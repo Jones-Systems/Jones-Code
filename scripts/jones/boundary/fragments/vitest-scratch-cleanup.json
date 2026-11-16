@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "vitest-scratch-cleanup",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

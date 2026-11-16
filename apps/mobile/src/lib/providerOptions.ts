@@ -21,10 +21,6 @@ export function resolveProviderOptionDescriptors(input: {
   });
 }
 
-/**
- * Applies one option change while preserving only previously explicit choices.
- * Displayed defaults stay inherited. Returns null for an unadvertised change.
- */
 export function applyProviderOptionSelection(
   descriptors: ReadonlyArray<ProviderOptionDescriptor>,
   change: ProviderOptionSelection,

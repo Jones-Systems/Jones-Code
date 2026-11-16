@@ -1,0 +1,26 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "connection-diagnostics",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/observability/clientTracing.test.ts",
+    "apps/server/src/jones/cloud/connectProbeEvidence.ts",
+    "apps/server/src/jones/cloud/connectProbeEvidence.test.ts",
+    "packages/client-runtime/src/jones/connection/sessionDiagnostic.ts",
+    "packages/client-runtime/src/jones/connection/sessionDiagnostic.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/cloud/ConnectReachability.ts",
+    "packages/client-runtime/src/connection/diagnosis.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/cloud/ConnectReachability.ts",
+      "to": "apps/server/src/jones/cloud/connectProbeEvidence.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/connection/diagnosis.ts",
+      "to": "packages/client-runtime/src/jones/connection/sessionDiagnostic.ts"
+    }
+  ]
+}

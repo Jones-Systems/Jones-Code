@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous conversation identifiers retain their existing custody hash encoding.
 import * as NodeCrypto from "node:crypto";
 import {
   CONVERSATION_LIBRARY_PROTOCOL,

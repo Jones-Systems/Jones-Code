@@ -1,0 +1,33 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "fleet-checkpoint",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/fleetCheckpoint/",
+    "apps/server/src/jones/mcp/fleetCheckpoint/tools.ts",
+    "apps/server/src/jones/mcp/fleetCheckpoint/handlers.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/config.ts",
+      "to": "apps/server/src/jones/fleetCheckpoint/Configuration.ts"
+    },
+    {
+      "from": "apps/server/src/cli/config.ts",
+      "to": "apps/server/src/jones/fleetCheckpoint/Configuration.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/fleetCheckpoint/Checkpoint.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/fleetCheckpoint/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/fleetCheckpoint/handlers.ts"
+    }
+  ]
+}

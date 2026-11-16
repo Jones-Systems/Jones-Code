@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "mobile-showcase-metro",
+  "jonesOwnedPaths": [],
+  "hookPaths": ["scripts/mobile-showcase.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "scripts/mobile-showcase.ts",
+      "to": "scripts/jones/mobile/showcase-metro.ts"
+    }
+  ]
+}

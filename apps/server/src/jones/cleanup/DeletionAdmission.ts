@@ -1,0 +1,680 @@
+import {
+  DeletionAdmissionBinding as Binding,
+  DeletionAdmissionWitnessBinding as WitnessBinding,
+  DeletionAdmissionCompletedNativeBinding as CompletedNativeBinding,
+} from "./DeletionBinding.ts";
+import { readCompletedNativeCleanupMembers } from "./CompletedNativeCleanup.ts";
+import { DeletionGroupRuntime, makeDeletionGroupEvidence } from "./DeletionGroupWitness.ts";
+import { RetirementReservationOwner } from "../workspaceRetirement/Receipts.ts";
+import { withOperation } from "../workspaceLifecycle/NativeOperation.ts";
+import { beforeCleanup, beforeCleanupPath } from "../workspaceLifecycle/NativeBoundary.ts";
+import { makeRuntimeUseStore } from "./RuntimeUseStore.ts";
+import { overlaps as runtimeUseOverlaps } from "../ordinaryCheckout/CheckoutTarget.ts";
+import * as EffectPath from "effect/Path";
+import {
+  CommandId,
+  ProjectId,
+  ThreadId,
+  WorktreeCleanupRules,
+  type ServerSettingsError,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
+import {
+  nativeCreationCanonicalJson,
+  nativeCreationSha256,
+} from "../nativeCreation/NativeCreationPreparation.ts";
+import {
+  DeletionWorktreeRemovalStartV1,
+  DeletionWorktreeRemovalTargetV1,
+} from "./DeletionWorktreeRemovalTypes.ts";
+import type { DeletionWorktreeRemovalObservationV1 } from "./DeletionWorktreeRemoval.ts";
+
+export class DeletionAdmissionError extends Schema.TaggedError<DeletionAdmissionError>()(
+  "DeletionAdmissionError",
+  {
+    reason: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+export type DeletionPolicyRead = Effect.Effect<WorktreeCleanupRules, ServerSettingsError>;
+export type DeletionLiveRead = Effect.Effect<boolean>;
+export interface DeletionAdmissionInput {
+  readonly threadId: ThreadId;
+  readonly target: DeletionWorktreeRemovalTargetV1;
+  readonly rules: WorktreeCleanupRules;
+  readonly currentRules: DeletionPolicyRead;
+  readonly currentLive: DeletionLiveRead;
+}
+const ThreadIdentity = Schema.Struct({
+  id: ThreadId,
+  projectId: ProjectId,
+  createdAt: Schema.String,
+  deletedAt: Schema.NullOr(Schema.String),
+  worktreePath: Schema.NullOr(Schema.String),
+  branch: Schema.NullOr(Schema.String),
+});
+const Readback = Schema.Struct({
+  registration: Schema.Union([
+    Schema.Struct({
+      status: Schema.Literal("complete"),
+      projectRoot: Schema.NonEmptyString,
+      gitCommonDirectory: Schema.NonEmptyString,
+      entries: Schema.Array(
+        Schema.Struct({
+          path: Schema.NonEmptyString,
+          head: Schema.NullOr(
+            Schema.String.check(Schema.isPattern(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)),
+          ),
+          branch: Schema.NullOr(Schema.String),
+          bare: Schema.Boolean,
+        }),
+      ),
+    }),
+    Schema.Struct({ status: Schema.Literal("unavailable"), reason: Schema.NonEmptyString }),
+  ]),
+  filesystem: Schema.Union([
+    Schema.Struct({ status: Schema.Literals(["present", "absent"]), path: Schema.NonEmptyString }),
+    Schema.Struct({
+      status: Schema.Literal("unavailable"),
+      path: Schema.NonEmptyString,
+      reason: Schema.NonEmptyString,
+    }),
+  ]),
+});
+const Observation = Schema.Struct({
+  version: Schema.Literal(1),
+  start: DeletionWorktreeRemovalStartV1,
+  startOrdinal: Schema.Int,
+  operation: Schema.Union([
+    Schema.Struct({
+      kind: Schema.Literal("executed"),
+      exitCode: Schema.NullOr(Schema.Int),
+      completion: Schema.Literals(["exited", "unknown"]),
+    }),
+    Schema.Struct({ kind: Schema.Literal("reconciled"), completion: Schema.Literal("unknown") }),
+    Schema.Struct({
+      kind: Schema.Literal("already_absent"),
+      completion: Schema.Literal("not_invoked"),
+    }),
+  ]),
+  before: Readback,
+  after: Readback,
+  observedAt: Schema.String,
+});
+const jsonBinding = Schema.fromJsonString(Binding);
+const jsonStart = Schema.fromJsonString(DeletionWorktreeRemovalStartV1);
+const same = (left: unknown, right: unknown) =>
+  nativeCreationCanonicalJson(left) === nativeCreationCanonicalJson(right);
+const decodeThreadIdentityJson = Schema.decodeEffect(Schema.fromJsonString(ThreadIdentity));
+const decodeStringJson = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({ id: ThreadId, projectId: ProjectId, createdAt: Schema.String }),
+  ),
+);
+const isWitnessBinding = Schema.is(WitnessBinding);
+const isCompletedNativeBinding = Schema.is(CompletedNativeBinding);
+const isDeletionAdmissionError = Schema.is(DeletionAdmissionError);
+const decodeObservation = Schema.decodeEffect(Observation);
+
+// These methods execute inside EventSink's owning SQL context. They never run Git.
+const compiledMain3acaCodec42 = Schema.is(DeletionAdmissionError);
+
+const compiledMain3acaCodec41 = Schema.decodeEffect(WorktreeCleanupRules);
+
+const compiledMain3acaCodec40 = Schema.decodeEffect(WorktreeCleanupRules);
+
+const compiledMain3acaCodec39 = Schema.decodeEffect(WorktreeCleanupRules);
+
+const compiledMain3acaCodec38 = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+export const makeDeletionAdmission = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const runtimeUses = yield* makeRuntimeUseStore;
+  const groupEvidence = yield* makeDeletionGroupEvidence(sql);
+  const groupRuntime = yield* Effect.serviceOption(DeletionGroupRuntime);
+  const path = yield* EffectPath.Path;
+  const overlaps = (left: string, right: string) =>
+    left === right ||
+    left.startsWith(`${right}${path.sep}`) ||
+    right.startsWith(`${left}${path.sep}`);
+  const newlyIssuedStarts = new Set<string>();
+  const consumedStarts = new Set<string>();
+  const receipts = yield* Receipts.CommandReceiptStoreV2;
+  const failure = (reason: string) => new DeletionAdmissionError({ reason });
+  const load = Effect.fn("DeletionAdmission.load")(function* (effectId: string) {
+    const rows = yield* sql<{
+      readonly binding_json: string;
+      readonly start_json: string;
+      readonly state: string;
+    }>`SELECT binding_json,start_json,state FROM jones_deletion_worktree_admissions WHERE effect_id=${effectId}`;
+    if (rows.length !== 1) return null;
+    const savedBinding = rows[0]!.binding_json;
+    const start = yield* Schema.decodeEffect(jsonStart)(rows[0]!.start_json);
+    const savedBindingSha256 = nativeCreationSha256(savedBinding);
+    // The original canonical bytes own receipt identity. Decoding a legacy
+    // policy may add defaults; that resolved view must never replace its digest.
+    if (
+      nativeCreationCanonicalJson(yield* compiledMain3acaCodec38(savedBinding)) !== savedBinding ||
+      start.effectId !== effectId ||
+      savedBindingSha256 !== start.bindingSha256
+    )
+      return yield* failure("original_removal_binding_changed");
+    return {
+      binding: yield* Schema.decodeEffect(jsonBinding)(savedBinding, { onExcessProperty: "error" }),
+      savedBindingSha256,
+      start,
+      state: rows[0]!.state,
+    };
+  });
+  const validateBinding = Effect.fn("DeletionAdmission.validateBinding")(function* (
+    binding: Binding,
+  ) {
+    const target = binding.target;
+    if (
+      !binding.rules.worktreeOnDelete ||
+      target.force ||
+      !path.isAbsolute(target.path) ||
+      !path.isAbsolute(target.projectRoot) ||
+      path.resolve(target.path) !== target.path ||
+      path.resolve(target.projectRoot) !== target.projectRoot ||
+      overlaps(target.path, target.projectRoot)
+    )
+      return yield* failure("original_policy_target_invalid");
+    if (
+      (yield* runtimeUses.pending()).some((use) =>
+        runtimeUseOverlaps(use.canonicalPath, target.path, path.sep),
+      )
+    )
+      return yield* failure("workspace_runtime_use_retirement_unconfirmed");
+    const native = yield* sql<{
+      readonly worktree_path: string;
+    }>`SELECT worktree_path FROM jones_native_workspace_admissions`;
+    if (native.some((row) => overlaps(row.worktree_path, target.path)))
+      return yield* failure("native_workspace_original_owner_handoff_required");
+    // Lease expiry is not evidence that an old owner's uncertain effect ended.
+    const claims = yield* sql<{
+      readonly worktree_path: string | null;
+    }>`SELECT worktree_path FROM native_creation_intents`;
+    if (
+      claims.some((row) => row.worktree_path !== null && overlaps(row.worktree_path, target.path))
+    )
+      return yield* failure("native_creation_original_owner_handoff_required");
+    const leases = yield* sql<{
+      readonly resource_path: string;
+    }>`SELECT resource_path FROM worktree_ownership_leases`;
+    if (leases.some((row) => overlaps(row.resource_path, target.path)))
+      return yield* failure("worktree_original_lease_owner_unavailable");
+    const deletion = yield* sql<{
+      readonly payload_json: string;
+      readonly command_id: string | null;
+    }>`SELECT payload_json,command_id FROM orchestration_events WHERE event_id=${binding.deletionEventId} AND sequence=${binding.deletionSequence} AND stream_id=${binding.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.deleted'`;
+    if (
+      deletion.length !== 1 ||
+      deletion[0]!.command_id !== binding.commandId ||
+      deletion[0]!.payload_json !== binding.deletionPayload
+    )
+      return yield* failure("original_deletion_event_changed");
+    const receipt = Option.getOrNull(yield* receipts.getByCommandId(binding.commandId));
+    if (
+      receipt?.status !== "accepted" ||
+      receipt.threadId !== binding.threadId ||
+      receipt.commandType !== "thread.delete" ||
+      receipt.resultSequence < binding.deletionSequence
+    )
+      return yield* failure("original_deletion_receipt_unavailable");
+    const birth = yield* sql<{
+      readonly event_id: string;
+      readonly sequence: number;
+      readonly payload_json: string;
+    }>`SELECT event_id,sequence,payload_json FROM orchestration_events WHERE stream_id=${binding.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.created' ORDER BY sequence DESC LIMIT 1`;
+    if (
+      birth.length !== 1 ||
+      birth[0]!.event_id !== binding.birthEventId ||
+      birth[0]!.sequence !== binding.birthSequence ||
+      binding.birthSequence >= binding.deletionSequence
+    )
+      return yield* failure("original_application_birth_changed");
+    const identity = yield* decodeThreadIdentityJson(binding.deletionPayload);
+    const born = yield* decodeStringJson(birth[0]!.payload_json);
+    const projection = yield* sql<{
+      readonly payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${binding.threadId}`;
+    if (projection.length !== 1) return yield* failure("original_deleted_projection_unavailable");
+    const current = yield* decodeThreadIdentityJson(projection[0]!.payload_json);
+    if (
+      identity.id !== binding.threadId ||
+      identity.projectId !== target.projectId ||
+      identity.deletedAt === null ||
+      identity.worktreePath !== target.path ||
+      identity.branch !== target.branch ||
+      born.id !== identity.id ||
+      born.projectId !== identity.projectId ||
+      born.createdAt !== identity.createdAt ||
+      !same(current, identity)
+    )
+      return yield* failure("original_deleted_thread_target_changed");
+    const project = yield* sql<{
+      readonly workspace_root: string;
+    }>`SELECT workspace_root FROM projection_projects WHERE project_id=${target.projectId}`;
+    if (project.length !== 1 || project[0]!.workspace_root !== target.projectRoot)
+      return yield* failure("original_project_root_changed");
+    const active = yield* sql<{
+      readonly path: string | null;
+    }>`SELECT json_extract(payload_json,'$.worktreePath') AS path FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL`;
+    if (isWitnessBinding(binding)) {
+      if (
+        binding.groupWitness.ownerThreadId !== binding.threadId ||
+        binding.groupWitness.deletionEventId !== binding.deletionEventId ||
+        binding.groupWitness.deletionSequence !== binding.deletionSequence ||
+        !same(binding.groupWitness.target, target)
+      )
+        return yield* failure("original_group_binding_mismatch");
+      yield* groupEvidence.validate(binding.groupWitness);
+    } else if (isCompletedNativeBinding(binding)) {
+      if (
+        !same(
+          binding.completedNativeMembers,
+          yield* readCompletedNativeCleanupMembers(sql, binding.threadId, target, path.sep),
+        )
+      )
+        return yield* failure("completed_native_cleanup_snapshot_changed");
+    } else if (active.some((row) => row.path !== null && overlaps(row.path, target.path)))
+      return yield* failure("shared_worktree_retained");
+    const sessions = yield* sql<{
+      readonly cwd: string;
+    }>`SELECT json_extract(payload_json,'$.cwd') AS cwd FROM orchestration_v2_projection_provider_sessions WHERE status != 'stopped'`;
+    if (sessions.some((row) => overlaps(row.cwd, target.path)))
+      return yield* failure("provider_cleanup_not_observed");
+    const pending =
+      yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox WHERE thread_id=${binding.threadId} AND status NOT IN ('succeeded','cancelled') LIMIT 1`;
+    if (pending.length > 0) return yield* failure("original_cleanup_prerequisites_unsettled");
+  });
+  const checkCurrent = Effect.fn("DeletionAdmission.checkCurrent")(function* (
+    binding: Binding,
+    currentRules?: DeletionPolicyRead,
+    currentLive?: DeletionLiveRead,
+  ) {
+    if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
+      return yield* failure("live_observation_inside_transaction");
+    if (currentRules === undefined || currentLive === undefined)
+      return yield* failure("current_policy_owner_unavailable");
+    const rules = yield* compiledMain3acaCodec39(yield* currentRules);
+    const resolvedBindingRules = yield* compiledMain3acaCodec40(binding.rules);
+    if (!rules.worktreeOnDelete || !same(rules, resolvedBindingRules))
+      return yield* failure("original_worktree_policy_changed");
+    if (!(yield* currentLive))
+      return yield* failure("current_cleanup_owner_or_live_prerequisites_changed");
+    if (isWitnessBinding(binding)) {
+      if (Option.isNone(groupRuntime))
+        return yield* failure("original_group_exclusion_unavailable");
+      yield* groupRuntime.value.revalidate(binding.groupWitness);
+    }
+    yield* validateBinding(binding);
+  });
+  const readBinding = Effect.fn("DeletionAdmission.readBinding")(function* (
+    input: DeletionAdmissionInput,
+  ) {
+    const deletions = yield* sql<{
+      readonly event_id: string;
+      readonly sequence: number;
+      readonly command_id: string | null;
+      readonly payload_json: string;
+    }>`SELECT event_id,sequence,command_id,payload_json FROM orchestration_events WHERE stream_id=${input.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.deleted' ORDER BY sequence DESC LIMIT 1`;
+    const births = yield* sql<{
+      readonly event_id: string;
+      readonly sequence: number;
+    }>`SELECT event_id,sequence FROM orchestration_events WHERE stream_id=${input.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.created' ORDER BY sequence DESC LIMIT 1`;
+    if (deletions.length !== 1 || births.length !== 1 || deletions[0]!.command_id === null)
+      return yield* failure("original_birth_or_deletion_command_unavailable");
+    const deletion = deletions[0]!;
+    const binding: Binding = {
+      actor: "storage-cleanup-policy",
+      threadId: input.threadId,
+      birthEventId: births[0]!.event_id,
+      birthSequence: births[0]!.sequence,
+      deletionEventId: deletion.event_id,
+      deletionSequence: deletion.sequence,
+      commandId: CommandId.make(deletion.command_id!),
+      deletionPayload: deletion.payload_json,
+      target: input.target,
+      rules: yield* compiledMain3acaCodec41(input.rules),
+    };
+    const active = yield* sql<{
+      readonly path: string | null;
+    }>`SELECT json_extract(payload_json,'$.worktreePath') AS path FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL`;
+    let candidate: Binding = binding;
+    if (active.some((row) => row.path !== null && overlaps(row.path, input.target.path))) {
+      candidate = {
+        ...binding,
+        schema: "jones.deletion-admission/v3",
+        completedNativeMembers: yield* readCompletedNativeCleanupMembers(
+          sql,
+          input.threadId,
+          input.target,
+          path.sep,
+        ),
+      };
+    }
+    yield* checkCurrent(candidate, input.currentRules, input.currentLive);
+    return candidate;
+  });
+  const start = Effect.fn("DeletionAdmission.start")(
+    function* (
+      input: DeletionAdmissionInput,
+      beforeCommit: Effect.Effect<void, DeletionAdmissionError> = Effect.void,
+    ) {
+      const binding = yield* readBinding(input);
+      yield* withOperation(
+        {
+          id: `deletion-admission:${binding.deletionEventId}`,
+          kind: "preservation",
+          threadId: input.threadId,
+          worktree: input.target.path,
+          boundaries: ["cleanup"],
+          inherit: false,
+          check: checkCurrent(binding, input.currentRules, input.currentLive),
+        },
+        beforeCleanup({
+          threadId: input.threadId,
+          boundary: "cleanup",
+          id: `deletion:${binding.deletionEventId}`,
+        }),
+      );
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* beforeCommit;
+          yield* validateBinding(binding);
+          const bindingSha256 = nativeCreationSha256(nativeCreationCanonicalJson(binding));
+          const effectId = `deletion-worktree:${binding.deletionEventId}:${bindingSha256}`;
+          const existing = yield* sql<{
+            readonly effect_id: string;
+          }>`SELECT effect_id FROM jones_deletion_worktree_admissions WHERE worktree_path=${input.target.path}`;
+          if (existing.length > 0) {
+            if (existing[0]!.effect_id !== effectId)
+              return yield* failure("another_original_worktree_operation_retained");
+            const original = yield* load(effectId);
+            if (original === null || !same(original.binding, binding))
+              return yield* failure("original_removal_binding_changed");
+            return { status: "observe_only" as const, start: original.start, ordinal: 0 };
+          }
+          const startedAt = DateTime.formatIso(yield* DateTime.now);
+          const captured: DeletionWorktreeRemovalStartV1 = {
+            schema: "t3.deletion-worktree-removal-start/v1",
+            effectId,
+            bindingSha256,
+            workerId: "storage-cleanup-policy",
+            expectedAttempt: 1,
+            target: input.target,
+            startedAt,
+          };
+          yield* sql`INSERT INTO jones_deletion_worktree_admissions(effect_id,worktree_path,binding_json,start_json,state) VALUES(${effectId},${input.target.path},${nativeCreationCanonicalJson(binding)},${nativeCreationCanonicalJson(captured)},'started')`;
+          return { status: "start_now" as const, start: captured, ordinal: 0 };
+        }),
+      );
+    },
+    Effect.map((result) => {
+      // Lost responses and process recovery cannot recreate this fresh invocation permit.
+      if (result.status === "start_now") newlyIssuedStarts.add(result.start.effectId);
+      return result;
+    }),
+    Effect.mapError((cause) =>
+      isDeletionAdmissionError(cause)
+        ? cause
+        : new DeletionAdmissionError({ reason: "deletion_admission_failed", cause }),
+    ),
+  );
+  const read = (effectId: string) =>
+    load(effectId).pipe(
+      Effect.map((row) => (row === null ? null : { start: row.start, ordinal: 0 })),
+      Effect.mapError(
+        (cause) => new DeletionAdmissionError({ reason: "original_start_read_failed", cause }),
+      ),
+    );
+  const readTarget = Effect.fn("DeletionAdmission.readTarget")(
+    function* (threadId: ThreadId, target: DeletionWorktreeRemovalTargetV1) {
+      const rows = yield* sql<{
+        readonly effect_id: string;
+      }>`SELECT effect_id FROM jones_deletion_worktree_admissions WHERE worktree_path=${target.path}`;
+      if (rows.length === 0) return null;
+      const original = yield* load(rows[0]!.effect_id);
+      if (
+        original === null ||
+        original.binding.threadId !== threadId ||
+        !same(original.binding.target, target)
+      )
+        return yield* failure("another_original_worktree_operation_retained");
+      return { start: original.start, ordinal: 0 };
+    },
+    Effect.mapError((cause) =>
+      isDeletionAdmissionError(cause)
+        ? cause
+        : new DeletionAdmissionError({ reason: "original_target_read_failed", cause }),
+    ),
+  );
+  const revalidate = Effect.fn("DeletionAdmission.revalidate")(
+    function* (
+      captured: DeletionWorktreeRemovalStartV1,
+      ordinal: number,
+      rules?: DeletionPolicyRead,
+      live?: DeletionLiveRead,
+      beforeCommit: Effect.Effect<void, DeletionAdmissionError> = Effect.void,
+    ) {
+      const check = Effect.gen(function* () {
+        const original = yield* load(captured.effectId);
+        if (
+          original === null ||
+          original.state !== "started" ||
+          ordinal !== 0 ||
+          !same(original.start, captured) ||
+          original.savedBindingSha256 !== captured.bindingSha256
+        )
+          return yield* failure("original_start_no_longer_executable");
+        const outcomes =
+          yield* sql`SELECT 1 FROM jones_deletion_worktree_observations WHERE effect_id=${captured.effectId} LIMIT 1`;
+        if (outcomes.length > 0) return yield* failure("original_start_already_observed");
+        if (!newlyIssuedStarts.has(captured.effectId))
+          return yield* failure("original_start_observation_only");
+        yield* validateBinding(original.binding);
+        return original.binding;
+      });
+      const prepared = yield* check;
+      yield* checkCurrent(prepared, rules, live);
+      yield* withOperation(
+        {
+          id: `deletion:${captured.effectId}:${ordinal}`,
+          kind: "preservation",
+          worktree: captured.target.path,
+          boundaries: ["cleanup"],
+          inherit: false,
+          check: checkCurrent(prepared, rules, live),
+        },
+        beforeCleanupPath(captured.target.path),
+      );
+      yield* sql.withTransaction(
+        beforeCommit.pipe(
+          Effect.andThen(check),
+          Effect.andThen(
+            Effect.suspend(() =>
+              newlyIssuedStarts.delete(captured.effectId)
+                ? Effect.sync(() => {
+                    consumedStarts.add(captured.effectId);
+                  })
+                : failure("original_start_observation_only"),
+            ),
+          ),
+        ),
+      );
+      if (isWitnessBinding(prepared)) {
+        if (Option.isNone(groupRuntime))
+          return yield* failure("original_group_exclusion_unavailable");
+        yield* groupRuntime.value.revalidate(prepared.groupWitness);
+      }
+    },
+    Effect.mapError((cause) =>
+      isDeletionAdmissionError(cause)
+        ? cause
+        : new DeletionAdmissionError({ reason: "original_start_revalidation_failed", cause }),
+    ),
+  );
+  // Readback never issues, consumes or recreates an execution permit. The producer
+  // must already have consumed its one-shot start in this exact owner lifetime.
+  const checkRetained = Effect.fn("DeletionAdmission.checkRetained")(
+    function* (
+      captured: DeletionWorktreeRemovalStartV1,
+      ordinal: number,
+      rules?: DeletionPolicyRead,
+      live?: DeletionLiveRead,
+    ) {
+      // Live policy/runtime readback must run outside SQLite's writer transaction.
+      // The immutable captured bytes and all SQL prerequisites are checked again
+      // atomically below, including the exact reservation owner.
+      const prepared = yield* load(captured.effectId);
+      if (prepared === null || prepared.savedBindingSha256 !== captured.bindingSha256)
+        return yield* failure("original_start_no_longer_executable");
+      yield* checkCurrent(prepared.binding, rules, live);
+      const own = yield* RetirementReservationOwner;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const original = yield* load(captured.effectId);
+          if (
+            original === null ||
+            original.state !== "started" ||
+            ordinal !== 0 ||
+            !same(original.start, captured) ||
+            original.savedBindingSha256 !== captured.bindingSha256
+          )
+            return yield* failure("original_start_no_longer_executable");
+          if (!consumedStarts.has(captured.effectId))
+            return yield* failure("original_start_observation_only");
+          const observed =
+            yield* sql`SELECT 1 FROM jones_deletion_worktree_observations WHERE effect_id=${captured.effectId} LIMIT 1`;
+          if (observed.length) return yield* failure("original_start_already_observed");
+          const rows = yield* sql<{
+            incarnation_id: string;
+            receipt_id: string;
+          }>`SELECT incarnation_id,receipt_id FROM jones_workspace_retirement_state WHERE worktree=${captured.target.path} AND state='retiring'`;
+          if (own === null) {
+            if (rows.length) return yield* failure("conflicting_retirement");
+          } else if (
+            own.worktree !== captured.target.path ||
+            rows.length !== 1 ||
+            rows[0]!.receipt_id !== own.record.receipt ||
+            rows[0]!.incarnation_id !== own.record.incarnation
+          ) {
+            return yield* failure("retirement_ownership_lost");
+          }
+          // The executor verifies the actual common-store row before this SQL-only
+          // callback; no guarded writer is entered under our own reservation.
+          yield* validateBinding(original.binding);
+        }),
+      );
+    },
+    Effect.mapError((cause) =>
+      compiledMain3acaCodec42(cause)
+        ? cause
+        : new DeletionAdmissionError({ reason: "original_start_readback_failed", cause }),
+    ),
+  );
+  const qualify = (input: DeletionWorktreeRemovalObservationV1) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const observation = yield* decodeObservation(input, {
+            onExcessProperty: "error",
+          });
+          const original = yield* load(observation.start.effectId);
+          const observedAt = DateTime.make(observation.observedAt);
+          const startTime = DateTime.make(observation.start.startedAt);
+          if (
+            original === null ||
+            observation.startOrdinal !== 0 ||
+            !same(original.start, observation.start) ||
+            original.savedBindingSha256 !== observation.start.bindingSha256 ||
+            Option.isNone(observedAt) ||
+            Option.isNone(startTime) ||
+            DateTime.formatIso(observedAt.value) !== observation.observedAt ||
+            DateTime.toEpochMillis(observedAt.value) < DateTime.toEpochMillis(startTime.value)
+          )
+            return yield* failure("observation_original_operation_mismatch");
+          yield* validateBinding(original.binding);
+          const target = original.binding.target;
+          if (isWitnessBinding(original.binding)) {
+            const physical = original.binding.groupWitness.physical;
+            const registered = observation.before.registration;
+            const entry =
+              registered.status === "complete"
+                ? registered.entries.find((row) => row.path === target.path)
+                : undefined;
+            if (
+              registered.status !== "complete" ||
+              registered.gitCommonDirectory !== physical.gitCommonDirectory ||
+              (entry !== undefined &&
+                (entry.head !== physical.head || entry.branch !== physical.branch))
+            )
+              return yield* failure("original_group_observation_identity_mismatch");
+          }
+          for (const readback of [observation.before, observation.after]) {
+            if (
+              readback.filesystem.path !== target.path ||
+              (readback.registration.status === "complete" &&
+                (readback.registration.projectRoot !== target.projectRoot ||
+                  !path.isAbsolute(readback.registration.gitCommonDirectory) ||
+                  new Set(readback.registration.entries.map((entry) => entry.path)).size !==
+                    readback.registration.entries.length ||
+                  readback.registration.entries.some(
+                    (entry) =>
+                      !path.isAbsolute(entry.path) || path.resolve(entry.path) !== entry.path,
+                  )))
+            )
+              return yield* failure("observation_target_readback_mismatch");
+          }
+          const before = observation.before.registration;
+          const after = observation.after.registration;
+          const entry =
+            before.status === "complete"
+              ? before.entries.find((row) => row.path === target.path)
+              : undefined;
+          const absent =
+            before.status === "complete" &&
+            after.status === "complete" &&
+            before.gitCommonDirectory === after.gitCommonDirectory &&
+            observation.after.filesystem.status === "absent" &&
+            !after.entries.some((row) => row.path === target.path);
+          const confirmed =
+            absent &&
+            observation.operation.kind === "executed" &&
+            observation.operation.completion === "exited" &&
+            observation.operation.exitCode === 0 &&
+            observation.before.filesystem.status === "present" &&
+            entry !== undefined &&
+            !entry.bare &&
+            (entry.branch === target.branch || entry.branch === `refs/heads/${target.branch}`);
+          const absence =
+            absent &&
+            (observation.operation.kind === "reconciled" ||
+              (observation.operation.kind === "already_absent" &&
+                entry === undefined &&
+                observation.before.filesystem.status === "absent"));
+          const result = confirmed ? "confirmed" : absence ? "absent" : "unknown";
+          const rows = yield* sql<{
+            readonly ordinal: number;
+          }>`SELECT ordinal FROM jones_deletion_worktree_observations WHERE effect_id=${observation.start.effectId} ORDER BY ordinal DESC LIMIT 1`;
+          const ordinal = (rows[0]?.ordinal ?? 0) + 1;
+          yield* sql`INSERT INTO jones_deletion_worktree_observations(effect_id,ordinal,observation_json,result) VALUES(${observation.start.effectId},${ordinal},${nativeCreationCanonicalJson(observation)},${result})`;
+          yield* sql`UPDATE jones_deletion_worktree_admissions SET state=${result === "unknown" ? "unknown" : "completed"} WHERE effect_id=${observation.start.effectId} AND state != 'completed'`;
+        }),
+      )
+      .pipe(
+        Effect.mapError((cause) =>
+          isDeletionAdmissionError(cause)
+            ? cause
+            : new DeletionAdmissionError({ reason: "observation_qualification_failed", cause }),
+        ),
+      );
+  return { start, read, readTarget, revalidate, checkRetained, qualify };
+});

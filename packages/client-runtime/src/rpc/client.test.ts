@@ -1,11 +1,8 @@
 import {
-  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
-  PreviewTabId,
-  ThreadId,
-  type PreviewAutomationStreamEvent,
+  ScheduledTaskId,
   type RelayClientInstallProgressEvent,
-  type ServerConfigStreamEvent,
+  type ServerConfig,
   type ServerLifecycleStreamEvent,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -19,9 +16,9 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
-import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
-import { RpcClientError } from "effect/unstable/rpc";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import { RpcClientError } from "effect/rpc";
 
 import {
   AVAILABLE_CONNECTION_STATE,
@@ -34,7 +31,9 @@ import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import {
   EnvironmentRpcRequestObserver,
-  request,
+  RpcPermissionGuard,
+  refreshVcsBranch,
+  requestGuarded,
   runStream,
   subscribe,
   subscribeDynamicWithSession,
@@ -60,9 +59,10 @@ function session(client: WsRpcProtocolClient): RpcSession.RpcSession {
   return {
     client,
     initialConfig: Effect.never,
-    subscribeServerConfig: (input) => client.subscribeServerConfig(input),
+    subscribeServerConfig: (input = {}) => client.subscribeServerConfig(input),
     ready: Effect.void,
     probe: Effect.void,
+    inboundFrames: Effect.succeed(0),
     closed: Effect.never,
   };
 }
@@ -91,221 +91,105 @@ const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* () {
 });
 
 describe("environment RPC", () => {
-  it.effect("registers a fresh preview host after completion without replaying requests", () =>
+  it.effect("finishes an issued mutation on its original session without replay", () =>
     Effect.gen(function* () {
-      const firstCompleted = yield* Deferred.make<void>();
-      const reconnected = yield* Deferred.make<void>();
-      const requests: string[] = [];
-      const connections: string[] = [];
-      let attempts = 0;
-      const client = {
-        [WS_METHODS.previewAutomationConnect]: () =>
-          Stream.suspend(() => {
-            attempts += 1;
-            const connected: PreviewAutomationStreamEvent = {
-              type: "connected",
-              connectionId: `connection-${attempts}`,
-            };
-            return attempts === 1
-              ? Stream.make(connected, {
-                  type: "request",
-                  connectionId: connected.connectionId,
-                  request: {
-                    requestId: "timed-out-action",
-                    operation: "click",
-                    threadId: ThreadId.make("thread-1"),
-                    tabId: PreviewTabId.make("tab-1"),
-                    input: {},
-                    timeoutMs: 1_000,
-                  },
-                } satisfies PreviewAutomationStreamEvent).pipe(
-                  Stream.ensuring(Deferred.succeed(firstCompleted, undefined)),
-                )
-              : Stream.succeed(connected).pipe(Stream.concat(Stream.never));
-          }),
-      } as unknown as WsRpcProtocolClient;
+      const issued = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const calls: string[] = [];
+      const id = ScheduledTaskId.make("task");
+      const makeClient = (name: string) =>
+        ({
+          [WS_METHODS.scheduledTasksDelete]: () =>
+            Effect.sync(() => calls.push(name)).pipe(
+              Effect.andThen(Deferred.succeed(issued, undefined)),
+              Effect.andThen(Deferred.await(release)),
+              Effect.as({ id }),
+            ),
+        }) as unknown as WsRpcProtocolClient;
       const { activeSession, supervisor } = yield* makeHarness();
-      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      const consumer = yield* subscribe(WS_METHODS.previewAutomationConnect, {
-        clientId: "preview-host",
-        environmentId: TARGET.environmentId,
-      }).pipe(
-        Stream.runForEach((event) => {
-          if (event.type === "request") {
-            requests.push(event.request.requestId);
-            return Effect.void;
-          }
-          connections.push(event.connectionId);
-          return connections.length === 2 ? Deferred.succeed(reconnected, undefined) : Effect.void;
-        }),
+      yield* SubscriptionRef.set(activeSession, Option.some(session(makeClient("first"))));
+      const result = yield* requestGuarded(WS_METHODS.scheduledTasksDelete, { id }).pipe(
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(RpcPermissionGuard, { authorize: () => Effect.void }),
         Effect.forkChild,
       );
-      yield* Deferred.await(firstCompleted);
-      yield* TestClock.adjust(999);
-      expect(attempts).toBe(1);
-      yield* TestClock.adjust(1);
-      expect(attempts).toBe(2);
-      yield* Deferred.await(reconnected);
-      expect(connections).toEqual(["connection-1", "connection-2"]);
-      expect(requests).toEqual(["timed-out-action"]);
-      yield* Fiber.interrupt(consumer);
+      yield* Deferred.await(issued);
+      yield* SubscriptionRef.set(activeSession, Option.some(session(makeClient("second"))));
+      yield* Deferred.succeed(release, undefined);
+      expect(yield* Fiber.join(result)).toEqual({ id });
+      expect(calls).toEqual(["first"]);
     }),
   );
 
-  it.effect("does not re-register an unmounted preview host during the recovery delay", () =>
-    Effect.gen(function* () {
-      const completed = yield* Deferred.make<void>();
-      let attempts = 0;
-      const client = {
-        [WS_METHODS.previewAutomationConnect]: () =>
-          Stream.suspend(() => {
-            attempts += 1;
-            return Stream.empty.pipe(Stream.ensuring(Deferred.succeed(completed, undefined)));
-          }),
-      } as unknown as WsRpcProtocolClient;
-      const { activeSession, supervisor } = yield* makeHarness();
-      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      const consumer = yield* subscribe(WS_METHODS.previewAutomationConnect, {
-        clientId: "preview-host",
-        environmentId: TARGET.environmentId,
-      }).pipe(
-        Stream.runDrain,
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.forkChild,
-      );
-      yield* Deferred.await(completed);
-      yield* Fiber.interrupt(consumer);
-      yield* TestClock.adjust(10_000);
-      expect(attempts).toBe(1);
-    }),
-  );
-
-  it.effect.each(["completion", "transport failure"] as const)(
-    "keeps preview recovery tied to the active session after %s",
-    (reason) =>
+  it.effect.each(["authorization", "validation", "observation"] as const)(
+    "rejects an unissued mutation when its session changes during %s",
+    (stage) =>
       Effect.gen(function* () {
-        const completed = yield* Deferred.make<void>();
-        const nextConnected = yield* Deferred.make<void>();
-        let oldAttempts = 0;
-        let nextAttempts = 0;
-        const firstClient = {
-          [WS_METHODS.previewAutomationConnect]: () =>
-            Stream.suspend(() => {
-              oldAttempts += 1;
-              return (
-                reason === "completion"
-                  ? Stream.empty
-                  : Stream.fail(
-                      new RpcClientError.RpcClientError({
-                        reason: new RpcClientError.RpcClientDefect({
-                          message: "socket closed",
-                          cause: new Error("socket closed"),
-                        }),
-                      }),
-                    )
-              ).pipe(Stream.ensuring(Deferred.succeed(completed, undefined)));
-            }),
-        } as unknown as WsRpcProtocolClient;
-        const nextClient = {
-          [WS_METHODS.previewAutomationConnect]: () =>
-            Stream.suspend(() => {
-              nextAttempts += 1;
-              return Stream.fromEffect(Deferred.succeed(nextConnected, undefined)).pipe(
-                Stream.drain,
-                Stream.concat(Stream.never),
-              );
-            }),
-        } as unknown as WsRpcProtocolClient;
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const hold = Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const issued: string[] = [];
+        const authorized: string[] = [];
+        const validated: RpcSession.RpcSession[] = [];
+        let completedObservations = 0;
+        const makeClient = (name: string) =>
+          ({
+            [WS_METHODS.scheduledTasksDelete]: () => {
+              issued.push(name);
+              return Effect.void;
+            },
+          }) as unknown as WsRpcProtocolClient;
+        const first = session(makeClient("first"));
+        const second = session(makeClient("second"));
         const { activeSession, supervisor } = yield* makeHarness();
-        yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
-        const consumer = yield* subscribe(WS_METHODS.previewAutomationConnect, {
-          clientId: "preview-host",
-          environmentId: TARGET.environmentId,
-        }).pipe(
-          Stream.runDrain,
+        yield* SubscriptionRef.set(activeSession, Option.some(first));
+        const result = yield* requestGuarded(
+          WS_METHODS.scheduledTasksDelete,
+          { id: ScheduledTaskId.make("task") },
+          {
+            validateSession: (value) =>
+              Effect.sync(() => validated.push(value)).pipe(
+                Effect.andThen(stage === "validation" ? hold : Effect.void),
+              ),
+          },
+        ).pipe(
           Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.provideService(RpcPermissionGuard, {
+            authorize: () =>
+              Effect.sync(() => authorized.push("first")).pipe(
+                Effect.andThen(stage === "authorization" ? hold : Effect.void),
+              ),
+          }),
+          Effect.provideService(EnvironmentRpcRequestObserver, {
+            observe: () =>
+              (stage === "observation" ? hold : Effect.void).pipe(
+                Effect.as(
+                  Effect.sync(() => {
+                    completedObservations += 1;
+                  }),
+                ),
+              ),
+          }),
+          Effect.exit,
           Effect.forkChild,
         );
-        yield* Deferred.await(completed);
-        if (reason === "transport failure") {
-          yield* TestClock.adjust(10_000);
-          expect(oldAttempts).toBe(1);
+        yield* Deferred.await(entered);
+        yield* SubscriptionRef.set(activeSession, Option.some(second));
+        yield* Deferred.succeed(release, undefined);
+        const exit = yield* Fiber.join(result);
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) {
+          expect(Cause.squash(exit.cause)).toMatchObject({
+            _tag: "EnvironmentRpcUnavailableError",
+          });
         }
-        yield* SubscriptionRef.set(activeSession, Option.some(session(nextClient)));
-        yield* Deferred.await(nextConnected);
-        yield* TestClock.adjust(10_000);
-        expect(oldAttempts).toBe(1);
-        expect(nextAttempts).toBe(1);
-        yield* Fiber.interrupt(consumer);
+        expect(issued).toEqual([]);
+        expect(authorized.length).toBeLessThanOrEqual(1);
+        expect(validated).toEqual([first]);
+        expect(completedObservations).toBe(stage === "observation" ? 1 : 0);
       }),
-  );
-
-  it.effect("reuses the session config stream instead of opening a duplicate subscription", () =>
-    Effect.gen(function* () {
-      const event: ServerConfigStreamEvent = {
-        version: 1,
-        type: "settingsUpdated",
-        payload: { settings: DEFAULT_SERVER_SETTINGS },
-      };
-      let duplicateSubscriptions = 0;
-      const client = {
-        [WS_METHODS.subscribeServerConfig]: () => {
-          duplicateSubscriptions += 1;
-          return Stream.never;
-        },
-      } as unknown as WsRpcProtocolClient;
-      const { activeSession, supervisor } = yield* makeHarness();
-      yield* SubscriptionRef.set(
-        activeSession,
-        Option.some({
-          ...session(client),
-          subscribeServerConfig: () => Stream.succeed(event),
-        }),
-      );
-
-      const received = yield* subscribe(WS_METHODS.subscribeServerConfig, {}).pipe(
-        Stream.runHead,
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      );
-
-      expect(received).toEqual(Option.some(event));
-      expect(duplicateSubscriptions).toBe(0);
-    }),
-  );
-
-  it.effect("observes unary requests until they complete", () =>
-    Effect.gen(function* () {
-      const observations: string[] = [];
-      const client = {
-        [WS_METHODS.cloudGetRelayClientStatus]: () =>
-          Effect.succeed({ status: "available", version: "2026.6.0" }),
-      } as unknown as WsRpcProtocolClient;
-      const { activeSession, supervisor } = yield* makeHarness();
-      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-
-      const result = yield* request(WS_METHODS.cloudGetRelayClientStatus, {}).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.provideService(
-          EnvironmentRpcRequestObserver,
-          EnvironmentRpcRequestObserver.of({
-            observe: ({ environmentId, method }) =>
-              Effect.sync(() => {
-                observations.push(`start:${environmentId}:${method}`);
-                return Effect.sync(() => {
-                  observations.push(`finish:${environmentId}:${method}`);
-                });
-              }),
-          }),
-        ),
-      );
-
-      expect(result).toEqual({ status: "available", version: "2026.6.0" });
-      expect(observations).toEqual([
-        `start:${TARGET.environmentId}:${WS_METHODS.cloudGetRelayClientStatus}`,
-        `finish:${TARGET.environmentId}:${WS_METHODS.cloudGetRelayClientStatus}`,
-      ]);
-    }),
   );
 
   it.effect("binds finite streaming commands to one active session", () =>
@@ -341,15 +225,18 @@ describe("environment RPC", () => {
   it.effect("switches durable subscriptions when the supervisor replaces the session", () =>
     Effect.gen(function* () {
       const subscriptions: string[] = [];
+      const subscriptionChanges = yield* Queue.make<void>();
       const firstClient = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
+        [WS_METHODS.subscribeTerminalMetadata]: () => {
           subscriptions.push("first");
+          Queue.offerUnsafe(subscriptionChanges, undefined);
           return Stream.never;
         },
       } as unknown as WsRpcProtocolClient;
       const secondClient = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
+        [WS_METHODS.subscribeTerminalMetadata]: () => {
           subscriptions.push("second");
+          Queue.offerUnsafe(subscriptionChanges, undefined);
           return Stream.never;
         },
       } as unknown as WsRpcProtocolClient;
@@ -357,16 +244,15 @@ describe("environment RPC", () => {
       const awaitSubscriptions = Effect.fn("TestEnvironmentRpc.awaitSubscriptions")(function* (
         count: number,
       ) {
-        for (let attempt = 0; attempt < 100; attempt += 1) {
+        for (;;) {
           if (subscriptions.length >= count) {
             return;
           }
-          yield* Effect.yieldNow;
+          yield* Queue.take(subscriptionChanges);
         }
-        return yield* Effect.die(new Error(`Expected ${count} durable subscriptions.`));
       });
 
-      const subscriptionFiber = yield* subscribe(WS_METHODS.subscribeTerminalEvents, {}).pipe(
+      const subscriptionFiber = yield* subscribe(WS_METHODS.subscribeTerminalMetadata, {}).pipe(
         Stream.runDrain,
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.forkChild,
@@ -451,9 +337,11 @@ describe("environment RPC", () => {
   it.effect("keeps durable subscriptions alive across a transport failure and new session", () =>
     Effect.gen(function* () {
       const subscriptions: string[] = [];
+      const subscriptionChanges = yield* Queue.make<void>();
       const firstClient = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
+        [WS_METHODS.subscribeTerminalMetadata]: () => {
           subscriptions.push("first");
+          Queue.offerUnsafe(subscriptionChanges, undefined);
           return Stream.fail(
             new RpcClientError.RpcClientError({
               reason: new RpcClientError.RpcClientDefect({
@@ -465,27 +353,28 @@ describe("environment RPC", () => {
         },
       } as unknown as WsRpcProtocolClient;
       const secondClient = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
+        [WS_METHODS.subscribeTerminalMetadata]: () => {
           subscriptions.push("second");
+          Queue.offerUnsafe(subscriptionChanges, undefined);
           return Stream.never;
         },
       } as unknown as WsRpcProtocolClient;
       const { activeSession, retryCount, supervisor } = yield* makeHarness();
 
-      const subscriptionFiber = yield* subscribe(WS_METHODS.subscribeTerminalEvents, {}).pipe(
+      const subscriptionFiber = yield* subscribe(WS_METHODS.subscribeTerminalMetadata, {}).pipe(
         Stream.runDrain,
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.forkChild,
       );
       yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
-      for (let attempt = 0; attempt < 100 && subscriptions.length < 1; attempt += 1) {
-        yield* Effect.yieldNow;
+      while (subscriptions.length < 1) {
+        yield* Queue.take(subscriptionChanges);
       }
       yield* SubscriptionRef.set(activeSession, Option.none());
       yield* SubscriptionRef.set(activeSession, Option.some(session(secondClient)));
 
-      for (let attempt = 0; attempt < 100 && subscriptions.length < 2; attempt += 1) {
-        yield* Effect.yieldNow;
+      while (subscriptions.length < 2) {
+        yield* Queue.take(subscriptionChanges);
       }
       yield* Fiber.interrupt(subscriptionFiber);
 
@@ -498,12 +387,12 @@ describe("environment RPC", () => {
     Effect.gen(function* () {
       const domainError = new Error("terminal subscription rejected");
       const client = {
-        [WS_METHODS.subscribeTerminalEvents]: () => Stream.fail(domainError),
+        [WS_METHODS.subscribeTerminalMetadata]: () => Stream.fail(domainError),
       } as unknown as WsRpcProtocolClient;
       const { activeSession, retryCount, supervisor } = yield* makeHarness();
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      const error = yield* subscribe(WS_METHODS.subscribeTerminalEvents, {}).pipe(
+      const error = yield* subscribe(WS_METHODS.subscribeTerminalMetadata, {}).pipe(
         Stream.runDrain,
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.flip,
@@ -518,16 +407,20 @@ describe("environment RPC", () => {
     Effect.gen(function* () {
       const domainError = new Error("terminal subscription rejected");
       const subscriptions: string[] = [];
+      const subscriptionChanges = yield* Queue.make<void>();
       const observedFailures: Error[] = [];
+      const failureObserved = yield* Deferred.make<void>();
       const firstClient = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
+        [WS_METHODS.subscribeTerminalMetadata]: () => {
           subscriptions.push("first");
+          Queue.offerUnsafe(subscriptionChanges, undefined);
           return Stream.fail(domainError);
         },
       } as unknown as WsRpcProtocolClient;
       const secondClient = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
+        [WS_METHODS.subscribeTerminalMetadata]: () => {
           subscriptions.push("second");
+          Queue.offerUnsafe(subscriptionChanges, undefined);
           return Stream.never;
         },
       } as unknown as WsRpcProtocolClient;
@@ -535,12 +428,13 @@ describe("environment RPC", () => {
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
       const subscriptionFiber = yield* subscribe(
-        WS_METHODS.subscribeTerminalEvents,
+        WS_METHODS.subscribeTerminalMetadata,
         {},
         {
           onExpectedFailure: (cause) =>
             Effect.sync(() => {
               observedFailures.push(Cause.squash(cause) as Error);
+              Deferred.doneUnsafe(failureObserved, Effect.void);
             }),
         },
       ).pipe(
@@ -548,16 +442,14 @@ describe("environment RPC", () => {
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.forkChild,
       );
-      for (let attempt = 0; attempt < 100 && observedFailures.length < 1; attempt += 1) {
-        yield* Effect.yieldNow;
-      }
+      yield* Deferred.await(failureObserved);
 
       expect(subscriptions).toEqual(["first"]);
       expect(observedFailures).toEqual([domainError]);
 
       yield* SubscriptionRef.set(activeSession, Option.some(session(secondClient)));
-      for (let attempt = 0; attempt < 100 && subscriptions.length < 2; attempt += 1) {
-        yield* Effect.yieldNow;
+      while (subscriptions.length < 2) {
+        yield* Queue.take(subscriptionChanges);
       }
       yield* Fiber.interrupt(subscriptionFiber);
 
@@ -566,60 +458,8 @@ describe("environment RPC", () => {
     }),
   );
 
-  it.effect("retries handled domain failures within the same session when configured", () =>
-    Effect.gen(function* () {
-      const domainError = new Error("thread not found yet");
-      const subscriptionCount = yield* Ref.make(0);
-      const expectedFailureCount = yield* Ref.make(0);
-      const client = {
-        [WS_METHODS.subscribeTerminalEvents]: () =>
-          Stream.unwrap(
-            Ref.getAndUpdate(subscriptionCount, (count) => count + 1).pipe(
-              Effect.map((count) => (count === 0 ? Stream.fail(domainError) : Stream.never)),
-            ),
-          ),
-      } as unknown as WsRpcProtocolClient;
-      const { activeSession, supervisor } = yield* makeHarness();
-
-      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      const subscriptionFiber = yield* subscribe(
-        WS_METHODS.subscribeTerminalEvents,
-        {},
-        {
-          onExpectedFailure: () => Ref.update(expectedFailureCount, (count) => count + 1),
-          retryExpectedFailureAfter: "100 millis",
-        },
-      ).pipe(
-        Stream.runDrain,
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.forkChild,
-      );
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* Ref.get(expectedFailureCount)) >= 1) {
-          break;
-        }
-        yield* Effect.yieldNow;
-      }
-
-      expect(yield* Ref.get(subscriptionCount)).toBe(1);
-      expect(yield* Ref.get(expectedFailureCount)).toBe(1);
-
-      yield* TestClock.adjust("100 millis");
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* Ref.get(subscriptionCount)) >= 2) {
-          break;
-        }
-        yield* Effect.yieldNow;
-      }
-      yield* Fiber.interrupt(subscriptionFiber);
-
-      expect(yield* Ref.get(subscriptionCount)).toBe(2);
-      expect(yield* Ref.get(expectedFailureCount)).toBe(1);
-    }),
-  );
-
   it.effect.each(["input", "stream"] as const)(
-    "does not classify %s subscription defects as expected failures",
+    "reports %s subscription defects and resubscribes on the next session",
     (where) =>
       Effect.gen(function* () {
         const defect = new Error("subscription invariant failed");
@@ -627,25 +467,35 @@ describe("environment RPC", () => {
         let inputs = 0;
         let streams = 0;
         const observedDefects: unknown[] = [];
-        const client = {
-          [WS_METHODS.subscribeTerminalEvents]: () => {
+        const defectObserved = yield* Deferred.make<void>();
+        const resubscribed = yield* Deferred.make<void>();
+        const firstClient = {
+          [WS_METHODS.subscribeTerminalMetadata]: () => {
             streams += 1;
             return where === "stream" ? Stream.die(defect) : Stream.never;
           },
         } as unknown as WsRpcProtocolClient;
+        const secondClient = {
+          [WS_METHODS.subscribeTerminalMetadata]: () => {
+            Deferred.doneUnsafe(resubscribed, Effect.void);
+            return Stream.never;
+          },
+        } as unknown as WsRpcProtocolClient;
         const { activeSession, supervisor } = yield* makeHarness();
 
-        yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-        const exit = yield* subscribeDynamicWithSession(
-          WS_METHODS.subscribeTerminalEvents,
+        yield* SubscriptionRef.set(activeSession, Option.some(session(firstClient)));
+        const subscriptionFiber = yield* subscribeDynamicWithSession(
+          WS_METHODS.subscribeTerminalMetadata,
           () =>
-            Effect.sync(() => {
+            Effect.suspend(() => {
               inputs += 1;
-            }).pipe(Effect.andThen(where === "input" ? Effect.die(defect) : Effect.succeed({}))),
+              return where === "input" && inputs === 1 ? Effect.die(defect) : Effect.succeed({});
+            }),
           {
             onDefect: (cause) =>
               Effect.sync(() => {
                 observedDefects.push(Cause.squash(cause));
+                Deferred.doneUnsafe(defectObserved, Effect.void);
               }),
             onExpectedFailure: () =>
               Effect.sync(() => {
@@ -656,74 +506,91 @@ describe("environment RPC", () => {
         ).pipe(
           Stream.runDrain,
           Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-          Effect.exit,
+          Effect.forkChild,
         );
+        yield* Deferred.await(defectObserved);
 
-        expect(Exit.isFailure(exit)).toBe(true);
-        if (Exit.isFailure(exit)) {
-          expect(Cause.hasDies(exit.cause)).toBe(true);
-          expect(Cause.squash(exit.cause)).toBe(defect);
-        }
         expect(inputs).toBe(1);
         expect(streams).toBe(where === "input" ? 0 : 1);
         expect(expectedFailureCount).toBe(0);
         expect(observedDefects).toEqual([defect]);
+
+        // Let the defect settle before the next session arrives, as it does on a real device.
+        yield* TestClock.adjust("1 second");
+        expect(subscriptionFiber.pollUnsafe()).toBeUndefined();
+        yield* SubscriptionRef.set(activeSession, Option.some(session(secondClient)));
+        yield* Deferred.await(resubscribed);
+        yield* Fiber.interrupt(subscriptionFiber);
+
+        expect(inputs).toBe(2);
       }),
   );
+});
 
-  it.effect("reports an initializer defect once after an expected failure retries", () =>
+it.effect.each([true, false])(
+  "refreshes branches using the connected server capability (%s)",
+  (supported) =>
     Effect.gen(function* () {
-      const defect = new Error("Synthetic retry initializer defect");
-      const expectedFailure = yield* Deferred.make<void>();
-      const observations: string[] = [];
-      const observedDefects: unknown[] = [];
-      let inputs = 0;
+      const { activeSession, supervisor } = yield* makeHarness();
+      const inputs: unknown[] = [];
       const client = {
-        [WS_METHODS.subscribeTerminalEvents]: () => {
-          observations.push("stream");
-          return Stream.fail(new Error("subscription not ready"));
+        [supported ? WS_METHODS.vcsRefreshBranch : WS_METHODS.vcsRefreshStatus]: (
+          input: unknown,
+        ) => {
+          inputs.push(input);
+          return Effect.void;
         },
       } as unknown as WsRpcProtocolClient;
-      const { activeSession, supervisor } = yield* makeHarness();
-      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      const fiber = yield* subscribeDynamicWithSession(
-        WS_METHODS.subscribeTerminalEvents,
-        () =>
-          Effect.sync(() => {
-            inputs += 1;
-            observations.push(`input ${inputs}`);
-            return inputs;
-          }).pipe(
-            Effect.flatMap((attempt) => (attempt === 1 ? Effect.succeed({}) : Effect.die(defect))),
-          ),
-        {
-          onDefect: (cause) =>
-            Effect.sync(() => {
-              observations.push("defect");
-              observedDefects.push(Cause.squash(cause));
-            }),
-          onExpectedFailure: () =>
-            Effect.sync(() => {
-              observations.push("expected failure");
-            }).pipe(Effect.andThen(Deferred.succeed(expectedFailure, undefined)), Effect.asVoid),
-          retryExpectedFailureAfter: "250 millis",
-        },
-      ).pipe(
-        Stream.runDrain,
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.exit,
-        Effect.forkChild,
+      yield* SubscriptionRef.set(
+        activeSession,
+        Option.some({
+          ...session(client),
+          initialConfig: Effect.succeed({
+            environment: { capabilities: supported ? { vcsBranchStatus: true } : {} },
+          } as ServerConfig),
+        }),
       );
-      yield* Deferred.await(expectedFailure);
-      yield* TestClock.adjust("250 millis");
-      const exit = yield* Fiber.join(fiber);
-      expect(Exit.isFailure(exit)).toBe(true);
-      if (Exit.isFailure(exit)) {
-        expect(Cause.hasDies(exit.cause)).toBe(true);
-        expect(Cause.squash(exit.cause)).toBe(defect);
-      }
-      expect(observations).toEqual(["input 1", "stream", "expected failure", "input 2", "defect"]);
-      expect(observedDefects).toEqual([defect]);
-    }),
-  );
-});
+      expect(
+        yield* refreshVcsBranch({ cwd: "/repo" }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        ),
+      ).toBeUndefined();
+      expect(inputs).toEqual(supported ? [{ cwd: "/repo" }] : []);
+    }).pipe(Effect.scoped),
+);
+
+it.effect("binds branch capability selection and execution to one session", () =>
+  Effect.gen(function* () {
+    const { activeSession, supervisor } = yield* makeHarness();
+    const configRequested = yield* Deferred.make<void>();
+    const config = yield* Deferred.make<ServerConfig>();
+    const executed = yield* Deferred.make<void>();
+    const original = {
+      [WS_METHODS.vcsRefreshBranch]: () =>
+        Deferred.succeed(executed, undefined).pipe(Effect.asVoid),
+    } as unknown as WsRpcProtocolClient;
+    const replacement = {
+      [WS_METHODS.vcsRefreshStatus]: () => Effect.succeed({ refName: "replacement" }),
+    } as unknown as WsRpcProtocolClient;
+    yield* SubscriptionRef.set(
+      activeSession,
+      Option.some({
+        ...session(original),
+        initialConfig: Deferred.succeed(configRequested, undefined).pipe(
+          Effect.andThen(Deferred.await(config)),
+        ),
+      }),
+    );
+    const refresh = yield* refreshVcsBranch({ cwd: "/repo" }).pipe(
+      Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      Effect.forkChild,
+    );
+    yield* Deferred.await(configRequested);
+    yield* SubscriptionRef.set(activeSession, Option.some(session(replacement)));
+    yield* Deferred.succeed(config, {
+      environment: { capabilities: { vcsBranchStatus: true } },
+    } as ServerConfig);
+    expect(yield* Fiber.join(refresh)).toBeUndefined();
+    yield* Deferred.await(executed);
+  }).pipe(Effect.scoped),
+);

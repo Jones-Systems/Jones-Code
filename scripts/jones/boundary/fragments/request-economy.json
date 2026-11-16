@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "request-economy",
+  "jonesOwnedPaths": ["apps/server/src/jones/requestEconomy/"],
+  "hookPaths": ["apps/web/src/components/GitActionsControl.tsx"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/GitActionsControl.tsx",
+      "to": "apps/web/src/jones/requestEconomy/gitActionResultToast.ts"
+    }
+  ]
+}

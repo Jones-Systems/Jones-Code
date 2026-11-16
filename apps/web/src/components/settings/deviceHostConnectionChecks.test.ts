@@ -8,7 +8,7 @@ import {
   type DeviceHostCheck,
 } from "./deviceHostConnectionChecks";
 
-const host = { id: "mac", label: "Mac mini", target: "user@mac" };
+const host = { kind: "ssh" as const, id: "mac", label: "Mac mini", target: "user@mac" };
 const ids = ["a", "b", "c", "d"].map((id) => EnvironmentId.make(id));
 const targets = ids.map((environmentId, index) => ({
   environmentId,
@@ -67,6 +67,18 @@ describe("device host connection checks", () => {
     expect(
       deviceHostConnectionKey({ ...host, id: "another-environment-id", label: "Renamed" }),
     ).toBe(key);
+  });
+  it("normalizes and validates the optional laptop SSH target without changing VPS connection checks", () => {
+    expect(parseDeviceHostDraft({ ...host, directSshTarget: " mini " })).toEqual(
+      Option.some({ ...host, directSshTarget: "mini" }),
+    );
+    expect(parseDeviceHostDraft({ ...host, directSshTarget: " " })).toEqual(Option.some(host));
+    for (const directSshTarget of ["-invalid", "mini host"]) {
+      expect(parseDeviceHostDraft({ ...host, directSshTarget })._tag).toBe("None");
+    }
+    expect(deviceHostConnectionKey({ ...host, directSshTarget: "mini" })).toBe(
+      deviceHostConnectionKey(host),
+    );
   });
   it("validates SSH targets and normalizes optional identity files through the host contract", () => {
     for (const target of ["-invalid", "user@bad host", "  "]) {

@@ -1,3 +1,4 @@
+import { makeReportLanes } from "@t3tools/client-runtime/jones/activity/report-lanes";
 import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import { EnvironmentRpcSubscriptionObserver, request } from "@t3tools/client-runtime/rpc";
 import {
@@ -14,7 +15,7 @@ import * as Queue from "effect/Queue";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { AppState, type AppStateStatus } from "react-native";
+import { AppState } from "react-native";
 
 import * as MobileStorage from "../persistence/mobile-storage";
 import {
@@ -28,22 +29,22 @@ const LEASE_TTL_MS = 45_000;
 const BASELINE_SCOPES: ReadonlyArray<BackgroundScope> = [{ type: "provider-status" }];
 
 function normalizeAppState(
-  state: AppStateStatus,
+  state: string | null | undefined,
 ): NonNullable<ClientActivityReportInput["appState"]> {
   if (state === "active" || state === "inactive" || state === "background") return state;
   return "unknown";
 }
 
-export const mobileBackgroundActivityObserverLayer = Layer.succeed(
+export const layerObserver = Layer.succeed(
   EnvironmentRpcSubscriptionObserver,
   EnvironmentRpcSubscriptionObserver.of({
     observe: observeMobileBackgroundActivitySubscription,
   }),
 );
 
-export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
+export const layerReporter = Layer.effectDiscard(
   Effect.gen(function* () {
-    const registry = yield* EnvironmentRegistry;
+    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const storage = yield* MobileStorage.MobileStorage;
     const clientId = yield* storage.loadOrCreateAgentAwarenessDeviceId.pipe(
       Effect.map((deviceId) => `mobile-${deviceId}`),
@@ -53,6 +54,10 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
     const requestReport = () => Queue.offerUnsafe(reportRequests, undefined);
     let appState = AppState.currentState;
 
+    const lanes = yield* makeReportLanes(
+      (environmentId: EnvironmentId, report: ClientActivityReportInput) =>
+        registry.run(environmentId, request(WS_METHODS.serverReportClientActivity, report)),
+    );
     const report = Effect.gen(function* () {
       const observedAtMs = yield* Clock.currentTimeMillis;
       const active = appState === "active";
@@ -60,26 +65,21 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
       yield* Effect.forEach(
         entries.keys(),
         (environmentId) =>
-          registry
-            .run(
-              environmentId,
-              request(WS_METHODS.serverReportClientActivity, {
-                environmentId: environmentId as EnvironmentId,
-                clientId,
-                clientKind: "mobile",
-                visible: active,
-                focused: active,
-                recentlyInteracted: active,
-                appState: normalizeAppState(appState),
-                scopes: [
-                  ...BASELINE_SCOPES,
-                  ...retainedMobileBackgroundScopes(environmentId as EnvironmentId),
-                ],
-                ttlMs: LEASE_TTL_MS,
-                observedAt: DateTime.makeUnsafe(observedAtMs),
-              }),
-            )
-            .pipe(Effect.ignore),
+          lanes.submit(environmentId as EnvironmentId, {
+            environmentId: environmentId as EnvironmentId,
+            clientId,
+            clientKind: "mobile",
+            visible: active,
+            focused: active,
+            recentlyInteracted: active,
+            appState: normalizeAppState(appState),
+            scopes: [
+              ...BASELINE_SCOPES,
+              ...retainedMobileBackgroundScopes(environmentId as EnvironmentId),
+            ],
+            ttlMs: LEASE_TTL_MS,
+            observedAt: DateTime.makeUnsafe(observedAtMs),
+          }),
         { concurrency: "unbounded", discard: true },
       );
     }).pipe(Effect.withSpan("mobile.backgroundActivity.report"));
@@ -100,7 +100,9 @@ export const mobileBackgroundActivityReporterLayer = Layer.effectDiscard(
         }),
     );
     yield* SubscriptionRef.changes(registry.entries).pipe(
-      Stream.runForEach(() => Effect.sync(requestReport)),
+      Stream.runForEach((entries) =>
+        lanes.retain(entries.keys()).pipe(Effect.andThen(Effect.sync(requestReport))),
+      ),
       Effect.forkScoped,
     );
     yield* Stream.fromQueue(reportRequests).pipe(

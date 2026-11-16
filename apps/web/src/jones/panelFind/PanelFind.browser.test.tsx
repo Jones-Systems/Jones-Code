@@ -1,0 +1,136 @@
+import { expect, it } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
+import { act, render } from "../../../test/render";
+import { PanelFindProvider, PanelFindScope } from "./PanelFind";
+import { collectFindRanges, findTextMatches } from "./panelFind";
+
+async function find() {
+  await act(() =>
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "f",
+        ctrlKey: !navigator.platform.includes("Mac"),
+        metaKey: navigator.platform.includes("Mac"),
+        bubbles: true,
+        cancelable: true,
+      }),
+    ),
+  );
+}
+
+it("searches the active panel, navigates matches, restores focus, and keeps button keyboard semantics", async () => {
+  await using screen = await render(
+    <PanelFindProvider>
+      <PanelFindScope label="page" data-find-default>
+        <button>Main</button>
+        <p>needle needle</p>
+      </PanelFindScope>
+      <PanelFindScope label="side">
+        <button>Side</button>
+        <p>needle</p>
+      </PanelFindScope>
+    </PanelFindProvider>,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Main", exact: true }));
+  await find();
+  await userEvent.fill(page.getByRole("textbox", { name: "Find in page" }), "needle");
+  await expect.element(page.getByRole("status")).toHaveTextContent("1 of 2");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("status")).toHaveTextContent("2 of 2");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("status")).toHaveTextContent("1 of 2");
+  await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+  await expect.element(page.getByRole("status")).toHaveTextContent("2 of 2");
+  await userEvent.keyboard("{Escape}");
+  await expect.element(screen.getByRole("button", { name: "Main", exact: true })).toHaveFocus();
+  await userEvent.click(screen.getByRole("button", { name: "Side", exact: true }));
+  await find();
+  await userEvent.fill(page.getByRole("textbox", { name: "Find in side" }), "needle");
+  await expect.element(page.getByRole("status")).toHaveTextContent("1 of 1");
+  await userEvent.fill(page.getByRole("textbox", { name: "Find in side" }), "missing");
+  await expect.element(page.getByRole("status")).toHaveTextContent("0 of 0");
+  await expect.element(page.getByRole("button", { name: "Next match" })).toBeDisabled();
+  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="Close find"]')!.focus());
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("search")).not.toBeInTheDocument();
+});
+
+it("routes a focused side thread into full-history search and returns to the page when removed", async () => {
+  let current: string | null = null;
+  function ui(side = true) {
+    return (
+      <PanelFindProvider>
+        <PanelFindScope label="page" data-find-default>
+          <PanelFindScope
+            label="thread"
+            data-find-default
+            nativeFind={{
+              open: () => {
+                current = "main";
+              },
+              close: () => {
+                if (current === "main") current = null;
+              },
+            }}
+          >
+            <button>Main thread</button>
+          </PanelFindScope>
+          {side && (
+            <PanelFindScope label="side">
+              <PanelFindScope
+                label="side thread"
+                nativeFind={{
+                  open: () => {
+                    current = "side";
+                  },
+                  close: () => {
+                    if (current === "side") current = null;
+                  },
+                }}
+              >
+                <button>Side thread</button>
+              </PanelFindScope>
+            </PanelFindScope>
+          )}
+        </PanelFindScope>
+      </PanelFindProvider>
+    );
+  }
+  await using screen = await render(ui());
+  await find();
+  expect(current).toBe("main");
+  await userEvent.click(screen.getByRole("button", { name: "Side thread" }));
+  await find();
+  expect(current).toBe("side");
+  await expect.element(page.getByRole("search")).not.toBeInTheDocument();
+  await screen.rerender(ui(false));
+  await find();
+  expect(current).toBe("main");
+});
+
+it("matches formatted text without searching hidden content, inputs, or adjacent panels", async () => {
+  await using screen = await render(
+    <PanelFindScope label="page">
+      <p>
+        A <strong>work</strong>tree setting
+      </p>
+      <p>work</p>
+      <p>tree</p>
+      <div hidden>worktree</div>
+      <input value="worktree" readOnly />
+      <PanelFindScope label="side">
+        <p>worktree</p>
+      </PanelFindScope>
+    </PanelFindScope>,
+  );
+  const ranges = collectFindRanges(screen.container.firstElementChild as HTMLElement, "worktree");
+  expect(ranges.map((range) => range.toString())).toEqual(["worktree"]);
+  expect(findTextMatches("A [x] and [X]", "[x]")).toEqual([
+    { start: 2, end: 5 },
+    { start: 10, end: 13 },
+  ]);
+  expect(findTextMatches("İ Next next", "next")).toEqual([
+    { start: 2, end: 6 },
+    { start: 7, end: 11 },
+  ]);
+});

@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "agent-message-header",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/agentMessageHeader.ts",
+    "apps/server/src/jones/mcp/agentMessageHeader.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/mcp/agentMessageHeader.ts"
+    }
+  ]
+}

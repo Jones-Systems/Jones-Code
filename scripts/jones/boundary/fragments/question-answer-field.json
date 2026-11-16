@@ -1,0 +1,110 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "question-answer-field",
+  "jonesOwnedPaths": [
+    "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts",
+    "apps/mobile/src/jones/questionAnswer/composerDispatch.ts",
+    "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts",
+    "apps/web/src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx",
+    "apps/web/src/jones/questionAnswer/QuestionAnswerFooter.tsx",
+    "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+    "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
+    "apps/web/src/jones/questionAnswer/questionAnswerCard.ts",
+    "apps/web/src/jones/questionAnswer/useQuestionAnswerAttachments.ts",
+    "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts",
+    "apps/web/src/jones/questionAnswer/threadReferenceAnswer.ts",
+    "apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts",
+    "apps/web/src/jones/questionAnswer/QuestionProgress.tsx",
+    "apps/mobile/src/jones/questionAnswer/QuestionProgress.tsx",
+    "apps/mobile/src/jones/questionAnswer/sequentialQuestions.ts",
+    "apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts",
+    "apps/web/src/jones/questionAnswer/QuickResponseSubmission.browser.test.tsx"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+    "apps/web/src/pendingUserInput.ts",
+    "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+    "apps/mobile/src/features/threads/QuestionAttachments.tsx",
+    "apps/mobile/src/state/use-selected-thread-requests.ts",
+    "apps/web/src/components/chat/usePendingThreadRequests.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/questionAnswer/questionAnswerCard.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "apps/web/src/jones/questionAnswer/QuestionAnswerFooter.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "apps/web/src/jones/questionAnswer/questionAnswerCard.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-composer-state.ts",
+      "to": "apps/mobile/src/jones/questionAnswer/composerDispatch.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts"
+    },
+    {
+      "from": "apps/web/src/pendingUserInput.ts",
+      "to": "apps/web/src/jones/questionAnswer/threadReferenceAnswer.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "apps/web/src/jones/questionAnswer/QuestionProgress.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+      "to": "apps/mobile/src/jones/questionAnswer/QuestionProgress.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+      "to": "apps/mobile/src/jones/questionAnswer/sequentialQuestions.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/mobile/src/lib/threadActivity.ts",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-selected-thread-requests.ts",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/usePendingThreadRequests.ts",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/web/src/pendingUserInput.ts",
+      "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+      "to": "apps/mobile/src/jones/questionAnswer/answers.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-selected-thread-requests.ts",
+      "to": "apps/mobile/src/jones/questionAnswer/answers.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/usePendingThreadRequests.ts",
+      "to": "apps/web/src/jones/questionAnswer/pendingAnswers.ts"
+    },
+    {
+      "from": "apps/web/src/pendingUserInput.ts",
+      "to": "apps/web/src/jones/questionAnswer/pendingAnswers.ts"
+    }
+  ]
+}

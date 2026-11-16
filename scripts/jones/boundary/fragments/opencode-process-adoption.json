@@ -1,0 +1,46 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "opencode-process-adoption",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts",
+    "packages/provider-opencode/src/server/jones/OpenCodeCreationPolicy.ts"
+  ],
+  "hookPaths": [
+    "packages/provider-opencode/src/server/adapter.test.ts",
+    "packages/provider-opencode/src/server/driver.ts",
+    "packages/provider-opencode/src/server/OpenCodeServerOwner.ts",
+    "packages/provider-opencode/src/server/v2/OpenCode2Server.ts",
+    "packages/provider-opencode/src/server/OpenCodeRuntime.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/provider-opencode/src/server/v2/adapter.ts",
+      "to": "packages/provider-opencode/src/server/jones/OpenCodeCreationPolicy.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/adapter.test.ts",
+      "to": "packages/provider-opencode/src/server/jones/OpenCodeCreationPolicy.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/adapter.ts",
+      "to": "packages/provider-opencode/src/server/jones/OpenCodeCreationPolicy.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/driver.ts",
+      "to": "packages/provider-opencode/src/server/jones/OpenCodeCreationPolicy.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/OpenCodeServerOwner.ts",
+      "to": "packages/provider-opencode/src/server/jones/OpenCodeCreationPolicy.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/v2/OpenCode2Server.ts",
+      "to": "packages/provider-opencode/src/server/jones/OpenCodeCreationPolicy.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/OpenCodeRuntime.ts",
+      "to": "packages/provider-opencode/src/server/jones/OpenCodeCreationPolicy.ts"
+    }
+  ]
+}

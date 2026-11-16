@@ -1,0 +1,18 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "compact-sidebar-header",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
+    "apps/web/src/jones/sidebarHeader/SidebarHeader.browser.test.tsx",
+    "apps/web/src/jones/sidebarHeader/compactSidebarHeader.css",
+    "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.tsx"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
+      "to": "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.tsx"
+    }
+  ]
+}

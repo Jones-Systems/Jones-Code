@@ -1,0 +1,18 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "provider-switch-before-start",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts",
+    "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
+    "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts",
+    "apps/server/src/jones/providerSwitchBeforeStart/testFixture.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSwitchService.ts",
+      "to": "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts"
+    }
+  ]
+}

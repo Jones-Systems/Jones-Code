@@ -1,0 +1,32 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "provider-conversation-reselection",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/runtime/ProviderConversationReselection.ts",
+    "apps/server/src/jones/runtime/ProviderConversationReselection.test.ts"
+  ],
+  "hookPaths": ["packages/contracts/src/clientRpcPermissions.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/providerConversationReselection.ts"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/jones/providerConversationReselection.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/runtime/ProviderConversationReselection.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/runtime/ProviderConversationReselection.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/runtime/ProviderConversationReselection.ts"
+    }
+  ]
+}

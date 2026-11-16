@@ -1,0 +1,7 @@
+{
+  "authSession": "t3.auth-session-cli/v1",
+  "placement": "t3.thread-corpus-placement/v1",
+  "schemaVersion": "t3.thread-corpus-capability/v1",
+  "shellSnapshot": "t3.thread-corpus-shell/v1",
+  "threadDetailPagination": "t3.thread-corpus-pagination/v1"
+}

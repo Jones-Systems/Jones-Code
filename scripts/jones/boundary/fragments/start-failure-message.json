@@ -1,0 +1,26 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "start-failure-message",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/provider/startFailureMessage.ts",
+    "apps/server/src/jones/provider/startFailureMessage.test.ts",
+    "apps/server/src/jones/provider/startFailureDiagnostics.ts",
+    "apps/server/src/jones/provider/startFailureDiagnostics.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/provider/startFailureMessage.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/provider/startFailureDiagnostics.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/cleanup/RuntimeUseProtocol.ts"
+    }
+  ]
+}

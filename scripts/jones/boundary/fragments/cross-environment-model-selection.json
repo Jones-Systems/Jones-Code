@@ -1,0 +1,27 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "cross-environment-model-selection",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/settings/modelSelectionCorrespondence.ts",
+    "apps/web/src/jones/settings/modelSelectionCorrespondence.test.ts",
+    "apps/web/src/jones/settings/modelSelectionCorrespondence.plan.test.ts"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/settings/scopedSettings.ts",
+    "apps/web/src/components/settings/useScopedSettings.ts",
+    "apps/web/src/components/settings/useScopedModelAvailability.ts",
+    "apps/web/src/components/settings/ProjectDefaultsSettings.tsx",
+    "apps/web/src/components/settings/settingsLayout.tsx"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/settings/useScopedSettings.ts",
+      "to": "apps/web/src/jones/settings/modelSelectionCorrespondence.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/useScopedModelAvailability.ts",
+      "to": "apps/web/src/jones/settings/modelSelectionCorrespondence.ts"
+    }
+  ]
+}

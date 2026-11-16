@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "orphaned-run-records",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+      "to": "apps/server/src/jones/orchestration/OrphanedRunRecords.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/orchestration/OrphanedRunRecords.ts"
+    }
+  ]
+}

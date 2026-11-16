@@ -4,16 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import * as NodeEvents from "node:events";
 
-async function processIdentity(pid) {
-  if (!pid) return null;
-  try {
-    const value = await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8");
-    return value.slice(value.lastIndexOf(")") + 2).split(" ")[19];
-  } catch (error) {
-    if (["ENOENT", "ESRCH"].includes(error.code)) return null;
-    throw error;
-  }
-}
+import { processIdentity } from "./process-identity.mjs";
 
 export const stateParent = () =>
   NodePath.join(
@@ -105,6 +96,7 @@ export async function superviseRun({ run, start, signals = process, remove = rem
   let cleanup;
   let escalation;
   let startTicks = null;
+  let namespaceProcess;
   try {
     if (cancelled) throw new Error("Cancelled before spawn");
     child = await start();
@@ -129,6 +121,16 @@ export async function superviseRun({ run, start, signals = process, remove = rem
   } finally {
     clearTimeout(escalation);
     try {
+      const currentTicks = await processIdentity(child?.pid);
+      const exited =
+        !currentTicks || (startTicks && currentTicks !== startTicks)
+          ? true
+          : child?.pid
+            ? "unknown"
+            : true;
+      namespaceProcess = { pid: child?.pid ?? null, startTicks, exited };
+      run.namespaceProcess = namespaceProcess;
+      if (exited !== true) throw new Error("Namespace exit unproved; scratch retained");
       cleanup = await remove(run);
     } catch (caught) {
       cleanup = { outcome: "unknown", error: caught.message };
@@ -137,19 +139,12 @@ export async function superviseRun({ run, start, signals = process, remove = rem
     signals.off("SIGINT", interrupt);
     signals.off("SIGTERM", terminate);
   }
-  const currentTicks = await processIdentity(child?.pid);
-  const exited =
-    !currentTicks || (startTicks && currentTicks !== startTicks)
-      ? true
-      : child?.pid
-        ? "unknown"
-        : true;
   return {
     code,
     signal: cancelled ?? null,
     cleanup,
     error,
     pid: child?.pid ?? null,
-    namespaceProcess: { pid: child?.pid ?? null, startTicks, exited },
+    namespaceProcess,
   };
 }

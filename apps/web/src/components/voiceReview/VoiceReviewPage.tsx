@@ -1,0 +1,456 @@
+import type {
+  EnvironmentId,
+  VoiceReviewDraft,
+  VoiceReviewRecentList,
+  VoiceReviewRecentEntry,
+  ThreadRegistryComposedSnapshot,
+  ThreadRegistryWorkstreams,
+} from "@t3tools/contracts";
+import { PauseIcon, PlayIcon } from "lucide-react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { Button } from "../ui/button";
+import { Textarea } from "../ui/textarea";
+import { Toggle, ToggleGroup } from "../ui/toggle-group";
+import { useVoiceReview } from "./useVoiceReview";
+import { RecentVoicePrompts } from "./RecentVoicePrompts";
+import { RoutingDiagnostics } from "./RoutingDiagnostics";
+import {
+  remainingSeconds,
+  VoiceReviewActions,
+  voiceReviewError,
+  type VoiceReviewTransport,
+} from "./voiceReviewActions";
+
+const promptTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZone: "America/New_York",
+  timeZoneName: "short",
+});
+
+export function EnvironmentVoiceReview({
+  environmentId,
+  pane,
+  onDirtyChange,
+  unavailable = false,
+  onRecentChange,
+  queuedEntriesOverride,
+}: {
+  environmentId: EnvironmentId;
+  pane?: "pending" | "queued" | "sent";
+  onDirtyChange?: (dirty: boolean) => void;
+  unavailable?: boolean;
+  onRecentChange?: (recent: VoiceReviewRecentList | null) => void;
+  queuedEntriesOverride?: readonly VoiceReviewRecentEntry[];
+}) {
+  const viewId = useId();
+  const tabs = useRef<Array<HTMLButtonElement | null>>([]);
+  const dirtyRows = useRef(new Set<string>());
+  const reportDirty = (id: string, dirty: boolean) => {
+    if (dirty) dirtyRows.current.add(id);
+    else dirtyRows.current.delete(id);
+    onDirtyChange?.(dirtyRows.current.size > 0);
+  };
+  const { fetchList, transport, review } = useVoiceReview(environmentId);
+  const [tab, setTab] = useState<"review" | "routing">("review");
+  const [recent, setRecent] = useState<VoiceReviewRecentList | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Notify the containing screen when asynchronous recent-review metadata changes.
+  useEffect(() => {
+    onRecentChange?.(recent);
+  }, [recent, onRecentChange]);
+  const [registry, setRegistry] = useState<ThreadRegistryComposedSnapshot | null>(null);
+  const [workstreams, setWorkstreams] = useState<ThreadRegistryWorkstreams | null>(null);
+  const [metadataError, setMetadataError] = useState(false);
+  const metadataRequest = useRef(0);
+  const refreshMetadata = async () => {
+    const request = ++metadataRequest.current;
+    const results = await Promise.allSettled([
+      review.recent(),
+      review.registry(),
+      review.workstreams(),
+    ]);
+    if (request !== metadataRequest.current) throw new Error("Metadata read superseded");
+    const [prompts, threads, labels] = results;
+    if (prompts.status === "fulfilled") setRecent(prompts.value);
+    if (threads.status === "fulfilled") setRegistry(threads.value);
+    else setRegistry(null);
+    if (labels.status === "fulfilled") setWorkstreams(labels.value);
+    else setWorkstreams(null);
+    const failed = results.some((result) => result.status === "rejected");
+    setMetadataError(failed);
+    if (failed) throw new Error("Metadata unavailable");
+  };
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own metadata polling and visibility listeners, fencing responses when the review page unmounts.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") void refreshMetadata().catch(() => undefined);
+    };
+    refresh();
+    const poll = window.setInterval(refresh, 10000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      metadataRequest.current++;
+      window.clearInterval(poll);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [refreshMetadata]);
+  const [drafts, setDrafts] = useState<readonly VoiceReviewDraft[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [now, setNow] = useState(() => performance.now());
+  const refreshing = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the visible pending-draft refresh subscription and ignore late results after unmount.
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      if (document.visibilityState !== "visible" || refreshing.current) return;
+      refreshing.current = true;
+      return await (async () => {
+        try {
+          const pending = await fetchList("pending");
+          if (!active) return;
+          setDrafts(pending.drafts);
+          setError(null);
+        } catch (cause) {
+          if (active) setError(voiceReviewError(cause));
+        }
+      })().finally(() => {
+        refreshing.current = false;
+        if (active) setLoading(false);
+      });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    void refresh();
+    const poll = window.setInterval(() => void refresh(), 3000);
+    const tick = window.setInterval(() => {
+      if (document.visibilityState === "visible") setNow(performance.now());
+    }, 1000);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      active = false;
+      window.clearInterval(poll);
+      window.clearInterval(tick);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [fetchList]);
+  const pending = drafts.filter(
+    (draft) => !["released", "deleted", "expired"].includes(draft.state),
+  );
+  const diagnosticDrafts = [
+    ...new Map(
+      [...drafts, ...(recent?.entries.map((entry) => entry.draft) ?? [])].map((draft) => [
+        draft.id,
+        draft,
+      ]),
+    ).values(),
+  ];
+  const recentEntries = recent?.entries ?? [];
+  const queuedEntries = (queuedEntriesOverride ?? recentEntries).filter(
+    (entry) => entry.draft.state === "released" || entry.command_id !== null,
+  );
+  return (
+    <div hidden={pane === "sent"} className="space-y-4">
+      <div hidden={pane === "queued"}>
+        <ToggleGroup
+          value={[tab]}
+          onValueChange={(values) => {
+            const next = values[0];
+            if (next === "review" || next === "routing") setTab(next);
+          }}
+          variant="segmented"
+          size="segmented"
+          role="tablist"
+          aria-label="Voice review views"
+        >
+          {(["review", "routing"] as const).map((view, index) => (
+            <Toggle
+              key={view}
+              value={view}
+              ref={(element) => {
+                tabs.current[index] = element;
+              }}
+              role="tab"
+              tabIndex={tab === view ? 0 : -1}
+              onKeyDownCapture={(event) => {
+                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const next = event.key === "Home" ? 0 : event.key === "End" ? 1 : 1 - index;
+                setTab(next === 0 ? "review" : "routing");
+                tabs.current[next]?.focus();
+              }}
+              aria-selected={tab === view}
+              aria-controls={`${viewId}-${view}-panel`}
+              id={`${viewId}-${view}-tab`}
+            >
+              {view === "review" ? "Review" : "Routing"}
+            </Toggle>
+          ))}
+        </ToggleGroup>
+      </div>
+      {error && pane !== "queued" ? <p role="alert">{error}</p> : null}
+      {loading && pane !== "queued" ? <p role="status">Loading voice prompts…</p> : null}
+      <div
+        role="tabpanel"
+        aria-labelledby={`${viewId}-review-tab`}
+        id={`${viewId}-review-panel`}
+        hidden={pane !== "queued" && tab !== "review"}
+      >
+        <div className="flex min-w-0 flex-col gap-6">
+          <section
+            hidden={pane === "queued"}
+            className="flex min-w-0 flex-col gap-3"
+            aria-label="Pending voice prompts"
+          >
+            {!loading && !error && pending.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No pending voice prompts.</p>
+            ) : null}
+            {pending.map((draft) => (
+              <VoiceReviewRow
+                key={draft.id}
+                draft={draft}
+                transport={transport}
+                now={now}
+                unavailable={unavailable || error !== null}
+                onDirtyChange={reportDirty}
+              />
+            ))}
+          </section>
+          <div hidden={pane === "pending"} className="flex min-w-0 flex-col gap-3">
+            {metadataError ? (
+              <p role="alert" className="text-sm">
+                Recent prompts or workstreams are unavailable. Previously observed prompts may be
+                stale.
+              </p>
+            ) : null}
+            {recent?.partial || registry?.partial ? (
+              <p className="text-xs text-muted-foreground">
+                Only part of the recent prompt and thread context is available.
+              </p>
+            ) : null}
+            {(recent?.unavailable.length ?? 0) + (registry?.unavailable.length ?? 0) > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                Unavailable:{" "}
+                {[...(recent?.unavailable ?? []), ...(registry?.unavailable ?? [])].join(", ")}
+              </p>
+            ) : null}
+            <RecentVoicePrompts
+              entries={pane === "queued" ? queuedEntries : recentEntries}
+              title={pane ? "Voice prompts" : "Recent prompts"}
+              emptyMessage={
+                metadataError
+                  ? "Recent voice prompts are unavailable."
+                  : recent === null
+                    ? "Loading recent voice prompts…"
+                    : recent.partial || recent.unavailable.length > 0
+                      ? "No prompts in this partial sample; other prompts may be unavailable."
+                      : "No recent prompts observed."
+              }
+              registry={registry}
+              workstreams={workstreams}
+              transport={review}
+              onRefresh={refreshMetadata}
+              unavailable={unavailable || metadataError || recent?.partial === true}
+            />
+          </div>
+        </div>
+      </div>
+      {tab === "routing" && pane !== "queued" ? (
+        <div
+          role="tabpanel"
+          aria-labelledby={`${viewId}-routing-tab`}
+          id={`${viewId}-routing-panel`}
+        >
+          <RoutingDiagnostics drafts={diagnosticDrafts} fetchDiagnostics={review.diagnostics} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function VoiceReviewRow({
+  draft,
+  transport,
+  now,
+  unavailable,
+  onDirtyChange,
+}: {
+  draft: VoiceReviewDraft;
+  transport: VoiceReviewTransport;
+  now: number;
+  unavailable: boolean;
+  onDirtyChange?: (id: string, dirty: boolean) => void;
+}) {
+  const [actions] = useState(() => new VoiceReviewActions(draft, transport));
+  useSyncExternalStore(actions.subscribe, actions.snapshot);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Apply committed server draft observations to the external review action controller.
+  useEffect(() => {
+    actions.receive(draft);
+  }, [actions, draft]);
+  const act = (action: Parameters<VoiceReviewActions["act"]>[0], send = false) => {
+    void actions.act(action, send);
+  };
+  const current = actions.draft;
+  const terminal = ["released", "deleted", "expired"].includes(current.state);
+  const editing = actions.editHandle !== null && current.state === "editing";
+  const disabled = actions.busy || actions.uncertain || unavailable;
+  const seconds = remainingSeconds(current, Math.max(0, now - actions.observedAt));
+  const validText = actions.text.trim().length > 0 && actions.text.length <= 100000;
+  const dirty = actions.editHandle !== null || actions.busy || actions.uncertain;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Register this draft's dirty state with the page leave guard and clear it when the row unmounts.
+  useEffect(() => {
+    onDirtyChange?.(draft.id, dirty);
+    return () => onDirtyChange?.(draft.id, false);
+  }, [draft.id, dirty, onDirtyChange]);
+  return (
+    <article className="flex items-start gap-3 rounded-lg border p-4">
+      {!terminal ? (
+        <Button
+          variant="outline"
+          size="icon"
+          aria-label={
+            current.state === "held" || current.state === "editing" ? "Pause prompt" : "Play prompt"
+          }
+          disabled={disabled}
+          onClick={() =>
+            act(current.state === "held" || current.state === "editing" ? "pause" : "play")
+          }
+        >
+          {current.state === "held" || current.state === "editing" ? <PauseIcon /> : <PlayIcon />}
+        </Button>
+      ) : null}
+      <div className="flex min-w-0 flex-1 flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <strong>{actions.uncertain ? "Uncertain" : current.state}</strong>
+          {current.state === "held" && seconds !== null ? <span>Release in {seconds}s</span> : null}
+          {current.state === "paused" && seconds !== null ? (
+            <span>{seconds}s remaining · paused</span>
+          ) : null}
+          <span className="text-muted-foreground">
+            {current.routing_target ?? "Target not yet observed"}
+          </span>
+        </div>
+        <time dateTime={current.created_at} className="text-xs text-muted-foreground">
+          {promptTimeFormatter.format(new Date(current.created_at))}
+        </time>
+        {actions.editHandle !== null ? (
+          <Textarea
+            aria-label="Edit voice prompt"
+            value={actions.text}
+            disabled={disabled || !editing}
+            maxLength={100000}
+            onChange={(event) => actions.setText(event.target.value)}
+          />
+        ) : current.text !== null ? (
+          <p
+            className="whitespace-pre-wrap break-words text-sm"
+            onDoubleClick={() => {
+              if (!disabled && !terminal && current.state !== "editing") act("edit-begin");
+            }}
+          >
+            {current.text}
+          </p>
+        ) : null}
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer">Prompt details</summary>
+          <p>
+            Source: {current.source_id} · revision {current.revision}
+          </p>
+          <p>Routing: {current.routing_state ?? "not observed"}</p>
+        </details>
+        {actions.editHandle !== null && !editing ? (
+          <p className="text-sm">Unsaved text is preserved. Begin a new edit before saving it.</p>
+        ) : null}
+        {current.state === "editing" && !editing ? (
+          <p className="text-sm">
+            Editing is held by another tab or session. Pause to release an abandoned edit hold.
+          </p>
+        ) : null}
+        {current.state === "blocked" ? (
+          <p className="text-sm">
+            Release blocked: {current.reason ?? "unavailable"}. Correct the cause before Play or
+            Send now.
+          </p>
+        ) : null}
+        {current.state === "released" ? (
+          <p className="text-sm">
+            Released · command {current.command_id ?? current.id} · command status{" "}
+            {current.command_status ?? "not yet observed"}. Queue intake and execution require
+            separate confirmation.
+          </p>
+        ) : null}
+        {actions.error ? (
+          <p role="alert" className="text-sm">
+            {actions.error}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          {editing ? (
+            <>
+              <Button
+                size="compact"
+                disabled={disabled || !validText}
+                onClick={() => act("edit-save")}
+              >
+                Save · stay paused
+              </Button>
+              <Button
+                size="compact"
+                disabled={disabled || !validText}
+                onClick={() => act("edit-save", true)}
+              >
+                Save and send
+              </Button>
+              <Button
+                size="compact"
+                variant="outline"
+                disabled={disabled}
+                onClick={() => act("edit-cancel")}
+              >
+                Cancel edit · stay paused
+              </Button>
+            </>
+          ) : !terminal && current.state !== "editing" ? (
+            <>
+              <Button
+                size="compact"
+                variant="outline"
+                disabled={disabled}
+                onClick={() => act("edit-begin")}
+              >
+                Edit
+              </Button>
+              <Button size="compact" disabled={disabled} onClick={() => act("send-now")}>
+                Send now
+              </Button>
+            </>
+          ) : null}
+          {!terminal ? (
+            <Button
+              size="compact"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => act("delete")}
+            >
+              Delete before send
+            </Button>
+          ) : null}
+          {actions.error ? (
+            <Button
+              size="compact"
+              variant="outline"
+              disabled={actions.busy}
+              onClick={() => void actions.reconcile()}
+            >
+              Check current state
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </article>
+  );
+}

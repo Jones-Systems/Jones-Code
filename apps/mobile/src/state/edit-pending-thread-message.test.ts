@@ -4,6 +4,9 @@ import type { QueuedThreadMessage } from "./thread-outbox-model";
 
 const state = vi.hoisted(() => ({
   dispatching: null as string | null,
+  revision: 1,
+  loaded: vi.fn(async () => {}),
+  mergePersist: vi.fn(async () => {}),
   held: {} as Record<string, true>,
   draft: { text: "Existing draft", attachments: [] as { id: string }[] },
   confirm: vi.fn(async () => true),
@@ -27,19 +30,31 @@ vi.mock("./use-thread-outbox", () => ({
 }));
 vi.mock("./thread-outbox", () => ({
   confirmThreadOutboxMessageQueued: state.confirm,
-  threadOutboxRevision: () => 1,
+  threadOutboxRevision: () => state.revision,
 }));
 vi.mock("./thread-outbox-removal", () => ({ removeThreadOutboxMessage: state.remove }));
 vi.mock("./use-composer-drafts", () => ({
-  waitForComposerDraftsLoaded: async () => {},
+  waitForComposerDraftsLoaded: state.loaded,
   getComposerDraftSnapshot: () => state.draft,
-  mergeComposerDraftContent: async (_key: string, message: QueuedThreadMessage) => {
+  mergeComposerDraftContent: async (
+    _key: string,
+    message: QueuedThreadMessage,
+    options?: {
+      onMerged?: (draft: typeof state.draft) => void;
+    },
+  ) => {
     state.draft = {
       text: `${state.draft.text}\n\n${message.text}`,
       attachments: [...state.draft.attachments, ...message.attachments],
     };
+    options?.onMerged?.(state.draft);
+    await state.mergePersist();
+    return { skippedAttachmentCount: 0 };
   },
-  updateComposerDraftSettings: () => {},
+  updateComposerDraftSettings: (_key: string, settings: object) => {
+    state.draft = { ...state.draft, ...settings };
+    return state.draft;
+  },
   flushComposerDrafts: state.flush,
   undoComposerDraftMerge: async (_key: string, snapshot: typeof state.draft) => {
     state.draft = snapshot;
@@ -54,6 +69,7 @@ const message: QueuedThreadMessage = {
   commandId: CommandId.make("command"),
   text: "Queued task",
   createdAt: "2026-09-06T10:00:00.000Z",
+  issuance: { state: "unissued" },
   attachments: [
     {
       id: "file",
@@ -68,7 +84,10 @@ const message: QueuedThreadMessage = {
 beforeEach(() => {
   vi.clearAllMocks();
   state.dispatching = null;
+  state.revision = 1;
   state.held = {};
+  state.loaded.mockResolvedValue(undefined);
+  state.mergePersist.mockResolvedValue(undefined);
   state.draft = { text: "Existing draft", attachments: [] };
   state.confirm.mockResolvedValue(true);
   state.remove.mockResolvedValue(true);
@@ -105,5 +124,72 @@ describe("editing a pending message", () => {
     state.remove.mockResolvedValueOnce(false);
     expect(await editPendingThreadMessage(message)).toBe(false);
     expect(state.draft.text).toBe("Existing draft");
+  });
+  it("prevents a reopened editor from taking delivery while an earlier transfer is pending", async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    state.confirm.mockImplementationOnce(async () => {
+      entered();
+      await gate;
+      return true;
+    });
+    const first = editPendingThreadMessage(message);
+    await started;
+    expect(await editPendingThreadMessage(message)).toBe(false);
+    expect(state.confirm).toHaveBeenCalledTimes(1);
+    expect(state.remove).not.toHaveBeenCalled();
+    release();
+    expect(await first).toBe(true);
+    expect(state.remove).toHaveBeenCalledTimes(1);
+    expect(state.held).toEqual({});
+  });
+  it("retains an unrelated queue revision accepted while draft loading is pending", async () => {
+    state.loaded.mockImplementationOnce(async () => {
+      state.revision++;
+    });
+    expect(await editPendingThreadMessage(message)).toBe(false);
+    expect(state.draft.text).toBe("Existing draft");
+    expect(state.remove).not.toHaveBeenCalled();
+    expect(state.held).toEqual({});
+  });
+  it("does not remove the newer queued revision after its draft merge finishes", async () => {
+    state.mergePersist.mockImplementationOnce(async () => {
+      state.revision++;
+    });
+    expect(await editPendingThreadMessage(message)).toBe(false);
+    expect(state.remove).not.toHaveBeenCalled();
+    expect(state.draft.text).toBe("Existing draft");
+    expect(state.held).toEqual({});
+  });
+  it("keeps the queued copy when persisting the draft fails and permits a later explicit edit", async () => {
+    state.mergePersist.mockRejectedValueOnce(new Error("draft disk full"));
+    await expect(editPendingThreadMessage(message)).rejects.toThrow("draft disk full");
+    expect(state.remove).not.toHaveBeenCalled();
+    expect(state.draft.text).toBe("Existing draft");
+    expect(state.held).toEqual({});
+    expect(await editPendingThreadMessage(message)).toBe(true);
+    expect(state.remove).toHaveBeenCalledTimes(1);
+  });
+  it("rechecks delivery ownership after the durable draft flush", async () => {
+    state.flush.mockImplementationOnce(async () => {
+      state.dispatching = message.messageId;
+    });
+    expect(await editPendingThreadMessage(message)).toBe(false);
+    expect(state.confirm).toHaveBeenCalledTimes(1);
+    expect(state.remove).not.toHaveBeenCalled();
+    expect(state.draft.text).toBe("Existing draft");
+    expect(state.held).toEqual({});
+  });
+  it("does not reclaim legacy messages with an unknown delivery outcome", async () => {
+    const { issuance: _issuance, ...legacy } = message;
+    expect(await editPendingThreadMessage(legacy)).toBe(false);
+    expect(state.confirm).not.toHaveBeenCalled();
+    expect(state.remove).not.toHaveBeenCalled();
   });
 });

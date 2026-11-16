@@ -1,0 +1,24 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "direct-producer-completion",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/workspaceRetirement/ProducerSessionObservation.ts",
+    "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.resolution.test.ts"
+  ],
+  "hookPaths": ["apps/server/scripts/cli.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/scripts/cli.ts",
+      "to": "scripts/jones/direct-producers/finite-production.ts"
+    },
+    {
+      "from": "apps/server/scripts/cli.ts",
+      "to": "scripts/jones/direct-producers/server-pack-profile.ts"
+    },
+    {
+      "from": "apps/server/vite.config.ts",
+      "to": "scripts/jones/direct-producers/server-pack-profile.ts"
+    }
+  ]
+}

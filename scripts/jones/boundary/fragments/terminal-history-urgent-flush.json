@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "terminal-history-urgent-flush",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/terminal/TerminalHistoryWorker.ts",
+    "apps/server/src/jones/terminal/TerminalHistoryWorker.test.ts"
+  ],
+  "hookPaths": ["apps/server/src/terminal/Manager.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/terminal/TerminalHistoryWorker.ts"
+    }
+  ]
+}

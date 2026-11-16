@@ -1,0 +1,429 @@
+import { describe, expect, it } from "@effect/vitest";
+import {
+  CommandId,
+  MessageId,
+  OrchestrationV2ThreadProjection,
+  OrchestrationV2ConversationMessage,
+  OrchestrationV2Command,
+  type OrchestrationV2Run,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ProviderThreadId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import {
+  cancelsSelfSettlement,
+  selfSettlementRun,
+  selfSettlementTerminalDisposition,
+} from "./SelfSettlement.ts";
+
+const caller = {
+  providerSessionId: "session-1",
+  providerInstanceId: ProviderInstanceId.make("codex"),
+};
+const owner = {
+  providerSessionId: ProviderSessionId.make("session-1"),
+  instanceId: caller.providerInstanceId,
+  providerThreadId: ProviderThreadId.make("provider-thread-1"),
+};
+const runId = RunId.make("run-1");
+const threadId = ThreadId.make("thread-1");
+const commandId = CommandId.make("self-settle-1");
+const compiledDecodeSync1 = Schema.decodeSync(Schema.toCodecJson(OrchestrationV2ThreadProjection));
+
+function fixture(): OrchestrationV2ThreadProjection {
+  const now = "2026-10-04T00:00:00.000Z";
+  const selection = { instanceId: "codex", model: "test-model" };
+  return compiledDecodeSync1({
+    thread: {
+      createdBy: "user",
+      creationSource: "web",
+      id: threadId,
+      projectId: "project-1",
+      title: "Self settlement",
+      providerInstanceId: "codex",
+      modelSelection: selection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: owner.providerThreadId,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      deletedAt: null,
+      selfSettlement: {
+        mcpCredentialId: "credential-1",
+        commandId,
+        runId,
+        providerSessionId: owner.providerSessionId,
+        providerInstanceId: owner.instanceId,
+      },
+    },
+    runs: [
+      {
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId: "codex",
+        modelSelection: selection,
+        providerThreadId: owner.providerThreadId,
+        userMessageId: "message-1",
+        rootNodeId: "node-1",
+        activeAttemptId: "attempt-1",
+        status: "running",
+        queuePosition: null,
+        requestedAt: now,
+        startedAt: now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    ],
+    updatedAt: now,
+    attempts: [
+      {
+        id: "attempt-1",
+        runId,
+        attemptOrdinal: 1,
+        rootNodeId: "node-1",
+        providerInstanceId: "codex",
+        providerThreadId: owner.providerThreadId,
+        providerTurnId: null,
+        reason: "initial",
+        status: "running",
+        startedAt: now,
+        completedAt: null,
+      },
+    ],
+    nodes: [],
+    subagents: [],
+    providerSessions: [],
+    providerThreads: [],
+    providerTurns: [],
+    runtimeRequests: [],
+    messages: [],
+    visibleTurnItems: [],
+    turnItems: [],
+    plans: [],
+    checkpointScopes: [],
+    checkpoints: [],
+    contextHandoffs: [],
+    contextTransfers: [],
+  });
+}
+const decodeMessage = Schema.decodeUnknownSync(
+  Schema.toCodecJson(OrchestrationV2ConversationMessage),
+);
+function wakeMessage(id: MessageId, wakeRunId: RunId): OrchestrationV2ConversationMessage {
+  return decodeMessage({
+    createdBy: "system",
+    creationSource: "server",
+    id,
+    threadId,
+    runId: wakeRunId,
+    nodeId: null,
+    role: "user",
+    text: "Wake",
+    attachments: [],
+    streaming: false,
+    notification: { source: { kind: "monitor" }, outcome: "completed", summary: "Wake" },
+    createdAt: "2026-10-04T00:00:00.000Z",
+    updatedAt: "2026-10-04T00:00:00.000Z",
+  });
+}
+
+const compiledDecodeSync2 = Schema.decodeSync(
+  Schema.toCodecJson(OrchestrationV2ConversationMessage),
+);
+const compiledDecodeUnknownSync3 = Schema.decodeUnknownSync(OrchestrationV2Command);
+
+describe("self settlement lifecycle decisions", () => {
+  it("accepts only the calling session's active run and leaves that run active", () => {
+    const projection = fixture();
+    expect(selfSettlementRun(projection, caller, owner)?.id).toBe(runId);
+    expect(projection.runs[0]?.status).toBe("running");
+    expect(
+      selfSettlementRun(projection, { ...caller, providerSessionId: "other" }, owner),
+    ).toBeUndefined();
+    expect(
+      selfSettlementRun(
+        projection,
+        { ...caller, providerInstanceId: ProviderInstanceId.make("other") },
+        owner,
+      ),
+    ).toBeUndefined();
+    expect(selfSettlementRun(projection, caller, null)).toBeUndefined();
+    expect(selfSettlementRun({ ...projection, attempts: [] }, caller, owner)).toBeUndefined();
+    expect(
+      selfSettlementRun(
+        {
+          ...projection,
+          thread: { ...projection.thread, activeProviderThreadId: ProviderThreadId.make("other") },
+        },
+        caller,
+        owner,
+      ),
+    ).toBeUndefined();
+  });
+  it("rejects archived, deleted, inactive, and superseded caller runs", () => {
+    const projection = fixture();
+    const now = projection.thread.updatedAt;
+    for (const thread of [
+      { ...projection.thread, archivedAt: now },
+      { ...projection.thread, deletedAt: now },
+    ]) {
+      expect(selfSettlementRun({ ...projection, thread }, caller, owner)).toBeUndefined();
+      expect(
+        selfSettlementTerminalDisposition(
+          {
+            ...projection,
+            thread,
+            runs: [{ ...projection.runs[0]!, status: "completed" }],
+          },
+          runId,
+        ),
+      ).toBe("cancel");
+    }
+    for (const status of [
+      "preparing",
+      "queued",
+      "waiting",
+      "completed",
+      "failed",
+      "interrupted",
+    ] as const) {
+      expect(
+        selfSettlementRun(
+          {
+            ...projection,
+            runs: [{ ...projection.runs[0]!, status }],
+          },
+          caller,
+          owner,
+        ),
+      ).toBeUndefined();
+    }
+    expect(
+      selfSettlementRun(
+        {
+          ...projection,
+          attempts: [{ ...projection.attempts[0]!, status: "superseded" }],
+        },
+        caller,
+        owner,
+      ),
+    ).toBeUndefined();
+  });
+  it("keeps intent while the reply and checkpoint are running and settles only completed", () => {
+    const projection = fixture();
+    for (const status of ["running", "waiting", "completed"] as const) {
+      const current = { ...projection, runs: [{ ...projection.runs[0]!, status }] };
+      expect(selfSettlementTerminalDisposition(current, runId)).toBe(
+        status === "completed" ? "settle" : "ignore",
+      );
+    }
+  });
+  it("cancels failed, interrupted, cancelled and rolled-back runs", () => {
+    const projection = fixture();
+    for (const status of ["failed", "interrupted", "cancelled", "rolled_back"] as const) {
+      expect(
+        selfSettlementTerminalDisposition(
+          { ...projection, runs: [{ ...projection.runs[0]!, status }] },
+          runId,
+        ),
+      ).toBe("cancel");
+    }
+  });
+  it("blocks queued and held user work while ignoring automatic queued wakeups", () => {
+    const projection = fixture();
+    const queued = {
+      ...projection.runs[0]!,
+      id: RunId.make("run-2"),
+      ordinal: 2,
+      status: "queued" as const,
+      queueHeld: true,
+    };
+    const queuedProjection = { ...projection, runs: [...projection.runs, queued] };
+    expect(selfSettlementRun(queuedProjection, caller, owner)).toBeUndefined();
+    expect(selfSettlementTerminalDisposition(queuedProjection, runId)).toBe("cancel");
+    const notification = {
+      ...queuedProjection,
+      messages: [
+        compiledDecodeSync2({
+          createdBy: "system",
+          creationSource: "server",
+          id: queued.userMessageId,
+          threadId,
+          runId: queued.id,
+          nodeId: null,
+          role: "user",
+          text: "Wake",
+          attachments: [],
+          streaming: false,
+          notification: { source: { kind: "monitor" }, outcome: "completed", summary: "Wake" },
+          createdAt: "2026-10-04T00:00:00.000Z",
+          updatedAt: "2026-10-04T00:00:00.000Z",
+        }),
+      ],
+    };
+    expect(selfSettlementRun(notification, caller, owner)?.id).toBe(runId);
+  });
+  it("settles after a successor cancelled before it started", () => {
+    const projection = fixture();
+    const cancelled = {
+      ...projection.runs[0]!,
+      id: RunId.make("run-2"),
+      ordinal: 2,
+      status: "cancelled" as const,
+      startedAt: null,
+      completedAt: projection.thread.updatedAt,
+    };
+    expect(
+      selfSettlementRun({ ...projection, runs: [...projection.runs, cancelled] }, caller, owner)
+        ?.id,
+    ).toBe(runId);
+    expect(
+      selfSettlementTerminalDisposition(
+        {
+          ...projection,
+          runs: [{ ...projection.runs[0]!, status: "completed" }, cancelled],
+        },
+        runId,
+      ),
+    ).toBe("settle");
+  });
+  it("accepts exactly the successors that completion would still settle", () => {
+    const projection = fixture();
+    const now = projection.thread.updatedAt;
+    const unstarted = { startedAt: null };
+    const automatic = true;
+    const successors: ReadonlyArray<
+      readonly [string, Partial<OrchestrationV2Run> & { automatic?: boolean }, boolean]
+    > = [
+      ["preparing", { status: "preparing", ...unstarted }, false],
+      ["starting", { status: "starting" }, false],
+      ["running", { status: "running" }, false],
+      ["waiting", { status: "waiting" }, false],
+      ["queued user work", { status: "queued", ...unstarted }, false],
+      ["held user work", { status: "queued", ...unstarted, queueHeld: true }, false],
+      ["queued automatic wakeup", { status: "queued", ...unstarted, automatic }, true],
+      ["cancelled before start", { status: "cancelled", ...unstarted }, true],
+      ["wakeup cancelled before start", { status: "cancelled", ...unstarted, automatic }, true],
+      ["cancelled after start", { status: "cancelled" }, false],
+      ["completed", { status: "completed" }, false],
+      ["failed", { status: "failed" }, false],
+      ["interrupted", { status: "interrupted" }, false],
+      ["rolled back", { status: "rolled_back" }, false],
+    ];
+    for (const [label, { automatic = false, ...overrides }, settles] of successors) {
+      const successor = {
+        ...projection.runs[0]!,
+        id: RunId.make("run-2"),
+        ordinal: 2,
+        userMessageId: MessageId.make("message-2"),
+        activeAttemptId: null,
+        queuePosition: null,
+        completedAt: null,
+        ...overrides,
+      };
+      const messages = automatic ? [wakeMessage(successor.userMessageId, successor.id)] : [];
+      const accepted = selfSettlementRun(
+        { ...projection, messages, runs: [...projection.runs, successor] },
+        caller,
+        owner,
+      );
+      const disposition = selfSettlementTerminalDisposition(
+        {
+          ...projection,
+          messages,
+          runs: [{ ...projection.runs[0]!, status: "completed", completedAt: now }, successor],
+        },
+        runId,
+      );
+      expect({ label, accepted: accepted?.id ?? null, disposition }).toEqual({
+        label,
+        accepted: settles ? runId : null,
+        disposition: settles ? "settle" : "cancel",
+      });
+    }
+  });
+  it("never settles a successor on delayed success of the original run", () => {
+    const projection = fixture();
+    expect(
+      selfSettlementTerminalDisposition(
+        {
+          ...projection,
+          runs: [
+            { ...projection.runs[0]!, status: "completed" },
+            {
+              ...projection.runs[0]!,
+              id: RunId.make("successor"),
+              ordinal: 2,
+              status: "completed",
+            },
+          ],
+        },
+        runId,
+      ),
+    ).toBe("cancel");
+    expect(selfSettlementTerminalDisposition(projection, RunId.make("older"))).toBe("ignore");
+    expect(
+      selfSettlementTerminalDisposition(
+        { ...projection, thread: { ...projection.thread, selfSettlement: null } },
+        runId,
+      ),
+    ).toBe("ignore");
+  });
+  it("invalidates new user work in every delivery mode and explicit reverse actions", () => {
+    for (const type of [
+      "start_immediately",
+      "queue_after_active",
+      "defer_start",
+      "steer_active",
+      "restart_active",
+    ] as const) {
+      expect(
+        cancelsSelfSettlement({
+          type: "message.dispatch",
+          commandId,
+          threadId,
+          messageId: MessageId.make("new-message"),
+          createdBy: "user",
+          creationSource: "web",
+          text: "Follow up",
+          attachments: [],
+          dispatchMode: { type, targetRunId: runId },
+        }),
+      ).toBe(true);
+    }
+    for (const type of [
+      "thread.unsettle",
+      "thread.pin",
+      "thread.unpin",
+      "thread.unsnooze",
+      "thread.archive",
+      "thread.unarchive",
+    ] as const) {
+      const command = compiledDecodeUnknownSync3({
+        type,
+        commandId,
+        threadId,
+        reason: "user",
+      });
+      expect(cancelsSelfSettlement(command)).toBe(true);
+    }
+    expect(
+      cancelsSelfSettlement({
+        type: "thread.metadata.update",
+        commandId,
+        threadId,
+        title: "Retitle",
+      }),
+    ).toBe(false);
+  });
+});

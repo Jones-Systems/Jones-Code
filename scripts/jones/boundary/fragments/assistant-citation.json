@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "assistant-citation",
+  "jonesOwnedPaths": ["apps/web/src/jones/assistantCitation/"],
+  "hookPaths": ["apps/web/src/components/chat/AssistantSelectionToolbar.tsx"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/AssistantSelectionToolbar.tsx",
+      "to": "apps/web/src/jones/assistantCitation/placement.ts"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workspace-retirement-qualification",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/workspaceRetirement/Behavior.node-test.mjs",
+    "apps/server/src/jones/workspaceRetirement/Behavior.test.ts",
+    "apps/server/src/jones/workspaceRetirement/Behavior.testkit.ts",
+    "apps/server/src/jones/workspaceRetirement/CompletionObservation.node-test.mjs",
+    "apps/server/src/jones/workspaceRetirement/CompletionObservation.test.ts",
+    "apps/server/src/jones/workspaceRetirement/CompletionObservation.testkit.ts",
+    "apps/server/src/jones/workspaceRetirement/CompletionObservation.ts",
+    "apps/server/src/jones/workspaceRetirement/Conformance.node-test.mjs",
+    "apps/server/src/jones/workspaceRetirement/Conformance.test.ts",
+    "apps/server/src/jones/workspaceRetirement/Conformance.testkit.ts",
+    "apps/server/src/jones/workspaceRetirement/ConsumerProbe.ts",
+    "apps/server/src/jones/workspaceRetirement/DarwinFilesystem.ts",
+    "apps/server/src/jones/workspaceRetirement/Filesystem.ts",
+    "apps/server/src/jones/workspaceRetirement/IgnoredClassifier.ts",
+    "apps/server/src/jones/workspaceRetirement/OutputAttestation.ts",
+    "apps/server/src/jones/workspaceRetirement/ParticipantGuard.ts",
+    "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.ts",
+    "apps/server/src/jones/workspaceRetirement/ProjectProduction.test.ts",
+    "apps/server/src/jones/workspaceRetirement/ProjectProduction.ts",
+    "apps/server/src/jones/workspaceRetirement/Qualification.ts",
+    "apps/server/src/jones/workspaceRetirement/conformance/v1/cases.json",
+    "apps/server/src/jones/workspaceRetirement/conformance/v1/source.json"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/ProjectProduction.ts"
+    }
+  ]
+}

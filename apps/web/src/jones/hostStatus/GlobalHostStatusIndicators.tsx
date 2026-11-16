@@ -1,0 +1,71 @@
+import type { EnvironmentId } from "@t3tools/contracts";
+import { useEffect, useState } from "react";
+
+import {
+  clearRetainedHostStatus,
+  HostStatusIndicators,
+} from "../../components/chat/HostStatusIndicators";
+import { fetchHostStatus, observeHostStatus } from "../../hostStatus";
+import {
+  useConnectedEnvironmentIds,
+  useEnvironmentIds,
+  usePrimaryEnvironmentId,
+} from "../../state/environments";
+import { discoverGlobalHostStatusSource } from "./globalSource";
+
+// Header remounts reuse the selected gateway and its freshness-bounded sample.
+let retainedEnvironmentId: EnvironmentId | null = null;
+
+export function GlobalHostStatusIndicators() {
+  const environmentIds = useEnvironmentIds();
+  const connectedEnvironmentIds = useConnectedEnvironmentIds();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const [selection, setSelection] = useState(() => retainedEnvironmentId);
+  const environmentId = selection !== null && environmentIds.includes(selection) ? selection : null;
+
+  if (selection !== null && environmentId === null) setSelection(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Clear the previously retained global host source when a specific environment becomes selected.
+  useEffect(() => {
+    if (environmentId === null && retainedEnvironmentId !== null) {
+      clearRetainedHostStatus(retainedEnvironmentId);
+      retainedEnvironmentId = null;
+    }
+  }, [environmentId]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own global host discovery and visibility observation while no specific environment is selected.
+  useEffect(() => {
+    if (environmentId !== null) return;
+    let active = true;
+    let stop = () => {};
+    stop = observeHostStatus(
+      document,
+      () => {},
+      async (signal) => {
+        const source = await discoverGlobalHostStatusSource(
+          { environmentIds, connectedEnvironmentIds, primaryEnvironmentId },
+          signal,
+          fetchHostStatus,
+        );
+        if (active && source !== null) {
+          active = false;
+          stop();
+          retainedEnvironmentId = source;
+          setSelection(source);
+        }
+        return { hosts: [] };
+      },
+    );
+    return () => {
+      active = false;
+      stop();
+    };
+  }, [environmentId, environmentIds, connectedEnvironmentIds, primaryEnvironmentId]);
+
+  return environmentId === null ? (
+    <span role="status" className="shrink-0 text-xs text-muted-foreground">
+      Host status unavailable
+    </span>
+  ) : (
+    <HostStatusIndicators environmentId={environmentId} />
+  );
+}

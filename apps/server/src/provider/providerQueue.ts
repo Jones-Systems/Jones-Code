@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Inventory hashing is synchronous and queue attempt IDs share this module boundary.
 import * as NodeCrypto from "node:crypto";
 import {
   QualifiedQuota,
@@ -14,8 +15,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { ServerConfig } from "../config.ts";
-import { writeFileStringAtomically } from "../atomicWrite.ts";
-import type { ProviderRegistryShape } from "./Services/ProviderRegistry.ts";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import type { ProviderRegistry } from "./ProviderRegistry.ts";
 import {
   quotaResetCrossed,
   PrivateQuotaProof,
@@ -46,10 +47,10 @@ const StoredQueueState = Schema.Union([
     attempts: Schema.Array(LegacyAttempt),
   }),
 ]);
+const compiledDecodeEffect1 = Schema.decodeEffect(Schema.fromJsonString(StoredQueueState));
+
 export const decodeProviderQueueState = Effect.fnUntraced(function* (contents: string) {
-  const state = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(StoredQueueState))(
-    contents,
-  );
+  const state = yield* compiledDecodeEffect1(contents);
   if (state.version === 2) return state;
   return {
     version: 2 as const,
@@ -109,6 +110,8 @@ export interface ProviderQueueStorage {
 }
 const iso = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
 
+const compiledEncodeEffect2 = Schema.encodeEffect(Schema.fromJsonString(QueueState));
+
 export const makeProviderQueueStorage = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -123,9 +126,9 @@ export const makeProviderQueueStorage = Effect.gen(function* () {
       if (Number(stat.size) > MAX_STATE_BYTES) return yield* failure();
       return yield* decodeProviderQueueState(yield* fs.readFileString(filePath));
     }).pipe(Effect.mapError(failure)),
-    write: (state: QueueState) =>
-      Effect.gen(function* () {
-        const contents = yield* Schema.encodeEffect(Schema.fromJsonString(QueueState))(state);
+    write: Effect.fn("ProviderQueue.write")(
+      function* (state: QueueState) {
+        const contents = yield* compiledEncodeEffect2(state);
         if (Buffer.byteLength(contents) > MAX_STATE_BYTES) return yield* failure();
         yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
         yield* fs.chmod(directory, 0o700);
@@ -134,7 +137,9 @@ export const makeProviderQueueStorage = Effect.gen(function* () {
           Effect.provideService(Path.Path, path),
         );
         yield* fs.chmod(filePath, 0o600);
-      }).pipe(Effect.mapError(failure)),
+      },
+      (effect) => effect.pipe(Effect.mapError(failure)),
+    ),
   } satisfies ProviderQueueStorage;
 });
 
@@ -167,7 +172,7 @@ export function projectQueueInventory(
 }
 
 export const makeProviderQueue = Effect.fn("makeProviderQueue")(function* (
-  registry: Pick<ProviderRegistryShape, "getProviders" | "refreshInstance">,
+  registry: Pick<ProviderRegistry["Service"], "getProviders" | "refreshInstance">,
   storage: ProviderQueueStorage,
   currentTime: Effect.Effect<number> = Clock.currentTimeMillis,
 ) {

@@ -1,5 +1,3 @@
-"use client";
-
 import { Autocomplete as AutocompletePrimitive } from "@base-ui/react/autocomplete";
 import { ChevronsUpDownIcon, XIcon } from "lucide-react";
 
@@ -109,7 +107,8 @@ function AutocompletePopup({
           )}
         >
           <AutocompletePrimitive.Popup
-            className="flex max-h-[min(var(--available-height),23rem)] flex-1 flex-col text-foreground"
+            // Electron drag hit-testing ignores z-index; items over a drag region would swallow clicks.
+            className="flex max-h-[min(var(--available-height),23rem)] flex-1 flex-col text-foreground [-webkit-app-region:no-drag]"
             data-slot="autocomplete-popup"
             {...props}
           >
@@ -146,11 +145,34 @@ function AutocompleteGroup({ className, ...props }: AutocompletePrimitive.Group.
   );
 }
 
+const GROUP_LABEL_CLASS_NAME = "px-2 py-1.5 font-medium text-muted-foreground text-xs";
+
 function AutocompleteGroupLabel({ className, ...props }: AutocompletePrimitive.GroupLabel.Props) {
   return (
     <AutocompletePrimitive.GroupLabel
-      className={cn("px-2 py-1.5 font-medium text-muted-foreground text-xs", className)}
+      className={cn(GROUP_LABEL_CLASS_NAME, className)}
       data-slot="autocomplete-group-label"
+      {...props}
+    />
+  );
+}
+
+function AutocompleteListHeading({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      className={cn(GROUP_LABEL_CLASS_NAME, className)}
+      data-slot="autocomplete-group-label"
+      role="presentation"
+      {...props}
+    />
+  );
+}
+
+function AutocompleteListVirtualized({ className, ...props }: AutocompletePrimitive.List.Props) {
+  return (
+    <AutocompletePrimitive.List
+      className={cn("size-full min-w-0", className)}
+      data-slot="autocomplete-list"
       {...props}
     />
   );
@@ -226,6 +248,8 @@ export {
   AutocompleteGroupLabel,
   AutocompleteEmpty,
   AutocompleteList,
+  AutocompleteListHeading,
+  AutocompleteListVirtualized,
   AutocompleteClear,
   AutocompleteCollection,
 };

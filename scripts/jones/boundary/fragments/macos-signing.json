@@ -1,0 +1,29 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "macos-signing",
+  "jonesOwnedPaths": [
+    ".github/workflows/jones-desktop-signing.yml",
+    "apps/desktop/src/jones/updates/jonesSigningSource.ts",
+    "apps/desktop/src/jones/updates/jonesSigningSource.test.ts"
+  ],
+  "hookPaths": ["scripts/sign-macos.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "scripts/build-cli-archive.ts",
+      "to": "scripts/jones/signing/cli.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/signing/policy.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/signing/profile.ts"
+    },
+    {
+      "from": "scripts/sign-macos.ts",
+      "to": "scripts/jones/signing/sign.ts"
+    }
+  ]
+}

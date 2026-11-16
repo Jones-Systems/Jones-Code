@@ -1,0 +1,106 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "linked-threads",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/linkedThreads/",
+    "apps/web/src/jones/linkedThreads/",
+    "packages/client-runtime/src/jones/linkedThreads/",
+    "packages/shared/src/jones/linkedThreads/"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "packages/contracts/src/jones/linkedThreadsCapability.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/linkedThreads/LinkedThreads.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+      "to": "apps/server/src/jones/linkedThreads/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+      "to": "apps/server/src/jones/linkedThreads/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
+      "to": "apps/server/src/jones/linkedThreads/launch.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerForwarding.ts",
+      "to": "apps/server/src/jones/linkedThreads/LinkedThreads.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerForwarding.ts",
+      "to": "apps/server/src/jones/linkedThreads/authorization.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/linkedThreads/LinkedThreads.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/linkedThreads/handoff.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/linkedThreads/launchTransport.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/linkedThreads/LinkedThreads.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/linkedThreads/CopyHandoffDialog.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/linkedThreads/LinkThreadDialog.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/linkedThreads/LinkedLineageGroups.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/linkedThreads/LinkedThreadRow.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/linkedThreads/LinkedThreadsActions.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/linkedThreads/LinkedThreadsSection.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/linkedThreads/model.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/linkedThreads/useLinkedThreads.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/linkedThreadsCapability.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/linkedThreads.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/linkedThreadsCapability.ts"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/jones/linkedThreadsRpc.ts"
+    }
+  ]
+}

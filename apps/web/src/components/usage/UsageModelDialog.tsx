@@ -1,0 +1,137 @@
+import { formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
+import { isModelCostUnknown, type ModelTotals } from "@t3tools/shared/usageMerge";
+
+import { mergeAnsweredUsage, type EnvironmentUsageStatus } from "../../state/usage";
+import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
+import { Button } from "../ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../ui/dialog";
+import { UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
+import { UsageShareBar } from "./UsageShareBar";
+import { costTypeSegments, speedCostSegments, tokenTypeSegments } from "./usageBreakdown";
+import { PROVIDER_PRESENTATION } from "./usageProviders";
+import { UsageModelTokenStats } from "../../jones/usage/UsageModelTokenStats";
+
+export interface UsageChartWindow {
+  readonly days: readonly string[];
+  readonly hours: readonly string[];
+  readonly resolution: "day" | "hour";
+  readonly timeZone: string;
+  readonly referenceTime: string | undefined;
+  readonly hour12: boolean;
+}
+
+export function UsageModelDialog({
+  model,
+  environments,
+  metric,
+  chartWindow,
+  onSetPrice,
+  onClose,
+}: {
+  readonly model: ModelTotals;
+  readonly environments: readonly EnvironmentUsageStatus[];
+  readonly metric: UsageChartMetric;
+  readonly chartWindow: UsageChartWindow;
+  readonly onSetPrice: () => void;
+  readonly onClose: () => void;
+}) {
+  const usage = mergeAnsweredUsage(
+    environments,
+    (bucket) => bucket.provider === model.provider && bucket.model === model.model,
+  );
+  const providers = [model.provider];
+  const presentation = PROVIDER_PRESENTATION[model.provider];
+  const costUnknown = isModelCostUnknown(model);
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <DialogPopup className="max-w-3xl">
+        <DialogHeader>
+          <div className="flex items-center gap-2">
+            <ProviderInstanceIcon
+              driverKind={presentation.driverKind}
+              displayName={presentation.label}
+              iconClassName="size-5"
+            />
+            <DialogTitle>{model.model}</DialogTitle>
+          </div>
+          <DialogDescription>
+            {presentation.label}
+            {costUnknown ? "" : ` · ${formatPercent(model.costShare)} of cost`}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <div className="flex flex-col gap-8">
+            <UsageModelTokenStats model={model} />
+
+            {/* Unpriced cost is unknown, not zero, so its trend shows tokens. */}
+            <UsageProviderChart
+              providers={providers}
+              days={chartWindow.days}
+              daily={usage.daily}
+              hours={chartWindow.hours}
+              hourly={usage.hourly}
+              metric={costUnknown ? "tokens" : metric}
+              referenceTime={chartWindow.referenceTime}
+              resolution={chartWindow.resolution}
+              timeZone={chartWindow.timeZone}
+              hour12={chartWindow.hour12}
+            />
+
+            <div className="grid gap-x-10 gap-y-8 sm:grid-cols-2">
+              {costUnknown ? null : (
+                <UsageShareBar
+                  label="Cost by type"
+                  segments={costTypeSegments(usage.categoryCost)}
+                  format={formatUsd}
+                />
+              )}
+              <UsageShareBar
+                label="Tokens by type"
+                segments={tokenTypeSegments(model.tokens)}
+                format={formatTokens}
+              />
+              {usage.speedCost.fast + usage.speedCost.ultrafast > 0 ? (
+                <UsageShareBar
+                  label="Cost by speed"
+                  segments={speedCostSegments(usage.speedCost)}
+                  format={formatUsd}
+                  aside={<SpeedPremium premiumUsd={usage.speedCost.premium} />}
+                />
+              ) : null}
+            </div>
+          </div>
+        </DialogPanel>
+        {model.unpricedTokens > 0 ? (
+          <DialogFooter variant="bare" className="items-center sm:justify-between">
+            <span className="text-xs text-muted-foreground">
+              {formatTokens(model.unpricedTokens)} tokens have no known price
+            </span>
+            <Button onClick={onSetPrice}>Set price</Button>
+          </DialogFooter>
+        ) : null}
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+export function SpeedPremium({ premiumUsd }: { readonly premiumUsd: number }) {
+  return (
+    <span className="text-xs text-muted-foreground">
+      Premium <span className="text-foreground tabular-nums">{formatUsd(premiumUsd)}</span>
+    </span>
+  );
+}

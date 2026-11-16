@@ -1,0 +1,132 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "deletion-worktree-removal",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.ts",
+    "apps/server/src/jones/cleanup/DeletionWorktreeRemovalTypes.ts",
+    "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+    "apps/server/src/jones/cleanup/DeletionAdmission.ts",
+    "apps/server/src/jones/cleanup/DeletionAdmission.test.ts",
+    "apps/server/src/jones/cleanup/DeletionGroupWitness.ts",
+    "apps/server/src/jones/cleanup/DeletionGroupWitness.test.ts",
+    "apps/server/src/jones/cleanup/CheckedRuntimeOwner.ts",
+    "apps/server/src/jones/cleanup/CheckedRuntimeOwner.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseProtocol.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseSchema.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseStore.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseStore.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseInvocation.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseInvocation.test.ts",
+    "apps/server/src/jones/cleanup/WorkspaceLeaseProof.ts",
+    "apps/server/src/jones/cleanup/WorkspaceLeaseProof.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseWorkspace.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseClaim.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseClaim.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseConversation.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseOpenGuard.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseManager.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseLifetime.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseLifetime.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseSession.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseTerminal.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseTerminal.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseAttachment.ts",
+    "apps/server/src/jones/cleanup/DeletionBinding.ts",
+    "apps/server/src/jones/cleanup/DeletionWriterFence.ts",
+    "apps/server/src/jones/cleanup/DeletionWriterFence.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseInstallation.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseInstallation.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseCreationProtocol.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseCreationSchema.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseCreationStore.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseCreationCapture.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseCreation.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUsePreparedTerminal.ts",
+    "apps/server/src/jones/cleanup/CompletedNativeCleanup.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/storageCleanup.ts",
+    "apps/server/src/serverOwnership.ts",
+    "apps/server/src/workspace/workspaceLease.ts",
+    "apps/server/src/orchestration-v2/ProjectStore.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionWorktreeRemovalTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.test.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/cleanup/CheckedRuntimeOwner.ts"
+    },
+    {
+      "from": "apps/server/src/serverOwnership.ts",
+      "to": "apps/server/src/jones/cleanup/CheckedRuntimeOwner.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/workspaceLease.ts",
+      "to": "apps/server/src/jones/cleanup/WorkspaceLeaseProof.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/cleanup/RuntimeUseClaim.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/cleanup/RuntimeUseOpenGuard.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/cleanup/RuntimeUseProtocol.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/cleanup/RuntimeUseLifetime.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/cleanup/RuntimeUseTerminal.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/cleanup/RuntimeUseAttachment.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectStore.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionWriterFence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionWriterFence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionWriterFence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/cleanup/DeletionWriterFence.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/cleanup/CompletedNativeCleanup.ts"
+    }
+  ]
+}

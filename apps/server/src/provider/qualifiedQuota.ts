@@ -1,3 +1,4 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Quota proof binding uses synchronous HMAC and private random key generation; Effect Crypto has no HMAC API.
 import * as NodeCrypto from "node:crypto";
 import * as Schema from "effect/Schema";
 import type {

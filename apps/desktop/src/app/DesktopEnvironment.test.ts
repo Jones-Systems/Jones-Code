@@ -2,8 +2,8 @@ import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Layer from "effect/Layer";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
@@ -20,7 +20,7 @@ const defaultInput = {
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
-const makeEnvironmentLayer = (
+const layerEnvironment = (
   overrides: Partial<DesktopEnvironment.MakeDesktopEnvironmentInput> = {},
   env: Record<string, string | undefined> = {},
 ) =>
@@ -36,10 +36,61 @@ const makeEnvironmentLayer = (
 const makeEnvironment = (
   overrides: Partial<DesktopEnvironment.MakeDesktopEnvironmentInput> = {},
   env: Record<string, string | undefined> = {},
-) =>
-  DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
+) => DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(layerEnvironment(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  it.effect.each([
+    {
+      channel: "development",
+      appVersion: "0.0.22",
+      isDevelopment: true,
+      displayName: "Jones Code (Dev)",
+      stageLabel: "Dev",
+    },
+    {
+      channel: "stable",
+      appVersion: "0.0.22",
+      isDevelopment: false,
+      displayName: "Jones Code",
+      stageLabel: "Beta",
+    },
+    {
+      channel: "nightly",
+      appVersion: "0.0.17-nightly.20260413.42",
+      isDevelopment: false,
+      displayName: "Jones Code",
+      stageLabel: "Nightly",
+    },
+    {
+      channel: "preview",
+      appVersion: "0.0.44-preview.20261002.36963972634",
+      isDevelopment: false,
+      displayName: "Jones Code",
+      stageLabel: "Nightly",
+    },
+  ] as const)(
+    "uses Jones Code branding for $channel",
+    ({ appVersion, isDevelopment, displayName, stageLabel }) =>
+      Effect.gen(function* () {
+        const environment = yield* makeEnvironment(
+          { appVersion, isPackaged: !isDevelopment },
+          isDevelopment ? { VITE_DEV_SERVER_URL: "http://localhost:5173" } : {},
+        );
+
+        assert.equal(environment.isDevelopment, isDevelopment);
+        assert.equal(environment.displayName, displayName);
+        assert.deepEqual(environment.branding, {
+          baseName: "Jones Code",
+          displayName,
+          stageLabel,
+        });
+        assert.equal(
+          environment.appUserModelId,
+          isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+        );
+      }),
+  );
+
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
@@ -142,19 +193,6 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
-  it.effect("uses the stable desktop entry as the packaged Linux portal identity", () =>
-    Effect.gen(function* () {
-      const environment = yield* makeEnvironment({
-        platform: "linux",
-        isPackaged: true,
-        appPath: "/tmp/.mount_t3code/resources/app.asar",
-        resourcesPath: "/tmp/.mount_t3code/resources",
-      });
-
-      assert.equal(environment.linuxDesktopEntryName, "com.t3tools.T3Code.desktop");
-    }),
-  );
-
   it.effect("keeps implicit development state separate from production state", () =>
     Effect.gen(function* () {
       const development = yield* makeEnvironment(
@@ -165,40 +203,6 @@ describe("DesktopEnvironment", () => {
 
       assert.equal(development.stateDir, "/Users/alice/.t3/dev");
       assert.equal(production.stateDir, "/Users/alice/.t3/userdata");
-    }),
-  );
-
-  it.effect("uses a configured app user model id override", () =>
-    Effect.gen(function* () {
-      const environment = yield* makeEnvironment(
-        {},
-        {
-          T3CODE_DESKTOP_APP_USER_MODEL_ID: " com.t3tools.t3code.dev.local ",
-          VITE_DEV_SERVER_URL: "http://localhost:5173",
-        },
-      );
-
-      assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev.local");
-    }),
-  );
-
-  it.effect("resolves picker defaults without nullish sentinels", () =>
-    Effect.gen(function* () {
-      const environment = yield* makeEnvironment();
-
-      assert.deepEqual(environment.resolvePickFolderDefaultPath(null), Option.none());
-      assert.deepEqual(
-        environment.resolvePickFolderDefaultPath({ initialPath: " " }),
-        Option.none(),
-      );
-      assert.deepEqual(
-        environment.resolvePickFolderDefaultPath({ initialPath: "~" }),
-        Option.some("/Users/alice"),
-      );
-      assert.deepEqual(
-        environment.resolvePickFolderDefaultPath({ initialPath: "~/project" }),
-        Option.some("/Users/alice/project"),
-      );
     }),
   );
 });

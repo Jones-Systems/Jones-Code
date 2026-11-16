@@ -1,11 +1,3 @@
-/**
- * ServerConfig - Runtime configuration services.
- *
- * Defines process-level server configuration and networking helpers used by
- * startup and runtime layers.
- *
- * @module ServerConfig
- */
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -17,9 +9,30 @@ import * as Path from "effect/Path";
 import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
+import type { OtlpEndpointSource } from "@t3tools/contracts";
 import { sweepStalePendingAttachments } from "./attachmentStore.ts";
-import { DEFAULT_SIGNAL_EXPORT, type SignalExport } from "@t3tools/shared/observability";
+import {
+  DEFAULT_SIGNAL_EXPORT,
+  nodeProcessRuntimeAttributes,
+  processServiceInstanceId,
+  type SignalExport,
+} from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
+import { type ReleaseChannel, releaseResourceAttributes } from "@t3tools/shared/releaseResource";
+import packageJson from "../package.json" with { type: "json" };
+import { holdJonesServerNativeWriterFence } from "./jones/updates/nativeWriterStartup.ts";
+import type { Configuration as FleetCheckpointConfiguration } from "./jones/fleetCheckpoint/Configuration.ts";
+import type { Configuration as WorkspaceLifecycleConfiguration } from "./jones/workspaceLifecycle/Configuration.ts";
+import {
+  resolveServerParallelismProfile,
+  type ServerParallelismConfig,
+} from "./jones/serverParallelism/config.ts";
+
+// Official release workflows set this telemetry channel; other builds report dev.
+// Unlike __T3CODE_BUILD_CHANNEL__, this is not the sign-in page's latest/nightly channel.
+declare const __T3CODE_TELEMETRY_CHANNEL__: ReleaseChannel | undefined;
+export const telemetryChannel: ReleaseChannel =
+  typeof __T3CODE_TELEMETRY_CHANNEL__ === "undefined" ? "dev" : __T3CODE_TELEMETRY_CHANNEL__;
 
 export const DEFAULT_PORT = 3773;
 
@@ -29,9 +42,6 @@ export type RuntimeMode = typeof RuntimeMode.Type;
 export const StartupPresentation = Schema.Literals(["browser", "headless"]);
 export type StartupPresentation = typeof StartupPresentation.Type;
 
-/**
- * ServerDerivedPaths - Derived paths from the base directory.
- */
 export interface ServerDerivedPaths {
   readonly stateDir: string;
   /** Native placement trust state; deliberately outside application/SQLite state. */
@@ -39,12 +49,11 @@ export interface ServerDerivedPaths {
   readonly dbPath: string;
   readonly keybindingsConfigPath: string;
   readonly settingsPath: string;
-  /** Palettes this machine publishes for clients to follow, one file per theme. */
   readonly environmentThemesDir: string;
   readonly providerStatusCacheDir: string;
   readonly worktreesDir: string;
+  readonly worktreeCheckoutCacheDir: string;
   readonly attachmentsDir: string;
-  /** Screenshots the agent asks the collaborative browser to keep for the user. */
   readonly browserArtifactsDir: string;
   readonly logsDir: string;
   readonly serverTracePath: string;
@@ -62,9 +71,6 @@ export interface DeriveServerPathsOptions {
   readonly authorityStateDir?: string;
 }
 
-/**
- * ServerConfig - Service tag for server runtime configuration.
- */
 export class ServerConfig extends Context.Service<
   ServerConfig,
   ServerDerivedPaths & {
@@ -77,18 +83,21 @@ export class ServerConfig extends Context.Service<
     readonly otlpTracesUrl: string | undefined;
     readonly otlpMetricsUrl: string | undefined;
     readonly otlpLogsUrl: string | undefined;
-    /**
-     * How each signal is exported. Read instead of a process-wide setting so
-     * the wire format, credential, and schedule travel with the endpoint they
-     * were configured beside.
-     */
     readonly otlpTracesExport: SignalExport;
     readonly otlpMetricsExport: SignalExport;
     readonly otlpLogsExport: SignalExport;
+    readonly otlpTracesSource?: OtlpEndpointSource;
+    readonly otlpTracesVariable?: string;
+    readonly otlpMetricsSource?: OtlpEndpointSource;
+    readonly otlpMetricsVariable?: string;
+    readonly otlpLogsSource?: OtlpEndpointSource;
+    readonly otlpLogsVariable?: string;
     readonly otelEnvironment: OtelEnvironment.OtelEnvironment;
     readonly mode: RuntimeMode;
     readonly port: number;
     readonly host: string | undefined;
+    /** Set when the host was defaulted to a private-network listener for the service. */
+    readonly privateNetworkOnly?: boolean | undefined;
     readonly cwd: string;
     readonly baseDir: string;
     readonly staticDir: string | undefined;
@@ -98,34 +107,54 @@ export class ServerConfig extends Context.Service<
     readonly noBrowser: boolean;
     readonly startupPresentation: StartupPresentation;
     readonly desktopBootstrapToken: string | undefined;
+    readonly desktopBootstrapSecret?: string | undefined;
+    readonly shellEnvironmentPrepared?: boolean | undefined;
     readonly desktopTelemetryFd?: number | undefined;
     readonly desktopTelemetryControlFd?: number | undefined;
+    readonly desktopBrowserFd?: number | undefined;
+    readonly desktopBrowserControlFd?: number | undefined;
+    readonly desktopNativeOwnerInputFd?: number | undefined;
+    readonly desktopNativeOwnerOutputFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
+    readonly fleetCheckpoint?: FleetCheckpointConfiguration | undefined;
+    readonly workspaceLifecycle?: WorkspaceLifecycleConfiguration | undefined;
+    readonly serverParallelism: ServerParallelismConfig;
     readonly autoBootstrapProjectFromCwd: boolean;
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
     readonly tailscaleServePort: number;
   }
 >()("t3/config/ServerConfig") {
-  /** @deprecated Import and use `layerTest` from this module. */
   static readonly layerTest = (
     cwd: string,
     baseDirOrPrefix: string | { readonly prefix: string },
   ) => layerTest(cwd, baseDirOrPrefix);
 }
 
-export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
+// Standalone CLI clients construct configuration without starting server pools.
+export const make = (
+  config: Omit<ServerConfig["Service"], "serverParallelism"> &
+    Partial<Pick<ServerConfig["Service"], "serverParallelism">>,
+) =>
+  ServerConfig.of({
+    ...config,
+    serverParallelism: config.serverParallelism ?? resolveServerParallelismProfile(undefined),
+  });
 
-/**
- * Resource attributes shared by every OTLP exporter, so traces, metrics, and
- * logs report the same service identity to the collector.
- */
-export const otlpResource = (config: ServerConfig["Service"]) => ({
+export const otlpResource = (
+  config: Pick<ServerConfig["Service"], "mode" | "otelEnvironment">,
+  hostName: string,
+) => ({
   serviceName: "t3code-server",
+  serviceVersion: packageJson.version,
   attributes: {
     "service.namespace": "t3code",
     "service.runtime": "t3-server",
-    "service.mode": config.mode,
+    "t3code.server.managed_by": config.mode === "desktop" ? "desktop" : "standalone",
+    "service.instance.id": processServiceInstanceId(config.otelEnvironment.resourceAttributes),
+    ...releaseResourceAttributes(telemetryChannel, config.otelEnvironment.resourceAttributes),
+    "host.name": config.otelEnvironment.resourceAttributes["host.name"] || hostName,
+    ...nodeProcessRuntimeAttributes(),
   },
 });
 
@@ -141,7 +170,7 @@ export const deriveServerPaths = Effect.fn(function* (
     baseDir,
     devUrl !== undefined && !options.baseDirIsExplicit ? "dev" : "userdata",
   );
-  const dbPath = join(stateDir, "state.sqlite");
+  const dbPath = join(stateDir, "statev2.sqlite");
   const attachmentsDir = join(stateDir, "attachments");
   const logsDir = join(stateDir, "logs");
   const providerLogsDir = join(logsDir, "provider");
@@ -155,6 +184,7 @@ export const deriveServerPaths = Effect.fn(function* (
     environmentThemesDir: join(stateDir, "themes"),
     providerStatusCacheDir,
     worktreesDir: join(baseDir, "worktrees"),
+    worktreeCheckoutCacheDir: join(providerStatusCacheDir, "worktree-checkouts"),
     attachmentsDir,
     browserArtifactsDir: join(stateDir, "browser-artifacts"),
     logsDir,
@@ -179,11 +209,10 @@ const canonicalizePath = Effect.fn("ServerConfig.canonicalizePath")(function* (i
   // their existing ancestor so a symlink cannot hide an overlapping target.
   while (true) {
     const canonical = yield* fileSystem.realPath(candidate).pipe(
-      Effect.map(Option.some),
-      Effect.catch((error) =>
-        error.reason._tag === "NotFound"
-          ? Effect.succeed(Option.none<string>())
-          : Effect.fail(error),
+      Effect.asSome,
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.succeed(Option.none<string>()),
       ),
     );
     if (Option.isSome(canonical)) {
@@ -241,6 +270,7 @@ const validateAuthorityStateDir = Effect.fn("ServerConfig.validateAuthorityState
 });
 
 export const ensureServerDirectories = Effect.fn(function* (derivedPaths: ServerDerivedPaths) {
+  yield* Effect.sync(() => holdJonesServerNativeWriterFence(derivedPaths.dbPath));
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
@@ -267,6 +297,14 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
     ],
     { concurrency: "unbounded" },
   );
+  // Logs, traces and the database are written with the process umask; keep them owner-only.
+  yield* fs
+    .chmod(derivedPaths.stateDir, 0o700)
+    .pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not restrict state directory permissions.", { cause }),
+      ),
+    );
 
   const swept = sweepStalePendingAttachments({
     attachmentsDir: derivedPaths.attachmentsDir,
@@ -286,13 +324,16 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
   const baseDir =
     typeof baseDirOrPrefix === "string"
       ? baseDirOrPrefix
-      : yield* fs.makeTempDirectoryScoped({ prefix: baseDirOrPrefix.prefix });
+      : // macOS temp dirs live under the /var -> /private/var symlink; storage cleanup's
+        // symlink guards compare resolved paths, so generated test dirs must be real paths.
+        yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: baseDirOrPrefix.prefix }));
   const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
-  // Test paths are derived internally and cannot overlap; keep this test-only
-  // invariant out of the service layer's ordinary error channel.
+  // Invalid fixture directory layouts are test setup defects rather than
+  // the service layer's ordinary error channel.
   yield* ensureServerDirectories(derivedPaths).pipe(Effect.orDie);
 
   return ServerConfig.of({
+    serverParallelism: resolveServerParallelismProfile(undefined),
     logLevel: "Error",
     traceMinLevel: "Info",
     traceTimingEnabled: true,
@@ -319,6 +360,8 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
     desktopBootstrapToken: undefined,
     desktopTelemetryFd: undefined,
     desktopTelemetryControlFd: undefined,
+    desktopBrowserFd: undefined,
+    desktopBrowserControlFd: undefined,
     resourceMonitorPath: undefined,
     staticDir: undefined,
     devUrl,

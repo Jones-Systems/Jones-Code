@@ -1,5 +1,10 @@
 import * as Schema from "effect/Schema";
-import { NonNegativeInt, PositiveInt, IsoDateTime } from "./baseSchemas.ts";
+import {
+  NonNegativeInt,
+  PositiveInt,
+  IsoDateTime,
+  ForwardCompatibleOptional,
+} from "./baseSchemas.ts";
 
 export const HostStatusId = Schema.Literals(["vps", "test", "mini", "home"]);
 export type HostStatusId = typeof HostStatusId.Type;
@@ -16,6 +21,17 @@ export const HostStatus = Schema.Union([
     logicalCpuCount: PositiveInt,
     // Occupied is total minus free, including reclaimable memory.
     occupiedMemoryBytes: NonNegativeInt,
+    availableMemoryBytes: Schema.optional(NonNegativeInt),
+    availableStorageBytes: Schema.optional(
+      NonNegativeInt.check(Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+    ),
+    totalStorageBytes: Schema.optional(
+      PositiveInt.check(Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+    ),
+    storageMountPoint: Schema.optional(Schema.String.check(Schema.isPattern(/^\//))),
+    swapIoBytesPerSecond: Schema.optional(
+      Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+    ),
     totalMemoryBytes: PositiveInt,
     sampledAt: IsoDateTime,
   }),
@@ -28,6 +44,9 @@ export const HostStatus = Schema.Union([
       "invalid_response",
       "stale",
     ]),
+    diagnostic: ForwardCompatibleOptional(
+      Schema.Literals(["collector_disconnected", "sample_expired", "upstream_failure"]),
+    ),
   }),
 ]);
 export type HostStatus = typeof HostStatus.Type;

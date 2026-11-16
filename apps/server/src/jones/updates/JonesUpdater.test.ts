@@ -1,0 +1,1617 @@
+import { describe, expect, it, vi } from "vite-plus/test";
+import { EnvironmentId, JonesUpdateState } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import type {
+  JonesActionsCandidate,
+  JonesActionsCheckResult,
+} from "@t3tools/shared/jones/jonesActions";
+import {
+  JonesUpdater,
+  readCurrentJonesBuildStartedAt,
+  type JonesUpdaterHost,
+  type JonesInstallBeforeDispatchRefusal,
+} from "./JonesUpdater.ts";
+import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
+
+const candidate: JonesActionsCandidate = {
+  schema: 1,
+  repository: "Jones-Systems/Jones-Code",
+  source: "b".repeat(40),
+  tree: "c".repeat(40),
+  installedSource: "a".repeat(40),
+  workflow: ".github/workflows/artifact-cli-linux.yml",
+  workflowId: 1,
+  runId: 2,
+  runAttempt: 1,
+  ciRunId: 3,
+  artifactId: 4,
+  artifactName: "fixture",
+  artifactDigest: `sha256:${"d".repeat(64)}`,
+  artifactBytes: 10,
+  expiresAt: "2099-01-01T00:00:00Z",
+  version: "0.0.0-preview.20261002.2.1",
+  platform: "linux",
+  architecture: "x64",
+};
+function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
+  const effects: string[] = [];
+  let available = candidate;
+  let buildStartedAt: string | undefined;
+  let checkResult: JonesActionsCheckResult | undefined;
+  const host: JonesUpdaterHost = {
+    initialState: {
+      source: "jones-actions",
+      channel: "jones-main",
+      phase: "no-new",
+      environmentId: EnvironmentId.make("fixture"),
+      currentVersion: "0.0.0-preview.20261002.1",
+      capability: { check: true, download: true, install: true },
+    },
+    installedSource: async () => "a".repeat(40),
+    platform: "linux",
+    architecture: "x64",
+    prepare: async () => {
+      effects.push("stage");
+      return {
+        stagedHandle: "fixed-handle",
+        version: candidate.version,
+        payloadSha256: "e".repeat(64),
+      };
+    },
+    install: async () => {
+      effects.push("install");
+    },
+  };
+  const updater = new JonesUpdater(
+    { ...host, ...overrides },
+    {
+      check: async () =>
+        checkResult ?? {
+          state: "available",
+          candidate: available,
+          ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
+        },
+    },
+  );
+  return {
+    updater,
+    effects,
+    setCheckResult: (value: JonesActionsCheckResult) => {
+      checkResult = value;
+    },
+    setBuildStartedAt: (value: string | undefined) => {
+      buildStartedAt = value;
+    },
+    newer: () => {
+      available = { ...candidate, artifactId: 5, source: "f".repeat(40) };
+    },
+  };
+}
+describe("failed native attempt settlement", () => {
+  const terminal = {
+    status: "failed" as const,
+    id: "11111111-1111-4111-8111-111111111111",
+    fromVersion: "0.0.0-preview.20261002.1",
+    targetVersion: candidate.version,
+    reason: "launcher-restarted",
+  };
+
+  it.each(["launcher-recorded", "legacy-reconciled"] as const)(
+    "shows a %s no-effect failure without rewriting its blocked outcome",
+    (settlement) => {
+      const f = fixture({
+        startupOutcome: () => ({ ...terminal, settlement, cause: "backup refused" }),
+      });
+      f.updater.setPolicy({ role: "follower", leaderSource: null });
+      expect(f.updater.snapshot()).toMatchObject({
+        updateId: terminal.id,
+        phase: "error",
+        settlement,
+        cause: "backup refused",
+        message: "Update did not start: backup refused. Nothing changed.",
+        outcome: { status: "blocked", reason: "launcher-restarted" },
+      });
+      expect(f.effects).toEqual([]);
+    },
+  );
+
+  it("keeps a failed attempt without proof unresolved", () => {
+    const f = fixture({ startupOutcome: () => terminal });
+    expect(f.updater.snapshot()).toMatchObject({
+      updateId: terminal.id,
+      settlement: "none",
+      message: "Previous attempt needs reconciliation",
+      outcome: { status: "blocked" },
+    });
+  });
+
+  it("retains a startup refusal through follower policy changes and later settlement", () => {
+    let noEffectProved = false;
+    const publications: JonesUpdateState[] = [];
+    const f = fixture({
+      initialState: {
+        ...fixture().updater.snapshot(),
+        phase: "error",
+        message: "Native installation requires reconciliation.",
+      },
+      startupOutcome: () => ({
+        ...terminal,
+        settlement: noEffectProved ? "legacy-reconciled" : "none",
+        cause: "backup refused",
+      }),
+      stateChanged: (state) => publications.push(state),
+    });
+    expect(f.updater.setPolicy({ role: "follower", leaderSource: null })).toMatchObject({
+      phase: "error",
+      updateId: terminal.id,
+      settlement: "none",
+      message: "Previous attempt needs reconciliation",
+      outcome: { status: "blocked", reason: "launcher-restarted" },
+      policy: { role: "follower", leaderSource: null },
+    });
+    noEffectProved = true;
+    expect(f.updater.refreshStartupOutcome()).toMatchObject({
+      phase: "error",
+      updateId: terminal.id,
+      settlement: "legacy-reconciled",
+      cause: "backup refused",
+      message: "Update did not start: backup refused. Nothing changed.",
+      outcome: { status: "blocked", reason: "launcher-restarted" },
+    });
+    f.updater.setPolicy({
+      role: "follower",
+      leaderSource: candidate.source,
+      leaderTree: candidate.tree,
+    });
+    const waiting = f.updater.setPolicy({ role: "follower", leaderSource: null });
+    expect(waiting).toMatchObject({
+      phase: "error",
+      settlement: "legacy-reconciled",
+      message: "Update did not start: backup refused. Nothing changed.",
+      policy: { role: "follower", leaderSource: null },
+    });
+    expect(publications.at(-1)).toEqual(waiting);
+    expect(f.effects).toEqual([]);
+  });
+});
+
+describe("installed Jones build time", () => {
+  const version = "0.0.45-preview.20261020.42.1";
+  const startedAt = "2026-10-20T21:13:43Z";
+  it.each([
+    { metadata: { version, jonesBuildStartedAt: startedAt }, expected: startedAt },
+    { metadata: { version }, expected: undefined },
+    { metadata: { version, jonesBuildStartedAt: "invalid" }, expected: undefined },
+    { metadata: { version: "another-build", jonesBuildStartedAt: startedAt }, expected: undefined },
+    { metadata: { jonesBuildStartedAt: startedAt }, expected: undefined },
+  ])(
+    "pairs installed time only with the exact current version: $metadata",
+    ({ metadata, expected }) => {
+      expect(readCurrentJonesBuildStartedAt(metadata, version)).toBe(expected);
+    },
+  );
+});
+
+const compiledDecodeSync1 = Schema.decodeSync(JonesUpdateState);
+
+describe("host-owned Jones updater", () => {
+  it.each([undefined, { pendingUpstream: [], pendingJones: [122, 123] }])(
+    "shows only the offered candidate's migration plan: %j",
+    async (migrationPlan) => {
+      const initialState = fixture().updater.snapshot();
+      const previousPlan = { pendingUpstream: [64, 65], pendingJones: [121] };
+      const f = fixture({
+        initialState: { ...initialState, migrationPlan: previousPlan },
+        startupOutcome: () => ({
+          id: "previous-update",
+          status: "committed",
+          fromVersion: "previous-version",
+          targetVersion: initialState.currentVersion!,
+        }),
+        prepare: async (_candidate, options) => {
+          expect(f.updater.snapshot()).not.toHaveProperty("migrationPlan");
+          options.onVerifying();
+          expect(f.updater.snapshot()).not.toHaveProperty("migrationPlan");
+          return {
+            stagedHandle: "fixed-handle",
+            version: candidate.version,
+            payloadSha256: "e".repeat(64),
+            ...(migrationPlan === undefined ? {} : { migrationPlan }),
+          };
+        },
+      });
+      const offered = await f.updater.check();
+      expect(offered).not.toHaveProperty("migrationPlan");
+      expect(offered).toMatchObject({
+        updateId: "previous-update",
+        outcome: { status: "committed", targetVersion: initialState.currentVersion },
+      });
+      const staged = await f.updater.download({
+        artifactId: candidate.artifactId,
+        sourceSha: candidate.source,
+      });
+      expect(staged.phase).toBe("staged");
+      expect(staged.migrationPlan).toEqual(migrationPlan);
+      if (migrationPlan === undefined) expect(staged).not.toHaveProperty("migrationPlan");
+      f.newer();
+      const checked = await f.updater.check();
+      expect(checked.provenance?.sourceSha).toBe(candidate.source);
+      expect(checked.migrationPlan).toEqual(migrationPlan);
+    },
+  );
+
+  it("carries candidate time through download and keeps the staged time across later checks", async () => {
+    const f = fixture();
+    const buildStartedAt = "2026-10-20T21:13:43Z";
+    f.setBuildStartedAt(buildStartedAt);
+    expect((await f.updater.check()).provenance?.buildStartedAt).toBe(buildStartedAt);
+    expect(
+      (await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source }))
+        .provenance?.buildStartedAt,
+    ).toBe(buildStartedAt);
+    f.newer();
+    f.setBuildStartedAt("2026-10-20T22:13:43Z");
+    expect((await f.updater.check()).provenance?.buildStartedAt).toBe(buildStartedAt);
+    expect(candidate).not.toHaveProperty("buildStartedAt");
+  });
+  it("clears an offered time when a subsequent candidate has no recorded time", async () => {
+    const f = fixture();
+    f.setBuildStartedAt("2026-10-20T21:13:43Z");
+    await f.updater.check();
+    f.newer();
+    f.setBuildStartedAt(undefined);
+    expect((await f.updater.check()).provenance?.buildStartedAt).toBeUndefined();
+    expect(
+      (await f.updater.download({ artifactId: 5, sourceSha: "f".repeat(40) })).provenance
+        ?.buildStartedAt,
+    ).toBeUndefined();
+  });
+  it("does not invent a candidate time for a restored staged selection", async () => {
+    const before = fixture();
+    await before.updater.check();
+    const restored = await before.updater.download({
+      artifactId: candidate.artifactId,
+      sourceSha: candidate.source,
+    });
+    const f = fixture({ initialState: restored });
+    f.setBuildStartedAt("2026-10-20T21:13:43Z");
+    expect((await f.updater.check()).provenance?.buildStartedAt).toBeUndefined();
+    expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+  });
+
+  it("stages only the pinned source and retains a conflicting existing handle", async () => {
+    const f = fixture();
+    const wrong = await f.updater.stageExact("f".repeat(40));
+    expect(wrong.stagedHandle).toBeUndefined();
+    expect(f.effects).toEqual([]);
+    expect((await f.updater.stageExact(candidate.source)).stagedHandle).toBe("fixed-handle");
+    f.newer();
+    expect((await f.updater.stageExact("f".repeat(40))).phase).toBe("blocked");
+    expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+    expect(f.effects).toEqual(["stage"]);
+  });
+  it("decodes older update state without inventing installed source identity", () => {
+    const decoded = compiledDecodeSync1(fixture().updater.snapshot());
+    expect(decoded.installedSource).toBeUndefined();
+  });
+  it("keeps authenticated installed source separate from offered and staged candidates", async () => {
+    const installedSource = {
+      repository: "Jones-Systems/Jones-Code" as const,
+      sha: "a".repeat(40),
+      tree: "9".repeat(40),
+    };
+    const original = fixture().updater.snapshot();
+    const f = fixture({ initialState: { ...original, installedSource } });
+    expect(compiledDecodeSync1(f.updater.snapshot()).installedSource).toEqual(installedSource);
+    await f.updater.check();
+    expect(f.updater.snapshot().installedSource).toEqual(installedSource);
+    expect(f.updater.snapshot().provenance?.sourceSha).toBe(candidate.source);
+    await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+    f.newer();
+    await f.updater.check();
+    expect(f.updater.snapshot().installedSource).toEqual(installedSource);
+    expect(f.updater.snapshot().provenance?.sourceSha).toBe(candidate.source);
+  });
+  it("Download stages without invoking install and a later check retains the fixed handle", async () => {
+    const f = fixture();
+    await f.updater.check();
+    const staged = await f.updater.download({
+      artifactId: candidate.artifactId,
+      sourceSha: candidate.source,
+    });
+    expect(staged.phase).toBe("staged");
+    expect(f.effects).toEqual(["stage"]);
+    f.newer();
+    const checked = await f.updater.check();
+    expect(checked.stagedHandle).toBe("fixed-handle");
+    expect(checked.provenance?.sourceSha).toBe(candidate.source);
+    expect(checked.phase).toBe("staged");
+  });
+  it("refuses stale selection and wrong environment/version/handle without native effects", async () => {
+    const f = fixture();
+    await f.updater.check();
+    await f.updater.download({ artifactId: 99, sourceSha: candidate.source });
+    expect(f.effects).toEqual([]);
+    await f.updater.download({ artifactId: 4, sourceSha: candidate.source });
+    const base = {
+      stagedHandle: "fixed-handle",
+      environmentId: EnvironmentId.make("fixture"),
+      currentVersion: "0.0.0-preview.20261002.1",
+    };
+    for (const patch of [
+      { stagedHandle: "other" },
+      { environmentId: EnvironmentId.make("other") },
+      { currentVersion: "1.2.3" },
+    ]) {
+      expect((await f.updater.install({ ...base, ...patch })).phase).toBe("blocked");
+    }
+    expect(f.effects).toEqual(["stage"]);
+    await f.updater.install(base);
+    expect(f.effects).toEqual(["stage", "install"]);
+  });
+  it("notifies subscriptions on a state transition and cancels idle observers", async () => {
+    const f = fixture();
+    const observed = f.updater.observe(f.updater.snapshot().revision);
+    await f.updater.check();
+    expect((await observed).phase).toBe("checking");
+    const abort = new AbortController();
+    const cancelled = f.updater.observe(f.updater.snapshot().revision, abort.signal);
+    abort.abort();
+    await expect(cancelled).rejects.toThrow("closed");
+  });
+  it("serializes a check and refuses overlapping downloads", async () => {
+    const f = fixture();
+    const check = f.updater.check();
+    await f.updater.download({ artifactId: 4, sourceSha: candidate.source });
+    await check;
+    expect(f.effects).toEqual([]);
+  });
+});
+
+it("retains the native terminal outcome identity after a subsequent build check", async () => {
+  const terminal = {
+    id: "update-fixture",
+    status: "rolled-back" as const,
+    fromVersion: "0.0.0-preview.20261002.1",
+    targetVersion: candidate.version,
+    reason: "trial failed",
+  };
+  const f = fixture({ startupOutcome: () => terminal });
+  await f.updater.check();
+  expect(f.updater.snapshot()).toMatchObject({
+    updateId: terminal.id,
+    outcome: {
+      status: "rolled-back",
+      reason: "trial failed",
+      fromVersion: terminal.fromVersion,
+      targetVersion: terminal.targetVersion,
+    },
+  });
+});
+
+it("keeps the accepted native update ID while refusing a second install", async () => {
+  const effects: string[] = [];
+  const f = fixture({
+    install: async () => {
+      effects.push("install");
+      return { updateId: "native-id" };
+    },
+  });
+  await f.updater.check();
+  await f.updater.download({ artifactId: 4, sourceSha: candidate.source });
+  const input = {
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+  };
+  expect(await f.updater.install(input)).toMatchObject({
+    phase: "installing",
+    updateId: "native-id",
+  });
+  await f.updater.install(input);
+  await f.updater.check();
+  expect(f.updater.snapshot().phase).toBe("installing");
+  expect(effects).toEqual(["install"]);
+});
+
+describe("exact unaccepted stage retirement", () => {
+  it("clears only the matching slot and permits a different frozen source afterwards", async () => {
+    const retired: string[] = [];
+    const f = fixture({
+      retireStaged: async (input) => {
+        retired.push(input.stagedHandle);
+      },
+    });
+    await f.updater.stageExact(candidate.source);
+    const input = {
+      operationId: "11111111-1111-4111-8111-111111111111",
+      environmentId: "fixture",
+      currentVersion: "0.0.0-preview.20261002.1",
+      expectedInstalledSource: "a".repeat(40),
+      targetSource: candidate.source,
+      stagedHandle: "fixed-handle",
+    };
+    expect(
+      (await f.updater.retireStagedOperation({ ...input, targetSource: "f".repeat(40) })).retired,
+    ).toBe(false);
+    expect(retired).toEqual([]);
+    expect((await f.updater.retireStagedOperation(input)).retired).toBe(true);
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+    f.newer();
+    expect((await f.updater.stageExact("f".repeat(40))).provenance?.sourceSha).toBe("f".repeat(40));
+    expect(retired).toEqual(["fixed-handle"]);
+    expect(f.effects).toEqual(["stage", "stage"]);
+  });
+  it("preserves the selection when native absence cannot be proved", async () => {
+    const f = fixture({
+      retireStaged: async () => {
+        throw new Error("Native acceptance is unknown.");
+      },
+    });
+    await f.updater.stageExact(candidate.source);
+    const result = await f.updater.retireStagedOperation({
+      operationId: "11111111-1111-4111-8111-111111111111",
+      environmentId: "fixture",
+      currentVersion: "0.0.0-preview.20261002.1",
+      expectedInstalledSource: "a".repeat(40),
+      targetSource: candidate.source,
+      stagedHandle: "fixed-handle",
+    });
+    expect(result).toEqual({ retired: false, reason: "Native acceptance is unknown." });
+    expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+  });
+});
+
+describe("caller-bound exact-source replacement", () => {
+  const target = "f".repeat(40);
+  const replace = {
+    stagedHandle: "fixed-handle",
+    sourceSha: candidate.source,
+    operationId: "11111111-1111-4111-8111-111111111111",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40),
+  };
+  function replacement(overrides: Partial<JonesUpdaterHost> = {}) {
+    return fixture({
+      initialState: {
+        ...fixture().updater.snapshot(),
+        installedSource: {
+          repository: "Jones-Systems/Jones-Code",
+          sha: "a".repeat(40),
+          tree: "9".repeat(40),
+        },
+        capability: {
+          check: true,
+          download: true,
+          exactSource: true,
+          replaceStaged: true,
+          install: true,
+        },
+      },
+      retireStaged: async () => {},
+      ...overrides,
+    });
+  }
+  async function staged(overrides: Partial<JonesUpdaterHost> = {}) {
+    const f = replacement(overrides);
+    await f.updater.stageExact(candidate.source);
+    f.newer();
+    return f;
+  }
+
+  it("publishes a separate generic alternative while retaining the exact download and migrations", async () => {
+    const prepare = vi.fn(async () => ({
+      stagedHandle: "fixed-handle",
+      version: candidate.version,
+      payloadSha256: "e".repeat(64),
+      migrationPlan: { pendingUpstream: [42], pendingJones: [7] },
+    }));
+    const f = await staged({ prepare });
+    const retained = f.updater.snapshot();
+    const checked = await f.updater.check();
+    expect(checked).toMatchObject({
+      phase: "staged",
+      stagedHandle: retained.stagedHandle,
+      provenance: retained.provenance,
+      alternativeCandidate: {
+        checkedAt: checked.checkedAt,
+        provenance: { sourceSha: target, artifactId: 5 },
+      },
+    });
+    expect(checked.migrationPlan).toEqual({ pendingUpstream: [42], pendingJones: [7] });
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces a captured generic offer once through native retirement, without Install", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    const offer = (await f.updater.check()).alternativeCandidate!;
+    const selected = { ...replace, alternative: offer };
+    expect(await f.updater.stageExact(target, selected)).toMatchObject({
+      phase: "staged",
+      provenance: { sourceSha: target },
+    });
+    expect(f.updater.snapshot().alternativeCandidate).toBeUndefined();
+    await f.updater.stageExact(target, selected);
+    expect(retireStaged).toHaveBeenCalledTimes(1);
+    expect(f.effects).toEqual(["stage", "stage"]);
+  });
+
+  it("invalidates offers on failed or inapplicable discovery, policy and installed-source changes", async () => {
+    let installed = "a".repeat(40);
+    let fail = false;
+    const f = await staged({
+      installedSource: async () => {
+        if (fail) throw new Error("Synthetic discovery failure");
+        return installed;
+      },
+    });
+    const retained = f.updater.snapshot().provenance;
+    for (const result of [
+      { state: "no-new" },
+      { state: "building", retryAfterMs: 1000 },
+      { state: "blocked", reason: "unqualified", retryAfterMs: 1000 },
+    ] as const) {
+      expect((await f.updater.check()).alternativeCandidate).toBeDefined();
+      f.setCheckResult(result);
+      expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+      f.setCheckResult({
+        state: "available",
+        candidate: { ...candidate, source: target, artifactId: 5 },
+      });
+    }
+    await f.updater.check();
+    fail = true;
+    expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+    fail = false;
+    await f.updater.check();
+    installed = "9".repeat(40);
+    expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+    installed = "a".repeat(40);
+    await f.updater.check();
+    f.updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: candidate.tree });
+    expect(f.updater.snapshot().alternativeCandidate).toBeUndefined();
+    expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+    expect(f.updater.snapshot().provenance).toEqual(retained);
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("refuses changed, expired and restart-retained offers before retirement", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    const offer = (await f.updater.check()).alternativeCandidate!;
+    const selected = { ...replace, alternative: offer };
+    expect((await f.updater.stageExact("9".repeat(40), selected)).message).toContain(
+      "target changed",
+    );
+    f.setCheckResult({
+      state: "available",
+      candidate: { ...candidate, source: target, artifactId: 99 },
+    });
+    expect((await f.updater.stageExact(target, selected)).message).toContain("alternative changed");
+    const current = (await f.updater.check()).alternativeCandidate!;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2100-01-01T00:00:00Z"));
+    try {
+      expect(
+        (await f.updater.stageExact(target, { ...replace, alternative: current })).message,
+      ).toContain("expired");
+    } finally {
+      clock.mockRestore();
+    }
+    const restarted = replacement({ initialState: f.updater.snapshot(), retireStaged });
+    expect(restarted.updater.snapshot().alternativeCandidate).toBeUndefined();
+    expect(
+      (await restarted.updater.stageExact(target, { ...replace, alternative: current })).message,
+    ).toContain("changed or expired");
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+  });
+
+  it("revalidates the offer after awaiting native installed-source evidence", async () => {
+    const entered = gate(),
+      release = gate();
+    let hold = false,
+      reads = 0;
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({
+      retireStaged,
+      installedSource: async () => {
+        if (hold && ++reads === 2) {
+          entered.release();
+          await release.promise;
+        }
+        return replace.expectedInstalledSource;
+      },
+    });
+    const offer = (await f.updater.check()).alternativeCandidate!;
+    hold = true;
+    const replacing = f.updater.stageExact(target, { ...replace, alternative: offer });
+    await entered.promise;
+    f.updater.recordOperation({
+      protocol: 1,
+      operationId: "22222222-2222-4222-8222-222222222222",
+      environmentId: replace.environmentId,
+      expectedInstalledSource: replace.expectedInstalledSource,
+      action: { kind: "download-exact", targetSource: target },
+      phase: "accepted",
+      acceptedAt: "2026-10-29T00:00:00Z",
+      updatedAt: "2026-10-29T00:00:00Z",
+    });
+    release.release();
+    expect((await replacing).message).toContain("changed or expired");
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+  });
+  function gate() {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+
+  it("retires the exact old binding before staging the checked target, without Install", async () => {
+    const calls: unknown[] = [];
+    const states: JonesUpdateState[] = [];
+    const f = await staged({
+      retireStaged: async (input) => {
+        calls.push(input);
+      },
+      prepare: async (selected, { onVerifying }) => {
+        calls.push(selected.source);
+        onVerifying();
+        return {
+          stagedHandle: selected.source,
+          version: selected.version,
+          payloadSha256: "e".repeat(64),
+        };
+      },
+      stateChanged: (state) => {
+        states.push(state);
+      },
+      install: async () => {
+        throw new Error("Replacement must never install");
+      },
+    });
+    const original = { ...replace, stagedHandle: candidate.source };
+    f.updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: candidate.tree });
+    expect(await f.updater.stageExact(target, original)).toMatchObject({
+      phase: "staged",
+      stagedHandle: target,
+      provenance: { sourceSha: target },
+    });
+    expect(calls).toEqual([
+      candidate.source,
+      {
+        operationId: original.operationId,
+        environmentId: original.environmentId,
+        currentVersion: original.currentVersion,
+        expectedInstalledSource: original.expectedInstalledSource,
+        stagedHandle: original.stagedHandle,
+        targetSource: original.sourceSha,
+      },
+      target,
+    ]);
+    for (const state of states
+      .filter((s) => ["downloading", "verifying"].includes(s.phase))
+      .slice(-2))
+      expect(state.provenance?.sourceSha).toBe(target);
+    const again = await f.updater.stageExact(target, original);
+    expect(again.phase).toBe("staged");
+    expect(calls).toHaveLength(3);
+  });
+
+  it("rejects stale bindings and unsupported replacement without changing the stage", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    for (const patch of [
+      { stagedHandle: "stale" },
+      { sourceSha: "d".repeat(40) },
+      { environmentId: EnvironmentId.make("another") },
+      { currentVersion: "another" },
+      { expectedInstalledSource: "e".repeat(40) },
+    ]) {
+      const before = f.updater.snapshot();
+      expect((await f.updater.stageExact(target, { ...replace, ...patch })).phase).toBe("blocked");
+      expect(f.updater.snapshot()).toEqual(before);
+    }
+    const unsupported = fixture({
+      initialState: {
+        ...f.updater.snapshot(),
+        capability: { check: true, download: true, install: true, exactSource: true },
+      },
+      retireStaged,
+    });
+    expect((await unsupported.updater.stageExact(target, replace)).message).toContain(
+      "unavailable",
+    );
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("checks target availability before retirement and retains the old selection on refusal", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = replacement({ retireStaged });
+    await f.updater.stageExact(candidate.source);
+    expect((await f.updater.stageExact(target, replace)).message).toContain("not available");
+    expect(f.updater.snapshot()).toMatchObject({
+      phase: "staged",
+      stagedHandle: replace.stagedHandle,
+    });
+    expect(retireStaged).not.toHaveBeenCalled();
+    for (const result of [
+      { state: "building", retryAfterMs: 0 },
+      { state: "no-new" },
+      { state: "blocked", reason: "unqualified", retryAfterMs: 0 },
+    ] as const) {
+      f.setCheckResult(result);
+      expect((await f.updater.stageExact(target, replace)).message).toContain("not available");
+      expect(f.updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+    }
+    expect(retireStaged).not.toHaveBeenCalled();
+    const denied = await staged({
+      retireStaged: async () => {
+        throw new Error("Native acceptance is unknown.");
+      },
+    });
+    expect((await denied.updater.stageExact(target, replace)).message).toBe(
+      "Native acceptance is unknown.",
+    );
+    expect(denied.updater.snapshot()).toMatchObject({
+      phase: "staged",
+      stagedHandle: replace.stagedHandle,
+    });
+    expect(denied.effects).toEqual(["stage"]);
+  });
+
+  it("refuses empty-slot replacement after restart and allows fresh plain exact download", async () => {
+    const before = replacement();
+    const restarted = replacement({ initialState: before.updater.snapshot() });
+    expect((await restarted.updater.stageExact(target, replace)).message).toContain(
+      "without replacement",
+    );
+    expect(restarted.effects).toEqual([]);
+    restarted.newer();
+    expect((await restarted.updater.stageExact(target)).phase).toBe("staged");
+    expect(restarted.effects).toEqual(["stage"]);
+  });
+
+  it("rechecks the installed source before native retirement", async () => {
+    let installed = "a".repeat(40);
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ installedSource: async () => installed, retireStaged });
+    installed = "d".repeat(40);
+    expect((await f.updater.stageExact(target, replace)).message).toContain(
+      "installed source changed",
+    );
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+  });
+
+  it("preserves the old stage if follower policy changes while reading the installed source", async () => {
+    const hold = gate();
+    const entered = gate();
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    f.updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: candidate.tree });
+    // The target check reads the installed source before retirement does.
+    let reads = 0;
+    const snapshot = f.updater.snapshot();
+    const updater = new JonesUpdater(
+      {
+        initialState: snapshot,
+        platform: "linux",
+        architecture: "x64",
+        installedSource: async () => {
+          if (++reads === 2) {
+            entered.release();
+            await hold.promise;
+          }
+          return "a".repeat(40);
+        },
+        retireStaged,
+        prepare: async () => {
+          throw new Error("A changed follower must not prepare");
+        },
+        install: async () => {
+          throw new Error("Replacement must not install");
+        },
+      },
+      { check: async () => ({ state: "available", candidate: { ...candidate, source: target } }) },
+    );
+    const replacing = updater.stageExact(target, replace);
+    await entered.promise;
+    updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: "d".repeat(40) });
+    hold.release();
+    expect((await replacing).message).toContain("source tree");
+    expect(updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+    expect(retireStaged).not.toHaveBeenCalled();
+  });
+
+  it.each(["source", "tree"])(
+    "rechecks follower %s after retirement and refuses competing requests",
+    async (changed) => {
+      const hold = gate();
+      const entered = gate();
+      const retireStaged = vi.fn(async () => {
+        entered.release();
+        await hold.promise;
+      });
+      const f = await staged({ retireStaged });
+      f.updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: candidate.tree });
+      const replacing = f.updater.stageExact(target, replace);
+      await entered.promise;
+      expect((await f.updater.stageExact(target, replace)).message).toContain("still active");
+      const busy = await f.updater.stageExact(target);
+      expect(busy.phase).toBe("blocked");
+      f.updater.setPolicy({
+        role: "follower",
+        leaderSource: changed === "source" ? "d".repeat(40) : target,
+        leaderTree: changed === "tree" ? "e".repeat(40) : candidate.tree,
+      });
+      hold.release();
+      expect((await replacing).message).toContain("was retired");
+      expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+      expect(retireStaged).toHaveBeenCalledTimes(1);
+      expect(f.effects).toEqual(["stage"]);
+    },
+  );
+
+  it("explains preparation failure after retirement and requires fresh explicit recovery", async () => {
+    let fail = false;
+    const f = await staged({
+      prepare: async () => {
+        if (fail) throw new Error("Download failed.");
+        return {
+          stagedHandle: replace.stagedHandle,
+          version: candidate.version,
+          payloadSha256: "e".repeat(64),
+        };
+      },
+    });
+    fail = true;
+    expect(await f.updater.stageExact(target, replace)).toMatchObject({ phase: "blocked" });
+    expect(f.updater.snapshot().message).toContain("was retired");
+    expect(f.updater.snapshot().message).toContain("Download failed");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+    expect((await f.updater.stageExact(target, replace)).message).toContain("without replacement");
+    const restarted = replacement({ initialState: f.updater.snapshot() });
+    expect((await restarted.updater.stageExact(target, replace)).message).toContain(
+      "without replacement",
+    );
+    expect(restarted.effects).toEqual([]);
+    fail = false;
+    expect((await f.updater.stageExact(target)).phase).toBe("staged");
+  });
+});
+
+describe("exact-source staging for this host", () => {
+  // Each case scripts what the Actions check returns for the requested source.
+  function exact(
+    check: (targetSource: string | undefined) => Promise<JonesActionsCheckResult>,
+    download: (artifactId: number) => Promise<void> = async () => {},
+  ) {
+    const effects: string[] = [];
+    const checks: Array<string | undefined> = [];
+    const downloads: number[] = [];
+    const phases: string[] = [];
+    const updater = new JonesUpdater(
+      {
+        initialState: {
+          source: "jones-actions",
+          channel: "jones-main",
+          phase: "no-new",
+          environmentId: EnvironmentId.make("fixture"),
+          currentVersion: "0.0.0-preview.20261002.1",
+          capability: { check: true, download: true, install: true },
+        },
+        installedSource: async () => "a".repeat(40),
+        platform: "linux",
+        architecture: "x64",
+        prepare: async (staged, { onVerifying }) => {
+          downloads.push(staged.artifactId);
+          await download(staged.artifactId);
+          onVerifying();
+          effects.push("stage");
+          return {
+            stagedHandle: "fixed-handle",
+            version: candidate.version,
+            payloadSha256: "e".repeat(64),
+          };
+        },
+        install: async () => {
+          effects.push("install");
+        },
+        stateChanged: (state) => {
+          phases.push(state.phase);
+        },
+      },
+      {
+        check: async (input) => {
+          checks.push(input.targetSource);
+          return check(input.targetSource);
+        },
+      },
+    );
+    return { updater, effects, checks, downloads, phases };
+  }
+  function gate() {
+    const held = { release: () => {} };
+    const promise = new Promise<void>((resolve) => (held.release = resolve));
+    return { promise, release: () => held.release() };
+  }
+  /** Lets every already-queued promise continuation run. */
+  const settle = async () => {
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+  };
+  const offered = async (): Promise<JonesActionsCheckResult> => ({
+    state: "available",
+    candidate,
+  });
+
+  it("keeps exact-source staging time paired with its own check result", async () => {
+    const buildStartedAt = "2026-10-20T21:13:43Z";
+    const f = exact(async () => ({ state: "available", candidate, buildStartedAt }));
+    expect((await f.updater.stageExact(candidate.source)).provenance?.buildStartedAt).toBe(
+      buildStartedAt,
+    );
+    expect(f.downloads).toEqual([candidate.artifactId]);
+  });
+
+  it("downloads exactly the artifact its check returned for the target, no install", async () => {
+    const f = exact(offered);
+    const staged = await f.updater.stageExact(candidate.source);
+    expect(f.checks).toEqual([candidate.source]);
+    expect(f.downloads).toEqual([candidate.artifactId]);
+    expect(staged).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: candidate.source, artifactId: candidate.artifactId },
+    });
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("never downloads a build whose source differs from the target", async () => {
+    const other = { ...candidate, artifactId: 9, source: "f".repeat(40) };
+    const f = exact(async () => ({ state: "available", candidate: other }));
+    const result = await f.updater.stageExact(candidate.source);
+    expect(result.stagedHandle).toBeUndefined();
+    expect(result.phase).toBe("available");
+    expect(result.message).toContain("not available from the current check");
+    expect(f.downloads).toEqual([]);
+    expect(f.effects).toEqual([]);
+  });
+
+  it("refuses to start a check or stage while a download owns the host", async () => {
+    const hold = gate();
+    const f = exact(offered, () => hold.promise);
+    await f.updater.check();
+    const downloading = f.updater.download({
+      artifactId: candidate.artifactId,
+      sourceSha: candidate.source,
+    });
+    await settle();
+    const result = await f.updater.stageExact(candidate.source);
+    expect(result.phase).toBe("downloading");
+    expect(f.checks).toEqual([undefined]);
+    expect(f.downloads).toEqual([candidate.artifactId]);
+    hold.release();
+    expect((await downloading).phase).toBe("staged");
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("waits for an in-flight latest-main check, then stages only its own target run", async () => {
+    const hold = gate();
+    const latest = { ...candidate, artifactId: 77 };
+    const f = exact(async (target) => {
+      if (target === undefined) {
+        await hold.promise;
+        return { state: "available", candidate: latest };
+      }
+      return { state: "available", candidate };
+    });
+    const background = f.updater.check();
+    await settle();
+    const staging = f.updater.stageExact(candidate.source);
+    await settle();
+    // The exact request never reads the running latest-main check and has not started its own.
+    expect(f.checks).toEqual([undefined]);
+    hold.release();
+    const staged = await staging;
+    await background;
+    expect(f.checks).toEqual([undefined, candidate.source]);
+    expect(f.downloads).toEqual([candidate.artifactId]);
+    expect(staged).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: candidate.source, artifactId: candidate.artifactId },
+    });
+  });
+
+  it("never stages an in-flight run's candidate when the target's own run differs", async () => {
+    for (const own of [
+      { state: "available", candidate: { ...candidate, artifactId: 9, source: "f".repeat(40) } },
+      { state: "no-new" },
+      { state: "blocked", reason: "unqualified", retryAfterMs: 0 },
+      { state: "building", retryAfterMs: 0 },
+    ] as const) {
+      const hold = gate();
+      // The latest-main run offers the target's own source; the target's run says otherwise.
+      const f = exact(async (target) => {
+        if (target === undefined) {
+          await hold.promise;
+          return { state: "available", candidate };
+        }
+        return own;
+      });
+      const background = f.updater.check();
+      await settle();
+      const staging = f.updater.stageExact(candidate.source);
+      hold.release();
+      const result = await staging;
+      await background;
+      expect(f.checks).toEqual([undefined, candidate.source]);
+      expect(result.stagedHandle).toBeUndefined();
+      expect(f.downloads).toEqual([]);
+      expect(f.effects).toEqual([]);
+    }
+  });
+
+  it("joins concurrent same-target checks into one run with one completed snapshot", async () => {
+    const hold = gate();
+    const f = exact(async () => {
+      await hold.promise;
+      return { state: "available", candidate };
+    });
+    const first = f.updater.check();
+    await settle();
+    const joined = [f.updater.check(), f.updater.check()];
+    await settle();
+    hold.release();
+    const results = await Promise.all([first, ...joined]);
+    expect(f.checks).toEqual([undefined]);
+    expect(results[1]).toEqual(results[0]);
+    expect(results[2]).toEqual(results[0]);
+    expect(results[0]).toMatchObject({ phase: "available" });
+    expect(f.phases.filter((phase) => phase === "available")).toHaveLength(1);
+  });
+
+  it("joins concurrent exact requests for one target into one check and one download", async () => {
+    const hold = gate();
+    const f = exact(async () => {
+      await hold.promise;
+      return { state: "available", candidate };
+    });
+    const requests = [
+      f.updater.stageExact(candidate.source),
+      f.updater.stageExact(candidate.source),
+    ];
+    await settle();
+    hold.release();
+    const results = await Promise.all(requests);
+    expect(f.checks).toEqual([candidate.source]);
+    expect(f.downloads).toEqual([candidate.artifactId]);
+    expect(f.effects).toEqual(["stage"]);
+    expect(results.map((result) => result.stagedHandle ?? result.phase)).toContain("fixed-handle");
+    expect(f.updater.snapshot()).toMatchObject({ phase: "staged", stagedHandle: "fixed-handle" });
+  });
+
+  it("sequences concurrent checks for different targets one run at a time", async () => {
+    const holds = [gate(), gate()];
+    const pending = [...holds];
+    const f = exact(async () => {
+      await pending.shift()!.promise;
+      return { state: "no-new" };
+    });
+    const first = f.updater.check();
+    await settle();
+    const second = f.updater.check("f".repeat(40));
+    const third = f.updater.check("f".repeat(40));
+    await settle();
+    expect(f.checks).toEqual([undefined]);
+    holds[0]!.release();
+    await first;
+    await settle();
+    expect(f.checks).toEqual([undefined, "f".repeat(40)]);
+    holds[1]!.release();
+    await Promise.all([second, third]);
+    expect(f.checks).toEqual([undefined, "f".repeat(40)]);
+  });
+
+  it("keeps the last settled result visible while a repeat check runs", async () => {
+    const hold = gate();
+    let calls = 0;
+    const f = exact(async () => {
+      if (calls++ === 1) await hold.promise;
+      return calls === 1 ? { state: "available", candidate } : { state: "no-new" };
+    });
+    await f.updater.check();
+    expect(f.phases).toEqual(["checking", "available"]);
+    const revision = f.updater.snapshot().revision ?? 0;
+    expect(revision).toBeGreaterThan(0);
+    const repeat = f.updater.check();
+    await settle();
+    // No transitional state: the prior result, provenance and revision stay as they were.
+    expect(f.updater.snapshot()).toMatchObject({
+      phase: "available",
+      revision,
+      provenance: { sourceSha: candidate.source },
+    });
+    expect(f.phases).toEqual(["checking", "available"]);
+    // The latch still refuses a download while the check owns the host.
+    await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+    expect(f.downloads).toEqual([]);
+    hold.release();
+    expect(await repeat).toMatchObject({ phase: "no-new", revision: revision + 1 });
+    expect(f.phases).toEqual(["checking", "available", "no-new"]);
+  });
+
+  it("starts a fresh run after a failed one instead of replaying its failure", async () => {
+    let calls = 0;
+    const f = exact(async () => {
+      if (calls++ === 0) throw new Error("Actions unavailable");
+      return { state: "available", candidate };
+    });
+    expect(await f.updater.check()).toMatchObject({
+      phase: "blocked",
+      message: "Actions unavailable",
+    });
+    expect(await f.updater.check()).toMatchObject({ phase: "available" });
+    expect(f.checks).toEqual([undefined, undefined]);
+  });
+
+  it("reports an already-running source as no-new instead of downloading", async () => {
+    const f = exact(async () => ({ state: "no-new" }));
+    const result = await f.updater.stageExact("a".repeat(40));
+    expect(result.phase).toBe("no-new");
+    expect(result.message).toBe("This host already runs the requested source.");
+    expect(f.downloads).toEqual([]);
+  });
+
+  it("surfaces an unqualified or blocked target and a check failure without staging", async () => {
+    const blocked = exact(async () => ({
+      state: "blocked",
+      reason: "unqualified",
+      retryAfterMs: 0,
+    }));
+    expect((await blocked.updater.stageExact(candidate.source)).phase).toBe("blocked");
+    const failed = exact(async () => {
+      throw new Error("Actions unavailable");
+    });
+    expect(await failed.updater.stageExact(candidate.source)).toMatchObject({
+      phase: "blocked",
+      message: "Actions unavailable",
+    });
+    expect(blocked.downloads.concat(failed.downloads)).toEqual([]);
+  });
+
+  it("is idempotent for the staged source and never replaces another staged source", async () => {
+    const f = exact(offered);
+    await f.updater.stageExact(candidate.source);
+    const checks = f.checks.length;
+    const again = await f.updater.stageExact(candidate.source);
+    expect(again).toMatchObject({ phase: "staged", stagedHandle: "fixed-handle" });
+    const refused = await f.updater.stageExact("f".repeat(40));
+    expect(refused.phase).toBe("blocked");
+    expect(refused.message).toContain(candidate.source.slice(0, 12));
+    expect(f.updater.snapshot()).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: candidate.source },
+    });
+    // Neither repeat consulted Actions or staged again.
+    expect(f.checks).toHaveLength(checks);
+    expect(f.downloads).toEqual([candidate.artifactId]);
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("keeps the staged provenance through later latest-main checks", async () => {
+    const newer = { ...candidate, artifactId: 5, source: "f".repeat(40) };
+    const f = exact(async (target) => ({
+      state: "available",
+      candidate: target === undefined ? newer : candidate,
+    }));
+    await f.updater.stageExact(candidate.source);
+    const checked = await f.updater.check();
+    expect(f.checks).toEqual([candidate.source, undefined]);
+    expect(checked).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: candidate.source, artifactId: candidate.artifactId },
+    });
+  });
+});
+
+it("waits for an in-flight check before installing and rechecks the selection", async () => {
+  let release!: (value: string) => void;
+  let hold = false;
+  const f = fixture({
+    installedSource: () =>
+      hold
+        ? new Promise<string>((resolve) => {
+            release = resolve;
+          })
+        : Promise.resolve("a".repeat(40)),
+  });
+  await f.updater.stageExact(candidate.source);
+  hold = true;
+  const check = f.updater.check();
+  const install = f.updater.install({
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+  });
+  expect(f.effects).toEqual(["stage"]);
+  release("a".repeat(40));
+  await check;
+  expect((await install).phase).toBe("installing");
+  expect(f.effects).toEqual(["stage", "install"]);
+});
+
+it.each([false, true])(
+  "publishes ordered install steps and clears its heartbeat on failure=%s",
+  async (fail) => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    const messages: string[] = [];
+    const f = fixture({
+      stateChanged: (state) => {
+        if (state.message) messages.push(state.message);
+      },
+      install: async (_input, reportStep) => {
+        for (const step of ["marking", "verifying", "preflight", "capturing", "handoff"] as const)
+          reportStep?.(step);
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        if (fail) throw new Error("synthetic definite rejection");
+      },
+    });
+    try {
+      await f.updater.stageExact(candidate.source);
+      const install = f.updater.install({
+        stagedHandle: "fixed-handle",
+        environmentId: EnvironmentId.make("fixture"),
+        currentVersion: "0.0.0-preview.20261002.1",
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(messages.slice(-6)).toEqual([
+        "Marking running threads for continuation… (0s elapsed)",
+        "Verifying the selected runtime… (0s elapsed)",
+        "Checking candidate startup readiness… (0s elapsed)",
+        "Capturing planned update continuity… (0s elapsed)",
+        "Waiting for the native launcher… (0s elapsed)",
+        "Waiting for the native launcher… (15s elapsed)",
+      ]);
+      finish();
+      expect((await install).phase).toBe(fail ? "blocked" : "installing");
+      const count = messages.length;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(messages).toHaveLength(count);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      finish?.();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("rechecks install guards after the in-flight check settles", async () => {
+  let release!: (value: string) => void;
+  let hold = false;
+  const f = fixture({
+    installedSource: () =>
+      hold
+        ? new Promise<string>((resolve) => {
+            release = resolve;
+          })
+        : Promise.resolve("a".repeat(40)),
+  });
+  await f.updater.stageExact(candidate.source);
+  hold = true;
+  const check = f.updater.check();
+  const install = f.updater.install({
+    stagedHandle: "wrong-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+  });
+  release("a".repeat(40));
+  await check;
+  expect((await install).message).toContain("does not match");
+  expect(f.effects).toEqual(["stage"]);
+});
+
+describe("follower policy on the host updater", () => {
+  const environmentId = EnvironmentId.make("fixture");
+  const currentVersion = "0.0.0-preview.20261002.1";
+  const leader = candidate.source;
+  const other = "f".repeat(40);
+  const following = (leaderSource: string) =>
+    ({ role: "follower", leaderSource, leaderTree: candidate.tree }) as const;
+  function follower(overrides: Partial<JonesUpdaterHost> = {}) {
+    const checks: Array<string | undefined> = [];
+    const installs: string[] = [];
+    let offered = candidate;
+    const updater = new JonesUpdater(
+      {
+        initialState: {
+          source: "jones-actions",
+          channel: "jones-main",
+          phase: "no-new",
+          environmentId,
+          currentVersion,
+          capability: { check: true, download: true, install: true },
+        },
+        installedSource: async () => "a".repeat(40),
+        platform: "linux",
+        architecture: "x64",
+        prepare: async () => ({
+          stagedHandle: "fixed-handle",
+          version: offered.version,
+          payloadSha256: "e".repeat(64),
+        }),
+        install: async (request) => {
+          installs.push(request.stagedHandle);
+        },
+        ...overrides,
+      },
+      {
+        check: async (input): Promise<JonesActionsCheckResult> => {
+          checks.push(input.targetSource);
+          return { state: "available", candidate: offered };
+        },
+      },
+    );
+    return {
+      updater,
+      checks,
+      installs,
+      offer: (source: string) => {
+        offered = { ...candidate, source, artifactId: candidate.artifactId + 1 };
+      },
+    };
+  }
+  const install = { stagedHandle: "fixed-handle", environmentId, currentVersion };
+
+  it("holds every manual path until the laptop reports its installed build", async () => {
+    const f = follower();
+    await f.updater.check();
+    expect(f.updater.snapshot().phase).toBe("available");
+    const held = f.updater.setPolicy({ role: "follower", leaderSource: null });
+    expect(held).toMatchObject({ phase: "no-new", policy: { leaderSource: null } });
+    expect(held.provenance).toBeUndefined();
+    expect((await f.updater.check()).message).toContain("Waiting for the laptop");
+    expect(f.checks).toEqual([undefined]);
+    const download = await f.updater.download({
+      artifactId: candidate.artifactId,
+      sourceSha: leader,
+    });
+    expect(download.phase).toBe("blocked");
+    expect(f.updater.snapshot().phase).toBe("no-new");
+    // A campaign from an older laptop app carries no source proof the host can verify.
+    const campaign = await f.updater.stageExact(leader);
+    expect(campaign.phase).toBe("blocked");
+    expect(campaign.message).toContain("predates following");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+    expect((await f.updater.install(install)).phase).toBe("blocked");
+    expect(f.installs).toEqual([]);
+  });
+
+  it("holds a leader record that predates source trees until the laptop reports again", async () => {
+    const f = follower();
+    f.updater.setPolicy({ role: "follower", leaderSource: leader });
+    expect((await f.updater.check(leader)).phase).toBe("blocked");
+    expect((await f.updater.stageExact(leader)).phase).toBe("blocked");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+  });
+
+  it("offers, stages and installs only the laptop's committed source", async () => {
+    const f = follower();
+    f.updater.setPolicy(following(leader));
+    await f.updater.check();
+    expect(f.checks).toEqual([leader]);
+    expect(f.updater.snapshot().provenance?.sourceSha).toBe(leader);
+    expect((await f.updater.stageExact(other)).message).toContain("bbbbbbb");
+    expect((await f.updater.stageExact(leader)).stagedHandle).toBe("fixed-handle");
+    expect((await f.updater.install(install)).phase).toBe("installing");
+    expect(f.installs).toEqual(["fixed-handle"]);
+  });
+
+  it("does not offer or stage the laptop's commit when the repository records another tree", async () => {
+    const f = follower();
+    f.updater.setPolicy({ role: "follower", leaderSource: leader, leaderTree: "9".repeat(40) });
+    const checked = await f.updater.check();
+    expect(checked).toMatchObject({ phase: "blocked" });
+    expect(checked.message).toContain("source tree");
+    expect(checked.provenance).toBeUndefined();
+    const staged = await f.updater.stageExact(leader);
+    expect(staged.phase).toBe("blocked");
+    expect(staged.message).toContain("source tree");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+    expect(f.installs).toEqual([]);
+  });
+
+  it("refuses a staged build whose tree the laptop's report no longer matches", async () => {
+    const f = follower();
+    f.updater.setPolicy(following(leader));
+    await f.updater.stageExact(leader);
+    f.updater.setPolicy({ role: "follower", leaderSource: leader, leaderTree: "9".repeat(40) });
+    const refused = await f.updater.install(install);
+    expect(refused).toMatchObject({ phase: "blocked" });
+    expect(refused.message).toContain("source tree");
+    expect(f.installs).toEqual([]);
+  });
+
+  it("refuses a staged build that is not the laptop's current build, even an older one", async () => {
+    const f = follower();
+    await f.updater.stageExact(leader);
+    f.updater.setPolicy(following(other));
+    expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+    for (const origin of ["manual", "fleet"] as const) {
+      const refused = await f.updater.install({ ...install, origin });
+      expect(refused).toMatchObject({ phase: "blocked" });
+      expect(refused.message).toContain("fffffff");
+    }
+    expect(f.installs).toEqual([]);
+    expect(f.updater.snapshot().phase).toBe("staged");
+  });
+
+  it("stops an unaccepted preparation when the laptop moves on, then stages its new build", async () => {
+    const signals: AbortSignal[] = [];
+    const f = follower({
+      prepare: (staged, { signal }) => {
+        signals.push(signal);
+        if (signals.length > 1)
+          return Promise.resolve({
+            stagedHandle: "fixed-handle",
+            version: staged.version,
+            payloadSha256: "e".repeat(64),
+          });
+        return new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(new Error("preparation was cancelled")), {
+            once: true,
+          }),
+        );
+      },
+    });
+    f.updater.setPolicy(following(leader));
+    const superseded = f.updater.stageExact(leader);
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    expect(f.updater.snapshot().phase).toBe("downloading");
+    f.offer(other);
+    f.updater.setPolicy(following(other));
+    expect(signals[0]?.aborted).toBe(true);
+    expect(await superseded).toMatchObject({
+      phase: "no-new",
+      message: "The laptop's installed build changed. Checking for it…",
+    });
+    expect(f.updater.snapshot().provenance).toBeUndefined();
+    expect(await f.updater.stageExact(other)).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: other },
+    });
+    expect(signals).toHaveLength(2);
+    expect(signals[1]?.aborted).toBe(false);
+  });
+
+  it("keeps the stage ready when an automatic activation is withdrawn before the handoff", async () => {
+    let withdraw = true;
+    const f = follower({
+      install: async () => {
+        if (!withdraw) return;
+        withdraw = false;
+        throw new Error("launcher not contacted", {
+          cause: new AutomaticActivationWithdrawn("Input arrived."),
+        });
+      },
+    });
+    f.updater.setPolicy(following(leader));
+    await f.updater.stageExact(leader);
+    const withdrawn = await f.updater.install({ ...install, origin: "fleet" });
+    expect(withdrawn).toMatchObject({ phase: "staged", stagedHandle: "fixed-handle" });
+    expect(withdrawn.message).toContain("Input arrived.");
+    expect(withdrawn.outcome).toBeUndefined();
+    expect((await f.updater.install(install)).phase).toBe("installing");
+  });
+});
+
+it("publishes bounded discovery classification without claiming an exhaustive check", async () => {
+  const f = fixture();
+  const classification = {
+    kind: "incomplete-discovery" as const,
+    checkedAt: "2026-10-27T00:00:00Z",
+    pendingCount: 0,
+    failedQualificationCount: 0,
+    discovery: {
+      termination: "window-ended" as const,
+      bounded: false,
+      unresolvedLimits: ["producer-pages" as const],
+    },
+  };
+  f.setCheckResult({ state: "no-new", classification });
+  expect((await f.updater.check()).checkClassification).toEqual(classification);
+});
+
+it("blocks new work while an earlier job's exit is unproved and releases only that hold", async () => {
+  const f = fixture();
+  f.updater.setHeldJobs(["held-a", "held-b"]);
+  await f.updater.stageExact(candidate.source);
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  expect(f.effects).toEqual([]);
+  f.updater.releaseHeldJob("held-a");
+  expect(f.updater.admissionHeld()).toBe(true);
+  f.updater.releaseHeldJob("held-b");
+  expect(f.updater.admissionHeld()).toBe(false);
+  expect((await f.updater.check()).phase).toBe("available");
+});
+
+it("reports a typed exact refusal only before invoking the install adapter", async () => {
+  const native = vi.fn(async () => {
+    throw new Error("Synthetic lost native reply after possible dispatch.");
+  });
+  const f = fixture({ install: native });
+  await f.updater.check();
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  const proof = vi.fn<(refusal: JonesInstallBeforeDispatchRefusal) => void>();
+  const request = {
+    operationId: "11111111-1111-4111-8111-111111111111",
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40),
+    targetSource: candidate.source,
+    onBeforeDispatchRefusal: proof,
+  };
+  f.updater.setHeldJobs(["earlier-job"]);
+  await f.updater.install(request);
+  expect(proof).toHaveBeenCalledExactlyOnceWith({
+    kind: "before-dispatch",
+    operationId: request.operationId,
+    environmentId: request.environmentId,
+    currentVersion: request.currentVersion,
+    stagedHandle: request.stagedHandle,
+    expectedInstalledSource: request.expectedInstalledSource,
+    targetSource: request.targetSource,
+  });
+  expect(native).not.toHaveBeenCalled();
+  proof.mockClear();
+  f.updater.releaseHeldJob("earlier-job");
+  expect((await f.updater.install(request)).phase).toBe("blocked");
+  expect(native).toHaveBeenCalledOnce();
+  expect(proof).not.toHaveBeenCalled();
+});
+
+it("emits the exact bound refusal when its host proves preparation stopped before dispatch", async () => {
+  const f = fixture({
+    install: async (_request, _step, onPreparationRefused) => {
+      onPreparationRefused?.();
+      throw new Error("Qualified runtime payload changed.");
+    },
+  });
+  await f.updater.check();
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  const proof = vi.fn<(refusal: JonesInstallBeforeDispatchRefusal) => void>();
+  const request = {
+    operationId: "11111111-1111-4111-8111-111111111111",
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40),
+    targetSource: candidate.source,
+    onBeforeDispatchRefusal: proof,
+  };
+  expect((await f.updater.install(request)).message).toContain(
+    "Qualified runtime payload changed.",
+  );
+  expect(proof).toHaveBeenCalledExactlyOnceWith({
+    kind: "before-dispatch",
+    operationId: request.operationId,
+    stagedHandle: request.stagedHandle,
+    environmentId: request.environmentId,
+    currentVersion: request.currentVersion,
+    expectedInstalledSource: request.expectedInstalledSource,
+    targetSource: request.targetSource,
+  });
+});

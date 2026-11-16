@@ -1,34 +1,35 @@
 import type { HostStatus, HostStatusSnapshot } from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
+export { fetchHostStatus } from "./jones/hostStatus/state";
 
-import { PrimaryEnvironmentHttpClient, layer } from "./environments/primary/httpClient";
-import { primaryEnvironmentHttpLayer } from "./environments/primary/httpLayer";
-
-export const HOST_STATUS_NAMES = { vps: "VPS", test: "Test", mini: "Mini", home: "Home" } as const;
+export const HOST_STATUS_NAMES = {
+  vps: "VPS",
+  test: "Test",
+  mini: "Mini",
+  home: "Laptop",
+} as const;
 export const HOST_STATUS_IDS = ["vps", "test", "mini", "home"] as const;
 
-const hostStatusRequest = PrimaryEnvironmentHttpClient.pipe(
-  Effect.flatMap((client) => client.hostStatus.snapshot({ headers: {} })),
-  Effect.timeout("8 seconds"),
-);
-
-export function fetchHostStatus(signal: AbortSignal): Promise<HostStatusSnapshot> {
-  // Retain RequestInit alongside the client so browser cookie credentials reach the request.
-  return Effect.runPromise(
-    hostStatusRequest.pipe(
-      Effect.provide(layer.pipe(Layer.provideMerge(primaryEnvironmentHttpLayer))),
-    ),
-    { signal },
-  );
-}
-
 const HOST_STATUS_MAX_AGE_MS = 30_000;
+const HOST_STATUS_MAX_FUTURE_SKEW_MS = 5_000;
+// oxlint-disable-next-line t3code/no-em-dash-copy -- Owner-approved missing-reading symbol, not prose punctuation.
+const UNAVAILABLE_READING = "—";
+
+function utilizationHealth(percent: number) {
+  return percent > 90
+    ? "critical"
+    : percent > 75
+      ? "elevated"
+      : percent >= 50
+        ? "warning"
+        : "healthy";
+}
 
 function freshHostStatus(host: HostStatus, now: number): HostStatus {
   if (host.status === "unavailable") return host;
   const age = now - Date.parse(host.sampledAt);
-  return !Number.isFinite(age) || age < 0 || age >= HOST_STATUS_MAX_AGE_MS
+  return !Number.isFinite(age) ||
+    age < -HOST_STATUS_MAX_FUTURE_SKEW_MS ||
+    age >= HOST_STATUS_MAX_AGE_MS
     ? { id: host.id, status: "unavailable", reason: "stale" }
     : host;
 }
@@ -44,78 +45,170 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
           invalid_response: "Invalid host status response",
           stale: "Host status sample is stale",
         }[host.reason];
-    return { cpu: "—", ram: "—", health: "unavailable", detail: reason } as const;
+    const diagnosis =
+      host?.reason === "stale" && host.diagnostic === "collector_disconnected"
+        ? [
+            "Host status collector is disconnected",
+            "Check the collector connection to the Netdata parent",
+          ]
+        : host?.reason === "stale" && host.diagnostic === "sample_expired"
+          ? ["Host status sample has expired", "Wait for a recent collector sample"]
+          : host?.reason === "upstream_unavailable" && host.diagnostic === "upstream_failure"
+            ? [reason, "Check the host status source connection"]
+            : undefined;
+    const tooltipLines = diagnosis
+      ? [...diagnosis, "Retries every 10 seconds while visible"]
+      : [reason];
+    return {
+      cpu: UNAVAILABLE_READING,
+      ram: UNAVAILABLE_READING,
+      cpuHealth: "unavailable",
+      ramHealth: "unavailable",
+      health: "unavailable",
+      detail: tooltipLines.join(". "),
+      tooltipLines,
+    } as const;
   }
+  const cpuHealth = utilizationHealth(host.cpuUsagePercent);
+  const cpu = `${Math.round(host.cpuUsagePercent)}%`;
+  const availableMemoryBytes = host.availableMemoryBytes;
+  const formatGiB = (bytes: number) => `${Number((bytes / 1024 ** 3).toFixed(1))} GiB`;
+  const storageLabel =
+    host.storageMountPoint &&
+    host.storageMountPoint !== "/" &&
+    host.storageMountPoint !== "/System/Volumes/Data"
+      ? `Storage (${host.storageMountPoint})`
+      : "Storage";
+  const tooltipLines = [
+    `CPU ${cpu} of total cores`,
+    `RAM ${availableMemoryBytes === undefined ? "unavailable" : `${formatGiB(availableMemoryBytes)} available of ${formatGiB(host.totalMemoryBytes)}`}`,
+    ...(host.id === "mini" || host.id === "home"
+      ? [
+          `Swap I/O ${host.swapIoBytesPerSecond === undefined ? "unavailable" : `${(host.swapIoBytesPerSecond / 1024 ** 2).toFixed(1)} MiB/s`}`,
+        ]
+      : []),
+    `${storageLabel} ${host.availableStorageBytes === undefined || host.totalStorageBytes === undefined ? "unavailable" : `${formatGiB(host.availableStorageBytes)} free of ${formatGiB(host.totalStorageBytes)}`}`,
+  ];
+  if (host.id === "mini" || host.id === "home") {
+    const swap = host.swapIoBytesPerSecond;
+    const swapMiB = swap === undefined ? undefined : swap / 1024 ** 2;
+    const ramHealth = swapMiB === undefined ? "unavailable" : swapMiB > 10 ? "warning" : "healthy";
+    const ram = swapMiB === undefined ? UNAVAILABLE_READING : `${swapMiB.toFixed(1)} mb/s`;
+    const health = cpuHealth === "healthy" && ramHealth === "warning" ? "warning" : cpuHealth;
+    return {
+      health,
+      cpuHealth,
+      ramHealth,
+      cpu,
+      ram,
+      detail: tooltipLines.join(". "),
+      tooltipLines,
+    } as const;
+  }
+  const ramHealth =
+    availableMemoryBytes === undefined
+      ? "unavailable"
+      : utilizationHealth(100 * (1 - availableMemoryBytes / host.totalMemoryBytes));
+  const ram =
+    availableMemoryBytes === undefined
+      ? UNAVAILABLE_READING
+      : String(Math.round(availableMemoryBytes / 1024 ** 3));
   const health =
-    host.cpuUsagePercent >= 95 ? "critical" : host.cpuUsagePercent >= 80 ? "warning" : "healthy";
-  const format = (value: number) => value.toFixed(1).replace(/\.0$/, "");
-  const cpu = `${format(host.cpuUsagePercent)}%`;
-  const ram = `${format(host.occupiedMemoryBytes / 1024 ** 3)}/${format(host.totalMemoryBytes / 1024 ** 3)} GiB`;
+    availableMemoryBytes === undefined
+      ? cpuHealth
+      : utilizationHealth(
+          Math.max(host.cpuUsagePercent, 100 * (1 - availableMemoryBytes / host.totalMemoryBytes)),
+        );
   return {
     health,
+    cpuHealth,
+    ramHealth,
     cpu,
     ram,
-    detail: `CPU ${cpu}. Occupied RAM ${ram}; includes reclaimable cache, not memory pressure. Color reflects CPU utilization only.`,
+    detail: tooltipLines.join(". "),
+    tooltipLines,
   } as const;
+}
+
+export interface HostStatusCache {
+  snapshot: HostStatusSnapshot | null;
+  settledAt: number;
 }
 
 export function observeHostStatus(
   visibility: Pick<Document, "visibilityState" | "addEventListener" | "removeEventListener">,
   receive: (snapshot: HostStatusSnapshot | null) => void,
-  request = fetchHostStatus,
+  request: (signal: AbortSignal) => Promise<HostStatusSnapshot>,
+  cache: HostStatusCache = { snapshot: null, settledAt: -Infinity },
 ) {
   let disposed = false;
   let pending = false;
   const abort = new AbortController();
+  let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   const clearExpiry = () => {
     clearTimeout(expiryTimer);
     expiryTimer = undefined;
   };
-  const publish = (snapshot: HostStatusSnapshot) => {
+  const publish = (snapshot: HostStatusSnapshot | null) => {
     clearExpiry();
+    if (snapshot === null) {
+      cache.snapshot = null;
+      receive(null);
+      return;
+    }
     const now = Date.now();
     const hosts = snapshot.hosts.map((host) => freshHostStatus(host, now));
-    receive({ ...snapshot, hosts });
+    cache.snapshot = { ...snapshot, hosts };
+    receive(cache.snapshot);
     const deadlines = hosts.flatMap((host) =>
       host.status === "available" ? [Date.parse(host.sampledAt) + HOST_STATUS_MAX_AGE_MS] : [],
     );
     if (deadlines.length > 0) {
       expiryTimer = setTimeout(
         () => {
-          if (!disposed && visibility.visibilityState === "visible")
-            publish({ ...snapshot, hosts });
+          if (!disposed) publish({ ...snapshot, hosts });
         },
         Math.min(...deadlines) - now,
       );
     }
+  };
+  const schedule = () => {
+    clearTimeout(pollTimer);
+    if (disposed || pending || visibility.visibilityState !== "visible") return;
+    const delay = cache.settledAt + 10_000 - Date.now();
+    if (delay <= 0) void refresh();
+    else pollTimer = setTimeout(() => void refresh(), delay);
   };
   const refresh = async () => {
     if (disposed || pending || visibility.visibilityState !== "visible") return;
     pending = true;
     try {
       const snapshot = await request(abort.signal);
-      if (!disposed && visibility.visibilityState === "visible") publish(snapshot);
+      if (!disposed) {
+        cache.settledAt = Date.now();
+        publish(snapshot);
+      }
     } catch {
       if (!disposed) {
-        clearExpiry();
-        receive(null);
+        cache.settledAt = Date.now();
+        publish(cache.snapshot);
       }
     } finally {
       pending = false;
+      schedule();
     }
   };
   const onVisibility = () => {
-    clearExpiry();
-    receive(null);
-    void refresh();
+    publish(cache.snapshot);
+    schedule();
   };
-  const timer = setInterval(() => void refresh(), 10_000);
   visibility.addEventListener("visibilitychange", onVisibility);
-  void refresh();
+  publish(cache.snapshot);
+  schedule();
   return () => {
     disposed = true;
-    clearInterval(timer);
+    clearTimeout(pollTimer);
     clearExpiry();
     visibility.removeEventListener("visibilitychange", onVisibility);
     abort.abort();

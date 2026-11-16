@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "runtime-census",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/runtime/CurrentThreadRuntimeAttachment.ts",
+    "apps/server/src/jones/runtime/RuntimeCensus.ts",
+    "apps/server/src/jones/runtime/RuntimeCensus.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/runtime/CurrentThreadRuntimeAttachment.ts"
+    }
+  ]
+}

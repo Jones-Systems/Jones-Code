@@ -1,3 +1,8 @@
+import {
+  monitorMainActivity,
+  subscribeMonitorNativeState,
+} from "../jones/threadMonitor/nativeState";
+import { makeReportLanes } from "@t3tools/client-runtime/jones/activity/report-lanes";
 import { EnvironmentRegistry } from "@t3tools/client-runtime/connection";
 import {
   EnvironmentRpcSubscriptionObserver,
@@ -40,9 +45,7 @@ function notifyRetainedScopesChanged(): void {
   for (const listener of retainedScopeListeners) {
     try {
       listener();
-    } catch {
-      // A failing observer must not corrupt retained-scope lifetime.
-    }
+    } catch {}
   }
 }
 
@@ -77,7 +80,7 @@ function resolveClientKind(): ClientActivityReportInput["clientKind"] {
   return window.desktopBridge ? "desktop-renderer" : "web";
 }
 
-export function wasRecentlyInteracted(lastInteractionAtMs: number, observedAtMs: number): boolean {
+function wasRecentlyInteracted(lastInteractionAtMs: number, observedAtMs: number): boolean {
   return (
     lastInteractionAtMs <= observedAtMs &&
     observedAtMs - lastInteractionAtMs <= RECENT_INTERACTION_WINDOW_MS
@@ -95,14 +98,17 @@ function createActivityReport(
       scopes.push(entry.scope);
     }
   }
+  const native = monitorMainActivity();
+  const visible = native?.visible ?? document.visibilityState === "visible";
+  const focused = native?.focused ?? document.hasFocus();
   return {
     environmentId,
     clientId: getClientId(),
     clientKind: resolveClientKind(),
-    visible: document.visibilityState === "visible",
-    focused: document.hasFocus(),
+    visible,
+    focused,
     recentlyInteracted: wasRecentlyInteracted(lastInteractionAtMs, observedAtMs),
-    appState: document.visibilityState === "visible" ? "active" : "background",
+    appState: visible ? "active" : "background",
     scopes,
     ttlMs: LEASE_TTL_MS,
     observedAt: DateTime.makeUnsafe(observedAtMs),
@@ -118,7 +124,8 @@ function scopeForSubscription(
   if (observation.method !== WS_METHODS.subscribeVcsStatus) {
     return null;
   }
-  const input = observation.input as { readonly cwd?: unknown };
+  const input = observation.input as { readonly cwd?: unknown; readonly includeRemote?: unknown };
+  if (input.includeRemote === false) return null;
   return typeof input.cwd === "string" ? { type: "vcs-status", cwd: input.cwd } : null;
 }
 
@@ -164,20 +171,20 @@ export function retainedBackgroundScopes(
   ).filter((scope): scope is BackgroundScope => scope !== null);
 }
 
-export const backgroundActivityObserverLayer = Layer.succeed(
+export const layerObserver = Layer.succeed(
   EnvironmentRpcSubscriptionObserver,
   EnvironmentRpcSubscriptionObserver.of({
     observe: observeBackgroundActivitySubscription,
   }),
 );
 
-export const backgroundActivityReporterLayer = Layer.effectDiscard(
+export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     if (typeof window === "undefined" || typeof document === "undefined") {
       return;
     }
 
-    const registry = yield* EnvironmentRegistry;
+    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const clock = yield* Clock.Clock;
     const reportRequests = yield* Queue.sliding<void>(1);
     const requestReport = () => Queue.offerUnsafe(reportRequests, undefined);
@@ -190,24 +197,25 @@ export const backgroundActivityReporterLayer = Layer.effectDiscard(
         requestReport();
       }
     };
+    const stopNativeActivity = subscribeMonitorNativeState(requestReport);
+    yield* Effect.addFinalizer(() => Effect.sync(stopNativeActivity));
     const passiveListenerOptions = { passive: true } as const;
 
+    const lanes = yield* makeReportLanes(
+      (environmentId: EnvironmentId, report: ClientActivityReportInput) =>
+        registry.run(environmentId, request(WS_METHODS.serverReportClientActivity, report)),
+    );
     const report = Effect.gen(function* () {
       const observedAtMs = yield* Clock.currentTimeMillis;
       const entries = yield* SubscriptionRef.get(registry.entries);
       yield* Effect.forEach(
         entries.keys(),
         (environmentId) =>
-          registry
-            .run(
-              environmentId,
-              request(
-                WS_METHODS.serverReportClientActivity,
-                createActivityReport(environmentId, lastInteractionAtMs, observedAtMs),
-              ),
-            )
-            .pipe(Effect.ignore),
-        { concurrency: "unbounded", discard: true },
+          lanes.submit(
+            environmentId,
+            createActivityReport(environmentId, lastInteractionAtMs, observedAtMs),
+          ),
+        { discard: true },
       );
     }).pipe(Effect.withSpan("web.backgroundActivity.report"));
 
@@ -238,7 +246,9 @@ export const backgroundActivityReporterLayer = Layer.effectDiscard(
     );
 
     yield* SubscriptionRef.changes(registry.entries).pipe(
-      Stream.runForEach(() => Effect.sync(requestReport)),
+      Stream.runForEach((entries) =>
+        lanes.retain(entries.keys()).pipe(Effect.andThen(Effect.sync(requestReport))),
+      ),
       Effect.forkScoped,
     );
     yield* Stream.fromQueue(reportRequests).pipe(

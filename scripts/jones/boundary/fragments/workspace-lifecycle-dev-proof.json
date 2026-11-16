@@ -1,0 +1,11 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workspace-lifecycle-dev-proof",
+  "jonesOwnedPaths": [
+    "apps/server/integration/jones-e2e/workspaceLifecycleDev.entrypoint.ts",
+    "apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs"
+  ],
+  "hookPaths": ["apps/server/src/provider/Drivers/ClaudeHome.ts"],
+  "tombstones": [],
+  "allowedImports": []
+}

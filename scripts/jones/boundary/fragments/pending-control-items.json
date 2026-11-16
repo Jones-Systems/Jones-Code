@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "pending-control-items",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
+      "to": "apps/server/src/jones/orchestration/pendingControlItems.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/threadHistoryPaging.ts",
+      "to": "apps/server/src/jones/orchestration/pendingControlItems.ts"
+    }
+  ]
+}

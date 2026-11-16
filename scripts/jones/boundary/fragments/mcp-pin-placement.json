@@ -1,0 +1,25 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "mcp-pin-placement",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/pinPlacement/pinPlacement.ts",
+    "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts",
+    "packages/shared/src/jones/pinOrder.ts"
+  ],
+  "hookPaths": ["packages/client-runtime/src/state/threadSort.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/toolkits/thread/handlers.ts",
+      "to": "apps/server/src/jones/mcp/pinPlacement/pinPlacement.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/thread/tools.ts",
+      "to": "apps/server/src/jones/mcp/pinPlacement/pinPlacement.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/state/threadSort.ts",
+      "to": "packages/shared/src/jones/pinOrder.ts"
+    }
+  ]
+}

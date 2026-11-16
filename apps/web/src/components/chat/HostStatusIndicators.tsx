@@ -1,54 +1,65 @@
-import type { HostStatusSnapshot } from "@t3tools/contracts";
+import type { EnvironmentId, HostStatusSnapshot } from "@t3tools/contracts";
 import { memo, useEffect, useState } from "react";
 
 import {
+  type HostStatusCache,
   HOST_STATUS_IDS,
   HOST_STATUS_NAMES,
+  fetchHostStatus,
   hostStatusMetrics,
   observeHostStatus,
 } from "../../hostStatus";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ResponsiveHostStatusPills } from "../../jones/hostStatus/ResponsiveHostStatusPills";
 
-const healthClasses = {
-  healthy: "border-emerald-500/60 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  warning: "border-amber-500/70 bg-amber-500/15 text-amber-800 dark:text-amber-200",
-  critical: "border-red-500/70 bg-red-500/15 text-red-700 dark:text-red-300",
-  unavailable: "border-muted-foreground/30 bg-muted text-muted-foreground",
-};
+let retained: { environmentId: EnvironmentId; cache: HostStatusCache } | null = null;
 
-export const HostStatusIndicators = memo(function HostStatusIndicators() {
-  const [snapshot, setSnapshot] = useState<HostStatusSnapshot | null>(null);
-  useEffect(() => observeHostStatus(document, setSnapshot), []);
-  return (
-    <div
-      role="group"
-      aria-label="Host status"
-      className="[-webkit-app-region:no-drag] flex min-w-0 max-w-full shrink items-center gap-2 overflow-x-auto py-1"
-    >
-      {HOST_STATUS_IDS.map((id) => {
-        const host = snapshot?.hosts.find((entry) => entry.id === id);
-        const metrics = hostStatusMetrics(host);
-        const detail = snapshot === null ? "Host status unavailable or loading" : metrics.detail;
-        const name = HOST_STATUS_NAMES[id];
-        const label = `${name}: ${detail}`;
-        return (
-          <Tooltip key={id}>
-            <TooltipTrigger
-              render={
-                <span
-                  role="img"
-                  tabIndex={0}
-                  aria-label={label}
-                  className={`inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-xs font-medium tabular-nums focus-visible:outline-2 focus-visible:outline-ring ${healthClasses[metrics.health]}`}
-                />
-              }
-            >
-              {`${name} · CPU ${metrics.cpu} · RAM ${metrics.ram}`}
-            </TooltipTrigger>
-            <TooltipPopup>{label}</TooltipPopup>
-          </Tooltip>
-        );
-      })}
-    </div>
-  );
+export function clearRetainedHostStatus(environmentId: EnvironmentId) {
+  if (retained?.environmentId === environmentId) retained = null;
+}
+
+export const HostStatusIndicators = memo(function HostStatusIndicators({
+  environmentId,
+}: {
+  environmentId: EnvironmentId;
+}) {
+  return <EnvironmentHostStatusIndicators key={environmentId} environmentId={environmentId} />;
 });
+
+function EnvironmentHostStatusIndicators({ environmentId }: { environmentId: EnvironmentId }) {
+  const [cache] = useState(() => {
+    if (retained?.environmentId !== environmentId) {
+      retained = { environmentId, cache: { snapshot: null, settledAt: -Infinity } };
+    }
+    return retained.cache;
+  });
+  const [snapshot, setSnapshot] = useState<HostStatusSnapshot | null>(() => cache.snapshot);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own host-status observation and retire callbacks when the selected environment changes.
+  useEffect(() => {
+    let active = true;
+    const stop = observeHostStatus(
+      document,
+      (snapshot) => {
+        if (active) setSnapshot(snapshot);
+      },
+      (signal) => fetchHostStatus(environmentId, signal),
+      cache,
+    );
+    return () => {
+      active = false;
+      stop();
+    };
+  }, [environmentId, cache]);
+  const hosts = HOST_STATUS_IDS.map((id) => {
+    const host = snapshot?.hosts.find((entry) => entry.id === id);
+    const metrics = hostStatusMetrics(host);
+    const detail = snapshot === null ? "Host status unavailable or loading" : metrics.detail;
+    const name = HOST_STATUS_NAMES[id];
+    return {
+      id,
+      metrics,
+      label: `${name}: ${detail}`,
+      name,
+    };
+  });
+  return <ResponsiveHostStatusPills hosts={hosts} />;
+}

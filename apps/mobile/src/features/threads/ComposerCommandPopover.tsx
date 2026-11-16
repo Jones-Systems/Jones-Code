@@ -3,7 +3,10 @@ import {
   type ProviderSkillSourceKind,
 } from "@t3tools/client-runtime/providerSkills";
 import type {
+  EnvironmentId,
+  EnvironmentMachineKind,
   PullRequestContextMetadata,
+  ScopedThreadRef,
   ServerProviderSkill,
   ServerProviderSlashCommand,
 } from "@t3tools/contracts";
@@ -11,10 +14,14 @@ import type { ComposerTriggerKind } from "@t3tools/shared/composerTrigger";
 import { memo } from "react";
 import { Pressable, ScrollView, StyleSheet, View, type ViewStyle } from "react-native";
 
-import { SymbolView, type AppSymbolName } from "../../components/AppSymbol";
-import { AppText as Text } from "../../components/AppText";
-import { GlassSurface } from "../../components/GlassSurface";
+import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
+import { AppText as Text } from "../../components/ui/AppText";
+import { ENVIRONMENT_MACHINE_SYMBOLS } from "../../components/EnvironmentMachineSymbol";
+import { GlassSurface } from "../../components/ui/GlassSurface";
 import { PierreEntryIcon } from "../../components/PierreEntryIcon";
+import { ProviderIcon } from "../../components/ProviderIcon";
+import type { ModelOption } from "../../lib/modelOptions";
+import { pullRequestStatus } from "../pull-requests/pullRequestStatus";
 export type ComposerCommandItem =
   | {
       readonly id: string;
@@ -28,6 +35,21 @@ export type ComposerCommandItem =
       readonly type: "path";
       readonly path: string;
       readonly kind: "file" | "directory";
+      readonly label: string;
+      readonly description: string;
+    }
+  | {
+      readonly id: string;
+      readonly type: "thread";
+      readonly thread: ScopedThreadRef;
+      readonly label: string;
+      readonly description: string;
+    }
+  | {
+      readonly id: string;
+      readonly type: "environment";
+      readonly environmentId: EnvironmentId;
+      readonly machine: EnvironmentMachineKind;
       readonly label: string;
       readonly description: string;
     }
@@ -49,6 +71,13 @@ export type ComposerCommandItem =
       readonly id: string;
       readonly type: "skill";
       readonly skill: ServerProviderSkill;
+      readonly label: string;
+      readonly description: string;
+    }
+  | {
+      readonly id: string;
+      readonly type: "model";
+      readonly option: ModelOption;
       readonly label: string;
       readonly description: string;
     };
@@ -91,18 +120,26 @@ const SKILL_SOURCE_SYMBOL_BY_KIND: Record<ProviderSkillSourceKind, AppSymbolName
 function itemIcon(item: ComposerCommandItem): AppSymbolName | null {
   switch (item.type) {
     case "pull-request":
-      return { ios: "arrow.triangle.pull", android: "merge" };
+      return pullRequestStatus(item.pullRequest).icon;
     case "slash-command":
     case "provider-slash-command":
       return "terminal";
     case "skill":
       return SKILL_SOURCE_SYMBOL_BY_KIND[resolveProviderSkillSourceKind(item.skill)];
     case "path":
+    case "model":
       return null;
+    case "thread":
+      return "text.bubble";
+    case "environment":
+      return ENVIRONMENT_MACHINE_SYMBOLS[item.machine];
   }
 }
 
-function groupLabel(triggerKind: ComposerTriggerKind | null): string | null {
+function groupLabel(
+  triggerKind: ComposerTriggerKind | null,
+  items: ReadonlyArray<ComposerCommandItem>,
+): string | null {
   switch (triggerKind) {
     case "pull-request":
       return "Pull requests";
@@ -111,7 +148,7 @@ function groupLabel(triggerKind: ComposerTriggerKind | null): string | null {
     case "skill":
       return "Skills";
     case "path":
-      return "Files";
+      return items.every((item) => item.type === "path") ? "Files" : "Mentions";
     default:
       return null;
   }
@@ -152,11 +189,21 @@ const CommandRow = memo(function CommandRow(props: {
     >
       {props.item.type === "path" ? (
         <PierreEntryIcon path={props.item.path} kind={props.item.kind} size={16} />
+      ) : props.item.type === "model" ? (
+        <ProviderIcon
+          iconUrl={props.item.option.providerIconUrl}
+          provider={props.item.option.providerDriver}
+          size={16}
+        />
       ) : iconName ? (
         <SymbolView
           name={iconName}
           size={14}
-          tintColorClassName={"accent-icon-subtle"}
+          tintColorClassName={
+            props.item.type === "pull-request"
+              ? pullRequestStatus(props.item.pullRequest).tint
+              : "accent-icon-subtle"
+          }
           type="monochrome"
         />
       ) : null}
@@ -182,7 +229,7 @@ const CommandRow = memo(function CommandRow(props: {
 export const ComposerCommandPopover = memo(function ComposerCommandPopover(
   props: ComposerCommandPopoverProps,
 ) {
-  const label = groupLabel(props.triggerKind);
+  const label = groupLabel(props.triggerKind, props.items);
 
   return (
     <PopoverSurface>

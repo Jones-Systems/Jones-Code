@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "apple-silicon-platforms",
+  "jonesOwnedPaths": [],
+  "hookPaths": ["scripts/build-cli-archive.ts"],
+  "tombstones": [".github/workflows/windows-tests.yml"],
+  "allowedImports": [
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/platforms/supportedTargets.ts"
+    },
+    {
+      "from": "scripts/build-cli-archive.ts",
+      "to": "scripts/jones/platforms/supportedTargets.ts"
+    }
+  ]
+}
