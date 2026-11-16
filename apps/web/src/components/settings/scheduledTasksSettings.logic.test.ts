@@ -24,6 +24,8 @@ import {
   scheduleFromDraft,
   scheduleLabel,
   taskToDraft,
+  worktreeStrategyFromDraft,
+  workspaceStrategyFromDraft,
   unbindDraftFromThread,
 } from "./scheduledTasksSettings.logic";
 
@@ -166,6 +168,30 @@ const legacyTask: ScheduledTask = {
 };
 
 describe("editing scheduled task branch settings", () => {
+  it.each([true, false])(
+    "preserves an automatic base with origin preference %s when saving",
+    (startFromOrigin) => {
+      const draft = taskToDraft({
+        ...legacyTask,
+        workspaceStrategy: { type: "worktree", startFromOrigin },
+      });
+      expect(draft.baseRef).toBe("");
+      expect(worktreeStrategyFromDraft(draft)).toEqual({ type: "worktree", startFromOrigin });
+    },
+  );
+
+  it("preserves and trims an explicitly selected base when saving", () => {
+    const draft = taskToDraft({
+      ...legacyTask,
+      workspaceStrategy: { type: "worktree", baseRef: "upstream/release", startFromOrigin: true },
+    });
+    expect(worktreeStrategyFromDraft({ ...draft, baseRef: ` ${draft.baseRef} ` })).toEqual({
+      type: "worktree",
+      baseRef: "upstream/release",
+      startFromOrigin: true,
+    });
+  });
+
   it("keeps an omitted origin flag on the local base branch", () => {
     const draft = taskToDraft(legacyTask);
     expect(draft.baseRef).toBe("release");
@@ -426,4 +452,18 @@ it("appends the server zone only to fixed-time schedule labels", () => {
   expect(scheduleLabel({ type: "fixed_time", timeOfDay: "09:00" })).toBe("Daily at 09:00");
   expect(scheduleLabel({ type: "interval", everyMs: 60_000 }, "Etc/UTC")).toBe("Every 1 min");
   expect(scheduleLabel({ type: "webhook", signature: null }, "Etc/UTC")).toBe("On webhook");
+});
+
+describe("scheduled project allocation inheritance", () => {
+  it.each<ScheduledTask["workspaceStrategy"]>([
+    { type: "auto" },
+    { type: "auto", baseRef: "release", branch: "work/automation" },
+    { type: "worktree", baseRef: "release", startFromOrigin: true },
+    { type: "existing_worktree", worktreePath: "/checkouts/explicit" },
+    { type: "root" },
+  ])("round-trips stored $type without converting explicit choices", (workspaceStrategy) => {
+    const draft = taskToDraft({ ...legacyTask, workspaceStrategy });
+    expect(draft.workspaceMode).toBe(workspaceStrategy.type);
+    expect(workspaceStrategyFromDraft(draft)).toEqual(workspaceStrategy);
+  });
 });

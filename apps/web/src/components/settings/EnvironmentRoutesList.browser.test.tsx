@@ -59,6 +59,7 @@ function routesList(routes: ReadonlyArray<ConnectionRoute>) {
   const environment: EnvironmentPresentation = {
     environmentId: ENVIRONMENT_ID,
     label: "Desk",
+    displayLabel: "Desk",
     displayUrl: null,
     relayManaged: false,
     entry,

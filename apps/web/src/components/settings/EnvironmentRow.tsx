@@ -67,6 +67,8 @@ export function EnvironmentTransportLabel(props: {
 
 export function EnvironmentRow({
   kind,
+  machineLabel,
+  iconOverride,
   label,
   subtitle,
   below,
@@ -76,6 +78,8 @@ export function EnvironmentRow({
   children,
 }: {
   readonly kind: EnvironmentMachineKind;
+  readonly machineLabel?: string | undefined;
+  readonly iconOverride?: boolean | undefined;
   readonly label: string;
   readonly subtitle: ReactNode;
   readonly below?: ReactNode;
@@ -95,6 +99,8 @@ export function EnvironmentRow({
       )}
     >
       <EnvironmentMachineIcon
+        label={machineLabel}
+        override={iconOverride}
         aria-hidden
         kind={kind}
         className={cn("size-4 text-muted-foreground", dimmed && "opacity-60")}

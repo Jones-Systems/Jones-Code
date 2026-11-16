@@ -1002,3 +1002,42 @@ describe("model selection patches at project scope", () => {
     ).toEqual({ ...saved, options });
   });
 });
+
+
+describe("composed destination resolution", () => {
+  it("accepts the Jones destination resolver in its existing fourth argument", () => {
+    const plan = planScopedSettingsPatch(
+      named,
+      environments,
+      { defaultModelSelection: { instanceId: ProviderInstanceId.make("source"), model: "source" } },
+      (_patch, destination) => ({
+        patch: {
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("destination"),
+            model: destination.label,
+          },
+        },
+      }),
+    );
+    expect(plan.unavailableReason).toBeNull();
+    expect(plan.serverWrites).toHaveLength(1);
+    expect(plan.serverWrites[0]?.patch.defaultModelSelection).toEqual({
+      instanceId: ProviderInstanceId.make("destination"),
+      model: server.label,
+    });
+    expect(plan.hasClientWrite).toBe(false);
+  });
+
+  it("retains destination refusal when device-only options occupy argument four", () => {
+    const plan = planScopedSettingsPatch(
+      named,
+      environments,
+      { defaultAutoPull: true },
+      { deviceOnly: true },
+      () => ({ refused: "The selected model destination is unavailable." }),
+    );
+    expect(plan.serverWrites).toEqual([]);
+    expect(plan.unavailableReason).toBe("The selected model destination is unavailable.");
+    expect(plan.hasClientWrite).toBe(false);
+  });
+});

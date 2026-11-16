@@ -1,4 +1,5 @@
 import { requestConfirmDialog } from "~/confirmDialog";
+import { CleanupResults } from "../../jones/storageCleanupResults/CleanupResults";
 import type {
   StorageCleanupReport,
   StorageCleanupSettings,
@@ -285,170 +286,6 @@ const COVERAGE_LABEL = {
   format_recognized: "Discard recognized format files",
 } as const;
 
-function factsWithKeys<A>(values: readonly A[], identity: (value: A) => string) {
-  const occurrences = new Map<string, number>();
-  return values.map((value) => {
-    const fact = identity(value);
-    const occurrence = occurrences.get(fact) ?? 0;
-    occurrences.set(fact, occurrence + 1);
-    return { value, key: `${fact}:${occurrence}` };
-  });
-}
-
-function lineageIdentity(lineage: Readonly<Record<string, string>>) {
-  return JSON.stringify(
-    Object.entries(lineage).sort(([left], [right]) => left.localeCompare(right)),
-  );
-}
-
-function CleanupResults({
-  report,
-  environmentLabel,
-  onRetire,
-}: {
-  report: StorageCleanupReport;
-  environmentLabel: string;
-  onRetire?: (entry: StorageCleanupReport["entries"][number]) => void;
-}) {
-  return (
-    <>
-      {report.entries.map((entry, index) => {
-        const name =
-          entry.kind === "worktree"
-            ? ((entry.threadId === null
-                ? entry.path
-                : entry.path?.split(/[\\/]/).findLast(Boolean)) ?? "Worktrees")
-            : entry.kind === "logs"
-              ? "Rotated logs"
-              : "Browser artifacts";
-        return (
-          <SettingsRow
-            key={`${entry.path ?? entry.kind}:${entry.threadId ?? index}`}
-            title={<span className="wrap-anywhere select-text">{name}</span>}
-            description={
-              <span className="block space-y-2 wrap-anywhere select-text">
-                <span className={`block ${entry.outcome === "failed" ? "text-destructive" : ""}`}>
-                  {entry.reason}
-                </span>
-                <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-border/60 pl-3">
-                  <span>Machine</span>
-                  <span className="text-foreground/80">{environmentLabel}</span>
-                  {entry.projectPath && (
-                    <>
-                      <span>Project</span>
-                      <code className="text-foreground/80">{entry.projectPath}</code>
-                    </>
-                  )}
-                  {entry.path && (
-                    <>
-                      <span>Folder</span>
-                      <code className="text-foreground/80">{entry.path}</code>
-                    </>
-                  )}
-                  {entry.threadTitle && (
-                    <>
-                      <span>Thread</span>
-                      <span>{entry.threadTitle}</span>
-                    </>
-                  )}
-                </span>
-              </span>
-            }
-            control={
-              <>
-                {onRetire &&
-                  entry.threadId &&
-                  entry.path &&
-                  entry.retirement?.fingerprint &&
-                  entry.retirement.paths.length <= 200 &&
-                  entry.retirement.reasonCodes.every((reason) =>
-                    ["unattested_ignored", "sensitive_ignored", "untracked"].includes(reason),
-                  ) &&
-                  entry.retirement.state !== "retired" && (
-                    <Button variant="outline" size="sm" onClick={() => onRetire(entry)}>
-                      Retire
-                    </Button>
-                  )}
-                {(entry.outcome === "removed" ||
-                  (entry.outcome === "kept" && entry.bytes !== null)) && (
-                  <span className="text-xs text-muted-foreground">
-                    {[
-                      entry.kind !== "worktree" && entry.files !== null
-                        ? `${entry.files.toLocaleString()} ${entry.files === 1 ? "file" : "files"}`
-                        : null,
-                      entry.bytes !== null ? formatBytes(entry.bytes) : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </span>
-                )}
-              </>
-            }
-          >
-            {entry.retirement &&
-              (entry.retirement.receiptId ||
-                entry.retirement.details.length > 0 ||
-                entry.retirement.outputObligations.length > 0) && (
-                <details className="pb-2 text-xs text-muted-foreground wrap-anywhere select-text">
-                  <summary className="cursor-pointer">Retirement details</summary>
-                  <span className="mt-1 block space-y-1">
-                    {entry.retirement.receiptId && (
-                      <span className="block">
-                        Receipt: {entry.retirement.receiptId} · {entry.retirement.state}
-                      </span>
-                    )}
-                    {factsWithKeys(entry.retirement.details, (detail) =>
-                      JSON.stringify([
-                        detail.target,
-                        detail.root,
-                        detail.reason,
-                        detail.fact,
-                        detail.missingFact,
-                        detail.nextAction,
-                        detail.lineage.map(lineageIdentity),
-                      ]),
-                    ).map(({ value: detail, key }) => (
-                      <span key={key} className="block">
-                        <code>{detail.root}</code>: {detail.fact}{" "}
-                        {detail.missingFact ? `Missing: ${detail.missingFact}. ` : ""}
-                        {detail.nextAction}
-                        {factsWithKeys(detail.lineage, lineageIdentity).map(
-                          ({ value: lineage, key }) => (
-                            <span key={key} className="block">
-                              {Object.entries(lineage)
-                                .map(([key, value]) => `${key}: ${value}`)
-                                .join(" · ")}
-                            </span>
-                          ),
-                        )}
-                      </span>
-                    ))}
-                    {entry.retirement.outputObligations.map((output) => (
-                      <span key={output.id} className="block">
-                        Output {output.id}: <code>{output.path}</code> · Owner {output.owner} ·{" "}
-                        {output.state}
-                      </span>
-                    ))}
-                  </span>
-                </details>
-              )}
-          </SettingsRow>
-        );
-      })}
-      {report.omittedCount > 0 && (
-        <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-          {environmentLabel}: {report.omittedCount.toLocaleString()} more results.
-        </p>
-      )}
-      {report.entries.length === 0 && report.omittedCount === 0 && (
-        <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-          {environmentLabel}: Nothing needed cleanup.
-        </p>
-      )}
-    </>
-  );
-}
-
 const storageCleanupReportsAtom = environmentAtomList(
   "web-storage-cleanup-reports",
   (environmentId) => serverEnvironment.storageCleanupReport({ environmentId, input: {} }),
@@ -675,25 +512,29 @@ Live consumers, tracked edits, nested repositories and other protections still h
             connectedEnvironments.length,
           )}
         >
-          {summaries.map(
-            ({ environment, label, report }) =>
-              report && (
-                <CleanupResults
-                  key={environment.environmentId}
-                  report={report}
-                  environmentLabel={label}
-                  {...(!pending &&
-                  environment.serverConfig?.environment.capabilities.settledWorktreeRetirement ===
-                    true &&
-                  state.some((e) => e.environmentId === environment.environmentId && e.allowed)
-                    ? {
-                        onRetire: (entry: StorageCleanupReport["entries"][number]) =>
-                          void retireTarget(environment.environmentId, entry),
-                      }
-                    : {})}
-                />
-              ),
-          )}
+          <CleanupResults
+            selectedEnvironmentIds={connectedEnvironments.map(({ environmentId }) => environmentId)}
+            reports={summaries.flatMap(({ environment, label, report }) =>
+              report
+                ? [
+                    {
+                      environmentId: environment.environmentId,
+                      environmentLabel: label,
+                      report,
+                      ...(!pending &&
+                      environment.serverConfig?.environment.capabilities
+                        .settledWorktreeRetirement === true &&
+                      state.some((e) => e.environmentId === environment.environmentId && e.allowed)
+                        ? {
+                            onRetire: (entry: StorageCleanupReport["entries"][number]) =>
+                              void retireTarget(environment.environmentId, entry),
+                          }
+                        : {}),
+                    },
+                  ]
+                : [],
+            )}
+          />
         </FoldedSettingsSection>
       )}
     </SettingsSection>

@@ -42,6 +42,10 @@ const task: ScheduledTask = {
   runCount: 0,
 };
 
+const inheritedTask: ScheduledTask = {
+  ...task,
+  workspaceStrategy: { type: "auto", baseRef: "release" },
+};
 // Stands in for the thread family read the editor makes when the shell lacks the bound thread.
 const threadFamilyRead = {
   snapshotSequence: 1,
@@ -59,6 +63,7 @@ const state = vi.hoisted(() => ({
   tasksLoaded: true,
   secondary: false,
   remove: vi.fn(),
+  inherited: false,
 }));
 const secondaryId = EnvironmentId.make("secondary");
 const permissions = new Map<string, Atom.Writable<boolean>>();
@@ -68,6 +73,7 @@ function setup() {
   state.tasksLoaded = true;
   state.remove.mockReset().mockResolvedValue({ _tag: "Success", value: { id: task.id } });
   state.secondary = false;
+  state.inherited = false;
   permissions.clear();
   permissions.set(environmentId, Atom.make(true));
   permissions.set(secondaryId, Atom.make(true));
@@ -147,7 +153,7 @@ vi.mock(import("../../state/query"), async (original) => ({
     data:
       request === null || request === threadFamilyRead
         ? request
-        : { tasks: state.tasksLoaded ? [task] : [] },
+        : { tasks: state.tasksLoaded ? [state.inherited ? inheritedTask : task] : [] },
     error: null,
     isPending: false,
     refresh: vi.fn(),
@@ -266,6 +272,7 @@ describe("ScheduledTasksSettings", () => {
   it("keeps an editor the user opened when the linked task loads later", async () => {
     setup();
     state.tasksLoaded = false;
+    state.inherited = false;
     await using screen = await render(<ScheduledTasksSettings taskId={task.id} />);
     await userEvent.click(page.getByRole("button", { name: "New task" }));
     const dialog = page.getByRole("dialog");
@@ -278,4 +285,31 @@ describe("ScheduledTasksSettings", () => {
     await expect.element(dialog.getByRole("heading", { name: "New task" })).toBeInTheDocument();
     await expect.element(name).toHaveValue("My draft");
   });
+});
+
+it("new tasks inherit project allocation and retain explicit checkout choices", async () => {
+  state.connected = true;
+  state.tasksLoaded = true;
+  state.inherited = false;
+  await using _screen = await render(<ScheduledTasksSettings />);
+  await userEvent.click(page.getByRole("button", { name: "New task" }));
+  const workspace = page.getByRole("dialog").getByRole("combobox", { name: "Workspace" });
+  await expect.element(workspace).toHaveTextContent("Use project allocation setting");
+  await userEvent.click(workspace);
+  await userEvent.click(page.getByRole("option", { name: "Create a new worktree" }));
+  await expect.element(workspace).toHaveTextContent("Create a new worktree");
+  await userEvent.click(workspace);
+  await userEvent.click(page.getByRole("option", { name: "Use project allocation setting" }));
+  await expect.element(workspace).toHaveTextContent("Use project allocation setting");
+});
+
+it("reopens persisted auto without converting it to an explicit worktree", async () => {
+  state.connected = true;
+  state.tasksLoaded = true;
+  state.inherited = true;
+  await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+  await expect
+    .element(page.getByRole("dialog").getByRole("combobox", { name: "Workspace" }))
+    .toHaveTextContent("Use project allocation setting");
+  state.inherited = false;
 });

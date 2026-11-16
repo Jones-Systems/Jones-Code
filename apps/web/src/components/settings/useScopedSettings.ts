@@ -1,3 +1,9 @@
+import { useEnvironmentProviders } from "../../state/environments";
+import {
+  createModelSelectionResolver,
+  modelSelectionsAreMixed,
+} from "../../jones/settings/modelSelectionCorrespondence";
+import { mergeEnvironmentSettings } from "../../hooks/useSettings";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { useEnvironmentsWithScope } from "../../state/session";
 import {
@@ -28,7 +34,6 @@ import {
   planProjectOverridesClear,
   planScopedSettingsClear,
   planScopedSettingsPatch,
-  scopedSettingsAreMixed,
   scopedSettingsSource,
   settlePendingScopedWrites,
   type ProjectOverrideEntry,
@@ -47,8 +52,16 @@ export function useScopedSettings<T = UnifiedSettings>(
 }
 
 export function useScopedSettingsMixed(keys: readonly (keyof ServerSettings)[]): boolean {
-  const { targets } = useSettingsScope();
-  return scopedSettingsAreMixed(targets, keys);
+  const context = useOptionalSettingsScope();
+  const providersByEnvironment = useEnvironmentProviders();
+  return (
+    context !== null &&
+    modelSelectionsAreMixed(
+      { representative: context.target, providersByEnvironment },
+      context.targets,
+      keys,
+    )
+  );
 }
 
 export function useScopedSettingSource(keys: readonly (keyof ServerSettings)[]) {
@@ -132,13 +145,33 @@ function useRunScopedPlan() {
 }
 
 export function useUpdateScopedSettings() {
-  const { scope, environments, deviceOnly } = useSettingsScope();
+  const { scope, environments, target, targets, deviceOnly } = useSettingsScope();
+  const providersByEnvironment = useEnvironmentProviders();
+  const settings = useMergedSettings(target?.settings ?? DEFAULT_SERVER_SETTINGS);
   const run = useRunScopedPlan();
   /** `onFailed` runs when any target rejects or drops the patch, so a draft can fall back. */
-  return (patch: ScopedSettingsPatch, options?: { readonly onFailed?: () => void }) =>
+  return (
+    patch: ScopedSettingsPatch,
+    options?: { readonly onFailed?: () => void; readonly literalModelSelections?: boolean },
+  ) =>
     run(
       environments,
-      (current) => planScopedSettingsPatch(scope, current, patch, { deviceOnly }),
+      (current) => planScopedSettingsPatch(
+        scope,
+        current,
+        patch,
+        { deviceOnly },
+        createModelSelectionResolver(
+          {
+            representative: target,
+            targets,
+            providersByEnvironment,
+            settingsForDestination: (destination) =>
+              mergeEnvironmentSettings(destination.settings, settings),
+          },
+          options,
+        ),
+      ),
       options?.onFailed,
     );
 }

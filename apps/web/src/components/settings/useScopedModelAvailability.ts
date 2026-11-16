@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 
 import { mergeEnvironmentSettings } from "../../hooks/useSettings";
+import { scopedModelDisabledReason } from "../../jones/settings/modelSelectionCorrespondence";
 import {
   getCustomModelOptionsByInstance,
   getTextGenerationModelOptionsByInstance,
@@ -22,13 +23,24 @@ export function useScopedModelDisabledReason(
   entries: readonly ProviderInstanceEntry[],
   textGeneration = false,
 ) {
-  const { targets } = useSettingsScope();
+  const { target, targets } = useSettingsScope();
   const { environments } = useEnvironments();
   const providersByEnvironment = useEnvironmentProviders();
   return (instanceId: ProviderInstanceId, model: string): string | null => {
     const sourceEntry = entries.find((entry) => entry.instanceId === instanceId);
     const shownGenerator = textGeneratorForSelection(settings, instanceId);
     for (const candidate of targets) {
+      if (target && candidate.environmentId !== target.environmentId) {
+        const reason = scopedModelDisabledReason(
+          { representative: target, providersByEnvironment },
+          candidate,
+          { instanceId, model },
+          mergeEnvironmentSettings(candidate.settings, settings),
+          textGeneration,
+        );
+        if (reason) return reason;
+        continue;
+      }
       const environment = environments.find(
         (entry) => entry.environmentId === candidate.environmentId,
       );
@@ -55,15 +67,16 @@ export function useScopedModelDisabledReason(
       const optionsForInstance = textGeneration
         ? getTextGenerationModelOptionsByInstance
         : getCustomModelOptionsByInstance;
-      const options = optionsForInstance(
+      const modelOptions = optionsForInstance(
         mergeEnvironmentSettings(candidate.settings, settings),
         providers,
       ).get(instanceId);
       if (
         !entry?.enabled ||
         !entry.isAvailable ||
+        (textGeneration && entry.snapshot.supportsTextGeneration === false) ||
         entry.driverKind !== sourceEntry?.driverKind ||
-        !options?.some((option) => option.slug === model && !option.isUnavailable)
+        !modelOptions?.some((option) => option.slug === model && !option.isUnavailable)
       ) {
         return unavailable;
       }

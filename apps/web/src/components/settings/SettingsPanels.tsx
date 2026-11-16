@@ -1,3 +1,4 @@
+import { useUiStateStore } from "../../uiStateStore";
 import { useAtomValue } from "@effect/atom-react";
 import { NotificationSettings } from "./NotificationSettings";
 import { PRIVACY_POLICY_URL } from "../../legalLinks";
@@ -22,7 +23,6 @@ import {
   MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
   type ResponseStreamingMode,
   type QuitConfirmationMode,
-  SidebarProjectSortOrder,
   ScreenReaderAnnouncements,
   ToolCallVisibility,
 } from "@t3tools/contracts/settings";
@@ -34,15 +34,24 @@ import * as Schema from "effect/Schema";
 import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
 import { AboutVersionTitle } from "./AboutVersionTitle";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
+import { DesktopBackgroundPreparationRow } from "../../jones/updates/DesktopBackgroundPreparation";
 import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
 import {
   canCheckForUpdate,
+  getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDisabledReason,
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
 } from "../../components/desktopUpdate.logic";
+import {
+  getJonesDesktopUpdateBlockedMessage,
+  installLocalDesktopUpdate,
+  downloadLocalDesktopUpdate,
+  discardLocalDesktopUpdate,
+  canDiscardLocalDesktopUpdate,
+} from "../../jones/updates/localDesktopUpdate";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { isElectron } from "../../env";
@@ -122,7 +131,6 @@ import { environmentIdsKey } from "~/state/environmentAtomList";
 import { environmentSessionStatesAtom } from "~/state/session";
 import { useCheckProviderUpdates } from "../ProviderUpdatesAction";
 import { canUpdateServer } from "../ServerUpdateAction";
-import { downloadLocalUpdate } from "../sidebar/SidebarUpdatePill";
 import { useUpdateEverythingRun } from "../sidebar/updateEverythingRun";
 import { awaitsTrackSwitch, channelSwitchLabel } from "../sidebar/updateEverything.logic";
 import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
@@ -137,12 +145,6 @@ const RESPONSE_STREAMING_MODE_DESCRIPTIONS: Record<ResponseStreamingMode, string
   paragraph: "Each paragraph or code block appears as soon as it is complete.",
 };
 
-const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string> = {
-  updated_at: msg("Last user message"),
-  created_at: msg("Created at"),
-  manual: msg("Manual"),
-};
-const isSidebarProjectSortOrder = Schema.is(SidebarProjectSortOrder);
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: msg("System default"),
@@ -162,7 +164,7 @@ const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
 };
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
-function AboutVersionSection() {
+export function AboutVersionSection() {
   const updateState = useDesktopUpdateState();
   const [switchChannel, setSwitchChannel] = useState<DesktopUpdateChannel | null>(null);
   const [isUpdateActionPending, setIsUpdateActionPending] = useState(false);
@@ -212,7 +214,23 @@ function AboutVersionSection() {
     const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
 
     if (action === "download") {
-      void downloadLocalUpdate(bridge, { notifyDownloaded: false });
+      if (isUpdateActionPending) return;
+      setIsUpdateActionPending(true);
+      void downloadLocalDesktopUpdate(bridge, updateState)
+        .then((result) => {
+          const failure = getDesktopUpdateActionError(result);
+          if (failure) throw new Error(failure);
+        })
+        .catch((error: unknown) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not download update",
+              description: error instanceof Error ? error.message : "Download failed.",
+            }),
+          );
+        })
+        .finally(() => setIsUpdateActionPending(false));
       return;
     }
 
@@ -221,12 +239,16 @@ function AboutVersionSection() {
       setIsUpdateActionPending(true);
       let confirmed = false;
       try {
-        confirmed = await ensureLocalApi().dialogs.confirm(
-          getDesktopUpdateInstallConfirmationMessage(
-            updateState ?? { availableVersion: null, downloadedVersion: null },
-          ),
-          { initialFocus: "confirm" },
-        );
+        // Native plans perform their own fresh install review.
+        confirmed =
+          bridge.installPlan !== undefined && updateState?.jones !== undefined
+            ? true
+            : await ensureLocalApi().dialogs.confirm(
+                getDesktopUpdateInstallConfirmationMessage(
+                  updateState ?? { availableVersion: null, downloadedVersion: null },
+                ),
+                { initialFocus: "confirm" },
+              );
       } catch (error) {
         setIsUpdateActionPending(false);
         toastManager.add(
@@ -242,8 +264,18 @@ function AboutVersionSection() {
         setIsUpdateActionPending(false);
         return;
       }
-      void bridge
-        .installUpdate()
+      void installLocalDesktopUpdate(bridge, updateState)
+        .then((result) => {
+          const message = getDesktopUpdateActionError(result);
+          if (!message) return;
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not install update",
+              description: message,
+            }),
+          );
+        })
         .catch((error: unknown) => {
           toastManager.add(
             stackedThreadToast({
@@ -303,10 +335,11 @@ function AboutVersionSection() {
   const buttonLabel =
     actionLabel[action] ?? statusLabel[updateState?.status ?? ""] ?? "Check for Updates";
   const description =
-    action === "download" || action === "install"
+    getJonesDesktopUpdateBlockedMessage(updateState, action) ??
+    (action === "download" || action === "install"
       ? "Update available."
       : (getDesktopUpdateDisabledReason(updateState, updatesDenial) ??
-        "Current version of the application.");
+        "Current version of the application."));
 
   return (
     <>
@@ -333,7 +366,53 @@ function AboutVersionSection() {
           </Tooltip>
         }
       />
+      {hasDesktopBridge &&
+      updateState?.jones?.stagedHandle &&
+      window.desktopBridge?.discardUpdate ? (
+        <SettingsRow
+          title="Downloaded build"
+          description="Discard it to check for another build. The running app is unaffected."
+          control={
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isUpdateActionPending || !canDiscardLocalDesktopUpdate(updateState)}
+              onClick={() => {
+                const bridge = window.desktopBridge;
+                if (!bridge || isUpdateActionPending) return;
+                setIsUpdateActionPending(true);
+                void discardLocalDesktopUpdate(bridge, updateState)
+                  .then((result) => {
+                    const failure = getDesktopUpdateActionError(result);
+                    if (failure) throw new Error(failure);
+                  })
+                  .catch((error: unknown) => {
+                    toastManager.add(
+                      stackedThreadToast({
+                        type: "error",
+                        title: "Could not discard downloaded build",
+                        description: error instanceof Error ? error.message : "Discard failed.",
+                      }),
+                    );
+                  })
+                  .finally(() => setIsUpdateActionPending(false));
+              }}
+            >
+              Discard download
+            </Button>
+          }
+        />
+      ) : null}
       {hasDesktopBridge ? (
+        <DesktopBackgroundPreparationRow preparation={updateState?.jonesPreparation} />
+      ) : null}
+      {hasDesktopBridge && updateState?.jones ? (
+        <SettingsRow
+          title="Update track"
+          description="Qualified builds from Jones Code main."
+          control={<span className="text-sm text-muted-foreground">Jones main</span>}
+        />
+      ) : hasDesktopBridge ? (
         <SettingsRow
           {...searchableSetting("update-track")}
           description={
@@ -434,6 +513,8 @@ function AboutVersionSection() {
 }
 
 export function useSettingsRestore(onRestored?: () => void) {
+  const projectOrder = useUiStateStore((state) => state.projectOrder);
+  const environmentOrder = useUiStateStore((state) => state.environmentOrder);
   const {
     theme,
     setTheme,
@@ -490,9 +571,11 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.sidebarProjectGroupingMode !== DEFAULT_UNIFIED_SETTINGS.sidebarProjectGroupingMode
       ? ["Project Grouping"]
       : []),
-    ...(settings.sidebarProjectSortOrder !== DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder
+    ...(settings.sidebarProjectSortOrder !== DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder ||
+    projectOrder.length > 0
       ? ["Project order"]
       : []),
+    ...(environmentOrder.length > 0 ? ["Environment order"] : []),
     ...(settings.sidebarWorkingShelfEnabled !== DEFAULT_UNIFIED_SETTINGS.sidebarWorkingShelfEnabled
       ? ["Working section"]
       : []),
@@ -607,6 +690,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       { variant: "destructive" },
     );
     if (!confirmed) return;
+    useUiStateStore.getState().setProjectOrder([]);
+    useUiStateStore.getState().setEnvironmentOrder([]);
 
     // Reset only dirty theme keys so storage failures cannot block other settings; re-read after confirmation
     // for safe rollback.
@@ -731,7 +816,7 @@ export function useSettingsRestore(onRestored?: () => void) {
   };
 }
 
-const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ?? 7;
+const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
 
 function AutoSettleDaysInput({
   value,
@@ -860,43 +945,16 @@ export function GeneralSettingsPanel() {
           }
         />
         <SettingsRow
-          {...setting("project-order")}
-          description={<T>Order of projects in the sidebar project picker and command palette.</T>}
-          resetAction={
-            settings.sidebarProjectSortOrder !==
-            DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder ? (
-              <SettingResetButton
-                label="project order"
-                onClick={() =>
-                  updateSettings({
-                    sidebarProjectSortOrder: DEFAULT_UNIFIED_SETTINGS.sidebarProjectSortOrder,
-                  })
-                }
-              />
-            ) : null
-          }
+          title="Project and environment order"
+          description="Arrange projects and environments in the sidebar."
           control={
-            <Select
-              value={settings.sidebarProjectSortOrder}
-              onValueChange={(value) => {
-                if (isSidebarProjectSortOrder(value)) {
-                  updateSettings({ sidebarProjectSortOrder: value });
-                }
-              }}
+            <Button
+              render={<Link to="/settings/jones-code" hash="project-order" />}
+              size="sm"
+              variant="outline"
             >
-              <SelectTrigger size="sm" className="w-full sm:w-44" aria-label={gt("Project order")}>
-                <SelectValue>
-                  {m(SIDEBAR_PROJECT_SORT_ORDER_LABELS[settings.sidebarProjectSortOrder])}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {SidebarProjectSortOrder.literals.map((sortOrder) => (
-                  <SelectItem hideIndicator key={sortOrder} value={sortOrder}>
-                    {m(SIDEBAR_PROJECT_SORT_ORDER_LABELS[sortOrder])}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
+              Manage order
+            </Button>
           }
         />
         <SettingsRow
@@ -1993,10 +2051,13 @@ export function ThreadsSettingsPanel() {
               <SettingResetButton
                 label="text generation model"
                 onClick={() =>
-                  updateSettings({
-                    textGenerationModelSelection:
-                      DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-                  })
+                  updateSettings(
+                    {
+                      textGenerationModelSelection:
+                        DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                    },
+                    { literalModelSelections: true },
+                  )
                 }
               />
             ) : null

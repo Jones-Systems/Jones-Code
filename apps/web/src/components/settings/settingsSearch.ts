@@ -17,6 +17,7 @@ import { commandLabel } from "./KeybindingsSettings.logic";
 import type { ResolvedSettingsScope } from "./settingsScope";
 
 export type SettingsPath =
+  | "/settings/jones-code"
   | "/settings/projects"
   | "/settings/general"
   | "/settings/diagnostics"
@@ -116,6 +117,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/about": msg("About"),
   "/settings/voice": msg("Voice"),
   "/settings/archived": msg("Archive"),
+  "/settings/jones-code": msg("Jones Code"),
 };
 
 /** Sidebar order. A group with a hidden heading is set apart on screen by space alone. */
@@ -162,7 +164,13 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   {
     heading: msg("More"),
     headingHidden: true,
-    paths: ["/settings/maintenance", "/settings/labs", "/settings/about", "/settings/archived"],
+    paths: [
+      "/settings/jones-code",
+      "/settings/maintenance",
+      "/settings/labs",
+      "/settings/about",
+      "/settings/archived",
+    ],
   },
 ];
 
@@ -228,6 +236,26 @@ const SOURCE_CONTROL_HOST_TERMS = sourceControlClients.definitions
   .join(" ");
 
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "show-work-button",
+    title: "Show Work button",
+    to: "/settings/jones-code",
+    searchTerms: ["sidebar appearance visibility hide work mode"],
+  },
+  {
+    id: "thread-activity-window",
+    title: "Thread activity window",
+    to: "/settings/jones-code",
+    searchTerms: [
+      "sidebar working input done recent recency time minutes hours days weeks read completed",
+    ],
+  },
+  {
+    id: "prompts-default-stage",
+    title: "Default prompt view",
+    to: "/settings/jones-code",
+    searchTerms: ["prompts pending queued sent preferred stage opening view"],
+  },
   {
     id: "storage-worktree-keep-when",
     targetId: "storage-worktrees",
@@ -436,8 +464,14 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "project-order",
     title: msg("Project order"),
-    to: "/settings/general",
-    searchTerms: ["sort projects sidebar manual created recent"],
+    to: "/settings/jones-code",
+    searchTerms: ["sort projects sidebar manual created recent reorder drag move draft"],
+  },
+  {
+    id: "environment-order",
+    title: msg("Environment order"),
+    to: "/settings/jones-code",
+    searchTerms: ["sort environments run on host machine reorder drag move"],
   },
   {
     id: "snooze-options",
@@ -1033,6 +1067,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow simulator emulator ios android drive tools sessions"],
   },
   {
+    id: "agent-decision-snapshot-access",
+    title: "Agent decision snapshot access",
+    to: "/settings/devices",
+    scope: "project-defaults",
+    searchTerms: [
+      "allow mcp decision snapshot usage cpu memory claude allowance host project override",
+    ],
+  },
+  {
     id: "device-hub",
     title: "Use devices",
     to: "/settings/devices",
@@ -1399,6 +1442,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/labs": null,
   "/settings/about": null,
   "/settings/archived": "project-defaults",
+  "/settings/jones-code": null,
 };
 
 const RENAMED_SETTINGS_PATHS: Readonly<Record<string, SettingsPath>> = {

@@ -1,3 +1,6 @@
+import { BuildVersion } from "../../jones/updates/updateDisplay";
+import { APP_SOURCE_SHA, APP_BUILD_STARTED_AT } from "../../branding";
+
 import { APP_VERSION } from "../../branding";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { InlineButton } from "../ui/button";
@@ -21,6 +24,12 @@ export function AboutVersionTitle() {
   return (
     <span className="inline-flex items-baseline gap-2">
       <span>Version</span>
+      <BuildVersion
+        label="app version"
+        version={APP_VERSION}
+        sourceSha={APP_SOURCE_SHA}
+        startedAt={APP_BUILD_STARTED_AT}
+      />
       <code className="text-2xs font-medium">
         <Tooltip>
           <TooltipTrigger
