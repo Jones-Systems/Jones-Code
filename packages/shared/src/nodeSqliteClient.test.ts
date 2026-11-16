@@ -827,13 +827,13 @@ it.effect.each([{ readerFailureMode: "fallback" }, { readerFailureMode: "fail" }
     ),
 );
 
-it.effect("waits for a retiring reader during scope close even when close is interrupted", () =>
+it.effect.each([false, true])("waits for a retiring reader during scope close even when close is interrupted (worker=%s)", (writerWorker) =>
   Effect.gen(function* () {
     const started = yield* Deferred.make<void>();
     const retired = yield* Deferred.make<void>();
-    const startedBefore = startedWorkers.length;
+    let expectedStarts = startedWorkers.length + 1;
     let releaseTermination = () => {};
-    silentWorkers.on = true;
+    silentWorkers.on = false;
     silentWorkers.terminationGate = new Promise<void>((resolve) => {
       releaseTermination = resolve;
     });
@@ -843,12 +843,14 @@ it.effect("waits for a retiring reader during scope close even when close is int
           (sql) =>
             Effect.gen(function* () {
               yield* sql`PRAGMA journal_mode = WAL`;
+              expectedStarts = startedWorkers.length + 1;
+              silentWorkers.on = true;
               yield* Deferred.succeed(started, undefined);
               const error = yield* sql`SELECT 1`.pipe(SqliteClient.readOnly, Effect.flip);
               assert.equal(error._tag, "SqlError");
               yield* Deferred.succeed(retired, undefined);
             }),
-          { readerStartupTimeout: "100 millis", readerFailureMode: "fail" },
+          { readerStartupTimeout: "100 millis", readerFailureMode: "fail", writerWorker },
         ),
         { startImmediately: true },
       );
@@ -864,7 +866,7 @@ it.effect("waits for a retiring reader during scope close even when close is int
       });
       assert.isUndefined(interrupted.pollUnsafe());
       reader.emit("message", { type: "ready" });
-      assert.equal(startedWorkers.length, startedBefore + 1);
+      assert.equal(startedWorkers.length, expectedStarts);
       releaseTermination();
       yield* Fiber.join(interrupted);
       assert.equal(workerTerminals.get(reader)!.terminationRequests, 1);

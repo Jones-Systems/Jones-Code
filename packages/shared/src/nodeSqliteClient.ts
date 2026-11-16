@@ -1959,7 +1959,7 @@ const make = Effect.fn("makeWithDatabase")(function* (
           Effect.map(
             Effect.all([
               options.readerStartupTimeout !== undefined || options.readerFailureMode !== undefined
-                ? Effect.map(makeJonesReader(options, 0, undefined, () => { readerRetirementUncertain = true; }), (slot) => slot.acquire)
+                ? Effect.map(makeJonesReader(options), (slot) => slot.acquire)
                 : makeReader(options.filename, readerPool),
               Semaphore.make(1),
             ]),
