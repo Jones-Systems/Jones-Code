@@ -31,6 +31,7 @@ const fixture = Effect.gen(function* () {
   let locked = false;
   let authenticated = true;
   let supported = true;
+  let offeredFeatures: Record<string, string> | undefined;
   let receipt: typeof FollowUp.FollowUpReceipt.Type | undefined;
   let sends = 0;
   let stopDebt = false;
@@ -91,8 +92,8 @@ const fixture = Effect.gen(function* () {
     assert.isFalse(locked, "network must be outside parent transaction");
     readCalls.push({tool: input.tool, arguments: input.arguments, ...(input.expectedGeneration === undefined ? {} : {generation: input.expectedGeneration})});
     let result: unknown;
-    if (input.tool === "orchestrator_capabilities") result = {features: supported ? {
-      remoteFollowUpSendVersion: FollowUp.receiptVersion, remoteFollowUpReceiptVersion: FollowUp.receiptVersion} : {}};
+    if (input.tool === "orchestrator_capabilities") result = {features: offeredFeatures ?? (supported ? {
+      remoteFollowUpSendVersion: FollowUp.receiptVersion, remoteFollowUpReceiptVersion: FollowUp.receiptVersion} : {})};
     else if (input.tool === "t3_thread_send_receipt_lookup") {
       result = receipt ?? {version: FollowUp.receiptVersion, environmentId: destination,
         ...input.arguments, outcome: "unknown", sent: null};
@@ -132,6 +133,7 @@ const fixture = Effect.gen(function* () {
   });
   return {service, store, sql, input, oldTask, sent, network, make,
     tasks: () => tasks, counts: () => ({sends, withdrawals, stopDebt}), readCalls,
+    features: (value: Record<string, string>) => { offeredFeatures = value; },
     supported: (value: boolean) => { supported = value; },
     bindFailure: (value: boolean) => { failBind = value; },
     withdrawal: (value: string) => { withdrawalStatus = value; },
@@ -140,9 +142,9 @@ const fixture = Effect.gen(function* () {
     nextParentRun: () => { runs = runs.map((run) => ({...run, id: RunId.make("parent-wake-run"), ordinal: run.ordinal + 1})); },
     endParent: () => { runs = runs.map((run) => ({...run, status: "completed"})); },
     receipt: (intent: Store.FollowUpIntent, outcome: "accepted" | "rejected" | "unknown", result = sent) => {
-      receipt = {version: FollowUp.receiptVersion, environmentId: destination, threadId: sent.threadId,
-        clientRequestId: String(intent.envelope.send.arguments.clientRequestId), requestDigest: intent.envelope.requestDigest,
-        outcome, sent: outcome === "accepted" ? result : null};
+      const identity = {version: FollowUp.receiptVersion, environmentId: destination, threadId: sent.threadId,
+        clientRequestId: String(intent.envelope.send.arguments.clientRequestId), requestDigest: intent.envelope.requestDigest} as const;
+      receipt = outcome === "accepted" ? {...identity, outcome, sent: result} : {...identity, outcome, sent: null};
     },
   };
 });
@@ -439,4 +441,16 @@ it.effect("foreground status leaves a live unstarted reservation alone and recon
     assert.equal(refreshed?.remoteChild?.runId, f.sent.runId);
     assert.equal(f.counts().sends, 1);
     assert.deepEqual(f.tasks()[0], f.oldTask);
+  }).pipe(Effect.provide(layer)));
+
+it.effect("one advertised version never admits SEND; both exact versions are mandatory", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const intent = (yield* f.service.prepare(f.input))!;
+    for (const feature of ["remoteFollowUpSendVersion", "remoteFollowUpReceiptVersion"] as const) {
+      f.features({[feature]: FollowUp.receiptVersion});
+      assert.equal((yield* f.service.send(intent, () => f.network()).pipe(Effect.result))._tag, "Failure");
+      assert.isFalse((yield* f.store.get(intent.commandId))?.launchStarted);
+      assert.equal(f.counts().sends, 0);
+    }
   }).pipe(Effect.provide(layer)));

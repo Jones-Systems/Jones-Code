@@ -34,6 +34,8 @@ import {
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendInput,
   OrchestratorMcpThreadSendResult,
+  OrchestratorMcpThreadSendReceiptLookupInput,
+  OrchestratorMcpThreadSendReceiptLookupResult,
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
   ThreadMetadataMcpUpdateInput,
@@ -283,6 +285,15 @@ const ThreadUpdateTool = Tool.make("t3_thread_update", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.Idempotent, false);
 
+export const ThreadSendReceiptLookupTool = Tool.make("t3_thread_send_receipt_lookup", {
+  description: "Read the original authenticated SEND receipt by exact thread, command key and digest. Missing or pruned evidence is unknown. Never retries SEND.",
+  parameters: OrchestratorMcpThreadSendReceiptLookupInput,
+  success: OrchestratorMcpThreadSendReceiptLookupResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+}).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true);
+
 const ThreadSendTool = Tool.make("t3_thread_send", {
   description:
     "Send a message to any thread. The target cannot run with broader modes than yours. `mode:'auto'` starts an idle thread, steers a running turn, or queues. `queue`: new turn. `steer`: mid-turn update. `restart`: interrupt and restart. A send to a finished child thread starts a fresh task and returns its `taskId`. In your reply, name it as its `link` verbatim.",
@@ -382,6 +393,7 @@ export const OrchestratorToolkit = Toolkit.make(
   ThreadReadTool,
   ThreadUpdateTool,
   ThreadSendTool,
+  ThreadSendReceiptLookupTool,
   ThreadWaitTool,
   ThreadInterruptTool,
   EnvironmentLinksTool,

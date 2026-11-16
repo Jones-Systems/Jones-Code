@@ -1,6 +1,7 @@
 import {
   CommandId, NodeId, ThreadId, OrchestratorMcpFailure, OrchestratorMcpThreadSendResult,
-  type OrchestrationV2ServerCommand, EnvironmentId, type RunId,
+  type OrchestrationV2ServerCommand, type EnvironmentId, type RunId,
+  REMOTE_FOLLOW_UP_RECEIPT_VERSION, OrchestratorMcpThreadSendReceiptLookupResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -29,15 +30,8 @@ export class FollowUpCommandOwner extends Context.Service<FollowUpCommandOwner, 
   }, OrchestratorMcpFailure>;
 }>()("jones/remoteDelegation/FollowUpCommandOwner") {}
 
-export const receiptVersion = "jones.remote-followup-receipt/v1";
-// Local strict negotiation until contracts owner adopts the minimal fragment.
-export const FollowUpReceipt = Schema.Struct({
-  version: Schema.Literal(receiptVersion),
-  environmentId: EnvironmentId, threadId: ThreadId,
-  clientRequestId: Schema.NonEmptyString, requestDigest: Schema.NonEmptyString,
-  outcome: Schema.Literals(["accepted", "rejected", "unknown"]),
-  sent: Schema.NullOr(OrchestratorMcpThreadSendResult),
-});
+export const receiptVersion = REMOTE_FOLLOW_UP_RECEIPT_VERSION;
+export const FollowUpReceipt = OrchestratorMcpThreadSendReceiptLookupResult;
 const CapabilityReceipt = Schema.Struct({features: Schema.Record(Schema.String, Schema.Unknown)});
 const pending = () => new OrchestratorMcpFailure({code: "orchestration_error",
   message: "Remote follow-up is durably pending exact receipt reconciliation. Do not resend or launch a replacement."});
