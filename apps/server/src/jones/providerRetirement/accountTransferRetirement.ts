@@ -40,8 +40,8 @@ type TransferProjection = Pick<OrchestrationV2ThreadProjection, "thread" | "runs
 
 export function accountTransferDestination(projection: TransferProjection): ProviderInstanceId {
   return (
-    projection.runs.find((run) => run.status === "starting" && run.startedAt === null)
-      ?.modelSelection.instanceId ?? projection.thread.modelSelection.instanceId
+    projection.runs.filter((run) => run.status === "starting" && run.startedAt === null)
+      .toSorted((left, right) => right.ordinal - left.ordinal)[0]?.modelSelection.instanceId ?? projection.thread.modelSelection.instanceId
   );
 }
 

@@ -66,9 +66,14 @@ export function makeProviderRecoveryPublication(ports: {
   readonly ingestor: Pick<Ingestor.ProviderEventIngestorV2Shape, "ingestNormalized">;
   readonly physical: Pick<Effect.Success<typeof Physical.make>, "bind">;
   readonly forgetTransfers: (threadId: ThreadId) => Effect.Effect<void>;
-  readonly revalidateGuard: (threadId: ThreadId) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly revalidateGuard: (threadId: ThreadId, publication: {
+    readonly previousGeneration: string | null;
+    readonly binding: ProviderRuntimeBinding;
+    readonly input: RuntimeBindingPublicationInput;
+  }) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly bindGuard: (
     binding: ProviderRuntimeBinding,
+    input: RuntimeBindingPublicationInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
 }) {
   const retained = new Map<
@@ -103,7 +108,7 @@ export function makeProviderRecoveryPublication(ports: {
           operation.input.producerOrigin === input.producerOrigin &&
           operation.input.physicalProcess === input.physicalProcess,
       );
-      if (existing !== undefined) return existing.handle;
+      if (existing !== undefined && (!existing.completed || existing.input === input)) return existing.handle;
       if (operations.at(-1)?.completed === false)
         return yield* failure("The unresolved original publication input changed.");
       const reservation = ports.reservations.get(input.runtimeGeneration);
@@ -165,7 +170,7 @@ export function makeProviderRecoveryPublication(ports: {
           return yield* failure(
             "The original launch reservation no longer owns this conversation.",
           );
-        yield* ports.revalidateGuard(binding.threadId);
+        yield* ports.revalidateGuard(binding.threadId, { previousGeneration: expectedGeneration, binding, input });
         yield* Origin.revalidateProviderEventOrigin(observedEvent, {
           driver: ports.driver,
           instanceId: ports.instanceId,
@@ -228,7 +233,16 @@ export function makeProviderRecoveryPublication(ports: {
               return yield* failure("The original predecessor changed before binding publication.");
             yield* revalidate;
             const written = yield* ports.sink.write({
-              runtimeIdentityBoundary: { expectedGeneration },
+              runtimeIdentityBoundary: { expectedGeneration,
+                ...(predecessor === undefined ? {} : {
+                  expectedActiveProviderThreadId: thread.id,
+                  expectedProviderThreadIdentity: {
+                    id: predecessor.id, appThreadId: predecessor.appThreadId, driver: predecessor.driver,
+                    providerInstanceId: predecessor.providerInstanceId,
+                    providerSessionId: predecessor.providerSessionId, nativeThreadRef: predecessor.nativeThreadRef,
+                  },
+                }),
+              },
               events: [boundary],
             });
             if (written.length === 0)
@@ -277,7 +291,7 @@ export function makeProviderRecoveryPublication(ports: {
           const committed = yield* assertCurrent;
           if (!sameObserved(committed.runtimeIdentity?.observed, input.observed))
             return yield* failure("The runtime identity observation did not commit.");
-          yield* ports.bindGuard(binding);
+          yield* ports.bindGuard(binding, input);
           yield* assertCurrent;
           yield* ports.physical.bind(binding, input.physicalProcess);
           const result = yield* assertCurrent;

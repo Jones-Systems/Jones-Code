@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import { WORK_MODE_SENTINEL } from "@t3tools/shared/jones/workMode";
 import {
   MessageId,
   NodeId,
@@ -1537,5 +1538,37 @@ it.effect("skips restart discovery when no project enables continuation", () =>
     );
     yield* recovery.prepareForShutdown;
     yield* recovery.prepareForShutdown;
+  }),
+);
+
+it.effect.each([false, true])("recorded preference override %s preserves original source selection", (override) =>
+  Effect.gen(function* () {
+    const projection = cutMidTurn();
+    const commands: OrchestrationV2Command[] = [];
+    yield* continueRestartedRun({ threadId, sourceRunId: runId, continueWithoutPreference: override,
+      processLossCount: 1 }).pipe(Effect.provide(Layer.merge(
+        ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false }),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: () => Effect.succeed(projection), recoverDelegatedTask: () => Effect.void,
+          dispatch: (command) => { commands.push(command); return Effect.succeed({} as never); },
+        }),
+      )));
+    assert.lengthOf(commands, override ? 1 : 0);
+    if (commands[0]?.type === "message.dispatch")
+      assert.deepEqual(commands[0].modelSelection, projection.runs[0]!.modelSelection);
+  }),
+);
+
+it.effect("restart continuation excludes a captured work-mode keep-warm source", () =>
+  Effect.gen(function* () {
+    const messageId = MessageId.make("work-mode:original");
+    const cut = cutMidTurn({ userMessageId: messageId });
+    const message = { id: messageId, threadId, runId, createdBy: "system", creationSource: "server",
+      text: WORK_MODE_SENTINEL, attachments: [] };
+    const projection = { ...cut, messages: [message] } as OrchestrationV2ThreadProjection;
+    assert.isEmpty(yield* continuationDispatches(projection));
+    assert.lengthOf(yield* continuationDispatches({ ...projection,
+      messages: [{ ...message, text: "Continue the original work", createdBy: "user" }],
+    } as OrchestrationV2ThreadProjection), 1);
   }),
 );

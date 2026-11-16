@@ -1,3 +1,4 @@
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
 import {
   CommandId,
   type MessageId,
@@ -62,6 +63,7 @@ function delegatedCompletionRetryKey(
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const ids = yield* IdAllocator.IdAllocatorV2;
+    const refusalProof = yield* Effect.serviceOption(StartRefusals.StartRefusals);
     const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const retryAttempts = yield* Ref.make(new Map<string, number>());
@@ -112,13 +114,14 @@ export const layer = Layer.effectDiscard(
                 ThreadManagementService.isTerminalRunStatus(event.payload.status),
             ),
             Stream.runHead,
-            Effect.flatMap((ended) =>
-              Option.isSome(ended) &&
-              ended.value.event.type === "run.updated" &&
-              ended.value.event.payload.startedAt === null
-                ? onRunEndedWithoutStarting()
-                : Effect.void,
-            ),
+            Effect.flatMap((ended) => Effect.gen(function* () {
+              if (Option.isNone(ended) || ended.value.event.type !== "run.updated" ||
+                  ended.value.event.payload.activeAttemptId === null || Option.isNone(refusalProof)) return;
+              const terminal = ended.value.event.payload;
+              const proof = yield* refusalProof.value.readPrefix({ threadId: request.threadId,
+                runId: terminal.id, attemptId: terminal.activeAttemptId! });
+              if (proof.state === "refused") yield* onRunEndedWithoutStarting();
+            })),
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.provider-continuation.run-watch-failed", {
                 threadId: request.threadId,

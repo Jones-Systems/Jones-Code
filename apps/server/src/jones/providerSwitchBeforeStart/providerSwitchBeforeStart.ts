@@ -12,6 +12,7 @@ function pristinePendingProviderThread(
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "providerSessions">,
   evidence: ProviderSwitchBeforeStartEvidence | undefined,
   preparing: boolean,
+  certifiedUnsent: ReadonlySet<string>,
 ): OrchestrationV2ProviderThread | undefined {
   if (evidence === undefined || projection.providerSessions.length !== 0) return;
   const pending = evidence.providerThreads[0];
@@ -42,12 +43,13 @@ function pristinePendingProviderThread(
   )
     return;
 
-  // Null cursors alone are unknown: require recorded interruption or pristine preparation.
+  // Null cursors and interruption alone are unknown: the service must supply original no-effect proof.
   const provedBeforeStart = evidence.runs.every((run) => {
     const attempt = evidence.attempts.find((candidate) => candidate.id === run.activeAttemptId);
     const node = evidence.nodes.find((candidate) => candidate.id === run.rootNodeId);
     const pristine = preparing && (run.status === "preparing" || run.status === "queued");
     return (
+      run.activeAttemptId !== null && certifiedUnsent.has(run.activeAttemptId) &&
       run.threadId === projection.thread.id &&
       run.providerInstanceId === pending.providerInstanceId &&
       run.providerThreadId === pending.id &&
@@ -99,15 +101,17 @@ function pristinePendingProviderThread(
 export function interruptedPendingProviderThread(
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "providerSessions">,
   evidence: ProviderSwitchBeforeStartEvidence | undefined,
+  certifiedUnsent: ReadonlySet<string> = new Set(),
 ): OrchestrationV2ProviderThread | undefined {
-  return pristinePendingProviderThread(projection, evidence, false);
+  return pristinePendingProviderThread(projection, evidence, false, certifiedUnsent);
 }
 
 /** A pristine launch has recorded preparation, but no possible provider invocation. */
 export function preparingPendingProviderThread(
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "providerSessions">,
   evidence: ProviderSwitchBeforeStartEvidence | undefined,
+  certifiedUnsent: ReadonlySet<string> = new Set(),
 ): OrchestrationV2ProviderThread | undefined {
   if (!evidence?.runs.some((run) => run.status === "preparing")) return;
-  return pristinePendingProviderThread(projection, evidence, true);
+  return pristinePendingProviderThread(projection, evidence, true, certifiedUnsent);
 }

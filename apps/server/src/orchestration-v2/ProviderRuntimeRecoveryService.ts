@@ -1,3 +1,12 @@
+import { modelSelectionsEqual } from "@t3tools/shared/model";
+import * as CommandReceipts from "./CommandReceiptStore.ts";
+import { makeUnsentStartProof } from "../jones/provider/UnsentStartProof.ts";
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
+import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { continuityAdmissionRefusal } from "../jones/goals/continuity/admission.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -5,7 +14,6 @@ import {
   isProviderNativeSubagentThread,
   type OrchestrationV2DomainEvent,
   type ProviderThreadId,
-  type RunAttemptId,
   type OrchestrationV2RestartCancelledBackgroundWork,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
@@ -196,6 +204,49 @@ export const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const receipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
+  const prefixEvidence = yield* Effect.serviceOption(StartRefusals.StartRefusals);
+  const restartAdmission = yield* Effect.serviceOption(RestartPreparation.RestartPreparation);
+  const controlAdmission = yield* Effect.serviceOption(ControlAdmission.ControlAdmission);
+  const goalContinuity = yield* Effect.serviceOption(GoalContinuity.GoalContinuity);
+  const environment = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironmentIdentity);
+  const certifiedUnsent = (projection: ProjectionStore.ProjectionRuntimeRecoveryState,
+    run: OrchestrationV2ThreadProjection["runs"][number]) => Effect.gen(function* () {
+      if (run.activeAttemptId === null || Option.isNone(receipts) || Option.isNone(prefixEvidence) || Option.isNone(restartAdmission) ||
+          Option.isNone(controlAdmission) || Option.isNone(goalContinuity) || Option.isNone(environment)) return false;
+      const attempt = projection.attempts.find((row) => row.id === run.activeAttemptId && row.runId === run.id);
+      const provider = projection.providerThreads.find((row) => row.id === run.providerThreadId);
+      if (attempt === undefined || provider === undefined || provider.providerSessionId === null) return false;
+      if (!(yield* makeUnsentStartProof({ outbox, receipts: receipts.value, sink: eventSink,
+          refusals: prefixEvidence.value })(run, projection.attempts))) return false;
+      yield* restartAdmission.value.assertThreadOpen(projection.thread.id);
+      yield* eventSink.assertRuntimeStopStartAllowed({ threadId: projection.thread.id, runId: run.id });
+      yield* controlAdmission.value.assertOpen({ instanceId: provider.providerInstanceId,
+        threadId: projection.thread.id, nativeThreadId: provider.nativeThreadRef?.nativeId ?? null,
+        producer: provider.runtimeIdentity === undefined ? null : {
+          instanceId: provider.providerInstanceId, providerSessionId: provider.providerSessionId,
+          runtimeGeneration: provider.runtimeIdentity.runtimeGeneration,
+        } });
+      const fresh = yield* projections.getThreadRecords(projection.thread.id, ["runs", "attempts", "providerThreads"]);
+      const currentRun = fresh.runs.find((row) => row.id === run.id);
+      const currentAttempt = fresh.attempts.find((row) => row.id === attempt.id);
+      const currentProvider = fresh.providerThreads.find((row) => row.id === provider.id);
+      if (currentRun?.activeAttemptId !== attempt.id || currentRun.status !== run.status ||
+          currentRun.providerThreadId !== provider.id || !modelSelectionsEqual(currentRun.modelSelection, run.modelSelection) ||
+          currentAttempt?.runId !== run.id || currentAttempt.providerThreadId !== attempt.providerThreadId ||
+          currentProvider?.providerSessionId !== provider.providerSessionId ||
+          currentProvider.providerInstanceId !== provider.providerInstanceId || currentProvider.driver !== provider.driver ||
+          currentProvider.nativeThreadRef?.nativeId !== provider.nativeThreadRef?.nativeId ||
+          currentProvider.runtimeIdentity?.runtimeGeneration !== provider.runtimeIdentity?.runtimeGeneration ||
+          fresh.thread.archivedAt !== null || fresh.thread.deletedAt !== null || fresh.thread.settledAt != null) return false;
+      yield* eventSink.assertRuntimeStopStartAllowed({ threadId: projection.thread.id, runId: run.id });
+      const environmentId = yield* environment.value.getEnvironmentId;
+      const requirement = yield* goalContinuity.value.requirementFor(environmentId, projection.thread.id);
+      return continuityAdmissionRefusal(requirement, provider.nativeThreadRef == null ? null : {
+        environmentId, threadId: projection.thread.id, providerInstanceId: provider.providerInstanceId,
+        providerThreadId: provider.id, driver: provider.driver, nativeThreadId: provider.nativeThreadRef.nativeId,
+      }) === undefined;
+    }).pipe(Effect.catchCause(() => Effect.succeed(false)));
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
   const sessionsLiveAtStart = (
@@ -213,62 +264,8 @@ export const make = Effect.gen(function* () {
     return [...sessions.values()];
   };
 
-  /**
-   * A run is marked running before its provider accepts the prompt, so only a provider turn of
-   * one of its attempts proves the prompt arrived. Recovery treats the others as never started.
-   */
-  const rewindUnacceptedRuns = Effect.fn("ProviderRuntimeRecoveryService.rewindUnacceptedRuns")(
-    function* (projection: ProjectionStore.ProjectionRuntimeRecoveryState) {
-      const runIdByAttempt = new Map(
-        projection.runs.flatMap((run) =>
-          (run.status === "running" || (run.status === "starting" && run.startedAt !== null)) &&
-          run.activeAttemptId !== null
-            ? [[run.activeAttemptId, run.id] as const]
-            : [],
-        ),
-      );
-      if (runIdByAttempt.size === 0) return projection;
-      const unaccepted = new Set(runIdByAttempt.values());
-      const accept = (turns: ReadonlyArray<{ readonly runAttemptId: RunAttemptId | null }>) => {
-        for (const turn of turns) {
-          const runId =
-            turn.runAttemptId === null ? undefined : runIdByAttempt.get(turn.runAttemptId);
-          if (runId !== undefined) unaccepted.delete(runId);
-        }
-      };
-      accept(projection.providerTurns);
-      if (unaccepted.size === 0) return projection;
-      for (const attempt of projection.attempts) {
-        if (unaccepted.has(attempt.runId)) runIdByAttempt.set(attempt.id, attempt.runId);
-      }
-      // The recovery projection omits ended provider turns, such as one a steer replaced.
-      accept(
-        (yield* projections
-          .getThreadRecords(projection.thread.id, ["providerTurns"], {
-            providerTurnAttemptIds: [...runIdByAttempt].flatMap(([attemptId, runId]) =>
-              unaccepted.has(runId) ? [attemptId] : [],
-            ),
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderRuntimeRecoveryError({
-                  operation: "read-projections",
-                  threadId: projection.thread.id,
-                  cause,
-                }),
-            ),
-          )).providerTurns,
-      );
-      return {
-        ...projection,
-        runs: projection.runs.map((run) =>
-          unaccepted.has(run.id) ? { ...run, status: "starting" as const, startedAt: null } : run,
-        ),
-      };
-    },
-  );
-
+  // An absent provider turn does not prove that the original native prefix was unsent.
+  // Keep the original status/time and let unknown outcomes settle as Interrupted.
   const reconcileProjection = Effect.fn("ProviderRuntimeRecoveryService.reconcileProjection")(
     function* (
       stored: ProjectionStore.ProjectionRuntimeRecoveryState,
@@ -277,7 +274,7 @@ export const make = Effect.gen(function* () {
       stoppedThisPass: ReadonlyMap<string, RecoverySession> = new Map(),
     ) {
       const now = yield* DateTime.now;
-      const projection = yield* rewindUnacceptedRuns(stored);
+      const projection = stored;
       let runs = [] as Array<OrchestrationV2ThreadProjection["runs"][number]>;
       for (const run of nonterminalRuns(projection)) {
         if (run.status === "waiting") {
@@ -393,7 +390,7 @@ export const make = Effect.gen(function* () {
           cancelledBackgroundNativeIds.add(item.nativeItemRef.nativeId);
         }
       };
-      const unstartedRuns = runs.filter(
+      const unstartedRuns = yield* Effect.filter(runs.filter(
         (run) =>
           run.status === "starting" &&
           neverStarted(run) &&
@@ -403,7 +400,7 @@ export const make = Effect.gen(function* () {
               request.status === "pending" &&
               projection.nodes.some((node) => node.id === request.nodeId && node.runId === run.id),
           ),
-      );
+      ), (run) => certifiedUnsent(projection, run));
       const queuedRuns = projection.runs.filter((run) => run.status === "queued");
       const pendingRuns = [...unstartedRuns, ...queuedRuns];
       const queuedMessages =
@@ -440,11 +437,11 @@ export const make = Effect.gen(function* () {
           )
           .map((message) => message.id),
       );
-      // A saved user message the provider never accepted stays available through the held queue.
+      // Only an original durable no-effect certificate can keep input eligible for replay.
       const retryableRuns = unstartedRuns.filter((run) =>
         retryableMessageIds.has(run.userMessageId),
       );
-      // Nobody reviews a delegated, agent-sent or scheduled prompt, so it is sent again instead.
+      // Unattended work shares the same certified no-effect admission as user input.
       const unattendedRuns = continueAfterRestart
         ? unstartedRuns.filter((run) =>
             queuedMessages.some(
@@ -605,12 +602,13 @@ export const make = Effect.gen(function* () {
           },
         });
       }
-      const unsentResumeRunIds = runs.flatMap((run) =>
-        run.startedAt === null && run.usageLimitContinuationOfRunId !== undefined ? [run.id] : [],
-      );
+      const unsentResumeRunIds = (yield* Effect.filter(
+        runs.filter((run) => run.usageLimitContinuationOfRunId !== undefined),
+        (run) => certifiedUnsent(projection, run),
+      )).map((run) => run.id);
       const limitRecovery = projection.thread.limitRecovery;
-      // The unsent resume spent the worker's request id, so a fresh one lets it send again. An
-      // untagged resume from an older server stays cancelled: its copy couldn't be hidden.
+      // Rearm only a positively certified original no-effect attempt. A null
+      // startedAt or missing native turn cannot authorize another Resume.
       if (limitRecovery?.autoResume === true && unsentResumeRunIds.length > 0) {
         events.push({
           id: yield* allocateEventId(),
@@ -1110,6 +1108,14 @@ export const make = Effect.gen(function* () {
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
         ),
       );
+    // Close the original claim fence before inspecting no-effect custody. An
+    // outstanding row is not proof; only its cancelled, never-claimed original
+    // plus accepted birth receipt can survive as genuinely unsent input.
+    const outboxReconciliation = yield* outbox.reconcileAfterProcessLoss.pipe(
+      Effect.mapError(
+        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
+      ),
+    );
     let terminalizedRuns = 0;
     let stoppedSessions = 0;
     let closedRequests = 0;
@@ -1161,13 +1167,8 @@ export const make = Effect.gen(function* () {
       // Eventless outbox cancellations also wait for the group's durable commit.
       if (cancelledEffectIds.length > 0) yield* outbox.signalCancellations(cancelledEffectIds);
     }
-    const outboxReconciliation = yield* outbox.reconcileAfterProcessLoss.pipe(
-      Effect.mapError(
-        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
-      ),
-    );
-    // After the drain, which cancels every unsettled provider start. A crash before this write
-    // leaves the run unstarted, so the next recovery sends it again.
+    // The original rows were fenced before recovery decisions. Recorded resend
+    // effects still pass their own captured start admission before native work.
     if (resends.length > 0) {
       yield* eventSink
         .writeWithEffects({ events: [], effects: resends })
@@ -1213,7 +1214,7 @@ export const make = Effect.gen(function* () {
           )
             return;
           const run = restartContinuationRun(
-            yield* rewindUnacceptedRuns(projection),
+            projection,
             yield* DateTime.now,
           );
           if (!run) return;
