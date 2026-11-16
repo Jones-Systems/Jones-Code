@@ -335,16 +335,24 @@ async function injectedWorker(
     runChild: async (options) => {
       path = options.owner.creationReceipt.canonicalRootPath;
       const readyPath = NodePath.join(path, "ready");
-      const watcher = NodeFS.watch(path, { persistent: false }, () => {
+      const onMarker = () => {
         if (!ready && NodeFS.existsSync(readyPath)) {
           ready = true;
           onReady?.();
         }
-      });
+      };
+      // Observe the actual marker: directory notifications can be coalesced on macOS.
+      NodeFS.watchFile(readyPath, { persistent: false, interval: 10 }, onMarker);
       try {
-        return await runOwnedChild({ ...options, args: ["--input-type=module", "-e", code] });
+        const child = await runOwnedChild({
+          ...options,
+          args: ["--input-type=module", "-e", code],
+        });
+        // Fast leaf exits can precede the filesystem notification; inspect before cleanup.
+        ready ||= NodeFS.existsSync(readyPath);
+        return child;
       } finally {
-        watcher.close();
+        NodeFS.unwatchFile(readyPath, onMarker);
       }
     },
   });
@@ -361,7 +369,8 @@ async function injectedWorker(
 
 const readyCode =
   "import{writeFileSync,renameSync}from'node:fs';writeFileSync('arming','ready');renameSync('arming','ready');";
-const blockedCode = `${readyCode}process.on('SIGTERM',()=>{});Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);`;
+// Cancellation may follow the ready marker immediately; arm resistance before publishing it.
+const blockedCode = `process.on('SIGTERM',()=>{});${readyCode}Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);`;
 
 describe("jones-sqlite-health — closed fixture integration", () => {
   it("refuses the old HOME/.t3/worktrees scratch shape before inspecting its absent parent", () => {

@@ -1,0 +1,36 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "storage-cleanup-results",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
+    "apps/server/src/jones/storageCleanup/ReportRead.ts",
+    "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
+    "apps/server/src/jones/mcp/storageCleanup/handlers.ts",
+    "apps/server/src/jones/mcp/storageCleanup/tools.ts",
+    "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/storageCleanup/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/storageCleanup/handlers.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/storageCleanupReport.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/StorageSettings.tsx",
+      "to": "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/StorageSettings.browser.test.tsx",
+      "to": "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx"
+    }
+  ]
+}

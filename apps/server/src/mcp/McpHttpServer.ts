@@ -1,3 +1,7 @@
+import * as AgentWorkstreams from "../jones/workstreams/personal/agentService.ts";
+import { WorkstreamToolkit } from "../jones/mcp/workstreams/tools.ts";
+import { handlers as workstreamHandlers } from "../jones/mcp/workstreams/handlers.ts";
+import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
 import * as ThreadResultMcpDependencies from "../jones/threadResultDependencies/McpDependencies.ts";
 import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts";
 import { handlers as userResponseRequestHandlers } from "../jones/mcp/userResponseRequest/handlers.ts";
@@ -31,6 +35,27 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 
+import { DecisionSnapshotCollectorLive } from "../jones/mcp/decisionSnapshot/collector.ts";
+import {
+  DecisionSnapshotNativeCountsLive,
+  DecisionSnapshotToolkitAccess,
+} from "../jones/mcp/decisionSnapshot/handlers.ts";
+import { DecisionSnapshotToolkit } from "../jones/mcp/decisionSnapshot/tools.ts";
+import { OrganizationMetadataHandlersLive } from "../jones/mcp/organizationMetadata/handlers.ts";
+import { OrganizationMetadataToolkit } from "../jones/mcp/organizationMetadata/tools.ts";
+import { StorageCleanupReportHandlersLive } from "../jones/mcp/storageCleanup/handlers.ts";
+import { StorageCleanupReportToolkit } from "../jones/mcp/storageCleanup/tools.ts";
+import { FleetCheckpointHandlersLive } from "../jones/mcp/fleetCheckpoint/handlers.ts";
+import { FleetCheckpointToolkit } from "../jones/mcp/fleetCheckpoint/tools.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as FleetCheckpoint from "../jones/fleetCheckpoint/Checkpoint.ts";
+import { SettlementRestoreHandlersLive } from "../jones/mcp/settlementRestore/handlers.ts";
+import { SettlementRestoreToolkit } from "../jones/mcp/settlementRestore/tools.ts";
+import * as SettlementRestore from "../jones/settlementRestore/SettlementRestore.ts";
+import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
+import * as TaskContinuation from "../jones/taskContinuation/TaskContinuation.ts";
+import * as TaskContinuationStore from "../jones/taskContinuation/TaskContinuationStore.ts";
+import * as OrganizationMetadata from "../jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import { parseBearerToken } from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
@@ -1346,9 +1371,59 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
     registrations,
   }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
-/** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
+export const OrganizationMetadataRegistrationLive = toolkitRegistration(
+  OrganizationMetadataToolkit,
+  OrganizationMetadataHandlersLive,
+).pipe(Layer.provide(OrganizationMetadata.layer));
+
+export const layerStorageCleanupReportToolkit = toolkitRegistration(
+  StorageCleanupReportToolkit,
+  StorageCleanupReportHandlersLive,
+);
+
+const SettlementRestoreRegistrationLive = toolkitRegistration(
+  SettlementRestoreToolkit,
+  SettlementRestoreHandlersLive,
+).pipe(Layer.provide(SettlementRestore.layer.pipe(Layer.provide(ProjectionStoreV2.layer))));
+
+const DecisionSnapshotToolkitRegistrationLive = toolkitRegistration(
+  DecisionSnapshotToolkit,
+  DecisionSnapshotToolkitAccess,
+).pipe(
+  Layer.provide(DecisionSnapshotNativeCountsLive),
+  Layer.provide(DecisionSnapshotCollectorLive),
+);
+
+export const layerWorkstreamToolkit = toolkitRegistration(
+  WorkstreamToolkit,
+  workstreamHandlers,
+).pipe(Layer.provide(AgentWorkstreams.layer));
+
+/** Every active tool the Jones MCP server advertises. */
 export const layerTools = Layer.mergeAll(
-  toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(Layer.provide(UserResponseRequest.layer)),
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      return config.fleetCheckpoint === undefined
+        ? Layer.empty
+        : toolkitRegistration(FleetCheckpointToolkit, FleetCheckpointHandlersLive).pipe(
+            Layer.provide(
+              FleetCheckpoint.layer(config.fleetCheckpoint).pipe(
+                Layer.provide(ProcessRunner.layer),
+              ),
+            ),
+          );
+    }),
+  ),
+  layerWorkstreamToolkit,
+  toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(
+    Layer.provide(UserResponseRequest.layer),
+  ),
+  OrganizationMetadataRegistrationLive,
+  layerStorageCleanupReportToolkit,
+  SettlementRestoreRegistrationLive,
+  toolkitRegistration(RemoteAdmissionCancel.toolkit, RemoteAdmissionCancel.handlers),
+  DecisionSnapshotToolkitRegistrationLive,
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,

@@ -27,16 +27,29 @@
     "apps/web/src/components/workstreams/WorkstreamNativeSidebar.tsx",
     "apps/web/src/components/workstreams/WorkstreamSidebarSection.tsx",
     "apps/web/src/jones/workstreams/PersonalSidebarGroupHeader.tsx",
+    "apps/web/src/jones/workstreams/PersonalWorkstreamTitleEditor.tsx",
+    "apps/web/src/jones/workstreams/personalInlineRename.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalThreadWindow.ts",
+    "apps/web/src/jones/workstreams/personalThreadWindow.test.ts",
+    "apps/web/src/jones/workstreams/personalThreadWindow.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalEnvironmentBinding.ts",
     "apps/web/src/jones/workstreams/personalNative.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalNotifications.test.ts",
     "apps/web/src/jones/workstreams/personalNotifications.tsx",
+    "apps/web/src/jones/workstreams/personalPresentation.test.ts",
     "apps/web/src/jones/workstreams/personalPresentation.ts",
     "apps/web/src/jones/workstreams/personalRail.test.ts",
     "apps/web/src/jones/workstreams/personalRail.ts",
     "apps/web/src/jones/workstreams/personalSettings.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalSidebarOrder.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalSidebarOrder.ts",
+    "apps/web/src/jones/workstreams/personalThreadDrag.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalThreadDrag.ts",
+    "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
+    "apps/web/src/jones/workstreams/personalThreadPlacement.ts",
     "apps/web/src/jones/workstreams/personalThreadReorder.test.ts",
     "apps/web/src/jones/workstreams/personalThreadReorder.ts",
+    "apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx",
     "apps/web/src/jones/workstreams/sidebarThreadDrop.ts",
     "apps/web/src/state/workstreamsPersonal.ts",
     "apps/web/src/test/reactElementTree.ts",
@@ -58,7 +71,11 @@
     "packages/contracts/test-fixtures/queue-dispatch-capability.json",
     "packages/contracts/test-fixtures/thread-corpus-capability.json",
     "packages/shared/src/jones/desktopNativeOwner.test.ts",
-    "packages/shared/src/jones/desktopNativeOwner.ts"
+    "packages/shared/src/jones/desktopNativeOwner.ts",
+    "apps/web/src/jones/workstreams/personalStatusFilter.ts",
+    "apps/web/src/jones/workstreams/personalStatusFilter.test.ts",
+    "apps/web/src/jones/workstreams/personalStatusFilter.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx"
   ],
   "hookPaths": [
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
@@ -881,6 +898,18 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "packages/client-runtime/src/jones/workstreams/personal/index.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalSidebarOrder.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalThreadPlacement.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalStatusFilter.ts"
     }
   ]
 }

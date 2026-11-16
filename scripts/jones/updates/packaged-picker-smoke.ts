@@ -476,54 +476,176 @@ async function downloadZip(id: number, destination: string, signal: AbortSignal)
   await NodeFSP.writeFile(destination, result.stdout, { flag: "wx", mode: 0o600 });
 }
 
-async function runPhase(
+type PickerErrorDetail = {
+  name: string;
+  message: string;
+  stack?: string;
+  code?: string;
+  cause?: PickerErrorDetail;
+  errors?: PickerErrorDetail[];
+  truncated?: boolean;
+};
+
+export function pickerErrorDetail(error: unknown): PickerErrorDetail {
+  const seen = new Set<unknown>();
+  let remaining = 64;
+  const detail = (value: unknown, depth: number): PickerErrorDetail => {
+    if (remaining-- <= 0 || depth > 8 || seen.has(value))
+      return {
+        name: "Truncated",
+        message: "Error depth, count or cycle bound reached.",
+        truncated: true,
+      };
+    if (!(value instanceof Error))
+      return { name: "ThrownValue", message: String(value).slice(0, 8192) };
+    seen.add(value);
+    const result: PickerErrorDetail = { name: value.name, message: value.message.slice(0, 8192) };
+    if (value.stack !== undefined) result.stack = value.stack.slice(0, 16384);
+    if ("code" in value && typeof value.code === "string") result.code = value.code;
+    if (value.cause !== undefined) result.cause = detail(value.cause, depth + 1);
+    if (value instanceof AggregateError) {
+      result.errors = value.errors.slice(0, 32).map((nested) => detail(nested, depth + 1));
+      if (value.errors.length > 32) result.truncated = true;
+    }
+    if (value.message.length > 8192 || (value.stack?.length ?? 0) > 16384) result.truncated = true;
+    return result;
+  };
+  return detail(error, 0);
+}
+
+type Absence = ReturnType<typeof processAbsence>;
+export type PickerPhaseObservation = {
+  phase: string;
+  pid?: number;
+  exitCode?: number | null;
+  exitSignal?: NodeJS.Signals | null;
+  timedOut?: boolean;
+  processAbsence: Absence;
+  groupAbsence: Absence;
+  evidence: { file: string; status: "copied" | "absent" | "error"; error?: PickerErrorDetail }[];
+  error?: PickerErrorDetail;
+};
+
+export function requirePickerPhaseCleanup(observation: PickerPhaseObservation, root: string) {
+  proof(
+    observation.processAbsence === "pass" && observation.groupAbsence === "pass",
+    `UNAVAILABLE: picker process/group absence not proved; retained exact root: ${root}`,
+  );
+  proof(
+    !observation.evidence.some((file) => file.status === "error"),
+    `Picker diagnostic preservation failed; retained exact root: ${root}`,
+  );
+}
+
+export async function runPickerPhase(
   executable: string,
   config: Record<string, unknown>,
   environment: NodeJS.ProcessEnv,
   signal: AbortSignal,
+  output: string,
+  observation: PickerPhaseObservation,
+  ports: {
+    copyFile?: typeof NodeFSP.copyFile;
+    processAbsence?: typeof processAbsence;
+  } = {},
 ) {
-  const file = NodePath.join(String(config.root), `config-${config.phase}.json`),
-    log = await NodeFSP.open(
-      NodePath.join(String(config.root), `electron-${config.phase}.log`),
-      "wx",
-      0o600,
-    );
-  await NodeFSP.writeFile(file, JSON.stringify(config), { flag: "wx", mode: 0o600 });
-  const child = NodeChildProcess.spawn(executable, [`--jones-picker-config=${file}`], {
-    env: environment,
-    detached: true,
-    stdio: ["ignore", log.fd, log.fd],
-    signal,
-  });
-  proof(child.pid !== undefined, "Picker spawn identity unavailable.");
-  const pid = child.pid;
-  let terminated = false;
-  const terminate = () => {
-    terminated = true;
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-    }
-  };
-  const timer = setTimeout(terminate, 90_000);
+  const root = String(config.root),
+    phase = String(config.phase),
+    file = NodePath.join(root, `config-${phase}.json`),
+    failures: unknown[] = [];
+  let log: NodeFSP.FileHandle | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+  observation.timedOut = false;
   try {
-    await new Promise<void>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("close", (code) =>
-        code === 0 && !terminated
-          ? resolve()
-          : reject(new Error(`Picker phase ${config.phase} exited ${code}.`)),
-      );
+    signal.throwIfAborted();
+    log = await NodeFSP.open(NodePath.join(root, `electron-${phase}.log`), "wx", 0o600);
+    await NodeFSP.writeFile(file, JSON.stringify(config), { flag: "wx", mode: 0o600 });
+    const child = NodeChildProcess.spawn(executable, [`--jones-picker-config=${file}`], {
+      env: environment,
+      detached: true,
+      stdio: ["ignore", log.fd, log.fd],
+      signal,
     });
+    if (child.pid !== undefined) observation.pid = child.pid;
+    let childError: unknown;
+    // Wait for close even after cancellation/error so the log and absence probes follow child exit.
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", (error) => {
+        childError = error;
+      });
+      child.once("close", (code, exitSignal) => {
+        observation.exitCode = code;
+        observation.exitSignal = exitSignal;
+        if (childError !== undefined) reject(childError);
+        else if (code === 0 && !observation.timedOut) resolve();
+        else reject(new Error(`Picker phase ${phase} exited ${code}.`));
+      });
+      timer = setTimeout(() => {
+        observation.timedOut = true;
+        if (observation.pid === undefined) return;
+        try {
+          process.kill(-observation.pid, "SIGTERM");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") failures.push(error);
+        }
+      }, 90_000);
+    });
+    proof(observation.pid !== undefined, "Picker spawn identity unavailable.");
+  } catch (error) {
+    failures.unshift(error);
   } finally {
     clearTimeout(timer);
-    await log.close();
-    proof(
-      processAbsence(pid) === "pass" && processAbsence(-pid) === "pass",
-      "UNAVAILABLE: picker process/group absence not proved; preserve scratch.",
-    );
+    try {
+      await log?.close();
+    } catch (error) {
+      failures.push(error);
+    }
+    if (observation.pid !== undefined) {
+      const probe = ports.processAbsence ?? processAbsence;
+      observation.processAbsence = probe(observation.pid);
+      observation.groupAbsence = probe(-observation.pid);
+    }
+    if (observation.processAbsence !== "pass" || observation.groupAbsence !== "pass")
+      failures.push(
+        new Error("UNAVAILABLE: picker process/group absence not proved; preserve scratch."),
+      );
+    // Preserve every available allowlisted diagnostic before the caller can remove its owned root.
+    for (const name of [`phase-${phase}.json`, `electron-${phase}.log`, `loader-${phase}.json`]) {
+      try {
+        await (ports.copyFile ?? NodeFSP.copyFile)(
+          NodePath.join(root, name),
+          NodePath.join(output, name),
+        );
+        observation.evidence.push({ file: name, status: "copied" });
+      } catch (error) {
+        const absent =
+          (error as NodeJS.ErrnoException).code === "ENOENT" &&
+          (await NodeFSP.lstat(NodePath.join(root, name)).then(
+            () => false,
+            (cause: NodeJS.ErrnoException) => cause.code === "ENOENT",
+          ));
+        observation.evidence.push({
+          file: name,
+          status: absent ? "absent" : "error",
+          ...(absent ? {} : { error: pickerErrorDetail(error) }),
+        });
+        if (!absent) failures.push(error);
+      }
+    }
   }
+  if (failures.length === 0) {
+    try {
+      // A missing or malformed phase report never qualifies, even when the child exited zero.
+      return JSON.parse(await NodeFSP.readFile(NodePath.join(root, `phase-${phase}.json`), "utf8"));
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  const error =
+    failures.length === 1
+      ? failures[0]
+      : new AggregateError(failures, "Picker phase failed; additional diagnostics retained.");
+  observation.error = pickerErrorDetail(error);
+  throw error;
 }
 
 async function consume(producerFile: string, output: string) {
@@ -559,7 +681,11 @@ async function consume(producerFile: string, output: string) {
     ],
   };
   await NodeFSP.mkdir(output, { recursive: true });
-  let safeToRemove = true;
+  let mountAbsent = true;
+  const phaseObservations: PickerPhaseObservation[] = [];
+  report.phaseObservations = phaseObservations;
+  let primaryFailure: unknown;
+  let invocationRoot: string | undefined;
   try {
     report.sourceGraph = scanPickerSourceGraph(
       "apps/desktop/src/jones/updates/pickerVerificationCore.ts",
@@ -567,6 +693,7 @@ async function consume(producerFile: string, output: string) {
     await withSmokeScratch(
       await NodeFSP.realpath(process.env.RUNNER_TEMP!),
       async (root) => {
+        invocationRoot = root;
         const nonce = NodeCrypto.randomBytes(16).toString("hex"),
           zip = NodePath.join(root, "artifact.zip"),
           archive = NodePath.join(root, "artifact");
@@ -624,7 +751,7 @@ async function consume(producerFile: string, output: string) {
           applications = NodePath.join(root, "Applications");
         await NodeFSP.mkdir(mount);
         await NodeFSP.mkdir(applications);
-        safeToRemove = false;
+        mountAbsent = false;
         let appPath = "",
           executable = "",
           bundleBefore: Record<string, string> = {};
@@ -666,7 +793,7 @@ async function consume(producerFile: string, output: string) {
         // hdiutil info is checked directly; an uncertain detach keeps the invocation root.
         const info = await command("/usr/bin/hdiutil", ["info", "-plist"], signal);
         proof(!info.includes(`<string>${mount}</string>`), "Mount remains after detach.");
-        safeToRemove = true;
+        mountAbsent = true;
         for (const [relative, digest] of Object.entries(bundleBefore))
           proof(
             hash(await NodeFSP.readFile(NodePath.join(appPath, relative))) === digest,
@@ -781,8 +908,14 @@ async function consume(producerFile: string, output: string) {
             "<!doctype html><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'none'; connect-src 'none'\"><title>Synthetic picker IPC</title>",
           );
           const reportPath = NodePath.join(root, `phase-${phase}.json`);
-          safeToRemove = false;
-          await runPhase(
+          const observation: PickerPhaseObservation = {
+            phase,
+            processAbsence: "unknown",
+            groupAbsence: "unknown",
+            evidence: [],
+          };
+          phaseObservations.push(observation);
+          const phaseReport = await runPickerPhase(
             executable,
             {
               root,
@@ -807,15 +940,10 @@ async function consume(producerFile: string, output: string) {
             },
             environment,
             signal,
+            output,
+            observation,
           );
-          safeToRemove = true;
-          const phaseReport = JSON.parse(await NodeFSP.readFile(reportPath, "utf8"));
           reports.push(phaseReport);
-          await NodeFSP.copyFile(reportPath, NodePath.join(output, `phase-${phase}.json`));
-          await NodeFSP.copyFile(
-            NodePath.join(root, `electron-${phase}.log`),
-            NodePath.join(output, `electron-${phase}.log`),
-          );
         }
         proof(
           hash(await NodeFSP.readFile(retained)) === bundleBefore["Contents/Resources/app.asar"] &&
@@ -829,23 +957,52 @@ async function consume(producerFile: string, output: string) {
         report.verdict = evaluatePickerReports(reports);
       },
       async (root) => {
-        proof(safeToRemove, `Unknown process/mount state; retained exact root: ${root}`);
+        proof(mountAbsent, `Unknown mount state; retained exact root: ${root}`);
+        for (const observation of phaseObservations) requirePickerPhaseCleanup(observation, root);
       },
     );
     report.cleanup = "proved; exact invocation root removed";
   } catch (error) {
-    report.error = String(error);
-    report.cleanup = safeToRemove
-      ? "exact invocation cleanup attempted"
-      : "retained; unknown process or mount";
-    throw error;
+    primaryFailure = error;
+    report.error = pickerErrorDetail(error);
+    report.cleanup =
+      mountAbsent &&
+      phaseObservations.every(
+        (phase) =>
+          phase.processAbsence === "pass" &&
+          phase.groupAbsence === "pass" &&
+          !phase.evidence.some((file) => file.status === "error"),
+      )
+        ? "exact invocation cleanup attempted; see nested errors for cleanup failure"
+        : "retained; unknown process/mount or diagnostic copy failure";
   } finally {
     cancellation.dispose();
-    await NodeFSP.writeFile(
-      NodePath.join(output, "qualification.json"),
-      JSON.stringify(report, null, 2),
-    );
+    if (invocationRoot !== undefined) {
+      report.scratch = await NodeFSP.lstat(invocationRoot).then(
+        () => ({ root: invocationRoot, pathAbsence: "fail" }),
+        (error: NodeJS.ErrnoException) => ({
+          root: invocationRoot,
+          pathAbsence: error.code === "ENOENT" ? "pass" : "unknown",
+          ...(error.code === "ENOENT" ? {} : { error: pickerErrorDetail(error) }),
+        }),
+      );
+    }
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(output, "qualification.json"),
+        JSON.stringify(report, null, 2),
+      );
+    } catch (error) {
+      primaryFailure =
+        primaryFailure === undefined
+          ? error
+          : new AggregateError(
+              [primaryFailure, error],
+              "Qualification and report publication failed.",
+            );
+    }
   }
+  if (primaryFailure !== undefined) throw primaryFailure;
 }
 
 if (

@@ -575,3 +575,20 @@ describe("delegated task list membership", () => {
     ).toBe(true);
   });
 });
+
+it("keeps the sidebar connecting for active run 26 while later run 27 is queued", () => {
+  const attention = shellAttentionInput(
+    shell({
+      activeRunId: RunId.make("synthetic-run-26"),
+      activityRunStatus: "starting",
+      activityRunStartedAt: null,
+      latestRunId: RunId.make("synthetic-run-27"),
+      status: "queued",
+      latestRunStartedAt: null,
+      latestRunRequestedAt: now,
+    }),
+  );
+  expect(attention.latestRun?.runId).toBe("synthetic-run-27");
+  expect(attention.runtime?.activeRunId).toBe("synthetic-run-26");
+  expect(resolveThreadAttentionPill({ thread: attention })).toBe("Connecting");
+});

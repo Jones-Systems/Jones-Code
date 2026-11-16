@@ -705,8 +705,13 @@ export default function ChatView(props: ChatViewProps) {
     optimisticBlobPreviews.handOff(optimisticState);
     setHeldOptimisticUserMessages(optimisticState);
   }
+  // The pending-send store owns row lifetime, including Dismiss. Local state
+  // retains attachment handoffs only and must not resurrect a removed send.
   const optimisticUserMessages = pendingSendEntries
-    .filter((entry) => entry.environmentId === environmentId && entry.threadId === threadId && !entry.visible)
+    .filter(
+      (entry) =>
+        entry.environmentId === environmentId && entry.threadId === threadId && !entry.visible,
+    )
     .map((entry) => entry.message);
   const setOptimisticUserMessages = (action: SetStateAction<ChatMessage[]>) => {
     const next = typeof action === "function" ? action(optimisticUserMessages) : action;

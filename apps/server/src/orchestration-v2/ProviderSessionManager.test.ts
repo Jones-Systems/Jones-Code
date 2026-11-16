@@ -460,7 +460,7 @@ const makeNativeChildFixture = Effect.fnUntraced(function* () {
     modelSelection,
     runtimePolicy,
   });
-  return { manager, parent, resumeChild };
+  return { manager, parent, resumeChild, runtime, eventSink, idAllocator, now };
 });
 
 function unimplemented(detail: string) {
@@ -5453,6 +5453,108 @@ it.effect.each([
                 : {}),
             // Another thread's work keeps the shared session open past the children's idle unloads.
             hasPendingBackgroundWork: Effect.succeed(keptOpen),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "account transfer retires the parent writer when its projection includes an attached native child",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const reached = yield* Deferred.make<void>();
+      const released = yield* Deferred.make<void>();
+      const retired: Array<ProviderThreadId> = [];
+      const target = ProviderInstanceId.make("native-parent-target");
+      yield* Effect.gen(function* () {
+        const fixture = yield* makeNativeChildFixture();
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const parentProvider = {
+          ...makeProviderThread({
+            idAllocator: fixture.idAllocator,
+            threadId: fixture.parent.threadId,
+            providerSessionId: fixture.parent.providerSessionId,
+            nativeThreadId: "native-parent-thread",
+            now: fixture.now,
+          }),
+          runtimeIdentity: {
+            runtimeGeneration: "native-parent-generation",
+            requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+            observed: unobservedRuntimeIdentity(),
+          },
+        };
+        yield* fixture.eventSink.write({
+          events: [
+            {
+              id: yield* fixture.idAllocator.allocate.event({ threadId: fixture.parent.threadId }),
+              type: "provider-thread.updated",
+              threadId: fixture.parent.threadId,
+              occurredAt: fixture.now,
+              payload: parentProvider,
+            },
+          ],
+        });
+        yield* fixture.runtime.resumeThread({
+          providerThread: parentProvider,
+          threadId: fixture.parent.threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* fixture.resumeChild;
+        const before = yield* store.getThreadRecords(fixture.parent.threadId, ["providerThreads"]);
+        assert.lengthOf(before.providerThreads, 2);
+        yield* store.apply({
+          id: EventId.make("native-parent:select-target"),
+          type: "thread.model-selection-updated",
+          threadId: fixture.parent.threadId,
+          occurredAt: fixture.now,
+          payload: {
+            ...(yield* store.getThread(fixture.parent.threadId)),
+            modelSelection: { ...modelSelection, instanceId: target },
+            providerInstanceId: target,
+          },
+        });
+        yield* fixture.manager.detach({ ...fixture.parent, retireOnAccountTransfer: true });
+        yield* Deferred.await(reached);
+        assert.deepEqual(retired, [parentProvider.id]);
+        assert.isTrue(yield* fixture.manager.hasRetiredWriter!(fixture.parent));
+        const waiting = yield* fixture.manager.awaitThreadRetirement!({
+          threadId: fixture.parent.threadId,
+          instanceId: target,
+        }).pipe(Effect.forkChild);
+        yield* Deferred.succeed(released, undefined);
+        yield* Fiber.join(waiting);
+        yield* fixture.resumeChild;
+        assert.equal((yield* Ref.get(state)).resumeCount, 2);
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        assert.isTrue(yield* fixture.manager.isLive(fixture.parent.providerSessionId));
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(released, undefined)),
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            getMetadata: () =>
+              Effect.succeed({
+                driver: CODEX_DRIVER,
+                continuationKey: "shared-parent-and-child",
+                enabled: true,
+                capabilities: CodexCapabilities,
+              }),
+            retireThreadForTransfer: ({ providerThread, allowProducerRetirement }) =>
+              Effect.gen(function* () {
+                assert.isFalse(allowProducerRetirement);
+                retired.push(providerThread.id);
+                yield* Deferred.succeed(reached, undefined);
+                yield* Deferred.await(released);
+                return {
+                  binding: runtimeBinding(providerThread, "native-parent-generation")!,
+                  evidence: "thread_closed" as const,
+                };
+              }),
           }),
         ),
       );
