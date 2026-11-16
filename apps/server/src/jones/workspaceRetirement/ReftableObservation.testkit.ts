@@ -78,6 +78,7 @@ export const reftableReaderCases: Record<string, () => Promise<void>> = {
             "base without log",
           ]);
           const base = await command(repo, ["rev-parse", "HEAD"]);
+          await command(repo, ["tag", "-a", "native-peeled-tag", "-m", "valid annotated tag"]);
           const refOnly = await complete(directory, format);
           NodeAssert.deepEqual(refOnly.endpoints, []);
           await command(repo, ["config", "reftable.geometricFactor", "1"]);
@@ -127,6 +128,7 @@ export const reftableReaderCases: Record<string, () => Promise<void>> = {
       await command(repo, ["pack-refs", "--all"]);
       const observedStart = performance.now();
       const result = await complete(directory);
+      // @effect-diagnostics-next-line globalConsole:off -- Shared native/Vitest fixture reports only bounded aggregate cost as qualification evidence.
       console.info(
         JSON.stringify({
           fixture: "native-small-blocks",
