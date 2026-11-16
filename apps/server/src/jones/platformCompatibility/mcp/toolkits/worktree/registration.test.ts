@@ -36,6 +36,7 @@ import * as SecretRequests from "../../../../../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../../../../../peer/RemoteDelegation.ts";
 import * as RemoteAdmissionIntake from "../../../../remoteAdmissionIntegration/RemoteAdmissionIntake.ts";
 import * as ServerSettings from "../../../../../serverSettings.ts";
+import * as StorageCleanup from "../../../../../storageCleanup.ts";
 import * as VcsStatusBroadcaster from "../../../../../vcs/VcsStatusBroadcaster.ts";
 import * as ServerSecretStore from "../../../../../auth/ServerSecretStore.ts";
 import * as AssetSigner from "../../../../../assets/AssetSigner.ts";
@@ -88,6 +89,7 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.succeed(DocumentText.DocumentText, { ensure: () => Effect.sync(() => undefined) }),
     Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
     ServerSettings.layerTest({}),
+    Layer.mock(StorageCleanup.StorageCleanup)({}),
     Layer.mock(GitWorkflowService.GitWorkflowService)({}),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
     Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
