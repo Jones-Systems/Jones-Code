@@ -4,6 +4,11 @@
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "features": [
     {
+      "id": "snooze-menu-pointer-isolation",
+      "tests": ["apps/web/src/jones/snoozeMenu/SidebarSnooze.browser.test.tsx"],
+      "scope": "Shared web/desktop sidebar Snooze pointer gestures stay inside the trigger and portaled menu instead of activating ancestor row dragging. Accepted shared edit: two local pointerdown propagation guards in SidebarThreadRow.tsx; extracting generic machinery for these guards would add complexity. Jones browser coverage uses the real sortable row and SidebarPointerSensor with click, pointer movement, keyboard and custom choices. Wire, persistence, server, MCP, scheduled tasks, providers and native mobile are unchanged."
+    },
+    {
       "id": "linux-runtime-library-layout",
       "tests": ["scripts/jones/packaging/linuxRuntimeLibraries.test.ts"],
       "scope": "Linux CLI packaging and archive smoke checks share a bundled libatomic path beneath the established node_modules root. The actual qualified archive extractor and payload digest accept a synthetic distribution containing the library and license without broadening installed updater payload roots. Hosted Linux artifact smoke verifies the ELF RUNPATH resolves the bundled library; macOS and Windows packaging are unchanged."
