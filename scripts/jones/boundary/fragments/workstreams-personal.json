@@ -33,8 +33,15 @@
     "apps/web/src/jones/workstreams/personalNotifications.tsx",
     "apps/web/src/jones/workstreams/personalPresentation.ts",
     "apps/web/src/jones/workstreams/personalSettings.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalSidebarOrder.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalSidebarOrder.ts",
+    "apps/web/src/jones/workstreams/personalThreadDrag.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalThreadDrag.ts",
+    "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
+    "apps/web/src/jones/workstreams/personalThreadPlacement.ts",
     "apps/web/src/jones/workstreams/personalThreadReorder.test.ts",
     "apps/web/src/jones/workstreams/personalThreadReorder.ts",
+    "apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx",
     "apps/web/src/jones/workstreams/sidebarThreadDrop.ts",
     "apps/web/src/state/workstreamsPersonal.ts",
     "apps/web/src/test/reactElementTree.ts",
@@ -879,6 +886,14 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "packages/client-runtime/src/jones/workstreams/personal/index.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalSidebarOrder.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalThreadPlacement.ts"
     }
   ]
 }

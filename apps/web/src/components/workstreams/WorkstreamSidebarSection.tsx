@@ -1,18 +1,53 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type DragEvent, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
   PersonalWorkstreamsController,
   PersonalWorkstreamView,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  EllipsisIcon,
+  PaletteIcon,
+  PencilIcon,
+  TrashIcon,
+} from "lucide-react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuItemDetail,
+  MenuPopup,
+  MenuTrigger,
+  MenuSeparator,
+  MenuSub,
+  MenuSubTrigger,
+  MenuSubPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuRadioItemIndicator,
+} from "../ui/menu";
+import {
+  AlertDialog,
+  AlertDialogPopup,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+} from "../ui/alert-dialog";
 import { Dialog, DialogPopup, DialogHeader, DialogTitle } from "../ui/dialog";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { PersonalSidebarGroupHeader } from "../../jones/workstreams/PersonalSidebarGroupHeader";
 import type { PersonalThreadSummary } from "../../jones/workstreams/personalPresentation";
+
+import { personalGroupCollapsedKey } from "../../jones/workstreams/personalSidebarOrder";
+
+const workstreamDragType = "application/x-jones-workstream";
+const lifecycles = ["planned", "active", "paused", "completed", "deferred", "abandoned"] as const;
+const lifecycleLabel = (value: string) => value[0]!.toUpperCase() + value.slice(1);
 
 const collapsedSchema = Schema.Boolean;
 const emptySummary: PersonalThreadSummary = { total: 0, running: 0, attention: 0, failed: 0 };
@@ -78,147 +113,232 @@ function Group({
   controller,
   children,
   summary,
+  dragging,
+  onDragStart,
+  onDeleted,
 }: {
   item: PersonalWorkstreamView;
   controller: PersonalWorkstreamsController;
   children: ReactNode;
   summary: PersonalThreadSummary;
+  dragging: boolean;
+  onDragStart: (event: DragEvent<HTMLDivElement>) => void;
+  onDeleted: () => void;
 }) {
   const state = useAtomValue(controller.state);
   const [collapsed, setCollapsed] = useLocalStorage(
-    `jones:workstreams:collapsed:${item.id}`,
+    personalGroupCollapsedKey(item.id),
     false,
     collapsedSchema,
   );
   const [editing, setEditing] = useState<"name" | "color" | null>(null);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const removedRef = useRef(false);
   const run = async (operation: () => ReturnType<typeof controller.remove>) => {
-    if (pending) return;
+    if (pendingRef.current) return;
+    pendingRef.current = true;
     setPending(true);
     try {
       const result = await operation();
       if (!result.ok) showPersonalFailure(result.failure);
-    } catch (error) {
+    } finally {
+      pendingRef.current = false;
       setPending(false);
-      throw error;
     }
-    setPending(false);
   };
   const index = state.workstreams.findIndex((entry) => entry.id === item.id);
   return (
     <section
       data-native-workstream={JSON.stringify(item.id)}
-      className="my-2 overflow-hidden rounded-lg border border-sidebar-border/70 border-l-4 bg-sidebar-control-surface/30"
+      className={`overflow-hidden rounded-lg border border-sidebar-border/70 border-l-4 bg-sidebar-control-surface/30 ${dragging ? "opacity-50" : ""}`}
       style={{ borderLeftColor: item.color ?? undefined }}
+      onPointerDownCapture={(event) => {
+        // Alert dialogs ignore outside presses by default; this flow allows cancel until submitted.
+        const target = event.target;
+        if (
+          confirmDelete &&
+          !pendingRef.current &&
+          target instanceof Element &&
+          target.closest(
+            '[data-slot="alert-dialog-viewport"], [data-slot="alert-dialog-backdrop"]',
+          ) &&
+          !target.closest('[data-slot="alert-dialog-popup"]')
+        )
+          setConfirmDelete(false);
+      }}
     >
-      <div
-        className="flex items-center gap-1 pr-2"
-        draggable={state.canCreate && !pending}
-        onDragStart={(event) => {
-          event.dataTransfer.setData("application/x-jones-workstream", item.id);
-          event.dataTransfer.effectAllowed = "move";
-        }}
-        onDragOver={(event) => {
-          if (event.dataTransfer.types.includes("application/x-jones-workstream"))
+      <div className="flex items-start gap-1 pr-2">
+        <div
+          className="flex min-w-0 flex-1"
+          draggable={state.canCreate && !pending && !confirmDelete && !editing}
+          onDragStart={onDragStart}
+        >
+          <PersonalSidebarGroupHeader
+            name={item.name}
+            collapsed={collapsed}
+            onToggle={() => setCollapsed((value) => !value)}
+            summary={summary}
+            lifecycle={item.lifecycle}
+          />
+        </div>
+        <div
+          className="mt-1.5 shrink-0"
+          data-workstream-menu
+          draggable={false}
+          onDragStart={(event) => {
             event.preventDefault();
-        }}
-        onDrop={(event) => {
-          const moved = event.dataTransfer.getData("application/x-jones-workstream");
-          if (!moved || moved === item.id || !state.canCreate) return;
-          event.preventDefault();
-          const others = state.workstreams.filter((entry) => entry.id !== moved);
-          const target = others.findIndex((entry) => entry.id === item.id);
-          void run(async () => {
-            const result = await controller.reorder(moved, {
-              beforeId: others[target - 1]?.id ?? null,
-              afterId: item.id,
-            });
-            return result.ok ? { ok: true, value: undefined } : result;
-          });
-        }}
-      >
-        <PersonalSidebarGroupHeader
-          name={item.name}
-          collapsed={collapsed}
-          onToggle={() => setCollapsed((value) => !value)}
-          summary={summary}
-          lifecycle={item.lifecycle}
-        />
-        <Menu>
-          <MenuTrigger aria-label={`Edit ${item.name}`}>…</MenuTrigger>
-          <MenuPopup>
-            <MenuItem
-              disabled={!state.canCreate || pending}
-              onClick={() => {
-                setDraft(item.name);
-                setEditing("name");
-              }}
+            event.stopPropagation();
+          }}
+        >
+          <Menu>
+            <MenuTrigger
+              aria-label={`Options for ${item.name}`}
+              render={<Button variant="ghost" size="icon-sm" />}
             >
-              Rename
-            </MenuItem>
-            <MenuItem
-              disabled={!state.canCreate || pending}
-              onClick={() => {
-                setDraft(item.color ?? "");
-                setEditing("color");
-              }}
-            >
-              Change color
-            </MenuItem>
-            {(["planned", "active", "paused", "completed", "deferred", "abandoned"] as const).map(
-              (lifecycle) => (
-                <MenuItem
-                  key={lifecycle}
-                  disabled={!state.canCreate || pending || item.lifecycle === lifecycle}
-                  onClick={() =>
-                    void run(async () => {
-                      const result = await controller.setLifecycle(item.id, lifecycle);
-                      return result.ok ? { ok: true, value: undefined } : result;
-                    })
-                  }
-                >
-                  {lifecycle[0]!.toUpperCase() + lifecycle.slice(1)}
-                </MenuItem>
-              ),
-            )}
-            <MenuItem
-              disabled={!state.canCreate || pending || index === 0}
-              onClick={() =>
-                void run(async () => {
-                  const result = await controller.reorder(item.id, {
-                    afterId: state.workstreams[index - 1]!.id,
-                    beforeId: state.workstreams[index - 2]?.id ?? null,
-                  });
-                  return result.ok ? { ok: true, value: undefined } : result;
-                })
-              }
-            >
-              Move up
-            </MenuItem>
-            <MenuItem
-              disabled={!state.canCreate || pending || index === state.workstreams.length - 1}
-              onClick={() =>
-                void run(async () => {
-                  const result = await controller.reorder(item.id, {
-                    beforeId: state.workstreams[index + 1]!.id,
-                    afterId: state.workstreams[index + 2]?.id ?? null,
-                  });
-                  return result.ok ? { ok: true, value: undefined } : result;
-                })
-              }
-            >
-              Move down
-            </MenuItem>
-            <MenuItem
-              disabled={!state.canCreate || pending}
-              onClick={() => void run(() => controller.remove(item.id))}
-            >
-              Delete Workstream
-            </MenuItem>
-          </MenuPopup>
-        </Menu>
+              <EllipsisIcon aria-hidden />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              <MenuItem
+                disabled={!state.canCreate || pending}
+                onClick={() => {
+                  setDraft(item.name);
+                  setEditing("name");
+                }}
+              >
+                <PencilIcon aria-hidden /> Rename
+              </MenuItem>
+              <MenuItem
+                disabled={!state.canCreate || pending}
+                onClick={() => {
+                  setDraft(item.color ?? "");
+                  setEditing("color");
+                }}
+              >
+                <PaletteIcon aria-hidden /> Change color
+              </MenuItem>
+              <MenuSeparator />
+              <MenuSub>
+                <MenuSubTrigger disabled={!state.canCreate || pending}>
+                  Lifecycle <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
+                </MenuSubTrigger>
+                <MenuSubPopup>
+                  <MenuRadioGroup value={item.lifecycle}>
+                    {lifecycles.map((lifecycle) => (
+                      <MenuRadioItem
+                        key={lifecycle}
+                        value={lifecycle}
+                        disabled={!state.canCreate || pending}
+                        closeOnClick
+                        onClick={() => {
+                          if (item.lifecycle === lifecycle) return;
+                          void run(async () => {
+                            const result = await controller.setLifecycle(item.id, lifecycle);
+                            return result.ok ? { ok: true, value: undefined } : result;
+                          });
+                        }}
+                      >
+                        <span className="flex items-center justify-between gap-4">
+                          {lifecycleLabel(lifecycle)}
+                          <MenuRadioItemIndicator />
+                        </span>
+                      </MenuRadioItem>
+                    ))}
+                  </MenuRadioGroup>
+                </MenuSubPopup>
+              </MenuSub>
+              <MenuSeparator />
+              <MenuItem
+                disabled={!state.canCreate || pending || index === 0}
+                onClick={() =>
+                  void run(async () => {
+                    const result = await controller.reorder(item.id, {
+                      afterId: state.workstreams[index - 1]!.id,
+                      beforeId: state.workstreams[index - 2]?.id ?? null,
+                    });
+                    return result.ok ? { ok: true, value: undefined } : result;
+                  })
+                }
+              >
+                <ArrowUpIcon aria-hidden /> Move up
+              </MenuItem>
+              <MenuItem
+                disabled={!state.canCreate || pending || index === state.workstreams.length - 1}
+                onClick={() =>
+                  void run(async () => {
+                    const result = await controller.reorder(item.id, {
+                      beforeId: state.workstreams[index + 1]!.id,
+                      afterId: state.workstreams[index + 2]?.id ?? null,
+                    });
+                    return result.ok ? { ok: true, value: undefined } : result;
+                  })
+                }
+              >
+                <ArrowDownIcon aria-hidden /> Move down
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem
+                variant="destructive"
+                disabled={!state.canCreate || pending}
+                onClick={() => setConfirmDelete(true)}
+              >
+                <TrashIcon aria-hidden /> Delete Workstream…
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+        </div>
       </div>
+      {confirmDelete ? (
+        <AlertDialog
+          open
+          onOpenChange={(open, details) => {
+            if (!open && pendingRef.current) details.cancel();
+            else if (!open) setConfirmDelete(false);
+          }}
+        >
+          <AlertDialogPopup
+            initialFocus={cancelRef}
+            finalFocus={() => (removedRef.current ? false : undefined)}
+          >
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete “{item.name}”?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Threads move to Unassigned. No threads are deleted. This cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <Button
+                ref={cancelRef}
+                variant="outline"
+                disabled={pending}
+                onClick={() => setConfirmDelete(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={pending || !state.canCreate}
+                onClick={() =>
+                  void run(async () => {
+                    const result = await controller.remove(item.id);
+                    if (result.ok) {
+                      removedRef.current = true;
+                      setConfirmDelete(false);
+                      onDeleted();
+                    }
+                    return result;
+                  })
+                }
+              >
+                {pending ? "Deleting…" : "Delete Workstream"}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
+      ) : null}
       {!collapsed ? children : null}
       {editing ? (
         <Dialog
@@ -294,36 +414,180 @@ export function WorkstreamSidebarSection({
 }) {
   const state = useAtomValue(controller.state);
   const [unassignedCollapsed, setUnassignedCollapsed] = useLocalStorage(
-    "jones:workstreams:unassigned-collapsed",
+    personalGroupCollapsedKey(null),
     false,
     collapsedSchema,
   );
+  const containerRef = useRef<HTMLDivElement>(null);
+  const draggedRef = useRef<string | null>(null);
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [insertion, setInsertion] = useState<{
+    beforeId: string | null;
+    afterId: string | null;
+  } | null>(null);
+  const reorderPending = useRef(false);
+  const clearDrag = () => {
+    draggedRef.current = null;
+    setDraggedId(null);
+    setInsertion(null);
+  };
+  const destination = (event: DragEvent<HTMLDivElement>, targetId: string | null) => {
+    const source = draggedRef.current;
+    if (
+      !source ||
+      !state.canCreate ||
+      reorderPending.current ||
+      !event.dataTransfer.types.includes(workstreamDragType)
+    )
+      return null;
+    const sourceIndex = state.workstreams.findIndex((entry) => entry.id === source);
+    if (sourceIndex < 0) return null;
+    const others = state.workstreams.filter((entry) => entry.id !== source);
+    let slot: number;
+    if (targetId === null) {
+      // Unassigned is a fixed tail: only its leading gap and header accept a drop.
+      const header = event.currentTarget.querySelector("button");
+      if (!header || event.clientY > header.getBoundingClientRect().bottom) return null;
+      slot = others.length;
+    } else {
+      if (targetId === source) return null;
+      const section = event.currentTarget.querySelector("section");
+      if (!section) return null;
+      const rect = section.getBoundingClientRect();
+      const index = others.findIndex((entry) => entry.id === targetId);
+      if (index < 0) return null;
+      slot = index + (event.clientY >= rect.top + rect.height / 2 ? 1 : 0);
+    }
+    if (slot === sourceIndex) return null;
+    return { beforeId: others[slot - 1]?.id ?? null, afterId: others[slot]?.id ?? null };
+  };
+  const dragOver = (event: DragEvent<HTMLDivElement>, targetId: string | null) => {
+    if (!draggedRef.current) return;
+    event.stopPropagation();
+    const next = destination(event, targetId);
+    if (next) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+    }
+    setInsertion((current) =>
+      current?.beforeId === next?.beforeId && current?.afterId === next?.afterId ? current : next,
+    );
+  };
+  const drop = (event: DragEvent<HTMLDivElement>, targetId: string | null) => {
+    if (!draggedRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const source = draggedRef.current;
+    const next = destination(event, targetId);
+    clearDrag();
+    if (!next) return;
+    reorderPending.current = true;
+    void (async () => {
+      try {
+        const result = await controller.reorder(source, next);
+        if (!result.ok) showPersonalFailure(result.failure);
+      } finally {
+        reorderPending.current = false;
+      }
+    })();
+  };
+  const focusAfterRemoval = (id: string) => {
+    const index = state.workstreams.findIndex((entry) => entry.id === id);
+    const following = state.workstreams.slice(index + 1).map((entry) => entry.id);
+    requestAnimationFrame(() => {
+      const sections = containerRef.current?.querySelectorAll<HTMLElement>(
+        "[data-native-workstream]",
+      );
+      const target =
+        following
+          .map((candidate) =>
+            Array.from(sections ?? []).find(
+              (section) => section.dataset.nativeWorkstream === JSON.stringify(candidate),
+            ),
+          )
+          .find(Boolean) ??
+        Array.from(sections ?? []).find((section) => section.dataset.nativeWorkstream === "null");
+      target?.querySelector<HTMLButtonElement>("button")?.focus();
+    });
+  };
+  const insertionLine = (
+    <div
+      aria-hidden
+      data-workstream-insertion
+      className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-primary forced-colors:bg-[Highlight]"
+    />
+  );
   return (
-    <div aria-label="Workstreams">
+    <div
+      ref={containerRef}
+      aria-label="Workstreams"
+      onDragEnd={clearDrag}
+      onDrop={clearDrag}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") clearDrag();
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInsertion(null);
+      }}
+    >
       {state.workstreams.map((item) => (
-        <Group
+        <div
           key={item.id}
-          item={item}
-          controller={controller}
-          summary={summaries?.get(item.id) ?? emptySummary}
+          className="relative py-1"
+          onDragOver={(event) => dragOver(event, item.id)}
+          onDrop={(event) => drop(event, item.id)}
         >
-          {renderMembers(item.id)}
-        </Group>
-      ))}
-      <section
-        data-native-workstream="null"
-        className="my-2 overflow-hidden rounded-lg border border-sidebar-border/70"
-      >
-        <div className="flex">
-          <PersonalSidebarGroupHeader
-            name="Unassigned"
-            collapsed={unassignedCollapsed}
-            onToggle={() => setUnassignedCollapsed((value) => !value)}
-            summary={unassignedSummary}
-          />
+          {insertion?.afterId === item.id ? insertionLine : null}
+          <Group
+            item={item}
+            controller={controller}
+            summary={summaries?.get(item.id) ?? emptySummary}
+            dragging={draggedId === item.id}
+            onDeleted={() => focusAfterRemoval(item.id)}
+            onDragStart={(event) => {
+              if (
+                event.target instanceof Element &&
+                event.target.closest("[data-workstream-menu]")
+              ) {
+                event.preventDefault();
+                return;
+              }
+              if (!state.canCreate || reorderPending.current) {
+                event.preventDefault();
+                return;
+              }
+              event.dataTransfer.setData(workstreamDragType, item.id);
+              event.dataTransfer.effectAllowed = "move";
+              draggedRef.current = item.id;
+              setDraggedId(item.id);
+              setInsertion(null);
+            }}
+          >
+            {renderMembers(item.id)}
+          </Group>
         </div>
-        {!unassignedCollapsed ? renderMembers(null) : null}
-      </section>
+      ))}
+      <div
+        className="relative py-1"
+        onDragOver={(event) => dragOver(event, null)}
+        onDrop={(event) => drop(event, null)}
+      >
+        {insertion?.afterId === null ? insertionLine : null}
+        <section
+          data-native-workstream="null"
+          className="overflow-hidden rounded-lg border border-sidebar-border/70"
+        >
+          <div className="flex">
+            <PersonalSidebarGroupHeader
+              name="Unassigned"
+              collapsed={unassignedCollapsed}
+              onToggle={() => setUnassignedCollapsed((value) => !value)}
+              summary={unassignedSummary}
+            />
+          </div>
+          {!unassignedCollapsed ? renderMembers(null) : null}
+        </section>
+      </div>
     </div>
   );
 }
