@@ -24,7 +24,7 @@ import {
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
-} from "../../pendingUserInput";
+} from "./answerProgress";
 
 vi.mock(import("../../components/ChatMarkdown"), async (importOriginal) => ({
   ...(await importOriginal()),

@@ -1,3 +1,7 @@
+import { projectPendingUserInputAnswer as projectJonesAnswer } from "../../jones/questionAnswer/threadReferenceAnswer";
+import { DisplacedAnswerLedger } from "../../jones/questionAnswer/displacedAnswer";
+import { derivePendingUserInputProgress } from "../../jones/questionAnswer/answerProgress";
+import { supportsUserResponseAnswerNotes } from "@t3tools/contracts/jones/userResponseRequest";
 import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import {
   AuthOrchestrationOperateScope,
@@ -17,7 +21,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { useRef, useState, type RefObject, type SetStateAction } from "react";
+import { useRef, useState, type SetStateAction } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   type ComposerThreadDraftState,
@@ -36,11 +40,9 @@ import {
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
-} from "@t3tools/client-runtime/state/pending-user-input";
+} from "../../jones/questionAnswer/pendingAnswers";
 import {
   carryDisplacedCustomAnswerIntoPrompt,
-  withdrawDisplacedCustomAnswerFromPrompt,
-  derivePendingUserInputProgress,
   answerContextRecords,
   projectPendingUserInputAnswer,
   threadContextsReferencedByAnswer,
@@ -62,7 +64,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { toastManager } from "../ui/toast";
 
-import type { ChatComposerHandle } from "./ChatComposer";
+
 
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const NO_PENDING_REQUESTS = { approvals: [], userInputs: [] } as const;
@@ -170,10 +172,11 @@ function deriveActivePendingDraft(
         activePendingUserInput.questions,
         activePendingDraftAnswers,
         activePendingQuestionIndex,
+        { notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) },
       )
     : null;
   const activePendingResolvedAnswers = activePendingUserInput
-    ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingDraftAnswers)
+    ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingDraftAnswers, { notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) })
     : null;
   return {
     activePendingDraftAnswers,
@@ -237,7 +240,6 @@ function readPendingUserInputDraft(scope: PendingUserInputDraftScope) {
 function makePendingCustomAnswerSetter(input: {
   readonly activePendingUserInput: PendingUserInput | null;
   readonly activePendingRequestKey: string;
-  readonly writePrompt: (prompt: string) => void;
   readonly withdrawRestoredAnswer: (questionId: string, value: string) => void;
   readonly setPendingUserInputAnswersByRequestId: (
     update: SetStateAction<Record<string, Record<string, PendingUserInputDraftAnswer>>>,
@@ -252,7 +254,6 @@ function makePendingCustomAnswerSetter(input: {
     if (!question || question.allowCustomAnswer === false) {
       return;
     }
-    input.writePrompt(value);
     input.withdrawRestoredAnswer(questionId, value);
     input.setPendingUserInputAnswersByRequestId((existing) => ({
       ...existing,
@@ -262,6 +263,7 @@ function makePendingCustomAnswerSetter(input: {
           question,
           existing[activePendingRequestKey]?.[questionId],
           value,
+          { notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) },
         ),
       },
     }));
@@ -276,8 +278,6 @@ export function usePendingThreadRequests(input: {
   readonly supportsQuestionAttachments: boolean;
   readonly composerDraftTarget: ScopedThreadRef | DraftId;
   readonly setComposerDraftPrompt: (target: ScopedThreadRef | DraftId, prompt: string) => void;
-  readonly promptRef: { current: string };
-  readonly composerRef: RefObject<ChatComposerHandle | null>;
   readonly setThreadError: (threadId: ThreadId, error: string | null) => void;
 }) {
   const {
@@ -287,8 +287,6 @@ export function usePendingThreadRequests(input: {
     supportsQuestionAttachments,
     composerDraftTarget,
     setComposerDraftPrompt,
-    promptRef,
-    composerRef,
     setThreadError,
   } = input;
   const respondToThreadApproval = useOrchestrationCommand(threadEnvironment.respondToApproval, {
@@ -302,9 +300,7 @@ export function usePendingThreadRequests(input: {
   });
   const userInputResponsesInFlight = useRef(new Set<string>());
   // In the order the text went into the thread draft, which is how a copy is found again.
-  const displacedAnswers = useRef<
-    Array<{ readonly draft: string; readonly key: string; readonly text: string }>
-  >([]);
+  const displacedAnswers = useRef(new DisplacedAnswerLedger());
   // This hook outlives a thread switch, and each thread has its own draft.
   const displacedDraftKey =
     typeof composerDraftTarget === "string"
@@ -418,7 +414,7 @@ export function usePendingThreadRequests(input: {
       for (const { question, target, draft } of questionDrafts) {
         if ((useQuestionAttachmentPreparation.getState().counts[target] ?? 0) > 0) return;
         providerAnswers[question.id] = projectPendingUserInputAnswer(
-          answers[question.id],
+          projectJonesAnswer(answers[question.id], draft?.threadContexts ?? [], environmentId),
           answerContextRecords(draft, threadDraft),
         );
         const attachments = draft ? [...draft.images, ...draft.files] : [];
@@ -521,28 +517,24 @@ export function usePendingThreadRequests(input: {
     }
     setPendingUserInputQuestionIndexByRequestId((existing) => ({
       ...existing,
-      [activePendingRequestKey]: nextQuestionIndex,
+      [activePendingRequestKey]: Math.max(0, Math.min(nextQuestionIndex, activePendingUserInput.questions.length - 1)),
     }));
   };
 
   const onSelectActivePendingUserInputOption = (questionId: string, optionValue: string) => {
-    if (!activePendingUserInput) {
-      return;
-    }
-    // The option replaces the custom answer. Anything typed there is the
-    // user's text, so it goes back to the thread draft instead of vanishing.
-    const displacedAnswer =
-      readPendingUserInputDraft(draftScope).activePendingDraftAnswers[questionId]?.customAnswer;
+    if (!activePendingUserInput || activePendingIsResponding) return;
+    const question = activePendingUserInput.questions.find((entry) => entry.id === questionId);
+    if (!question || !question.options.some((option) => (option.value ?? option.label) === optionValue)) return;
+    const fresh = readPendingUserInputDraft(draftScope);
+    const currentAnswers = fresh.activePendingDraftAnswers;
+    const notes = supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) && !question.multiSelect;
+    const displacedAnswer = notes ? undefined : currentAnswers[questionId]?.customAnswer;
     const currentPrompt =
       useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
     const nextPrompt = carryDisplacedCustomAnswerIntoPrompt(currentPrompt, displacedAnswer);
     if (nextPrompt !== currentPrompt) {
       setComposerDraftPrompt(composerDraftTarget, nextPrompt);
-      displacedAnswers.current.push({
-        draft: displacedDraftKey,
-        key: `${activePendingRequestKey}:${questionId}`,
-        text: displacedAnswer ?? "",
-      });
+      displacedAnswers.current.record(displacedDraftKey, `${activePendingRequestKey}:${questionId}`, displacedAnswer ?? "", currentPrompt, nextPrompt);
       toastManager.add({
         type: "info",
         title: "Your typed text was set aside",
@@ -567,66 +559,37 @@ export function usePendingThreadRequests(input: {
         );
       }
     }
-    setPendingUserInputAnswersByRequestId((existing) => {
-      const question = activePendingUserInput.questions.find((entry) => entry.id === questionId);
-      if (!question) {
-        return existing;
-      }
-
-      return {
-        ...existing,
-        [activePendingRequestKey]: {
-          ...existing[activePendingRequestKey],
-          [questionId]: togglePendingUserInputOptionSelection(
-            question,
-            existing[activePendingRequestKey]?.[questionId],
-            optionValue,
-          ),
-        },
-      };
-    });
-    promptRef.current = "";
-    composerRef.current?.resetCursorState({ cursor: 0 });
+    const nextAnswer = togglePendingUserInputOptionSelection(question,
+      question.multiSelect ? currentAnswers[questionId] : { ...currentAnswers[questionId], selectedOptionValues: [] },
+      optionValue, { notes });
+    const drafts = { ...currentAnswers, [questionId]: nextAnswer };
+    setPendingUserInputAnswersByRequestId((existing) => ({ ...existing, [activePendingRequestKey]: drafts }));
+    if (question.multiSelect) return;
+    const answers = buildPendingUserInputAnswers(activePendingUserInput.questions, drafts, { notes });
+    if (answers) void onRespondToUserInput(activePendingUserInput.requestId, answers);
+    else setActivePendingUserInputQuestionIndex(derivePendingUserInputProgress(activePendingUserInput.questions, drafts, fresh.activePendingQuestionIndex, { notes }).firstUnansweredIndex);
   };
   const onSelectActivePendingUserInputOptionStable = useStableCallback(
     onSelectActivePendingUserInputOption,
   );
 
-  const writePrompt = useStableCallback((prompt: string) => {
-    promptRef.current = prompt;
-  });
   // Undo can put set-aside text back into the answer; left in the draft too, it is sent twice.
   const withdrawRestoredAnswer = useStableCallback((questionId: string, value: string) => {
     const key = `${activePendingRequestKey}:${questionId}`;
-    const entries = displacedAnswers.current;
-    const index = entries.findLastIndex(
-      (entry) =>
-        entry.draft === displacedDraftKey &&
-        entry.key === key &&
-        entry.text.trim() === value.trim(),
-    );
-    const displaced = entries[index];
-    if (displaced === undefined) return;
-    const later = entries
-      .slice(index + 1)
-      .filter((entry) => entry.draft === displaced.draft)
-      .map((entry) => entry.text);
-    displacedAnswers.current = entries.filter((entry) => entry !== displaced);
-    const currentPrompt =
-      useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
-    const nextPrompt = withdrawDisplacedCustomAnswerFromPrompt(
-      currentPrompt,
-      displaced.text,
-      later,
-    );
+    const currentPrompt = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
+    const nextPrompt = displacedAnswers.current.withdraw(displacedDraftKey, key, value, currentPrompt);
     if (nextPrompt !== currentPrompt) setComposerDraftPrompt(composerDraftTarget, nextPrompt);
   });
-  const onChangeActivePendingUserInputCustomAnswer = makePendingCustomAnswerSetter({
+  const changeAnswer = makePendingCustomAnswerSetter({
     activePendingUserInput,
     activePendingRequestKey,
-    writePrompt,
     withdrawRestoredAnswer,
     setPendingUserInputAnswersByRequestId,
+  });
+
+  const onChangeActivePendingUserInputCustomAnswer = useStableCallback((questionId: string, value: string) => {
+    if (!activePendingUserInput || activePendingIsResponding || userInputResponsesInFlight.current.has(JSON.stringify([environmentId, activeThreadId, activePendingUserInput.requestId]))) return;
+    changeAnswer(questionId, value);
   });
 
   const onAdvanceActivePendingUserInput = () => {
@@ -664,9 +627,10 @@ export function usePendingThreadRequests(input: {
     activePendingApproval,
     activePendingUserInput,
     activePendingIsResponding,
-    respondingRequestIds,
+    respondingRequestIds: [...respondingRequestIds, ...respondingUserInputRequestIds],
     onRespondToApproval: onRespondToApprovalStable,
     onDismissUserInput: onDismissUserInputStable,
+    onSelectActivePendingUserInputQuestion: setActivePendingUserInputQuestionIndex,
     onSelectActivePendingUserInputOption: onSelectActivePendingUserInputOptionStable,
     onChangeActivePendingUserInputCustomAnswer,
     onAdvanceActivePendingUserInput,

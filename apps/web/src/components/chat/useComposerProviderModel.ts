@@ -7,6 +7,7 @@ import { draftModelSelectionApplies } from "../../lib/chatThreadActions";
 import {
   type ModelSelection,
   type ProjectId,
+  type ProviderInstanceId,
   ProviderDriverKind,
   type ScopedThreadRef,
   type ServerProvider,
@@ -18,7 +19,7 @@ import {
 } from "../../providerInstances";
 import { type UnifiedSettings } from "@t3tools/contracts/settings";
 import { getComposerPromptInjectionState, getComposerProviderState } from "./composerProviderState";
-import { resolveComposerProviderSelection } from "../ChatView.logic";
+import { resolveComposerProviderSelection } from "../../jones/composer/providerSelection";
 
 const NO_PROVIDER_MODELS: ServerProvider["models"] = [];
 
@@ -29,6 +30,7 @@ const NO_PROVIDER_MODELS: ServerProvider["models"] = [];
  */
 export function useComposerProviderModel(
   input: Omit<Parameters<typeof resolveComposerProviderSelection>[0], "entries"> & {
+    readonly requiredInstanceId?: ProviderInstanceId | null | undefined;
     readonly providerStatuses: ReadonlyArray<ServerProvider>;
     readonly settings: UnifiedSettings;
     readonly activeProjectId: ProjectId | null;
@@ -51,6 +53,7 @@ export function useComposerProviderModel(
     lockedProvider,
     lockedInstanceId,
     threadStarted,
+    requiredInstanceId,
   } = input;
   const draftModelState = useComposerDraftModelState(threadRef);
   const providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry> = providerInstanceEntriesFor(
@@ -68,9 +71,12 @@ export function useComposerProviderModel(
     ],
     lockedProvider,
     lockedInstanceId,
+    requiredInstanceId,
   });
   const selectedInstanceId =
-    selection.selectedProviderEntry?.instanceId ?? NO_PROVIDER_MODEL_SELECTION.instanceId;
+    selection.selectedProviderEntry?.instanceId ??
+    selection.unavailableProviderInstanceId ??
+    NO_PROVIDER_MODEL_SELECTION.instanceId;
   const selectedProvider: ProviderDriverKind =
     selection.selectedProviderEntry?.driverKind ?? selection.requestedDriverKind;
   const modelState = deriveEffectiveComposerModelState({
@@ -87,6 +93,11 @@ export function useComposerProviderModel(
   const selectedProviderModels = selection.selectedProviderEntry?.models ?? NO_PROVIDER_MODELS;
   const composerProviderState = getComposerProviderState({
     provider: selectedProvider,
+    instanceId: selectedInstanceId,
+    defaultModelSelection: projectModelSelection,
+    defaultDriverKind: providerInstanceEntries.find(
+      (entry) => entry.instanceId === projectModelSelection?.instanceId,
+    )?.driverKind,
     model: modelState.selectedModel,
     models: selectedProviderModels,
     promptInjectionState,

@@ -39,7 +39,7 @@ import {
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
-} from "../../pendingUserInput";
+} from "./answerProgress";
 
 vi.mock(import("../../components/ChatMarkdown"), async (importOriginal) => ({
   ...(await importOriginal()),
@@ -1153,4 +1153,22 @@ it("inserts a newline with Shift+Enter and sends its choice and note with Enter"
   expect(output("answer")).toBe(
     JSON.stringify({ approach: "Incremental\nNote: First paragraph\nSecond paragraph" }),
   );
+});
+
+it("does not admit a prepared image into a replacement card after the request unmounts", async () => {
+  await using _fixture = await setupTest();
+  const key = questionAttachmentDraftId(threadRef.environmentId, threadRef.threadId, "request", "approach");
+  let finish!: (value: Awaited<ReturnType<typeof prepareImageForAttachment>>) => void;
+  vi.mocked(prepareImageForAttachment).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  await act(async () => await root.rerender(<Harness key="old-request" capabilities={capabilities} />));
+  const clipboardData = new DataTransfer();
+  const file = new File(["image"], "late.png", { type: "image/png" });
+  clipboardData.items.add(file);
+  await act(async () => answerField().dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true })));
+  expect(useQuestionAttachmentPreparation.getState().counts[key]).toBe(1);
+  await act(async () => await root.rerender(<Harness key="replacement-request" capabilities={capabilities} />));
+  await act(async () => finish({ ok: true, file, recompressed: false }));
+  expect(useComposerDraftStore.getState().getComposerDraft(key)?.images ?? []).toEqual([]);
+  expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.images ?? []).toEqual([]);
+  expect(useQuestionAttachmentPreparation.getState().counts[key] ?? 0).toBe(0);
 });

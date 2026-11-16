@@ -1,5 +1,5 @@
 import type { PendingUserInput } from "../../session-logic";
-import type { PendingUserInputDraftAnswer, PendingUserInputProgress } from "../../pendingUserInput";
+import type { PendingUserInputDraftAnswer, PendingUserInputProgress } from "./answerProgress";
 
 export const ANSWER_FIELD_MAX_LINES = 10;
 
