@@ -4,6 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import * as NodeModule from "node:module";
+import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeChildProcess from "node:child_process";
 import { incarnation } from "./OutputAttestation.ts";
@@ -326,70 +327,74 @@ export const qualificationCases: Record<string, () => Promise<void>> = {
       NodeAssert.deepEqual([...proposal.preservationTips!].sort(), [orphan, head].sort());
       await retireAndVerify(repo, worktree, input, [orphan, head]);
     }),
-  "candidate reflog corruption and unreadability retain bounded sanitized observation diagnostics":
-    () =>
-      fixture(async ({ input }) => {
-        const log = NodePath.join(input.expected.git_dir, "logs/HEAD");
-        const original = await NodeFSP.readFile(log);
-        for (const scenario of ["malformed", "permission_denied"] as const) {
-          if (scenario === "malformed")
-            await NodeFSP.writeFile(log, "private raw corruption must never be echoed\n");
-          else {
-            await NodeFSP.writeFile(log, original);
-            await NodeFSP.chmod(log, 0);
-          }
-          try {
-            const result = await qualify(input);
-            NodeAssert.notEqual(result.outcome, "retirable");
-            NodeAssert.ok(result.reasons.includes("observation_failed"));
-            NodeAssert.deepEqual(result.observationFailure, {
-              stage: "candidate_reflog",
-              errorClass: scenario,
-            });
-            NodeAssert.ok(!JSON.stringify(result).includes("private raw corruption"));
-            NodeAssert.match(
-              result.details?.find((d) => d.reason === "observation_failed")?.fact ?? "",
-              /candidate_reflog/,
-            );
-          } finally {
-            await NodeFSP.chmod(log, 0o644);
-          }
-        }
-      }),
-  "candidate reflog bytes and distinct tips are bounded rather than silently dropped": () =>
+  "candidate reflog injected read failures retain bounded sanitized diagnostics": () =>
     fixture(async ({ input }) => {
-      const log = NodePath.join(input.expected.git_dir, "logs/HEAD");
-      const head = await command(input.worktree, ["rev-parse", "HEAD"]);
-      for (const bytes of [
-        "x".repeat(1024 * 1024 + 1),
-        Array.from(
-          { length: 1001 },
-          (_, i) =>
-            `${head} ${i.toString(16).padStart(40, "0")} Fixture <fixture@example.invalid> 1 +0000\tfixture\n`,
-        ).join(""),
+      const fs = NodeModule.createRequire(import.meta.url)(
+        "node:fs/promises",
+      ) as typeof import("node:fs/promises");
+      const original = fs.open;
+      for (const [code, expected] of [
+        ["EACCES", "permission_denied"],
+        ["EIO", "native_read"],
+        ["bound_exceeded", "bounds"],
       ]) {
-        await NodeFSP.writeFile(log, bytes);
-        const result = await qualify(input);
-        NodeAssert.notEqual(result.outcome, "retirable");
-        NodeAssert.deepEqual(result.observationFailure, {
-          stage: "candidate_reflog",
-          errorClass: "bounds",
+        const opened = NodeTest.mock.method(fs, "open", (...args: unknown[]) => {
+          if (
+            String(args[0]).endsWith("/HEAD") &&
+            NodeFS.realpathSync(NodePath.dirname(String(args[0]))).endsWith("/logs")
+          )
+            return Promise.reject(
+              code === "bound_exceeded"
+                ? new Error(code)
+                : Object.assign(new Error("private failure detail"), { code }),
+            );
+          return Reflect.apply(original, fs, args);
         });
+        NodeModule.syncBuiltinESMExports();
+        try {
+          const result = await qualify(input);
+          NodeAssert.notEqual(result.outcome, "retirable");
+          NodeAssert.deepEqual(result.observationFailure, {
+            stage: "candidate_reflog",
+            errorClass: expected,
+          });
+          NodeAssert.ok(!JSON.stringify(result).includes("private failure detail"));
+        } finally {
+          opened.mock.restore();
+          NodeModule.syncBuiltinESMExports();
+        }
       }
     }),
   "Git command failures and elapsed budget identify their safe stage without copying native output":
     () =>
       fixture(async ({ input }) => {
-        const index = NodePath.join(input.expected.git_dir, "index");
-        const original = await NodeFSP.readFile(index);
-        await NodeFSP.writeFile(index, "private invalid index");
-        const failed = await qualify(input);
-        NodeAssert.deepEqual(failed.observationFailure, {
-          stage: "tracked_status",
-          errorClass: "native_command",
+        const child = NodeModule.createRequire(import.meta.url)(
+          "node:child_process",
+        ) as typeof import("node:child_process");
+        const original = child.execFile;
+        const commands = NodeTest.mock.method(child, "execFile", (...args: unknown[]) => {
+          if ((args[1] as string[]).includes("status")) {
+            (args[3] as (error: Error | null, stdout: Buffer, stderr: Buffer) => void)(
+              Object.assign(new Error("private native failure"), { code: 1 }),
+              Buffer.alloc(0),
+              Buffer.alloc(0),
+            );
+            return;
+          }
+          return Reflect.apply(original, child, args);
         });
-        NodeAssert.ok(!JSON.stringify(failed).includes("private invalid index"));
-        await NodeFSP.writeFile(index, original);
+        NodeModule.syncBuiltinESMExports();
+        try {
+          const failed = await qualify(input);
+          NodeAssert.deepEqual(failed.observationFailure, {
+            stage: "tracked_status",
+            errorClass: "native_command",
+          });
+          NodeAssert.ok(!JSON.stringify(failed).includes("private native failure"));
+        } finally {
+          commands.mock.restore();
+          NodeModule.syncBuiltinESMExports();
+        }
         let calls = 0;
         const clock = NodeTest.mock.method(performance, "now", () => (calls++ ? 60001 : 0));
         try {
@@ -439,27 +444,27 @@ export const reftableCases: Record<string, () => Promise<void>> = {
       NodeAssert.equal(result.outcome, "retirable", JSON.stringify(result));
       NodeAssert.deepEqual(result.preservationTips, [head]);
     }, "reftable"),
-  "native reftable missing objects remain unknown and disposable views are removed on failure":
+  "native reftable object-validation failure remains unknown without partial tips or a copied view":
     () =>
       fixture(async ({ worktree, input }) => {
         await command(worktree, ["checkout", "--detach"]);
-        await command(worktree, ["commit", "--allow-empty", "-m", "pruned fixture"]);
-        const orphan = await command(worktree, ["rev-parse", "HEAD"]);
+        await command(worktree, ["commit", "--allow-empty", "-m", "orphan fixture"]);
         await command(worktree, ["checkout", "task"]);
-        await NodeFSP.unlink(
-          NodePath.join(
-            input.expected.git_common_dir,
-            "objects",
-            orphan.slice(0, 2),
-            orphan.slice(2),
-          ),
-        );
-        const commands = NodeTest.mock.method(
-          NodeModule.createRequire(import.meta.url)(
-            "node:child_process",
-          ) as typeof import("node:child_process"),
-          "execFile",
-        );
+        const child = NodeModule.createRequire(import.meta.url)(
+          "node:child_process",
+        ) as typeof import("node:child_process");
+        const original = child.execFile;
+        const commands = NodeTest.mock.method(child, "execFile", (...args: unknown[]) => {
+          if ((args[1] as string[]).includes("cat-file")) {
+            (args[3] as (error: Error | null, stdout: Buffer, stderr: Buffer) => void)(
+              Object.assign(new Error("injected object unavailable"), { code: 1 }),
+              Buffer.alloc(0),
+              Buffer.alloc(0),
+            );
+            return;
+          }
+          return Reflect.apply(original, child, args);
+        });
         NodeModule.syncBuiltinESMExports();
         try {
           const result = await qualify(input);
@@ -468,15 +473,70 @@ export const reftableCases: Record<string, () => Promise<void>> = {
             stage: "candidate_reflog",
             errorClass: "native_command",
           });
-          const view = commands.mock.calls.flatMap(({ arguments: args }) =>
-            Array.isArray(args[1])
-              ? args[1].filter((arg: string) => arg.startsWith("--git-dir="))
-              : [],
+          NodeAssert.equal(result.preservationTips, undefined);
+          NodeAssert.ok(
+            !commands.mock.calls.some(({ arguments: args }) =>
+              (args[1] as string[]).some((arg) => arg.startsWith("--git-dir=")),
+            ),
           );
-          NodeAssert.equal(view.length, 1);
-          await NodeAssert.rejects(NodeFSP.lstat((view[0] as string).slice("--git-dir=".length)), {
-            code: "ENOENT",
+        } finally {
+          commands.mock.restore();
+          NodeModule.syncBuiltinESMExports();
+        }
+      }, "reftable"),
+  "SC-C4 success-shaped incomplete native enumeration cannot subtract decoded history or authorize a failed read":
+    () =>
+      fixture(async ({ worktree, input }) => {
+        await command(worktree, ["checkout", "--detach"]);
+        await command(worktree, ["commit", "--allow-empty", "-m", "candidate orphan"]);
+        const orphan = await command(worktree, ["rev-parse", "HEAD"]);
+        await command(worktree, ["checkout", "task"]);
+        const head = await command(worktree, ["rev-parse", "HEAD"]);
+        const child = NodeModule.createRequire(import.meta.url)(
+          "node:child_process",
+        ) as typeof import("node:child_process");
+        const original = child.execFile;
+        let incompleteCalls = 0;
+        const commands = NodeTest.mock.method(child, "execFile", (...args: unknown[]) => {
+          if ((args[1] as string[]).includes("rev-list")) {
+            incompleteCalls++;
+            (args[3] as (error: Error | null, stdout: Buffer, stderr: Buffer) => void)(
+              null,
+              Buffer.from(head + "\n"),
+              Buffer.alloc(0),
+            );
+            return;
+          }
+          return Reflect.apply(original, child, args);
+        });
+        NodeModule.syncBuiltinESMExports();
+        try {
+          const proposal = await qualify(input);
+          NodeAssert.equal(proposal.outcome, "retirable", JSON.stringify(proposal));
+          NodeAssert.deepEqual(proposal.preservationTips, [orphan]);
+          NodeAssert.equal(incompleteCalls, 0);
+          const fs = NodeModule.createRequire(import.meta.url)(
+            "node:fs/promises",
+          ) as typeof import("node:fs/promises");
+          const open = fs.open;
+          const failedRead = NodeTest.mock.method(fs, "open", (...args: unknown[]) => {
+            if (String(args[0]).endsWith("/tables.list"))
+              return Promise.reject(
+                Object.assign(new Error("injected read failure"), { code: "EIO" }),
+              );
+            return Reflect.apply(open, fs, args);
           });
+          NodeModule.syncBuiltinESMExports();
+          try {
+            const failed = await finalCheck(input, proposal);
+            NodeAssert.equal(failed.conflict, true);
+            NodeAssert.equal(failed.result.outcome, "unknown");
+            NodeAssert.equal(failed.result.preservationTips, undefined);
+            NodeAssert.equal(incompleteCalls, 0);
+          } finally {
+            failedRead.mock.restore();
+            NodeModule.syncBuiltinESMExports();
+          }
         } finally {
           commands.mock.restore();
           NodeModule.syncBuiltinESMExports();
@@ -557,10 +617,7 @@ export const reftableCases: Record<string, () => Promise<void>> = {
               ? args[1].filter((arg: string) => arg.startsWith("--git-dir="))
               : [],
           );
-          NodeAssert.equal(view.length, 1);
-          await NodeAssert.rejects(NodeFSP.lstat((view[0] as string).slice("--git-dir=".length)), {
-            code: "ENOENT",
-          });
+          NodeAssert.equal(view.length, 0);
         } finally {
           commands.mock.restore();
           NodeModule.syncBuiltinESMExports();

@@ -25,6 +25,10 @@
     "apps/server/src/jones/workspaceRetirement/Qualification.test.ts",
     "apps/server/src/jones/workspaceRetirement/Qualification.testkit.ts",
     "apps/server/src/jones/workspaceRetirement/Qualification.ts",
+    "apps/server/src/jones/workspaceRetirement/ReftableObservation.node-test.mjs",
+    "apps/server/src/jones/workspaceRetirement/ReftableObservation.test.ts",
+    "apps/server/src/jones/workspaceRetirement/ReftableObservation.testkit.ts",
+    "apps/server/src/jones/workspaceRetirement/ReftableObservation.ts",
     "apps/server/src/jones/workspaceRetirement/conformance/v1/cases.json",
     "apps/server/src/jones/workspaceRetirement/conformance/v1/source.json"
   ],

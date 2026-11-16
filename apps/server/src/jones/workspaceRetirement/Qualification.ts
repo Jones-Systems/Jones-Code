@@ -1,8 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Read-only Git/filesystem qualification adapter; exclusion and removal belong to J3.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import * as NodeOS from "node:os";
-import * as NodeChildProcess from "node:child_process";
 import {
   canonical,
   exists,
@@ -25,6 +23,7 @@ import {
 import { consumerDecision, type ConsumerEvidence } from "./ConsumerProbe.ts";
 import { outputObligations } from "./ProducerFinalizer.ts";
 import { completionLineage } from "./CompletionObservation.ts";
+import { observeReftable } from "./ReftableObservation.ts";
 
 export interface QualificationInput {
   worktree: string;
@@ -113,7 +112,6 @@ const reflogByteLimit = 1024 * 1024;
 
 async function candidateReflog(
   current: Binding,
-  head: string,
   g: (args: string[]) => Promise<Buffer>,
   remaining: () => number,
 ): Promise<string[]> {
@@ -223,78 +221,17 @@ async function candidateReflog(
   } else if (backend === "reftable") {
     const objectFormat = (await g(["rev-parse", "--show-object-format"])).toString().trim();
     if (!["sha1", "sha256"].includes(objectFormat)) throw new ObservationError("malformed");
-    const source = NodePath.join(current.git_dir, "reftable");
-    const manifest = await read(NodePath.join(source, "tables.list"));
-    const tables = manifest.toString().split("\n").filter(Boolean);
-    if (tables.length > 1000) throw new ObservationError("bounds");
-    if (tables.some((name) => !/^[a-zA-Z0-9][a-zA-Z0-9.-]*\.ref$/.test(name)))
-      throw new ObservationError("malformed");
-    // A disposable standalone view exposes only the candidate's stack. --reflog
-    // on the original repository would also enumerate the shared reflogs. Git
-    // decodes both record endpoints; no binary reftable parser is duplicated.
-    // Small, bounded scratch stays off /tmp; this call owns its exact cleanup.
-    const view = await NodeFSP.mkdtemp(NodePath.join(NodeOS.homedir(), ".jones-ref-observation-"));
-    try {
-      await NodeFSP.mkdir(NodePath.join(view, "refs"));
-      await NodeFSP.mkdir(NodePath.join(view, "reftable"));
-      await NodeFSP.writeFile(NodePath.join(view, "HEAD"), "ref: refs/heads/.invalid\n");
-      await NodeFSP.writeFile(
-        NodePath.join(view, "config"),
-        `[core]\nrepositoryformatversion = 1\nbare = true\n[extensions]\nrefStorage = reftable\nobjectFormat = ${objectFormat}\n`,
-      );
-      await NodeFSP.symlink(
-        NodePath.join(current.git_common_dir, "objects"),
-        NodePath.join(view, "objects"),
-      );
-      for (const name of tables)
-        await NodeFSP.writeFile(
-          NodePath.join(view, "reftable", name),
-          await read(NodePath.join(source, name)),
-        );
-      await NodeFSP.writeFile(NodePath.join(view, "reftable/tables.list"), manifest);
-      if (
-        !manifest.equals(await readBounded(NodePath.join(source, "tables.list"), reflogByteLimit))
-      )
-        throw new ObservationError("native_read");
-      const timeout = Math.min(10000, remaining());
-      if (timeout <= 0) throw new ObservationError("timeout");
-      const output = await new Promise<Buffer>((resolve, reject) => {
-        NodeChildProcess.execFile(
-          "git",
-          [
-            "--no-optional-locks",
-            `--git-dir=${view}`,
-            "rev-list",
-            "--no-walk",
-            "--single-worktree",
-            "--reflog",
-            // Empty reflogs otherwise leave rev-list with no revision input.
-            head,
-          ],
-          {
-            timeout,
-            maxBuffer: reflogByteLimit,
-            encoding: "buffer",
-            env: {
-              PATH: process.env.PATH,
-              GIT_CONFIG_NOSYSTEM: "1",
-              GIT_CONFIG_GLOBAL: "/dev/null",
-              GIT_OPTIONAL_LOCKS: "0",
-              GIT_NO_LAZY_FETCH: "1",
-              GIT_TERMINAL_PROMPT: "0",
-            },
-          },
-          (error, stdout, stderr) => {
-            // Git warns and skips pruned/corrupt objects; that is not empty history.
-            if (error) reject(error);
-            else if (stderr.length) reject(new ObservationError("native_command"));
-            else resolve(stdout);
-          },
-        );
-      });
-      for (const tip of output.toString().split("\n").filter(Boolean)) add(tip);
-    } finally {
-      await NodeFSP.rm(view, { recursive: true, force: true });
+    const observation = await observeReftable(
+      NodePath.join(current.git_dir, "reftable"),
+      objectFormat as "sha1" | "sha256",
+      { remaining },
+    );
+    if (observation.outcome !== "complete") throw new ObservationError(observation.errorClass);
+    for (const tip of observation.endpoints) {
+      // A decoded endpoint must exist and peel to a commit before containment.
+      // Missing/non-commit objects cannot become an empty successful history.
+      await g(["cat-file", "-e", `${tip}^{commit}`]);
+      add(tip);
     }
   } else throw new ObservationError("malformed");
   return [...tips].sort();
@@ -596,12 +533,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     }
     result.level = other.length ? "contained" : "branch-retained";
     stage = "candidate_reflog";
-    const tips = await candidateReflog(
-      current,
-      result.head,
-      g,
-      () => 60000 - (performance.now() - started),
-    );
+    const tips = await candidateReflog(current, g, () => 60000 - (performance.now() - started));
     stage = "reflog_containment";
     const orphan: string[] = [];
     for (const tip of tips)
