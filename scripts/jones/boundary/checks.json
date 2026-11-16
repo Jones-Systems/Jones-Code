@@ -5417,9 +5417,13 @@
     },
     {
       "id": "jones-start-failure-message",
-      "tests": ["apps/server/src/jones/provider/startFailureMessage.test.ts"],
+      "tests": [
+        "apps/server/src/jones/provider/startFailureMessage.test.ts",
+        "apps/server/src/jones/provider/startFailureDiagnostics.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts"
+      ],
       "commands": [
-        "vp test run apps/server/src/jones/provider/startFailureMessage.test.ts",
+        "vp test run apps/server/src/jones/provider/startFailureMessage.test.ts apps/server/src/jones/provider/startFailureDiagnostics.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]

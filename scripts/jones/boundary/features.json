@@ -3415,8 +3415,12 @@
     },
     {
       "id": "start-failure-message",
-      "tests": ["apps/server/src/jones/provider/startFailureMessage.test.ts"],
-      "scope": "Provider start failures keep the app-authored start error text when the immediate cause is an Error with a blank message, such as an Effect tagged error declared without a message field. The small ProviderTurnStartService hook replaces its inline cause-message selection with this helper; nonblank nested error and string reasons still win, and curated known messages still take precedence. No additional provider or cause text is exposed, and no wire, persistence, provider execution or transport behavior changes."
+      "tests": [
+        "apps/server/src/jones/provider/startFailureMessage.test.ts",
+        "apps/server/src/jones/provider/startFailureDiagnostics.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts"
+      ],
+      "scope": "Provider start failures keep the app-authored start error text when the immediate cause is an Error with a blank message, such as an Effect tagged error declared without a message field. The small ProviderTurnStartService hook replaces its inline cause-message selection with this helper; nonblank nested error and string reasons still win, and curated known messages still take precedence. The additional narrow hook fills only a null failure.code with one of 42 reviewed RuntimeUseError reasons or a fixed fallback; it retains no raw reason or cause. The existing upstream service test is an accepted integration-harness exception: moving it would require exporting or duplicating the large private harness. It proves literal session text, safe classification, failed run/attempt and zero native dispatch. No additional provider or cause text is exposed, and no wire, persistence, provider execution or transport behavior changes."
     },
     {
       "id": "storage-cleanup-results",
