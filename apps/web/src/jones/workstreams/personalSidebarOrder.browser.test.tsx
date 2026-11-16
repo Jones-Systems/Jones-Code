@@ -7,7 +7,6 @@ import { page, userEvent } from "vite-plus/test/browser";
 import type { PersonalWorkstreamsState } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { personalThreadKey } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { AppRoot } from "~/AppRoot";
-import "~/components/ChatView";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
 import { usePersonalWorkstreams } from "~/state/workstreamsPersonal";
@@ -19,7 +18,13 @@ import {
 } from "../../../test/fakeEnvironment";
 import { render } from "../../../test/render";
 
-vi.mock("~/state/workstreamsPersonal", { spy: true });
+// Navigation exercises the real Sidebar and router. Conversation layout,
+// timeline measurement and composer effects are covered by their own tests.
+vi.mock("~/components/ChatView", () => ({ default: () => null }));
+vi.mock(import("~/state/workstreamsPersonal"), async (original) => ({
+  ...(await original()),
+  usePersonalWorkstreams: vi.fn(),
+}));
 vi.mock(
   "../../../../../packages/client-runtime/src/connection/driver.ts",
   async (importOriginal) => {
@@ -132,7 +137,7 @@ async function withSidebar(
   vi.mocked(usePersonalWorkstreams).mockReturnValue({ controller, state });
   using _restore = {
     [Symbol.dispose]() {
-      vi.mocked(usePersonalWorkstreams).mockRestore();
+      vi.mocked(usePersonalWorkstreams).mockReset();
       for (const key of [
         "jones:workstreams:collapsed:alpha",
         "jones:workstreams:collapsed:beta",
