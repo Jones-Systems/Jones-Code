@@ -30,7 +30,7 @@ export const managedAccessGrantId = Effect.fn("AdmissionReview.managedAccessLink
     LEFT JOIN jones_remote_admission_grants g ON g.admission_id=a.id
     WHERE a.id=${record.id}`)[0];
   const binding = stored?.binding_json
-    ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(DTO.RemoteAdmissionAccessBinding))(
+    ? yield* Schema.decodeEffect(Schema.fromJsonString(DTO.RemoteAdmissionAccessBinding))(
         stored.binding_json,
       )
     : null;
@@ -81,7 +81,7 @@ export const managedAccessGrantId = Effect.fn("AdmissionReview.managedAccessLink
   const visited = new Set<string>();
   while (current && !visited.has(current.grant_id)) {
     visited.add(current.grant_id);
-    const ceiling = yield* Schema.decodeUnknownEffect(
+    const ceiling = yield* Schema.decodeEffect(
       Schema.fromJsonString(DTO.RemoteAdmissionAccessBinding),
     )(current.binding_json);
     if (

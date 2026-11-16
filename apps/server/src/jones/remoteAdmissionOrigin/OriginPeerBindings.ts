@@ -42,7 +42,7 @@ export class OriginPeerBindings extends Context.Service<
       observationKey: string,
     ) => Effect.Effect<RemoteAdmissionObservation, OrchestratorMcpFailure>;
   }
->()("jones/remoteAdmissionOrigin/OriginPeerBindings") {}
+>()("t3/jones/remoteAdmissionOrigin/OriginPeerBindings") {}
 
 // These protocol operations inspect/register delivery only. They never launch work or
 // inherit a full-access coordinator's authority. The launch and retry registration

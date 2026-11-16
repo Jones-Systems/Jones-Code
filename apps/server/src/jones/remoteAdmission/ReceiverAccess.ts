@@ -1,20 +1,22 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Receiver-local IDs and canonical command fingerprints.
 import * as NodeCrypto from "node:crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as SqlClient from "effect/sql/SqlClient";
 import type { RemoteAdmissionRecord } from "@t3tools/contracts";
-import type {
+import {
   RemoteAdmissionAccessBinding,
-  RemoteAdmissionBlockedReason,
+  type RemoteAdmissionBlockedReason,
 } from "@t3tools/contracts/jones/remoteAdmissionReview";
+import { SqlError, UnknownError } from "effect/sql/SqlError";
 import { canonicalJsonStrict } from "../remoteDelegation/shared.ts";
 
-export class ReceiverAccessConflict extends Schema.TaggedError<ReceiverAccessConflict>()(
+export class ReceiverAccessConflict extends Schema.TaggedError<ReceiverAccessConflict, { readonly brand: unique symbol }>()(
   "ReceiverAccessConflict",
   { current: Schema.Unknown },
 ) {}
-export class ReceiverAccessUnavailable extends Schema.TaggedError<ReceiverAccessUnavailable>()(
+export class ReceiverAccessUnavailable extends Schema.TaggedError<ReceiverAccessUnavailable, { readonly brand: unique symbol }>()(
   "ReceiverAccessUnavailable",
   {},
 ) {}
@@ -63,9 +65,14 @@ const ACCESS_DURATIONS = [3600, 86400, 172800, 259200, 604800] as const;
 const fingerprint = (value: unknown) =>
   NodeCrypto.createHash("sha256").update(canonicalJsonStrict(value)).digest("hex");
 const expiry = (now: string, duration: number) =>
-  new Date(Date.parse(now) + duration * 1000).toISOString();
+  DateTime.formatIso(DateTime.add(DateTime.makeUnsafe(now), { milliseconds: duration * 1000 }));
 const validDuration = (duration: number) =>
   (ACCESS_DURATIONS as readonly number[]).includes(duration);
+const decodeStoredBinding = Effect.fn("ReceiverAccess.decodeStoredBinding")((json: string) =>
+  Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(json).pipe(
+    Effect.mapError((cause) => new SqlError({ reason: new UnknownError({ cause }) })),
+  ),
+);
 
 // These operations share the caller's SqlClient transaction. Authority and settings
 // callbacks perform database reads only; the settings semaphore must already be held.
@@ -285,7 +292,7 @@ export const makeReceiverAccess = (
     const grant = rows[0];
     if (!grant) return null;
     const binding = {
-      ...(JSON.parse(grant.binding_json) as AccessBinding),
+      ...(yield* decodeStoredBinding(grant.binding_json)),
       destinationThreadId: input.destinationThreadId,
     };
     // Exact creation evidence may establish restriction after revocation, never a lease.
@@ -312,7 +319,7 @@ export const makeReceiverAccess = (
       binding_json: string | null;
     }>`SELECT binding_json FROM jones_remote_admission_extensions WHERE admission_id=${record.id}`;
     const bindingScope = extensions[0]?.binding_json
-      ? yield* findScope(JSON.parse(extensions[0].binding_json) as AccessBinding)
+      ? yield* findScope(yield* decodeStoredBinding(extensions[0].binding_json))
       : null;
     const scopeId =
       marks[0]?.managed_scope_id ?? grants[0]?.managed_scope_id ?? bindingScope?.managed_scope_id;
@@ -388,7 +395,7 @@ export const makeReceiverAccess = (
     )
       reason = "access_expired";
     else if (grant?.state === "active" && grant.expires_at > input.now) {
-      const ceiling = JSON.parse(grant.binding_json) as AccessBinding;
+      const ceiling = yield* decodeStoredBinding(grant.binding_json);
       if (!input.modeAllowed(ceiling, binding)) reason = "mode_exceeds";
       else if (
         grant.session_id === binding.sessionId &&
@@ -423,7 +430,7 @@ export const makeReceiverAccess = (
     return {
       grantId: grant.grant_id,
       sourceAdmissionId: grant.admission_id,
-      binding: JSON.parse(grant.binding_json) as AccessBinding,
+      binding: yield* decodeStoredBinding(grant.binding_json),
       state: grant.state,
       generation: grant.generation,
       expiresAt: grant.expires_at,

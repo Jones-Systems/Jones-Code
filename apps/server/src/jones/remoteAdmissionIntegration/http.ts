@@ -66,14 +66,10 @@ const reviewPrincipal = Effect.gen(function* () {
   return yield* EnvironmentAuthenticatedPrincipal;
 });
 const reviewOwnerPrincipal = reviewPrincipal.pipe(
-  Effect.flatMap((principal) =>
-    isRemoteAdmissionOwner(principal)
-      ? Effect.succeed(principal)
-      : Effect.fail({
-          code: "owner_required",
-          message: "Receiving owner access is required.",
-        } satisfies RemoteAdmissionReviewForbidden),
-  ),
+  Effect.filterOrFail(isRemoteAdmissionOwner, () => ({
+    code: "owner_required",
+    message: "Receiving owner access is required.",
+  } satisfies RemoteAdmissionReviewForbidden)),
 );
 export const remoteAdmissionReviewHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,

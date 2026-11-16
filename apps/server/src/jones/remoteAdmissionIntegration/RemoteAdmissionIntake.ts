@@ -228,7 +228,7 @@ const make = Effect.gen(function* () {
   });
   const withSettings = <A, E, R>(use: () => Effect.Effect<A, E, R>, requireLinked = true) => {
     if (Option.isNone(settings)) return Effect.fail(intakeError("settings_unavailable"));
-    return settings.value.withSettingsSnapshot((current) =>
+    return settings.value.withSettingsSnapshot<A, E | RemoteAdmissionIntakeError, R>((current) =>
       !requireLinked || current.linkedEnvironmentsEnabled
         ? use()
         : Effect.fail(intakeError("linked_environments_disabled")),
@@ -479,7 +479,7 @@ const make = Effect.gen(function* () {
     }
   });
   const pruneFinished = Effect.fn("RemoteAdmissionIntake.pruneFinished")(function* (now: string) {
-    const cutoff = new Date(Date.parse(now) - 30 * 86400000).toISOString();
+    const cutoff = DateTime.formatIso(DateTime.subtract(DateTime.makeUnsafe(now), { days: 30 }));
     const review = yield* presence("jones_remote_admission_extensions");
     const dependencies = yield* presence("jones_thread_result_requests");
     for (;;) {

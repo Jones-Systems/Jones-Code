@@ -23,7 +23,7 @@ import migrate from "../persistence/Migrations/116_JonesRemoteAdmission.ts";
 import * as Admission from "./RemoteAdmission.ts";
 import { REMOTE_ADMISSION_EVALUATION_TIMEOUT_MS } from "./evaluationDiagnostic.ts";
 
-class SyntheticEvaluationError extends Schema.TaggedError<SyntheticEvaluationError>()(
+class SyntheticEvaluationError extends Schema.TaggedError<SyntheticEvaluationError, { readonly brand: unique symbol }>()(
   "SyntheticEvaluationError",
   {},
 ) {}

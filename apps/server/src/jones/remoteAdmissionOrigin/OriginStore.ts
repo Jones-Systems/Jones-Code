@@ -1,7 +1,13 @@
-import { OrchestratorMcpFailure, ThreadId } from "@t3tools/contracts";
+import {
+  OrchestratorMcpFailure,
+  ProviderInteractionMode,
+  RuntimeMode,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import type * as SqlClient from "effect/sql/SqlClient";
-import type { RemoteAdmissionLaunchResult } from "@t3tools/contracts/jones/remoteAdmissionReview";
+import { RemoteAdmissionLaunchResult } from "@t3tools/contracts/jones/remoteAdmissionReview";
 import type { OriginWakeCommit } from "../threadResultDependencies/DependencyCommit.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 
@@ -19,6 +25,34 @@ export interface OriginIntent {
   readonly acknowledged: boolean;
   readonly limits?: import("../../peer/PeerMcpClient.ts").PeerCallLimits;
 }
+const ReturnBindingRecord = Schema.Struct({
+  rootObservationKey: Schema.String,
+  originThreadId: Schema.String,
+  returnRouteKey: Schema.String,
+  waiterGeneration: Schema.Number,
+  waiterRunId: Schema.NullOr(Schema.String),
+});
+const OriginIntentRecord = Schema.Struct({
+  phase: Schema.Literals(["prepared", "held", "sent_unknown"]),
+  fingerprint: Schema.String,
+  registered: Schema.Boolean,
+  acknowledged: Schema.Boolean,
+  // Missing limits are retained for pre-existing observations; present limits
+  // must remain valid caller authority, never an untyped JSON value.
+  limits: Schema.optionalKey(
+    Schema.Struct({
+      runtimeMode: RuntimeMode,
+      interactionMode: ProviderInteractionMode,
+    }),
+  ),
+});
+export const encodeReturnBinding = Schema.encodeSync(Schema.fromJsonString(ReturnBindingRecord));
+export const decodeReturnBinding = Schema.decodeSync(Schema.fromJsonString(ReturnBindingRecord));
+export const encodeIntent = Schema.encodeSync(Schema.fromJsonString(OriginIntentRecord));
+const decodeIntent = Schema.decodeSync(Schema.fromJsonString(OriginIntentRecord));
+export const encodeLaunchResult = Schema.encodeSync(
+  Schema.fromJsonString(RemoteAdmissionLaunchResult),
+);
 export interface ObservationRow {
   observation_key: string;
   peer_environment_id: string;
@@ -53,8 +87,8 @@ export const originConflict = () =>
     message: "The launch observation binding is unavailable or fenced.",
   });
 export const returnBinding = (row: ObservationRow): ReturnBinding =>
-  JSON.parse(row.return_binding_json);
-export const intent = (row: ObservationRow): OriginIntent => JSON.parse(row.intent_json);
+  decodeReturnBinding(row.return_binding_json);
+export const intent = (row: ObservationRow): OriginIntent => decodeIntent(row.intent_json);
 
 /** Same-client SQL operations. Transactional operations are named explicitly. */
 export function makeOriginStore(sql: SqlClient.SqlClient) {
@@ -116,7 +150,7 @@ export function makeOriginStore(sql: SqlClient.SqlClient) {
           return yield* originConflict();
       }
     }
-    yield* sql`INSERT INTO jones_remote_origin_observations ${sql.insert(row)}`;
+    yield* sql`INSERT INTO jones_remote_origin_observations ${sql.insert({ ...row })}`;
     if (row.kind === "launch")
       yield* sql`INSERT INTO jones_remote_origin_return_anchors
       (root_observation_key,peer_environment_id,session_id,return_binding_json)
@@ -130,7 +164,7 @@ export function makeOriginStore(sql: SqlClient.SqlClient) {
   ) {
     const row = yield* get(key);
     if (!row) return yield* originConflict();
-    yield* sql`UPDATE jones_remote_origin_observations SET intent_json = ${JSON.stringify({ ...intent(row), ...patch })}, updated_at = ${now} WHERE observation_key = ${key}`;
+    yield* sql`UPDATE jones_remote_origin_observations SET intent_json = ${encodeIntent({ ...intent(row), ...patch })}, updated_at = ${now} WHERE observation_key = ${key}`;
   });
   const pending = Effect.fn("OriginStore.pending")(function* (
     key: string,
@@ -146,7 +180,7 @@ export function makeOriginStore(sql: SqlClient.SqlClient) {
     admissionId: string | null,
     now: string,
   ) =>
-    sql`UPDATE jones_remote_origin_observations SET state = 'resolved', result_json = ${JSON.stringify(result)}, admission_id = COALESCE(admission_id,${admissionId}), updated_at = ${now}
+    sql`UPDATE jones_remote_origin_observations SET state = 'resolved', result_json = ${encodeLaunchResult(result)}, admission_id = COALESCE(admission_id,${admissionId}), updated_at = ${now}
       WHERE observation_key = ${key} AND state IN ('intent','pending')`;
   const release = (key: string, now: string) =>
     sql`UPDATE jones_remote_origin_observations SET state = 'released', updated_at = ${now}, terminal_at = ${now} WHERE observation_key = ${key} AND state IN ('intent','pending')`;

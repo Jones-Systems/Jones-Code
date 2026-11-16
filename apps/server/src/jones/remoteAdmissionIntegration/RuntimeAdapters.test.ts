@@ -1,7 +1,9 @@
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "@t3tools/shared/nodeSqliteClient";
 import type {
@@ -9,7 +11,7 @@ import type {
   OrchestrationV2ThreadShell,
   RemoteAdmissionRecord,
 } from "@t3tools/contracts";
-import type { ProjectRow } from "../../orchestration-v2/ProjectStore.ts";
+import { ProjectRow } from "../../orchestration-v2/ProjectStore.ts";
 import { makeCurrentAuthority } from "./RuntimeAdapters.ts";
 const record: RemoteAdmissionRecord = {
   id: "request",
@@ -54,21 +56,25 @@ const memory = Layer.effectDiscard(
 ).pipe(Layer.provideMerge(Sqlite.layer({ filename: ":memory:" })));
 const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  let shell = {
-    id: "target",
-    projectId: "project",
-    runtimeMode: "auto",
-    interactionMode: "default",
-    deletedAt: null,
-    linkOrigin: { sessionId: "session" },
-  } as unknown as OrchestrationV2ThreadShell | null;
+  const baseShell = {
+    ...liveThreadShell(ThreadId.make("target"), { runtimeMode: "auto" }),
+    projectId: ProjectId.make("project"),
+    linkOrigin: { sessionId: "session", label: "Synthetic peer" },
+  };
+  let shell: OrchestrationV2ThreadShell | null = baseShell;
+  const project = yield* Schema.decodeEffect(Schema.toCodecJson(ProjectRow))({
+    projectId: "project", title: "Synthetic project", workspaceRoot: "/synthetic/project",
+    defaultModelSelection: null, defaultThreadEnvMode: null, autoPull: false,
+    faviconPath: null, projectIcon: null, scripts: [], pinnedAt: null, archivedAt: null,
+    createdAt: "2026-11-16T00:00:00.000Z", updatedAt: "2026-11-16T00:00:00.000Z", deletedAt: null,
+  });
   let document: ManagedPolicyDocument | undefined;
   const authorize = makeCurrentAuthority(
     sql,
     { getThreadShell: () => Effect.succeed(shell) },
     {
       get: () =>
-        Effect.succeed(Option.some({ projectId: "project", deletedAt: null } as ProjectRow)),
+        Effect.succeedSome(project),
     },
     {
       get document() {
@@ -79,6 +85,7 @@ const setup = Effect.gen(function* () {
   return {
     sql,
     authorize,
+    baseShell,
     setShell: (next: typeof shell) => {
       shell = next;
     },
@@ -124,10 +131,10 @@ it.effect("retains verified narrowing and enforces loaded administrator ceiling"
     };
     expect(yield* authorize(narrowed)).toBe(false);
     setPolicy({
-      version: 1,
+      schemaVersion: 1,
       organization: "Synthetic",
       limits: { maxRuntimeMode: "approval-required" },
-    } as ManagedPolicyDocument);
+    });
     expect(yield* authorize(record)).toBe(false);
   }).pipe(Effect.provide(memory)),
 );
@@ -135,26 +142,20 @@ it.effect(
   "requires live receiver project/destination and exact linked ownership below full access",
   () =>
     Effect.gen(function* () {
-      const { authorize, setShell } = yield* setup;
+      const { authorize, setShell, baseShell } = yield* setup;
       setShell(null);
       expect(yield* authorize(record)).toBe(false);
       setShell({
-        id: "target",
-        projectId: "project",
-        runtimeMode: "auto",
-        interactionMode: "default",
-        deletedAt: null,
-        linkOrigin: { sessionId: "foreign" },
-      } as unknown as OrchestrationV2ThreadShell);
+        ...baseShell,
+        projectId: ProjectId.make("project"),
+        linkOrigin: { sessionId: "foreign", label: "Synthetic peer" },
+      });
       expect(yield* authorize(record)).toBe(false);
       setShell({
-        id: "target",
-        projectId: "foreign-project",
-        runtimeMode: "auto",
-        interactionMode: "default",
-        deletedAt: null,
-        linkOrigin: { sessionId: "session" },
-      } as unknown as OrchestrationV2ThreadShell);
+        ...baseShell,
+        projectId: ProjectId.make("foreign-project"),
+        linkOrigin: { sessionId: "session", label: "Synthetic peer" },
+      });
       expect(yield* authorize(record)).toBe(false);
     }).pipe(Effect.provide(memory)),
 );

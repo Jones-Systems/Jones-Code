@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it } from "@effect/vitest";
 import type { RemoteAdmissionRecord } from "@t3tools/contracts";
 import { originalReturnBinding } from "./returnBinding.ts";
 const envelope: RemoteAdmissionRecord["envelope"] = {

@@ -28,4 +28,4 @@ export const remoteAdmissionFeatures = Effect.gen(function* () {
     remoteAdmissionCapabilitiesRegisterVersion:
       Review.REMOTE_ADMISSION_CAPABILITIES_REGISTER_VERSION,
   };
-}).pipe(Effect.catch(() => Effect.succeed({})));
+}).pipe(Effect.orElseSucceed(() => ({})));

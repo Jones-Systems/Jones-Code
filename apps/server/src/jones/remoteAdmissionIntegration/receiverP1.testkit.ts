@@ -4,9 +4,14 @@ import {
   EnvironmentId,
   ProviderInstanceId,
   type EnvironmentSessionPrincipalShape,
-  type OrchestrationV2ThreadShell,
+  OrchestrationV2LinkOrigin,
+  ProjectId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
+import { encodeJson } from "./json.ts";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "@t3tools/shared/nodeSqliteClient";
@@ -68,7 +73,7 @@ const database = Layer.effectDiscard(
     yield* sql`CREATE TABLE jones_thread_links(launch_command_id TEXT,kind TEXT,from_environment_id TEXT,
     from_thread_id TEXT,to_environment_id TEXT,to_thread_id TEXT,asserted_by TEXT)`;
     yield* sql`CREATE TABLE synthetic_receiver_shells(id TEXT PRIMARY KEY,shell_json TEXT)`;
-    yield* sql`INSERT INTO jones_remote_admission_policy VALUES(1,${JSON.stringify({
+    yield* sql`INSERT INTO jones_remote_admission_policy VALUES(1,${encodeJson({
       enabled: true,
       revision: "policy",
       modelSelection: {
@@ -78,19 +83,29 @@ const database = Layer.effectDiscard(
     })})`;
   }),
 ).pipe(Layer.provideMerge(Sqlite.layer({ filename: ":memory:" })));
-const projections = Layer.effect(
-  Projections.ProjectionStoreV2,
+const StoredShell = Schema.Struct({
+  id: ThreadId,
+  projectId: ProjectId,
+  deletedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
+  linkOrigin: OrchestrationV2LinkOrigin,
+});
+const projections = Layer.unwrap(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    return Projections.ProjectionStoreV2.of({
-      getThreadShell: (id) =>
-        Effect.gen(function* () {
-          const row = (yield* sql<{
-            shell_json: string;
-          }>`SELECT shell_json FROM synthetic_receiver_shells WHERE id=${id}`)[0];
-          return row ? (JSON.parse(row.shell_json) as OrchestrationV2ThreadShell) : null;
-        }),
-    } as Projections.ProjectionStoreV2["Service"]);
+    const getThreadShell = Effect.fn("receiverP1.getThreadShell")(
+      function* (id: ThreadId) {
+        const row = (yield* sql<{ shell_json: string }>`
+          SELECT shell_json FROM synthetic_receiver_shells WHERE id=${id}`)[0];
+        if (!row) return null;
+        const stored = yield* Schema.decodeEffect(Schema.fromJsonString(StoredShell))(row.shell_json);
+        return { ...liveThreadShell(stored.id), ...stored };
+      },
+      (effect, id) =>
+        effect.pipe(
+          Effect.mapError((cause) => new Projections.ProjectionStoreReadError({ threadId: id, cause })),
+        ),
+    );
+    return Layer.mock(Projections.ProjectionStoreV2)({ getThreadShell });
   }),
 );
 const stores = Layer.merge(Receipts.layer, projections);
@@ -121,7 +136,7 @@ export const receiverP1Layer = Intake.layer.pipe(
   ),
   Layer.provideMerge(evidenceLayer),
   Layer.provideMerge(Settings.ServerSettingsService.layerTest()),
-  Layer.provide(Layer.mock(Providers.ProviderInstanceRegistry)({})),
+  Layer.provide(Layer.mock(Providers.ProviderInstanceRegistry)({ getCatalogSource: () => undefined })),
   Layer.provideMerge(database),
 );
 export const p1Services = Effect.gen(function* () {
@@ -157,24 +172,24 @@ export const p1Services = Effect.gen(function* () {
     ),
   };
 });
-export const writeP1Creation = (sql: SqlClient.SqlClient, commandId: string, projectId: string) =>
-  Effect.gen(function* () {
-    yield* sql.withTransaction(
+export const writeP1Creation = Effect.fn("receiverP1.writeCreation")(
+  (sql: SqlClient.SqlClient, commandId: string, projectId: string) =>
+    sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`INSERT INTO orchestration_events(event_id,aggregate_kind,stream_id,stream_version,
       event_type,occurred_at,command_id,actor_kind,payload_json,metadata_json)
       VALUES(${commandId},'thread',${commandId},1,'thread.created','2026-11-16T00:00:00.000Z',
-      ${commandId},'system',${JSON.stringify({ id: commandId, projectId })},'{}')`;
+      ${commandId},'system',${encodeJson({ id: commandId, projectId })},'{}')`;
         yield* sql`INSERT INTO orchestration_command_receipts(command_id,aggregate_kind,aggregate_id,accepted_at,
       result_sequence,status,error,command_type) SELECT ${commandId},'thread',${commandId},
       '2026-11-16T00:00:00.000Z',sequence,'accepted',NULL,'thread.create' FROM orchestration_events WHERE command_id=${commandId}`;
-        yield* sql`INSERT INTO synthetic_receiver_shells VALUES(${commandId},${JSON.stringify({
+        yield* sql`INSERT INTO synthetic_receiver_shells VALUES(${commandId},${encodeJson({
           id: commandId,
           projectId,
           deletedAt: null,
-          linkOrigin: { sessionId: "remote" },
+          linkOrigin: { sessionId: "remote", label: "Synthetic peer" },
         })})`;
         yield* sql`INSERT INTO jones_thread_links VALUES(${commandId},'launch','sender','origin','receiver',${commandId},'link:remote')`;
       }),
-    );
-  }).pipe(Effect.mapError((cause) => new Intake.RemoteAdmissionIntakeError({ cause })));
+    ).pipe(Effect.mapError((cause) => new Intake.RemoteAdmissionIntakeError({ cause }))),
+);

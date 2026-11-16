@@ -8,7 +8,7 @@ export class ReceiverClaimTracker extends Context.Service<
     readonly add: (id: string) => void;
     readonly delete: (id: string) => void;
   }
->()("jones/remoteAdmissionIntegration/ReceiverClaimTracker") {}
+>()("t3/jones/remoteAdmissionIntegration/ClaimTracker/ReceiverClaimTracker") {}
 export const claimTrackingLayer = Layer.sync(ReceiverClaimTracker, () => {
   const claims = new Set<string>();
   return {

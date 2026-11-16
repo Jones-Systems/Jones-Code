@@ -6,7 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "@t3tools/shared/nodeSqliteClient";
 import * as Projections from "../../orchestration-v2/ProjectionStore.ts";
@@ -51,18 +51,18 @@ const dependencies = Layer.mergeAll(
   Layer.mock(Projections.ProjectionStoreV2)({ getThreadShell: () => Effect.succeed(shell) }),
   Layer.mock(Projects.ProjectStoreV2)({
     get: () =>
-      Effect.succeed(Option.some({ projectId: "project", deletedAt: null } as Projects.ProjectRow)),
+      Effect.succeedSome({ projectId: "project", deletedAt: null } as Projects.ProjectRow),
   }),
   Layer.mock(Receipts.CommandReceiptStoreV2)({
-    getByCommandId: () => Effect.succeed(Option.none()),
+    getByCommandId: () => Effect.succeedNone,
   }),
   Layer.mock(Threads.ThreadManagementService)({}),
   Layer.mock(Environment.ServerEnvironment)({
     getEnvironmentId: Effect.succeed(EnvironmentId.make("receiver")),
   }),
-  Layer.mock(Managed.ManagedPolicy)({ document: undefined }),
-  Layer.mock(Config.ServerConfig)({ cwd: "/synthetic/receiver" }),
-  Layer.mock(Providers.ProviderInstanceRegistry)({}),
+  Managed.layerTest(),
+  Config.layerTest("/synthetic/receiver", { prefix: "admission-runtime-" }).pipe(Layer.provide(NodeServices.layer)),
+  Layer.mock(Providers.ProviderInstanceRegistry)({ getCatalogSource: () => undefined }),
   Layer.mock(Generation.TextGeneration)({
     evaluateRemoteRequest: () =>
       Effect.succeed({ verdict: "pass", category: "none", reason: "Ordinary request" }),

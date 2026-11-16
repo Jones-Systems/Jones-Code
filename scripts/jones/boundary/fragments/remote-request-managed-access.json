@@ -9,10 +9,6 @@
   "tombstones": [],
   "allowedImports": [
     {
-      "from": "apps/web/src/jones/remoteAdmission/ReviewPage.tsx",
-      "to": "apps/web/src/lib/utils.ts"
-    },
-    {
       "from": "apps/server/src/peer/PeerForwarding.test.ts",
       "to": "apps/server/src/jones/remoteAdmissionOrigin/capabilities.testkit.ts"
     },

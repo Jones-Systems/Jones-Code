@@ -2,6 +2,7 @@ import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as DTO from "@t3tools/contracts/jones/remoteAdmissionReview";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import * as Invocation from "../../mcp/McpInvocationContext.ts";
 import * as Access from "../../mcp/McpToolAccess.ts";
@@ -11,8 +12,8 @@ import { ReceiverInspection } from "./Inspection.ts";
 export class ReceiverPeerProtocol extends Context.Service<
   ReceiverPeerProtocol,
   ReturnType<typeof makePeerProtocol>
->()("jones/remoteAdmissionIntegration/ReceiverPeerProtocol") {}
-const dependencies = [Invocation.McpInvocationContext, ReceiverPeerProtocol] as const;
+>()("t3/jones/remoteAdmissionIntegration/protocolTools/ReceiverPeerProtocol") {}
+const dependencies = [Invocation.McpInvocationContext, ReceiverPeerProtocol];
 const ObserveTool = Tool.make("t3_remote_admission_observe", {
   description:
     "Read this linked session’s exact retained launch observation. Reading registers or acknowledges nothing.",
@@ -93,7 +94,7 @@ export const toolkit = Toolkit.make(
   RecoveryStatusTool,
 );
 const failure = (cause: unknown) =>
-  cause instanceof OrchestratorMcpFailure
+  Schema.is(OrchestratorMcpFailure)(cause)
     ? cause
     : new OrchestratorMcpFailure({
         code: "orchestration_error",

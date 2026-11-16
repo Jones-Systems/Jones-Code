@@ -20,7 +20,20 @@ import * as PeerMcpClient from "../../peer/PeerMcpClient.ts";
 import { DependencyWakeCommit } from "../threadResultDependencies/DependencyCommit.ts";
 import * as Bindings from "./OriginPeerBindings.ts";
 import * as Delivery from "./OriginDelivery.ts";
-import { intent, makeOriginStore, returnBinding, type ObservationRow } from "./OriginStore.ts";
+import {
+  decodeReturnBinding,
+  encodeIntent,
+  encodeLaunchResult,
+  intent,
+  makeOriginStore,
+  returnBinding,
+  type ObservationRow,
+} from "./OriginStore.ts";
+
+const encodeGrant = Schema.encodeSync(Schema.fromJsonString(Review.RemoteAdmissionGrant));
+const decodeLaunchResult = Schema.decodeEffect(
+  Schema.fromJsonString(Review.RemoteAdmissionLaunchResult),
+);
 
 export const FALLBACK_MS = 600_000;
 export const STALE_MS = 900_000;
@@ -36,7 +49,7 @@ export class OriginCoordinator extends Context.Service<
       import("effect/Scope").Scope
     >;
   }
->()("jones/remoteAdmissionOrigin/OriginCoordinator") {}
+>()("t3/jones/remoteAdmissionOrigin/OriginCoordinator") {}
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const peers = yield* PeerMcpClient.PeerMcpClient;
@@ -77,9 +90,7 @@ const make = Effect.gen(function* () {
   const wake = Effect.fn("OriginCoordinator.wake")(function* (row: ObservationRow) {
     if (row.state !== "resolved" || !intent(row).registered || row.result_json === null) return;
     if (yield* sql.withTransaction(store.suppressIfStoppedInTransaction(row, yield* now))) return;
-    const result = yield* Schema.decodeUnknownEffect(Review.RemoteAdmissionLaunchResult)(
-      JSON.parse(row.result_json),
-    );
+    const result = yield* decodeLaunchResult(row.result_json);
     const binding = returnBinding(row);
     const messageId = MessageId.make(yield* random.uuidV4());
     const summary = `Linked launch result: ${result.outcome}`;
@@ -278,7 +289,7 @@ const make = Effect.gen(function* () {
           created_at: timestamp,
           updated_at: timestamp,
           terminal_at: null,
-          intent_json: JSON.stringify({
+          intent_json: encodeIntent({
             phase: "prepared",
             fingerprint: attempt.attemptId,
             registered: false,
@@ -299,7 +310,7 @@ const make = Effect.gen(function* () {
         anchor.peer_environment_id !== peer.environmentId
       )
         continue;
-      const binding = JSON.parse(anchor.return_binding_json);
+      const binding = decodeReturnBinding(anchor.return_binding_json);
       if (
         binding.originThreadId !== notice.returnBinding.originThreadId ||
         binding.returnRouteKey !== notice.returnBinding.returnRouteKey
@@ -322,9 +333,9 @@ const make = Effect.gen(function* () {
           attempt_id: null,
           recovered_revision: notice.recoveredRevision,
           return_binding_json: anchor.return_binding_json,
-          result_json: JSON.stringify(notice.result),
+          result_json: encodeLaunchResult(notice.result),
           state: "resolved",
-          intent_json: JSON.stringify({
+          intent_json: encodeIntent({
             phase: "prepared",
             fingerprint: notice.evidenceDigest,
             registered: false,
@@ -452,7 +463,7 @@ const make = Effect.gen(function* () {
                 Date.parse(grant.revokedAt ?? grant.expiresAt) >
                   Date.parse(timestamp) - 30 * 86400_000;
               yield* sql`INSERT INTO jones_remote_grant_status_cache (peer_environment_id,link_generation,grant_id,ordinal,status_json,observed_at)
-              VALUES (${peer.environmentId},${peer.generation},${grant.grantId},${ordinal},${JSON.stringify(grant)},${timestamp})
+              VALUES (${peer.environmentId},${peer.generation},${grant.grantId},${ordinal},${encodeGrant(grant)},${timestamp})
               ON CONFLICT(peer_environment_id,link_generation,grant_id) DO UPDATE SET ordinal = excluded.ordinal, status_json = excluded.status_json, observed_at = excluded.observed_at`;
             }
           }),
@@ -540,7 +551,7 @@ const make = Effect.gen(function* () {
               );
               // Auth failures pause this exact generation. No refresh/re-pair/admin path.
               if (
-                error instanceof OrchestratorMcpFailure &&
+                Schema.is(OrchestratorMcpFailure)(error) &&
                 ["capability_denied"].includes(error.code)
               )
                 return;

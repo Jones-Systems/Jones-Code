@@ -53,6 +53,13 @@ function fixture(
           grants: supported,
           conflicts: supported,
           changeFeed: supported,
+          grantRestore: supported,
+          blockedAudit: supported,
+          blockedReview: supported,
+          history: supported,
+          launchRetry: supported,
+          recoveredResult: supported,
+          managedAccess: supported,
         },
         principal: { canDecide: isRemoteAdmissionOwner(principal) },
       }),
@@ -62,7 +69,7 @@ function fixture(
     recheck: () => reached("recheck"),
   });
   const routes = HttpApiBuilder.layer(
-    HttpApi.make("review-test").add(EnvironmentHttpApi.groups.remoteAdmissionReview),
+    HttpApi.make("environment").add(EnvironmentHttpApi.groups.remoteAdmissionReview),
   ).pipe(
     Layer.provide(remoteAdmissionReviewHttpApiLayer),
     Layer.provide(service),

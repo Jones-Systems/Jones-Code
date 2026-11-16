@@ -6,7 +6,13 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import migration from "../persistence/Migrations/156_JonesRemoteAdmissionReview.ts";
-import { admitOriginWake, intent, makeOriginStore, type ObservationRow } from "./OriginStore.ts";
+import {
+  admitOriginWake,
+  encodeIntent,
+  intent,
+  makeOriginStore,
+  type ObservationRow,
+} from "./OriginStore.ts";
 import { cacheIsStale, STALE_MS } from "./OriginCoordinator.ts";
 
 const timestamp = "2026-11-16T00:00:00.000Z";
@@ -107,6 +113,46 @@ it.effect("replaced link cannot rebind retained intent or its return anchor", ()
     expect((yield* store.get("root"))?.link_generation).toBe("generation-1");
   }).pipe(Effect.provide(fixture)),
 );
+
+it.effect("intent metadata updates retain the original caller limits after reload", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const store = makeOriginStore(sql);
+    const original = {
+      ...row(),
+      intent_json: encodeIntent({
+        ...intent(row()),
+        limits: { runtimeMode: "approval-required", interactionMode: "plan" },
+      }),
+    };
+    yield* sql.withTransaction(store.prepareInTransaction(original));
+    yield* sql.withTransaction(store.pending("root", "sent_unknown", timestamp));
+    const reloaded = makeOriginStore(sql);
+    yield* sql.withTransaction(
+      reloaded.updateIntent("root", { registered: true, acknowledged: true }, timestamp),
+    );
+    const retained = yield* reloaded.get("root");
+    expect(retained).toBeDefined();
+    expect(retained && intent(retained)).toEqual({
+      phase: "sent_unknown",
+      fingerprint: "digest",
+      registered: true,
+      acknowledged: true,
+      limits: { runtimeMode: "approval-required", interactionMode: "plan" },
+    });
+  }).pipe(Effect.provide(fixture)),
+);
+
+it("rejects malformed retained authority rather than treating it as absent legacy limits", () => {
+  expect(intent(row()).limits).toBeUndefined();
+  expect(() =>
+    intent({
+      ...row(),
+      intent_json:
+        '{"phase":"prepared","fingerprint":"digest","registered":false,"acknowledged":false,"limits":{"runtimeMode":"unsupported","interactionMode":"plan"}}',
+    }),
+  ).toThrow();
+});
 
 it.effect("synchronous release has no wake and retains root for notices beyond thirty days", () =>
   Effect.gen(function* () {

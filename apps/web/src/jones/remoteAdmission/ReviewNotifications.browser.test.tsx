@@ -136,8 +136,20 @@ it("collapses an incoming row independently and uses compact controls and an exa
   expect(
     Math.abs(approve.getBoundingClientRect().height - deny.getBoundingClientRect().height),
   ).toBeLessThanOrEqual(1);
+  const controlSizing = [duration, deny, approve].map((control) => {
+    const style = getComputedStyle(control);
+    return {
+      label: control.textContent,
+      height: control.getBoundingClientRect().height,
+      minHeight: style.minHeight,
+      lineHeight: style.lineHeight,
+      fontSize: style.fontSize,
+      padding: style.padding,
+    };
+  });
   expect(
     Math.abs(duration.getBoundingClientRect().height - approve.getBoundingClientRect().height),
+    JSON.stringify(controlSizing),
   ).toBeLessThanOrEqual(1);
   await act(() => title.click());
   expect(title.getAttribute("aria-expanded")).toBe("false");

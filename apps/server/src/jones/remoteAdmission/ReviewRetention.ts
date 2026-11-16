@@ -1,3 +1,4 @@
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/sql/SqlClient";
 
@@ -8,7 +9,9 @@ export const makeReviewRetention = (
   invalidate: Effect.Effect<void> = Effect.void,
 ) => {
   const prune = Effect.fn("ReviewRetention.prune")(function* (now: string) {
-    const cutoff = new Date(Date.parse(now) - 30 * 86400000).toISOString();
+    const cutoff = DateTime.formatIso(
+      DateTime.subtract(DateTime.makeUnsafe(now), { milliseconds: 30 * 86400000 }),
+    );
     // A restored grant still needs its predecessor's verified invocation and
     // command fingerprint. Retain the entire ancestry while any descendant is
     // pending, live, or inside its own terminal retention window.

@@ -53,5 +53,5 @@ it.effect(
         yield* Deferred.await(third);
         expect(yield* Ref.get(count)).toBe(3);
       }),
-    ).pipe(Effect.provide(Signals.layer), Effect.provide(links)),
+    ).pipe(Effect.provide(Layer.merge(Signals.layer, links))),
 );

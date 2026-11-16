@@ -2,6 +2,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as Bindings from "./OriginPeerBindings.ts";
 import * as Delivery from "./OriginDelivery.ts";
@@ -16,6 +17,17 @@ export const servicesLayer = Delivery.layer.pipe(
 
 // PeerLinks has no change stream. This watcher samples only local public metadata;
 // it does not resolve tokens, probe routes, retry transport or open another client.
+const encodeLinkSnapshot = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Array(
+      Schema.Struct({
+        environmentId: Schema.String,
+        generation: Schema.NullOr(Schema.String),
+        status: Schema.String,
+      }),
+    ),
+  ),
+);
 const linkSnapshot = Effect.gen(function* () {
   const links = yield* PeerLinks.PeerLinks;
   const listed = yield* links.list;
@@ -23,10 +35,16 @@ const linkSnapshot = Effect.gen(function* () {
     links
       .currentGeneration(link.environmentId)
       .pipe(
-        Effect.map((generation) => [link.environmentId, Option.getOrNull(generation), link.status]),
+        Effect.map((generation) => ({
+          environmentId: link.environmentId,
+          generation: Option.getOrNull(generation),
+          status: link.status,
+        })),
       ),
   );
-  return JSON.stringify(generations.toSorted((a, b) => String(a[0]).localeCompare(String(b[0]))));
+  return encodeLinkSnapshot(
+    generations.toSorted((a, b) => a.environmentId.localeCompare(b.environmentId)),
+  );
 });
 
 export const start = Effect.gen(function* () {
@@ -38,7 +56,7 @@ export const start = Effect.gen(function* () {
   // independently of the request that prepared an observation.
   yield* Effect.gen(function* () {
     while (true) {
-      const snapshot = yield* linkSnapshot.pipe(Effect.catch(() => Effect.succeed(undefined)));
+      const snapshot = yield* linkSnapshot.pipe(Effect.orElseSucceed(() => undefined));
       const clock = DateTime.toEpochMillis(yield* DateTime.now);
       if (snapshot !== previous || clock - lastReconcile >= Coordinator.FALLBACK_MS) {
         previous = snapshot;

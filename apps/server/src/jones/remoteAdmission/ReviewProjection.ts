@@ -16,7 +16,7 @@ import type { Grant } from "./ReceiverAccess.ts";
 import type { SqlError } from "effect/sql/SqlError";
 import type * as SqlClient from "effect/sql/SqlClient";
 
-export class ReviewHistoryUnavailable extends Schema.TaggedError<ReviewHistoryUnavailable>()(
+export class ReviewHistoryUnavailable extends Schema.TaggedError<ReviewHistoryUnavailable, { readonly brand: unique symbol }>()(
   "ReviewHistoryUnavailable",
   {},
 ) {}
@@ -41,6 +41,23 @@ const CursorSchema = Schema.Struct({
   id: Schema.String,
 });
 
+const CursorJson = Schema.fromJsonString(CursorSchema);
+const decodeCursor = Effect.fn("ReviewProjection.decodeCursor")(function* (cursor: string) {
+  const json = yield* Effect.try({
+    try: () => NodeBuffer.Buffer.from(cursor, "base64url").toString("utf8"),
+    catch: () => new ReviewHistoryUnavailable({}),
+  });
+  return yield* Schema.decodeEffect(CursorJson)(json).pipe(
+    Effect.mapError(() => new ReviewHistoryUnavailable({})),
+  );
+});
+const encodeCursor = Effect.fn("ReviewProjection.encodeCursor")((cursor: Cursor) =>
+  Schema.encodeEffect(CursorJson)(cursor).pipe(
+    Effect.map((json) => NodeBuffer.Buffer.from(json).toString("base64url")),
+    Effect.mapError(() => new ReviewHistoryUnavailable({})),
+  ),
+);
+
 export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
   const revision = Effect.fn("ReviewProjection.revision")(function* () {
     return (yield* sql<{ revision: number; prune_revision: number }>`SELECT revision,prune_revision
@@ -62,13 +79,7 @@ export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
     const snapshot = yield* revision();
     let cursor: Cursor | undefined;
     if (input.cursor) {
-      cursor = yield* Effect.try({
-        try: () =>
-          Schema.decodeUnknownSync(CursorSchema)(
-            JSON.parse(NodeBuffer.Buffer.from(input.cursor!, "base64url").toString("utf8")),
-          ),
-        catch: () => new ReviewHistoryUnavailable({}),
-      });
+      cursor = yield* decodeCursor(input.cursor);
       if (
         cursor.view !== input.view ||
         cursor.authorizationScope !== input.authorizationScope ||
@@ -139,15 +150,13 @@ export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
     const last = items.at(-1);
     const nextCursor =
       rows.length > limit && last
-        ? NodeBuffer.Buffer.from(
-            JSON.stringify({
-              view,
-              authorizationScope: input.authorizationScope,
-              revision: snapshot.revision,
-              createdAt: last.created_at,
-              id: last.id,
-            } satisfies Cursor),
-          ).toString("base64url")
+        ? yield* encodeCursor({
+            view,
+            authorizationScope: input.authorizationScope,
+            revision: snapshot.revision,
+            createdAt: last.created_at,
+            id: last.id,
+          })
         : null;
     const doneCount = (yield* sql<{ n: number }>`SELECT COUNT(*) n FROM jones_remote_admissions a
       LEFT JOIN jones_remote_admission_extensions e ON e.admission_id=a.id
@@ -229,15 +238,7 @@ export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
     projectGrant: (row: Grant, now: string) => Effect.Effect<RemoteAdmissionGrant, SqlError>;
   }) {
     const snapshot = yield* revision();
-    const cursor = input.cursor
-      ? yield* Effect.try({
-          try: () =>
-            Schema.decodeUnknownSync(CursorSchema)(
-              JSON.parse(NodeBuffer.Buffer.from(input.cursor!, "base64url").toString("utf8")),
-            ),
-          catch: () => new ReviewHistoryUnavailable({}),
-        })
-      : undefined;
+    const cursor = input.cursor ? yield* decodeCursor(input.cursor) : undefined;
     if (
       cursor &&
       (cursor.view !== "access" ||
@@ -266,15 +267,13 @@ export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
     const last = items.at(-1);
     const nextCursor =
       rows.length > limit && last
-        ? NodeBuffer.Buffer.from(
-            JSON.stringify({
-              view: "access",
-              authorizationScope: input.authorizationScope,
-              revision: snapshot.revision,
-              createdAt: last.created_at,
-              id: last.grant_id,
-            } satisfies Cursor),
-          ).toString("base64url")
+        ? yield* encodeCursor({
+            view: "access",
+            authorizationScope: input.authorizationScope,
+            revision: snapshot.revision,
+            createdAt: last.created_at,
+            id: last.grant_id,
+          })
         : null;
     return {
       snapshotRevision: String(snapshot.revision),

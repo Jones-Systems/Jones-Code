@@ -116,8 +116,7 @@ const reviewServicesLayer = Layer.mergeAll(
         | ThreadManagement.ThreadManagementService
       >();
       return {
-        status: (input) =>
-          Effect.gen(function* () {
+        status: Effect.fn("ReceiverInspection.status")(function* (input: Parameters<ReceiverInspection["Service"]["status"]>[0]) {
             const scope = yield* Invocation.McpInvocationContext;
             return yield* inspectionStatus(input).pipe(
               Effect.provideService(Invocation.McpInvocationContext, scope),

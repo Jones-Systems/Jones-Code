@@ -4,10 +4,13 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Signals from "./OriginSignals.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as OriginPeerBindings from "./OriginPeerBindings.ts";
 import {
+  encodeIntent,
+  encodeReturnBinding,
   makeOriginStore,
   originConflict,
   type ObservationRow,
@@ -35,7 +38,7 @@ export class OriginDelivery extends Context.Service<
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly release: (key: string) => Effect.Effect<void, OrchestratorMcpFailure>;
   }
->()("jones/remoteAdmissionOrigin/OriginDelivery") {}
+>()("t3/jones/remoteAdmissionOrigin/OriginDelivery") {}
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const peers = yield* OriginPeerBindings.OriginPeerBindings;
@@ -73,8 +76,8 @@ const make = Effect.gen(function* () {
             admission_id: null,
             attempt_id: null,
             recovered_revision: null,
-            return_binding_json: JSON.stringify(input.binding),
-            intent_json: JSON.stringify({
+            return_binding_json: encodeReturnBinding(input.binding),
+            intent_json: encodeIntent({
               phase: "prepared",
               fingerprint: input.fingerprint,
               registered: true,
@@ -92,7 +95,7 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.mapError((error) =>
-      error instanceof OrchestratorMcpFailure ? error : originConflict(),
+      Schema.is(OrchestratorMcpFailure)(error) ? error : originConflict(),
     ),
   );
   const pending = Effect.fn("OriginDelivery.pending")(
@@ -101,7 +104,7 @@ const make = Effect.gen(function* () {
       yield* changed;
     },
     Effect.mapError((error) =>
-      error instanceof OrchestratorMcpFailure ? error : originConflict(),
+      Schema.is(OrchestratorMcpFailure)(error) ? error : originConflict(),
     ),
   );
   const release = Effect.fn("OriginDelivery.release")(
@@ -110,7 +113,7 @@ const make = Effect.gen(function* () {
       yield* changed;
     },
     Effect.mapError((error) =>
-      error instanceof OrchestratorMcpFailure ? error : originConflict(),
+      Schema.is(OrchestratorMcpFailure)(error) ? error : originConflict(),
     ),
   );
   return OriginDelivery.of({ prepare, pending, release, isSending: (key) => sending.has(key) });

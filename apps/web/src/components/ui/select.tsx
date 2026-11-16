@@ -51,7 +51,7 @@ function SelectTrigger({
         selectTriggerVariants({ size, variant }),
         valueSizing &&
           "w-auto min-w-0 max-w-full [&_[data-slot=select-value]]:flex-none [&_[data-slot=select-value]]:whitespace-normal [&_[data-slot=select-value]]:overflow-visible [&_[data-slot=select-value]]:text-clip",
-        valueSizing && size === "compact" && "h-auto min-h-7 py-1",
+        valueSizing && size === "compact" && "h-auto min-h-7 py-1 text-xs leading-4 sm:text-xs",
         className,
       )}
       data-slot="select-trigger"

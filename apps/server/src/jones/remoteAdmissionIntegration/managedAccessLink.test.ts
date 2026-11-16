@@ -1,3 +1,5 @@
+import * as Schema from "effect/Schema";
+import { RemoteAdmissionAccessBinding } from "@t3tools/contracts/jones/remoteAdmissionReview";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -23,7 +25,7 @@ const setup = Effect.gen(function* () {
       }),
     target,
   );
-  yield* intake.invoke("t3_thread_send", input, p1Scope).pipe(Effect.flip);
+  yield* intake.invoke("t3_thread_send", input, p1Scope).pipe(Effect.asVoid, Effect.flip);
   const source = (yield* intake.snapshot()).pending[0]!;
   yield* intake.decide(
     { ...source, decision: "approve", grant: { durationSeconds: 86400 } },
@@ -50,11 +52,11 @@ it.effect.each(["revoked", "expired"] as const)(
           now,
         });
       else
-        yield* sql`UPDATE jones_remote_admission_grants SET expires_at=${new Date(Date.parse(now) - 1000).toISOString()} WHERE grant_id=${grant.grant_id}`;
+        yield* sql`UPDATE jones_remote_admission_grants SET expires_at=${DateTime.formatIso(DateTime.subtract(DateTime.makeUnsafe(now), { seconds: 1 }))} WHERE grant_id=${grant.grant_id}`;
       // A later unrelated grant with the same destination must never win scope selection.
       const original = (yield* admissions.access.getGrant(grant.grant_id))!;
       const otherBinding = {
-        ...JSON.parse(original.binding_json),
+        ...(yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(original.binding_json)),
         originThreadId: "unrelated-origin",
       };
       yield* sql.withTransaction(
@@ -67,7 +69,7 @@ it.effect.each(["revoked", "expired"] as const)(
       );
       yield* intake
         .invoke("t3_thread_send", { ...input, clientRequestId: "blocked-message" }, p1Scope)
-        .pipe(Effect.flip);
+        .pipe(Effect.asVoid, Effect.flip);
       const blocked = (yield* intake.snapshot()).pending[0]!;
       expect(blocked.status).toBe("held");
       const item = yield* review.item(blocked.id, p1Owner);
@@ -120,7 +122,7 @@ it.effect.each(["revoked", "expired"] as const)(
       yield* sql`UPDATE jones_remote_admission_policy SET policy_json=json_set(policy_json,'$.enabled',json('false'))`;
       yield* intake
         .invoke("t3_thread_send", { ...input, clientRequestId: "blocked-message" }, p1Scope)
-        .pipe(Effect.flip);
+        .pipe(Effect.asVoid, Effect.flip);
       expect((yield* admissions.get(blocked.id))?.status).toBe("held");
       expect(calls()).toBe(1);
       expect(
@@ -175,7 +177,7 @@ it.effect("the latest restored head wins even when its root predates another sco
     yield* sql.withTransaction(
       admissions.access.createGrantInTransaction({
         admissionId: "newer-independent-root",
-        binding: JSON.parse(original.binding_json),
+        binding: yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(original.binding_json),
         durationSeconds: 86400,
         now: DateTime.formatIso(yield* DateTime.now),
       }),

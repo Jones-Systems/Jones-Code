@@ -83,9 +83,7 @@ export function makeLaunchEvidenceReader(
         );
       }
       const origin = payload.invocation.client?.remoteOrigin;
-      const readPath = Effect.fn("AdmissionRecovery.readPath")(function* (
-        commandId: string,
-      ): Effect.fn.Return<RecoveryPath, unknown> {
+      const readPath = Effect.fn("AdmissionRecovery.readPath")(function* (commandId: string) {
         const creation = Option.getOrNull(
           yield* receipts.getByCommandId(CommandId.make(commandId)),
         );
@@ -105,11 +103,18 @@ export function makeLaunchEvidenceReader(
           creation,
           creationProjectId: yield* creationProject(sql, creation, commandId),
           message,
-          shell,
+          shell:
+            shell === null
+              ? null
+              : {
+                  id: shell.id,
+                  projectId: shell.projectId,
+                  deletedAt: shell.deletedAt === null ? null : DateTime.formatIso(shell.deletedAt),
+                },
           claimMatches:
             claims.length > 0 &&
             (shell === null || shell.linkOrigin?.sessionId === record.envelope.identity.clientId),
-        };
+        } satisfies RecoveryPath;
       });
       // Sequential reads retain the caller's SQL transaction; do not parallelize its connection.
       const hashed = yield* readPath(ids.hashed).pipe(
@@ -167,10 +172,17 @@ export function makeKeyedLaunchResultReader(
           creation,
           creationProjectId: yield* creationProject(sql, creation, commandId),
           message,
-          shell,
+          shell:
+            shell === null
+              ? null
+              : {
+                  id: shell.id,
+                  projectId: shell.projectId,
+                  deletedAt: shell.deletedAt === null ? null : DateTime.formatIso(shell.deletedAt),
+                },
           claimMatches:
             claims.length > 0 && (shell === null || shell.linkOrigin?.sessionId === sessionId),
-        };
+        } satisfies RecoveryPath;
       });
       const hashed = yield* read(ids.hashed),
         legacy = yield* read(ids.legacy);

@@ -84,7 +84,7 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.mock(PeerForwarding.PeerForwarding)({}),
     Layer.mock(SecretRequests.SecretRequests)({}),
     Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-    Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
+    Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ isLiveClaim: () => false, register: () => {} }),
     Layer.mock(ProjectService.ProjectService)({}),
     Layer.succeed(DocumentText.DocumentText, { ensure: () => Effect.sync(() => undefined) }),
     Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),

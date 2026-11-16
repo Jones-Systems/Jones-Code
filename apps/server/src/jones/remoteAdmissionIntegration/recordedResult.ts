@@ -56,7 +56,7 @@ export const recordedLaunchResult = Effect.fn("AdmissionRecovery.recordedResult"
     WHERE a.id=${id}`)[0];
   if (!row || row.operation !== "t3_thread_launch") return null;
   if (row.launch_result !== null)
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(RemoteAdmissionLaunchResult))(
+    return yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionLaunchResult))(
       row.launch_result,
     );
   if (row.result_json === null && !["denied", "cancelled", "dispatched"].includes(row.status))

@@ -64,7 +64,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(EventSink.EventSinkV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(ProviderSessions.ProviderSessionManagerV2)({}),
-  Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
+  Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ isLiveClaim: () => false, register: () => {} }),
   Layer.mock(PersonalWorkstreams.PersonalWorkstreams)({}),
   Layer.mock(DeviceService)({}),
   Layer.mock(DocumentText)({}),

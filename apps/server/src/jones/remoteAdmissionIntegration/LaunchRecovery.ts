@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Synchronous receiver identity hashes and opaque IDs preserve retained command/fence bytes.
 import * as Crypto from "node:crypto";
 import type {
   RemoteAdmissionLaunchResult,

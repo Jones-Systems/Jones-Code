@@ -1,3 +1,4 @@
+import { encodeJson } from "./json.ts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -50,7 +51,7 @@ it.effect.each([false, true])(
           }),
         target,
       );
-      yield* intake.invoke("t3_thread_launch", scratch, p1Scope).pipe(Effect.flip);
+      yield* intake.invoke("t3_thread_launch", scratch, p1Scope).pipe(Effect.asVoid, Effect.flip);
       const record = (yield* intake.snapshot()).pending[0]!;
       expect(record.envelope.target.projectId).toBeNull();
       yield* intake.decide(
@@ -115,7 +116,7 @@ it.effect(
     Effect.gen(function* () {
       const { sql, intake, admissions, evidence, protocol } = yield* p1Services;
       intake.register("t3_thread_launch", () => Effect.die("held launch must not run"), target);
-      yield* intake.invoke("t3_thread_launch", scratch, p1Scope).pipe(Effect.flip);
+      yield* intake.invoke("t3_thread_launch", scratch, p1Scope).pipe(Effect.asVoid, Effect.flip);
       const record = (yield* intake.snapshot()).pending[0]!;
       yield* writeP1Creation(sql, ids.hashed, "receiver-scratch-project");
       const classify = () => evidence.read(record).pipe(Effect.map(classifyLaunchEvidence));
@@ -160,7 +161,7 @@ it.effect(
           }),
         target,
       );
-      yield* intake.invoke("t3_thread_launch", scratch, p1Scope).pipe(Effect.flip);
+      yield* intake.invoke("t3_thread_launch", scratch, p1Scope).pipe(Effect.asVoid, Effect.flip);
       const record = (yield* intake.snapshot()).pending[0]!;
       yield* sql`UPDATE jones_remote_admissions SET status='dispatching',command_id=${`admission:${record.id}`} WHERE id=${record.id}`;
       expect(
@@ -204,7 +205,7 @@ it.effect.each(["deny", "withdraw"] as const)(
         () => Effect.die("refused launch must never dispatch"),
         target,
       );
-      yield* intake.invoke("t3_thread_launch", scratch, p1Scope).pipe(Effect.flip);
+      yield* intake.invoke("t3_thread_launch", scratch, p1Scope).pipe(Effect.asVoid, Effect.flip);
       const record = (yield* intake.snapshot()).pending[0]!;
       const before = (yield* protocol.status(p1Scope, {})).after;
       if (action === "deny") yield* intake.decide({ ...record, decision: "deny" }, p1Owner);
@@ -235,11 +236,11 @@ it.effect(
     Effect.gen(function* () {
       const { sql, intake, protocol, review } = yield* p1Services;
       intake.register("t3_thread_launch", () => Effect.die("not dispatched here"), target);
-      yield* intake.invoke("t3_thread_launch", scratch, p1Scope).pipe(Effect.flip);
+      yield* intake.invoke("t3_thread_launch", scratch, p1Scope).pipe(Effect.asVoid, Effect.flip);
       const record = (yield* intake.snapshot()).pending[0]!;
       expect(yield* recordedLaunchResult(sql, record.id)).toBeNull();
       yield* sql`UPDATE jones_remote_admissions SET status='dispatched',command_id=${`admission:${record.id}`} WHERE id=${record.id}`;
-      const legacy = JSON.stringify({
+      const legacy = encodeJson({
         ok: false,
         value: { code: "orchestration_error", message: "Interrupted" },
       });
@@ -264,7 +265,7 @@ it.effect(
         reasonCode: "creation_receipt",
       };
       yield* sql`DELETE FROM jones_remote_admission_results WHERE admission_id=${record.id}`;
-      const exact = JSON.stringify({ ok: true, value: {}, launchResult: positive });
+      const exact = encodeJson({ ok: true, value: {}, launchResult: positive });
       yield* sql`INSERT INTO jones_remote_admission_results VALUES(${record.id},${exact})`;
       expect(yield* recordedLaunchResult(sql, record.id)).toEqual(positive);
       expect(

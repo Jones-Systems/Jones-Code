@@ -1188,6 +1188,7 @@ it.effect(
             context: firstContext,
             linkSessionId: "remote",
           }),
+          Effect.asVoid,
           Effect.flip,
         );
       expect(held.code).toBe("remote_admission_pending");

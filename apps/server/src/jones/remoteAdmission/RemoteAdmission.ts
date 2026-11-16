@@ -40,35 +40,35 @@ import {
   type EvaluationFailureKind,
 } from "./evaluationDiagnostic.ts";
 
-export class RemoteAdmissionInvalidRequest extends Schema.TaggedError<RemoteAdmissionInvalidRequest>()(
+export class RemoteAdmissionInvalidRequest extends Schema.TaggedError<RemoteAdmissionInvalidRequest, { readonly brand: unique symbol }>()(
   "RemoteAdmissionInvalidRequest",
   { cause: Schema.Defect() },
 ) {}
-export class RemoteAdmissionPersistenceError extends Schema.TaggedError<RemoteAdmissionPersistenceError>()(
+export class RemoteAdmissionPersistenceError extends Schema.TaggedError<RemoteAdmissionPersistenceError, { readonly brand: unique symbol }>()(
   "RemoteAdmissionPersistenceError",
   { cause: Schema.Defect() },
 ) {}
-export class RemoteAdmissionKeyConflict extends Schema.TaggedError<RemoteAdmissionKeyConflict>()(
+export class RemoteAdmissionKeyConflict extends Schema.TaggedError<RemoteAdmissionKeyConflict, { readonly brand: unique symbol }>()(
   "RemoteAdmissionKeyConflict",
   {},
 ) {}
-export class RemoteAdmissionNotFound extends Schema.TaggedError<RemoteAdmissionNotFound>()(
+export class RemoteAdmissionNotFound extends Schema.TaggedError<RemoteAdmissionNotFound, { readonly brand: unique symbol }>()(
   "RemoteAdmissionNotFound",
   {},
 ) {}
-export class RemoteAdmissionBindingMismatch extends Schema.TaggedError<RemoteAdmissionBindingMismatch>()(
+export class RemoteAdmissionBindingMismatch extends Schema.TaggedError<RemoteAdmissionBindingMismatch, { readonly brand: unique symbol }>()(
   "RemoteAdmissionBindingMismatch",
   {},
 ) {}
-export class RemoteAdmissionForbidden extends Schema.TaggedError<RemoteAdmissionForbidden>()(
+export class RemoteAdmissionForbidden extends Schema.TaggedError<RemoteAdmissionForbidden, { readonly brand: unique symbol }>()(
   "RemoteAdmissionForbidden",
   {},
 ) {}
-export class RemoteAdmissionStateConflict extends Schema.TaggedError<RemoteAdmissionStateConflict>()(
+export class RemoteAdmissionStateConflict extends Schema.TaggedError<RemoteAdmissionStateConflict, { readonly brand: unique symbol }>()(
   "RemoteAdmissionStateConflict",
   { status: Schema.String },
 ) {}
-export class RemoteAdmissionPolicyChanged extends Schema.TaggedError<RemoteAdmissionPolicyChanged>()(
+export class RemoteAdmissionPolicyChanged extends Schema.TaggedError<RemoteAdmissionPolicyChanged, { readonly brand: unique symbol }>()(
   "RemoteAdmissionPolicyChanged",
   {},
 ) {}
@@ -200,6 +200,11 @@ const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(
 );
 const decodeRemoteAdmissionRequest = Schema.decodeEffect(RemoteAdmissionRequest);
 const decodeRemoteAdmissionReceiverPolicy = Schema.decodeEffect(RemoteAdmissionReceiverPolicy);
+const decodeStoredAccessBinding = Effect.fn("RemoteAdmission.decodeStoredAccessBinding")((json: string) =>
+  Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionAccessBinding))(json).pipe(
+    Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })),
+  ),
+);
 
 const make = Effect.fn("RemoteAdmission.make")(function* <E>(
   evaluate: RemoteAdmissionEvaluator<E>,
@@ -262,7 +267,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
         Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })),
       );
       const trustedBinding = input.accessBinding
-        ? yield* Schema.decodeUnknownEffect(RemoteAdmissionAccessBinding)(input.accessBinding).pipe(
+        ? yield* Schema.decodeEffect(RemoteAdmissionAccessBinding)(input.accessBinding).pipe(
             Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })),
           )
         : undefined;
@@ -501,7 +506,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
                 if (!extensions[0]?.binding_json) return yield* new ReceiverAccessUnavailable({});
                 yield* access.createGrantInTransaction({
                   admissionId: record.id,
-                  binding: JSON.parse(extensions[0].binding_json) as AccessBinding,
+                  binding: yield* decodeStoredAccessBinding(extensions[0].binding_json),
                   durationSeconds: input.durationSeconds,
                   now,
                 });
@@ -569,7 +574,7 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
             const guard = yield* access.enforceInTransaction({
               record,
               binding: extensions[0]?.binding_json
-                ? (JSON.parse(extensions[0].binding_json) as AccessBinding)
+                ? yield* decodeStoredAccessBinding(extensions[0].binding_json)
                 : null,
               now: yield* nowIso,
               phase: "claim",

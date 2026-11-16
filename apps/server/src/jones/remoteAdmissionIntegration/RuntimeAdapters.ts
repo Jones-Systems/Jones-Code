@@ -82,7 +82,7 @@ export function makeCurrentAuthority(
       }>`SELECT scopes FROM auth_sessions WHERE session_id=${client.sessionId}
       AND subject='mcp-client' AND method='bearer-access-token' AND revoked_at IS NULL AND expires_at>${now}`)[0];
       if (!session) return false;
-      const scopes = yield* Schema.decodeUnknownEffect(
+      const scopes = yield* Schema.decodeEffect(
         Schema.fromJsonString(Schema.Array(Schema.String)),
       )(session.scopes);
       if (!scopes.includes("orchestration:operate")) return false;
@@ -90,7 +90,7 @@ export function makeCurrentAuthority(
         policy_json: string;
       }>`SELECT policy_json FROM jones_remote_admission_policy WHERE singleton=1`)[0];
       if (policy) {
-        const current = yield* Schema.decodeUnknownEffect(
+        const current = yield* Schema.decodeEffect(
           Schema.fromJsonString(RemoteAdmissionReceiverPolicy),
         )(policy.policy_json);
         if (current.enabled && current.modelSelection === null) return false;
@@ -183,14 +183,14 @@ export const runtimeAdaptersLayer = Layer.unwrap(
         Effect.map((ids) => ids.filter((id): id is string => id !== null)),
         Effect.mapError(sqlFailure),
       );
-    const validLeaseIds = (grants: ReadonlyArray<Grant>) =>
-      Effect.gen(function* () {
+    const validLeaseIds = Effect.fn("AdmissionRuntime.validLeaseIds")(
+      function* (grants: ReadonlyArray<Grant>) {
         const now = DateTime.formatIso(yield* DateTime.now),
           valid: string[] = [];
         for (const grant of grants) {
           if (grant.state !== "active" || grant.expires_at <= now || !grant.destination_thread_id)
             continue;
-          const binding = yield* Schema.decodeUnknownEffect(
+          const binding = yield* Schema.decodeEffect(
             Schema.fromJsonString(Review.RemoteAdmissionAccessBinding),
           )(grant.binding_json);
           if (
@@ -217,12 +217,16 @@ export const runtimeAdaptersLayer = Layer.unwrap(
           if (yield* authorize(current)) valid.push(grant.grant_id);
         }
         return valid;
-      }).pipe(Effect.mapError(sqlFailure));
+      },
+      Effect.mapError(sqlFailure),
+    );
     const root = makeReturnBindingReader(sql, admissions);
     return Layer.merge(
       Layer.succeed(ReceiverRecoveryEvidence, {
         read: makeLaunchEvidenceReader(sql, receipts, projections, tracker.has),
-        root: (record) => root(record).pipe(Effect.mapError(() => new RecoveryUnavailable({}))),
+        root: Effect.fn("AdmissionRuntime.returnBinding")((record: RemoteAdmissionRecord) =>
+          root(record).pipe(Effect.mapError(() => new RecoveryUnavailable({}))),
+        ),
         authorize,
       }),
       Layer.succeed(ReceiverReviewReaders, {

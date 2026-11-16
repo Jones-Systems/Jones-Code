@@ -1,3 +1,4 @@
+import type { makeKeyedLaunchResultReader } from "./EvidenceReader.ts";
 import type { ReviewChanges } from "../remoteAdmission/ReviewChanges.ts";
 import { recordedLaunchResult } from "./recordedResult.ts";
 import * as Effect from "effect/Effect";
@@ -43,11 +44,11 @@ const noticeView = (row: NoticeRow): DTO.RemoteAdmissionRecoveredNotice => ({
   admissionId: row.admission_id,
   recoveredRevision: row.recovered_revision,
   rootAdmissionId: row.root_admission_id,
-  returnBinding: Schema.decodeUnknownSync(Schema.fromJsonString(DTO.RemoteAdmissionReturnBinding))(
+  returnBinding: Schema.decodeSync(Schema.fromJsonString(DTO.RemoteAdmissionReturnBinding))(
     row.return_binding_json,
   ),
   evidenceDigest: row.evidence_digest,
-  result: Schema.decodeUnknownSync(Schema.fromJsonString(DTO.RemoteAdmissionLaunchResult))(
+  result: Schema.decodeSync(Schema.fromJsonString(DTO.RemoteAdmissionLaunchResult))(
     row.result_json,
   ),
   deliveryState: row.state === "closed_unknown" ? "undeliverable" : row.state,
@@ -58,10 +59,7 @@ export type ObservationSelector =
 export const makePeerProtocol = (
   sql: SqlClient.SqlClient,
   admissions: Pick<RemoteAdmission.RemoteAdmission["Service"], "access" | "get">,
-  readKeyedResult?: (
-    sessionId: string,
-    clientRequestId: string,
-  ) => Effect.Effect<DTO.RemoteAdmissionLaunchResult, unknown>,
+  readKeyedResult?: ReturnType<typeof makeKeyedLaunchResultReader>,
   changes?: ReviewChanges["Service"],
 ) => {
   const presence = makeJonesTablePresence(sql);
@@ -75,9 +73,9 @@ export const makePeerProtocol = (
       AND subject='mcp-client' AND method='bearer-access-token' AND revoked_at IS NULL AND expires_at>${yield* nowIso}`;
     if (
       !rows[0] ||
-      !Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(
+      !(yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)))(
         rows[0].scopes,
-      ).includes("orchestration:operate")
+      )).includes("orchestration:operate")
     )
       return yield* unavailable();
     return scope.client.sessionId;

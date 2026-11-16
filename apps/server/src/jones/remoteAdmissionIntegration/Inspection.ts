@@ -20,7 +20,7 @@ export class ReceiverInspection extends Context.Service<
       Invocation.McpInvocationContext
     >;
   }
->()("jones/remoteAdmissionIntegration/ReceiverInspection") {}
+>()("t3/jones/remoteAdmissionIntegration/Inspection/ReceiverInspection") {}
 const unavailable = () =>
   new OrchestratorMcpFailure({
     code: "capability_denied",

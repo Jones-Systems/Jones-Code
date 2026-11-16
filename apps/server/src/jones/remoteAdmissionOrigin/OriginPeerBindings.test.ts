@@ -59,7 +59,7 @@ function fixture() {
             new OrchestratorMcpFailure({ code: "orchestration_error", message: "Offline" }),
           );
         replyHook();
-        return Schema.decodeUnknownEffect(input.success)(
+        return Schema.decodeEffect(input.success)(
           input.tool === "t3_remote_admission_peer_status"
             ? reported
             : input.tool === "t3_remote_admission_ack"
