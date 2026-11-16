@@ -1,4 +1,6 @@
 import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import { ClientSettingsSchema, ClientSettingsPatch } from "@t3tools/contracts/settings";
 import { DEFAULT_CLIENT_SETTINGS, type ClientSettings } from "@t3tools/contracts/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -335,4 +337,37 @@ it("uses the environment's model preferences after migration, including empty li
   );
   expect(merged.favorites).toEqual([]);
   expect(merged.providerModelPreferences).toEqual({});
+});
+
+const decodeWorkButtonClientSettings = Schema.decodeSync(ClientSettingsSchema);
+const decodeWorkButtonClientPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
+
+describe("Work button client preference", () => {
+  it("defaults old settings to visible and decodes partial visibility patches", () => {
+    expect(decodeWorkButtonClientSettings({}).showWorkButton).toBe(true);
+    expect(decodeWorkButtonClientPatch({})).toEqual({});
+    expect(decodeWorkButtonClientPatch({ showWorkButton: false })).toEqual({
+      showWorkButton: false,
+    });
+    expect(() => decodeWorkButtonClientPatch({ showWorkButton: "false" })).toThrow();
+  });
+
+  it("persists hiding across hydration and restores visibility without altering server mode", async () => {
+    await persistClientSettingsPatch({ showWorkButton: false });
+    const saved = persistenceMocks.setClientSettings.mock.lastCall![0];
+    expect(saved.showWorkButton).toBe(false);
+    expect(saved).not.toHaveProperty("workModeEnabled");
+    __resetClientSettingsPersistenceForTests();
+    persistenceMocks.getClientSettings.mockResolvedValue(saved);
+    await ensureClientSettingsHydrated();
+    expect(getClientSettings().showWorkButton).toBe(false);
+    const server = { ...DEFAULT_SERVER_SETTINGS, workModeEnabled: true };
+    expect(mergeEnvironmentSettings(server, getClientSettings()).workModeEnabled).toBe(true);
+    await persistClientSettingsPatch({ showWorkButton: true });
+    expect(persistenceMocks.setClientSettings.mock.lastCall![0]).toEqual({
+      ...saved,
+      showWorkButton: true,
+    });
+    expect(server.workModeEnabled).toBe(true);
+  });
 });

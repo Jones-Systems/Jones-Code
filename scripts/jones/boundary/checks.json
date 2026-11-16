@@ -1151,14 +1151,17 @@
         "packages/contracts/src/jones/workMode.test.ts",
         "packages/shared/src/jones/workMode.test.ts",
         "packages/shared/src/serverSettings.test.ts",
-        "apps/server/src/orchestration-v2/RestartContinuation.test.ts"
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/web/src/jones/workMode/WorkButtonSettings.browser.test.tsx",
+        "apps/web/src/hooks/useSettings.test.ts"
       ],
       "commands": [
         "vp test run packages/shared/src/KeyedLock.test.ts apps/mobile/src/features/threads/pending-thread-feed.test.ts apps/mobile/src/lib/threadActivity.test.ts apps/server/src/jones/provider/workModePrompt.test.ts apps/server/src/jones/workMode/Policy.test.ts apps/server/src/jones/workMode/Retention.test.ts apps/server/src/jones/workMode/Settlement.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ThreadSettlementService.test.ts apps/web/src/components/chat/MessagesTimeline.logic.test.ts apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx packages/contracts/src/jones/workMode.test.ts packages/shared/src/jones/workMode.test.ts packages/shared/src/serverSettings.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts",
         "vp lint apps/server/src/jones/workMode/WorkMode.ts apps/server/src/jones/workMode/WorkMode.test.ts",
         "vp run --filter t3 typecheck",
         "knip --workspace apps/server --exports --preprocessor ./scripts/knip-schemas.ts --no-config-hints",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/web/src/jones/workMode/WorkButtonSettings.browser.test.tsx apps/web/src/hooks/useSettings.test.ts apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx"
       ]
     },
     {
@@ -5239,13 +5242,15 @@
         "packages/contracts/src/jones/workstreamsPersonal.test.ts",
         "packages/contracts/src/jones/workstreamsPersonalRpc.test.ts",
         "apps/mobile/src/features/workstreams/personalStorage.test.ts",
-        "apps/web/src/jones/workstreams/personalThreadReorder.test.ts"
+        "apps/web/src/jones/workstreams/personalThreadReorder.test.ts",
+        "apps/web/src/jones/workstreams/personalRail.test.ts"
       ],
       "commands": [
         "vp test run apps/desktop/src/jones/workstreams/personalStartup.test.ts apps/mobile/src/features/workstreams/personalPresentation.test.ts apps/server/src/jones/workstreams/personal/service.test.ts apps/server/src/jones/workstreamsLegacyHttp.test.ts apps/web/src/jones/workstreams/personalNotifications.test.ts packages/client-runtime/src/jones/workstreams/personal/controller.test.ts packages/contracts/src/jones/workstreamsPersonal.test.ts packages/contracts/src/jones/workstreamsPersonalRpc.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --project browser apps/web/src/jones/workstreams/personalNative.browser.test.tsx apps/web/src/jones/workstreams/personalSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "cd apps/mobile && vp test run --project unit src/features/workstreams/personalStorage.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/web/src/jones/workstreams/personalThreadReorder.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/web/src/jones/workstreams/personalThreadReorder.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/workstreams/personalRail.test.ts"
       ]
     },
     {
