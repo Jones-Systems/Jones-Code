@@ -168,8 +168,24 @@ export function ProviderUpdateEnvironmentRows() {
 }
 
 function ProviderUpdateToastBody() {
+  const updates = useJonesProviderUpdates();
   const [expanded, setExpanded] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const inFlight = useRef(false);
   const detailsId = useId();
+  const pending = submitting || updates.groups.some((group) => group.attempt?.phase === "running");
+  const canUpdate = updates.machines.length > 0 && updates.canManage;
+  const updateAll = async () => {
+    if (inFlight.current || pending || !canUpdate) return;
+    inFlight.current = true;
+    setSubmitting(true);
+    try {
+      await updates.updateAll({ quiet: true });
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+    }
+  };
   return (
     <div className="min-w-0 w-full">
       <button
@@ -197,10 +213,14 @@ function ProviderUpdateToastBody() {
           className="min-w-0 pt-0.5 pr-5 select-text wrap-break-word text-muted-foreground"
           data-slot="toast-description"
         />
-        <div className="mt-2 flex justify-end">
-          <Toast.Action render={<Button size="xs" variant="default" />} data-slot="toast-action">
+        <div className="mt-2 flex justify-end gap-2">
+          <Toast.Action render={<Button size="xs" variant="outline" />} data-slot="toast-action">
             Settings
           </Toast.Action>
+          <Button size="xs" disabled={pending || !canUpdate} onClick={() => void updateAll()}>
+            {pending ? <Spinner size="sm" aria-hidden="true" /> : null}
+            {pending ? "Updating…" : "Update All"}
+          </Button>
         </div>
       </div>
     </div>
