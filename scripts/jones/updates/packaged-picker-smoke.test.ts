@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Fail-closed native consumer preflight and exact producer binding.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { afterEach, expect, it } from "vite-plus/test";
+import { afterEach, beforeAll, expect, it } from "vite-plus/test";
 import {
   scanPickerBundle,
   readPickerFuses,
@@ -174,6 +174,9 @@ it("bounds producer discovery and rejects stale API sources", async () => {
   expect(waits).toBe(2);
 });
 const parents: string[] = [];
+beforeAll(async () => {
+  await NodeFSP.mkdir(NodePath.resolve("node_modules/.cache"), { recursive: true });
+});
 afterEach(async () => {
   for (const parent of parents.splice(0)) await NodeFSP.rm(parent, { recursive: true });
 });
