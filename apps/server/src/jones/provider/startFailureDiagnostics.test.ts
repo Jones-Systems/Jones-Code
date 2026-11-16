@@ -1,6 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
-import { startFailureDiagnosticCode, withStartFailureDiagnostic } from "./startFailureDiagnostics.ts";
+import {
+  startFailureDiagnosticCode,
+  withStartFailureDiagnostic,
+} from "./startFailureDiagnostics.ts";
 
 const runtime = (reason: unknown, cause?: unknown) => ({ _tag: "RuntimeUseError", reason, cause });
 const known = "runtime_use_prior_outcome_unknown_no_replay";
@@ -80,7 +83,10 @@ it("accepts only the exact own tag and the outermost recognized error", () => {
     startFailureDiagnosticCode(runtime("unknown", runtime(known))),
     "runtime_use_unclassified",
   );
-  assert.equal(startFailureDiagnosticCode(runtime(known, runtime("runtime_use_unavailable"))), known);
+  assert.equal(
+    startFailureDiagnosticCode(runtime(known, runtime("runtime_use_unavailable"))),
+    known,
+  );
 });
 
 it("stops on cycles and after sixteen visited objects", () => {
