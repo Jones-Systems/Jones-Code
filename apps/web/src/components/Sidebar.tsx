@@ -23,13 +23,18 @@ import {
 import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
 import { dropPinnedThreadOnWorkstream } from "../jones/workstreams/sidebarThreadDrop";
-import { planWorkstreamThreadReorder } from "../jones/workstreams/personalThreadReorder";
+import { usePersonalSidebarActiveThreads } from "../jones/workstreams/personalSidebarOrder";
+import { usePersonalStatusSelection } from "../jones/workstreams/personalStatusFilter";
+import { placePersonalThread } from "../jones/workstreams/personalThreadPlacement";
 import { usePersonalWorkstreams } from "../state/workstreamsPersonal";
 import {
   groupPersonalThreads,
   personalThreadKey,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
-import { showPinnedUnpinFailure } from "../jones/workstreams/personalNotifications";
+import {
+  showPersonalFailure,
+  showPinnedUnpinFailure,
+} from "../jones/workstreams/personalNotifications";
 import {
   WorkstreamNativeSidebar,
   type NativeThreadAssignmentMenu,
@@ -452,6 +457,8 @@ function useSidebarThreads(input: {
   readonly threads: readonly EnvironmentThreadShell[];
   readonly delegatedUnderParent: ReadonlySet<string>;
   readonly routeRowThreadKey: string | null;
+  readonly personalWorkstreams: ReturnType<typeof usePersonalWorkstreams>["state"];
+  readonly workstreamsEnabled: boolean;
   // Set in boring mode: the project groups to fold active threads into, in order.
   readonly folderGroups: readonly SidebarProjectSnapshot[] | null;
   // Keeps folders with no active threads, so a project the user filtered to or pinned can start one.
@@ -493,8 +500,16 @@ function useSidebarThreads(input: {
     cycleStatusFilter,
     hideWorkingThreads,
     counts: statusCounts,
-    threads: visibleThreads,
+    threads: globallyVisibleThreads,
   } = useThreadStatusFilter(scopedThreads, "current", statusWakeAt, routeRowThreadKey);
+  const personalVisibleThreads = usePersonalStatusSelection(
+    scopedThreads,
+    input.personalWorkstreams,
+    globallyVisibleThreads,
+    statusWakeAt,
+    routeRowThreadKey,
+  );
+  const visibleThreads = input.workstreamsEnabled ? personalVisibleThreads : globallyVisibleThreads;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- schedules the status roster's precise snooze wake, including filtered rows
   useEffect(() => {
     const next = nextThreadStatusWakeAt(
@@ -1372,6 +1387,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     },
   );
 
+  const workstreamController = usePersonalWorkstreams();
+  const workstreamsEnabled = workstreamController.state.environments.some(
+    (entry) => entry.status !== "update_required",
+  );
   const {
     workingShelfEnabled,
     pinnedThreads,
@@ -1400,8 +1419,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     renderedSettledThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
-    orderedThreadKeys,
-    threadByKey,
+    orderedThreadKeys: fallbackOrderedThreadKeys,
+    threadByKey: fallbackThreadByKey,
     settledThreadKeys,
     snoozedThreadKeys,
     sectionByThreadKey,
@@ -1424,6 +1443,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     threads,
     delegatedUnderParent,
     routeRowThreadKey,
+    personalWorkstreams: workstreamController.state,
+    workstreamsEnabled,
     folderGroups: boringSidebarEnabled
       ? scopedProjectGroups.length === 0
         ? // An archived project keeps a folder for its active threads, below the rest.
@@ -1455,10 +1476,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     return count;
   });
 
-  const workstreamController = usePersonalWorkstreams();
-  const workstreamsEnabled = workstreamController.state.environments.some(
-    (entry) => entry.status !== "update_required",
-  );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publishes personal definition labels while Sidebar owns the work-queue label publisher.
   useEffect(() => {
     if (!primaryEnvironmentId) return;
@@ -1478,6 +1495,38 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useStableCallback(() => setWorkstreamCreateOpen(false));
   const workstreamGrouping = groupPersonalThreads(workstreamController.state, activeThreads);
+  const workstreamRouteThread = routeRowThreadKey ? parseScopedThreadKey(routeRowThreadKey) : null;
+  const workstreamActiveThreads = usePersonalSidebarActiveThreads(
+    workstreamGrouping,
+    workstreamRouteThread === null
+      ? null
+      : { environmentId: workstreamRouteThread.environmentId, id: workstreamRouteThread.threadId },
+  );
+  const orderedThreads = workstreamsEnabled
+    ? [
+        ...pinnedThreads,
+        ...workstreamActiveThreads.visible,
+        ...visibleWorkingThreads,
+        ...visibleSnoozedThreads,
+        ...renderedSettledThreads,
+      ]
+    : null;
+  const orderedThreadKeys = orderedThreads?.map(threadShellKey) ?? fallbackOrderedThreadKeys;
+  const traversalThreadKeys = workstreamsEnabled
+    ? [
+        ...pinnedThreads,
+        ...workstreamActiveThreads.traversal,
+        ...visibleWorkingThreads,
+        ...visibleSnoozedThreads,
+        ...renderedSettledThreads,
+      ].map(threadShellKey)
+    : fallbackOrderedThreadKeys;
+  const threadByKey = orderedThreads
+    ? new Map([
+        ...fallbackThreadByKey,
+        ...activeThreads.map((thread) => [threadShellKey(thread), thread] as const),
+      ])
+    : fallbackThreadByKey;
 
   // Ranked across environments as the palette ranks them, so one
   // environment's list does not sit above another's better matches; rows
@@ -2215,58 +2264,52 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     routeThreadKey: routeRowThreadKey,
     snoozedThreadCount: snoozedThreads.length,
   });
+  const placeWorkstreamThread = useStableCallback(
+    async (
+      thread: EnvironmentThreadShell,
+      destinationId: string | null,
+      neighbor: EnvironmentThreadShell | null,
+      after: boolean,
+    ): Promise<boolean> => {
+      return placePersonalThread({
+        thread,
+        destinationId,
+        neighbor,
+        after,
+        state: workstreamController.state,
+        activeThreads,
+        activeKeys,
+        activeKeysById,
+        reorderableKeys: activeReorderableThreadKeys,
+        threadByKey,
+        allowReorder: !workingShelfEnabled,
+        controller: workstreamController.controller,
+        canOperate: canOperateThreads,
+        reorder: async (target, orderKey) => {
+          const result = await reorderActiveThread(
+            scopeThreadRef(target.environmentId, target.id),
+            orderKey,
+          );
+          return result._tag === "Success";
+        },
+        onAssignmentFailure: showPersonalFailure,
+        onPositionFailure: (assignmentSaved) => {
+          toastManager.add({
+            type: "error",
+            title: "Thread position could not be saved",
+            description: assignmentSaved
+              ? "The Workstream assignment was saved, but the drop position could not be saved. Refresh before retrying."
+              : "The drop position could not be saved. Refresh before retrying.",
+          });
+        },
+      });
+    },
+  );
   const reorderWorkstreamThread = useStableCallback(
     async (thread: EnvironmentThreadShell, neighbor: EnvironmentThreadShell, after: boolean) => {
-      if (workingShelfEnabled || !checkThreadOperations([thread, neighbor])) return;
-      const movedId = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      const neighborId = scopedThreadKey(scopeThreadRef(neighbor.environmentId, neighbor.id));
-      if (
-        movedId === neighborId ||
-        !activeKeys.includes(movedId) ||
-        !activeKeys.includes(neighborId)
-      )
-        return;
-      const writable = new Set(
-        [...activeReorderableThreadKeys].filter((key) => {
-          const candidate = threadByKey.get(key);
-          return (
-            candidate !== undefined &&
-            readEnvironmentScope(candidate.environmentId, AuthOrchestrationOperateScope)
-          );
-        }),
-      );
-      if (!writable.has(neighborId)) return;
-      const assignments = planWorkstreamThreadReorder({
-        activeOrder: activeKeys,
-        keysById: activeKeysById,
-        movedId,
-        neighborId,
-        after,
-        writableKeys: writable,
-        groupIdByKey: new Map(
-          workstreamGrouping.groups.flatMap((group) =>
-            group.threads.map(
-              (member) =>
-                [
-                  scopedThreadKey(scopeThreadRef(member.environmentId, member.id)),
-                  group.workstream.id,
-                ] as const,
-            ),
-          ),
-        ),
-      });
-      if (assignments === null) return;
-      for (const assignment of assignments) {
-        const target = threadByKey.get(assignment.id);
-        if (!target) throw new Error("Thread changed while reordering. Try again.");
-        if (!checkThreadOperations([target])) return;
-        const result = await reorderActiveThread(
-          scopeThreadRef(target.environmentId, target.id),
-          assignment.orderKey,
-        );
-        if (result._tag !== "Success")
-          throw new Error("Active thread reorder did not complete. Refresh before retrying.");
-      }
+      const destinationId =
+        workstreamGrouping.workstreamIdByThreadKey.get(personalThreadKey(thread)) ?? null;
+      await placeWorkstreamThread(thread, destinationId, neighbor, after);
     },
   );
   const draggedThreadKey = dragState?.activeKey;
@@ -3202,7 +3245,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       if (traversalDirection !== null) {
         navigateToThreadKey(
           resolveAdjacentThreadId({
-            threadIds: orderedThreadKeys,
+            threadIds: traversalThreadKeys,
             currentThreadId: routeRowThreadKey,
             direction: traversalDirection,
           }),
@@ -3219,6 +3262,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     keybindings,
     navigateToThread,
     orderedThreadKeys,
+    traversalThreadKeys,
     routePreviewOpen,
     routeRowThreadKey,
     routeTerminalOpen,
@@ -3791,35 +3835,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           />
                         ) : null,
                       ];
-                      if (workstreamsEnabled) {
-                        items.push(
-                          <li key="native-workstream-groups" className="list-none">
-                            <WorkstreamNativeSidebar
-                              controller={workstreamController.controller}
-                              assignmentMenuRef={workstreamAssignmentMenuRef}
-                              externalDropRef={workstreamExternalDropRef}
-                              canOperate={(thread) =>
-                                readEnvironmentScope(
-                                  thread.environmentId,
-                                  AuthOrchestrationOperateScope,
-                                )
-                              }
-                              threads={activeThreads}
-                              summaryThreads={workstreamSummaryThreads}
-                              renderThread={(thread, assignment) =>
-                                renderThreadRow(thread, "active", undefined, assignment)
-                              }
-                              canReorder={(thread) =>
-                                !workingShelfEnabled &&
-                                activeReorderableThreadKeys.has(
-                                  scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-                                )
-                              }
-                              reorder={reorderWorkstreamThread}
-                            />
-                          </li>,
-                        );
-                      }
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
                           // The mounted Workstream section owns every active row, including Unassigned.
@@ -3829,7 +3844,39 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
                           continue;
                         }
-                        if (item.marker === "active-placeholder" && workstreamsEnabled) continue;
+                        if (item.marker === "active-placeholder" && workstreamsEnabled) {
+                          items.push(
+                            <li key="native-workstream-groups" className="list-none">
+                              <WorkstreamNativeSidebar
+                                controller={workstreamController.controller}
+                                assignmentMenuRef={workstreamAssignmentMenuRef}
+                                externalDropRef={workstreamExternalDropRef}
+                                canOperate={(thread) =>
+                                  readEnvironmentScope(
+                                    thread.environmentId,
+                                    AuthOrchestrationOperateScope,
+                                  )
+                                }
+                                threads={activeThreads}
+                                summaryThreads={workstreamSummaryThreads}
+                                renderThread={(thread, assignment) =>
+                                  renderThreadRow(thread, "active", undefined, assignment)
+                                }
+                                canReorder={(thread) =>
+                                  !workingShelfEnabled &&
+                                  activeReorderableThreadKeys.has(
+                                    scopedThreadKey(
+                                      scopeThreadRef(thread.environmentId, thread.id),
+                                    ),
+                                  )
+                                }
+                                reorder={reorderWorkstreamThread}
+                                placeThread={placeWorkstreamThread}
+                              />
+                            </li>,
+                          );
+                          continue;
+                        }
                         if (projectFolders !== null && item.marker === "active-placeholder") {
                           for (const folder of projectFolders) {
                             items.push(
