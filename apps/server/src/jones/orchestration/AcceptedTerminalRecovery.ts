@@ -23,10 +23,12 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 
 type Terminal = Extract<ProviderAdapter.ProviderAdapterV2Event, { readonly type: "turn.terminal" }>;
 type CurrentWrite = Parameters<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>[0];
+type ProviderOwnerWrite = Parameters<EventSink.EventSinkV2["Service"]["writeIfProviderThreadOwner"]>[0];
 type UnconditionalWrite = Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0];
 type Publication =
   | { readonly type: "current"; readonly input: CurrentWrite }
-  | { readonly type: "unconditional"; readonly input: UnconditionalWrite };
+  | { readonly type: "unconditional"; readonly input: UnconditionalWrite }
+  | { readonly type: "provider-owner"; readonly input: ProviderOwnerWrite };
 type Result = Effect.Success<ReturnType<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>>;
 const isLockTimeout = Schema.is(SqlError.LockTimeoutError);
 const encodeTerminalEvent = Schema.encodeEffect(Schema.fromJsonString(OrchestrationV2DomainEvent));
@@ -297,7 +299,9 @@ export const makeTerminalPublisher = Effect.gen(function* () {
     const write =
       request.type === "current"
         ? sink.writeIfRunCurrent({ ...request.input, commandId: entry.commandId })
-        : sink
+        : request.type === "provider-owner"
+          ? sink.writeIfProviderThreadOwner({ ...request.input, commandId: entry.commandId })
+          : sink
             .writeWithEffects({ ...request.input, commandId: entry.commandId })
             .pipe(Effect.map((storedEvents) => ({ committed: true, storedEvents })));
     entry.uncertain = true;

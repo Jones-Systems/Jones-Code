@@ -218,12 +218,7 @@ export interface ProviderEventIngestInput {
   readonly analyticsContext?: ProviderTurnAnalyticsContext;
 }
 
-export interface ProviderEventIngestorV2Shape {
-  readonly normalize: (
-    input: ProviderEventIngestInput,
-  ) => Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, ProviderEventIngestorV2Error>;
-  readonly ingestNormalized: (
-    input: ProviderEventIngestInput & {
+export type ProviderEventPublishInput = ProviderEventIngestInput & {
       readonly writeIfRunCurrent?: {
         readonly runId: RunId;
         readonly activeAttemptId: RunAttemptId;
@@ -235,7 +230,20 @@ export interface ProviderEventIngestorV2Shape {
         readonly activeAttemptId: RunAttemptId;
         readonly expectedLastRunOrdinal: number;
       };
-    },
+    };
+
+export interface ProviderEventIngestorV2Shape {
+  readonly captureTerminal: (
+    input: ProviderEventPublishInput,
+  ) => Effect.Effect<{
+    readonly publish: Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, ProviderEventIngestorV2Error>;
+  }, ProviderEventIngestorV2Error>;
+
+  readonly normalize: (
+    input: ProviderEventIngestInput,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, ProviderEventIngestorV2Error>;
+  readonly ingestNormalized: (
+    input: ProviderEventPublishInput,
   ) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, ProviderEventIngestorV2Error>;
 }
 
@@ -497,7 +505,7 @@ export const layer: Layer.Layer<
             return yield* new ProviderEventNormalizeError({
               providerSessionId: input.providerSessionId,
               threadId: input.threadId,
-              providerEvent: input.event,
+              eventType: input.event.type,
               cause: "A retained identity event ID requires runtime_identity.observed.",
             });
           switch (input.event.type) {
@@ -797,12 +805,13 @@ export const layer: Layer.Layer<
           ),
       );
 
-    return ProviderEventIngestorV2.of({
-      normalize,
-      ingestNormalized:
-        /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
-        Effect.fnUntraced(
-          function* (input) {
+    // Publication owns only the captured normalized batch and its exact history fallback.
+    // No post-publication model/analytics read belongs in this retryable operation.
+    const publishNormalized = Effect.fnUntraced(
+          function* (input: ProviderEventPublishInput, prepared?: {
+            readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
+            readonly historical?: HistoricalTerminalInput;
+          }) {
             const recordIneligibleRejection = isHistoricalTerminalCandidate(input.event)
               ? Effect.void
               : SupersededTerminalTrace.recordTerminalRejection(
@@ -826,7 +835,7 @@ export const layer: Layer.Layer<
               isHistoricalTerminalCandidate(input.event) &&
               eventSink.writeHistoricalTerminal !== undefined
             ) {
-              historicalInput = {
+              historicalInput = prepared?.historical ?? {
                 providerSessionId: input.providerSessionId,
                 providerInstanceId: input.providerInstanceId,
                 threadId: input.threadId,
@@ -843,7 +852,7 @@ export const layer: Layer.Layer<
                       new ProviderEventNormalizeError({
                         providerSessionId: input.providerSessionId,
                         threadId: input.threadId,
-                        providerEvent: input.event,
+                        eventType: input.event.type,
                         cause,
                       }),
                   ),
@@ -885,9 +894,9 @@ export const layer: Layer.Layer<
                     Effect.as(storedEvents),
                   );
             const ordinary = Effect.gen(function* () {
-              const events = yield* input.event.type === "turn.terminal"
+              const events = prepared?.events ?? (yield* input.event.type === "turn.terminal"
                 ? normalizeTerminal(input.event, normalize(input))
-                : normalize(input);
+                : normalize(input));
               if (events.length === 0) {
                 return [];
               }
@@ -921,16 +930,18 @@ export const layer: Layer.Layer<
                   cause,
                 });
               if (input.writeIfProviderThreadOwner !== undefined) {
-                const ownerResult = yield* eventSink
-                  .writeIfProviderThreadOwner({
+                const ownerWrite = {
                     guardPendingUserInputCancellations: true,
                     skipUnchangedProviderNodes: input.event.type === "node.updated",
                     ...runtimeGuard,
                     ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                     ...input.writeIfProviderThreadOwner,
                     events,
-                  })
-                  .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
+                };
+                const ownerResult = yield* (input.event.type === "turn.terminal"
+                  ? publishTerminal(input.event, "owner-ingestion", { type: "provider-owner", input: ownerWrite })
+                  : eventSink.writeIfProviderThreadOwner(ownerWrite).pipe(retryLockTimeout)
+                ).pipe(Effect.mapError(mapWriteError));
                 ordinaryRejected = !ownerResult.committed;
                 return ownerResult.storedEvents;
               }
@@ -977,6 +988,53 @@ export const layer: Layer.Layer<
               }),
             );
           },
+    );
+    return ProviderEventIngestorV2.of({
+      normalize,
+      captureTerminal: Effect.fnUntraced(function* (input) {
+        const terminal = input.event;
+        if (terminal.type !== "turn.terminal")
+          return yield* new ProviderEventNormalizeError({
+            providerSessionId: input.providerSessionId,
+            threadId: input.threadId, eventType: terminal.type,
+          });
+        let retained: {
+          readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
+          readonly historical?: HistoricalTerminalInput;
+        } | undefined;
+        const publish = Effect.suspend(() => Effect.gen(function* () {
+          if (retained === undefined) {
+            const events = yield* normalizeTerminal(terminal, normalize(input));
+            const historical = isHistoricalTerminalCandidate(terminal) ? {
+              providerSessionId: input.providerSessionId,
+              providerInstanceId: input.providerInstanceId,
+              threadId: input.threadId,
+              ...(input.runId === undefined ? {} : { runId: input.runId }),
+              event: terminal,
+              terminal: yield* makeDomainEvent(input, {
+                type: "provider-turn.updated",
+                ...(terminal.threadId === undefined ? {} : { threadId: terminal.threadId }),
+                payload: terminal.providerTurn, nodeId: terminal.providerTurn.nodeId,
+              }).pipe(Effect.mapError((cause) => new ProviderEventNormalizeError({
+                providerSessionId: input.providerSessionId,
+                threadId: input.threadId, eventType: terminal.type, cause,
+              }))),
+            } satisfies HistoricalTerminalInput : undefined;
+            retained = { events, ...(historical === undefined ? {} : { historical }) };
+          }
+          const stored = yield* publishNormalized(input, retained);
+          if (stored.length > 0 && terminal.status === "failed" && terminal.failure.class === "usage_limit")
+            yield* instances.getInstance(input.providerInstanceId).pipe(
+              Effect.flatMap((instance) => instance?.snapshot.refreshUsage ?? Effect.void),
+              Effect.ignoreCause({ log: true }),
+              Effect.forkIn(scope, { startImmediately: true }),
+            );
+          return stored;
+        }));
+        return { publish };
+      }),
+      ingestNormalized: Effect.fnUntraced(
+          (input: ProviderEventPublishInput) => publishNormalized(input),
           (effect, input) =>
             effect.pipe(
               Effect.tap((storedEvents) =>
