@@ -32,6 +32,7 @@ on:
 permissions:
   contents: read
   actions: read
+  pull-requests: read
 
 concurrency:
   group: jones-packaged-picker-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.workflow_run.head_sha }}
@@ -48,6 +49,8 @@ jobs:
         (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule')))
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    outputs:
+      applicable: ${{ steps.producer.outputs.applicable }}
     steps:
       - name: Checkout exact consumer source
         env:
@@ -72,6 +75,7 @@ jobs:
           cache: true
           run-install: true
       - name: Locate producer within a finite budget
+        id: producer
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/jones/updates/packaged-picker-smoke.ts --locate
@@ -86,6 +90,7 @@ jobs:
   picker:
     name: Native packaged picker (diagnostic)
     needs: locate
+    if: needs.locate.outputs.applicable == 'true'
     runs-on: macos-15
     timeout-minutes: 15
     steps:
