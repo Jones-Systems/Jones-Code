@@ -4,6 +4,7 @@ import {
   type ProviderRuntimeBinding,
   type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Authority from "./NativeCreationAuthority.ts";
@@ -13,6 +14,10 @@ import { ProviderAdapterProtocolError } from "@t3tools/provider-core/server/Prov
 
 import type { NativeProviderExecutionGuard } from "@t3tools/provider-core/server/jones/runtimeTypes";
 export type { NativeProviderExecutionGuard } from "@t3tools/provider-core/server/jones/runtimeTypes";
+// Only the existing whole-operation executor provides this issued private handle.
+export class CurrentNativeGuard extends Context.Service<CurrentNativeGuard, NativeProviderExecutionGuard>()(
+  "jones/nativeCreation/CurrentNativeGuard",
+) {}
 const guards = new WeakMap<
   NativeProviderExecutionGuard,
   {

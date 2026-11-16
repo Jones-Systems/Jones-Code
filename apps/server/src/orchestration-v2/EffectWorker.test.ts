@@ -34,6 +34,8 @@ import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
@@ -175,6 +177,10 @@ function layerExecutorFor(input: {
         layerDependencies,
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({ getByCommandId: () => Effect.succeedNone }),
+        // Lifecycle custody is covered through its real owner integration suite.
+        // These executor cases exercise interrupt/rollback/respond/continuation ports.
+        Layer.mock(RestartPreparation.RestartPreparation)({ recordSteerFailure: () => Effect.void }),
         ServerSettings.layerTest(
           input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},
         ),
