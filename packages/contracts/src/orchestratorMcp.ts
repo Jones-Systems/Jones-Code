@@ -625,6 +625,8 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
+  /** Compare the target incarnation under its command lock before SEND; unsupported fences fail closed. */
+  expectedThreadCreatedAt: Schema.optional(IsoDateTime),
   awaitResult: Schema.optional(Schema.Boolean),
   resultRequest: Schema.optional(ThreadResultRequestDescriptor),
   environmentId: OrchestratorMcpEnvironmentTarget,
@@ -652,6 +654,49 @@ export const OrchestratorMcpThreadSendResult = Schema.Struct({
   delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
 });
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
+
+export const REMOTE_FOLLOW_UP_RECEIPT_VERSION = "jones.remote-followup-receipt/v1";
+
+// Receipt identity must not be silently stripped before the authenticated owner validates it.
+const remoteFollowUpStruct = <Fields extends Schema.Struct.Fields>(fields: Fields) =>
+  Schema.flip(
+    Schema.flip(Schema.Struct(fields)).check(
+      Schema.makeFilter((value) => Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key))),
+    ),
+  );
+
+/** Read-only lookup in the same authenticated origin namespace as SEND. No dispatch on a miss. */
+export const OrchestratorMcpThreadSendReceiptLookupInput = remoteFollowUpStruct({
+  threadId: ThreadId,
+  clientRequestId: Schema.NonEmptyString,
+  requestDigest: Schema.NonEmptyString,
+});
+export type OrchestratorMcpThreadSendReceiptLookupInput =
+  typeof OrchestratorMcpThreadSendReceiptLookupInput.Type;
+
+const RemoteFollowUpReceiptIdentity = {
+  version: Schema.Literal(REMOTE_FOLLOW_UP_RECEIPT_VERSION),
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  clientRequestId: Schema.NonEmptyString,
+  requestDigest: Schema.NonEmptyString,
+};
+
+/** A missing/pruned receipt is unknown; rejected requires a durable pre-effect refusal. */
+export const OrchestratorMcpThreadSendReceiptLookupResult = Schema.Union([
+  remoteFollowUpStruct({
+    ...RemoteFollowUpReceiptIdentity,
+    outcome: Schema.Literal("accepted"),
+    sent: remoteFollowUpStruct(OrchestratorMcpThreadSendResult.fields),
+  }).check(Schema.makeFilter((value) => value.sent.threadId === value.threadId)),
+  remoteFollowUpStruct({
+    ...RemoteFollowUpReceiptIdentity,
+    outcome: Schema.Literals(["rejected", "unknown"]),
+    sent: Schema.Null,
+  }),
+]);
+export type OrchestratorMcpThreadSendReceiptLookupResult =
+  typeof OrchestratorMcpThreadSendReceiptLookupResult.Type;
 
 export const OrchestratorMcpThreadWaitInput = Schema.Struct({
   childProgressForRunId: Schema.optional(RunId),
@@ -777,6 +822,9 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
   features: Schema.Struct({
+    // Optional acceptance only. The server advertises both only after the full mechanism exists.
+    remoteFollowUpSendVersion: Schema.optional(Schema.Literal(REMOTE_FOLLOW_UP_RECEIPT_VERSION)),
+    remoteFollowUpReceiptVersion: Schema.optional(Schema.Literal(REMOTE_FOLLOW_UP_RECEIPT_VERSION)),
     threadContentEvidence: Schema.optional(ThreadContentEvidenceCapability),
     remoteTaskObservationVersion: Schema.optional(Schema.String),
     threadResultRequestVersion: Schema.optional(Schema.String),
