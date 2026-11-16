@@ -49,8 +49,22 @@ const proof = (): LaunchEvidenceInput => ({
   expectedProjectId: "project",
   initialMessageRequested: false,
   observedAt: now,
-  hashed: { commandId: ids.hashed, creation: null, creationProjectId: null, message: null, shell: null, claimMatches: true },
-  legacy: { commandId: ids.legacy, creation: null, creationProjectId: null, message: null, shell: null, claimMatches: true },
+  hashed: {
+    commandId: ids.hashed,
+    creation: null,
+    creationProjectId: null,
+    message: null,
+    shell: null,
+    claimMatches: true,
+  },
+  legacy: {
+    commandId: ids.legacy,
+    creation: null,
+    creationProjectId: null,
+    message: null,
+    shell: null,
+    claimMatches: true,
+  },
 });
 const memory = Layer.effectDiscard(
   core.pipe(Effect.andThen(integration), Effect.andThen(review)),

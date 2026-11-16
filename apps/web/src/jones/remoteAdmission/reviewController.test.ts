@@ -343,7 +343,8 @@ it("recovers a pruned saved cursor at head while preserving unknown attention an
   };
   f.controller.setAttentionPersistence(persistence);
   const pendingChanges = f.client.changes;
-  f.client.changes = vi.fn()
+  f.client.changes = vi
+    .fn()
     .mockRejectedValueOnce({ code: "history_unavailable" })
     .mockResolvedValueOnce({ cursor: "after-new-result", revision: "new", results: [created] })
     .mockImplementation(pendingChanges);
@@ -356,7 +357,9 @@ it("recovers a pruned saved cursor at head while preserving unknown attention an
   expect(f.controller.getSnapshot().results).toEqual([retained, created]);
   expect(f.controller.getSnapshot().uncertain.has("access:revoked-grant")).toBe(true);
   expect(persistence.write).toHaveBeenLastCalledWith({
-    cursor: "after-new-result", results: [retained, created], uncertainAccess,
+    cursor: "after-new-result",
+    results: [retained, created],
+    uncertainAccess,
   });
   expect(f.client.page).toHaveBeenCalled();
   expect(f.client.mutate).not.toHaveBeenCalled();
@@ -369,7 +372,8 @@ it("bounds repeated history rejection to one head reset without clearing unknown
   const retained = { ...a, outcome: "unknown" as const };
   const write = vi.fn();
   f.controller.setAttentionPersistence({
-    read: () => ({ cursor: "expired", results: [retained] }), write,
+    read: () => ({ cursor: "expired", results: [retained] }),
+    write,
   });
   f.client.changes = vi.fn().mockRejectedValue({ code: "history_unavailable" });
   await f.controller.watchResults();
@@ -378,7 +382,9 @@ it("bounds repeated history rejection to one head reset without clearing unknown
   expect(f.controller.getSnapshot().results).toEqual([retained]);
   expect(f.controller.getSnapshot().error).toContain("updates are unavailable");
   expect(write).toHaveBeenLastCalledWith({
-    cursor: "current-head", results: [retained], uncertainAccess: [],
+    cursor: "current-head",
+    results: [retained],
+    uncertainAccess: [],
   });
   expect(f.client.mutate).not.toHaveBeenCalled();
 });
@@ -387,10 +393,16 @@ it("does not persist a late reset head after the result subscription stops", asy
   const f = fixture();
   const write = vi.fn();
   f.controller.setAttentionPersistence({
-    read: () => ({ cursor: "expired", results: [] }), write,
+    read: () => ({ cursor: "expired", results: [] }),
+    write,
   });
   let finish!: (head: string) => void;
-  f.client.head = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+  f.client.head = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
   f.client.changes = vi.fn().mockRejectedValue({ code: "history_unavailable" });
   const watching = f.controller.watchResults();
   await vi.waitFor(() => expect(f.client.head).toHaveBeenCalledTimes(1));
@@ -421,9 +433,17 @@ it("opens the exact managed access lineage for a new blocked message without a n
     },
   };
   const transport: ReviewTransport = {
-    capabilities: vi.fn(), review: vi.fn(), grants: vi.fn(), decision: vi.fn(),
-    updateGrant: vi.fn(), revokeGrant: vi.fn(), restoreGrant: vi.fn(), retry: vi.fn(),
-    recheck: vi.fn(), changes: vi.fn(), item: vi.fn(async () => wire),
+    capabilities: vi.fn(),
+    review: vi.fn(),
+    grants: vi.fn(),
+    decision: vi.fn(),
+    updateGrant: vi.fn(),
+    revokeGrant: vi.fn(),
+    restoreGrant: vi.fn(),
+    retry: vi.fn(),
+    recheck: vi.fn(),
+    changes: vi.fn(),
+    item: vi.fn(async () => wire),
   };
   const client = createCanonicalReviewClient(transport);
   expect((await client.lookup(a.record.id)).accessId).toBe("revoked-scope-head");

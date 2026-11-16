@@ -1402,7 +1402,8 @@ it.effect(
       expect(closed.results[0].ok).toBe(false);
       expect(closed.results[0].value.code).toBe("orchestration_error");
       expect(closed.results[0].launchResult).toMatchObject({
-        outcome: "unknown", threadId: null,
+        outcome: "unknown",
+        threadId: null,
         stages: { creation: "unknown", availability: "unknown" },
       });
       // The sender now gets a terminal answer, not a pending claim, and the work is not rerun.

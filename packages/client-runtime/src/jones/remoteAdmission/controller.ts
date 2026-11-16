@@ -617,8 +617,11 @@ export function createReviewController(client: ReviewClient) {
           try {
             batch = await client.changes(cursor, owner.signal);
           } catch (error) {
-            const expiredHistory = typeof error === "object" && error !== null &&
-              "code" in error && error.code === "history_unavailable";
+            const expiredHistory =
+              typeof error === "object" &&
+              error !== null &&
+              "code" in error &&
+              error.code === "history_unavailable";
             if (!expiredHistory || historyReset || owner.signal.aborted) throw error;
             // A rejected retained cursor is unavailable history, never evidence
             // that a decision or launch had no effect. Preserve attention and

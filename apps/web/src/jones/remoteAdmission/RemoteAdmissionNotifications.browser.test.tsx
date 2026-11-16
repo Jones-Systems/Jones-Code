@@ -18,7 +18,10 @@ let store: ReturnType<typeof createAdmissionStore>;
 let notificationMode = "off";
 vi.mock("../../components/ui/toast", () => ({ toastManager: mocks }));
 vi.mock("../../state/entities", async (original) => ({
-  ...(await original<typeof import("../../state/entities")>()), useProject: () => null, useThreadShell: () => null }));
+  ...(await original<typeof import("../../state/entities")>()),
+  useProject: () => null,
+  useThreadShell: () => null,
+}));
 vi.mock("../../state/environments", async (original) => ({
   ...(await original<typeof import("../../state/environments")>()),
   useEnvironments: () => ({

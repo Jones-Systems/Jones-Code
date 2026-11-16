@@ -145,6 +145,7 @@ export function createCanonicalReviewClient(transport: ReviewTransport): ReviewC
           });
           return {};
         }
+        if (!("expectedGeneration" in input)) throw new Error("Access generation is required");
         const base = { grantId: input.id, expectedGeneration: input.expectedGeneration };
         if (input.action === "revoke")
           return { access: reviewAccess(await transport.revokeGrant(base)) };

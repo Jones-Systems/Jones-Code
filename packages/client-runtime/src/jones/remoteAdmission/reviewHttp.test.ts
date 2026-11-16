@@ -42,22 +42,38 @@ describe("authenticated review transport", () => {
   it.effect("refuses a route prepared for another receiver before sending an owner mutation", () =>
     Effect.gen(function* () {
       let sent = false;
-      const http = HttpClient.make(() => Effect.sync(() => {
-        sent = true;
-        throw new Error("Wrong receiver must never be contacted.");
-      }));
-      const result = yield* reviewHttp.revokeGrant(entry, {
-        grantId: "grant", expectedGeneration: 1,
-      }).pipe(Effect.provideService(HttpClient.HttpClient, http), Effect.result);
+      const http = HttpClient.make(() =>
+        Effect.sync(() => {
+          sent = true;
+          throw new Error("Wrong receiver must never be contacted.");
+        }),
+      );
+      const result = yield* reviewHttp
+        .revokeGrant(entry, {
+          grantId: "grant",
+          expectedGeneration: 1,
+        })
+        .pipe(Effect.provideService(HttpClient.HttpClient, http), Effect.result);
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result)) {
-        expect(result.failure).toMatchObject({ _tag: "ConnectionBlockedError", reason: "configuration" });
+        expect(result.failure).toMatchObject({
+          _tag: "ConnectionBlockedError",
+          reason: "configuration",
+        });
       }
       expect(sent).toBe(false);
-    }).pipe(Effect.provide(Layer.succeed(ConnectionResolver, ConnectionResolver.of({
-      prepare: () => Effect.succeed({ ...prepared, environmentId: EnvironmentId.make("wrong-receiver") }),
-      prepareForUpdate: () => Effect.die("No update bypass."),
-    })))),
+    }).pipe(
+      Effect.provide(
+        Layer.succeed(
+          ConnectionResolver,
+          ConnectionResolver.of({
+            prepare: () =>
+              Effect.succeed({ ...prepared, environmentId: EnvironmentId.make("wrong-receiver") }),
+            prepareForUpdate: () => Effect.die("No update bypass."),
+          }),
+        ),
+      ),
+    ),
   );
 
   it.effect("preserves a declared conflict and sends the mutation exactly once", () =>

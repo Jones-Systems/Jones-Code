@@ -107,8 +107,7 @@ it.effect(
       ).toBe("ReviewHistoryUnavailable");
       yield* sql.withTransaction(service.access.bumpInTransaction("admission", seed.id, input.now));
       expect(
-        (yield* service.review.page({ ...input, cursor: page.nextCursor! }).pipe(Effect.flip))
-          ._tag,
+        (yield* service.review.page({ ...input, cursor: page.nextCursor! }).pipe(Effect.flip))._tag,
       ).toBe("ReviewHistoryUnavailable");
     }).pipe(Effect.provide(layer)),
 );

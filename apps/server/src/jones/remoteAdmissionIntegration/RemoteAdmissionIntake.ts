@@ -282,14 +282,17 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const now = yield* nowIso;
         const { params } = unpack(record);
-        const launchResult = record.envelope.operation === "t3_thread_launch"
-          ? terminalLaunchResult({
-              status: record.status,
-              commandId: record.commandId,
-              recordedAt: now,
-              initialMessageRequested: typeof params.message === "string" ||
-                (Array.isArray(params.attachments) && params.attachments.length > 0),
-            }) : null;
+        const launchResult =
+          record.envelope.operation === "t3_thread_launch"
+            ? terminalLaunchResult({
+                status: record.status,
+                commandId: record.commandId,
+                recordedAt: now,
+                initialMessageRequested:
+                  typeof params.message === "string" ||
+                  (Array.isArray(params.attachments) && params.attachments.length > 0),
+              })
+            : null;
         yield* sql`INSERT OR IGNORE INTO jones_remote_admission_results (admission_id, result_json) VALUES (${record.id}, ${encodeJson({ ok: false, value: interruptedFailure(), ...(launchResult ? { launchResult } : {}) })})`;
         if (yield* presence("jones_remote_admission_extensions")) {
           yield* sql`INSERT INTO jones_remote_admission_extensions(admission_id,outcome) VALUES(${record.id},'unknown') ON CONFLICT(admission_id) DO UPDATE SET outcome=COALESCE(outcome,'unknown')`;
@@ -404,17 +407,19 @@ const make = Effect.gen(function* () {
       status: "dispatching",
       commandId,
       recordedAt: resultRecordedAt,
-      initialMessageRequested: typeof params.message === "string" ||
+      initialMessageRequested:
+        typeof params.message === "string" ||
         (Array.isArray(params.attachments) && params.attachments.length > 0),
     });
-    const launchResult = record.envelope.operation === "t3_thread_launch"
-      ? Option.isSome(recoveryEvidence)
-        ? yield* recoveryEvidence.value.read(record).pipe(
-            Effect.map((raw) => classifyLaunchEvidence({ ...raw, liveClaim: false }).result),
-            Effect.orElseSucceed(() => unknownLaunchResult),
-          )
-        : unknownLaunchResult
-      : null;
+    const launchResult =
+      record.envelope.operation === "t3_thread_launch"
+        ? Option.isSome(recoveryEvidence)
+          ? yield* recoveryEvidence.value.read(record).pipe(
+              Effect.map((raw) => classifyLaunchEvidence({ ...raw, liveClaim: false }).result),
+              Effect.orElseSucceed(() => unknownLaunchResult),
+            )
+          : unknownLaunchResult
+        : null;
     yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`INSERT INTO jones_remote_admission_results (admission_id, result_json) VALUES (${record.id}, ${encodeJson({ ...outcome, ...(launchResult ? { launchResult } : {}) })})`;
@@ -740,31 +745,38 @@ const make = Effect.gen(function* () {
       ),
     ),
     withdraw: Effect.fn("RemoteAdmissionIntake.withdraw")((input, clientId) =>
-      sql.withTransaction(Effect.gen(function* () {
-        const before = yield* admissions.get(input.id);
-        const record = yield* admissions.withdraw({ ...input, clientId }).pipe(
-          Effect.catchTags({
-            RemoteAdmissionStateConflict: (error) =>
-              error.status === "dispatching" ||
-              error.status === "dispatched" ||
-              error.status === "denied"
-                ? admissions.get(input.id).pipe(
-                    Effect.filterOrFail(
-                      (current) => current !== null,
-                      () => error,
-                    ),
-                  )
-                : Effect.fail(error),
-          }),
-        );
-        if (record.status === "cancelled" && before?.status !== "cancelled" &&
-          (yield* presence("jones_remote_admission_peer_revisions"))) {
-          yield* sql`INSERT INTO jones_remote_admission_peer_revisions(session_id,revision) VALUES(${clientId},1)
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const before = yield* admissions.get(input.id);
+            const record = yield* admissions.withdraw({ ...input, clientId }).pipe(
+              Effect.catchTags({
+                RemoteAdmissionStateConflict: (error) =>
+                  error.status === "dispatching" ||
+                  error.status === "dispatched" ||
+                  error.status === "denied"
+                    ? admissions.get(input.id).pipe(
+                        Effect.filterOrFail(
+                          (current) => current !== null,
+                          () => error,
+                        ),
+                      )
+                    : Effect.fail(error),
+              }),
+            );
+            if (
+              record.status === "cancelled" &&
+              before?.status !== "cancelled" &&
+              (yield* presence("jones_remote_admission_peer_revisions"))
+            ) {
+              yield* sql`INSERT INTO jones_remote_admission_peer_revisions(session_id,revision) VALUES(${clientId},1)
             ON CONFLICT(session_id) DO UPDATE SET revision=revision+1`;
-          yield* admissions.access.invalidate;
-        }
-        return publicRemoteAdmission(record);
-      })).pipe(Effect.mapError(intakeError)),
+              yield* admissions.access.invalidate;
+            }
+            return publicRemoteAdmission(record);
+          }),
+        )
+        .pipe(Effect.mapError(intakeError)),
     ),
     updatePolicy: Effect.fn("RemoteAdmissionIntake.updatePolicy")(function* (input) {
       yield* sql.withTransaction(

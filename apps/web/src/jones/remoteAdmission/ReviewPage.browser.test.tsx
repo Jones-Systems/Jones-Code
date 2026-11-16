@@ -12,10 +12,13 @@ import { ReviewPage } from "./ReviewPage";
 import { admissionFixture } from "./testFixtures";
 
 vi.mock("../../state/environments", async (original) => ({
-  ...(await original<typeof import("../../state/environments")>()), useEnvironments: () => ({ environments: [] }) }));
+  ...(await original<typeof import("../../state/environments")>()),
+  useEnvironments: () => ({ environments: [] }),
+}));
 vi.mock("../../state/entities", async (original) => ({
   ...(await original<typeof import("../../state/entities")>()),
-  useThreadShell: () => null }));
+  useThreadShell: () => null,
+}));
 function setup(receiver: string) {
   const record = admissionFixture();
   const item: Item = {

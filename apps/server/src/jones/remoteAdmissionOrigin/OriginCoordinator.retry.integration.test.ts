@@ -99,23 +99,25 @@ const memory = Layer.effectDiscard(
     };
     yield* sql.withTransaction(store.prepareInTransaction(root));
     yield* store.release("root", timestamp);
-    yield* sql.withTransaction(store.prepareInTransaction({
-      ...root,
-      observation_key: "retry",
-      client_request_id: attempt.attemptId,
-      receiver_namespace: "admission-retry:root-admission",
-      kind: "retry",
-      predecessor_observation_key: "root",
-      admission_id: attempt.childAdmissionId,
-      attempt_id: attempt.attemptId,
-      intent_json: JSON.stringify({
-        phase: "prepared",
-        fingerprint: attempt.attemptId,
-        registered: false,
-        acknowledged: false,
-        limits: callerLimits,
+    yield* sql.withTransaction(
+      store.prepareInTransaction({
+        ...root,
+        observation_key: "retry",
+        client_request_id: attempt.attemptId,
+        receiver_namespace: "admission-retry:root-admission",
+        kind: "retry",
+        predecessor_observation_key: "root",
+        admission_id: attempt.childAdmissionId,
+        attempt_id: attempt.attemptId,
+        intent_json: JSON.stringify({
+          phase: "prepared",
+          fingerprint: attempt.attemptId,
+          registered: false,
+          acknowledged: false,
+          limits: callerLimits,
+        }),
       }),
-    }));
+    );
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 
@@ -137,105 +139,121 @@ const regression = (advanced: "claimed" | "completed", replaceOnReply = false) =
       limits: PeerMcpClient.PeerCallLimits;
     }> = [];
     const peers = PeerMcpClient.PeerMcpClient.of({
-      call: (input) => Effect.gen(function* () {
-        let response: unknown;
-        switch (input.tool) {
-          case "orchestrator_capabilities":
-            response = {
-              parentThreadId: null,
-              inheritedProviderInstanceId: null,
-              inheritedModel: null,
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              providers: [],
-              features: {
-                appOwnedSubagents: true,
-                asyncPolling: true,
-                cancellation: true,
-                batchThreadCreation: true,
-                threadManagement: true,
-                incrementalThreadRead: true,
-                scheduledTasks: true,
-                maxBatchThreads: 10,
-                remoteAdmissionPeerStatusVersion: Review.REMOTE_ADMISSION_PEER_STATUS_VERSION,
-                remoteAdmissionRetryObservationVersion: Review.REMOTE_ADMISSION_RETRY_OBSERVATION_VERSION,
-                remoteAdmissionCapabilitiesRegisterVersion: Review.REMOTE_ADMISSION_CAPABILITIES_REGISTER_VERSION,
-              },
-            };
-            break;
-          case "t3_remote_admission_capabilities_register":
-            response = input.arguments;
-            break;
-          case "t3_remote_admission_attempt_register":
-            registrations.push(input);
-            expect(input.arguments).toEqual({ attemptId: "attempt", observationKey: "retry" });
-            if (registeredKey === null) {
-              registeredKey = "retry";
-              // External receiver fixture: acceptance permits one claim, then loses its reply.
-              remoteState = advanced;
-              launches += 1;
-              yield* Deferred.succeed(lostReply, undefined);
-              return yield* new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: "Accepted registration reply lost.",
-              });
-            }
-            expect(registeredKey).toBe(input.arguments.observationKey);
-            if (replaceOnReply) generation = "replacement";
-            response = { attempt: { ...attempt, state: remoteState } };
-            break;
-          case "t3_remote_admission_peer_status":
-            // Claimed/completed retries are absent from the discovery projection.
-            response = {
-              after: "peer:session-1:1",
-              receiverEnvironmentId: environmentId,
-              sessionId: "session-1",
-              peerLongPoll: false,
-              serverNow: timestamp,
-              grants: [],
-              attempts: remoteState === "prepared" ? [attempt] : [],
-              notices: [],
-            };
-            yield* Deferred.succeed(statusRead, undefined);
-            break;
-          default:
-            return yield* Effect.die(`Unexpected tool: ${input.tool}`);
-        }
-        return yield* Schema.decodeUnknownEffect(input.success)(response).pipe(
-          Effect.mapError(() => new OrchestratorMcpFailure({ code: "orchestration_error", message: "Invalid synthetic peer response." })),
-        );
-      }),
+      call: (input) =>
+        Effect.gen(function* () {
+          let response: unknown;
+          switch (input.tool) {
+            case "orchestrator_capabilities":
+              response = {
+                parentThreadId: null,
+                inheritedProviderInstanceId: null,
+                inheritedModel: null,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                providers: [],
+                features: {
+                  appOwnedSubagents: true,
+                  asyncPolling: true,
+                  cancellation: true,
+                  batchThreadCreation: true,
+                  threadManagement: true,
+                  incrementalThreadRead: true,
+                  scheduledTasks: true,
+                  maxBatchThreads: 10,
+                  remoteAdmissionPeerStatusVersion: Review.REMOTE_ADMISSION_PEER_STATUS_VERSION,
+                  remoteAdmissionRetryObservationVersion:
+                    Review.REMOTE_ADMISSION_RETRY_OBSERVATION_VERSION,
+                  remoteAdmissionCapabilitiesRegisterVersion:
+                    Review.REMOTE_ADMISSION_CAPABILITIES_REGISTER_VERSION,
+                },
+              };
+              break;
+            case "t3_remote_admission_capabilities_register":
+              response = input.arguments;
+              break;
+            case "t3_remote_admission_attempt_register":
+              registrations.push(input);
+              expect(input.arguments).toEqual({ attemptId: "attempt", observationKey: "retry" });
+              if (registeredKey === null) {
+                registeredKey = "retry";
+                // External receiver fixture: acceptance permits one claim, then loses its reply.
+                remoteState = advanced;
+                launches += 1;
+                yield* Deferred.succeed(lostReply, undefined);
+                return yield* new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: "Accepted registration reply lost.",
+                });
+              }
+              expect(registeredKey).toBe(input.arguments.observationKey);
+              if (replaceOnReply) generation = "replacement";
+              response = { attempt: { ...attempt, state: remoteState } };
+              break;
+            case "t3_remote_admission_peer_status":
+              // Claimed/completed retries are absent from the discovery projection.
+              response = {
+                after: "peer:session-1:1",
+                receiverEnvironmentId: environmentId,
+                sessionId: "session-1",
+                peerLongPoll: false,
+                serverNow: timestamp,
+                grants: [],
+                attempts: remoteState === "prepared" ? [attempt] : [],
+                notices: [],
+              };
+              yield* Deferred.succeed(statusRead, undefined);
+              break;
+            default:
+              return yield* Effect.die(`Unexpected tool: ${input.tool}`);
+          }
+          return yield* Schema.decodeUnknownEffect(input.success)(response).pipe(
+            Effect.mapError(
+              () =>
+                new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: "Invalid synthetic peer response.",
+                }),
+            ),
+          );
+        }),
     });
     const bindings = Layer.succeed(Bindings.OriginPeerBindings, {
       current: () => Effect.sync(() => ({ ...peer, generation })),
       relevant: () => Effect.succeed([peer]),
-      observeRetry: (_binding, attemptId, observationKey) => Effect.sync(() => {
-        expect(attemptId).toBe("attempt");
-        expect(observationKey).toBe(registeredKey);
-        remoteState = "completed";
-        observations += 1;
-        return { admission: null, result: launchResult };
-      }),
-      ackRetry: (_binding, attemptId, observationKey, disposition) => Effect.sync(() => {
-        expect(attemptId).toBe("attempt");
-        expect(observationKey).toBe(registeredKey);
-        expect(disposition).toBe("delivered");
-        acknowledgments += 1;
-      }),
+      observeRetry: (_binding, attemptId, observationKey) =>
+        Effect.sync(() => {
+          expect(attemptId).toBe("attempt");
+          expect(observationKey).toBe(registeredKey);
+          remoteState = "completed";
+          observations += 1;
+          return { admission: null, result: launchResult };
+        }),
+      ackRetry: (_binding, attemptId, observationKey, disposition) =>
+        Effect.sync(() => {
+          expect(attemptId).toBe("attempt");
+          expect(observationKey).toBe(registeredKey);
+          expect(disposition).toBe("delivered");
+          acknowledgments += 1;
+        }),
     });
     // The external dispatch fixture commits the production wake hook and receipt
     // in one SQL transaction; it does not mock origin delivery state transitions.
     const orchestrator = Layer.mock(Orchestrator.OrchestratorV2)({
-      dispatch: (command) => Effect.gen(function* () {
-        const commit = yield* DependencyWakeCommit;
-        if (!commit || !("kind" in commit) || commit.kind !== "remote_admission_origin")
-          return yield* Effect.die("Missing origin wake commit");
-        yield* sql.withTransaction(Effect.gen(function* () {
-          yield* sql`INSERT INTO synthetic_wake_receipts VALUES (${command.commandId},${commit.messageId})`;
-          yield* admitOriginWake(sql, commit);
-        })).pipe(Effect.orDie);
-        return { sequence: 1, storedEvents: [] };
-      }),
+      dispatch: (command) =>
+        Effect.gen(function* () {
+          const commit = yield* DependencyWakeCommit;
+          if (!commit || !("kind" in commit) || commit.kind !== "remote_admission_origin")
+            return yield* Effect.die("Missing origin wake commit");
+          yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`INSERT INTO synthetic_wake_receipts VALUES (${command.commandId},${commit.messageId})`;
+                yield* admitOriginWake(sql, commit);
+              }),
+            )
+            .pipe(Effect.orDie);
+          return { sequence: 1, storedEvents: [] };
+        }),
     });
     const dependencies = Layer.mergeAll(
       bindings,
@@ -247,16 +265,19 @@ const regression = (advanced: "claimed" | "completed", replaceOnReply = false) =
         pending: () => Effect.die("Unexpected launch transmission"),
         release: () => Effect.die("Unexpected launch release"),
       }),
-      Layer.succeed(SecureRandom.SecureRandom, SecureRandom.make((size) => new Uint8Array(size).fill(7))),
+      Layer.succeed(
+        SecureRandom.SecureRandom,
+        SecureRandom.make((size) => new Uint8Array(size).fill(7)),
+      ),
     );
     const round = (completed: Effect.Effect<void>) =>
-      Effect.scoped(Effect.gen(function* () {
-        const coordinator = yield* Coordinator.OriginCoordinator;
-        yield* coordinator.reconcile();
-        yield* completed;
-      })).pipe(
-        Effect.provide(Layer.fresh(Coordinator.layer).pipe(Layer.provide(dependencies))),
-      );
+      Effect.scoped(
+        Effect.gen(function* () {
+          const coordinator = yield* Coordinator.OriginCoordinator;
+          yield* coordinator.reconcile();
+          yield* completed;
+        }),
+      ).pipe(Effect.provide(Layer.fresh(Coordinator.layer).pipe(Layer.provide(dependencies))));
 
     yield* round(Deferred.await(lostReply));
     expect(intent((yield* store.get("retry"))!).registered).toBe(false);

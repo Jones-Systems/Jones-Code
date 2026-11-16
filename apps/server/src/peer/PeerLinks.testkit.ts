@@ -65,8 +65,10 @@ export const descriptorOf = (
 export const servePeer = <E, R>(
   initial: ExecutionEnvironmentDescriptor,
   tools: Layer.Layer<never, E, R>,
-  databaseLayer: Layer.Layer<SqlClient.SqlClient, Layer.Error<typeof Sqlite.layerMemory>> =
-    Sqlite.layerMemory,
+  databaseLayer: Layer.Layer<
+    SqlClient.SqlClient,
+    Layer.Error<typeof Sqlite.layerMemory>
+  > = Sqlite.layerMemory,
 ) =>
   Effect.gen(function* () {
     const descriptor = yield* Ref.make(initial);

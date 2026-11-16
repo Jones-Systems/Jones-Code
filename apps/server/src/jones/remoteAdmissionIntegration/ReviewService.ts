@@ -112,7 +112,11 @@ export function makeReviewService(
     return yield* Schema.decodeUnknownEffect(DTO.RemoteAdmissionReviewItem)({
       record,
       extension: {
-        managedAccessGrantId: yield* managedAccessGrantId(sql, record, readers.receiverEnvironmentId),
+        managedAccessGrantId: yield* managedAccessGrantId(
+          sql,
+          record,
+          readers.receiverEnvironmentId,
+        ),
         grantable,
         grantUnavailableReason: grantable ? null : "operation_not_covered",
         grant: grant ? yield* admissions.access.grantView(grant, now) : null,

@@ -1969,6 +1969,7 @@
     "docs/internals/server-updates.md": "accepted-shared",
     "docs/internals/t3-connect.md": "accepted-shared",
     "docs/internals/typecheck-compiler.md": "policy",
+    "docs/internals/web-ui.md": "policy",
     "docs/operations/build-artifacts.md": "policy",
     "docs/operations/contributor-guidance.md": "policy",
     "docs/operations/desktop-bootstrap.md": "jones-owned",

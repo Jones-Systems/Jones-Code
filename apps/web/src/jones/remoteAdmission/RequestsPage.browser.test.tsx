@@ -10,7 +10,10 @@ const request = vi.hoisted(() => vi.fn());
 let overviewIds: EnvironmentId[] = [];
 vi.mock("./runtime", () => ({ remoteAdmissionRequest: request }));
 vi.mock("../../state/entities", async (original) => ({
-  ...(await original<typeof import("../../state/entities")>()), useProject: () => null, useThreadShell: () => null }));
+  ...(await original<typeof import("../../state/entities")>()),
+  useProject: () => null,
+  useThreadShell: () => null,
+}));
 vi.mock("../../hooks/useSettings", async (original) => ({
   ...(await original<typeof import("../../hooks/useSettings")>()),
   useClientSettings: (select: (settings: { timestampFormat: string }) => unknown) =>
