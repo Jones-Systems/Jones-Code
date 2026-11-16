@@ -3,7 +3,7 @@ import { expect, it } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
 import { PanelFindProvider, PanelFindScope } from "./PanelFind";
-import { collectFindRanges, findTextMatches } from "./panelFind";
+import { collectFindRanges, findTextMatches } from "./findRanges";
 
 async function find() {
   await act(() =>

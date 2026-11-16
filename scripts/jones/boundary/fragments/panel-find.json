@@ -5,7 +5,7 @@
     "apps/web/src/jones/panelFind/PanelFind.tsx",
     "apps/web/src/jones/panelFind/panelFind.css",
     "apps/web/src/jones/panelFind/PanelFind.browser.test.tsx",
-    "apps/web/src/jones/panelFind/panelFind.ts"
+    "apps/web/src/jones/panelFind/findRanges.ts"
   ],
   "hookPaths": [
     "apps/desktop/src/window/DesktopApplicationMenu.ts",

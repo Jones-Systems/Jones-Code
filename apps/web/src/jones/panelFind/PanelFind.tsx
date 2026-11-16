@@ -13,7 +13,7 @@ import {
 import { ChevronDownIcon, ChevronUpIcon, SearchIcon, XIcon } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { collectFindRanges, scrollFindRangeIntoView } from "./panelFind";
+import { collectFindRanges, scrollFindRangeIntoView } from "./findRanges";
 import { isMacPlatform } from "../../lib/utils";
 
 let openFocused: (() => boolean) | undefined;
