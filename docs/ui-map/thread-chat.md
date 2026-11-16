@@ -52,7 +52,9 @@ Known shared consumers:
   A proposed plan alone creates no input status; explicit own/child requests and
   native approvals retain precedence. Working includes displayed Waiting rows in
   its count and selection; double-click Hide working excludes both. Filtering
-  preserves the roster order, including pin order. The optional activity window
+  preserves the roster order, including pin order. Counts and positive status
+  selections include only top-level threads, excluding forks, subagents and
+  delegated tasks even when their parent is unavailable. The optional activity window
   in Settings → Jones Code limits status counts and positive selections to real
   message/run activity and includes read successful completions with reliable
   completion times. All preserves the scoped roster; Hide working still removes
