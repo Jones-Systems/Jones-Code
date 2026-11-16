@@ -1,15 +1,41 @@
 import { ComposerEffortColumn } from "../../components/chat/ComposerModelEffort";
 import "~/index.css";
 import { act, render as renderTest, type Screen } from "../../../test/render";
-import { createRef, type ComponentProps } from "react";
+import { createRef, useRef, useState, type ComponentProps } from "react";
+import { createPortal } from "react-dom";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderOptionDescriptor,
+  type ServerProvider,
 } from "@t3tools/contracts";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
+import { deriveProviderInstanceEntries } from "../../providerInstances";
+import { ComposerShortcutRails } from "./ComposerShortcutPlate";
+import { ProviderInstanceShortcuts } from "./ProviderInstanceShortcuts";
 import { ReasoningEffortShortcuts } from "./ReasoningEffortShortcuts";
+import { useComposerShortcutRails } from "./composerShortcutRails";
+import {
+  ComposerLayout,
+  ComposerLayoutLane,
+  ComposerLayoutHeadline,
+  ComposerLayoutFooter,
+  ComposerLayoutBody,
+  ComposerLayoutActions,
+  composerLayoutPromptClassName,
+  composerLayoutPlaceholderClassName,
+} from "./ComposerLayout";
+import { ComposerSurface } from "../../components/chat/ComposerSurface";
+import { ComposerControl } from "../../components/chat/ComposerControl";
+import { ComposerPrimaryActions } from "../../components/chat/ComposerPrimaryActions";
+import { DraftHeroProjectHeading } from "../../components/chat/DraftHeroProjectHeading";
+import {
+  ComposerPromptEditorTiptap,
+  type ComposerPromptEditorHandle,
+} from "../../components/ComposerPromptEditorTiptap";
 import {
   useTraitsSelection,
   readPromptUltrathink,
@@ -103,7 +129,7 @@ function currentOptions(id = instanceId) {
   return useComposerDraftStore.getState().stickyModelSelectionByProvider[id]?.options;
 }
 
-async function setupTest(): Promise<AsyncDisposable> {
+async function setupTest(realLayout = false): Promise<AsyncDisposable> {
   let initialized = false;
   let ownedContainer: HTMLDivElement | undefined;
   async function cleanup() {
@@ -127,14 +153,16 @@ async function setupTest(): Promise<AsyncDisposable> {
       stickyModelSelectionByProvider: {},
       stickyActiveProvider: null,
     });
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    );
+    if (!realLayout) {
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        },
+      );
+    }
     ownedContainer = container = document.createElement("div");
     document.body.append(container);
     root = await renderTest(null, { container: container, router: false });
@@ -548,4 +576,435 @@ it("preserves Claude body locks and strips the prefix on same- and cross-model e
   expect(buttons().every((button) => button.disabled)).toBe(true);
   await act(() => familyButton("Claude sonnet, High reasoning").click());
   expect(onProviderModelSelect).toHaveBeenCalledTimes(1);
+});
+
+const wrappingEffort = {
+  ...effort,
+  options: [
+    ...effort.options,
+    { id: "adaptive", label: "Adaptive model supplied effort with an unusuallylongunbrokenlabel" },
+  ],
+};
+const genericModels = [
+  {
+    slug: "test-model",
+    name: "Test",
+    isCustom: false,
+    capabilities: { optionDescriptors: [wrappingEffort, fast] },
+  },
+];
+
+function ShortcutRailsFixture({
+  width,
+  height,
+  codex,
+  hero,
+  initialPrompt = "",
+  onAccountSelect,
+  onProviderModelSelect,
+}: {
+  width: number;
+  height: number;
+  codex: boolean;
+  hero: boolean;
+  initialPrompt?: string;
+  onAccountSelect: ComponentProps<typeof ProviderInstanceShortcuts>["onSelect"];
+  onProviderModelSelect: NonNullable<
+    ComponentProps<typeof ReasoningEffortShortcuts>["onProviderModelSelect"]
+  >;
+}) {
+  const [workspace, setWorkspace] = useState<HTMLDivElement | null>(null);
+  const [host, setHost] = useState<HTMLDivElement | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const bandRef = useRef<HTMLDivElement>(null);
+  const accountGroupRef = useRef<HTMLDivElement>(null);
+  const effortGroupRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<ComposerPromptEditorHandle>(null);
+  const [prompt, setPrompt] = useState({ value: initialPrompt, cursor: initialPrompt.length });
+  const rails = useComposerShortcutRails({
+    host,
+    workspace,
+    formRef,
+    bandRef,
+    accountGroupRef,
+    effortGroupRef,
+    eligible: true,
+    contentKey: codex,
+  });
+  const provider = ProviderDriverKind.make(codex ? "codex" : "opencode");
+  const models = codex ? familyModels : genericModels;
+  const model = models[0]!.slug;
+  const entries = deriveProviderInstanceEntries(
+    Array.from(
+      { length: 9 },
+      (_, index) =>
+        ({
+          instanceId: index === 0 ? instanceId : ProviderInstanceId.make(`account-${index + 1}`),
+          driver: provider,
+          displayName: `Account ${index + 1}`,
+          enabled: true,
+          installed: true,
+          status: "ready",
+          version: null,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-11-16T00:00:00.000Z",
+          models,
+          slashCommands: [],
+          skills: [],
+        }) satisfies ServerProvider,
+    ),
+  );
+  const shortcuts = (
+    <ComposerShortcutRails
+      bandRef={bandRef}
+      {...rails}
+      accounts={
+        <ProviderInstanceShortcuts
+          instanceEntries={entries}
+          settings={DEFAULT_UNIFIED_SETTINGS}
+          activeInstanceId={instanceId}
+          model={model}
+          lockedProvider={null}
+          lockedContinuationGroupKey={null}
+          disabled={false}
+          visible={rails.visible}
+          groupRef={accountGroupRef}
+          getModelDisabledReason={() => null}
+          onSelect={onAccountSelect}
+        />
+      }
+      effort={
+        <ReasoningEffortShortcuts
+          provider={provider}
+          instanceId={instanceId}
+          draftId={draftId}
+          model={model}
+          models={models}
+          visible={rails.visible}
+          groupRef={effortGroupRef}
+          onProviderModelSelect={onProviderModelSelect}
+        />
+      }
+    />
+  );
+  return (
+    <div
+      ref={setWorkspace}
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        width,
+        height,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
+      <header
+        data-chat-header
+        className="flex h-(--workspace-topbar-height) shrink-0 items-center px-3"
+      >
+        synthetic-project / New thread
+      </header>
+      <div data-fixture-canvas className="relative min-h-0 flex-1">
+        <ComposerLayout hero={hero}>
+          <ComposerLayoutLane>
+            <div
+              data-chat-composer-stack="true"
+              className="pointer-events-auto relative mx-auto w-full max-w-(--chat-content-max-width)"
+            >
+              {hero ? (
+                <ComposerLayoutHeadline>
+                  <div className="pb-4">
+                    <DraftHeroProjectHeading projectName="synthetic-project">
+                      <button type="button">synthetic-project</button>
+                    </DraftHeroProjectHeading>
+                    <p className="mt-2 text-center text-sm">or start without a project</p>
+                  </div>
+                </ComposerLayoutHeadline>
+              ) : null}
+              <ComposerSurface.Shell>
+                <ComposerSurface.Host>
+                  <form
+                    ref={formRef}
+                    data-chat-composer-form="true"
+                    onSubmit={(event) => event.preventDefault()}
+                  >
+                    {host ? createPortal(shortcuts, host) : null}
+                    <ComposerSurface.Main>
+                      <ComposerLayoutBody>
+                        <ComposerPromptEditorTiptap
+                          editorRef={editorRef}
+                          value={prompt.value}
+                          cursor={prompt.cursor}
+                          richTextEnabled={false}
+                          contextRecords={new Map()}
+                          skills={[]}
+                          disabled={false}
+                          ariaLabel="Message"
+                          placeholder="Ask anything. @ files, $ skills, / commands"
+                          className={composerLayoutPromptClassName}
+                          placeholderClassName={composerLayoutPlaceholderClassName}
+                          onChange={(value, cursor) => setPrompt({ value, cursor })}
+                          onPaste={() => {}}
+                        />
+                      </ComposerLayoutBody>
+                      <ComposerLayoutActions className="justify-end gap-2">
+                        <ComposerControl aria-label="Model picker">Sol Medium</ComposerControl>
+                        <ComposerPrimaryActions
+                          compact
+                          canOperateThread
+                          pendingAction={null}
+                          isRunning={false}
+                          canInterrupt={false}
+                          isSendBusy={false}
+                          sendDisabledReason={null}
+                          isEnvironmentUnavailable={false}
+                          isPreparingWorktree={false}
+                          hasSendableContent={prompt.value.length > 0}
+                          onPreviousPendingQuestion={() => {}}
+                          onInterrupt={() => {}}
+                        />
+                      </ComposerLayoutActions>
+                    </ComposerSurface.Main>
+                  </form>
+                </ComposerSurface.Host>
+              </ComposerSurface.Shell>
+              {hero ? <div data-composer-layout-hero-spacer className="h-4 sm:h-5" /> : null}
+            </div>
+          </ComposerLayoutLane>
+          <ComposerLayoutFooter>
+            <div ref={setHost} data-chat-composer-shortcut-host="true" />
+            <div aria-hidden className="pb-safe">
+              <div data-composer-layout-bottom-space className="h-4 sm:h-5" />
+            </div>
+          </ComposerLayoutFooter>
+        </ComposerLayout>
+      </div>
+    </div>
+  );
+}
+
+function expectContained(inner: DOMRect, outer: DOMRect) {
+  // Browser layout rounds scroll dimensions to whole pixels but retains fractional text bounds.
+  expect(inner.left).toBeGreaterThanOrEqual(outer.left - 1);
+  expect(inner.right).toBeLessThanOrEqual(outer.right + 1);
+  expect(inner.top).toBeGreaterThanOrEqual(outer.top - 1);
+  expect(inner.bottom).toBeLessThanOrEqual(outer.bottom + 1);
+}
+
+function expectProductionComposerLayout() {
+  const canvas = container.querySelector<HTMLElement>("[data-fixture-canvas]")!;
+  const header = container.querySelector<HTMLElement>("[data-chat-header]")!;
+  const form = container.querySelector<HTMLElement>("[data-chat-composer-form]")!;
+  const editor = container.querySelector<HTMLElement>('[role="textbox"]')!;
+  const band = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-rails]")!;
+  const headline = container.querySelector<HTMLElement>("[data-composer-layout-headline]");
+  const bounds = canvas.getBoundingClientRect();
+  expect(bounds.top).toBeGreaterThanOrEqual(header.getBoundingClientRect().bottom);
+  expectContained(form.getBoundingClientRect(), bounds);
+  expectContained(editor.getBoundingClientRect(), form.getBoundingClientRect());
+  expectContained(band.getBoundingClientRect(), bounds);
+  expect(form.getBoundingClientRect().bottom).toBeLessThanOrEqual(band.getBoundingClientRect().top);
+  if (headline && headline.getBoundingClientRect().height > 0) {
+    expectContained(headline.getBoundingClientRect(), bounds);
+    expect(headline.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      form.getBoundingClientRect().top,
+    );
+  }
+  for (const element of [canvas, band, ...band.querySelectorAll<HTMLElement>("button"), editor]) {
+    const rect = element.getBoundingClientRect();
+    if (element === canvas || element === band) {
+      expect(element.scrollWidth).toBeLessThanOrEqual(element.clientWidth + 1);
+      expect(element.scrollHeight).toBeLessThanOrEqual(element.clientHeight + 1);
+      continue;
+    }
+    const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    expect(hit === element || element.contains(hit)).toBe(true);
+  }
+  const documentScroller = document.scrollingElement!;
+  expect(documentScroller.scrollWidth).toBeLessThanOrEqual(documentScroller.clientWidth + 1);
+  expect(documentScroller.scrollHeight).toBeLessThanOrEqual(documentScroller.clientHeight + 1);
+}
+
+const composerLayoutCases = [320, 380, 620, 900].flatMap((width) =>
+  [240, 800].flatMap((height) =>
+    [true, false].flatMap((hero) => [true, false].map((codex) => ({ width, height, hero, codex }))),
+  ),
+);
+
+it.each(composerLayoutCases)(
+  "reserves editor and rails below the header at $width×$height (hero=$hero, codex=$codex)",
+  async ({ width, height, hero, codex }) => {
+    await using _fixture = await setupTest(true);
+    const originalViewport = { width: innerWidth, height: innerHeight };
+    try {
+      await page.viewport(width, height);
+      await document.fonts.ready;
+      const onAccountSelect = vi.fn();
+      const onProviderModelSelect = vi.fn();
+      await act(
+        async () =>
+          await root.rerender(
+            <ShortcutRailsFixture
+              key={`${width}-${height}-${codex}-${hero}`}
+              hero={hero}
+              width={width}
+              height={height}
+              codex={codex}
+              onAccountSelect={onAccountSelect}
+              onProviderModelSelect={onProviderModelSelect}
+            />,
+          ),
+      );
+      const band = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-rails]")!;
+      const content = container.querySelector<HTMLElement>(
+        "[data-chat-composer-shortcut-content]",
+      )!;
+      await expect.poll(() => band.getBoundingClientRect().height).toBeGreaterThan(0);
+      await expect
+        .poll(() => band.getBoundingClientRect().height)
+        .toBe(content.getBoundingClientRect().height);
+      const bounds = band.getBoundingClientRect();
+      const host = band.closest<HTMLElement>("[data-chat-composer-shortcut-host]")!;
+      expect(bounds.width).toBe(host.clientWidth);
+      expectProductionComposerLayout();
+      expect(getComputedStyle(band).overflowX).toBe("visible");
+      expect(getComputedStyle(band).overflowY).toBe("visible");
+      const elements = [
+        band,
+        ...band.querySelectorAll<HTMLElement>(
+          "[data-chat-composer-shortcut-content], [data-composer-shortcut-group], [data-composer-shortcut-plate], button",
+        ),
+      ];
+      for (const element of elements) {
+        const context = JSON.stringify({
+          width,
+          height,
+          codex,
+          element: element.tagName,
+          label: element.getAttribute("aria-label"),
+          className: element.className,
+        });
+        expect(element.getBoundingClientRect().height).toBeGreaterThan(0);
+        expectContained(element.getBoundingClientRect(), bounds);
+        expect(element.scrollWidth, context).toBeLessThanOrEqual(element.clientWidth + 1);
+        expect(element.scrollHeight, context).toBeLessThanOrEqual(element.clientHeight + 1);
+      }
+      const accounts = band.querySelectorAll<HTMLButtonElement>(
+        '[aria-label="Provider accounts"] button',
+      );
+      const efforts = band.querySelectorAll<HTMLButtonElement>(
+        '[data-composer-shortcut-group="effort"] button',
+      );
+      expect(accounts).toHaveLength(9);
+      expect(efforts).toHaveLength(codex ? 6 : 4);
+      for (const button of efforts) {
+        const text = document.createRange();
+        text.selectNodeContents(button);
+        for (const rect of text.getClientRects()) {
+          expectContained(rect, button.getBoundingClientRect());
+        }
+      }
+      for (const button of [...accounts, ...efforts]) {
+        expect(button.disabled).toBe(false);
+        expect(button.tabIndex).toBe(0);
+        const rect = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        expect(hit === button || button.contains(hit)).toBe(true);
+        await userEvent.click(button);
+      }
+      expect(onAccountSelect).toHaveBeenLastCalledWith(
+        ProviderInstanceId.make("account-9"),
+        codex ? "gpt-6.1-sol" : "test-model",
+      );
+      if (codex) {
+        expect(onProviderModelSelect).toHaveBeenLastCalledWith(instanceId, "gpt-6-astra", {
+          effort: { id: "reasoningEffort", value: "xhigh" },
+        });
+      } else {
+        expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "adaptive" });
+      }
+      for (const button of accounts) {
+        expect(button.clientHeight).toBeGreaterThanOrEqual(26);
+        expectContained(
+          button.querySelector("[data-provider-shortcut-label]")!.getBoundingClientRect(),
+          button.getBoundingClientRect(),
+        );
+      }
+      const visited = new Set<Element>();
+      accounts[0]!.focus();
+      for (let index = 0; index < accounts.length + efforts.length; index++) {
+        if (document.activeElement) visited.add(document.activeElement);
+        await userEvent.keyboard("{Tab}");
+      }
+      expect([...accounts, ...efforts].every((button) => visited.has(button))).toBe(true);
+      const high = Array.from(efforts).find((button) => button.textContent === "High")!;
+      high.focus();
+      expect(document.activeElement).toBe(high);
+      await userEvent.keyboard("{Enter}");
+      expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "high" });
+      const editor = container.querySelector<HTMLElement>('[role="textbox"]')!;
+      await userEvent.click(editor);
+      await userEvent.keyboard("repair");
+      expect(editor.textContent).toContain("repair");
+      expectProductionComposerLayout();
+    } finally {
+      await page.viewport(originalViewport.width, originalViewport.height);
+    }
+  },
+);
+
+it("keeps a growing focused draft and every shortcut operable in a narrow pane of a wide window", async () => {
+  await using _fixture = await setupTest(true);
+  const originalViewport = { width: innerWidth, height: innerHeight };
+  try {
+    await page.viewport(900, 240);
+    const view = (width: number, height: number) => (
+      <ShortcutRailsFixture
+        width={width}
+        height={height}
+        codex
+        hero={false}
+        initialPrompt={Array.from({ length: 12 }, (_, index) => `Draft line ${index + 1}`).join(
+          "\n",
+        )}
+        onAccountSelect={vi.fn()}
+        onProviderModelSelect={vi.fn()}
+      />
+    );
+    await act(async () => await root.rerender(view(320, 240)));
+    const band = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-rails]")!;
+    await expect.poll(() => band.getBoundingClientRect().height).toBeGreaterThan(0);
+    expectProductionComposerLayout();
+    const editor = container.querySelector<HTMLElement>('[role="textbox"]')!;
+    expect(editor.scrollHeight).toBeGreaterThan(editor.clientHeight);
+    await userEvent.click(editor);
+    await userEvent.keyboard("continued");
+    expect(editor.textContent).toContain("continued");
+    expectProductionComposerLayout();
+    const shortHeight = band.getBoundingClientRect().height;
+    await page.viewport(900, 800);
+    await act(async () => await root.rerender(view(620, 800)));
+    await expect
+      .poll(
+        () => container.querySelector<HTMLElement>("[data-chat-composer-overlay]")!.dataset.short,
+      )
+      .toBe("false");
+    await expect
+      .poll(() => band.getBoundingClientRect().height)
+      .toBe(
+        container
+          .querySelector<HTMLElement>("[data-chat-composer-shortcut-content]")!
+          .getBoundingClientRect().height,
+      );
+    expectProductionComposerLayout();
+    await page.viewport(900, 240);
+    await act(async () => await root.rerender(view(320, 240)));
+    await expect.poll(() => band.getBoundingClientRect().height).toBe(shortHeight);
+    expect(editor.textContent).toContain("continued");
+    expectProductionComposerLayout();
+  } finally {
+    await page.viewport(originalViewport.width, originalViewport.height);
+  }
 });

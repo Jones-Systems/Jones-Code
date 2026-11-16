@@ -4,7 +4,13 @@ import * as Schema from "effect/Schema";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { ReactNode } from "react";
 import { requiredComposerProvider } from "../../jones/threadConfiguration/composerSelection";
-import { ComposerShortcutPlate } from "../../jones/composer/ComposerShortcutPlate";
+import { ComposerShortcutRails } from "../../jones/composer/ComposerShortcutPlate";
+import {
+  ComposerLayoutBody,
+  ComposerLayoutActions,
+  composerLayoutPromptClassName,
+  composerLayoutPlaceholderClassName,
+} from "../../jones/composer/ComposerLayout";
 import { ReasoningEffortShortcuts } from "../../jones/composer/ReasoningEffortShortcuts";
 import { ProviderInstanceShortcuts } from "../../jones/composer/ProviderInstanceShortcuts";
 import { useComposerShortcutRails } from "../../jones/composer/composerShortcutRails";
@@ -3518,58 +3524,45 @@ canSteer: canSteer && !steeringBlockedByQuestion,
     >
       {shortcutControlsHost
         ? createPortal(
-            <div
-              ref={shortcutBandRef}
-              data-chat-composer-shortcut-rails="true"
-              aria-hidden={!shortcutRails.visible || undefined}
-              inert={!shortcutRails.visible || undefined}
-              className="relative w-full overflow-auto overscroll-contain"
-              style={{ height: shortcutRails.height }}
-            >
-              <div
-                data-chat-composer-shortcut-content="true"
-                className="flex min-w-0 flex-wrap items-end justify-between gap-x-4 gap-y-2"
-              >
-                <div className="pointer-events-auto shrink-0">
-                  <ComposerShortcutPlate visible={shortcutRails.visible}>
-                    <ProviderInstanceShortcuts
-                      instanceEntries={providerInstanceEntries}
-                      settings={settings}
-                      modelOptionsByInstance={modelOptionsByInstance}
-                      rememberedSelections={composerDraft.modelSelectionByProvider}
-                      activeInstanceId={selectedInstanceId}
-                      model={selectedModelForPickerWithCustomFallback}
-                      lockedProvider={lockedProvider}
-                      lockedContinuationGroupKey={lockedContinuationGroupKey ?? null}
-                      lockedInstanceId={
-                        activeThread?.runtime?.providerInstanceId ??
-                        activeThreadModelSelection?.instanceId ??
-                        null
-                      }
-                      disabled={isSendBusy}
-                      visible={shortcutRails.visible}
-                      groupRef={accountShortcutGroupRef}
-                      getModelDisabledReason={getModelDisabledReason}
-                      onSelect={onProviderModelSelect}
-                    />
-                  </ComposerShortcutPlate>
-                </div>
-                <div className="pointer-events-auto w-max shrink-0">
-                  {selectedModel !== "" ? (
-                    <ComposerShortcutPlate visible={shortcutRails.visible}>
-                      <ReasoningEffortShortcuts
-                        {...providerTraitsPickerInput}
-                        {...effectiveTraitsOptions}
-                        onProviderModelSelect={onProviderModelSelect}
-                        getModelDisabledReason={getModelDisabledReason}
-                        groupRef={effortShortcutGroupRef}
-                        visible={shortcutRails.visible}
-                      />
-                    </ComposerShortcutPlate>
-                  ) : null}
-                </div>
-              </div>
-            </div>,
+            <ComposerShortcutRails
+              bandRef={shortcutBandRef}
+              visible={shortcutRails.visible}
+              height={shortcutRails.height}
+              accounts={
+                <ProviderInstanceShortcuts
+                  instanceEntries={providerInstanceEntries}
+                  settings={settings}
+                  modelOptionsByInstance={modelOptionsByInstance}
+                  rememberedSelections={composerDraft.modelSelectionByProvider}
+                  activeInstanceId={selectedInstanceId}
+                  model={selectedModelForPickerWithCustomFallback}
+                  lockedProvider={lockedProvider}
+                  lockedContinuationGroupKey={lockedContinuationGroupKey ?? null}
+                  lockedInstanceId={
+                    activeThread?.runtime?.providerInstanceId ??
+                    activeThreadModelSelection?.instanceId ??
+                    null
+                  }
+                  disabled={isSendBusy}
+                  visible={shortcutRails.visible}
+                  groupRef={accountShortcutGroupRef}
+                  getModelDisabledReason={getModelDisabledReason}
+                  onSelect={onProviderModelSelect}
+                />
+              }
+              effort={
+                selectedModel !== "" ? (
+                  <ReasoningEffortShortcuts
+                    {...providerTraitsPickerInput}
+                    {...effectiveTraitsOptions}
+                    onProviderModelSelect={onProviderModelSelect}
+                    getModelDisabledReason={getModelDisabledReason}
+                    groupRef={effortShortcutGroupRef}
+                    visible={shortcutRails.visible}
+                  />
+                ) : null
+              }
+            />,
             shortcutControlsHost,
           )
         : null}
@@ -3732,7 +3725,7 @@ canSteer: canSteer && !steeringBlockedByQuestion,
               </div>
             ) : null}
 
-            <div
+            <ComposerLayoutBody
               ref={(node) => {
                 setComposerMenuAnchor(node);
                 const stopObserving = observeWrappedPrompt(node);
@@ -3741,12 +3734,7 @@ canSteer: canSteer && !steeringBlockedByQuestion,
                   stopObserving?.();
                 };
               }}
-              data-chat-composer-body="true"
-              className={cn(
-                "relative px-4 pb-2",
-                "pt-3.5 sm:pt-4",
-                isComposerCollapsedMobile && "hidden",
-              )}
+              className={cn(isComposerCollapsedMobile && "hidden")}
             >
               {isStashMenuOpen && !composerMenuOpen && (
                 <ComposerCommandMenuLayer anchor={composerMenuAnchor} canOverflowTop>
@@ -3840,7 +3828,11 @@ canSteer: canSteer && !steeringBlockedByQuestion,
                     buildContextClipboardFragment={buildContextClipboardFragmentStable}
                     importContextFragment={importContextFragmentStable}
                     skills={selectedProviderSkills}
-                    className={cn(showMobilePendingAnswerActions && "max-sm:pb-12")}
+                    className={cn(
+                      composerLayoutPromptClassName,
+                      showMobilePendingAnswerActions && "max-sm:pb-12",
+                    )}
+                    placeholderClassName={composerLayoutPlaceholderClassName}
                     onChange={onPromptChangeStable}
                     onCommandKeyDown={onComposerCommandKeyStable}
                     onPageScrollKeyDown={onPageScrollKeyDown}
@@ -3904,7 +3896,7 @@ canSteer: canSteer && !steeringBlockedByQuestion,
                   </div>
                 ) : null}
               </div>
-            </div>
+            </ComposerLayoutBody>
 
             <ComposerPromptLengthValidation
               message={providerInputSubmissionError ?? composerSubmissionError}
@@ -3924,10 +3916,8 @@ canSteer: canSteer && !steeringBlockedByQuestion,
             ) : null}
 
             {isComposerCollapsedMobile && speechInput.state.phase === "idle" ? null : (
-              <div
-                data-chat-composer-footer="true"
+              <ComposerLayoutActions
                 className={cn(
-                  "flex min-w-0 flex-nowrap items-center overflow-visible px-2 pb-2",
                   pendingUserInputs.length > 0 && "pt-2",
                   showMobilePendingAnswerActions &&
                     speechInput.state.phase === "idle" &&
@@ -4043,7 +4033,7 @@ canSteer={canSteer && !steeringBlockedByQuestion}
                     />
                   </ComposerFooterPrimaryActions>
                 </div>
-              </div>
+              </ComposerLayoutActions>
             )}
             {showInlineRestingControls ? (
               <div className="h-8">
