@@ -223,7 +223,6 @@ describe("prepared turn commands", () => {
       }),
   );
 });
-});
 
 describe("history loading", () => {
   it.effect("sends a message on the thread while earlier history is loading", () =>
