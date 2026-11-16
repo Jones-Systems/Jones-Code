@@ -3435,6 +3435,18 @@ const make = Effect.gen(function* () {
         };
       const remoteObservation = input.childProgressForRunId === undefined ? undefined :
         yield* readObservation(scope, input.threadId, input.childProgressForRunId);
+      // All fallible preparation and final wire sizing precede result acknowledgement.
+      // Dependency rosters and negotiated observations count toward evidence's envelope too.
+      if (input.contentEvidence !== undefined && jsonBytes({
+        thread: { ...thread, ...dependencyRoster }, recentRuns, items,
+        remoteMessagePolicy: ObservationSupport.linkedMessagePolicy,
+        ...(remoteObservation === undefined ? {} : { remoteObservation }),
+        nextPosition: items.at(-1)?.position ?? null,
+        hasMore: timeline.hasMore || (!newestFirst && items.length < timeline.items.length),
+        earlierPosition: timeline.hasEarlier || start > 0 ? (items[0]?.position ?? null) : null,
+      }) > THREAD_READ_RESULT_MAX_BYTES) {
+        return yield* failure("invalid_request", "Content evidence response exceeds the wire budget; request a smaller page.");
+      }
       const returnedRunIds = new Set(
         page.filter((row) => row.sourceThreadId === target.thread.id).map((row) => row.item.runId),
       );
