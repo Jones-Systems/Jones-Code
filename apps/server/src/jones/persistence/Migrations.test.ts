@@ -871,3 +871,61 @@ it.effect(
       assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
     }).pipe(Effect.provide(memory)),
 );
+
+it.effect("current independent Jones history needs no migration write transaction", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations();
+    const before = yield* readLedger;
+    yield* sql`PRAGMA query_only = ON`;
+    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+    assert.deepStrictEqual(yield* runMigrations(), []);
+    assert.deepStrictEqual(yield* readLedger, before);
+  }).pipe(Effect.provide(memory)),
+);
+
+it.effect("Jones pending batch rollback leaves the completed upstream head durable", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 96 });
+    yield* runJonesMigrations(originals);
+    const before = yield* readLedger;
+    const failedBatch = runJonesMigrations([
+      ...originals,
+      [100, "S1BatchProbe", Effect.gen(function* () {
+        yield* sql`CREATE TABLE s1_batch_probe(value TEXT)`;
+        yield* sql`INSERT INTO s1_batch_probe VALUES ('rolled back')`;
+      })],
+      [101, "S1BatchFailure", Effect.gen(function* () {
+        yield* sql`INSERT INTO s1_missing_table VALUES (1)`;
+      })],
+    ]);
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(failedBatch)));
+    assert.deepStrictEqual(yield* readLedger, before);
+    assert.deepStrictEqual(yield* sql`SELECT name FROM sqlite_master WHERE name = 's1_batch_probe'`, []);
+    assert.deepStrictEqual(yield* sql`SELECT migration_id FROM effect_sql_migrations ORDER BY migration_id`,
+      migrationManifest.map(([migration_id]) => ({ migration_id })));
+  }).pipe(Effect.provide(memory)),
+);
+
+it.effect("late guarded Jones failure suppresses FINISHED after upstream 96 commits", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: 80 });
+    yield* runJonesMigrations(originals);
+    const before = yield* readLedger;
+    yield* sql`CREATE TABLE jones_peer_wake_holds(s1_fault TEXT)`;
+    const logs: unknown[] = [];
+    const logger = Logger.make<unknown, void>(({ message }) => {
+      logs.push(...(Array.isArray(message) ? message : [message]));
+    });
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations().pipe(Effect.provide(Logger.layer([logger]))))));
+    assert.notInclude(logs, "Migrations ran successfully");
+    assert.deepStrictEqual(yield* readLedger, before);
+    assert.deepStrictEqual(yield* sql`SELECT name FROM sqlite_master WHERE name = 'jones_peer_wake_bindings'`, []);
+    assert.deepStrictEqual(yield* sql`SELECT migration_id FROM effect_sql_migrations ORDER BY migration_id`,
+      migrationManifest.map(([migration_id]) => ({ migration_id })));
+    yield* sql`DROP TABLE jones_peer_wake_holds`;
+    assert.deepStrictEqual(yield* runMigrations(), []);
+  }).pipe(Effect.provide(memory)),
+);

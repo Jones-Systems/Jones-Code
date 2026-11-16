@@ -8,12 +8,18 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-import { hasPendingMigrations, runMigrations } from "./Migrations.ts";
+import { runMigrations, migrationManifest } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
 
 import { holdJonesServerNativeWriterFence } from "../jones/updates/nativeWriterStartup.ts";
+
+import type { SqliteReaderPoolOptions } from "@t3tools/shared/jones/sqliteReaderContracts";
+import { readerPoolOptions } from "../jones/serverParallelism/persistenceOptions.ts";
+import { makePoolObservers } from "../jones/serverParallelism/metrics.ts";
+import { jonesMigrationEntries } from "../jones/persistence/JonesMigrations.ts";
+import { readMigrationPlan } from "../jones/updates/migrationPlan.ts";
 
 const WAL_SIZE_LIMIT_BYTES = 128 * 1024 * 1024;
 
@@ -52,21 +58,7 @@ const damagedDatabaseError = (dbPath: string, cause: SqlError.SqlError) =>
     }),
   });
 
-// CLI commands open the server's database from another process; migrating behind its owner changes the schema it runs on.
-const runMigrationsAsOwner = Effect.fn("SqlitePersistence.runMigrationsAsOwner")(function* () {
-  // With nothing pending, runMigrations only validates the recorded history and writes nothing.
-  if (!(yield* hasPendingMigrations())) return yield* runMigrations();
-  const { serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
-  yield* ServerOwnership.holdServerOwnershipLock(serverRuntimeStatePath).pipe(
-    Effect.catchTags({
-      ServerAlreadyRunningError: ({ stateDir }) =>
-        Effect.fail(new ServerOwnsDatabaseError({ stateDir })),
-    }),
-  );
-  yield* runMigrations();
-}, Effect.scoped);
-
-const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
+const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>, maintenance = true) =>
   Layer.effectDiscard(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -77,8 +69,8 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
       const tables = yield* sql<{
         readonly count: number;
       }>`SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table'`;
-      if (tables[0]?.count === 0) yield* sql`PRAGMA auto_vacuum = INCREMENTAL;`;
-      yield* sql`PRAGMA journal_mode = WAL;`;
+      if (maintenance && tables[0]?.count === 0) yield* sql`PRAGMA auto_vacuum = INCREMENTAL;`;
+      if (maintenance) yield* sql`PRAGMA journal_mode = WAL;`;
       // FULL fsyncs every event commit; NORMAL syncs only at WAL checkpoints.
       // App crashes lose nothing; OS crashes or power loss can roll back post-checkpoint commits without corruption.
       yield* sql`PRAGMA synchronous = NORMAL;`;
@@ -93,7 +85,7 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
       // Collecting stats scans every page, and stale small-table stats cause scans after growth; use indexes by default.
       // Connections cache stats; reload after deleting them.
       const statTables = yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`;
-      if (statTables.length > 0) {
+      if (maintenance && statTables.length > 0) {
         yield* sql`DELETE FROM sqlite_stat1;`;
         yield* sql`ANALYZE sqlite_schema;`;
       }
@@ -103,7 +95,7 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>) =>
 const layerSetup = makeLayerSetup(runMigrations());
 
 const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<never, E, R>) =>
-  Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string) {
+  Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string, readerPool?: SqliteReaderPoolOptions) {
     yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -114,6 +106,9 @@ const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<neve
       NodeSqliteClient.layer({
         filename: dbPath,
         readerWorker: true,
+        readerFailureMode: "fail",
+        checkpointWorker: true,
+        ...(readerPool === undefined ? {} : { readerPool }),
         // A slow disk then delays writes instead of freezing every client.
         writerWorker: true,
         spanAttributes: {
@@ -143,14 +138,36 @@ export const layerMemory = Layer.provideMerge(
 );
 
 const makeLayerConfig = <E, R>(
-  fromPath: (dbPath: string) => Layer.Layer<SqlClient.SqlClient, E, R>,
+  fromPath: (dbPath: string, readerPool?: SqliteReaderPoolOptions) => Layer.Layer<SqlClient.SqlClient, E, R>,
+  cli = false,
 ) =>
   Layer.unwrap(
     Effect.gen(function* () {
-      const { dbPath } = yield* ServerConfig.ServerConfig;
+      const { dbPath, serverParallelism, serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
+      const observers = yield* makePoolObservers(serverParallelism.profile);
       yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
-      yield* initializeV2Database(dbPath);
-      return fromPath(dbPath);
+      let cliPending = false;
+      if (cli) {
+        // Inspect before copy/open/setup: a refused CLI must leave the database unchanged.
+        const plan = yield* Effect.sync(() => readMigrationPlan({
+          databasePath: dbPath, upstream: migrationManifest, jones: jonesMigrationEntries.map(([id, name]) => [id, name]),
+        }));
+        if (plan.status === "blocked") return yield* Effect.fail(new SqlError.SqlError({
+          reason: new SqlError.UnknownError({ cause: new Error(plan.reason), operation: "open", message: plan.reason }),
+        }));
+        if (plan.migrationPlan.pendingUpstream.length > 0 || plan.migrationPlan.pendingJones.length > 0) {
+          cliPending = true;
+          yield* ServerOwnership.holdServerOwnershipLock(serverRuntimeStatePath).pipe(
+            Effect.catchTags({ ServerAlreadyRunningError: ({ stateDir }) =>
+              Effect.fail(new ServerOwnsDatabaseError({ stateDir })) }),
+          );
+          yield* initializeV2Database(dbPath);
+        }
+      } else {
+        yield* initializeV2Database(dbPath);
+      }
+      const selected = cliPending ? layerFromPath : fromPath;
+      return selected(dbPath, readerPoolOptions(serverParallelism.readerCount, observers.reader));
     }),
   );
 
@@ -158,5 +175,6 @@ export const layerConfig = makeLayerConfig(layerFromPath);
 
 /** For CLI commands: pending migrations run only while no server owns the T3 home. */
 export const layerCliConfig = makeLayerConfig(
-  makeLayerFromPath(() => makeLayerSetup(runMigrationsAsOwner())),
+  makeLayerFromPath(() => makeLayerSetup(runMigrations(), false)),
+  true,
 );

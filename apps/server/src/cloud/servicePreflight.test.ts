@@ -262,3 +262,22 @@ it("preserves a bound candidate database blocker before stopping the active serv
     }),
   ).toBe("Candidate older than this database (Jones migration 105).");
 });
+
+it.layer(NodeServices.layer)("independent candidate ledgers", (it) => {
+  it.effect("blocks unknown Jones history even when the upstream ledger is absent", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const databasePath = path.join(yield* fs.makeTempDirectoryScoped({ prefix: "s1-preflight-jones-" }), "statev2.sqlite");
+      const db = new NodeSqlite.DatabaseSync(databasePath);
+      try {
+        db.exec("CREATE TABLE jones_sql_migrations(migration_id INTEGER PRIMARY KEY, name TEXT); INSERT INTO jones_sql_migrations VALUES (999, 'UnknownJones')");
+      } finally { db.close(); }
+      const before = yield* fs.readFile(databasePath);
+      const result = runServicePreflight({ databasePath, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL, version: "candidate" });
+      expect(result.status).toBe("blocked");
+      if (result.status === "blocked") expect(result.reason).toContain("Jones migration 999");
+      expect(yield* fs.readFile(databasePath)).toEqual(before);
+    }).pipe(Effect.scoped),
+  );
+});

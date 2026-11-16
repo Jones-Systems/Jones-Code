@@ -751,3 +751,14 @@ it.effect(
       }
     }),
 );
+
+it("rejects an upstream gap even when the highest recorded ID matches the candidate", () => {
+  withDatabase((databasePath) => {
+    const db = new NodeSqlite.DatabaseSync(databasePath);
+    try { db.exec("DELETE FROM effect_sql_migrations; INSERT INTO effect_sql_migrations VALUES (2, 'UpstreamNext')"); }
+    finally { db.close(); }
+    const before = NodeFS.readFileSync(databasePath);
+    expect(readMigrationPlan({ databasePath, ...manifest })).toMatchObject({ status: "blocked" });
+    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+  });
+});

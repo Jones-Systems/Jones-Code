@@ -10,6 +10,8 @@ import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import { readerPoolOptions } from "../jones/serverParallelism/persistenceOptions.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -233,6 +235,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
     }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
   );
 
+  it.effect("refuses Jones-only pending history before setup writes", () =>
+    Effect.gen(function* () {
+      yield* migrateTo();
+      const { dbPath } = yield* ServerConfig.ServerConfig;
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM jones_sql_migrations WHERE migration_id = 155`;
+        yield* sql`CREATE TABLE s1_stat_probe(value TEXT)`;
+        yield* sql`INSERT INTO s1_stat_probe VALUES ('retained')`;
+        yield* sql`ANALYZE s1_stat_probe`;
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+      const before = NodeFS.readFileSync(dbPath);
+      yield* ownT3Home();
+      const result = yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerCliConfig), Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") assert.instanceOf(result.failure, SqlitePersistence.ServerOwnsDatabaseError);
+      assert.deepEqual(NodeFS.readFileSync(dbPath), before);
+    }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
+  );
+
   it.effect("opens a current T3 home while a running server owns it", () =>
     Effect.gen(function* () {
       yield* migrateTo();
@@ -240,5 +262,34 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
 
       yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerCliConfig));
     }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
+  );
+});
+
+it.effect.each([2, 3] as const)("worker startup applies pragmas and routes pool size %i read-only", (size) => {
+  const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "s1-startup-"));
+  const filename = NodePath.join(tempDir, "statev2.sqlite");
+  const observations: Array<{ slotId: number }> = [];
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    for (const [pragma, expected] of [
+      ["foreign_keys", 1], ["synchronous", 1], ["busy_timeout", 5000],
+      ["checkpoint_fullfsync", 1], ["temp_store", 2], ["journal_size_limit", 128 * 1024 * 1024],
+    ] as const) {
+      const rows = yield* sql.unsafe(`PRAGMA ${pragma}`);
+      assert.equal(Object.values(rows[0]!)[0], expected, pragma);
+    }
+    assert.deepEqual(yield* sql`PRAGMA journal_mode`, [{ journal_mode: "wal" }]);
+    yield* sql`CREATE TABLE s1_parent(id INTEGER PRIMARY KEY)`;
+    yield* sql`CREATE TABLE s1_child(parent_id INTEGER REFERENCES s1_parent(id))`;
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(sql`INSERT INTO s1_child VALUES (77)`)));
+    assert.deepEqual(yield* sql`SELECT 1 AS value`.pipe(NodeSqliteClient.readOnly), [{ value: 1 }]);
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(
+      sql`INSERT INTO s1_parent VALUES (77)`.pipe(NodeSqliteClient.readOnly),
+    )));
+    assert.isTrue(observations.some(({ slotId }) => slotId >= 0 && slotId < size));
+  }).pipe(
+    Effect.provide(SqlitePersistence.layerFromPath(filename, readerPoolOptions(size, (event) => observations.push(event)))
+      .pipe(Layer.provide(NodeServices.layer))),
+    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
   );
 });
