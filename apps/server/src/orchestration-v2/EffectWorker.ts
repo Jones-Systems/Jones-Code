@@ -1466,8 +1466,11 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
         ? Math.max(1, Math.floor(requestedLivenessPollIntervalMs))
         : DEFAULT_EFFECT_WORKER_LIVENESS_POLL_INTERVAL_MS;
       const admission = concurrency >= 2 ? yield* makeActionWorkerAdmission(worker.awaitWork) : undefined;
-      // Title generation can run for minutes; leave at least one worker free for turn work.
-      const claimLimits = concurrency > 1 ? { maxRunningTitleGenerations: concurrency - 1 } : {};
+      // Detached executions retain their running rows. Cap titles by mixed-lane
+      // capacity so slot release preserves both action and urgent reservations.
+      const claimLimits = concurrency > 1
+        ? { maxRunningTitleGenerations: concurrency - (concurrency >= 3 ? 2 : 1) }
+        : {};
       // Notifications wake promptly; availableAt persists retry timing, and liveness polling recovers missed wakeups.
       const runWorker = (index: number) => Effect.gen(function* () {
         const lane = actionWorkerLane(index, concurrency);
