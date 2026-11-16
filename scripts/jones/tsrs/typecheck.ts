@@ -93,28 +93,37 @@ export async function typecheck(
   const target = Identity.hostTarget();
   if (target) {
     const installed = await Identity.resolveInstalled(root, target);
-    return withLocalMacCapacity({ root, signal, jobs: 2 }, () =>
-      runWithBuildInfo({
-        root: installed.root,
-        cwd,
-        args,
-        compiler: installed,
-        signal,
-        run: (effectiveArgs, seen) =>
-          launchVerified(installed, signal, (compiler, spawned) =>
-            runChild({
-              executable: compiler.executable,
-              args: [...effectiveArgs, ...Identity.CHECKER_OPTIONS],
-              cwd,
-              signal,
-              spawned: async () => {
-                seen();
-                await spawned();
-              },
+    return withLocalMacCapacity({ root, signal, jobs: 2 }, async (_budget, lease) => {
+      let producerMayBeRunning = false;
+      try {
+        return await runWithBuildInfo({
+          root: installed.root,
+          cwd,
+          args,
+          compiler: installed,
+          signal,
+          run: (effectiveArgs, seen) =>
+            launchVerified(installed, signal, (compiler, spawned) => {
+              producerMayBeRunning = true;
+              return runChild({
+                executable: compiler.executable,
+                args: [...effectiveArgs, ...Identity.CHECKER_OPTIONS],
+                cwd,
+                signal,
+                closed: () => {
+                  producerMayBeRunning = false;
+                },
+                spawned: async () => {
+                  seen();
+                  await spawned();
+                },
+              });
             }),
-          ),
-      }),
-    );
+        });
+      } finally {
+        if (!producerMayBeRunning) lease.confirmClosure();
+      }
+    });
   }
   return runFallback(root, cwd, args, signal);
 }

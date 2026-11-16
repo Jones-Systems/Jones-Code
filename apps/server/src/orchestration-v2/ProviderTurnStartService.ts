@@ -1,3 +1,4 @@
+import { withStartFailureDiagnostic } from "../jones/provider/startFailureDiagnostics.ts";
 import * as StartRefusal from "../jones/startRefusal/Store.ts";
 import type { RefusalReason } from "../jones/startRefusal/model.ts";
 import { ContextHandoffDeliveryUncertainError } from "./ContextHandoffDelivery.ts";
@@ -794,14 +795,17 @@ export const layer: Layer.Layer<
                       retryable: true,
                       message: unavailable.message,
                     })
-                  : makeProviderFailure({
-                      cause: failed.error,
-                      message:
-                        failed.message ??
-                        knownProviderFailureMessage(failed.error) ??
-                        startFailureCauseMessage(failed.error, nestedCause),
-                      class: "provider_error",
-                    }),
+                  : withStartFailureDiagnostic(
+                      makeProviderFailure({
+                        cause: failed.error,
+                        message:
+                          failed.message ??
+                          knownProviderFailureMessage(failed.error) ??
+                          startFailureCauseMessage(failed.error, nestedCause),
+                        class: "provider_error",
+                      }),
+                      failed.error,
+                    ),
             },
           });
           if (terminalStartFailure(failed.error)) return yield* Effect.fail(failed.error);

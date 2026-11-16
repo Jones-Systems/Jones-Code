@@ -40,3 +40,15 @@ it("clones payloads and results and disposes the synthetic listener", async () =
   await ipc.send("fixture", value);
   expect(calls).toBe(1);
 });
+
+it("never reuses an immutable artifact ID across latest and repeated alternate rebuilds", () => {
+  const fixture = createPickerFixture("1".repeat(40));
+  const ids = new Set(fixture.builds.map((value) => (value as { artifactId: number }).artifactId));
+  expect(ids.size).toBe(2);
+  for (let rebuild = 0; rebuild < 3; rebuild++) {
+    fixture.rebuild();
+    const alternate = fixture.builds[1] as { artifactId: number };
+    expect(ids.has(alternate.artifactId)).toBe(false);
+    ids.add(alternate.artifactId);
+  }
+});

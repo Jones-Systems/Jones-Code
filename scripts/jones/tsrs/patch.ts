@@ -191,6 +191,7 @@ export interface ChildOptions {
   cwd: string;
   signal: AbortSignal;
   spawned?: (pid: number) => Promise<void>;
+  closed?: () => void;
 }
 
 export function cancellationExitCode(signal: AbortSignal): 130 | 143 {
@@ -267,6 +268,7 @@ export async function runChild(options: ChildOptions): Promise<number> {
     if (stop) options.signal.removeEventListener("abort", stop);
     if (escalation) await Effect.runPromise(Fiber.interrupt(escalation));
     if (observed || !child) await Effect.runPromise(Scope.close(scope, Exit.void));
+    if (observed) options.closed?.();
   }
 }
 

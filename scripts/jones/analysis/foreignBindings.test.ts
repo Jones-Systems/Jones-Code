@@ -159,6 +159,13 @@ it.each([
     "unknown-plugin",
     "compiler",
   ],
+  [
+    "unconfirmed producer recovery",
+    "scripts/jones/tsrs/capacity-lock.ts",
+    '"admission", "closed"',
+    '"admission", "producer", "closed"',
+    "compiler",
+  ],
 ] as const)("refuses %s", async (_label, file, from, to, group) => {
   const source = await read(file);
   expect(source).toContain(from);
