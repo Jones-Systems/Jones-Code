@@ -3004,9 +3004,11 @@
         "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
         "packages/shared/src/t3McpToolPresentation.test.ts",
         "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
-        "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts"
+        "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts",
+        "packages/client-runtime/src/jones/approvalChoices.test.ts"
       ],
       "commands": [
+        "vp test run packages/client-runtime/src/jones/approvalChoices.test.ts packages/client-runtime/src/state/threadRequests.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run packages/contracts/src/jones/userResponseRequest.test.ts apps/server/src/jones/orchestration/userInputRequestRecord.test.ts apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts packages/shared/src/t3McpToolPresentation.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter t3 typecheck",
@@ -5418,6 +5420,26 @@
         "vp run --filter @t3tools/desktop typecheck",
         "vp run --filter @t3tools/scripts typecheck",
         "vp run knip:check",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
+      "id": "jones-storage-cleanup-results",
+      "tests": [
+        "apps/server/src/provider/AgentContextBudget.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
+        "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
+        "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/storageCleanup/ReportRead.test.ts apps/server/src/jones/mcp/storageCleanup/handlers.test.ts apps/server/src/provider/AgentContextBudget.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project browser src/components/settings/StorageSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp lint apps/server/src/jones/storageCleanup apps/server/src/jones/mcp/storageCleanup apps/web/src/jones/storageCleanupResults apps/web/src/components/settings/StorageSettings.tsx apps/web/src/components/settings/StorageSettings.browser.test.tsx packages/contracts/src/jones/storageCleanupReport.ts apps/server/src/mcp/McpHttpServer.ts packages/contracts/src/index.ts",
         "node scripts/jones/check-boundary.ts --strict",
         "git diff --check"
       ]

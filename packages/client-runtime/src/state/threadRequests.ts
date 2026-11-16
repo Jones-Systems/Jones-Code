@@ -11,6 +11,7 @@ import type {
   ProviderRequestKind,
   RuntimeRequestId,
 } from "@t3tools/contracts";
+import { withApprovalChoices } from "../jones/approvalChoices.ts";
 import { Atom } from "effect/reactivity";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { getProjectionArrayReplacementIndex } from "./orchestrationV2Projection.ts";
@@ -242,7 +243,7 @@ export function derivePendingThreadRequests(
         requestId: request.id,
         createdAt: DateTime.formatIso(request.createdAt),
         questions: item.questions.map((question) => ({
-          ...question,
+          ...withApprovalChoices(question, request.id),
           multiSelect: question.multiSelect ?? false,
         })),
         responseCapability,

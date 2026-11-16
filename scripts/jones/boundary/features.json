@@ -1858,9 +1858,10 @@
         "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
         "packages/shared/src/t3McpToolPresentation.test.ts",
         "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
-        "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts"
+        "apps/server/src/jones/mcp/userResponseRequest/questions.test.ts",
+        "packages/client-runtime/src/jones/approvalChoices.test.ts"
       ],
-      "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command or database schema changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only. Provider-session attachment validates distinct MCP credential identities; detached and foreign callers remain refused. Additive 1\u20135-question input, per-prompt 1500-code-point bounds and multiline legacy input preserve legacy normalization. Batch integration proves incomplete rejection, ordered long reply, durable pending provider-start intent and replay deduplication without an effect worker. Tool and provider guidance require an explicit first (Recommended) option and rationale for genuine multi-option decisions, exempting action-status/result choices, acknowledgements and single-option prompts. Opt-in defaultDone normalizes to a standard Done option only for instruction-form action requests; explicit choices take precedence and absent/false preserve legacy retry identity. No event/schema migration or custom quick-response renderer."
+      "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command or database schema changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only. Provider-session attachment validates distinct MCP credential identities; detached and foreign callers remain refused. Additive 1\u20135-question input, per-prompt 1500-code-point bounds and multiline legacy input preserve legacy normalization. Batch integration proves incomplete rejection, ordered long reply, durable pending provider-start intent and replay deduplication without an effect worker. Tool and provider guidance require an explicit first (Recommended) option and rationale for genuine multi-option non-approval decisions, exempting action-status/result choices, acknowledgements and single-option prompts. Opt-in defaultDone normalizes to a standard Done option only for instruction-form action requests; explicit choices take precedence and absent/false preserve legacy retry identity. Shared client projection adds explained Approve/Deny choices for explicit approval wording in optionless app-owned requests, preserving persisted bytes, custom answers, authored choices and native prompts. Approval guidance requires descriptions and no recommendation. No event/schema migration or custom quick-response renderer."
     },
     {
       "id": "thread-reference-only",
@@ -3401,6 +3402,17 @@
       "id": "start-failure-message",
       "tests": ["apps/server/src/jones/provider/startFailureMessage.test.ts"],
       "scope": "Provider start failures keep the app-authored start error text when the immediate cause is an Error with a blank message, such as an Effect tagged error declared without a message field. The small ProviderTurnStartService hook replaces its inline cause-message selection with this helper; nonblank nested error and string reasons still win, and curated known messages still take precedence. No additional provider or cause text is exposed, and no wire, persistence, provider execution or transport behavior changes."
+    },
+    {
+      "id": "storage-cleanup-results",
+      "tests": [
+        "apps/server/src/provider/AgentContextBudget.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
+        "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
+        "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+      ],
+      "scope": "Storage cleanup results initially render five rows total across selected environments, expand by ten, and preserve retirement guards. A read-only MCP adapter pages the same session report with exact filters, snapshot consistency, explicit omissions and a serialized response budget; it cannot evaluate or execute cleanup."
     }
   ]
 }
