@@ -837,7 +837,8 @@ function expectProductionComposerLayout() {
   expect(documentScroller.scrollHeight).toBeLessThanOrEqual(documentScroller.clientHeight + 1);
 }
 
-const composerLayoutCases = [320, 380, 620, 900].flatMap((width) =>
+// A 320px window leaves a 296px chat canvas after the production side gutters.
+const composerLayoutCases = [296, 320, 380, 620, 900].flatMap((width) =>
   [240, 800].flatMap((height) =>
     [true, false].flatMap((hero) => [true, false].map((codex) => ({ width, height, hero, codex }))),
   ),
