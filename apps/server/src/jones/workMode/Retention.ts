@@ -1,3 +1,6 @@
+import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
+import type { ThreadId } from "@t3tools/contracts";
 import type {
   OrchestrationV2ThreadProjection,
   ProviderInstanceId,
@@ -34,4 +37,24 @@ export function workModeRetainsSession(input: {
     owner.providerSessionId === input.providerSessionId &&
     owner.providerInstanceId === input.providerInstanceId
   );
+}
+
+/** Residency reads cannot grant work or advance the refresh clock. */
+export function makeWorkModeRetentionProbe(ports: {
+  readonly enabled: Effect.Effect<boolean, unknown>;
+  readonly projection: (threadId: ThreadId) => Effect.Effect<OrchestrationV2ThreadProjection, unknown>;
+}) {
+  return Effect.fn("WorkModeRetention.probe")((
+    threadId: ThreadId,
+    providerSessionId: ProviderSessionId,
+    providerInstanceId: ProviderInstanceId,
+  ) => Effect.gen(function* () {
+    if (!(yield* ports.enabled)) return false;
+    return workModeRetainsSession({
+      projection: yield* ports.projection(threadId),
+      providerSessionId,
+      providerInstanceId,
+      nowMs: yield* Clock.currentTimeMillis,
+    });
+  }).pipe(Effect.catchCause(() => Effect.succeed(false))));
 }
