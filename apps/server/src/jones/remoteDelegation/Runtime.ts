@@ -1,5 +1,4 @@
-import { followUpOwnerRun } from "../../orchestration-v2/CommandPolicy.ts";
-import type { OrchestrationV2Subagent } from "@t3tools/contracts";
+import * as DurableFollowUp from "./FollowUp.ts";
 import {
   CommandId,
   type EnvironmentId,
@@ -68,92 +67,16 @@ export const make = Effect.gen(function* () {
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
   const monitor = yield* PeerMonitor.make;
+  const durableFollowUps = yield* DurableFollowUp.make;
   const lifecycle = yield* RemoteLifecycle.make((parentThreadId, taskId) =>
     followOne(parentThreadId, taskId).pipe(Effect.forkIn(followers), Effect.asVoid),
   );
 
-  const followUp: RemoteDelegation["Service"]["followUp"] = Effect.fn("RemoteDelegation.followUp")(
-    function* (scope, environmentId, request, sent) {
-      // A steer joins a run that is already some task's, or no one's.
-      if (scope.thread === undefined || (sent.delivery !== "started" && sent.delivery !== "queued"))
-        return sent;
-      const parentThreadId = scope.thread.threadId;
-      const parent = yield* threads
-        .getThreadRecords(parentThreadId, ["runs", "subagents"])
-        .pipe(Effect.orElseSucceed(() => undefined));
-      const isThere = (task: OrchestrationV2Subagent) =>
-        task.remoteChild?.environmentId === environmentId &&
-        task.remoteChild.threadId === sent.threadId;
-      const finished = parent?.subagents.find((task) => isThere(task) && task.result !== null);
-      // Bound as a follow-up here is: a background caller's foreground run may have ended.
-      const parentRun = parent === undefined ? null : followUpOwnerRun(parent.runs);
-      if (
-        finished?.remoteChild === undefined ||
-        finished.model === null ||
-        parentRun === null ||
-        parentRun.rootNodeId === null
-      )
-        return sent;
-      // The message id there is the send's, so a retry that reached the same send records once.
-      const commandId = CommandId.make(
-        `command:remote-followup:${encodeURIComponent(parentThreadId)}:${encodeURIComponent(environmentId)}:${encodeURIComponent(sent.messageId)}`,
-      );
-      const recorded = yield* threads
-        .dispatch({
-          type: "delegated_task.remote.request",
-          commandId,
-          parentThreadId,
-          parentRunId: parentRun.id,
-          parentNodeId: parentRun.rootNodeId,
-          task: request.message,
-          ...(finished.title === null ? {} : { title: finished.title }),
-          driver: finished.driver,
-          modelSelection: finished.modelSelection ?? { instanceId: finished.providerInstanceId, model: finished.model },
-          remoteChild: {
-            environmentId,
-            threadId: sent.threadId,
-            label: finished.remoteChild.label,
-            runId: sent.runId,
-          },
-          completionWake: "always",
-        })
-        .pipe(
-          Effect.tapError((cause) =>
-            Effect.logWarning("remote-delegation.followup-record-failed", {
-              parentThreadId,
-              cause,
-            }),
-          ),
-          Effect.mapError(
-            () =>
-              new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message:
-                  `The message ${sent.messageId} was sent to ${sent.threadId} for run ${sent.runId}, but local task recording failed. Retain this known remote effect and reconcile its stable command; do not send a replacement.`,
-              }),
-          ),
-        );
-      const taskEvent = recorded.storedEvents.find(
-        (stored) => stored.event.type === "subagent.updated",
-      );
-      const taskId =
-        taskEvent?.event.type === "subagent.updated"
-          ? taskEvent.event.payload.id
-          : // A replayed request recorded the task the first time.
-            yield* threads.getThreadRecords(parentThreadId, ["subagents"]).pipe(
-              Effect.map(
-                ({ subagents }) =>
-                  subagents.find((task) => isThere(task) && task.remoteChild?.runId === sent.runId)
-                    ?.id,
-              ),
-              Effect.orElseSucceed(() => undefined),
-            );
-      if (taskId === undefined) return sent;
-      yield* followOne(parentThreadId, taskId).pipe(Effect.forkIn(followers));
-      return { ...sent, taskId };
-    },
-  );
-
+  const followUp: RemoteDelegation["Service"]["followUp"] = (scope, _environmentId, _request, sent) => {
+    // Reservation and exact binding already committed inside peer forwarding.
+    if (scope.thread === undefined || sent.taskId === undefined) return Effect.succeed(sent);
+    return followOne(scope.thread.threadId, sent.taskId).pipe(Effect.forkIn(followers), Effect.as(sent));
+  };
 
   /** The peer's project with this thread's repository, or the one the caller named. */
   const resolveRemoteProject = Effect.fn("RemoteDelegation.resolveRemoteProject")(function* (
@@ -762,7 +685,10 @@ export const make = Effect.gen(function* () {
   const cancel: RemoteDelegation["Service"]["cancel"] = Effect.fn("RemoteDelegation.cancel")(
     function* (scope, task, input) {
       const remote = task.remoteChild;
-      if (remote === undefined) return yield* lifecycle.cancelPending(task, input.reason);
+      if (remote === undefined) {
+        if (yield* durableFollowUps.cancel(task.id, input.reason)) return {taskId: task.id, status: "cancel_requested" as const};
+        return yield* lifecycle.cancelPending(task, input.reason);
+      }
       const { reason } = input;
       const there = followScope(scope.thread, remote);
       // A later cancel stops what started there since; a retry of this one, nothing new.
@@ -859,6 +785,7 @@ export const make = Effect.gen(function* () {
   const start: RemoteDelegation["Service"]["start"] = () =>
     forkParked(
       Effect.gen(function* () {
+        yield* durableFollowUps.start;
         yield* FollowerSupervision.retry(lifecycle.start, { operation: "startup" });
         if (threads.recoverRemoteTaskQuestions !== undefined)
           yield* threads.recoverRemoteTaskQuestions.pipe(
@@ -887,16 +814,18 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  const runStatus: RemoteDelegation["Service"]["runStatus"] = (scope, task) => {
-    const remote = task.remoteChild;
-    if (remote?.runId === undefined) return Effect.succeed(null);
-    return forwarding.readThread(scope, remote.environmentId, {
+  const runStatus: RemoteDelegation["Service"]["runStatus"] = (scope, task) => Effect.gen(function* () {
+    const refreshed = task.remoteChild === undefined ? yield* durableFollowUps.refresh(task.id) : undefined;
+    const remote = (refreshed ?? task).remoteChild;
+    if (remote?.runId === undefined) return refreshed?.result === null ? "starting" as const : null;
+    if (refreshed !== undefined) yield* followOne(task.threadId, task.id).pipe(Effect.forkIn(followers));
+    return yield* forwarding.readThread(scope, remote.environmentId, {
       threadId: remote.threadId, runLimit: 50, limit: 1,
     }).pipe(
       Effect.map((read) => read.recentRuns.find((run) => run.runId === remote.runId)?.status ?? null),
       Effect.orElseSucceed(() => null),
     );
-  };
+  });
 
   return { observe, delegate, followUp, runStatus, cancel, start } satisfies RemoteDelegation["Service"];
 });

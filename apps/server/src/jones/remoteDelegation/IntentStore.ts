@@ -10,11 +10,16 @@ import {
   RemoteAdmissionDigest,
   RemoteAdmissionStatus,
   RunId,
+  RuntimeMode,
+  ProviderInteractionMode,
+  LinkedRequestContext,
+  OrchestratorMcpThreadSendResult,
   ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 import type * as Tool from "effect/ai/Tool";
@@ -204,7 +209,7 @@ export const make = Effect.gen(function* () {
     // One undecodable row must not stop recovery of the others. It stays pending,
     // untouched, and is reported; reads of that exact row still fail as storage errors.
     pending:
-      sql<Row>`SELECT * FROM jones_remote_delegation_intents WHERE status = 'pending' ORDER BY created_at, command_id`.pipe(
+      sql<Row>`SELECT * FROM jones_remote_delegation_intents WHERE status = 'pending' AND json_extract(envelope_json, '$.kind') IS NULL ORDER BY created_at, command_id`.pipe(
         Effect.mapError(storageFailure),
         Effect.flatMap((rows) =>
           Effect.forEach(rows, (row) =>
@@ -258,5 +263,119 @@ export const make = Effect.gen(function* () {
         Effect.asVoid,
         Effect.mapError(storageFailure),
       ),
+  };
+});
+
+// A tagged operation in the released sparse JSON ledger. Legacy launch rows stay
+// byte-for-byte untagged and continue through make's original decoder/recovery.
+export const FollowUpEnvelope = Schema.Struct({
+  kind: Schema.Literal("remote-followup/v1"),
+  scope: StoredEnvelope.fields.scope,
+  environmentId: EnvironmentId,
+  linkedAt: Schema.String,
+  label: Schema.String,
+  request: StoredEnvelope.fields.request,
+  previousTaskId: NodeId,
+  previousRemoteRunId: RunId,
+  linkGeneration: Schema.NonEmptyString,
+  requestDigest: Schema.NonEmptyString,
+  targetCreatedAt: Schema.String,
+  send: Schema.Struct({
+    arguments: Schema.Record(Schema.String, Schema.Unknown),
+    limits: Schema.Struct({runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode}),
+    origin: Schema.Struct({
+      schemaVersion: Schema.Literal("t3.linked-message-origin/v1"),
+      environmentId: Schema.String,
+      thread: Schema.Struct({threadId: Schema.String, title: Schema.optional(Schema.String)}),
+    }),
+    context: Schema.optional(LinkedRequestContext),
+  }),
+});
+export type FollowUpEnvelope = typeof FollowUpEnvelope.Type;
+export interface FollowUpIntent extends Omit<Intent, "envelope" | "launched"> {
+  readonly envelope: FollowUpEnvelope;
+  readonly launched: typeof OrchestratorMcpThreadSendResult.Type | null;
+}
+const decodeFollowUpSelectors = Schema.decodeUnknownSync(Schema.Struct({
+  threadId: ThreadId, message: TrimmedNonEmptyString, clientRequestId: Schema.NonEmptyString,
+  expectedThreadCreatedAt: Schema.String,
+}));
+const decodeFollowUpEnvelope = (value: unknown): FollowUpEnvelope => {
+  const envelope = Schema.decodeUnknownSync(FollowUpEnvelope)(value);
+  const selectors = decodeFollowUpSelectors(envelope.send.arguments);
+  if (selectors.expectedThreadCreatedAt !== envelope.targetCreatedAt ||
+      envelope.scope.thread.threadId !== envelope.request.parentThreadId ||
+      envelope.scope.environmentId !== envelope.send.origin.environmentId ||
+      envelope.scope.thread.threadId !== envelope.send.origin.thread.threadId ||
+      !/^[a-f0-9]{64}$/.test(envelope.requestDigest)) throw new Error("Inconsistent follow-up envelope");
+  return envelope;
+};
+const decodeSent = Schema.decodeUnknownSync(OrchestratorMcpThreadSendResult);
+const followUpRow = (row: Row): FollowUpIntent => {
+  const envelope = decodeFollowUpEnvelope(decodeJson(row.envelope_json));
+  if (row.command_id !== envelope.request.commandId) throw new Error("Inconsistent follow-up command");
+  return {
+    commandId: row.command_id, createdAt: row.created_at,
+    envelope,
+    launched: row.launched_json === null ? null : decodeSent(decodeJson(row.launched_json)),
+    taskId: row.task_id, launchStarted: row.launch_started === 1,
+    admission: row.admission_json === null ? null : decodeAdmission(decodeJson(row.admission_json)), status: row.status,
+  };
+};
+
+export const makeFollowUps = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const get = (commandId: CommandId) => sql<Row>`SELECT * FROM jones_remote_delegation_intents
+    WHERE command_id = ${commandId} AND json_extract(envelope_json, '$.kind') = 'remote-followup/v1'`.pipe(
+      Effect.flatMap((rows) => Effect.try({try: () => rows[0] === undefined ? undefined : followUpRow(rows[0]), catch: storageFailure})),
+      Effect.mapError(storageFailure));
+  const find = Effect.fn("FollowUpIntent.find")(function* (commandId: CommandId, request: unknown) {
+    const rows = yield* sql<Row>`SELECT * FROM jones_remote_delegation_intents WHERE command_id = ${commandId}`.pipe(Effect.mapError(storageFailure));
+    if (rows[0] === undefined) return undefined;
+    if (rows[0].request_json !== canonicalJson(request)) return yield* new OrchestratorMcpFailure({code: "request_conflict", message: "This follow-up key already has a different immutable request."});
+    return yield* Effect.try({try: () => followUpRow(rows[0]!), catch: storageFailure});
+  });
+  return {
+    get, find,
+    pendingForTarget: (parentThreadId: ThreadId, environmentId: EnvironmentId, threadId: string) =>
+      sql<Row>`SELECT * FROM jones_remote_delegation_intents WHERE status = 'pending'
+        AND json_extract(envelope_json, '$.kind') = 'remote-followup/v1'
+        AND json_extract(envelope_json, '$.request.parentThreadId') = ${parentThreadId}
+        AND json_extract(envelope_json, '$.environmentId') = ${environmentId}
+        AND json_extract(envelope_json, '$.send.arguments.threadId') = ${threadId}
+        ORDER BY created_at, command_id LIMIT 1`.pipe(
+          Effect.flatMap((rows) => Effect.try({try: () => rows[0] === undefined ? undefined : followUpRow(rows[0]), catch: storageFailure})),
+          Effect.mapError(storageFailure)),
+    prepare: Effect.fn("FollowUpIntent.prepare")(function* (commandId: CommandId, request: unknown, envelope: FollowUpEnvelope) {
+      const previous = yield* find(commandId, request);
+      if (previous !== undefined) return previous;
+      // Caller owns the authoritative parent lock and transaction with reservation.
+      yield* Effect.try({try: () => decodeFollowUpEnvelope(envelope), catch: storageFailure});
+      const now = DateTime.formatIso(yield* DateTime.now);
+      yield* sql`INSERT INTO jones_remote_delegation_intents(command_id, request_json, envelope_json, status, created_at)
+        VALUES (${commandId}, ${canonicalJson(request)}, ${encodeJson(envelope)}, 'pending', ${now})`.pipe(Effect.mapError(storageFailure));
+      return (yield* get(commandId))!;
+    }),
+    reserved: (id: CommandId, taskId: NodeId) => sql`UPDATE jones_remote_delegation_intents SET task_id = ${taskId}
+      WHERE command_id = ${id} AND status = 'pending' AND (task_id IS NULL OR task_id = ${taskId}) RETURNING command_id`.pipe(
+        Effect.flatMap((rows) => rows.length === 1 ? Effect.void : Effect.fail(storageFailure())), Effect.mapError(storageFailure)),
+    beginSend: (id: CommandId, taskId: NodeId) => sql`UPDATE jones_remote_delegation_intents SET launch_started = 1
+      WHERE command_id = ${id} AND task_id = ${taskId} AND status = 'pending' AND launch_started = 0 RETURNING command_id`.pipe(
+        Effect.map((rows) => rows.length === 1), Effect.mapError(storageFailure)),
+    admission: (id: CommandId, admission: NonNullable<OrchestratorMcpFailure["remoteAdmission"]>) =>
+      sql`UPDATE jones_remote_delegation_intents SET admission_json = ${encodeJson(admission)} WHERE command_id = ${id} AND status = 'pending'`.pipe(Effect.asVoid, Effect.mapError(storageFailure)),
+    accepted: (id: CommandId, sent: typeof OrchestratorMcpThreadSendResult.Type) => sql`UPDATE jones_remote_delegation_intents SET launched_json = ${encodeJson(sent)}
+      WHERE command_id = ${id} AND status = 'pending' AND (launched_json IS NULL OR launched_json = ${encodeJson(sent)}) RETURNING command_id`.pipe(
+        Effect.flatMap((rows) => rows.length === 1 ? Effect.void : Effect.fail(storageFailure())), Effect.mapError(storageFailure)),
+    finish: (id: CommandId, status: FollowUpIntent["status"]) => sql`UPDATE jones_remote_delegation_intents SET status = ${status}
+      WHERE command_id = ${id} AND status = 'pending'`.pipe(Effect.asVoid, Effect.mapError(storageFailure)),
+    byTask: (id: NodeId) => sql<{command_id: CommandId}>`SELECT command_id FROM jones_remote_delegation_intents
+      WHERE task_id = ${id} AND json_extract(envelope_json, '$.kind') = 'remote-followup/v1'`.pipe(
+        Effect.flatMap((rows) => rows[0] === undefined ? Effect.succeed(undefined) : get(rows[0].command_id)), Effect.mapError(storageFailure)),
+    pending: sql<Row>`SELECT * FROM jones_remote_delegation_intents WHERE status = 'pending'
+      AND json_extract(envelope_json, '$.kind') = 'remote-followup/v1' ORDER BY created_at, command_id`.pipe(
+        Effect.flatMap((rows) => Effect.forEach(rows, (row) => Effect.try({try: () => followUpRow(row), catch: storageFailure}).pipe(
+          Effect.tapError(() => Effect.logWarning("Unreadable follow-up intent retained", {commandId: row.command_id})), Effect.option))),
+        Effect.map((rows) => rows.flatMap((row) => Option.isSome(row) ? [row.value] : [])), Effect.mapError(storageFailure)),
   };
 });

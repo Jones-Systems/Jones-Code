@@ -1856,6 +1856,19 @@ const make = Effect.gen(function* () {
     forceStopThread,
     awaitBackgroundTasks,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
+    // Preserve optionality until the core owner's normal parent merge.
+    ...((orchestrator as ObservationPorts).observeRemoteTask === undefined ? {} : {
+      observeRemoteTask: (orchestrator as ObservationPorts).observeRemoteTask!,
+    }),
+    ...((orchestrator as ObservationPorts).readRemoteTaskObservation === undefined ? {} : {
+      readRemoteTaskObservation: (orchestrator as ObservationPorts).readRemoteTaskObservation!,
+    }),
+    ...((orchestrator as ObservationPorts).reconcileRemoteTaskQuestions === undefined ? {} : {
+      reconcileRemoteTaskQuestions: (orchestrator as ObservationPorts).reconcileRemoteTaskQuestions!,
+    }),
+    ...((orchestrator as ObservationPorts).recoverRemoteTaskQuestions === undefined ? {} : {
+      recoverRemoteTaskQuestions: (orchestrator as ObservationPorts).recoverRemoteTaskQuestions!,
+    }),
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
     cancelDelegatedTask: orchestrator.cancelDelegatedTask,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
