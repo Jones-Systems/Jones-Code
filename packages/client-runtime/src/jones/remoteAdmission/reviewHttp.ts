@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { ConnectionCatalogEntry } from "../../connection/catalog.ts";
 import { ConnectionResolver } from "../../connection/resolver.ts";
+import { environmentMismatchError } from "../../connection/errors.ts";
 import { connectionRoutes, routeEntry } from "../../connection/routes.ts";
 import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
@@ -39,7 +40,10 @@ const request = Effect.fn("clientRuntime.remoteAdmission.reviewHttp")(function* 
     connectionRoutes(entry).map((route) => resolver.prepare(routeEntry(entry, route))),
   );
   if (prepared.environmentId !== entry.target.environmentId)
-    return yield* Effect.fail(new Error("Receiving environment changed."));
+    return yield* environmentMismatchError({
+      expected: entry.target.environmentId,
+      actual: prepared.environmentId,
+    });
   const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
   const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
   const response = yield* executeAuthenticatedEnvironmentHttpRequest({

@@ -1,3 +1,4 @@
+import { managedAccessGrantId } from "./managedAccessLink.ts";
 import type { ReviewChanges } from "../remoteAdmission/ReviewChanges.ts";
 import * as Buffer from "node:buffer";
 import { findGrantSourceAdmission } from "./grantSource.ts";
@@ -111,6 +112,7 @@ export function makeReviewService(
     return yield* Schema.decodeUnknownEffect(DTO.RemoteAdmissionReviewItem)({
       record,
       extension: {
+        managedAccessGrantId: yield* managedAccessGrantId(sql, record, readers.receiverEnvironmentId),
         grantable,
         grantUnavailableReason: grantable ? null : "operation_not_covered",
         grant: grant ? yield* admissions.access.grantView(grant, now) : null,
@@ -430,7 +432,7 @@ export function makeReviewService(
         settings.withSettingsSnapshot((current) => page(q, p, current.linkedEnvironmentsEnabled)),
       ),
     item: (id: string, p: EnvironmentSessionPrincipalShape) =>
-      mapFailure(owner(p).pipe(Effect.andThen(item(id))), id),
+      mapFailure(owner(p).pipe(Effect.andThen(sql.withTransaction(item(id)))), id),
     decide: (input: DTO.RemoteAdmissionReviewDecision, p: EnvironmentSessionPrincipalShape) =>
       mapFailure(
         Effect.gen(function* () {

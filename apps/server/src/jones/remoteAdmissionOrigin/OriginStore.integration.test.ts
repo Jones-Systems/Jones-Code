@@ -102,7 +102,7 @@ it.effect("replaced link cannot rebind retained intent or its return anchor", ()
     yield* sql.withTransaction(store.prepareInTransaction(row()));
     const rejected = yield* sql
       .withTransaction(store.prepareInTransaction({ ...row(), link_generation: "replacement" }))
-      .pipe(Effect.flip());
+      .pipe(Effect.flip);
     expect(rejected._tag).toBe("OrchestratorMcpFailure");
     expect((yield* store.get("root"))?.link_generation).toBe("generation-1");
   }).pipe(Effect.provide(fixture)),
@@ -117,7 +117,7 @@ it.effect("synchronous release has no wake and retains root for notices beyond t
     yield* store.resolve("root", result, "admission", "2027-01-20T00:00:00.000Z");
     expect((yield* store.get("root"))?.state).toBe("released");
     expect(yield* store.anchor("root")).toBeDefined();
-    yield* sql.withTransaction(admitOriginWake(sql, wake)).pipe(Effect.flip());
+    yield* sql.withTransaction(admitOriginWake(sql, wake)).pipe(Effect.flip);
     expect((yield* sql`SELECT * FROM synthetic_message_receipts`).length).toBe(0);
   }).pipe(Effect.provide(fixture)),
 );
@@ -136,7 +136,7 @@ it.effect("wake state and receipt roll back together on crash; successful retry 
           return yield* Effect.fail("crash");
         }),
       )
-      .pipe(Effect.flip());
+      .pipe(Effect.flip);
     expect((yield* store.get("root"))?.state).toBe("resolved");
     expect((yield* sql`SELECT * FROM synthetic_message_receipts`).length).toBe(0);
     yield* sql.withTransaction(
@@ -152,7 +152,7 @@ it.effect("wake state and receipt roll back together on crash; successful retry 
           yield* admitOriginWake(sql, wake);
         }),
       )
-      .pipe(Effect.flip());
+      .pipe(Effect.flip);
     expect((yield* store.get("root"))?.state).toBe("delivered");
     expect((yield* sql`SELECT * FROM synthetic_message_receipts`).length).toBe(1);
   }).pipe(Effect.provide(fixture)),
@@ -221,7 +221,7 @@ it.effect(
         admission_id: "child",
       };
       expect(
-        (yield* sql.withTransaction(store.prepareInTransaction(retry)).pipe(Effect.flip()))._tag,
+        (yield* sql.withTransaction(store.prepareInTransaction(retry)).pipe(Effect.flip))._tag,
       ).toBe("OrchestratorMcpFailure");
       yield* sql.withTransaction(store.prepareInTransaction(row()));
       yield* store.release("root", timestamp);

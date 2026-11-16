@@ -164,7 +164,7 @@ it.effect(
     f.offline();
     return Effect.gen(function* () {
       const bindings = yield* Bindings.OriginPeerBindings;
-      expect((yield* bindings.current(environmentId).pipe(Effect.flip())).code).toBe(
+      expect((yield* bindings.current(environmentId).pipe(Effect.flip)).code).toBe(
         "orchestration_error",
       );
     }).pipe(Effect.provide(f.layer));
@@ -176,7 +176,7 @@ it.effect("wrong receiver cannot populate the session cache", () => {
   f.report(status("session", "wrong-receiver"));
   return Effect.gen(function* () {
     const bindings = yield* Bindings.OriginPeerBindings;
-    expect((yield* bindings.current(environmentId).pipe(Effect.flip())).code).toBe(
+    expect((yield* bindings.current(environmentId).pipe(Effect.flip)).code).toBe(
       "capability_denied",
     );
     f.report(status());
@@ -204,9 +204,9 @@ it.effect("authentication denial pauses handshake until link generation changes"
   f.deny();
   return Effect.gen(function* () {
     const bindings = yield* Bindings.OriginPeerBindings;
-    yield* bindings.current(environmentId).pipe(Effect.flip());
+    yield* bindings.current(environmentId).pipe(Effect.flip);
     f.allow();
-    expect((yield* bindings.current(environmentId).pipe(Effect.flip())).code).toBe(
+    expect((yield* bindings.current(environmentId).pipe(Effect.flip)).code).toBe(
       "capability_denied",
     );
     expect(f.calls.length).toBe(1);

@@ -3,17 +3,19 @@
   "feature": "remote-request-managed-access",
   "jonesOwnedPaths": [
     "apps/server/src/jones/remoteAdmissionOrigin/",
-    "packages/contracts/src/jones/remoteAdmissionReview.ts",
-    "packages/contracts/src/jones/remoteAdmissionReview.test.ts",
-    "packages/contracts/src/jones/remoteAdmissionGrant.test.ts",
-    "packages/contracts/src/jones/remoteAdmissionRecovery.test.ts",
-    "packages/contracts/src/jones/remoteAdmissionCapabilities.test.ts",
-    "apps/server/src/jones/persistence/Migrations/156_JonesRemoteAdmissionReview.ts",
     "apps/server/src/jones/mcp/remoteAdmissionFeatures.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/peer/PeerForwarding.test.ts",
+      "to": "apps/server/src/jones/remoteAdmissionOrigin/capabilities.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/peer/RemoteDelegation.test.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/receiver.testkit.ts"
+    },
     {
       "from": "apps/web/src/routes/__root.tsx",
       "to": "apps/web/src/jones/remoteAdmission/ReviewClientsCoordinator.tsx"

@@ -121,15 +121,40 @@ const make = Effect.gen(function* () {
         }),
       );
   });
+  const registerRetry = Effect.fn("OriginCoordinator.registerRetry")(function* (
+    peer: Bindings.OriginPeerBinding,
+    row: ObservationRow,
+  ) {
+    if (intent(row).registered) return true;
+    if (
+      row.kind !== "retry" ||
+      row.attempt_id === null ||
+      row.peer_environment_id !== peer.environmentId ||
+      row.link_generation !== peer.generation ||
+      row.session_id !== peer.receiverSessionId ||
+      !(yield* current(peer))
+    )
+      return false;
+    // A retained observation is sufficient to reconcile this idempotent call.
+    // Claimed/completed attempts no longer appear in the discovery projection.
+    yield* call(
+      { ...peer, limits: intent(row).limits ?? Bindings.protocolLimits },
+      "t3_remote_admission_attempt_register",
+      { attemptId: row.attempt_id, observationKey: row.observation_key },
+      Review.RemoteAdmissionAttemptRegisterResult,
+    );
+    if (!(yield* current(peer))) return false;
+    yield* sql.withTransaction(
+      store.updateIntent(row.observation_key, { registered: true }, yield* now),
+    );
+    return true;
+  });
   const follow = Effect.fn("OriginCoordinator.follow")(function* (
     peer: Bindings.OriginPeerBinding,
     row: ObservationRow,
   ) {
-    if (
-      delivery.isSending(row.observation_key) ||
-      (row.kind === "retry" && !intent(row).registered)
-    )
-      return;
+    if (delivery.isSending(row.observation_key)) return;
+    if (row.kind === "retry" && !(yield* registerRetry(peer, row))) return;
     if (row.state === "intent" || row.state === "pending") {
       const observed =
         row.kind === "retry"
@@ -262,16 +287,7 @@ const make = Effect.gen(function* () {
           }),
         }),
       );
-      if (!intent(row).registered) {
-        yield* call(
-          { ...peer, limits: intent(row).limits ?? Bindings.protocolLimits },
-          "t3_remote_admission_attempt_register",
-          { attemptId: attempt.attemptId, observationKey: key },
-          Review.RemoteAdmissionAttemptRegisterResult,
-        );
-        if (yield* current(peer))
-          yield* sql.withTransaction(store.updateIntent(key, { registered: true }, timestamp));
-      }
+      yield* registerRetry(peer, row);
     }
     for (const notice of status.notices) {
       if (!(yield* current(peer))) return;
@@ -402,6 +418,11 @@ const make = Effect.gen(function* () {
           (["delivered", "suppressed"].includes(row.state) && !intent(row).acknowledged) ||
           (row.result_json !== null && Date.parse(row.updated_at) > clock - 30 * 86400_000),
       );
+      // Resume registration from local durable intent before discovery (including
+      // a long poll). A lost accepted reply must not depend on re-listing a child.
+      for (const row of rows) {
+        if (row.kind === "retry" && !intent(row).registered) yield* follow(peer, row);
+      }
       if (projection) {
         const status = yield* call(
           peer,

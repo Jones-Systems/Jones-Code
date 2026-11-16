@@ -12,6 +12,7 @@ import {
   type ReviewTransport,
 } from "@t3tools/client-runtime/jones/remoteAdmission/adapter";
 import { admissionFixture } from "./testFixtures";
+import type { RemoteAdmissionReviewItem } from "@t3tools/contracts/jones/remoteAdmissionReview";
 
 function item(id: string): Item {
   return {
@@ -327,6 +328,111 @@ it("resumes persisted attention from its cursor without requesting a new head", 
   expect(f.controller.getSnapshot().results).toEqual([retained]);
   f.controller.stopResults();
   await watching;
+});
+
+it("recovers a pruned saved cursor at head while preserving unknown attention and receiving a new result", async () => {
+  const f = fixture();
+  const retained = { ...a, outcome: "unknown" as const };
+  const created = { ...b, outcome: "created" as const, availability: "available" as const };
+  const uncertainAccess = [
+    { id: "revoked-grant", action: "restore", generation: 3, restoreCommandId: "original" },
+  ];
+  const persistence = {
+    read: () => ({ cursor: "before-restart", results: [retained], uncertainAccess }),
+    write: vi.fn(),
+  };
+  f.controller.setAttentionPersistence(persistence);
+  const pendingChanges = f.client.changes;
+  f.client.changes = vi.fn()
+    .mockRejectedValueOnce({ code: "history_unavailable" })
+    .mockResolvedValueOnce({ cursor: "after-new-result", revision: "new", results: [created] })
+    .mockImplementation(pendingChanges);
+  const watching = f.controller.watchResults();
+  await vi.waitFor(() => expect(f.client.changes).toHaveBeenCalledTimes(3));
+  expect(f.client.head).toHaveBeenCalledTimes(1);
+  expect(f.client.changes).toHaveBeenNthCalledWith(1, "before-restart", expect.any(AbortSignal));
+  expect(f.client.changes).toHaveBeenNthCalledWith(2, "current-head", expect.any(AbortSignal));
+  expect(f.client.changes).toHaveBeenNthCalledWith(3, "after-new-result", expect.any(AbortSignal));
+  expect(f.controller.getSnapshot().results).toEqual([retained, created]);
+  expect(f.controller.getSnapshot().uncertain.has("access:revoked-grant")).toBe(true);
+  expect(persistence.write).toHaveBeenLastCalledWith({
+    cursor: "after-new-result", results: [retained, created], uncertainAccess,
+  });
+  expect(f.client.page).toHaveBeenCalled();
+  expect(f.client.mutate).not.toHaveBeenCalled();
+  f.controller.stopResults();
+  await watching;
+});
+
+it("bounds repeated history rejection to one head reset without clearing unknown outcomes", async () => {
+  const f = fixture();
+  const retained = { ...a, outcome: "unknown" as const };
+  const write = vi.fn();
+  f.controller.setAttentionPersistence({
+    read: () => ({ cursor: "expired", results: [retained] }), write,
+  });
+  f.client.changes = vi.fn().mockRejectedValue({ code: "history_unavailable" });
+  await f.controller.watchResults();
+  expect(f.client.head).toHaveBeenCalledTimes(1);
+  expect(f.client.changes).toHaveBeenCalledTimes(2);
+  expect(f.controller.getSnapshot().results).toEqual([retained]);
+  expect(f.controller.getSnapshot().error).toContain("updates are unavailable");
+  expect(write).toHaveBeenLastCalledWith({
+    cursor: "current-head", results: [retained], uncertainAccess: [],
+  });
+  expect(f.client.mutate).not.toHaveBeenCalled();
+});
+
+it("does not persist a late reset head after the result subscription stops", async () => {
+  const f = fixture();
+  const write = vi.fn();
+  f.controller.setAttentionPersistence({
+    read: () => ({ cursor: "expired", results: [] }), write,
+  });
+  let finish!: (head: string) => void;
+  f.client.head = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+  f.client.changes = vi.fn().mockRejectedValue({ code: "history_unavailable" });
+  const watching = f.controller.watchResults();
+  await vi.waitFor(() => expect(f.client.head).toHaveBeenCalledTimes(1));
+  f.controller.stopResults();
+  finish("late-head");
+  await watching;
+  expect(f.client.changes).toHaveBeenCalledTimes(1);
+  expect(write).toHaveBeenLastCalledWith({ cursor: "expired", results: [], uncertainAccess: [] });
+});
+
+it("opens the exact managed access lineage for a new blocked message without a newly issued grant", async () => {
+  let wire: RemoteAdmissionReviewItem = {
+    record: a.record,
+    extension: {
+      managedAccessGrantId: "revoked-scope-head",
+      grantable: true,
+      grantUnavailableReason: null,
+      grant: null,
+      evaluator: null,
+      blocked: { admissionId: a.record.id, managedScopeId: "scope", reason: "access_revoked" },
+      accessBasis: null,
+      attemptId: null,
+      result: null,
+      recoveredResult: null,
+      originNotifiedAt: null,
+      retryEligible: false,
+      recheckEligible: false,
+    },
+  };
+  const transport: ReviewTransport = {
+    capabilities: vi.fn(), review: vi.fn(), grants: vi.fn(), decision: vi.fn(),
+    updateGrant: vi.fn(), revokeGrant: vi.fn(), restoreGrant: vi.fn(), retry: vi.fn(),
+    recheck: vi.fn(), changes: vi.fn(), item: vi.fn(async () => wire),
+  };
+  const client = createCanonicalReviewClient(transport);
+  expect((await client.lookup(a.record.id)).accessId).toBe("revoked-scope-head");
+  const olderExtension = { ...wire.extension };
+  delete olderExtension.managedAccessGrantId;
+  wire = { ...wire, extension: olderExtension };
+  expect((await client.lookup(a.record.id)).accessId).toBeNull();
+  expect(transport.decision).not.toHaveBeenCalled();
+  expect(transport.restoreGrant).not.toHaveBeenCalled();
 });
 
 it("retains a lost Restore fence when a new controller mounts", async () => {

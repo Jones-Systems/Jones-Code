@@ -15,6 +15,36 @@ import {
 import { RecoveryUnavailable } from "./RecoveryStore.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 
+/** A current shell cannot establish its own project identity. Bind it to the exact
+ * creation command's immutable event, covered by the accepted receipt sequence. */
+const creationProject = Effect.fn("AdmissionRecovery.creationProject")(function* (
+  sql: SqlClient.SqlClient,
+  creation: Receipts.CommandReceiptV2 | null,
+  commandId: string,
+) {
+  if (
+    creation?.status !== "accepted" ||
+    creation.commandId !== commandId ||
+    creation.threadId !== commandId ||
+    creation.commandType !== "thread.create"
+  )
+    return null;
+  const rows = yield* sql<{
+    thread_id: string | null;
+    project_id: string | null;
+  }>`SELECT json_extract(payload_json,'$.id') thread_id,
+    json_extract(payload_json,'$.projectId') project_id FROM orchestration_events
+    WHERE command_id=${commandId} AND aggregate_kind='thread' AND stream_id=${commandId}
+    AND event_type='thread.created' AND sequence<=${creation.resultSequence} LIMIT 2`;
+  const event = rows[0];
+  return rows.length === 1 &&
+    event?.thread_id === commandId &&
+    typeof event.project_id === "string" &&
+    event.project_id.length > 0
+    ? event.project_id
+    : null;
+});
+
 /** All three stores must be bound to the same receiver SQL client. A failed read defers recovery. */
 export function makeLaunchEvidenceReader(
   sql: SqlClient.SqlClient,
@@ -73,6 +103,7 @@ export function makeLaunchEvidenceReader(
         return {
           commandId,
           creation,
+          creationProjectId: yield* creationProject(sql, creation, commandId),
           message,
           shell,
           claimMatches:
@@ -134,6 +165,7 @@ export function makeKeyedLaunchResultReader(
         return {
           commandId,
           creation,
+          creationProjectId: yield* creationProject(sql, creation, commandId),
           message,
           shell,
           claimMatches:
@@ -147,7 +179,7 @@ export function makeKeyedLaunchResultReader(
         abandonedClaim: false,
         readsComplete: true,
         liveClaim: false,
-        expectedProjectId: hashed.shell?.projectId ?? legacy.shell?.projectId ?? null,
+        expectedProjectId: null,
         initialMessageRequested: hashed.message !== null || legacy.message !== null,
         observedAt: DateTime.formatIso(yield* DateTime.now),
         hashed,

@@ -24,6 +24,8 @@ export interface RecoveryReceipt {
 export interface RecoveryPath {
   readonly commandId: string;
   readonly creation: RecoveryReceipt | null;
+  /** Exact immutable thread.created project, never the mutable shell's assertion. */
+  readonly creationProjectId: string | null;
   readonly message: RecoveryReceipt | null;
   readonly shell: {
     readonly id: string;
@@ -72,7 +74,14 @@ export function classifyLaunchEvidence(input: LaunchEvidenceInput): {
     )
       contradictions.push("invalid_receipt");
     if (p.shell && p.creation?.status !== "accepted") contradictions.push("shell_without_creation");
-    if (p.shell && p.shell.projectId !== input.expectedProjectId)
+    const projectId = input.expectedProjectId ?? p.creationProjectId;
+    if (
+      (p.creation?.status === "accepted" &&
+        (typeof p.creationProjectId !== "string" ||
+          p.creationProjectId.length === 0 ||
+          p.creationProjectId !== projectId)) ||
+      (p.shell && p.shell.projectId !== projectId)
+    )
       contradictions.push("project_mismatch");
     if (p.message && p.creation?.status !== "accepted")
       contradictions.push("message_without_creation");

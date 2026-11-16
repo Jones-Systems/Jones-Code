@@ -32,9 +32,7 @@ import {
 } from "./remoteAdmissionReview.ts";
 
 it("keeps malicious audit facts separate from access-blocked admission marks", () => {
-  expect(Schema.decodeSync(RemoteAdmissionBlockedAuditReason)("malicious")).toBe(
-    "malicious",
-  );
+  expect(Schema.decodeSync(RemoteAdmissionBlockedAuditReason)("malicious")).toBe("malicious");
   expect(() =>
     Schema.decodeUnknownSync(RemoteAdmissionBlockedMark)({
       admissionId: "request",
@@ -215,9 +213,9 @@ describe("remote admission review compatibility", () => {
     expect(Schema.decodeSync(RemoteAdmissionGrantHttpQuery)({ limit: "100" })).toEqual({
       limit: 100,
     });
-    expect(
-      Schema.decodeSync(RemoteAdmissionChangesHttpQuery)({ timeoutMs: "50000" }),
-    ).toEqual({ timeoutMs: 50000 });
+    expect(Schema.decodeSync(RemoteAdmissionChangesHttpQuery)({ timeoutMs: "50000" })).toEqual({
+      timeoutMs: 50000,
+    });
     for (const limit of ["0", "101", "1.5", "NaN"])
       expect(() =>
         Schema.decodeSync(RemoteAdmissionReviewHttpQuery)({ view: "current", limit }),

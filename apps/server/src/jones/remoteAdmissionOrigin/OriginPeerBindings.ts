@@ -65,17 +65,15 @@ const make = Effect.gen(function* () {
     }
     return yield* gate.withPermits(1)(
       Effect.gen(function* () {
-        const generation = yield* links
-          .currentGeneration(environmentId)
-          .pipe(
-            Effect.mapError(
-              () =>
-                new OrchestratorMcpFailure({
-                  code: "orchestration_error",
-                  message: "The linked launch generation is unavailable.",
-                }),
-            ),
-          );
+        const generation = yield* links.currentGeneration(environmentId).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The linked launch generation is unavailable.",
+              }),
+          ),
+        );
         if (Option.isNone(generation)) {
           cache.delete(environmentId);
           return null;
@@ -103,17 +101,15 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
-        const latest = yield* links
-          .currentGeneration(environmentId)
-          .pipe(
-            Effect.mapError(
-              () =>
-                new OrchestratorMcpFailure({
-                  code: "orchestration_error",
-                  message: "The linked launch generation is unavailable.",
-                }),
-            ),
-          );
+        const latest = yield* links.currentGeneration(environmentId).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The linked launch generation is unavailable.",
+              }),
+          ),
+        );
         if (Option.isNone(latest) || latest.value !== generation.value) return null;
         if (status.receiverEnvironmentId !== environmentId)
           return yield* new OrchestratorMcpFailure({

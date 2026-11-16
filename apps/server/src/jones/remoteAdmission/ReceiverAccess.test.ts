@@ -185,7 +185,7 @@ it.effect("restore replay returns successor current state and does not extend or
     expect(replay.expires_at).toBe(restored.expires_at);
     expect((yield* service.get(held.id))?.status).toBe("held");
     expect(
-      (yield* service.access.restore({ ...input, commandKey: "other" }).pipe(Effect.flip()))._tag,
+      (yield* service.access.restore({ ...input, commandKey: "other" }).pipe(Effect.flip))._tag,
     ).toBe("ReceiverAccessConflict");
   }).pipe(Effect.provide(testLayer)),
 );
@@ -327,7 +327,7 @@ it.effect("duration validation and immutable binding reject widening an existing
           durationSeconds: 42,
           now,
         })
-        .pipe(Effect.flip()))._tag,
+        .pipe(Effect.flip))._tag,
     ).toBe("ReceiverAccessUnavailable");
     const changed =
       yield* sql`UPDATE jones_remote_admission_grants SET session_id='different' WHERE grant_id=${grant.grant_id}`.pipe(

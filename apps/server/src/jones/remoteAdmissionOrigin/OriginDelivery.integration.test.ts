@@ -85,7 +85,7 @@ it.effect(
     Effect.gen(function* () {
       const delivery = yield* Delivery.OriginDelivery;
       const sql = yield* SqlClient.SqlClient;
-      const rejected = yield* Effect.scoped(delivery.prepare(input)).pipe(Effect.flip());
+      const rejected = yield* Effect.scoped(delivery.prepare(input)).pipe(Effect.flip);
       expect(rejected._tag).toBe("OrchestratorMcpFailure");
       expect((yield* makeOriginStore(sql).list()).length).toBe(0);
       expect(delivery.isSending("root")).toBe(false);

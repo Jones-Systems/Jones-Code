@@ -17,15 +17,18 @@ const environmentId = EnvironmentId.make("notification-receiver");
 let store: ReturnType<typeof createAdmissionStore>;
 let notificationMode = "off";
 vi.mock("../../components/ui/toast", () => ({ toastManager: mocks }));
-vi.mock("../../state/entities", () => ({ useProject: () => null, useThreadShell: () => null }));
-vi.mock("../../state/environments", () => ({
+vi.mock("../../state/entities", async (original) => ({
+  ...(await original<typeof import("../../state/entities")>()), useProject: () => null, useThreadShell: () => null }));
+vi.mock("../../state/environments", async (original) => ({
+  ...(await original<typeof import("../../state/environments")>()),
   useEnvironments: () => ({
     environments: [
       { environmentId, label: "Synthetic receiver", displayLabel: "Synthetic receiver" },
     ],
   }),
 }));
-vi.mock("../../hooks/useSettings", () => ({
+vi.mock("../../hooks/useSettings", async (original) => ({
+  ...(await original<typeof import("../../hooks/useSettings")>()),
   useClientSettings: (
     select: (settings: {
       inAppNotificationsEnabled: boolean;

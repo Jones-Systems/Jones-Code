@@ -1,5 +1,5 @@
 import type * as Wire from "@t3tools/contracts/jones/remoteAdmissionReview";
-import type { Access, Item, ReviewClient } from "./controller";
+import type { Access, Item, ReviewClient } from "./controller.ts";
 
 export interface ReviewTransport {
   capabilities(): Promise<Wire.RemoteAdmissionReviewCapabilities>;
@@ -30,7 +30,7 @@ function reviewItem(item: Wire.RemoteAdmissionReviewItem): Item {
       ? `recovered:${x.recoveredResult.revision}`
       : (x.attemptId ?? "original"),
     blocked: x.blocked !== null,
-    accessId: x.grant?.grantId ?? null,
+    accessId: x.managedAccessGrantId ?? x.grant?.grantId ?? null,
     grantEligible: x.grantable,
     outcome: result
       ? result.outcome === "refused"

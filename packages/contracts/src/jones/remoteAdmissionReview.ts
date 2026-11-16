@@ -199,6 +199,8 @@ export const RemoteAdmissionRecoveredResult = Schema.Struct({
   result: RemoteAdmissionLaunchResult,
 });
 export const RemoteAdmissionReviewExtension = Schema.Struct({
+  // Exact retained managed scope/restore head, independent of a grant issued by this request.
+  managedAccessGrantId: Schema.optionalKey(Schema.NullOr(Id)),
   grantable: Schema.Boolean,
   grantUnavailableReason: Schema.NullOr(Id),
   grant: Schema.NullOr(RemoteAdmissionGrant),

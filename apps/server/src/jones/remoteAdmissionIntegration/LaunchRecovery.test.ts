@@ -13,8 +13,8 @@ const base = (): LaunchEvidenceInput => ({
   expectedProjectId: "project",
   initialMessageRequested: true,
   observedAt: "2026-11-16T00:00:00.000Z",
-  hashed: { commandId: ids.hashed, creation: null, message: null, shell: null, claimMatches: true },
-  legacy: { commandId: ids.legacy, creation: null, message: null, shell: null, claimMatches: true },
+  hashed: { commandId: ids.hashed, creation: null, creationProjectId: null, message: null, shell: null, claimMatches: true },
+  legacy: { commandId: ids.legacy, creation: null, creationProjectId: null, message: null, shell: null, claimMatches: true },
 });
 const accepted = () => {
   const input = base();
@@ -22,6 +22,7 @@ const accepted = () => {
     ...input,
     hashed: {
       ...input.hashed,
+      creationProjectId: "project",
       creation: {
         commandId: ids.hashed,
         threadId: ids.hashed,
@@ -74,6 +75,16 @@ describe("receipt-grounded receiver recovery", () => {
         hashed: { ...input.hashed, shell: { id: ids.hashed, projectId: "wrong", deletedAt: null } },
       }).result.outcome,
     ).toBe("unknown");
+  });
+  it("scratch project identity comes from exact creation evidence and remains mandatory", () => {
+    const input = { ...accepted(), expectedProjectId: null };
+    expect(classifyLaunchEvidence(input).result.outcome).toBe("created");
+    expect(classifyLaunchEvidence({
+      ...input, hashed: { ...input.hashed, creationProjectId: null },
+    }).result.outcome).toBe("unknown");
+    expect(classifyLaunchEvidence({
+      ...input, expectedProjectId: "another-request-project",
+    }).evidence.contradictions).toContain("project_mismatch");
   });
   it("positive deletedAt is distinct from absence", () => {
     const input = accepted();

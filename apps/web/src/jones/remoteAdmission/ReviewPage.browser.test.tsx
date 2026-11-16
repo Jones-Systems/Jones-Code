@@ -11,8 +11,11 @@ import { installReviewClient, reviewControllerFor } from "./reviewRuntime";
 import { ReviewPage } from "./ReviewPage";
 import { admissionFixture } from "./testFixtures";
 
-vi.mock("../../state/environments", () => ({ useEnvironments: () => ({ environments: [] }) }));
-vi.mock("../../state/entities", () => ({ useThreadShell: () => null }));
+vi.mock("../../state/environments", async (original) => ({
+  ...(await original<typeof import("../../state/environments")>()), useEnvironments: () => ({ environments: [] }) }));
+vi.mock("../../state/entities", async (original) => ({
+  ...(await original<typeof import("../../state/entities")>()),
+  useThreadShell: () => null }));
 function setup(receiver: string) {
   const record = admissionFixture();
   const item: Item = {

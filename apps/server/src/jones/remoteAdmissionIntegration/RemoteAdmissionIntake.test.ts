@@ -1158,7 +1158,7 @@ it.effect(
       yield* enable(intake);
       let calls = 0;
       intake.register(
-        "t3_thread_launch",
+        "t3_thread_send",
         () =>
           Effect.sync(() => {
             calls++;
@@ -1169,11 +1169,35 @@ it.effect(
             Effect.mapError((cause) => new Intake.RemoteAdmissionIntakeError({ cause })),
           ),
       );
-      yield* withContext(intake, { params: { ...input, threadId: "receiver-thread" } }).pipe(
-        Effect.asVoid,
-        Effect.flip,
-      );
-      const record = (yield* intake.snapshot()).pending[0]!;
+      // Renames concern an existing destination. A launch's access binding has
+      // no destination yet, so passing threadId to a launch fails before intake.
+      const held = yield* intake
+        .invoke(
+          "t3_thread_send",
+          {
+            clientRequestId: input.clientRequestId,
+            projectId: input.projectId,
+            threadId: "receiver-thread",
+            message: input.prompt,
+            runtimeMode: input.runtimeMode,
+          },
+          originInvocation(),
+        )
+        .pipe(
+          Effect.provideService(IncomingLinkedRequestContext, {
+            context: firstContext,
+            linkSessionId: "remote",
+          }),
+          Effect.flip,
+        );
+      expect(held.code).toBe("remote_admission_pending");
+      expect(held.remoteAdmission?.status).toBe("held");
+      const record = (yield* intake.snapshot()).pending.find(
+        (candidate) => candidate.id === held.remoteAdmission?.id,
+      )!;
+      expect(record).toBeDefined();
+      expect(record.envelope.operation).toBe("t3_thread_send");
+      expect(record.envelope.target.threadId).toBe("receiver-thread");
       projectTitle = "Renamed receiver project";
       threadTitle = "Renamed receiver thread";
       const committed = yield* intake.decide({ ...record, decision: "approve" }, owner);
@@ -1377,6 +1401,10 @@ it.effect(
       expect(closed.results).toHaveLength(1);
       expect(closed.results[0].ok).toBe(false);
       expect(closed.results[0].value.code).toBe("orchestration_error");
+      expect(closed.results[0].launchResult).toMatchObject({
+        outcome: "unknown", threadId: null,
+        stages: { creation: "unknown", availability: "unknown" },
+      });
       // The sender now gets a terminal answer, not a pending claim, and the work is not rerun.
       const retried = yield* intake
         .invoke("t3_thread_launch", input, invocation)

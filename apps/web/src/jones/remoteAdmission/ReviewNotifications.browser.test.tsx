@@ -17,13 +17,19 @@ import { requestHref, threadHref } from "./navigation";
 const mocks = vi.hoisted(() => ({ add: vi.fn(), close: vi.fn() }));
 let receiver = EnvironmentId.make("review-notifications-initial");
 vi.mock("../../components/ui/toast", () => ({ toastManager: mocks }));
-vi.mock("../../state/entities", () => ({ useThreadShell: () => null, useProject: () => null }));
-vi.mock("../../state/environments", () => ({
+vi.mock("../../state/entities", async (original) => ({
+  ...(await original<typeof import("../../state/entities")>()),
+  useThreadShell: () => null,
+  useProject: () => null,
+}));
+vi.mock("../../state/environments", async (original) => ({
+  ...(await original<typeof import("../../state/environments")>()),
   useEnvironments: () => ({
     environments: [{ environmentId: receiver, label: "Laptop", displayLabel: "Laptop" }],
   }),
 }));
-vi.mock("../../hooks/useSettings", () => ({
+vi.mock("../../hooks/useSettings", async (original) => ({
+  ...(await original<typeof import("../../hooks/useSettings")>()),
   useClientSettings: (
     select: (settings: { inAppNotificationsEnabled: boolean; timestampFormat: string }) => unknown,
   ) => select({ inAppNotificationsEnabled: true, timestampFormat: "12-hour" }),

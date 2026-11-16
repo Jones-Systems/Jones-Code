@@ -1,3 +1,4 @@
+import { legacyCapabilities } from "../jones/remoteAdmissionOrigin/capabilities.testkit.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -270,7 +271,11 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
         Layer.provide(
           Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
         ),
-        Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+        Layer.provide(
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([]),
+          }),
+        ),
         Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
         Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
         Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
@@ -356,7 +361,9 @@ const makeLaptop = Effect.gen(function* () {
         }),
         Layer.mock(EventSink.EventSinkV2)({}),
         Layer.mock(Orchestrator.OrchestratorV2)({}),
-        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
+        }),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
@@ -870,17 +877,19 @@ it.effect(
                 Effect.sync(() => {
                   calls.push(input);
                   return (
-                    input.tool === "t3_thread_wait"
-                      ? { timedOut: false }
-                      : input.tool === "t3_thread_read" && supportsPolicy
-                        ? {
-                            remoteMessagePolicy: {
-                              schemaVersion: "t3.linked-message-policy/v1",
-                              authenticatedOrigin: true,
-                              incomingAcceptance: true,
-                            },
-                          }
-                        : {}
+                    input.tool === "orchestrator_capabilities"
+                      ? legacyCapabilities
+                      : input.tool === "t3_thread_wait"
+                        ? { timedOut: false }
+                        : input.tool === "t3_thread_read" && supportsPolicy
+                          ? {
+                              remoteMessagePolicy: {
+                                schemaVersion: "t3.linked-message-policy/v1",
+                                authenticatedOrigin: true,
+                                incomingAcceptance: true,
+                              },
+                            }
+                          : {}
                   ) as never;
                 }),
             }),

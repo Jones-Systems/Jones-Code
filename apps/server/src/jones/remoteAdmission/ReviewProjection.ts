@@ -80,7 +80,13 @@ export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
         yield* sql`SELECT id FROM jones_remote_admissions WHERE id=${cursor.id} AND created_at=${cursor.createdAt}`;
       if (!anchor[0]) return yield* new ReviewHistoryUnavailable({});
     }
-    const limit = Math.max(1, Math.min(REMOTE_ADMISSION_MAX_PAGE_SIZE, Math.floor(input.limit ?? REMOTE_ADMISSION_DEFAULT_PAGE_SIZE)));
+    const limit = Math.max(
+      1,
+      Math.min(
+        REMOTE_ADMISSION_MAX_PAGE_SIZE,
+        Math.floor(input.limit ?? REMOTE_ADMISSION_DEFAULT_PAGE_SIZE),
+      ),
+    );
     if (!Number.isFinite(limit)) return yield* new ReviewHistoryUnavailable({});
     const view = input.view;
     const rows = yield* sql<ProjectionRow>`SELECT a.id,a.created_at FROM jones_remote_admissions a
@@ -245,7 +251,13 @@ export const makeReviewProjection = (sql: SqlClient.SqlClient) => {
       !(yield* sql`SELECT grant_id FROM jones_remote_admission_grants WHERE grant_id=${cursor.id} AND created_at=${cursor.createdAt}`)[0]
     )
       return yield* new ReviewHistoryUnavailable({});
-    const limit = Math.max(1, Math.min(REMOTE_ADMISSION_MAX_PAGE_SIZE, Math.floor(input.limit ?? REMOTE_ADMISSION_DEFAULT_PAGE_SIZE)));
+    const limit = Math.max(
+      1,
+      Math.min(
+        REMOTE_ADMISSION_MAX_PAGE_SIZE,
+        Math.floor(input.limit ?? REMOTE_ADMISSION_DEFAULT_PAGE_SIZE),
+      ),
+    );
     if (!Number.isFinite(limit)) return yield* new ReviewHistoryUnavailable({});
     const rows = yield* sql<Grant>`SELECT * FROM jones_remote_admission_grants
       WHERE (${cursor?.id ?? null} IS NULL OR created_at<${cursor?.createdAt ?? ""}

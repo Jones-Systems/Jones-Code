@@ -611,8 +611,26 @@ export function createReviewController(client: ReviewClient) {
           cursor = head;
         }
         persistAttention();
+        let historyReset = false;
         while (!owner.signal.aborted) {
-          const batch = await client.changes(cursor, owner.signal);
+          let batch: ChangeBatch;
+          try {
+            batch = await client.changes(cursor, owner.signal);
+          } catch (error) {
+            const expiredHistory = typeof error === "object" && error !== null &&
+              "code" in error && error.code === "history_unavailable";
+            if (!expiredHistory || historyReset || owner.signal.aborted) throw error;
+            // A rejected retained cursor is unavailable history, never evidence
+            // that a decision or launch had no effect. Preserve attention and
+            // uncertainty, restart once at head, and reconcile the current pages.
+            historyReset = true;
+            const head = await client.head();
+            if (owner.signal.aborted) break;
+            cursor = head;
+            persistAttention();
+            await load();
+            continue;
+          }
           if (owner.signal.aborted) break;
           cursor = batch.cursor;
           const results = new Map(
