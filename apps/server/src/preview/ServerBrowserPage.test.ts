@@ -1041,3 +1041,56 @@ describe("server browser net errors", () => {
     expect(ServerBrowserPage.parseNetError(errorText)).toEqual({ description, code });
   });
 });
+
+it("does not dispatch evaluation or terminate script when attachment preflight refuses", async () => {
+  const send = vi.fn();
+  const cdp = { send } as unknown as CDPSession;
+  const refusal = new Error("attachment replaced");
+  await expect(
+    ServerBrowserPage.evaluate(cdp, { expression: "window.sideEffect = 1" }, 100, () => {
+      throw refusal;
+    }),
+  ).rejects.toBe(refusal);
+  expect(send).not.toHaveBeenCalled();
+});
+
+it("rejects a snapshot whose receive budget expired before any page inspection", async () => {
+  const page = { mainFrame: vi.fn(), viewportSize: vi.fn() } as unknown as Page;
+  const send = vi.fn();
+  await expect(
+    ServerBrowserPage.snapshotMetadata({
+      page,
+      cdp: { send } as unknown as CDPSession,
+      renderScale: 2,
+      deadlineMs: Date.now() - 1,
+      consoleEntries: [],
+      networkEntries: [],
+      actionTimeline: [],
+    }),
+  ).rejects.toMatchObject({ tag: "PreviewAutomationTimeoutError" });
+  expect(page.mainFrame).not.toHaveBeenCalled();
+  expect(send).not.toHaveBeenCalled();
+});
+
+it("revalidates attachment before the parse-only top-level-await retry", async () => {
+  const send = vi.fn(async () => ({
+    result: { type: "object" },
+    exceptionDetails: {
+      text: "Uncaught",
+      scriptId: "parse-only",
+      exception: { type: "object", className: "SyntaxError" },
+    },
+  }));
+  const refusal = new Error("original attachment retired");
+  let preflights = 0;
+  await expect(
+    ServerBrowserPage.evaluate(
+      { send } as unknown as CDPSession,
+      { expression: "await 0; window.sideEffect = 1" },
+      1000,
+      () => { if (++preflights === 2) throw refusal; },
+    ),
+  ).rejects.toBe(refusal);
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledWith("Runtime.evaluate", expect.objectContaining({ returnByValue: true }));
+});
