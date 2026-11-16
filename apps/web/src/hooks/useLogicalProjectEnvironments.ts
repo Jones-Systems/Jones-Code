@@ -44,6 +44,7 @@ export function useLogicalProjectEnvironments(
       environmentId,
       projectId,
       label: environment?.label ?? environmentId,
+      displayLabel: environment?.displayLabel ?? environment?.label ?? environmentId,
       isPrimary: environmentId === primaryEnvironmentId,
       machine: resolveEnvironmentMachineKind(environment?.serverConfig ?? null),
     });

@@ -1,3 +1,4 @@
+import { deviceDisplayLabel } from "@t3tools/contracts/jones/devicePresentation";
 import { JonesBuildVersion } from "../../jones/updates/JonesBuildVersion";
 import { mobileJonesBuildRef, mobileJonesBuildDescription } from "../../jones/updates/buildVersion";
 import { WorkModeSettings } from "../../jones/workMode/WorkModeSettings";
@@ -187,7 +188,13 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
   }
 
   return (
-    <SettingsScreen title={environment?.environmentLabel ?? "Environment"}>
+    <SettingsScreen
+      title={deviceDisplayLabel(
+        environment?.environmentLabel ?? "Environment",
+        config?.environment.platform.machine,
+        config?.settings.deviceDisplayName,
+      )}
+    >
       <ScreenScrollView
         contentInsetAdjustmentBehavior="automatic"
         className="flex-1"
@@ -201,6 +208,11 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
         ) : (
           <>
             <SettingsSection title="Connection">
+              <Text className="text-xs text-foreground-muted">
+                Original: {environment.environmentLabel} · {environmentId}. Connection Label below
+                is saved only on this client; the shared device display name is managed in web or
+                desktop Connections settings.
+              </Text>
               <ConnectionEnvironmentRow
                 environment={environment}
                 expanded={connectionExpanded}

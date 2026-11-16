@@ -6,7 +6,10 @@ import type { EnvironmentOption } from "../components/BranchToolbar.logic";
 import { useEnvironments } from "../state/environments";
 import { useEnvironmentsWithScope } from "../state/session";
 
-export type AddProjectTarget = Pick<EnvironmentOption, "environmentId" | "label" | "machine">;
+export type AddProjectTarget = Pick<
+  EnvironmentOption,
+  "environmentId" | "label" | "displayLabel" | "machine"
+>;
 
 /**
  * Connected machines that do not have the project yet and can clone it.
@@ -35,6 +38,7 @@ export function useAddProjectTargets(
     .map((environment) => ({
       environmentId: environment.environmentId,
       label: environment.label,
+      displayLabel: environment.displayLabel,
       machine: resolveEnvironmentMachineKind(environment.serverConfig),
     }))
     .toSorted((a, b) => a.label.localeCompare(b.label));

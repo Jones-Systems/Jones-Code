@@ -1,45 +1,27 @@
+import { DesktopUpdates, makeDesktopUpdateStateCell } from "./DesktopUpdatesService.ts";
+export { DesktopUpdates } from "./DesktopUpdatesService.ts";
+import { makeJonesDesktopUpdates } from "../jones/updates/jonesDesktopUpdatesService.ts";
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - Native plan adapter supplies UUIDs and its scheduling clock.
-import type {
-  JonesInstallPlanRequest,
-  JonesInstallPlanResult,
-} from "@t3tools/contracts/jones/installPlan";
-import type {
-  JonesUpdateBuildList,
-  JonesUpdateProvenance,
-} from "@t3tools/contracts/jones/jonesUpdates";
-import { createInstallPlanStore } from "../jones/installPlan/store.ts";
-import { createInstallPlanCoordinator } from "../jones/installPlan/coordinator.ts";
 import * as NodeCrypto from "node:crypto";
-import type {
-  FleetDesktopRequest,
-  FleetDesktopState,
-} from "@t3tools/contracts/jones/fleet-updates";
-import { createDesktopFleetStore } from "../jones/fleetUpdates/store.ts";
 import {
   DESKTOP_UPDATE_RESTART_MARKER_FILE,
   DesktopUpdateChannelSchema,
   type DesktopRuntimeInfo,
-  type DesktopUpdateActionResult,
   type DesktopUpdateChannel,
-  type DesktopUpdateCheckResult,
   type DesktopUpdateState,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   JonesDesktopUpdateController,
   jonesNativeProcessRoles,
-  type JonesDesktopDownloadSelection,
-  type JonesDesktopDownloadResult,
 } from "../jones/updates/JonesDesktopUpdates.ts";
 import {
   jonesNativeBootstrapCredential,
   prepareJonesNativeInstall,
 } from "../jones/updates/jonesNativePreparation.ts";
-import { createJonesDesktopPreparation } from "../jones/updates/desktopPreparationRuntime.ts";
 import { currentJonesDesktopOwner } from "../jones/updates/jonesNativeStartup.ts";
 import { errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
-import * as Context from "effect/Context";
 import type * as Mac from "effect/crypto/Mac";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -48,12 +30,11 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as PubSub from "effect/PubSub";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
@@ -92,10 +73,6 @@ const AUTO_UPDATE_POLL_INTERVAL = "4 minutes";
 const PREPARED_INSTALL_CHECK_WAIT = Duration.seconds(90);
 
 type UpdateAction = "check" | "download" | "install" | "install-recovery" | "channel";
-
-interface DesktopPreparedUpdateInstallResult extends DesktopUpdateActionResult {
-  readonly failed: boolean;
-}
 
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
@@ -213,57 +190,6 @@ export const DesktopUpdateSetChannelError = Schema.Union([
   DesktopUpdateChannelManagedError,
 ]);
 export type DesktopUpdateSetChannelError = typeof DesktopUpdateSetChannelError.Type;
-
-export class DesktopUpdates extends Context.Service<
-  DesktopUpdates,
-  {
-    readonly getState: Effect.Effect<DesktopUpdateState>;
-    readonly isActionActive: Effect.Effect<boolean>;
-    readonly isInstallActive: Effect.Effect<boolean>;
-    readonly subscribe: Effect.Effect<
-      {
-        readonly latest: DesktopUpdateState;
-        readonly changes: Stream.Stream<DesktopUpdateState>;
-      },
-      never,
-      Scope.Scope
-    >;
-    readonly emitState: Effect.Effect<void>;
-    readonly disabledReason: Effect.Effect<Option.Option<string>>;
-    readonly configure: Effect.Effect<void, never, Scope.Scope>;
-    /** `minimumVersion` is a track switch's checked release; nothing older is offered after. */
-    readonly setChannel: (
-      channel: DesktopUpdateChannel,
-      options?: { readonly minimumVersion?: string | undefined },
-    ) => Effect.Effect<DesktopUpdateState, DesktopUpdateSetChannelError>;
-    /** `allowDowngrade` is for a guarded track switch, which checked that older release. */
-    readonly check: (
-      reason: string,
-      options?: { readonly allowDowngrade?: boolean },
-    ) => Effect.Effect<DesktopUpdateCheckResult>;
-    readonly download: Effect.Effect<DesktopUpdateActionResult>;
-    readonly listJonesBuilds?: Effect.Effect<JonesUpdateBuildList>;
-    readonly selectJonesBuild?: (build: JonesUpdateProvenance) => Effect.Effect<boolean>;
-    readonly downloadSelected?: (
-      selection: JonesDesktopDownloadSelection,
-    ) => Effect.Effect<JonesDesktopDownloadResult & { readonly state: DesktopUpdateState }>;
-    readonly install: Effect.Effect<DesktopUpdateActionResult>;
-    readonly discardStaged?: (handle: string) => Effect.Effect<DesktopUpdateActionResult>;
-    readonly setBackgroundPreparation?: (enabled: boolean) => Effect.Effect<DesktopUpdateState>;
-    readonly installStaged?: (
-      handle: string,
-      campaignId?: string,
-    ) => Effect.Effect<DesktopUpdateActionResult>;
-    readonly installPlan?: (
-      request: JonesInstallPlanRequest,
-    ) => Effect.Effect<JonesInstallPlanResult>;
-    readonly fleetUpdates?: (request: FleetDesktopRequest) => Effect.Effect<FleetDesktopState>;
-    readonly installPrepared: (
-      expectedVersion: string,
-      stagedHandle?: string,
-    ) => Effect.Effect<DesktopPreparedUpdateInstallResult>;
-  }
->()("@t3tools/desktop/updates/DesktopUpdates") {}
 
 const {
   logInfo: logUpdaterInfo,
@@ -454,37 +380,14 @@ export const make = Effect.gen(function* () {
             : desktopUpdateChannelOf(environment.appVersion) === state.channel),
       ),
     );
-  const updateStateRef = yield* Ref.make<DesktopUpdateState>(
-    createInitialDesktopUpdateState(
-      environment.appVersion,
-      environment.runtimeInfo,
-      environment.defaultDesktopSettings.updateChannel,
-    ),
-  );
-
-  const stateChanges = yield* PubSub.sliding<DesktopUpdateState>(16);
-  // Serialize writes and publishes against subscription so snapshots cannot overlap the first change.
-  const stateMutex = yield* Semaphore.make(1);
-
-  const emitState = Ref.get(updateStateRef).pipe(
-    Effect.flatMap((state) => electronWindow.sendAll(IpcChannels.UPDATE_STATE_CHANNEL, state)),
-  );
-
-  const setState = (state: DesktopUpdateState): Effect.Effect<void> =>
-    stateMutex
-      .withPermits(1)(
-        Ref.set(updateStateRef, state).pipe(Effect.andThen(PubSub.publish(stateChanges, state))),
-      )
-      .pipe(Effect.andThen(emitState));
-
-  const updateState = (
-    f: (state: DesktopUpdateState) => DesktopUpdateState,
-  ): Effect.Effect<DesktopUpdateState> =>
-    Ref.get(updateStateRef).pipe(
-      Effect.flatMap((state) => {
-        const nextState = f(state);
-        return setState(nextState).pipe(Effect.as(nextState));
-      }),
+  const { updateStateRef, stateChanges, stateMutex, emitState, setState, updateState } =
+    yield* makeDesktopUpdateStateCell(
+      createInitialDesktopUpdateState(
+        environment.appVersion,
+        environment.runtimeInfo,
+        environment.defaultDesktopSettings.updateChannel,
+      ),
+      (state) => electronWindow.sendAll(IpcChannels.UPDATE_STATE_CHANNEL, state),
     );
 
   // Unsigned Jones previews use qualified Actions artifacts and a native activation
@@ -501,238 +404,92 @@ export const make = Effect.gen(function* () {
     const processEnv = yield* HostProcess.Environment;
     const executablePath = yield* HostProcess.ExecutablePath;
     const profile = yield* DesktopUserData.resolveUserDataPath(environment);
-    let coordinator: ReturnType<typeof createInstallPlanCoordinator> | undefined;
-    const planStore = createInstallPlanStore({ home: environment.baseDir, profile });
-    const fleet = createDesktopFleetStore({
-      home: environment.baseDir,
-      profile,
-      isPlanManaged: (source) =>
-        coordinator === undefined ? Promise.resolve(true) : coordinator.isPlanManaged(source),
-      withUnmanagedTarget: (source, work) => {
-        if (coordinator === undefined)
-          return Promise.reject(new Error("Native plan persistence is unavailable."));
-        return coordinator.withUnmanagedTarget(source, work);
-      },
-    });
-    const preparation = createJonesDesktopPreparation({
-      bundleDirectory: environment.dirname,
-      stateDirectory: environment.stateDir,
-      platform: environment.platform,
-    });
-    const controller = new JonesDesktopUpdateController({
-      ...preparation.controllerOptions,
+    return yield* makeJonesDesktopUpdates({
+      createController: (options) => new JonesDesktopUpdateController(options),
       home: environment.baseDir,
       appRoot: environment.appRoot,
       appPath: environment.path.resolve(environment.resourcesPath, "../.."),
       executablePath,
       profile,
-      fleet,
-      plan: {
-        bindLaptopInstall: (binding) => {
-          if (coordinator === undefined)
-            return Promise.reject(new Error("Native plan persistence is unavailable."));
-          return coordinator.bindLaptopInstall(binding);
-        },
-        recordLaptopOutcome: (outcome) =>
-          coordinator?.recordLaptopOutcome(outcome) ?? Promise.resolve(),
-        preparationHeld: () =>
-          coordinator === undefined ? Promise.resolve(true) : coordinator.preparationHeld(),
-        recordLaptopAdmission: (operationId) => {
-          if (coordinator === undefined)
-            return Promise.reject(new Error("Native plan persistence is unavailable."));
-          return coordinator.recordLaptopAdmission(operationId);
-        },
-        recordLaptopWorker: (input) => {
-          if (coordinator === undefined)
-            return Promise.reject(new Error("Native plan persistence is unavailable."));
-          return coordinator.recordLaptopWorker(input);
-        },
-      },
+      bundleDirectory: environment.dirname,
+      stateDirectory: environment.stateDir,
       activeGeneration: processEnv.T3CODE_JONES_ACTIVE_GENERATION,
       architecture: environment.runtimeInfo.hostArch === "arm64" ? "arm64" : "x64",
-      platform: environment.platform,
-      initialState: yield* Ref.get(updateStateRef),
       disabledByEnv: config.disableAutoUpdate || policy.mode === "off",
-      onState: async (state) => {
-        await Effect.runPromiseWith(context)(setState(state));
-        // Native state changes wake all windows; no renderer observation is accepted as Laptop proof.
-        void coordinator?.request({ type: "read" });
-      },
+      cell: { updateStateRef, stateChanges, stateMutex, emitState, setState, updateState },
       timestamp: () => Effect.runPromiseWith(context)(currentIsoTimestamp),
-      ordinaryRecoveryReadiness: async () => {
-        const primary = await Effect.runPromiseWith(context)(pool.primary);
-        const before = await Effect.runPromiseWith(context)(primary.snapshot);
-        const config = await Effect.runPromiseWith(context)(primary.currentConfig);
-        if (
-          !before.ready ||
-          Option.isNone(before.activePid) ||
-          Option.isNone(config) ||
-          config.value.jonesColdBackendPermit !== undefined ||
-          config.value.bootstrapDelivery !== "fd3"
-        )
-          return undefined;
-        const owner = config.value.jonesDesktopOwner?.();
-        if (owner === undefined || currentJonesDesktopOwner()?.() !== owner) return undefined;
-        owner.assertCurrent();
-        const after = await Effect.runPromiseWith(context)(primary.snapshot);
-        const current = await Effect.runPromiseWith(context)(primary.currentConfig);
-        if (
-          !after.ready ||
-          Option.isNone(after.activePid) ||
-          after.activePid.value !== before.activePid.value ||
-          Option.isNone(current) ||
-          current.value !== config.value
-        )
-          return undefined;
-        owner.assertCurrent();
-        return { owner, backendPid: after.activePid.value, run: config.value };
-      },
-      prepareNative: async (handle, transactionId, active) => {
-        const primary = await Effect.runPromiseWith(context)(pool.primary);
-        const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
-        if (Option.isNone(backend)) throw new Error("Native backend preparation is unavailable.");
-        const token = await Effect.runPromiseWith(context)(
-          jonesNativeBootstrapCredential(backend.value.bootstrap),
-        );
-        if (typeof token !== "string")
-          throw new Error("Native backend preparation is unavailable.");
-        return prepareJonesNativeInstall({
-          listener: backend.value.httpBaseUrl.toString(),
-          bootstrapToken: token,
-          stagedHandle: handle,
-          transactionId,
-          active,
-        });
-      },
-      processProofs: async () => {
-        const instances = await Effect.runPromiseWith(context)(pool.list);
-        const pids: number[] = [];
-        for (const instance of instances) {
-          const snapshot = await Effect.runPromiseWith(context)(instance.snapshot);
-          if (Option.isSome(snapshot.activePid)) pids.push(snapshot.activePid.value);
-        }
-        return jonesNativeProcessRoles(process.pid, pids);
-      },
-      listener: async () => {
-        const primary = await Effect.runPromiseWith(context)(pool.primary);
-        const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
-        if (Option.isNone(backend)) throw new Error("Native backend listener is unavailable.");
-        return backend.value.httpBaseUrl.origin;
-      },
-    });
-    const background = preparation.attach(controller, (source) =>
-      coordinator === undefined ? Promise.resolve(true) : coordinator.backgroundSuppressed(source),
-    );
-    coordinator = createInstallPlanCoordinator({
-      store: planStore,
-      controller,
-      localEnvironmentId: () => controller.state.jones?.environmentId,
-      track: (work) => background.track(work),
       now: Date.now,
       uuid: NodeCrypto.randomUUID,
-      broadcast: (state) => {
-        void Effect.runPromiseWith(context)(
+      broadcastPlan: (state) =>
+        Effect.runPromiseWith(context)(
           electronWindow.sendAll("desktop:jones-install-plan-state", state),
-        );
-      },
-    });
-    const check = Effect.promise(() => background.check());
-    const install = (handle?: string, campaignId?: string) =>
-      Effect.promise(() => background.track(() => controller.install(handle, campaignId))).pipe(
-        Effect.map((result) => ({ ...result, state: controller.state })),
-      );
-    return DesktopUpdates.of({
-      getState: Ref.get(updateStateRef),
-      isActionActive: Effect.sync(() => controller.busy !== null),
-      isInstallActive: Effect.sync(() => controller.busy === "install"),
-      subscribe: stateMutex.withPermits(1)(
-        Effect.gen(function* () {
-          const subscription = yield* PubSub.subscribe(stateChanges);
-          return {
-            latest: yield* Ref.get(updateStateRef),
-            changes: Stream.fromSubscription(subscription),
-          };
-        }),
-      ),
-      emitState,
-      disabledReason: Ref.get(updateStateRef).pipe(
-        Effect.map((state) =>
-          state.jones?.capability.check
-            ? Option.none()
-            : Option.some(state.message ?? "Jones native launcher bootstrap is required."),
         ),
-      ),
-      configure: Effect.gen(function* () {
-        yield* Effect.addFinalizer(() => Effect.promise(() => preparation.close()));
-        yield* Effect.promise(() => controller.configure());
-        yield* Effect.promise(() => coordinator!.request({ type: "read" }));
-        yield* Effect.promise(() => background.start());
-        yield* Effect.sleep(AUTO_UPDATE_STARTUP_DELAY).pipe(
-          Effect.andThen(check),
-          Effect.asVoid,
-          Effect.forkScoped,
-        );
-        yield* Effect.sleep(AUTO_UPDATE_POLL_INTERVAL).pipe(
-          Effect.andThen(check),
-          Effect.asVoid,
-          Effect.forever,
-          Effect.forkScoped,
-        );
-      }),
-      setChannel: Effect.fn("DesktopUpdates.setChannel")(function () {
-        return Ref.get(updateStateRef);
-      }),
-      check: Effect.fn("DesktopUpdates.check")(function () {
-        return check.pipe(Effect.map((checked) => ({ checked, state: controller.state })));
-      }),
-      download: Effect.promise(() => background.track(() => controller.download())).pipe(
-        Effect.map((result) => ({ ...result, state: controller.state })),
-      ),
-      listJonesBuilds: Effect.promise(() => controller.listBuilds()),
-      selectJonesBuild: Effect.fn("DesktopUpdates.selectJonesBuild")(
-        (build: JonesUpdateProvenance) => Effect.promise(() => controller.selectBuild(build)),
-      ),
-      downloadSelected: Effect.fn("DesktopUpdates.downloadSelected")(function (selection) {
-        return Effect.promise(() => background.track(() => controller.download(selection))).pipe(
-          Effect.map((result) => ({ ...result, state: controller.state })),
-        );
-      }),
-      install: install().pipe(
-        Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
-      ),
-      discardStaged: Effect.fn("DesktopUpdates.discardStaged")(function (handle) {
-        return Effect.promise(() => background.discard(handle)).pipe(
-          Effect.map((result) => ({ ...result, state: controller.state })),
-        );
-      }),
-      setBackgroundPreparation: Effect.fn("DesktopUpdates.setBackgroundPreparation")(
-        function (enabled) {
-          return Effect.promise(() => background.setEnabled(enabled)).pipe(
-            Effect.map(() => controller.state),
-          );
+      schedule: {
+        startupDelay: AUTO_UPDATE_STARTUP_DELAY,
+        pollInterval: AUTO_UPDATE_POLL_INTERVAL,
+      },
+      native: {
+        ordinaryRecoveryReadiness: async () => {
+          const primary = await Effect.runPromiseWith(context)(pool.primary);
+          const before = await Effect.runPromiseWith(context)(primary.snapshot);
+          const config = await Effect.runPromiseWith(context)(primary.currentConfig);
+          if (
+            !before.ready ||
+            Option.isNone(before.activePid) ||
+            Option.isNone(config) ||
+            config.value.jonesColdBackendPermit !== undefined ||
+            config.value.bootstrapDelivery !== "fd3"
+          )
+            return undefined;
+          const owner = config.value.jonesDesktopOwner?.();
+          if (owner === undefined || currentJonesDesktopOwner()?.() !== owner) return undefined;
+          owner.assertCurrent();
+          const after = await Effect.runPromiseWith(context)(primary.snapshot);
+          const current = await Effect.runPromiseWith(context)(primary.currentConfig);
+          if (
+            !after.ready ||
+            Option.isNone(after.activePid) ||
+            after.activePid.value !== before.activePid.value ||
+            Option.isNone(current) ||
+            current.value !== config.value
+          )
+            return undefined;
+          owner.assertCurrent();
+          return { owner, backendPid: after.activePid.value, run: config.value };
         },
-      ),
-      installPlan: Effect.fn("DesktopUpdates.installPlan")(function (request) {
-        return Effect.promise(() => coordinator!.request(request));
-      }),
-      fleetUpdates: Effect.fn("DesktopUpdates.fleetUpdates")(function (request) {
-        return Effect.promise(() => fleet.request(request));
-      }),
-      installStaged: Effect.fn("DesktopUpdates.installStaged")(function (handle, campaignId) {
-        return install(handle, campaignId).pipe(
-          Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
-        );
-      }),
-      installPrepared: Effect.fn("DesktopUpdates.installPrepared")(function (version, handle) {
-        return controller.state.downloadedVersion === version
-          ? install(handle)
-          : Effect.succeed({
-              accepted: false,
-              completed: false,
-              failed: false,
-              state: controller.state,
-            });
-      }),
+        prepareNative: async (handle, transactionId, active) => {
+          const primary = await Effect.runPromiseWith(context)(pool.primary);
+          const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
+          if (Option.isNone(backend)) throw new Error("Native backend preparation is unavailable.");
+          const token = await Effect.runPromiseWith(context)(
+            jonesNativeBootstrapCredential(backend.value.bootstrap),
+          );
+          if (typeof token !== "string")
+            throw new Error("Native backend preparation is unavailable.");
+          return prepareJonesNativeInstall({
+            listener: backend.value.httpBaseUrl.toString(),
+            bootstrapToken: token,
+            stagedHandle: handle,
+            transactionId,
+            active,
+          });
+        },
+        processProofs: async () => {
+          const instances = await Effect.runPromiseWith(context)(pool.list);
+          const pids: number[] = [];
+          for (const instance of instances) {
+            const snapshot = await Effect.runPromiseWith(context)(instance.snapshot);
+            if (Option.isSome(snapshot.activePid)) pids.push(snapshot.activePid.value);
+          }
+          return jonesNativeProcessRoles(process.pid, pids);
+        },
+        listener: async () => {
+          const primary = await Effect.runPromiseWith(context)(pool.primary);
+          const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
+          if (Option.isNone(backend)) throw new Error("Native backend listener is unavailable.");
+          return backend.value.httpBaseUrl.origin;
+        },
+      },
     });
   }
 

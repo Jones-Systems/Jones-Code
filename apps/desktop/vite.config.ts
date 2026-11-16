@@ -114,6 +114,42 @@ export default defineConfig({
       },
     },
     {
+      format: "cjs",
+      outDir: "dist-electron",
+      dts: false,
+      sourcemap: true,
+      outExtensions: () => ({ js: ".cjs" }),
+      define: publicConfigDefine,
+      entry: {
+        "jones/updates/pickerVerificationMain": "src/jones/updates/pickerVerificationMain.ts",
+      },
+      clean: false,
+      outputOptions: { codeSplitting: false },
+      deps: {
+        alwaysBundle: (id) => id !== "electron" && !id.startsWith("node:"),
+        neverBundle: (id) => id === "electron" || id.startsWith("node:"),
+        onlyBundle: false,
+      },
+    },
+    {
+      format: "cjs",
+      outDir: "dist-electron",
+      dts: false,
+      sourcemap: true,
+      outExtensions: () => ({ js: ".cjs" }),
+      define: publicConfigDefine,
+      entry: {
+        "jones/updates/pickerVerificationPreload": "src/jones/updates/pickerVerificationPreload.ts",
+      },
+      clean: false,
+      outputOptions: { codeSplitting: false, banner: "(() => {", footer: "})();" },
+      deps: {
+        alwaysBundle: (id) => id !== "electron" && !id.startsWith("node:"),
+        neverBundle: (id) => id === "electron" || id.startsWith("node:"),
+        onlyBundle: false,
+      },
+    },
+    {
       // boot and main require the same custody artifact; its private permits must never be duplicated.
       format: "cjs",
       outDir: "dist-electron",

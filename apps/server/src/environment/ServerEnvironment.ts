@@ -305,6 +305,7 @@ export const make = Effect.gen(function* () {
       queuedRunStart: true,
       threadStop: true,
       ...(hostPlatform === "win32" ? {} : { localServerStop: true }),
+      deviceDisplayName: true,
       environmentIcon: true,
       projectCloneTracking: true,
       projectOrganization: true,

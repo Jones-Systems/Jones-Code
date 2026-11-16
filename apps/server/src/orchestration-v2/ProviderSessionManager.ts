@@ -1,3 +1,4 @@
+import { selectTransferBindings } from "../jones/providerRetirement/transferBindings.ts";
 import {
   ProviderAdapterEventStreamError,
   type ProviderAdapterV2SessionRuntime,
@@ -3972,45 +3973,6 @@ export const layerWithOptions = (
             Effect.mapError((cause) => new ProviderRuntimeStopCaptureError({ threadId, cause })),
           ),
       );
-      const selectTransferBindings = (
-        input: Parameters<ProviderSessionManagerV2Shape["detach"]>[0],
-        entry: LiveSessionEntry,
-        threads: ReadonlyArray<OrchestrationV2ProviderThread>,
-      ) => {
-        const selected = threads.filter(
-          (thread) =>
-            (input.providerThreadId === undefined || thread.id === input.providerThreadId) &&
-            (thread.providerSessionId === input.providerSessionId ||
-              (input.providerThreadId !== undefined &&
-                input.replacementProviderSessionId !== undefined &&
-                thread.providerSessionId === input.replacementProviderSessionId)),
-        );
-        const providerThreads = selected.flatMap((thread) => {
-          if (
-            thread.appThreadId !== input.threadId ||
-            thread.driver !== entry.runtime.driver ||
-            thread.providerInstanceId !== entry.runtime.instanceId ||
-            thread.nativeThreadRef?.driver !== entry.runtime.driver ||
-            thread.nativeThreadRef?.nativeId == null
-          )
-            return [];
-          // Restart commits the replacement first; only its recorded source may retire the old writer.
-          return [{ ...thread, providerSessionId: input.providerSessionId }];
-        });
-        const bindings = providerThreads
-          .flatMap((thread) => {
-            const generation = thread.runtimeIdentity?.runtimeGeneration;
-            const binding =
-              generation === undefined ? undefined : runtimeBinding(thread, generation);
-            return binding === undefined ? [] : [binding];
-          })
-          .sort((left, right) => left.providerThreadId.localeCompare(right.providerThreadId));
-        return {
-          providerThreads,
-          bindings,
-          complete: selected.length > 0 && selected.length === bindings.length,
-        };
-      };
       const detachForTransfer = Effect.fn("ProviderSessionManager.detachForTransfer")(
         function* (
           input: Parameters<ProviderSessionManagerV2Shape["detach"]>[0],
@@ -4058,7 +4020,7 @@ export const layerWithOptions = (
                 omittedSelector
                   ? { providerSessionId: input.providerSessionId, threadId: input.threadId }
                   : input,
-                entry,
+                entry.runtime,
                 fresh.providerThreads,
               );
               const current = (yield* Ref.get(sessions)).get(sessionKey(input.providerSessionId));
@@ -4082,7 +4044,7 @@ export const layerWithOptions = (
           ]);
           const { providerThreads, bindings, complete } = selectTransferBindings(
             input,
-            entry,
+            entry.runtime,
             projection.providerThreads,
           );
           const loadedKey =
@@ -4942,7 +4904,8 @@ export const layerWithOptions = (
                 loadedKey: currentEntry.loadedProviderThreadKeyByThread.get(input.threadId),
                 complete:
                   projection !== undefined &&
-                  selectTransferBindings(input, currentEntry, projection.providerThreads).complete,
+                  selectTransferBindings(input, currentEntry.runtime, projection.providerThreads)
+                    .complete,
                 sourceMetadata,
                 destinationMetadata,
               });

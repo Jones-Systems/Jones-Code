@@ -219,6 +219,24 @@ describe("personal status selection subscriptions", () => {
     },
   );
 
+  it("removes snoozed input from a work stream's local filter and restores it on wake", async () => {
+    using f = fixture();
+    const thread = { ...f.alphaDone, hasPendingUserInput: true, pendingUserInputAt: visited };
+    const input = { ...f, threads: [thread], activeThreadKey: key(thread) };
+    await using screen = await render(<Selection {...input} />, { router: false });
+    await setFilter(alphaId, "input");
+    expect(visible(screen.container)).toEqual(ids(thread));
+    await screen.rerender(
+      <Selection
+        {...input}
+        threads={[{ ...thread, snoozedAt: completed, snoozedUntil: "2100-01-01T00:00:00.000Z" }]}
+      />,
+    );
+    expect(visible(screen.container)).toEqual([]);
+    await screen.rerender(<Selection {...input} />);
+    expect(visible(screen.container)).toEqual(ids(thread));
+  });
+
   it("uses upstream activity-window classification and preserves Hide working outside that window", async () => {
     using f = fixture();
     __setClientSettingsForTests({
