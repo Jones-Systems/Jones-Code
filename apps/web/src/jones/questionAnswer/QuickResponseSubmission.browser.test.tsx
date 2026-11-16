@@ -38,13 +38,17 @@ let fixture = 0;
 function Questions({
   questions,
   capability = "message",
+  appOwned = false,
 }: {
   questions: UserInputQuestion[];
   capability?: "message" | "live";
+  appOwned?: boolean;
 }) {
   const projection = makeThreadProjectionFixture();
   const threadId = ThreadId.make(`quick-response-${fixture}`);
-  const requestId = RuntimeRequestId.make(`quick-response-${fixture}`);
+  const requestId = RuntimeRequestId.make(
+    `${appOwned ? "user-response:" : ""}quick-response-${fixture}`,
+  );
   const environmentId = EnvironmentId.make("quick-response-env");
   const nodeId = NodeId.make(requestId);
   const state = usePendingThreadRequests({
@@ -262,3 +266,39 @@ it("uses digit shortcuts to advance and send, while ignoring held and composing 
   await digit();
   expect(respond).toHaveBeenCalledTimes(1);
 });
+
+it.each(["Approve", "Deny"])(
+  "submits %s for an existing optionless approval request",
+  async (choice) => {
+    using _fixture = setup();
+    await using _screen = await render(
+      <Questions
+        appOwned
+        questions={[
+          {
+            id: "response",
+            header: "Action needed",
+            question: "Approve one additional diagnostic run in a 45-minute window?",
+            options: [],
+            multiSelect: false,
+            allowCustomAnswer: true,
+          },
+        ]}
+      />,
+    );
+    expect(document.body.textContent).toContain(
+      "Authorize only the action and limits described above.",
+    );
+    expect(document.body.textContent).toContain(
+      "Do not authorize the requested action; keep it on hold.",
+    );
+    expect(respond).not.toHaveBeenCalled();
+    await click(choice);
+    expect(respond).toHaveBeenCalledTimes(1);
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({ answers: { response: choice } }),
+      }),
+    );
+  },
+);
