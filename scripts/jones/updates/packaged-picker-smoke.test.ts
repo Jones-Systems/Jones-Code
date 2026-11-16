@@ -447,7 +447,10 @@ it("retains bounded nested aggregate, cause and errno detail", () => {
 });
 
 it("skips producer lookup only for a complete, current consumer-only PR", async () => {
-  const workflow = await NodeFSP.readFile(".github/workflows/artifact-desktop-mac.yml", "utf8");
+  const workflow = await NodeFSP.readFile(
+    new URL("../../../.github/workflows/artifact-desktop-mac.yml", import.meta.url),
+    "utf8",
+  );
   const head = "a".repeat(40),
     calls: string[] = [];
   const files = [
@@ -492,7 +495,10 @@ it("skips producer lookup only for a complete, current consumer-only PR", async 
 });
 
 it("does not classify incomplete, changing, large or unsupported producer evidence as a skip", async () => {
-  const workflow = await NodeFSP.readFile(".github/workflows/artifact-desktop-mac.yml", "utf8");
+  const workflow = await NodeFSP.readFile(
+    new URL("../../../.github/workflows/artifact-desktop-mac.yml", import.meta.url),
+    "utf8",
+  );
   const head = "a".repeat(40);
   await expect(
     pickerProducerApplicable({ pr: 1030, head }, workflow, async (endpoint) =>
@@ -545,7 +551,10 @@ it("records non-qualification without any producer request or wait", async () =>
 });
 
 it("uses every page before ruling out a producer", async () => {
-  const workflow = await NodeFSP.readFile(".github/workflows/artifact-desktop-mac.yml", "utf8");
+  const workflow = await NodeFSP.readFile(
+    new URL("../../../.github/workflows/artifact-desktop-mac.yml", import.meta.url),
+    "utf8",
+  );
   const head = "a".repeat(40);
   expect(
     await pickerProducerApplicable({ pr: 1030, head }, workflow, async (endpoint) => {
