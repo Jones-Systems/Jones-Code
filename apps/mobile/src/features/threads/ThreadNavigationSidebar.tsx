@@ -1,4 +1,10 @@
 import { useActiveNewTask } from "../../state/active-new-task";
+import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
+import {
+  projectMobileWorkstreamList,
+  mobileWorkstreamMoveDestination,
+} from "../workstreams/listProjection";
+import type { ThreadMoveDestination } from "./threadOrder";
 import { ThreadUndoNotice } from "../home/ThreadUndoNotice";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
@@ -61,6 +67,7 @@ import { useFabScroll } from "../home/FabScrollContext";
 import { WorkspaceListHeader } from "../layout/workspace/WorkspaceListHeader";
 import { WorkspaceSidebarColumn } from "../layout/workspace/WorkspaceSidebarColumn";
 import {
+  ThreadListV2WorkstreamHeader,
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
@@ -129,6 +136,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const projects = useProjects();
   const threads = useAtomValue(steadyNavigationThreadShellsAtom);
   const selectedThreadKey = useSidebarRowThreadKey(props.selectedThreadKey);
+  const workstreams = useMobileWorkstreams(threads);
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
@@ -140,6 +148,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     snoozeThread,
     unsnoozeThread,
     unsettleThread,
+    undoSettleThread,
     pinThread,
     unpinThread,
     setThreadAutoSettle,
@@ -267,7 +276,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const pendingOrder = usePendingThreadOrder();
   const {
     layout: threadListV2Layout,
-    items: threadListV2Items,
+    items: nativeThreadListV2Items,
     contentOnlyThreadKeys,
     olderSettledShelf,
   } = useThreadListV2({
@@ -291,6 +300,15 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     snoozedShelfExpanded,
     settledShelfExpanded,
     selectedThreadKey,
+  });
+  const threadListV2Items = projectMobileWorkstreamList(nativeThreadListV2Items, {
+    enabled: workstreams.enabled,
+    groups: workstreams.groups,
+    collapsedKeys: workstreams.collapsedKeys,
+    secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+    confirmedUnassignedKeys: workstreams.confirmedUnassignedKeys,
+    selectedThreadKey: props.selectedThreadKey ?? null,
+    searching: props.searchQuery.trim().length > 0,
   });
   const listItems: readonly SidebarListItem[] =
     settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0
@@ -353,6 +371,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   // Recycle equality needs project/search data for titles and favicons; keep the minute clock on items to limit updates.
   const listExtraData = {
     activeNewTask,
+    workstreamBindingRevision: workstreams.bindingRevision,
     selectedThreadKey: selectedThreadKey ?? "",
     projectByKey,
     projectTitleByProjectKey,
@@ -371,7 +390,29 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     }
     return false;
   };
+  const moveWithinWorkstream = (
+    thread: EnvironmentThreadShell,
+    direction: ThreadMoveDestination,
+  ) => {
+    const target = workstreams.enabled
+      ? mobileWorkstreamMoveDestination(
+          listItems.filter((item) => item.type !== "v2-show-more"),
+          thread,
+          direction,
+        )
+      : direction;
+    if (target !== null) void moveThread(thread, target);
+  };
   const renderListItem = ({ item }: { readonly item: SidebarListItem }) => {
+    if (item.type === "v2-workstream") {
+      return (
+        <ThreadListV2WorkstreamHeader
+          {...item}
+          onToggle={() => workstreams.toggleGroup(item.groupKey)}
+          onOpen={() => workstreams.openGroup(item.groupKey)}
+        />
+      );
+    }
     switch (item.type) {
       case "v2-pending": {
         const pendingScopeKey = scopedProjectKey(
@@ -414,6 +455,8 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
           <ThreadListV2Row
             onNewThreadOnBranch={props.onNewThreadOnBranch}
             thread={thread}
+            onOpenWorkstreams={workstreams.openThread}
+            secondaryWorkstreamLabel={item.secondaryWorkstreamLabel}
             variant={item.item.variant}
             hasQueuedMessages={item.hasQueuedMessages}
             snoozed={item.item.snoozed}
@@ -474,10 +517,11 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
             onSnoozeThread={snoozeThread}
             onUnsnoozeThread={unsnoozeThread}
             onUnsettleThread={unsettleThread}
+            onUndoSettleThread={undoSettleThread}
             onPinThread={pinThread}
             onUnpinThread={unpinThread}
             onSetThreadAutoSettle={setThreadAutoSettle}
-            onMoveThread={moveThread}
+            onMoveThread={moveWithinWorkstream}
             onSwipeableClose={handleSwipeableClose}
             onSwipeableWillOpen={handleSwipeableWillOpen}
             simultaneousSwipeGesture={sidebarScrollGesture}
@@ -599,6 +643,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   if (Platform.OS === "ios") {
     return (
       <>
+        {workstreams.sheet}
         {header}
         <View className="flex-1">
           <SwipeableScrollGateProvider enabled={swipeEnabled}>
@@ -607,6 +652,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
                 renderScrollComponent={NativeScrollView}
                 itemLayoutAnimation={THREAD_LIST_ROW_LAYOUT}
                 data={listItems}
+                ListHeaderComponent={workstreams.controls}
                 drawDistance={500}
                 estimatedItemSize={64}
                 extraData={listExtraData}
@@ -644,6 +690,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   // Android: the bar floats below the list.
   return (
     <View testID="thread-navigation-sidebar" className="flex-1 bg-header">
+      {workstreams.sheet}
       <View
         className="flex-1"
         style={{
@@ -664,6 +711,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
               <AnimatedLegendList
                 itemLayoutAnimation={THREAD_LIST_ROW_LAYOUT}
                 data={listItems}
+                ListHeaderComponent={workstreams.controls}
                 drawDistance={500}
                 estimatedItemSize={64}
                 extraData={listExtraData}

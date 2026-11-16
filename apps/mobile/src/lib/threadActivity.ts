@@ -1,3 +1,5 @@
+import { threadActivityLabel } from "@t3tools/client-runtime/jones/thread-activity-label";
+import { isWorkModeSentinelMessage } from "@t3tools/shared/jones/workMode";
 import type {
   ThreadPendingApproval,
   ThreadPendingUserInput,
@@ -265,6 +267,7 @@ type ThreadFeedEntryContent =
     };
 
 export interface ThreadFeedLatestRun {
+  readonly providerActivityStarted?: boolean;
   readonly runId: RunId;
   readonly status: OrchestrationV2RunStatus;
   readonly startedAt: string | null;
@@ -355,10 +358,16 @@ const runFoldRowsCache = new WeakMap<
 >();
 let cachedThinkingRow: Extract<ThreadFeedEntry, { readonly type: "thinking" }> | null = null;
 
+// Feed groups are immutable; repeated thread-wide compaction scans must not
+// re-read settled historical activities during streaming presentation.
+const compactionGroups = new WeakMap<ThreadFeedActivityGroup, boolean>();
 export function isContextCompactionActivityGroup(entry: ThreadFeedActivityGroup): boolean {
-  return (
-    entry.activities.length === 1 && entry.activities[0]?.projectedItem.item.type === "compaction"
-  );
+  const cached = compactionGroups.get(entry);
+  if (cached !== undefined) return cached;
+  const result =
+    entry.activities.length === 1 && entry.activities[0]?.projectedItem.item.type === "compaction";
+  compactionGroups.set(entry, result);
+  return result;
 }
 
 export function threadFeedCompactionLabels(feed: ReadonlyArray<ThreadFeedEntry>) {
@@ -1622,6 +1631,16 @@ export function deriveThreadFeedPresentation(
   cache?: ThreadFeedCache,
   display: ThreadFeedDisplay = DEFAULT_THREAD_FEED_DISPLAY,
 ): ThreadFeedEntry[] {
+  const sentinelEntry = (entry: ThreadFeedEntry) =>
+    entry.type === "message" &&
+    isWorkModeSentinelMessage({
+      ...entry.message,
+      status: entry.message.projectedItem?.item.status,
+    });
+  const lastUserIndex = feed.findLastIndex(
+    (entry) => entry.type === "message" && entry.message.role === "user",
+  );
+  const quietTurn = lastUserIndex >= 0 && feed.slice(lastUserIndex).every(sentinelEntry);
   const previous = cache?.presentation ?? null;
   const restart = presentationRestart(
     previous,
@@ -1654,7 +1673,7 @@ export function deriveThreadFeedPresentation(
   > = [];
   const retainedFeedIndices: number[] = [];
   const { toolCallVisibility, revealedMessageId } = display;
-  const isWorking = activeWorkStartedAt !== null && latestRun?.status !== "preparing";
+  const isWorking = !quietTurn && activeWorkStartedAt !== null && latestRun?.status !== "preparing";
   const activeRunId = unsettledRunId(latestRun);
   const zen = toolCallVisibility === "zen";
   const answering = isWorking && latestRun?.turnEnded !== true;
@@ -1670,6 +1689,7 @@ export function deriveThreadFeedPresentation(
       entry.type === "viewed-images"
     )
       continue;
+    if (sentinelEntry(entry)) continue;
     const runId = feedEntryRunId(entry);
     if (runId !== null) {
       if (!firstEntryByRun.has(runId)) firstEntryByRun.set(runId, index);
@@ -1823,11 +1843,20 @@ export function deriveThreadFeedPresentation(
     )
   ) {
     const waitingOn = activeRunId === null ? 0 : runningSubagentsAtRunTail(feed, activeRunId);
+    const activityLabel = threadActivityLabel(
+      latestRun?.status,
+      runlessWorkActive,
+      latestRun?.providerActivityStarted,
+    );
     result.push(
       thinkingRow(
         activeWorkStartedAt,
         activeRunId,
-        waitingOn > 0 ? waitingOnSubagentsLabel(waitingOn) : zen ? liveAnswerPreview(feed) : null,
+        waitingOn > 0
+          ? waitingOnSubagentsLabel(waitingOn)
+          : activityLabel === "Thinking"
+            ? (zen ? liveAnswerPreview(feed) : null)
+            : activityLabel,
         latestRun?.providerStartingLabel,
       ),
     );
@@ -2249,6 +2278,8 @@ interface ThreadFeedBuild {
   readonly nodes: ReadonlyArray<OrchestrationV2ExecutionNode> | undefined;
   readonly checkpointSummaries: ReadonlyArray<ThreadCheckpointSummary> | undefined;
   readonly foldedAnswerRunIdByMessageId: ReadonlyMap<string, RunId | null>;
+  readonly compactPromptRunIds: ReadonlySet<RunId>;
+  readonly compactedRunIds: ReadonlySet<RunId>;
   readonly delegatedChildrenByRun: ReadonlyMap<RunId, ReadonlySet<string>>;
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
   /** Grouping is empty before `row`: the rows before it produced `feed.slice(0, feedLength)`. */
@@ -2362,7 +2393,17 @@ export function buildThreadFeed(
   // An answer that started a later run stays a normal message at that run's position.
   const foldedAnswerRunIdByMessageId = new Map<string, RunId | null>();
   const delegatedChildrenByRun = new Map<RunId, Set<string>>();
+  const compactPromptRunIds = new Set<RunId>();
+  const compactedRunIds = new Set<RunId>();
   for (const { item } of visibleTurnItems) {
+    if (item.runId !== null) {
+      if (
+        item.type === "user_message" &&
+        isCompactionCommandMessage({ role: "user", text: item.text, attachments: item.attachments })
+      )
+        compactPromptRunIds.add(item.runId);
+      else if (item.type === "compaction") compactedRunIds.add(item.runId);
+    }
     if (item.type === "user_input_request" && item.questionAnswer) {
       foldedAnswerRunIdByMessageId.set(`async-answer:${item.questionAnswer.requestId}`, item.runId);
     } else if (item.type === "subagent" && item.origin === "app_owned" && item.runId !== null) {
@@ -2382,6 +2423,8 @@ export function buildThreadFeed(
     previous.nodes === options?.nodes &&
     checkpointSummariesEqual(previous.checkpointSummaries, options?.checkpointSummaries) &&
     mapsEqual(previous.foldedAnswerRunIdByMessageId, foldedAnswerRunIdByMessageId) &&
+    setsEqual(previous.compactPromptRunIds, compactPromptRunIds) &&
+    setsEqual(previous.compactedRunIds, compactedRunIds) &&
     setMapsEqual(previous.delegatedChildrenByRun, delegatedChildrenByRun)
   ) {
     const firstChanged = firstChangedIndex(previous.rows, visibleTurnItems);
@@ -2396,18 +2439,6 @@ export function buildThreadFeed(
 
   const entries: RawThreadFeedEntry[] = [];
   const entryRows: number[] = [];
-  // A stopped compaction's own row already says it stopped. A `/compact` run stopped
-  // before its provider started has no such row, so it keeps the interrupted one.
-  const compactPromptRunIds = new Set<RunId>();
-  const compactedRunIds = new Set<RunId>();
-  for (const { item } of visibleTurnItems) {
-    if (item.runId === null) continue;
-    if (item.type === "user_message" && isCompactionCommandMessage({ role: "user", ...item })) {
-      compactPromptRunIds.add(item.runId);
-    } else if (item.type === "compaction") {
-      compactedRunIds.add(item.runId);
-    }
-  }
   for (let index = restart?.row ?? 0; index < visibleTurnItems.length; index += 1) {
     const row = visibleTurnItems[index]!;
     const item = row.item;
@@ -2609,6 +2640,8 @@ export function buildThreadFeed(
             nodes: options?.nodes,
             checkpointSummaries: options?.checkpointSummaries,
             foldedAnswerRunIdByMessageId,
+            compactPromptRunIds,
+            compactedRunIds,
             delegatedChildrenByRun,
             feed,
             restarts,

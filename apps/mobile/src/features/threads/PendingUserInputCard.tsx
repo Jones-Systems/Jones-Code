@@ -1,3 +1,9 @@
+import { supportsUserResponseAnswerNotes } from "@t3tools/contracts/jones/userResponseRequest";
+import { QuestionProgress } from "../../jones/questionAnswer/QuestionProgress";
+import {
+  clampQuestionIndex,
+  sequentialQuestionProgress,
+} from "../../jones/questionAnswer/sequentialQuestions";
 import { Button } from "../../components/ui/Button";
 import { QuestionAttachments } from "./QuestionAttachments";
 import type { EnvironmentId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
@@ -8,7 +14,7 @@ import {
   type TextDirection,
 } from "@t3tools/shared/textDirection";
 import { useNavigation } from "@react-navigation/native";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -33,8 +39,9 @@ import {
 import { useLiveThreadLinkLabels } from "../../state/entities";
 import {
   isPendingUserInputOptionSelected,
+  resolvePendingUserInputAnswer,
   type PendingUserInputDraftAnswer,
-} from "@t3tools/client-runtime/state/pending-user-input";
+} from "../../jones/questionAnswer/answers";
 import type { PendingUserInput } from "../../lib/threadActivity";
 
 export interface PendingUserInputCardProps {
@@ -45,6 +52,8 @@ export interface PendingUserInputCardProps {
   readonly pendingUserInput: PendingUserInput;
   readonly maxHeight: DerivedValue<number>;
   readonly collapsed: boolean;
+  /** Use within a bounded scrolling request stack instead of an upward iOS overlay. */
+  readonly expandedInFlow?: boolean;
   readonly onToggleCollapsed: () => void;
   readonly onStopThread?: () => void;
   readonly cardProgress: SharedValue<number>;
@@ -57,7 +66,7 @@ export interface PendingUserInputCardProps {
     requestId: RuntimeRequestId,
     question: ThreadUserInputQuestion,
     value: string,
-  ) => void;
+  ) => number | undefined;
   readonly onChangeCustomAnswer: (
     requestId: RuntimeRequestId,
     questionId: string,
@@ -134,6 +143,48 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       .join(" "),
   );
 
+  const notes = supportsUserResponseAnswerNotes(props.pendingUserInput.responseCapability);
+  const progress = sequentialQuestionProgress(
+    props.pendingUserInput.questions,
+    props.drafts,
+    notes,
+  );
+  const [position, setPosition] = useState({
+    requestId: props.pendingUserInput.requestId,
+    index: progress.initialIndex,
+  });
+  if (position.requestId !== props.pendingUserInput.requestId) {
+    setPosition({ requestId: props.pendingUserInput.requestId, index: progress.initialIndex });
+  }
+  const questionIndex = clampQuestionIndex(
+    position.requestId === props.pendingUserInput.requestId
+      ? position.index
+      : progress.initialIndex,
+    questionCount,
+  );
+  const activeQuestion = props.pendingUserInput.questions[questionIndex];
+  const selectQuestion = (index: number) => {
+    setPosition({
+      requestId: props.pendingUserInput.requestId,
+      index: clampQuestionIndex(index, questionCount),
+    });
+    if (props.collapsed) props.onToggleCollapsed();
+  };
+  const segments = (
+    <QuestionProgress
+      index={questionIndex}
+      answered={progress.answered}
+      questionIds={props.pendingUserInput.questions.map((question) => question.id)}
+      disabled={!props.canOperateThread || isResponding}
+      onSelect={selectQuestion}
+    />
+  );
+  const isLastQuestion = questionIndex === questionCount - 1;
+  const blockedReason =
+    isLastQuestion && !progress.complete
+      ? `Answer question ${progress.firstUnansweredIndex + 1} to send · ${progress.answeredCount} of ${questionCount} answered`
+      : null;
+
   const { cardCoverage, cardProgress, maxHeight } = props;
   const barHeightRef = useRef(0);
   const cardHeightRef = useRef(0);
@@ -196,11 +247,11 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         onPress={props.onToggleCollapsed}
         className="min-h-10 flex-1 flex-row items-center gap-2 active:opacity-70"
       >
-        <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary">
+        <Text
+          numberOfLines={1}
+          className="min-w-0 shrink font-t3-bold text-2xs uppercase tracking-[1.1px] text-foreground-secondary"
+        >
           User input needed
-        </Text>
-        <Text className="font-sans text-xs text-foreground-muted">
-          {questionCount} question{questionCount === 1 ? "" : "s"}
         </Text>
         <View className="flex-1" />
         <SymbolView
@@ -210,6 +261,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
           type="monochrome"
         />
       </Pressable>
+      {segments}
       {stopButton}
     </View>
   );
@@ -234,7 +286,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               User input needed
             </Text>
             <Text className="font-t3-bold text-lg text-foreground">
-              Fill in the pending answers
+              Answer one question at a time
             </Text>
           </View>
           <View className="h-8 w-8 items-center justify-center rounded-full bg-subtle-strong">
@@ -248,6 +300,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
         </Pressable>
         {stopButton}
       </View>
+      {segments}
       <ScrollView
         bounces={false}
         className="min-h-0"
@@ -263,7 +316,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
             run to continue.
           </Text>
         ) : null}
-        {props.pendingUserInput.questions.map((question) => {
+        {(activeQuestion ? [activeQuestion] : []).map((question) => {
           const draft = props.drafts[question.id];
           return (
             <View key={question.id} className="gap-2 pt-1">
@@ -284,7 +337,9 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               <View className="gap-2">
                 {question.options.map((option) => {
                   const optionValue = option.value ?? option.label.trim();
-                  const selected = isPendingUserInputOptionSelected(question, draft, optionValue);
+                  const selected = isPendingUserInputOptionSelected(question, draft, optionValue, {
+                    notes,
+                  });
                   const description =
                     option.description !== option.label ? option.description : undefined;
                   return (
@@ -297,13 +352,14 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                           "min-h-12 w-full rounded-2xl border px-3.5 py-3",
                           selected ? "border-primary bg-primary/10" : "border-border bg-input",
                         )}
-                        onPress={() =>
-                          props.onSelectOption(
+                        onPress={() => {
+                          const nextIndex = props.onSelectOption(
                             props.pendingUserInput.requestId,
                             question,
                             optionValue,
-                          )
-                        }
+                          );
+                          if (nextIndex !== undefined) selectQuestion(nextIndex);
+                        }}
                       >
                         <View className="min-w-0 flex-1 gap-0.5">
                           <Text
@@ -355,17 +411,53 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                   onInputFocusChange={props.onInputFocusChange}
                 />
               ) : null}
+              {notes ? (
+                <>
+                  <Text numberOfLines={3} className="font-sans text-xs text-foreground-muted">
+                    Sends:{" "}
+                    {resolvePendingUserInputAnswer(question, draft, { notes }) ??
+                      "Choose or write an answer"}
+                  </Text>
+                </>
+              ) : null}
             </View>
           );
         })}
       </ScrollView>
-      <Button
-        label="Submit answers"
-        fullWidth
-        tone={props.answers ? "primary" : "secondary"}
-        disabled={!props.canOperateThread || responseDisabled || props.answers === null}
-        onPress={() => void props.onSubmit()}
-      />
+      {blockedReason ? (
+        <Text accessibilityRole="text" className="font-sans text-xs text-foreground-muted">
+          {blockedReason}
+        </Text>
+      ) : null}
+      <View className="flex-row items-center gap-2">
+        {questionIndex > 0 ? (
+          <Button
+            label="Back"
+            tone="text"
+            disabled={isResponding}
+            onPress={() => selectQuestion(questionIndex - 1)}
+          />
+        ) : null}
+        <View className="flex-1">
+          <Button
+            label={isResponding ? "Sending…" : isLastQuestion ? "Send" : "Continue"}
+            fullWidth
+            tone="primary"
+            accessibilityHint={blockedReason ?? ""}
+            disabled={
+              !props.canOperateThread ||
+              responseDisabled ||
+              (isLastQuestion ? props.answers === null : !progress.answered[questionIndex])
+            }
+            onPress={() => {
+              if (!props.canOperateThread || responseDisabled) return;
+              if (isLastQuestion) {
+                if (props.answers !== null) void props.onSubmit();
+              } else if (progress.answered[questionIndex]) selectQuestion(questionIndex + 1);
+            }}
+          />
+        </View>
+      </View>
       {props.pendingUserInput.dismissible ? (
         <Button
           label="Dismiss without answering"
@@ -381,6 +473,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       ) : null}
     </Animated.View>
   );
+  if (props.expandedInFlow) return props.collapsed ? bar : card;
   return (
     <Animated.View
       className="relative"

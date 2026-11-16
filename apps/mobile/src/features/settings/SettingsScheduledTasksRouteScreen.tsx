@@ -1,6 +1,7 @@
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import {
+  type ScheduledTaskUpsertInput,
   AuthOrchestrationOperateScope,
   clampManagedRuntimeMode,
   managedCapabilityDenial,
@@ -12,7 +13,6 @@ import type {
   ProjectId,
   ScheduledTask,
   ScheduledTaskThreadMode,
-  ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
 import {
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
@@ -79,6 +79,7 @@ import {
   parseIntervalMinutes,
   scheduledTaskDefaultModel,
   scheduleFromDraft,
+  scheduledTaskUpsertInputFromDraft,
   unbindDraftFromThread,
   type ScheduledTaskDraft as Draft,
 } from "./scheduledTaskDraft";
@@ -800,31 +801,15 @@ function TaskForm({
       Dialog.alert("Project unavailable", "Choose a project in this environment.");
       return;
     }
+    const payload = scheduledTaskUpsertInputFromDraft(draft, schedule);
+    if (payload === null) return;
     const input: ScheduledTaskUpsertInput = {
-      ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
-      title: draft.title.trim(),
-      prompt: draft.prompt.trim(),
-      projectId: draft.projectId,
-      modelSelection: withImplicitFastModeSelection(draft.modelSelection, config?.providers ?? []),
-      schedule,
-      enabled: draft.enabled,
-      threadId: draft.threadId,
+      ...payload,
+      modelSelection: withImplicitFastModeSelection(payload.modelSelection, config?.providers ?? []),
       ...(offersThreadModes ? { threadMode: draft.threadMode } : {}),
-      workspaceStrategy:
-        draft.workspace === "root"
-          ? { type: "root" }
-          : draft.workspace === "existing_worktree"
-            ? { type: "existing_worktree", worktreePath: draft.checkoutPath.trim() }
-            : {
-                type: "worktree",
-                baseRef: draft.baseRef.trim() || "main",
-                startFromOrigin: draft.startFromOrigin,
-              },
       // Tasks have no mode picker; a mode above the administrator's ceiling is refused.
       runtimeMode:
         clampManagedRuntimeMode(config?.managedPolicy, draft.runtimeMode) ?? draft.runtimeMode,
-      interactionMode: draft.task?.interactionMode ?? "default",
-      creationSource: draft.task?.creationSource ?? "mobile",
     };
     submissionPending.current = true;
     setSaving(true);
@@ -1003,13 +988,20 @@ function TaskForm({
           <SelectRow
             label="Run in"
             value={
-              draft.workspace === "worktree"
-                ? "New worktree"
-                : draft.workspace === "root"
-                  ? "Project checkout"
-                  : "Specific checkout"
+              draft.workspace === "auto"
+                ? "Project allocation setting"
+                : draft.workspace === "worktree"
+                  ? "New worktree"
+                  : draft.workspace === "root"
+                    ? "Project checkout"
+                    : "Specific checkout"
             }
             actions={[
+              {
+                id: "auto",
+                title: "Use project allocation setting",
+                state: draft.workspace === "auto" ? "on" : undefined,
+              },
               {
                 id: "worktree",
                 title: "New worktree",
@@ -1027,7 +1019,7 @@ function TaskForm({
               },
             ]}
             onSelect={(id) => {
-              if (id === "worktree" || id === "root" || id === "existing_worktree")
+              if (id === "auto" || id === "worktree" || id === "root" || id === "existing_worktree")
                 setDraft((current) => ({ ...current, workspace: id }));
             }}
           />
