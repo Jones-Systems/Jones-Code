@@ -103,6 +103,7 @@ const EARLY_LOAD_GRACE = "3 seconds";
 type ShellOriginIdentity = Omit<Persistence.ShellCacheOrigin, "snapshotAt">;
 
 interface ShellSubscription {
+  readonly httpOwner?: object;
   readonly producer: SubscriptionProducer;
   /** What a snapshot from this subscription descends from; null when the server did not say. */
   readonly identity: ShellOriginIdentity | null;
@@ -161,6 +162,7 @@ type HttpShellOutcome =
   | { readonly kind: "failed" };
 
 interface EarlyShellLoad {
+  readonly owner: object;
   readonly prepared: PreparedConnection;
   readonly identity: ShellOriginIdentity;
   readonly fiber: Fiber.Fiber<HttpShellOutcome>;
@@ -470,7 +472,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     items: ReadonlyArray<OrchestrationV2ShellStreamItem>,
   ) {
     const subscription = yield* Ref.get(activeSubscription);
-    yield* applyLocked(items, subscription?.identity ?? null, undefined, () => producerGuard.isCurrent(producer));
+    yield* applyLocked(items, subscription?.identity ?? null, undefined, () => subscription?.producer === producer && producerGuard.isCurrent(producer));
   }, snapshotWriteLock.withPermit);
 
   const stateScope = yield* Effect.scope;
@@ -623,8 +625,14 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         // Items a closed session still has in flight must not land on the rows this loads.
         yield* cancelActiveFill;
         yield* Ref.set(activeSubscription, null);
-        const fiber = yield* loadOverHttp(prepared, identity, () => Option.getOrNull(SubscriptionRef.getUnsafe(supervisor.prepared)) === prepared && Ref.getUnsafe(activeSubscription) === null).pipe(Effect.forkIn(stateScope));
-        const next: EarlyShellLoad = { prepared, identity, fiber, claimed: claim };
+        const owner = {};
+        const canCommit = () => {
+          const subscription = Ref.getUnsafe(activeSubscription);
+          return Option.getOrNull(SubscriptionRef.getUnsafe(supervisor.prepared)) === prepared &&
+            (subscription === null || (subscription.httpOwner === owner && producerGuard.isCurrent(subscription.producer)));
+        };
+        const fiber = yield* loadOverHttp(prepared, identity, canCommit).pipe(Effect.forkIn(stateScope));
+        const next: EarlyShellLoad = { owner, prepared, identity, fiber, claimed: claim };
         return [next, next] as const;
       }),
     ).pipe(
@@ -681,6 +689,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         yield* producerGuard.begin(producer);
         const session = producer.session;
         const config = yield* session.initialConfig;
+        if (!producerGuard.isCurrent(producer)) return yield* Effect.never;
         const refreshSubscription = shellRefreshSubscription(config);
         const supportsCompletionMarker = config.shellResumeCompletionMarker === true;
         const identity = yield* session.initialConfig.pipe(
@@ -706,7 +715,8 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           sameShellIdentity(early.identity, identity)
             ? earlyExit.value
             : null;
-        yield* Ref.set(activeSubscription, { producer, identity });
+        if (!producerGuard.isCurrent(producer)) return yield* Effect.never;
+        yield* Ref.set(activeSubscription, { producer, identity, ...(early === null ? {} : { httpOwner: early.owner }) });
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 
