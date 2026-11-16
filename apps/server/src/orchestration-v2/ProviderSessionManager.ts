@@ -2487,7 +2487,7 @@ export const layerWithOptions = (
                       linkedEnvironments: undefined,
                       complete: Effect.void,
                     })
-                  : retainedLoad(threadId, JSON.stringify(["resume", providerThreadKey]), runtime.resumeThread(input)),
+                  : retainedLoad(threadId, JSON.stringify(["resume", providerThreadKey, input.modelSelection, input.runtimePolicy]), runtime.resumeThread(input)),
               ),
               Effect.tap(({ loaded: providerThread, linkedEnvironments }) =>
                 markProviderThreadLoaded({
