@@ -3,8 +3,8 @@ import { observeResize } from "../../lib/observeResize";
 import { cn } from "../../lib/utils";
 import styles from "./ComposerLayout.module.css";
 
-export const composerLayoutPromptClassName = styles.prompt;
-export const composerLayoutPlaceholderClassName = styles.placeholder;
+export const composerLayoutPromptClassName = cn(styles.prompt);
+export const composerLayoutPlaceholderClassName = cn(styles.placeholder);
 
 /** The canvas owns the height budget; the composer and its portalled rails share it. */
 export function ComposerLayout({
@@ -87,10 +87,7 @@ export function ComposerLayoutActions({ className, ...props }: ComponentProps<"d
     <div
       {...props}
       data-chat-composer-footer="true"
-      className={cn(
-        "flex min-w-0 flex-nowrap items-center overflow-visible px-2 pb-2",
-        className,
-      )}
+      className={cn("flex min-w-0 flex-nowrap items-center overflow-visible px-2 pb-2", className)}
     />
   );
 }

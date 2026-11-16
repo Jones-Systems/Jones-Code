@@ -858,7 +858,9 @@ it.each(composerLayoutCases)(
           ),
       );
       const band = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-rails]")!;
-      const content = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-content]")!;
+      const content = container.querySelector<HTMLElement>(
+        "[data-chat-composer-shortcut-content]",
+      )!;
       await expect.poll(() => band.getBoundingClientRect().height).toBeGreaterThan(0);
       await expect
         .poll(() => band.getBoundingClientRect().height)
@@ -964,7 +966,9 @@ it("keeps a growing focused draft and every shortcut operable in a narrow pane o
         height={height}
         codex
         hero={false}
-        initialPrompt={Array.from({ length: 12 }, (_, index) => `Draft line ${index + 1}`).join("\n")}
+        initialPrompt={Array.from({ length: 12 }, (_, index) => `Draft line ${index + 1}`).join(
+          "\n",
+        )}
         onAccountSelect={vi.fn()}
         onProviderModelSelect={vi.fn()}
       />
@@ -983,7 +987,9 @@ it("keeps a growing focused draft and every shortcut operable in a narrow pane o
     await page.viewport(900, 800);
     await act(async () => await root.rerender(view(620, 800)));
     await expect
-      .poll(() => container.querySelector<HTMLElement>("[data-chat-composer-overlay]")!.dataset.short)
+      .poll(
+        () => container.querySelector<HTMLElement>("[data-chat-composer-overlay]")!.dataset.short,
+      )
       .toBe("false");
     await expect
       .poll(() => band.getBoundingClientRect().height)
