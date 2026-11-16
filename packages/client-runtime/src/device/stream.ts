@@ -504,6 +504,7 @@ export function createDeviceStreamClient(
   };
 
   const connecting = (detail?: string) => {
+    if (stopped) return;
     firstFrame = false;
     if (frameTimer === null) {
       frameTimer = setTimeout(
@@ -706,8 +707,8 @@ export function createDeviceStreamClient(
 
   const handleUnauthorized = () => {
     stop();
-    events.onInputConnected(false);
     events.onUnauthorized();
+    events.onInputConnected(false);
   };
 
   const readIosVideo = async () => {
@@ -1178,10 +1179,6 @@ export function createDeviceStreamClient(
       rotationCursor = null;
       if (stopped) return;
       if (event.code === 4001) return fail(leaseEnded(event.reason || "ended"));
-      events.onInputConnected(
-        false,
-        event.reason || (event.code === 1006 ? "input socket refused" : `closed ${event.code}`),
-      );
       // A rejected HTTP upgrade surfaces as 1006, including an expired stream ticket.
       if (
         event.code === 1008 ||
@@ -1189,6 +1186,10 @@ export function createDeviceStreamClient(
         (event.code === 1006 && access.query.wsTicket)
       )
         return handleUnauthorized();
+      events.onInputConnected(
+        false,
+        event.reason || (event.code === 1006 ? "input socket refused" : `closed ${event.code}`),
+      );
       scheduleRetry("input", () => void connectIosInput());
     };
     ws.onerror = () => ws.close();
@@ -1253,13 +1254,13 @@ export function createDeviceStreamClient(
       socket = null;
       closeDecoder();
       if (stopped) return;
-      events.onInputConnected(false, event.reason || `closed ${event.code}`);
       if (
         event.code === 1008 ||
         event.code === 4401 ||
         (event.code === 1006 && access.query.wsTicket)
       )
         return handleUnauthorized();
+      events.onInputConnected(false, event.reason || `closed ${event.code}`);
       if (!inputOnly) {
         configuring = false;
         connecting(event.reason || undefined);

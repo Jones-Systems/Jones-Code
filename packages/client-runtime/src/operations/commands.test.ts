@@ -1,23 +1,33 @@
+import * as DateTime from "effect/DateTime";
 import {
+  ChatAttachmentId,
   CheckpointId,
   CheckpointRef,
   CheckpointScopeId,
   CommandId,
   EnvironmentId,
   MessageId,
+  GitCommandError,
+  OrchestrationDispatchCommandError,
+  type VcsListRefsInput,
+  type VcsListRefsResult,
   NodeId,
   ORCHESTRATION_V2_WS_METHODS,
   ProjectId,
-  ProviderInstanceId,
   ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ProviderThreadId,
   RunId,
   ThreadId,
   TurnItemId,
   WS_METHODS,
   type OrchestrationV2Command,
+  type OrchestrationV2ProviderSession,
   type OrchestrationV2ThreadLaunchInput,
   type OrchestrationV2ThreadProjection,
   type ProjectMutation,
+  type PersistChatAttachmentsResult,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
@@ -40,6 +50,7 @@ import {
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
+import type { EnvironmentRpcFailure } from "../rpc/client.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import { v2Now, v2Projection, v2ThreadId } from "../state/orchestrationV2TestFixtures.ts";
 import {
@@ -48,9 +59,17 @@ import {
   revertThreadCheckpoint,
   resumeThreadQueue,
   startThreadTurn,
+  prepareThreadTurn,
+  dispatchPreparedThreadTurn,
+  prepareImportedHistoryMessage,
 } from "./commands.ts";
 
 const layerTestRandom = Layer.succeed(
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => new Uint8Array(size)),
+);
+
+const layerTestCrypto = Layer.succeed(
   SecureRandom.SecureRandom,
   SecureRandom.make((size) => new Uint8Array(size)),
 );
@@ -69,17 +88,29 @@ const CONNECTED_STATE: SupervisorConnectionState = {
 };
 
 const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(function* (input: {
+  readonly listRefs?: (
+    input: VcsListRefsInput,
+  ) => Effect.Effect<VcsListRefsResult, EnvironmentRpcFailure<typeof WS_METHODS.vcsListRefs>>;
+  readonly onLaunch?: () => Effect.Effect<void, OrchestrationDispatchCommandError>;
+  readonly onDispatch?: () => Effect.Effect<void, OrchestrationDispatchCommandError>;
+  readonly persistAttachments?: () => Effect.Effect<PersistChatAttachmentsResult>;
   readonly commands: OrchestrationV2Command[];
   readonly projects: ProjectMutation[];
   readonly launches?: OrchestrationV2ThreadLaunchInput[];
   readonly projection?: OrchestrationV2ThreadProjection;
   readonly projectionRequests?: ThreadId[];
+  readonly advertiseServerResolvedCommandContext?: boolean;
   readonly advertiseThreadStop?: boolean;
+  readonly advertiseQueuedRunStart?: boolean;
+  readonly advertiseQueuedToolBoundaryDelivery?: boolean;
 }) {
   const client = {
+    [WS_METHODS.assetsPersistChatAttachments]: input.persistAttachments ?? (() => Effect.never),
+    [WS_METHODS.vcsListRefs]: input.listRefs ?? (() => Effect.never),
     [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         input.commands.push(command);
+        yield* input.onDispatch?.() ?? Effect.void;
         return { sequence: input.commands.length };
       }),
     [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (requestInput: {
@@ -90,8 +121,9 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
         return input.projection ?? v2Projection;
       }),
     [ORCHESTRATION_V2_WS_METHODS.launchThread]: (launchInput: OrchestrationV2ThreadLaunchInput) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         input.launches?.push(launchInput);
+        yield* input.onLaunch?.() ?? Effect.void;
         return {
           threadId: launchInput.threadId ?? v2ThreadId,
           projection: input.projection ?? v2Projection,
@@ -122,6 +154,13 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
       environment: {
         capabilities: {
           repositoryIdentity: true,
+          serverResolvedCommandContext: input.advertiseServerResolvedCommandContext === true,
+          ...(input.advertiseQueuedRunStart === undefined
+            ? {}
+            : { queuedRunStart: input.advertiseQueuedRunStart }),
+          ...(input.advertiseQueuedToolBoundaryDelivery === true
+            ? { queuedToolBoundaryDelivery: true }
+            : {}),
           ...(input.advertiseThreadStop === true ? { threadStop: true } : {}),
         },
       },
@@ -144,10 +183,100 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("V2 environment commands", () => {
+  it.effect.each([false, true, undefined])(
+    "preserves composer selection intent %s through ordinary, immediate and imported dispatch",
+    (modelSelectionExplicit) =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const supervisor = yield* makeSupervisor({ commands, projects: [] });
+        for (const dispatchMode of ["auto", "start"] as const) {
+          yield* startThreadTurn({
+            commandId: CommandId.make("composer-" + dispatchMode),
+            threadId: v2ThreadId,
+            message: {
+              messageId: MessageId.make("composer-" + dispatchMode),
+              role: "user",
+              text: "continue",
+              attachments: [],
+            },
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex-compatible-b"),
+              model: "gpt-6-astra",
+            },
+            ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        }
+        const imported = yield* prepareImportedHistoryMessage({
+          commandId: CommandId.make("composer-imported"),
+          threadId: v2ThreadId,
+          message: {
+            messageId: MessageId.make("composer-imported"),
+            role: "user",
+            text: "continue imported work",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex-compatible-b"),
+            model: "gpt-6-astra",
+          },
+          ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        commands.push(imported);
+        expect(commands).toHaveLength(3);
+        for (const command of commands) {
+          expect(command.type).toBe("message.dispatch");
+          if (command.type !== "message.dispatch") throw new Error("Expected message dispatch");
+          expect(command.modelSelection?.instanceId).toBe("codex-compatible-b");
+          expect(command.modelSelectionExplicit).toBe(modelSelectionExplicit);
+          if (modelSelectionExplicit === undefined)
+            expect(command).not.toHaveProperty("modelSelectionExplicit");
+        }
+      }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("withholds start-one without its capability while explicit resume survives", () =>
+    Effect.gen(function* () {
+      for (const advertiseQueuedRunStart of [undefined, false]) {
+        const commands: OrchestrationV2Command[] = [];
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          ...(advertiseQueuedRunStart === undefined ? {} : { advertiseQueuedRunStart }),
+          advertiseThreadStop: true,
+          advertiseQueuedToolBoundaryDelivery: true,
+        });
+        const threadId = ThreadId.make("thread-1");
+        const failure = yield* resumeThreadQueue({
+          commandId: CommandId.make("unsupported-start"),
+          threadId,
+          runId: RunId.make("selected"),
+        }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.flip,
+        );
+        expect(failure._tag).toBe("QueuedRunStartUnavailableError");
+        expect(commands).toEqual([]);
+        yield* resumeThreadQueue({ commandId: CommandId.make("resume-only"), threadId }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+        expect(commands).toEqual([{ type: "queue.resume", commandId: "resume-only", threadId }]);
+      }
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect("distinguishes sending a selected queued message from resuming queue order", () =>
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];
-      const supervisor = yield* makeSupervisor({ commands, projects: [] });
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        advertiseQueuedRunStart: true,
+      });
       const threadId = ThreadId.make("thread-1");
       yield* resumeThreadQueue({
         commandId: CommandId.make("send-selected"),
@@ -274,7 +403,12 @@ describe("V2 environment commands", () => {
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];
       const projectionRequests: ThreadId[] = [];
-      const supervisor = yield* makeSupervisor({ commands, projects: [], projectionRequests });
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        projectionRequests,
+        advertiseServerResolvedCommandContext: true,
+      });
 
       for (const [mode, expectedType] of [
         ["queue", "queue_after_active"],
@@ -785,5 +919,651 @@ describe("V2 environment commands", () => {
         },
       ]);
     }).pipe(Effect.provide(layerTestRandom)),
+  );
+});
+
+it.effect.each([true, false, undefined] as const)(
+  "negotiates queued tool eligibility only with capability %s",
+  (capability) =>
+    Effect.gen(function* () {
+      for (const serverResolution of [true, false]) {
+        const commands: OrchestrationV2Command[] = [];
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          advertiseServerResolvedCommandContext: serverResolution,
+          ...(capability === undefined ? {} : { advertiseQueuedToolBoundaryDelivery: capability }),
+        });
+        for (const mode of ["queue", "auto", "start", "steer", "restart"] as const) {
+          yield* startThreadTurn({
+            commandId: CommandId.make(`policy-${mode}`),
+            threadId: v2ThreadId,
+            message: {
+              messageId: MessageId.make(`message-${mode}`),
+              role: "user",
+              text: "Owner follow-up",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: mode,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+          const command = commands.at(-1)!;
+          if (capability === true && (mode === "queue" || mode === "auto"))
+            expect(command).toHaveProperty("queuedToolBoundaryEligible", true);
+          else expect(command).not.toHaveProperty("queuedToolBoundaryEligible");
+        }
+        for (const source of ["mcp", "provider", "server"] as const) {
+          yield* startThreadTurn({
+            commandId: CommandId.make(`policy-source-${source}`),
+            threadId: v2ThreadId,
+            creationSource: source,
+            message: {
+              messageId: MessageId.make(`source-${source}`),
+              role: "user",
+              text: "Special delivery",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: "queue",
+            allowQueuedToolBoundaryDelivery: true,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+          expect(commands.at(-1)).not.toHaveProperty("queuedToolBoundaryEligible");
+        }
+      }
+    }).pipe(Effect.provide(layerTestCrypto)),
+);
+
+it.effect.each([true, false])(
+  "opts out of queued tool-boundary delivery during an active run with server resolution %s",
+  (serverResolution) =>
+    Effect.gen(function* () {
+      const providerThreadId = ProviderThreadId.make("active-provider-thread");
+      const providerSessionId = ProviderSessionId.make("active-session");
+      const activeRunId = RunId.make("active-root-run");
+      const providerSession: OrchestrationV2ProviderSession = {
+        id: providerSessionId,
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: v2Projection.thread.providerInstanceId,
+        status: "running",
+        cwd: "/workspace/project",
+        model: v2Projection.thread.modelSelection.model,
+        // The command only reads turn capabilities from this RPC fixture.
+        capabilities: {
+          turns: {
+            supportsActiveSteering: true,
+            supportsQueuedMessages: true,
+            supportsSteeringByInterruptRestart: true,
+          },
+        } as OrchestrationV2ProviderSession["capabilities"],
+        createdAt: v2Now,
+        updatedAt: v2Now,
+        lastError: null,
+      };
+      const projection: OrchestrationV2ThreadProjection = {
+        ...v2Projection,
+        thread: { ...v2Projection.thread, activeProviderThreadId: providerThreadId },
+        runs: [
+          {
+            id: activeRunId,
+            threadId: v2ThreadId,
+            ordinal: 1,
+            providerInstanceId: v2Projection.thread.providerInstanceId,
+            modelSelection: v2Projection.thread.modelSelection,
+            providerThreadId,
+            userMessageId: MessageId.make("active-user-message"),
+            rootNodeId: NodeId.make("active-root-node"),
+            activeAttemptId: null,
+            status: "running",
+            requestedAt: v2Now,
+            startedAt: v2Now,
+            completedAt: null,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        ],
+        providerThreads: [
+          {
+            id: providerThreadId,
+            driver: providerSession.driver,
+            providerInstanceId: providerSession.providerInstanceId,
+            providerSessionId,
+            appThreadId: v2ThreadId,
+            ownerNodeId: null,
+            nativeThreadRef: null,
+            nativeConversationHeadRef: null,
+            status: "active",
+            firstRunOrdinal: 1,
+            lastRunOrdinal: 1,
+            handoffIds: [],
+            forkedFrom: null,
+            createdAt: v2Now,
+            updatedAt: v2Now,
+          },
+        ],
+        providerSessions: [providerSession],
+      };
+      const commands: OrchestrationV2Command[] = [];
+      const projectionRequests: ThreadId[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        projection,
+        projectionRequests,
+        advertiseServerResolvedCommandContext: serverResolution,
+        advertiseQueuedToolBoundaryDelivery: true,
+      });
+      for (const creationSource of [undefined, "mobile"] as const) {
+        for (const allow of [undefined, false, true] as const) {
+          const commandId = CommandId.make(`reply-${creationSource}-${allow}`);
+          const messageId = MessageId.make(`message-${creationSource}-${allow}`);
+          yield* startThreadTurn({
+            commandId,
+            threadId: v2ThreadId,
+            ...(creationSource === undefined ? {} : { creationSource }),
+            message: { messageId, role: "user", text: "Queued reply", attachments: [] },
+            modelSelection: projection.thread.modelSelection,
+            runtimeMode: projection.thread.runtimeMode,
+            interactionMode: projection.thread.interactionMode,
+            dispatchMode: "queue",
+            ...(allow === undefined ? {} : { allowQueuedToolBoundaryDelivery: allow }),
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+          const command = commands.at(-1)!;
+          expect(command).toMatchObject({
+            type: "message.dispatch",
+            commandId,
+            messageId,
+            threadId: v2ThreadId,
+            createdBy: "user",
+            creationSource: creationSource ?? "web",
+            modelSelection: projection.thread.modelSelection,
+            dispatchMode: { type: "queue_after_active" },
+          });
+          expect(command).not.toHaveProperty("deliveryIntent");
+          expect(command).not.toHaveProperty("allowQueuedToolBoundaryDelivery");
+          if (allow === false) expect(command).not.toHaveProperty("queuedToolBoundaryEligible");
+          else expect(command).toHaveProperty("queuedToolBoundaryEligible", true);
+        }
+      }
+      expect(commands).toHaveLength(6);
+      expect(projectionRequests).toHaveLength(serverResolution ? 0 : 6);
+    }).pipe(Effect.provide(layerTestCrypto)),
+);
+
+const automaticWorktreeTurn = {
+  commandId: CommandId.make("captured-command"),
+  threadId: ThreadId.make("captured-thread"),
+  message: {
+    messageId: MessageId.make("captured-message"),
+    role: "user" as const,
+    text: "Start the task",
+    attachments: [],
+  },
+  runtimeMode: "full-access" as const,
+  interactionMode: "default" as const,
+  bootstrap: {
+    createThread: {
+      projectId: ProjectId.make("captured-project"),
+      title: "Captured draft",
+      modelSelection: v2Projection.thread.modelSelection,
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+      branch: null,
+      worktreePath: null,
+      createdAt: DateTime.formatIso(v2Now),
+    },
+    prepareWorktree: {
+      projectCwd: "/workspace/project",
+      branch: "t3/captured-branch",
+      startFromOrigin: true,
+    },
+    runSetupScript: true,
+  },
+};
+
+const automaticWorktreeLaunch = {
+  commandId: automaticWorktreeTurn.commandId,
+  creationSource: "web" as const,
+  threadId: automaticWorktreeTurn.threadId,
+  projectId: automaticWorktreeTurn.bootstrap.createThread.projectId,
+  title: automaticWorktreeTurn.bootstrap.createThread.title,
+  generateTitle: false,
+  modelSelection: automaticWorktreeTurn.bootstrap.createThread.modelSelection,
+  runtimeMode: automaticWorktreeTurn.runtimeMode,
+  interactionMode: automaticWorktreeTurn.interactionMode,
+  workspaceStrategy: {
+    type: "worktree" as const,
+    branch: automaticWorktreeTurn.bootstrap.prepareWorktree.branch,
+    startFromOrigin: true,
+  },
+  initialMessage: {
+    messageId: automaticWorktreeTurn.message.messageId,
+    text: automaticWorktreeTurn.message.text,
+    attachments: [],
+  },
+};
+
+const refsResult = (refs: VcsListRefsResult["refs"], isRepo = true): VcsListRefsResult => ({
+  refs,
+  isRepo,
+  hasPrimaryRemote: refs.some((ref) => ref.isRemote === true),
+  nextCursor: null,
+  totalCount: refs.length,
+});
+
+const withBaseRef = (baseRef: string) => ({
+  ...automaticWorktreeLaunch,
+  workspaceStrategy: { ...automaticWorktreeLaunch.workspaceStrategy, baseRef },
+});
+
+describe("prepared thread turns", () => {
+  it.effect.each([false, true])(
+    "retries identical wire bytes after input, projection, defaults and capabilities change (launch=%s)",
+    (launch) =>
+      Effect.gen(function* () {
+        const commands: OrchestrationV2Command[] = [];
+        const launches: OrchestrationV2ThreadLaunchInput[] = [];
+        const projectionRequests: ThreadId[] = [];
+        const projection = {
+          ...v2Projection,
+          thread: {
+            ...v2Projection.thread,
+            modelSelection: { ...v2Projection.thread.modelSelection },
+          },
+          messages: [],
+          runs: [
+            {
+              id: RunId.make("captured-active-run"),
+              threadId: v2ThreadId,
+              ordinal: 1,
+              providerInstanceId: v2Projection.thread.providerInstanceId,
+              modelSelection: v2Projection.thread.modelSelection,
+              providerThreadId: null,
+              userMessageId: MessageId.make("active-message"),
+              rootNodeId: null,
+              activeAttemptId: null,
+              status: "running" as const,
+              requestedAt: v2Now,
+              startedAt: v2Now,
+              completedAt: null,
+              checkpointId: null,
+              contextHandoffId: null,
+            },
+          ],
+        };
+        const uploadStarted = yield* Deferred.make<void>();
+        const uploadReply = yield* Deferred.make<void>();
+        let uploads = 0;
+        let refLookups = 0;
+        const persisted = {
+          type: "image" as const,
+          id: ChatAttachmentId.make("persisted-image"),
+          name: "original.png",
+          mimeType: "image/png",
+          sizeBytes: 1,
+        };
+        const supervisor = yield* makeSupervisor({
+          commands,
+          launches,
+          projects: [],
+          projection,
+          projectionRequests,
+          advertiseServerResolvedCommandContext: false,
+          advertiseQueuedToolBoundaryDelivery: true,
+          onDispatch: () =>
+            Effect.fail(
+              new OrchestrationDispatchCommandError({ message: "Response lost after issuance" }),
+            ),
+          onLaunch: () =>
+            Effect.fail(
+              new OrchestrationDispatchCommandError({ message: "Response lost after issuance" }),
+            ),
+          persistAttachments: () =>
+            Effect.gen(function* () {
+              uploads++;
+              yield* Deferred.succeed(uploadStarted, undefined);
+              yield* Deferred.await(uploadReply);
+              return { attachments: [persisted] };
+            }),
+          listRefs: () =>
+            Effect.sync(() => {
+              refLookups++;
+              return refsResult([
+                { name: "original-base", current: true, isDefault: true, worktreePath: null },
+              ]);
+            }),
+        });
+        const input = {
+          threadId: v2ThreadId,
+          message: {
+            messageId: MessageId.make("captured-message"),
+            role: "user" as const,
+            text: "original text",
+            attachments: [
+              {
+                type: "image" as const,
+                name: "original.png",
+                mimeType: "image/png",
+                sizeBytes: 1,
+                dataUrl: "data:image/png;base64,AA==",
+              },
+            ],
+          },
+          ...(launch ? {} : { titleSeed: "original title" }),
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          dispatchMode: "steer" as const,
+          ...(launch
+            ? {
+                bootstrap: {
+                  prepareWorktree: { projectCwd: "/original", branch: "original-branch" },
+                },
+              }
+            : {}),
+        };
+        const preparation = yield* prepareThreadTurn(input).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(uploadStarted);
+        input.message.text = "changed during upload";
+        input.message.attachments[0]!.name = "changed.png";
+        yield* Deferred.succeed(uploadReply, undefined);
+        const prepared = yield* Fiber.join(preparation);
+        const originalBytes = JSON.stringify(prepared.payload);
+        expect(commands).toEqual([]);
+        expect(launches).toEqual([]);
+        expect(Object.isFrozen(prepared.payload)).toBe(true);
+        if (prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
+          expect(prepared.payload.initialMessage.text).toBe("original text");
+          expect(prepared.payload.title).toBe(projection.thread.title);
+          expect(prepared.payload.modelSelection).toEqual(projection.thread.modelSelection);
+          expect(prepared.payload.workspaceStrategy).toMatchObject({ baseRef: "original-base" });
+          expect(Object.isFrozen(prepared.payload.initialMessage.attachments[0])).toBe(true);
+        } else {
+          expect(prepared.payload.text).toBe("original text");
+          expect(prepared.payload.dispatchMode).toEqual({
+            type: "steer_active",
+            targetRunId: RunId.make("captured-active-run"),
+          });
+          expect(Object.isFrozen(prepared.payload.attachments[0])).toBe(true);
+        }
+        const first = yield* dispatchPreparedThreadTurn(prepared).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.exit,
+        );
+        expect(first._tag).toBe("Failure");
+        projection.thread.title = "changed projected title";
+        projection.thread.modelSelection.model = "changed-default-model";
+        projection.runs[0]!.id = RunId.make("different-active-run");
+        input.titleSeed = "changed title";
+        if (input.bootstrap) input.bootstrap.prepareWorktree.branch = "different-branch";
+        persisted.name = "changed-server-attachment.png";
+        const replacement = yield* makeSupervisor({
+          commands,
+          launches,
+          projects: [],
+          projection,
+          projectionRequests,
+        });
+        yield* SubscriptionRef.set(
+          supervisor.session,
+          yield* SubscriptionRef.get(replacement.session),
+        );
+        yield* dispatchPreparedThreadTurn(prepared).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+        const attempts = launch ? launches : commands;
+        expect(attempts).toHaveLength(2);
+        expect(attempts.map((payload) => JSON.stringify(payload))).toEqual([
+          originalBytes,
+          originalBytes,
+        ]);
+        expect(uploads).toBe(1);
+        expect(refLookups).toBe(launch ? 1 : 0);
+        expect(projectionRequests).toEqual([v2ThreadId]);
+      }).pipe(Effect.provide(layerTestCrypto), Effect.scoped),
+  );
+});
+
+describe("v2 worktree start compatibility", () => {
+  it.effect("waits for one unfiltered default-ref lookup before launching on older servers", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const lookups: VcsListRefsInput[] = [];
+      const firstOperation = yield* Deferred.make<"refs" | "launch">();
+      const refs = yield* Deferred.make<VcsListRefsResult>();
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        launches,
+        onLaunch: () => Deferred.succeed(firstOperation, "launch").pipe(Effect.asVoid),
+        listRefs: (input) =>
+          Effect.gen(function* () {
+            lookups.push(input);
+            yield* Deferred.succeed(firstOperation, "refs");
+            return yield* Deferred.await(refs);
+          }),
+      });
+      const start = yield* startThreadTurn(automaticWorktreeTurn).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.forkChild,
+      );
+
+      expect(yield* Deferred.await(firstOperation)).toBe("refs");
+      expect(lookups).toEqual([{ cwd: "/workspace/project", limit: 100 }]);
+      expect(launches).toEqual([]);
+      yield* Deferred.succeed(
+        refs,
+        refsResult([
+          { name: "feature/current", current: true, isDefault: false, worktreePath: null },
+          {
+            name: "origin/develop",
+            current: false,
+            isDefault: true,
+            isRemote: true,
+            worktreePath: null,
+          },
+        ]),
+      );
+      expect(yield* Fiber.join(start)).toMatchObject({ threadId: automaticWorktreeTurn.threadId });
+      expect(launches).toEqual([withBaseRef("origin/develop")]);
+      expect(commands).toEqual([]);
+      expect(automaticWorktreeTurn.bootstrap.prepareWorktree).not.toHaveProperty("baseBranch");
+    }).pipe(Effect.provide(layerTestCrypto), Effect.scoped),
+  );
+
+  it.effect("passes automatic intent directly to capable servers without the client hint", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const lookups: VcsListRefsInput[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        launches,
+        listRefs: (input) =>
+          Effect.sync(() => {
+            lookups.push(input);
+            return refsResult([]);
+          }),
+      });
+      yield* startThreadTurn({ ...automaticWorktreeTurn, serverResolvesWorktreeBase: true }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
+      expect(lookups).toEqual([]);
+      expect(launches).toEqual([automaticWorktreeLaunch]);
+      expect(commands).toEqual([]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect(
+    "keeps independent command and thread identities for automatic multi-model launches",
+    () =>
+      Effect.gen(function* () {
+        const launches: OrchestrationV2ThreadLaunchInput[] = [];
+        const lookups: VcsListRefsInput[] = [];
+        const supervisor = yield* makeSupervisor({
+          commands: [],
+          projects: [],
+          launches,
+          listRefs: (input) =>
+            Effect.sync(() => {
+              lookups.push(input);
+              return refsResult([]);
+            }),
+        });
+        for (const suffix of ["one", "two"]) {
+          yield* startThreadTurn({
+            ...automaticWorktreeTurn,
+            commandId: CommandId.make(`multi-model-command-${suffix}`),
+            threadId: ThreadId.make(`multi-model-thread-${suffix}`),
+            serverResolvesWorktreeBase: true,
+            message: {
+              ...automaticWorktreeTurn.message,
+              messageId: MessageId.make(`multi-model-message-${suffix}`),
+            },
+            bootstrap: {
+              ...automaticWorktreeTurn.bootstrap,
+              prepareWorktree: {
+                projectCwd: "/workspace/project",
+                requireWorktree: true,
+                startFromOrigin: true,
+              },
+            },
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        }
+        expect(lookups).toEqual([]);
+        expect(launches).toEqual(
+          ["one", "two"].map((suffix) => ({
+            ...automaticWorktreeLaunch,
+            commandId: CommandId.make(`multi-model-command-${suffix}`),
+            threadId: ThreadId.make(`multi-model-thread-${suffix}`),
+            initialMessage: {
+              ...automaticWorktreeLaunch.initialMessage,
+              messageId: MessageId.make(`multi-model-message-${suffix}`),
+            },
+            workspaceStrategy: { type: "worktree", startFromOrigin: true },
+          })),
+        );
+      }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("preserves an explicit base and skips lookup for current-checkout launches", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const lookups: VcsListRefsInput[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        launches,
+        listRefs: (input) =>
+          Effect.sync(() => {
+            lookups.push(input);
+            return refsResult([]);
+          }),
+      });
+      yield* startThreadTurn({
+        ...automaticWorktreeTurn,
+        serverResolvesWorktreeBase: false,
+        bootstrap: {
+          ...automaticWorktreeTurn.bootstrap,
+          prepareWorktree: {
+            ...automaticWorktreeTurn.bootstrap.prepareWorktree,
+            baseBranch: "upstream/release",
+          },
+        },
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      yield* startThreadTurn({
+        ...automaticWorktreeTurn,
+        serverResolvesWorktreeBase: false,
+        bootstrap: { createThread: automaticWorktreeTurn.bootstrap.createThread },
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(lookups).toEqual([]);
+      expect(launches).toEqual([
+        withBaseRef("upstream/release"),
+        { ...automaticWorktreeLaunch, workspaceStrategy: { type: "root" } },
+      ]);
+      expect(commands).toEqual([]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("uses the current local branch when an older server reports no default", () =>
+    Effect.gen(function* () {
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands: [],
+        projects: [],
+        launches,
+        listRefs: () =>
+          Effect.succeed(
+            refsResult([
+              { name: "feature/local", current: true, isDefault: false, worktreePath: null },
+            ]),
+          ),
+      });
+      yield* startThreadTurn({ ...automaticWorktreeTurn, serverResolvesWorktreeBase: false }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
+      expect(launches).toEqual([withBaseRef("feature/local")]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("fails clearly without launching when no valid automatic base exists", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      for (const isRepo of [true, false]) {
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          launches,
+          listRefs: () => Effect.succeed(refsResult([], isRepo)),
+        });
+        const failure = yield* startThreadTurn(automaticWorktreeTurn).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.flip,
+        );
+        expect(failure).toBeInstanceOf(OrchestrationDispatchCommandError);
+        expect(failure.message).toContain("base branch");
+      }
+      expect(launches).toEqual([]);
+      expect(commands).toEqual([]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("propagates lookup failure without launching or retrying", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      let lookupCount = 0;
+      const refsFailure = new GitCommandError({
+        operation: "listRefs",
+        command: "git",
+        cwd: "/workspace/project",
+        detail: "Repository unavailable",
+      });
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        launches,
+        listRefs: () =>
+          Effect.suspend(() => {
+            lookupCount += 1;
+            return Effect.fail(refsFailure);
+          }),
+      });
+      const failure = yield* startThreadTurn(automaticWorktreeTurn).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.flip,
+      );
+      expect(failure).toBe(refsFailure);
+      expect(lookupCount).toBe(1);
+      expect(launches).toEqual([]);
+      expect(commands).toEqual([]);
+    }).pipe(Effect.provide(layerTestCrypto)),
   );
 });

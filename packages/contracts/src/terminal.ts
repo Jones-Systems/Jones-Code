@@ -203,6 +203,17 @@ export const TerminalWriteInput = Schema.Struct({
   // A renderer's answer to a terminal query (DA, DSR, DECRQM). Every attached renderer
   // answers, so the server passes on one viewer's replies; older servers ignore it.
   reply: Schema.optionalKey(Schema.Boolean),
+  observation: Schema.optional(
+    Schema.Struct({
+      invocationId: Schema.String.check(
+        Schema.isPattern(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        ),
+      ),
+      projectId: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256)),
+      scriptId: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256)),
+    }),
+  ),
 });
 export type TerminalWriteInput = Schema.Codec.Encoded<typeof TerminalWriteInput>;
 

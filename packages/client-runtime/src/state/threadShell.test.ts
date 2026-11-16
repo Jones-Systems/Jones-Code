@@ -1,6 +1,8 @@
 import {
   EnvironmentId,
   ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   RunId,
   RuntimeRequestId,
   ThreadId,
@@ -12,6 +14,7 @@ import * as Option from "effect/Option";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
+import { presentThreadShell } from "./models.ts";
 import { PrimaryConnectionTarget } from "../connection/model.ts";
 import { v2Now, v2ShellSnapshot, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import { applyShellStreamEvent } from "./shellReducer.ts";
@@ -116,7 +119,7 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
-  it("keeps a live subagent question inside the parent without flagging its thread", () => {
+  it("keeps a live subagent question inside the parent with Jones input attention", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const root = v2ThreadShell;
     const child = {
@@ -143,7 +146,7 @@ describe("v2 thread shell lists", () => {
     expect(
       registry.get(threads.threadShellAtom({ environmentId, threadId: root.id }))
         ?.pendingSubagentRequest,
-    ).toBeNull();
+    ).toBe("user_input");
     registry.set(snapshotAtom(environmentId), {
       ...v2ShellSnapshot,
       threads: [root, { ...child, status: "queued" as const }],
@@ -411,7 +414,9 @@ describe("v2 thread shell lists", () => {
         { ...helper, pendingRuntimeRequest: { ...approval, kind: "user_input" as const } },
       ],
     });
-    expect(registry.get(threads.threadShellAtom(parentRef))?.pendingSubagentRequest).toBeNull();
+    expect(registry.get(threads.threadShellAtom(parentRef))?.pendingSubagentRequest).toBe(
+      "user_input",
+    );
     expect(registry.get(inputs).map((thread) => thread.id)).toEqual([helper.id]);
 
     // A secret card needs the user, so it still reaches the parent here.
@@ -682,6 +687,32 @@ describe("v2 thread shell lists", () => {
       harness.registry.dispose();
     }
   });
+});
+
+it("retains optional server-selected runtime identity without activating replayed generations", () => {
+  const identity = {
+    runtimeGeneration: "historical-native-process",
+    evidenceRevision: 4,
+    requested: {
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerDriver: ProviderDriverKind.make("codex"),
+      model: "requested",
+      serviceTier: null,
+    },
+    observed: {
+      backend: { status: "unknown" as const },
+      model: { status: "observed" as const, value: "native", sourceEvent: "codex.thread/open" },
+      account: { status: "unavailable" as const, reason: "Not reported." },
+      serviceTier: { status: "unavailable" as const, reason: "Not reported." },
+    },
+  };
+  const presented = presentThreadShell(environmentId, {
+    ...v2ThreadShell,
+    runtimeIdentity: identity,
+  });
+  expect(presented.runtimeIdentity).toEqual(identity);
+  expect(presented.modelSelection).toEqual(v2ThreadShell.modelSelection);
+  expect(presentThreadShell(environmentId, v2ThreadShell)).not.toHaveProperty("runtimeIdentity");
 });
 
 describe("resolveListedAncestorThreadRef", () => {

@@ -1,3 +1,9 @@
+import {
+  type StartThreadTurnInput,
+  type PreparedThreadTurn,
+  promoteQueuedBatch,
+  type PromoteQueuedBatchInput,
+} from "../operations/commands.ts";
 import { CommandId, type ModelSelection, type ThreadId } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
@@ -5,6 +11,7 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 import {
   WS_METHODS,
+  ORCHESTRATION_V2_WS_METHODS,
   type EnvironmentId,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
@@ -28,6 +35,7 @@ import {
   closeGuestShare,
   resolveGuestMessage,
   cancelQueuedRun,
+  reorderQueuedRun,
   createThread,
   deleteThread,
   editQueuedRun,
@@ -53,6 +61,8 @@ import {
   settleThread,
   snoozeThread,
   startThreadTurn,
+  prepareThreadTurn,
+  dispatchPreparedThreadTurn,
   stopThreadSession,
   unarchiveThread,
   unlinkThreadPullRequest,
@@ -305,6 +315,21 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    prepareTurn: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:prepare-turn",
+      execute: (input: StartThreadTurnInput) => prepareThreadTurn(input),
+      scheduler,
+      concurrency,
+    }),
+    dispatchPreparedTurn: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:dispatch-prepared-turn",
+      execute: (input: PreparedThreadTurn) => dispatchPreparedThreadTurn(input),
+      scheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.payload.threadId]),
+      },
+    }),
     startTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:start-turn",
       execute: startThreadTurn,
@@ -338,6 +363,24 @@ export function createThreadEnvironmentAtoms<R, E>(
     revertCheckpoint: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:revert-checkpoint",
       execute: revertThreadCheckpoint,
+      scheduler,
+      concurrency,
+    }),
+    readCurrentRuntimeStopTarget: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:read-current-runtime-stop-target",
+      tag: ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget,
+      scheduler,
+      concurrency,
+    }),
+    stopCurrentThreadRuntime: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:stop-current-runtime",
+      tag: ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime,
+      scheduler,
+      concurrency,
+    }),
+    observeCurrentThreadRuntimeStop: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:observe-current-runtime-stop",
+      tag: ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop,
       scheduler,
       concurrency,
     }),
@@ -381,9 +424,21 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    promoteQueuedBatch: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:promote-queued-batch",
+      execute: (input: PromoteQueuedBatchInput) => promoteQueuedBatch(input),
+      scheduler,
+      concurrency,
+    }),
     promoteQueuedRun: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:promote-queued-run",
       execute: promoteQueuedRun,
+      scheduler,
+      concurrency,
+    }),
+    reorderQueuedRun: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:reorder-queued-run",
+      execute: reorderQueuedRun,
       scheduler,
       concurrency,
     }),
@@ -409,6 +464,9 @@ export function createThreadEnvironmentAtoms<R, E>(
       label: "environment-data:commands:thread:load-earlier-history",
       execute: loadEarlierHistory,
       scheduler,
+      // A page load can make two sequential HTTP fetches, so it gets its own lane
+      // and Send or Stop never waits behind it. Loads still run one at a time, and
+      // the controller drops stale cursors and merges pages under its apply lock.
       concurrency: {
         mode: "serial",
         key: ({ environmentId, input }) =>

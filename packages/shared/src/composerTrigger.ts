@@ -1,4 +1,11 @@
-export type ComposerTriggerKind = "path" | "pull-request" | "slash-command" | "skill";
+import { oneSpaceThreadQuery } from "./jones/composerThreadQuery.ts";
+
+export type ComposerTriggerKind =
+  | "path"
+  | "pull-request"
+  | "slash-command"
+  | "slash-model"
+  | "skill";
 export type ComposerSlashCommand = "model" | "plan" | "default";
 
 export interface ComposerTrigger {
@@ -107,7 +114,8 @@ export function detectComposerTrigger(
     };
   }
   if (!token.startsWith("@")) {
-    return null;
+    const threadQuery = oneSpaceThreadQuery(text, cursor, wsCheck);
+    return threadQuery ? { kind: "path", ...threadQuery } : null;
   }
 
   return {

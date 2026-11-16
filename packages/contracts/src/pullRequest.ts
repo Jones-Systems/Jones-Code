@@ -13,6 +13,8 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { SourceControlProviderKind } from "./sourceControl.ts";
+import { PullRequestCheckObservation } from "./jones/pullRequestCheckObservation.ts";
+export { PullRequestCheckObservation } from "./jones/pullRequestCheckObservation.ts";
 
 export const PullRequestInvolvement = Schema.Literals(["all", "reviewing", "authored"]);
 export type PullRequestInvolvement = typeof PullRequestInvolvement.Type;
@@ -672,6 +674,7 @@ export const PullRequestDetail = Schema.Struct({
   labels: Schema.Array(PullRequestLabel),
   checks: Schema.Array(PullRequestCheck),
   mergeCapabilities: PullRequestMergeCapabilities,
+  jonesCheckObservation: Schema.optional(PullRequestCheckObservation),
   viewer: Schema.optional(TrimmedNonEmptyString),
   baseComparison: Schema.optional(PullRequestBaseComparison),
   behindBy: Schema.optional(NonNegativeInt),
@@ -689,6 +692,7 @@ export const PullRequestChecks = Schema.Struct({
   observedAt: Schema.optional(Schema.Finite),
   state: PullRequestState,
   checks: Schema.Array(PullRequestCheck),
+  jonesCheckObservation: Schema.optional(PullRequestCheckObservation),
 });
 export type PullRequestChecks = typeof PullRequestChecks.Type;
 
@@ -1037,7 +1041,8 @@ export class PullRequestOperationError extends Schema.TaggedError<PullRequestOpe
   {
     operation: Schema.String,
     detail: TrimmedNonEmptyString,
-    reason: Schema.optional(Schema.Literal("not-found")),
+    reason: Schema.optional(Schema.Literals(["not-found", "rate-limited"])),
+    retryAt: Schema.optional(Schema.Number.check(Schema.isFinite())),
     listResult: Schema.optional(PullRequestListResult),
     cause: Schema.optional(Schema.Defect()),
   },
@@ -1051,3 +1056,55 @@ export class PullRequestOperationError extends Schema.TaggedError<PullRequestOpe
     return `Pull request operation ${this.operation} failed: ${this.detail}`;
   }
 }
+
+export const PullRequestCiStatusInput = Schema.Struct({
+  host: TrimmedNonEmptyString.check(Schema.isMaxLength(253)),
+  organization: TrimmedNonEmptyString.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/)),
+  expectedAccountId: Schema.optional(TrimmedNonEmptyString),
+});
+export type PullRequestCiStatusInput = typeof PullRequestCiStatusInput.Type;
+
+export const PullRequestCiAvailability = Schema.Literals(["available", "partial", "unavailable"]);
+const ciSection = <A extends Schema.Top>(item: A) =>
+  Schema.Struct({
+    state: PullRequestCiAvailability,
+    reasons: Schema.Array(Schema.String),
+    items: Schema.Array(item),
+  });
+export const PullRequestCiJob = Schema.Struct({
+  id: PositiveInt,
+  runId: PositiveInt,
+  repository: Schema.String,
+  name: Schema.String,
+  status: Schema.Literals(["queued", "in_progress"]),
+  url: Schema.NullOr(Schema.String),
+  runnerId: Schema.NullOr(PositiveInt),
+  runnerName: Schema.NullOr(Schema.String),
+  startedAt: Schema.NullOr(IsoDateTime),
+});
+export const PullRequestCiWorkflow = Schema.Struct({
+  id: PositiveInt,
+  repository: Schema.String,
+  name: Schema.String,
+  status: Schema.String,
+  url: Schema.NullOr(Schema.String),
+});
+export const PullRequestCiRunner = Schema.Struct({
+  id: PositiveInt,
+  name: Schema.String,
+  status: Schema.Literals(["online", "offline", "unknown"]),
+  busy: Schema.Boolean,
+  labels: Schema.Array(Schema.String),
+});
+export const PullRequestCiStatusResult = Schema.Struct({
+  host: Schema.String,
+  organization: Schema.String,
+  accountId: Schema.NullOr(Schema.String),
+  observedAt: IsoDateTime,
+  repositories: Schema.Array(Schema.String),
+  scopeTruncated: Schema.Boolean,
+  jobs: ciSection(PullRequestCiJob),
+  workflows: ciSection(PullRequestCiWorkflow),
+  runners: ciSection(PullRequestCiRunner),
+});
+export type PullRequestCiStatusResult = typeof PullRequestCiStatusResult.Type;
