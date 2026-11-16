@@ -76,7 +76,18 @@ export function classifyThreadStatus(
   activityWindow?: ThreadActivityWindow,
   now = Date.now(),
 ): ThreadStatus | null {
-  if (effectiveSnoozed(thread, { now: new Date(now).toISOString() })) return null;
+  if (
+    effectiveSnoozed(
+      {
+        ...thread,
+        source: { pendingRuntimeRequest: thread.source?.pendingRuntimeRequest ?? null },
+        latestUserMessageAt: thread.latestUserMessageAt ?? null,
+        pendingGuestMessageCount: thread.pendingGuestMessageCount ?? 0,
+      },
+      { now: new Date(now).toISOString() },
+    )
+  )
+    return null;
   if (activityWindow?.threadActivityWindowEnabled) {
     if (!threadIsInActivityWindow(thread, activityWindow, now)) return null;
     const status = resolveSidebarThreadStatus(thread);
