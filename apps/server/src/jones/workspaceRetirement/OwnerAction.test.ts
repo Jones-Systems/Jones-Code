@@ -5,6 +5,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Config from "../../config.ts";
 import * as Projections from "../../orchestration-v2/ProjectionStore.ts";
@@ -23,13 +24,13 @@ const fixture = (failure?: ServerSettingsError | Projections.ProjectionStoreRead
           Layer.mock(Projects.ProjectStoreV2)({}),
           Layer.mock(Settings.ServerSettingsService)({
             getSettings:
-              failure instanceof ServerSettingsError
+              Schema.is(ServerSettingsError)(failure)
                 ? Effect.fail(failure)
                 : Effect.succeed(DEFAULT_SERVER_SETTINGS),
           }),
           Layer.mock(Projections.ProjectionStoreV2)({
             getThreadWorktreePaths: () =>
-              failure instanceof Projections.ProjectionStoreReadError
+              Schema.is(Projections.ProjectionStoreReadError)(failure)
                 ? Effect.fail(failure)
                 : Effect.succeed([{ threadId, worktreePath }]),
             getThread: () =>

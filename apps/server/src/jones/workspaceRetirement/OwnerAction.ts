@@ -203,8 +203,8 @@ export const make = Effect.gen(function* () {
             retirement: result.outcome,
           } satisfies StorageCleanupReportEntry;
         }).pipe(
-          Effect.catch(() =>
-            Effect.succeed({
+          Effect.orElseSucceed(() => {
+            return {
               kind: "worktree",
               outcome: "failed",
               reason: `${failureReason}: ${nextAction}`,
@@ -233,8 +233,8 @@ export const make = Effect.gen(function* () {
                 ],
                 outputObligations: [],
               },
-            } satisfies StorageCleanupReportEntry),
-          ),
+            } satisfies StorageCleanupReportEntry;
+          }),
         );
         entries.push(entry);
       }
