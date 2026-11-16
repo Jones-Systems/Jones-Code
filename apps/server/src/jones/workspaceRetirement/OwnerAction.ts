@@ -17,6 +17,7 @@ import * as Settings from "../../serverSettings.ts";
 import { beforeCleanup } from "../workspaceLifecycle/NativeBoundary.ts";
 import { withOperation } from "../workspaceLifecycle/NativeOperation.ts";
 import { RetirementError } from "./Receipts.ts";
+import { TargetObservation, presenceOutcome } from "./TargetPresence.ts";
 import { evaluate } from "./Runtime.ts";
 
 const compiledMain3acaCodec22 = Schema.is(ServerSettingsError);
@@ -29,6 +30,7 @@ export const make = Effect.gen(function* () {
   const context = yield* Effect.context<
     SqlClient.SqlClient | Config.ServerConfig | Projections.ProjectionStoreV2
   >();
+  const observeTarget = yield* TargetObservation;
   const projections = yield* Projections.ProjectionStoreV2,
     projects = yield* Projects.ProjectStoreV2;
   const settings = yield* Settings.ServerSettingsService,
@@ -62,7 +64,9 @@ export const make = Effect.gen(function* () {
           reason: "binding_changed",
         });
       const serverSettings = yield* settings.getSettings;
-      for (const item of selected.slice(0, 200)) {
+      let evaluated = 0,
+        omitted = 0;
+      for (const item of selected) {
         let threadTitle: string | null = null;
         let projectPath: string | null = null;
         let failureReason = "thread_metadata_unavailable";
@@ -83,6 +87,28 @@ export const make = Effect.gen(function* () {
             });
           }
           projectPath = project.value.workspaceRoot;
+          const presence = yield* Effect.promise(() =>
+            observeTarget(item.worktreePath, project.value.workspaceRoot),
+          );
+          if (presence.status !== "present") {
+            return {
+              kind: "worktree",
+              outcome: "kept",
+              reason: presenceOutcome(item.worktreePath, presence).reasonCodes.join(", "),
+              path: item.worktreePath,
+              projectPath,
+              threadId: item.threadId,
+              threadTitle,
+              bytes: null,
+              files: null,
+              retirement: presenceOutcome(item.worktreePath, presence),
+            } satisfies StorageCleanupReportEntry;
+          }
+          if (evaluated >= 200) {
+            omitted++;
+            return null;
+          }
+          evaluated++;
           failureReason = "candidate_evaluation_unavailable";
           nextAction = "Restore this checkout's retirement observations, then repeat the proposal.";
           const rules = resolveWorktreeCleanup(serverSettings, thread.projectId);
@@ -236,7 +262,7 @@ export const make = Effect.gen(function* () {
             } satisfies StorageCleanupReportEntry;
           }),
         );
-        entries.push(entry);
+        if (entry !== null) entries.push(entry);
       }
       return {
         trigger: "manual",
@@ -248,7 +274,7 @@ export const make = Effect.gen(function* () {
           kept: entries.filter((e) => e.outcome === "kept").length,
           failed: entries.filter((e) => e.outcome === "failed").length,
         },
-        omittedCount: Math.max(0, selected.length - 200),
+        omittedCount: omitted,
         bytesFreed: 0,
       } satisfies StorageCleanupReport;
     },

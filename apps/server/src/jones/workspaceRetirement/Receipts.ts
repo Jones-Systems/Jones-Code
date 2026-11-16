@@ -35,6 +35,11 @@ export class RetirementError extends Schema.TaggedError<RetirementError>()("Reti
     return `Checkout retirement held (${this.reason}): ${this.target}.`;
   }
 }
+// Installed only around a recovery proposal; ordinary runtime callers retain their own guards.
+export class SettlementRecoveryGuard extends Context.Reference<
+  Effect.Effect<void, RetirementError>
+>("jones/workspaceRetirement/SettlementRecoveryGuard", { defaultValue: () => Effect.void }) {}
+
 export interface RetirementReceipt {
   schema: "worktree-retirement/v1";
   id: string;
@@ -133,7 +138,11 @@ export class Receipts extends Context.Service<
       event: string,
       holder: string,
     ) => Effect.Effect<boolean, RetirementError>;
-    readonly cancelPendingScript: (event: string) => Effect.Effect<void, RetirementError>;
+    readonly cancelPendingScript: (
+      event: string,
+      guard?: Effect.Effect<void, RetirementError>,
+      result?: unknown,
+    ) => Effect.Effect<boolean, RetirementError>;
     readonly finishScript: (
       event: string,
       state: Exclude<SettlementScriptState, "pending" | "running">,
@@ -144,6 +153,7 @@ export class Receipts extends Context.Service<
       event: string,
       state: SettlementScriptState,
       result: unknown,
+      guard?: Effect.Effect<void, RetirementError>,
     ) => Effect.Effect<void, RetirementError>;
     readonly begin: (receipt: RetirementReceipt) => Effect.Effect<void, RetirementError>;
     readonly finish: (receipt: RetirementReceipt) => Effect.Effect<void, RetirementError>;
@@ -267,11 +277,17 @@ const make = Effect.gen(function* () {
     }, mapError("workspace")),
     recoveryBatch: Effect.fn("WorkspaceRetirement.recoveryBatch")(function* (after) {
       return yield* sql<RecoverableSettlement>`SELECT i.*,i.rowid AS cursor,d.identity_json,d.native_owner_json,c.holder_json,
-        (i.outcome_json IS NULL OR json_extract(i.outcome_json,'$.reasonCodes[0]') IN ('settle_script_pending','settle_script_recovery_pending')) AS needs_outcome
+        (i.outcome_json IS NULL OR (i.script_state='completed' AND json_extract(i.outcome_json,'$.state')='held'
+        AND json_array_length(json_extract(i.outcome_json,'$.reasonCodes'))>0
+        AND NOT EXISTS (SELECT 1 FROM json_each(i.outcome_json,'$.reasonCodes') WHERE value NOT IN
+        ('observation_failed','consumer_evidence_unavailable','settlement_recovery_unavailable','native_output_observation_unavailable','target_observation_unavailable','settle_script_pending','settle_script_recovery_pending')))) AS needs_outcome
         FROM jones_workspace_retirement_intents i
         LEFT JOIN jones_workspace_duty_claims c ON c.claim_id='settlement-intent:'||i.event_id AND c.worktree=i.worktree AND c.owner=i.thread_id AND c.kind='settlement-intent'
         LEFT JOIN jones_workspace_duty_identity d ON d.claim_id=c.claim_id
-        WHERE i.rowid>${after} AND (i.script_state IN ('pending','running') OR i.outcome_json IS NULL OR json_extract(i.outcome_json,'$.reasonCodes[0]') IN ('settle_script_pending','settle_script_recovery_pending')) ORDER BY i.rowid LIMIT 100`;
+        WHERE i.rowid>${after} AND (i.script_state IN ('pending','running') OR i.outcome_json IS NULL OR (i.script_state='completed' AND json_extract(i.outcome_json,'$.state')='held'
+        AND json_array_length(json_extract(i.outcome_json,'$.reasonCodes'))>0
+        AND NOT EXISTS (SELECT 1 FROM json_each(i.outcome_json,'$.reasonCodes') WHERE value NOT IN
+        ('observation_failed','consumer_evidence_unavailable','settlement_recovery_unavailable','native_output_observation_unavailable','target_observation_unavailable','settle_script_pending','settle_script_recovery_pending')))) ORDER BY i.rowid LIMIT 100`;
     }, mapError("workspace")),
     cancelAbsentScript: Effect.fn("WorkspaceRetirement.cancelAbsentScript")(function* (
       event,
@@ -289,13 +305,19 @@ const make = Effect.gen(function* () {
         }),
       );
     }, mapError("workspace")),
-    cancelPendingScript: Effect.fn("WorkspaceRetirement.cancelPendingScript")(function* (event) {
-      yield* sql.withTransaction(
+    cancelPendingScript: Effect.fn("WorkspaceRetirement.cancelPendingScript")(function* (
+      event,
+      guard,
+      result,
+    ) {
+      return yield* sql.withTransaction(
         Effect.gen(function* () {
+          if (guard) yield* guard;
           const rows =
-            yield* sql`UPDATE jones_workspace_retirement_intents SET script_state='cancelled',script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE event_id=${event} AND script_state='pending' RETURNING event_id`;
+            yield* sql`UPDATE jones_workspace_retirement_intents SET script_state='cancelled',script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())},outcome_json=CASE WHEN ${result === undefined ? 0 : 1} THEN ${yield* compiledMain3acaCodec5(result ?? null)} ELSE outcome_json END WHERE event_id=${event} AND script_state='pending' RETURNING event_id`;
           if (rows.length)
             yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE claim_id=${settlementClaimId(event)} AND released_at IS NULL`;
+          return rows.length === 1;
         }),
       );
     }, mapError("workspace")),
@@ -364,14 +386,26 @@ const make = Effect.gen(function* () {
       );
     }, mapError("workspace")),
     outcome: Effect.fn("WorkspaceRetirement.outcome")(function* (event, result) {
-      yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${yield* compiledMain3acaCodec5(result)} WHERE event_id=${event}`;
+      const guard = yield* SettlementRecoveryGuard;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* guard;
+          yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${yield* compiledMain3acaCodec5(result)} WHERE event_id=${event}`;
+        }),
+      );
     }, mapError("workspace")),
     recoveryOutcome: Effect.fn("WorkspaceRetirement.recoveryOutcome")(function* (
       event,
       state,
       result,
+      guard,
     ) {
-      yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${yield* compiledMain3acaCodec5(result)} WHERE event_id=${event} AND script_state=${state}`;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          if (guard) yield* guard;
+          yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${yield* compiledMain3acaCodec5(result)} WHERE event_id=${event} AND script_state=${state}`;
+        }),
+      );
     }, mapError("workspace")),
     begin: Effect.fn("WorkspaceRetirement.begin")(function* (receipt) {
       yield* sql.withTransaction(
