@@ -13,6 +13,8 @@ import {
   StorageCleanupReportReadError,
 } from "./ReportRead.ts";
 
+const isReportReadError = Schema.is(StorageCleanupReportReadError);
+const decode = Schema.decodeUnknownSync(StorageCleanupReportReadInput);
 const environmentId = EnvironmentId.make("report-environment");
 const threadId = ThreadId.make("report-thread");
 const entry = (index: number): StorageCleanupReportEntry => ({
@@ -59,7 +61,7 @@ const page = (
   input: typeof StorageCleanupReportReadInput.Type = {},
 ) => {
   const result = pageStorageCleanupReport(environmentId, source, input);
-  if (Schema.is(StorageCleanupReportReadError)(result)) throw result;
+  if (isReportReadError(result)) throw result;
   return result;
 };
 
@@ -229,7 +231,6 @@ it("bounds serialized nested detail without truncating or silently skipping an o
 });
 
 it("decodes bounded numeric cursors, limits and SHA-256 snapshots", () => {
-  const decode = Schema.decodeUnknownSync(StorageCleanupReportReadInput);
   expect(
     decode({ cursor: Number.MAX_SAFE_INTEGER, limit: 50, expectedSnapshot: "a".repeat(64) }),
   ).toMatchObject({ cursor: Number.MAX_SAFE_INTEGER });

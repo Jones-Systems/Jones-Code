@@ -9,6 +9,8 @@ import {
 } from "../../storageCleanup/ReportRead.ts";
 import { StorageCleanupReportToolkit } from "./tools.ts";
 
+const isReportReadError = Schema.is(StorageCleanupReportReadError);
+
 export const StorageCleanupReportHandlersLive = McpToolAccess.toLayer(StorageCleanupReportToolkit, {
   t3_storage_cleanup_report: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
@@ -16,7 +18,7 @@ export const StorageCleanupReportHandlersLive = McpToolAccess.toLayer(StorageCle
       const cleanup = yield* StorageCleanup.StorageCleanup;
       const report = yield* cleanup.latestReport;
       const page = pageStorageCleanupReport(caller.environmentId, report, input);
-      return Schema.is(StorageCleanupReportReadError)(page) ? yield* page : page;
+      return isReportReadError(page) ? yield* page : page;
     }),
   ),
 });
