@@ -233,6 +233,12 @@ const SOURCE_CONTROL_HOST_TERMS = sourceControlClients.definitions
 
 export const SETTINGS_SEARCH_ITEMS = [
   {
+    id: "show-work-button",
+    title: "Show Work button",
+    to: "/settings/jones-code",
+    searchTerms: ["sidebar appearance visibility hide work mode"],
+  },
+  {
     id: "thread-activity-window",
     title: "Thread activity window",
     to: "/settings/jones-code",

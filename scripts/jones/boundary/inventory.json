@@ -3590,6 +3590,11 @@
     "apps/web/src/components/chat/TimelineWorkGroupRows.tsx": "hook",
     "apps/web/src/components/chat/timelineRowContext.ts": "hook",
     "apps/mobile/src/features/threads/thread-work-log.tsx": "accepted-shared",
+    "apps/web/src/jones/workMode/WorkButtonSettings.tsx": "jones-owned",
+    "apps/web/src/jones/workMode/WorkButtonSettings.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/personalRail.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/personalRail.test.ts": "jones-owned",
+    "apps/web/src/hooks/useSettings.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/provider/startFailureMessage.ts": "jones-owned",
     "apps/server/src/jones/provider/startFailureMessage.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/start-failure-message.json": "jones-owned"
@@ -4561,6 +4566,10 @@
     {
       "from": "apps/server/src/provider/AgentContextBudget.test.ts",
       "to": "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts"
+    },
+    {
+      "from": "apps/web/src/routes/_chat.settings.jones-code.tsx",
+      "to": "apps/web/src/jones/workMode/WorkButtonSettings.tsx"
     }
   ]
 }

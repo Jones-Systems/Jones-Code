@@ -6,6 +6,7 @@ import { useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 
+import { useClientSettings } from "../../hooks/useSettings";
 import { useEnvironments } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
 import { environmentSession, readEnvironmentScopeAccess } from "../../state/session";
@@ -33,6 +34,11 @@ const DESCRIPTION =
   "Experimental: refreshes idle top-level threads after 55 minutes. Can consume usage; cache savings are not guaranteed.";
 
 export function SidebarWorkModePill() {
+  const visible = useClientSettings((settings) => settings.showWorkButton);
+  return visible ? <VisibleSidebarWorkModePill /> : null;
+}
+
+function VisibleSidebarWorkModePill() {
   const { isReady, environments } = useEnvironments();
   const initialConfigs = useAtomValue(
     initialConfigsAtom(environments.map(({ environmentId }) => environmentId).join("\n")),
