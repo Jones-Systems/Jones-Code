@@ -80,6 +80,97 @@ import type { TextPreviewResult } from "./largeTextProtocol";
 import type { ReactElement } from "react";
 import type { OfficeWorkerResult } from "./officePreviewProtocol";
 
+function observeOfficeViewerWorker(kind: "rtf" | "epub" | "ods", holdOpen = false) {
+  let markOpened!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    markOpened = resolve;
+  });
+  let releaseOpen: (() => void) | undefined;
+  let resolveReply!: (result: OfficeWorkerResult) => void;
+  let rejectReply!: (error: Error) => void;
+  const reply = new Promise<OfficeWorkerResult>((resolve, reject) => {
+    resolveReply = resolve;
+    rejectReply = reject;
+  });
+  const listeners = new AbortController();
+  const opening = new WeakSet<Worker>();
+  const observed = new WeakSet<Worker>();
+  const stub = stubGlobal(
+    "Worker",
+    class extends Worker {
+      constructor(...args: ConstructorParameters<typeof Worker>) {
+        super(...args);
+        if (!new URL(String(args[0]), document.baseURI).pathname.includes("officePreview.worker"))
+          return;
+        observed.add(this);
+        this.addEventListener(
+          "message",
+          (event: MessageEvent<OfficeWorkerResult>) => {
+            if (!opening.has(this)) {
+              rejectReply(new Error("Office viewer replied before its open request"));
+            } else if (event.data.type === "error") {
+              rejectReply(new Error(event.data.message));
+            } else {
+              resolveReply(event.data);
+            }
+          },
+          { once: true, signal: listeners.signal },
+        );
+        this.addEventListener(
+          "error",
+          () => rejectReply(new Error("Office viewer worker failed")),
+          {
+            once: true,
+            signal: listeners.signal,
+          },
+        );
+      }
+      override postMessage(
+        message: unknown,
+        options?: Transferable[] | StructuredSerializeOptions,
+      ) {
+        const forward = () => {
+          if (Array.isArray(options)) super.postMessage(message, options);
+          else super.postMessage(message, options);
+        };
+        if (
+          observed.has(this) &&
+          typeof message === "object" &&
+          message !== null &&
+          "type" in message &&
+          message.type === "open"
+        ) {
+          if (!("kind" in message) || message.kind !== kind) {
+            rejectReply(new Error("Office viewer opened an unexpected document kind"));
+          }
+          markOpened();
+          const sendOpen = () => {
+            opening.add(this);
+            forward();
+          };
+          if (holdOpen) releaseOpen = sendOpen;
+          else sendOpen();
+          return;
+        }
+        forward();
+      }
+    },
+  );
+  return {
+    reply,
+    opened,
+    release() {
+      if (!releaseOpen) throw new Error("Office viewer has not requested its document yet");
+      releaseOpen();
+      releaseOpen = undefined;
+    },
+    [Symbol.dispose]() {
+      listeners.abort();
+      stub[Symbol.dispose]();
+    },
+  };
+}
+
 // Real worker imports and WASM initialization can exceed waitFor's default second
 // when the full browser project runs concurrently on CI.
 describe("bounded binary previews", () => {
@@ -1902,6 +1993,7 @@ it.each(["rtf", "epub", "ods"] as const)(
     } finally {
       worker.terminate();
     }
+    using _viewer = observeOfficeViewerWorker(kind, kind === "ods");
     await using screen = await render(
       <div style={{ display: "flex", height: 400, width: 600 }}>
         <AttachmentFilePreview
@@ -1912,6 +2004,12 @@ it.each(["rtf", "epub", "ods"] as const)(
         />
       </div>,
     );
+    await _viewer.opened;
+    if (kind === "ods") {
+      expect(screen.container.textContent).not.toContain("North");
+      _viewer.release();
+    }
+    await _viewer.reply;
     await vi.waitFor(
       () => {
         if (kind === "ods") {

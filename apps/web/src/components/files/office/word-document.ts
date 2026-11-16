@@ -70,9 +70,17 @@ type Lazy<T> = { value: T | undefined };
  * Opens the document and lays out its first pages; the rest lay out a `step` at a time. `fonts` is the font set the
  * painting canvas draws text with, if it has one.
  */
-export async function openWordDocument(bytes: Uint8Array, fonts: FontFaceSet | undefined) {
+export async function openWordDocument(
+  bytes: Uint8Array,
+  fonts: FontFaceSet | undefined,
+  trace?: (phase: string) => void,
+) {
+  trace?.("session-start");
   const session = await createYrsSession();
+  trace?.("session-ready");
+  trace?.("parse-start");
   const document = session.openDocx(bytes, true, { mediaTokens: true }).document;
+  trace?.("parse-ready");
   const settings = document.package.settings;
 
   const measure = createRustMeasureSource({
@@ -97,18 +105,26 @@ export async function openWordDocument(bytes: Uint8Array, fonts: FontFaceSet | u
     mediaTokens: true,
   });
 
-  const requirements = decodeFontRequirements(
-    session.layoutFontRequirementsJson(JSON.stringify(request)),
-  ).map(({ scripts, ...requirement }) => ({
-    ...requirement,
-    ...(scripts ? { scripts: [...scripts] } : {}),
-  }));
+  trace?.("request-ready");
+  trace?.("font-requirements-start");
+  const requirementsJson = session.layoutFontRequirementsJson(JSON.stringify(request));
+  trace?.("font-requirements-ready");
+  trace?.("font-requirements-decode-start");
+  const requirements = decodeFontRequirements(requirementsJson).map(
+    ({ scripts, ...requirement }) => ({
+      ...requirement,
+      ...(scripts ? { scripts: [...scripts] } : {}),
+    }),
+  );
+  trace?.("font-requirements-decode-ready");
+  trace?.("fonts-start");
 
   await Promise.all([
     measure.prepareFontRequirements(requirements),
     fonts && addCanvasFaces(fonts, requirements),
   ]);
 
+  trace?.("fonts-ready");
   const measurement = measure.measurementConfigForRequirements(requirements);
 
   if (!measurement) throw new Error("The document's fonts could not be prepared");
@@ -126,10 +142,16 @@ export async function openWordDocument(bytes: Uint8Array, fonts: FontFaceSet | u
   // The session keeps the layout it last ran and builds display frames from it: only the display extras go in, and a
   // binary frame comes back with the window's pages built and every other page a placeholder carrying its geometry.
   const display = (previous: RetainedFrame | null, reply: string) => {
+    const traceInitial = previous === null ? trace : undefined;
+    traceInitial?.("layout-computation-start");
     const layout = workerLayoutComputation(reply).layout;
+    traceInitial?.("layout-computation-ready");
 
+    traceInitial?.("display-window-start");
     session.setDisplayWindow(0, firstPages);
+    traceInitial?.("display-window-ready");
 
+    traceInitial?.("display-extras-start");
     const extras = encodeDisplayListFrameExtras({
       measured: [],
       options: {},
@@ -141,15 +163,26 @@ export async function openWordDocument(bytes: Uint8Array, fonts: FontFaceSet | u
       resolvedCommentIds,
     });
 
-    return applyFrameDelta(
-      previous,
-      decodeFrameDelta(session.buildDisplayListFrame(extras, previous?.frameEpoch ?? 0)),
-    );
+    traceInitial?.("display-extras-ready");
+    traceInitial?.("display-frame-start");
+    const bytes = session.buildDisplayListFrame(extras, previous?.frameEpoch ?? 0);
+    traceInitial?.("display-frame-ready");
+    traceInitial?.("display-decode-start");
+    const delta = decodeFrameDelta(bytes);
+    traceInitial?.("display-decode-ready");
+    traceInitial?.("display-apply-start");
+    const frame = applyFrameDelta(previous, delta);
+    traceInitial?.("display-apply-ready");
+    return frame;
   };
 
   // Only as much of the body as fills the first pages; a long document goes on past it.
+  trace?.("prefix-start");
   const prefix = session.layoutDocumentWithRegionsPrefixRetainedJson(input, firstPages);
+  trace?.("prefix-ready");
+  trace?.("display-start");
   const retained = { frame: display(null, prefix) };
+  trace?.("display-ready");
 
   if (retained.frame.displayList.pages.length === 0)
     throw new Error("The document produced no pages");

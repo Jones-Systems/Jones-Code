@@ -1,3 +1,4 @@
+import { createWorkspacePdfSession } from "../../jones/filePreview/workspacePdfSession";
 import { DownloadIcon, CopyIcon, CheckIcon, Code2Icon, EyeIcon, Table2Icon } from "lucide-react";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { Spinner } from "~/components/ui/spinner";
@@ -250,6 +251,8 @@ export function WorkspaceBrowserPreview(props: {
     workspaceRoot: props.workspaceRoot,
     absolutePath: props.absolutePath,
   });
+  const [retryRevision, setRetryRevision] = useState(0);
+  const refresh = useAssetUrlRefresh(props.environmentId, resource);
   // Each workspace mutation re-mints the URL: a file outside the workspace is signed by its
   // inode, which an atomic replace changes.
   const assetUrl = useAssetUrlState(props.environmentId, resource, props.workspaceMutationId);
@@ -264,10 +267,31 @@ export function WorkspaceBrowserPreview(props: {
   }
   const fileRevision = pdf && assetUrl._tag === "Success" ? assetUrl.fileRevision : undefined;
   const revision = fileRevision ?? (pdf ? props.workspaceMutationId : settledMutationId);
-  const revisionSuffix =
+  const resourceId = JSON.stringify([
+    props.environmentId,
+    props.threadRef.environmentId,
+    props.threadRef.threadId,
+    resource,
+  ]);
+  const [owner, setOwner] = useState(() => ({
+    resourceId,
+    session: createWorkspacePdfSession(resourceId),
+  }));
+  if (owner.resourceId !== resourceId)
+    setOwner({ resourceId, session: createWorkspacePdfSession(resourceId) });
+  const session = owner.session;
+  // Pending authorization is not evidence of a new document revision.
+  if (assetUrl._tag === "Success" && !assetUrl.waiting) session.selectRevision(revision);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Revoke late authorization completions when this exact resource owner leaves the panel.
+  useEffect(() => {
+    session.activate();
+    return () => session.dispose();
+  }, [session]);
+
+  const revisionSuffix = (url: string) =>
     revision === null
       ? ""
-      : `${assetUrl._tag === "Success" && assetUrl.url.includes("?") ? "&" : "?"}${fileRevision !== undefined ? "file" : "workspace"}-revision=${encodeURIComponent(revision)}`;
+      : `${url.includes("?") ? "&" : "?"}${fileRevision !== undefined ? "file" : "workspace"}-revision=${encodeURIComponent(revision)}`;
 
   if (assetUrl._tag === "Failure") {
     return (
@@ -286,11 +310,33 @@ export function WorkspaceBrowserPreview(props: {
       </div>
     );
   }
+  const load = pdf
+    ? session.load(`${assetUrl.url}${revisionSuffix(assetUrl.url)}`, retryRevision)
+    : undefined;
   return (
     <BrowserDocumentFrame
-      src={`${assetUrl.url}${revisionSuffix}`}
-      documentKey={`${props.environmentId}:${resource._tag}:${props.threadRef.threadId}:${props.absolutePath}:${revision}`}
-      documentId={`${props.environmentId}:${resource._tag}:${props.threadRef.threadId}:${props.absolutePath}`}
+      key={pdf ? undefined : retryRevision}
+      onRetry={async () => {
+        const acceptRetry = load ? session.beginRetry(load) : undefined;
+        const url = await refresh();
+        if (!url) throw new Error("Reconnect to the environment and try again.");
+        if (pdf && load) {
+          if (!acceptRetry?.(`${url}${revisionSuffix(url)}`)) return;
+        }
+        setRetryRevision((value) => value + 1);
+      }}
+      src={load?.src ?? `${assetUrl.url}${revisionSuffix(assetUrl.url)}`}
+      pdfSession={pdf ? session : undefined}
+      documentKey={
+        pdf
+          ? `${resourceId}:${load?.generation ?? 0}`
+          : `${props.environmentId}:${resource._tag}:${props.threadRef.threadId}:${props.absolutePath}:${revision}`
+      }
+      documentId={
+        pdf
+          ? resourceId
+          : `${props.environmentId}:${resource._tag}:${props.threadRef.threadId}:${props.absolutePath}`
+      }
       title={props.title}
       pdf={pdf}
     />

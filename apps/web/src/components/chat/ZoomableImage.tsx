@@ -1,4 +1,4 @@
-import { imageFit, type ImageView } from "~/jones/filePreview/imageView";
+import { clampImageZoom, imageFit, type ImageView } from "~/jones/filePreview/imageView";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { observeResize } from "~/lib/observeResize";
@@ -104,7 +104,7 @@ export function ZoomableImage({
   const changeZoom = (next: number, point?: { x: number; y: number }) => {
     const viewport = viewportRef.current;
     const previous = zoom;
-    const clamped = Math.min(Math.max(MAX_ZOOM, 1 / (fit || 1)), Math.max(MIN_ZOOM, next));
+    const clamped = clampImageZoom(next, fit);
     if (!viewport || previous === clamped) return;
     const bounds = viewport.getBoundingClientRect();
     const x = point ? point.x - bounds.left : viewport.clientWidth / 2;
@@ -306,6 +306,8 @@ export function ZoomableImage({
             } else if (event.key === "-") {
               event.preventDefault();
               stepZoom(-1);
+            } else if (layout === "panel" && controller.pan(event.key)) {
+              event.preventDefault();
             } else if (event.key === "0") {
               event.preventDefault();
               changeZoom(1);

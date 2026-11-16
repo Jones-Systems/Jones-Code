@@ -3,7 +3,7 @@ import { MaximizeIcon, MinusIcon, PlusIcon, ScanIcon } from "lucide-react";
 import type { ZoomableImageHandle } from "~/components/chat/ZoomableImage";
 import { Input } from "~/components/ui/input";
 import { FileSurfaceAction } from "~/components/files/fileSurfaceChrome";
-import type { ImageView } from "./imageView";
+import { clampImageZoom, type ImageView } from "./imageView";
 
 export function ImagePanelToolbar({
   view,
@@ -26,12 +26,18 @@ export function ImagePanelToolbar({
     setPercent(String(Math.round(view.zoom * 100)));
   }
   const commitPercent = () => {
-    const value = Number.parseFloat(percent);
-    if (Number.isFinite(value)) viewer.current?.zoomTo(value / 100);
-    else setPercent(String(Math.round(view.zoom * 100)));
+    const value = Number(percent.trim());
+    if (percent.trim() && Number.isFinite(value)) {
+      const zoom = clampImageZoom(value / 100, view.fit);
+      viewer.current?.zoomTo(zoom);
+      setPercent(String(Math.round(zoom * 100)));
+    } else setPercent(String(Math.round(view.zoom * 100)));
   };
   return (
-    <div className="flex min-h-10 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-1 text-xs text-muted-foreground">
+    <div
+      onKeyDown={(event) => event.stopPropagation()}
+      className="flex min-h-10 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-1 text-xs text-muted-foreground"
+    >
       <span className="tabular-nums">
         {view.width
           ? `${view.width.toLocaleString()} × ${view.height.toLocaleString()}`
