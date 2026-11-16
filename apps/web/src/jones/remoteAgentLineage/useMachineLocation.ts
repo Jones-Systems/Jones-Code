@@ -5,10 +5,10 @@ import { isClientLocalMachine, resolveMachineIdentity } from "./model";
 
 export function useMachineLocation(environmentId: EnvironmentId, fallbackLabel?: string | null) {
   const environment = useEnvironment(environmentId);
-  return isClientLocalMachine(environment?.entry?.target, isElectron)
-    ? null
-    : resolveMachineIdentity(
-        environment?.label ?? fallbackLabel,
-        environment?.serverConfig?.environment.platform.machine,
-      );
+  if (isClientLocalMachine(environment?.entry?.target, isElectron)) return null;
+  const machine = resolveMachineIdentity(
+    environment?.label ?? fallbackLabel,
+    environment?.serverConfig?.environment.platform.machine,
+  );
+  return { ...machine, shortLabel: environment?.displayLabel ?? machine.shortLabel };
 }

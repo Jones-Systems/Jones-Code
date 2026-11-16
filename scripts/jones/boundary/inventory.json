@@ -7,6 +7,8 @@
   },
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "paths": {
+    "apps/web/src/components/EnvironmentMachineIcon.tsx": "accepted-shared",
+    "apps/web/src/components/ThreadStatusIndicators.tsx": "accepted-shared",
     "scripts/jones/packaging/linuxRuntimeLibraries.ts": "jones-owned",
     "scripts/jones/packaging/linuxRuntimeLibraries.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/linux-runtime-library-layout.json": "jones-owned",
@@ -3609,7 +3611,10 @@
     "apps/server/src/jones/mcp/storageCleanup/tools.ts": "jones-owned",
     "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx": "jones-owned",
     "packages/contracts/src/jones/storageCleanupReport.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/storage-cleanup-results.json": "jones-owned"
+    "scripts/jones/boundary/fragments/storage-cleanup-results.json": "jones-owned",
+    "apps/web/src/components/BranchToolbarEnvironmentSelector.tsx": "accepted-shared",
+    "apps/web/src/hooks/useAddProjectTargets.ts": "accepted-shared",
+    "apps/web/src/components/settings/EnvironmentRoutesList.browser.test.tsx": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

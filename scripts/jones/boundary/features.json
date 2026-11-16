@@ -4,6 +4,18 @@
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "features": [
     {
+      "id": "device-presentation",
+      "tests": [
+        "apps/web/src/jones/devicePresentation/identityProtection.test.ts",
+        "apps/web/src/jones/devicePresentation/SidebarDevice.browser.test.tsx",
+        "apps/web/src/jones/devicePresentation/DeviceDisplayNameEditor.browser.test.tsx",
+        "apps/server/src/jones/devicePresentation/settings.test.ts",
+        "packages/contracts/src/jones/devicePresentation.test.ts",
+        "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
+      ],
+      "scope": "Server-owned bounded nullable deviceDisplayName setting uses existing Settings persistence and push readback; optional default decoding and an optional edit capability preserve independent client/server upgrades. ID, OS/server labels, connection labels, shell label guards and legacy environment filters remain unchanged. Web/desktop Connections offers save/reset with explicit unavailable and offline states; mobile detail reads the shared alias while its local connection label editor remains distinct. Common personal identity mapping supplies monochrome SVG sidebar/card symbols and retains colorful summary emoji, generic unknown machines and explicit kind overrides. Sidebar cards always show the device subtitle; the existing focusable worktree indicator moves before unchanged PR/provider controls and shows full path/branch without help cursor. Accepted shared edits: contract fields and capability advertisement, small environment presentation projection, sidebar layout placement, Settings menu registration, mobile detail presentation, summary/composer display-label plumbing that preserves raw classification labels, and generic icon adapter; extracting schema fields or these layout hooks further would duplicate upstream machinery. Existing lineage fixture expectations use the approved readable short labels. The existing EnvironmentRoutesList browser fixture gains only the required displayLabel field; its route assertions are unchanged. No provider, runtime, stored event, database, OS or installed application changes."
+    },
+    {
       "id": "snooze-menu-pointer-isolation",
       "tests": ["apps/web/src/jones/snoozeMenu/SidebarSnooze.browser.test.tsx"],
       "scope": "Shared web/desktop sidebar Snooze pointer gestures stay inside the trigger and portaled menu instead of activating ancestor row dragging. Accepted shared edit: two local pointerdown propagation guards in SidebarThreadRow.tsx; extracting generic machinery for these guards would add complexity. Jones browser coverage uses the real sortable row and SidebarPointerSensor with click, pointer movement, keyboard and custom choices. Wire, persistence, server, MCP, scheduled tasks, providers and native mobile are unchanged."
