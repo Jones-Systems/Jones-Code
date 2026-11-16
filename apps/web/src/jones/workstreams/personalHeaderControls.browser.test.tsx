@@ -16,17 +16,19 @@ function Header({
   onRename = () => {},
   counts = summary,
   nameEditor,
+  fontFamily,
 }: {
   width?: number;
   name?: string;
   onRename?: () => void;
   counts?: PersonalThreadSummary;
   nameEditor?: ReactNode;
+  fontFamily?: string | undefined;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [filter, setFilter] = useState<PersonalStatusFilter | null>(null);
   return (
-    <div style={{ width }}>
+    <div style={{ width, fontFamily }}>
       <PersonalSidebarGroupHeader
         name={name}
         collapsed={collapsed}
@@ -204,35 +206,41 @@ describe("personal Workstream header controls", () => {
     expect(minimum.width).toBeLessThan(54);
   });
 
-  it("compresses for the title while preserving the minimum layout's two visible lines", async () => {
-    await using screen = await render(<Header width={420} />);
-    const roomyWidth = pill(screen.container).getBoundingClientRect().width;
-    for (const width of [200, 260, 360]) {
-      await screen.rerender(<Header width={width} name={"W".repeat(100)} />);
-      const header = screen.container.querySelector<HTMLElement>("[data-personal-group-header]")!;
-      const group = pill(header);
-      const title = header.querySelector(".line-clamp-2")!;
-      const minimum = minimumLayout(header);
-      expect(visibleTitleLines(header)).toEqual(minimum.lines);
-      expect(minimum.lines).toHaveLength(2);
-      expect(group.getBoundingClientRect().width).toBeLessThan(roomyWidth - 2);
-      expect(group.getBoundingClientRect().width).toBeGreaterThanOrEqual(minimum.width);
-      expect(group.scrollWidth).toBeLessThanOrEqual(group.clientWidth + 1);
-      expect(header.scrollWidth).toBeLessThanOrEqual(header.clientWidth);
-      expect(title.getBoundingClientRect().right).toBeLessThanOrEqual(
-        group.getBoundingClientRect().left,
-      );
-      for (const name of ["Working", "Needs input", "Done"]) {
-        const button = counter(header, name);
-        expect(button.getBoundingClientRect().width).toBeGreaterThan(8);
-        expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(
-          group.getBoundingClientRect().right,
+  it.each([undefined, "Arial", "monospace", "serif"])(
+    "compresses for the title while preserving the minimum layout's two visible lines with %s",
+    async (fontFamily) => {
+      await using screen = await render(<Header width={420} fontFamily={fontFamily} />);
+      const roomyWidth = pill(screen.container).getBoundingClientRect().width;
+      for (const width of [200, 260, 360, 213.3, 287.7]) {
+        await screen.rerender(
+          <Header width={width} name={"W".repeat(100)} fontFamily={fontFamily} />,
         );
+        const header = screen.container.querySelector<HTMLElement>("[data-personal-group-header]")!;
+        const group = pill(header);
+        const title = header.querySelector(".line-clamp-2")!;
+        const minimum = minimumLayout(header);
+        // A width-only rerender refits through ResizeObserver before the next paint.
+        await expect.poll(() => visibleTitleLines(header)).toEqual(minimum.lines);
+        expect(minimum.lines).toHaveLength(2);
+        expect(group.getBoundingClientRect().width).toBeLessThan(roomyWidth - 2);
+        expect(group.getBoundingClientRect().width).toBeGreaterThanOrEqual(minimum.width);
+        expect(group.scrollWidth).toBeLessThanOrEqual(group.clientWidth + 1);
+        expect(header.scrollWidth).toBeLessThanOrEqual(header.clientWidth);
+        expect(title.getBoundingClientRect().right).toBeLessThanOrEqual(
+          group.getBoundingClientRect().left,
+        );
+        for (const name of ["Working", "Needs input", "Done"]) {
+          const button = counter(header, name);
+          expect(button.getBoundingClientRect().width).toBeGreaterThan(8);
+          expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(
+            group.getBoundingClientRect().right,
+          );
+        }
       }
-    }
-    await screen.rerender(<Header width={420} />);
-    expect(pill(screen.container).getBoundingClientRect().width).toBeCloseTo(roomyWidth, 1);
-  });
+      await screen.rerender(<Header width={420} fontFamily={fontFamily} />);
+      expect(pill(screen.container).getBoundingClientRect().width).toBeCloseTo(roomyWidth, 1);
+    },
+  );
 
   it("returns unused line space to the counters when further title wrapping cannot improve", async () => {
     await using screen = await render(<Header width={420} />);
