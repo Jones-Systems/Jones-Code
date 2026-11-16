@@ -200,6 +200,7 @@ import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
+import { resolveOpenBinding } from "./jones/previewCompanion/openBinding.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import {
   attachmentRelativePath,
@@ -1537,6 +1538,7 @@ export const layerWsRpc = (
         threadManagement.getThreadShell,
       );
       const previewManager = yield* PreviewManager.PreviewManager;
+      const previewOpenBinding = yield* resolveOpenBinding();
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -3256,7 +3258,10 @@ export const layerWsRpc = (
               (unsubscribe) => Effect.sync(unsubscribe),
             ),
           ),
-        [WS_METHODS.previewOpen]: (input) => previewManager.open(input),
+        [WS_METHODS.previewOpen]: (input) =>
+          previewManager.open(
+            previewOpenBinding === undefined ? input : { ...input, beforePublish: previewOpenBinding },
+          ),
         [WS_METHODS.previewResize]: (input) => previewManager.resize(input),
         [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input),
         [WS_METHODS.previewClose]: (input) => previewManager.close(input),

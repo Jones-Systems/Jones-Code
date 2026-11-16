@@ -175,6 +175,19 @@ it.effect(
             result: { status: "unknown", handle },
           });
         }
+        const readonlyScope = {
+          ...invocation,
+          client: { sessionId: "read-client", label: "test", access: "read-only" as const },
+        };
+        expect((yield* call({ tabId, handle }, readonlyScope)).structuredContent).toMatchObject({
+          result: { status: "unknown", handle },
+        });
+        expect((yield* call({ tabId, handle }, {
+          ...readonlyScope,
+          thread: { ...invocation.thread, providerSessionId: "other-session" },
+        })).structuredContent).toMatchObject({
+          result: { status: "unavailable", reason: "not_retained" },
+        });
         expect({ hostRequests, evidenceCalls }).toEqual(before);
         expect(
           yield* broker
