@@ -6,6 +6,15 @@ import styles from "./ComposerLayout.module.css";
 export const composerLayoutPromptClassName = cn(styles.prompt);
 export const composerLayoutPlaceholderClassName = cn(styles.placeholder);
 
+function measureComposerCanvas(element: HTMLDivElement) {
+  const canvas = element.parentElement;
+  if (!canvas) return;
+  const height = canvas.clientHeight;
+  const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+  element.dataset.short = String(height <= 28 * rem);
+  element.style.setProperty("--composer-pane-height", `${height}px`);
+}
+
 /** The canvas owns the height budget; the composer and its portalled rails share it. */
 export function ComposerLayout({
   hero,
@@ -18,18 +27,20 @@ export function ComposerLayout({
 }) {
   const elementRef = useRef<HTMLDivElement | null>(null);
 
+  // A resize event can precede React's pane resize. Refresh the committed canvas
+  // before paint instead of leaving the editor on its previous height budget.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read the independent canvas after React commits pane geometry; ResizeObserver still covers changes outside React.
+  useLayoutEffect(() => {
+    const element = elementRef.current;
+    if (element) measureComposerCanvas(element);
+  });
+
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Subscribe to the independent canvas size, never the composer height that these presentation rules change.
   useLayoutEffect(() => {
     const element = elementRef.current;
     const canvas = element?.parentElement;
     if (!element || !canvas) return;
-    const measure = () => {
-      const height = canvas.clientHeight;
-      const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
-      element.dataset.short = String(height <= 28 * rem);
-      element.style.setProperty("--composer-pane-height", `${height}px`);
-    };
-    measure();
+    const measure = () => measureComposerCanvas(element);
     const stop = observeResize(canvas, measure);
     window.addEventListener("resize", measure);
     return () => {
