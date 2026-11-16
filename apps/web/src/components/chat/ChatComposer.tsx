@@ -1,6 +1,12 @@
 import type { ReactNode } from "react";
 import { requiredComposerProvider } from "../../jones/threadConfiguration/composerSelection";
 import { ComposerShortcutRails } from "../../jones/composer/ComposerShortcutPlate";
+import {
+  ComposerLayoutBody,
+  ComposerLayoutActions,
+  composerLayoutPromptClassName,
+  composerLayoutPlaceholderClassName,
+} from "../../jones/composer/ComposerLayout";
 import { ReasoningEffortShortcuts } from "../../jones/composer/ReasoningEffortShortcuts";
 import { ProviderInstanceShortcuts } from "../../jones/composer/ProviderInstanceShortcuts";
 import { useComposerShortcutRails } from "../../jones/composer/composerShortcutRails";
@@ -3499,7 +3505,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               </div>
             ) : null}
 
-            <div
+            <ComposerLayoutBody
               ref={(node) => {
                 setComposerMenuAnchor(node);
                 const stopObserving = observeWrappedPrompt(node);
@@ -3508,12 +3514,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   stopObserving?.();
                 };
               }}
-              data-chat-composer-body="true"
-              className={cn(
-                "relative px-4 pb-2",
-                "pt-3.5 sm:pt-4",
-                isComposerCollapsedMobile && "hidden",
-              )}
+              className={cn(isComposerCollapsedMobile && "hidden")}
             >
               {isStashMenuOpen && !composerMenuOpen && (
                 <ComposerCommandMenuLayer anchor={composerMenuAnchor}>
@@ -3607,7 +3608,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     buildContextClipboardFragment={buildContextClipboardFragmentStable}
                     importContextFragment={importContextFragmentStable}
                     skills={selectedProviderSkills}
-                    className={cn(showMobilePendingAnswerActions && "max-sm:pb-12")}
+                    className={cn(
+                      composerLayoutPromptClassName,
+                      showMobilePendingAnswerActions && "max-sm:pb-12",
+                    )}
+                    placeholderClassName={composerLayoutPlaceholderClassName}
                     onChange={onPromptChangeStable}
                     onCommandKeyDown={onComposerCommandKeyStable}
                     onPageScrollKeyDown={onPageScrollKeyDown}
@@ -3673,7 +3678,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   </div>
                 ) : null}
               </div>
-            </div>
+            </ComposerLayoutBody>
 
             <ComposerPromptLengthValidation
               message={providerInputSubmissionError ?? composerSubmissionError}
@@ -3690,10 +3695,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             ) : null}
 
             {isComposerCollapsedMobile && speechInput.state.phase === "idle" ? null : (
-              <div
-                data-chat-composer-footer="true"
+              <ComposerLayoutActions
                 className={cn(
-                  "flex min-w-0 flex-nowrap items-center overflow-visible px-2 pb-2",
                   pendingUserInputs.length > 0 && "pt-2",
                   showMobilePendingAnswerActions &&
                     speechInput.state.phase === "idle" &&
@@ -3802,7 +3805,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     />
                   </ComposerFooterPrimaryActions>
                 </div>
-              </div>
+              </ComposerLayoutActions>
             )}
             {showInlineRestingControls ? (
               <div className="h-8">

@@ -74,6 +74,7 @@ export function useComposerShortcutRails(input: {
     const height = visible
       ? (content?.getBoundingClientRect().height ?? Math.max(0, ...groupHeights))
       : 0;
+    overlay.style.setProperty("--composer-rails-height", `${height}px`);
     setLayout((previous) =>
       previous.visible === visible && previous.height === height ? previous : { visible, height },
     );
