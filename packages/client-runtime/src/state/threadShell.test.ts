@@ -1,8 +1,6 @@
 import {
   EnvironmentId,
   ProjectId,
-  ProviderDriverKind,
-  ProviderInstanceId,
   RunId,
   RuntimeRequestId,
   ThreadId,
@@ -14,12 +12,15 @@ import * as Option from "effect/Option";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
-import { presentThreadShell } from "./models.ts";
 import { PrimaryConnectionTarget } from "../connection/model.ts";
 import { v2Now, v2ShellSnapshot, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import { applyShellStreamEvent } from "./shellReducer.ts";
 import { isThreadWorking } from "./threadInbox.ts";
-import { childThreadInputsTitle, createEnvironmentThreadShellAtoms } from "./threadShell.ts";
+import {
+  childThreadInputsTitle,
+  createEnvironmentThreadShellAtoms,
+  resolveListedAncestorThreadRef,
+} from "./threadShell.ts";
 
 const environmentId = EnvironmentId.make("environment-v2");
 const remoteEnvironmentId = EnvironmentId.make("remote-environment-v2");
@@ -115,7 +116,7 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
-  it("keeps a live subagent question inside the parent with Jones input attention", () => {
+  it("keeps a live subagent question inside the parent without flagging its thread", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const root = v2ThreadShell;
     const child = {
@@ -142,7 +143,7 @@ describe("v2 thread shell lists", () => {
     expect(
       registry.get(threads.threadShellAtom({ environmentId, threadId: root.id }))
         ?.pendingSubagentRequest,
-    ).toBe("user_input");
+    ).toBeNull();
     registry.set(snapshotAtom(environmentId), {
       ...v2ShellSnapshot,
       threads: [root, { ...child, status: "queued" as const }],
@@ -160,6 +161,36 @@ describe("v2 thread shell lists", () => {
     });
     expect(registry.get(inputs)).toEqual([]);
     dispose();
+    registry.dispose();
+  });
+
+  it("flags the parent while a live subagent waits on a secret card", () => {
+    const { registry, threads, snapshotAtom } = makeHarness();
+    const root = v2ThreadShell;
+    const child = {
+      ...root,
+      id: ThreadId.make("child"),
+      creationSource: "mcp" as const,
+      status: "running" as const,
+      activityRunStatus: "running" as const,
+      lineage: {
+        ...root.lineage,
+        parentThreadId: root.id,
+        relationshipToParent: "subagent" as const,
+      },
+      pendingRuntimeRequest: {
+        id: RuntimeRequestId.make("secret-card"),
+        kind: "user_input" as const,
+        createdAt: v2Now,
+        blocking: true,
+        userOnly: true,
+      },
+    };
+    registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [root, child] });
+    expect(
+      registry.get(threads.threadShellAtom({ environmentId, threadId: root.id }))
+        ?.pendingSubagentRequest,
+    ).toBe("user_input");
     registry.dispose();
   });
 
@@ -380,10 +411,23 @@ describe("v2 thread shell lists", () => {
         { ...helper, pendingRuntimeRequest: { ...approval, kind: "user_input" as const } },
       ],
     });
+    expect(registry.get(threads.threadShellAtom(parentRef))?.pendingSubagentRequest).toBeNull();
+    expect(registry.get(inputs).map((thread) => thread.id)).toEqual([helper.id]);
+
+    // A secret card needs the user, so it still reaches the parent here.
+    registry.set(snapshotAtom(remoteEnvironmentId), {
+      ...v2ShellSnapshot,
+      threads: [
+        task,
+        {
+          ...helper,
+          pendingRuntimeRequest: { ...approval, kind: "user_input" as const, userOnly: true },
+        },
+      ],
+    });
     expect(registry.get(threads.threadShellAtom(parentRef))?.pendingSubagentRequest).toBe(
       "user_input",
     );
-    expect(registry.get(inputs).map((thread) => thread.id)).toEqual([helper.id]);
 
     // A task whose parent is gone there is listed on its own, as is one whose
     // parent's environment is switched off.
@@ -640,28 +684,68 @@ describe("v2 thread shell lists", () => {
   });
 });
 
-it("retains optional server-selected runtime identity without activating replayed generations", () => {
-  const identity = {
-    runtimeGeneration: "historical-native-process",
-    evidenceRevision: 4,
-    requested: {
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      providerDriver: ProviderDriverKind.make("codex"),
-      model: "requested",
-      serviceTier: null,
-    },
-    observed: {
-      backend: { status: "unknown" as const },
-      model: { status: "observed" as const, value: "native", sourceEvent: "codex.thread/open" },
-      account: { status: "unavailable" as const, reason: "Not reported." },
-      serviceTier: { status: "unavailable" as const, reason: "Not reported." },
-    },
-  };
-  const presented = presentThreadShell(environmentId, {
-    ...v2ThreadShell,
-    runtimeIdentity: identity,
+describe("resolveListedAncestorThreadRef", () => {
+  type Thread = Parameters<typeof resolveListedAncestorThreadRef>[1][number];
+  const otherEnvironmentId = EnvironmentId.make("environment-other");
+  const ref = (environment: EnvironmentId, threadId: ThreadId) => ({
+    environmentId: environment,
+    threadId,
   });
-  expect(presented.runtimeIdentity).toEqual(identity);
-  expect(presented.modelSelection).toEqual(v2ThreadShell.modelSelection);
-  expect(presentThreadShell(environmentId, v2ThreadShell)).not.toHaveProperty("runtimeIdentity");
+  const listed = (
+    id: string,
+    environment = environmentId,
+    overrides?: Partial<Thread>,
+  ): Thread => ({
+    id: ThreadId.make(id),
+    environmentId: environment,
+    lineage: { rootThreadId: ThreadId.make(id), parentThreadId: null, relationshipToParent: null },
+    archivedAt: null,
+    delegatedFrom: null,
+    ...overrides,
+  });
+  const subagentOf = (id: string, parentId: ThreadId, environment = environmentId) =>
+    listed(id, environment, {
+      lineage: {
+        rootThreadId: parentId,
+        parentThreadId: parentId,
+        relationshipToParent: "subagent",
+      },
+    });
+  const rowOf = (threadId: ThreadId, environment: EnvironmentId, threads: readonly Thread[]) =>
+    resolveListedAncestorThreadRef(ref(environment, threadId), threads);
+
+  it("maps an open subagent to its nearest listed ancestor", () => {
+    const root = listed("thread-root");
+    const fork = listed("thread-fork", environmentId, {
+      lineage: { rootThreadId: root.id, parentThreadId: root.id, relationshipToParent: "fork" },
+    });
+    const child = subagentOf("thread-child", root.id);
+    const grandchild = subagentOf("thread-grandchild", child.id);
+    const forkChild = subagentOf("thread-fork-child", fork.id);
+    const orphan = subagentOf("thread-orphan", ThreadId.make("thread-missing"));
+    const elsewhere = subagentOf("thread-elsewhere", root.id, otherEnvironmentId);
+    const threads = [root, fork, child, grandchild, forkChild, orphan, elsewhere];
+
+    expect(rowOf(child.id, environmentId, threads)).toEqual(ref(environmentId, root.id));
+    expect(rowOf(grandchild.id, environmentId, threads)).toEqual(ref(environmentId, root.id));
+    expect(rowOf(forkChild.id, environmentId, threads)).toEqual(ref(environmentId, fork.id));
+    expect(rowOf(elsewhere.id, otherEnvironmentId, threads)).toEqual(
+      ref(otherEnvironmentId, elsewhere.id),
+    );
+    expect(rowOf(orphan.id, environmentId, threads)).toEqual(ref(environmentId, orphan.id));
+    const loopA = subagentOf("thread-loop-a", ThreadId.make("thread-loop-b"));
+    const loopB = subagentOf("thread-loop-b", loopA.id);
+    expect(rowOf(loopA.id, environmentId, [loopA, loopB])).toEqual(ref(environmentId, loopA.id));
+  });
+
+  it("maps an open task a linked environment delegated to its listed parent", () => {
+    const parent = listed("thread-parent", remoteEnvironmentId);
+    const task = listed("thread-task", environmentId, {
+      delegatedFrom: { environmentId: remoteEnvironmentId, threadId: parent.id, title: "Parent" },
+    });
+
+    expect(rowOf(task.id, environmentId, [parent, task])).toEqual(
+      ref(remoteEnvironmentId, parent.id),
+    );
+  });
 });

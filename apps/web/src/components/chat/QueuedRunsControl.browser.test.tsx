@@ -1,28 +1,22 @@
-import { createRef, type ComponentProps } from "react";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { RegistryContext } from "@effect/atom-react";
+import type { EnvironmentThreadState } from "@t3tools/client-runtime/state/threads";
 import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
+import {
+  formatComposerContextReference,
+  toComposerContextId,
+} from "@t3tools/shared/composerContextReferences";
 import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import { AsyncResult, type Atom, AtomRegistry } from "effect/reactivity";
+import { Profiler, useState, type ComponentProps } from "react";
+import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
 const state = vi.hoisted(() => ({
-  projection: null as unknown,
+  threadState: null as unknown as Atom.Writable<AsyncResult.AsyncResult<EnvironmentThreadState>>,
   workflow: null as unknown,
-  queuedRunStart: undefined as boolean | undefined,
-  review: vi.fn(),
-  promote: vi.fn(async (_input: unknown): Promise<void> => undefined),
 }));
-
-vi.mock(import("../../state/server"), async (original) => {
-  const actual = await original();
-  const { Atom } = await import("effect/reactivity");
-  const config = () =>
-    Atom.make({ environment: { capabilities: { queuedRunStart: state.queuedRunStart } } });
-  return {
-    ...actual,
-    serverEnvironment: { ...actual.serverEnvironment, configValueAtom: config },
-  } as never;
-});
 
 vi.mock(import("@t3tools/client-runtime/state/thread-workflows"), async (importOriginal) => ({
   ...(await importOriginal()),
@@ -31,9 +25,17 @@ vi.mock(import("@t3tools/client-runtime/state/thread-workflows"), async (importO
 
 vi.mock(import("../../state/entities"), async (importOriginal) => ({
   ...(await importOriginal()),
-  useThreadProjection: (() => state.projection) as never,
-  useQuietThreadShell: ((target: unknown) =>
-    target === null ? null : { title: "Release lead" }) as never,
+  // The linked environment is connected, but its thread is not in the loaded shell.
+  useQuietThreadShell: ((target: { readonly environmentId: string } | null) =>
+    target === null || target.environmentId === "environment:linked"
+      ? null
+      : { title: "Release lead" }) as never,
+}));
+
+vi.mock(import("../../state/environments"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useEnvironment: ((environmentId: string | null) =>
+    environmentId === "environment:linked" ? { environmentId } : null) as never,
 }));
 
 vi.mock(import("../../state/query"), async (importOriginal) => ({
@@ -43,10 +45,28 @@ vi.mock(import("../../state/query"), async (importOriginal) => ({
   })) as never,
 }));
 
+// The thread detail atoms are real, fed by one state atom the test writes.
+vi.mock(import("../../state/threads"), async (importOriginal) => {
+  const { createEnvironmentThreadDetailAtoms, EMPTY_ENVIRONMENT_THREAD_STATE } =
+    await import("@t3tools/client-runtime/state/threads");
+  const { AsyncResult, Atom } = await import("effect/reactivity");
+  const Option = await import("effect/Option");
+  const { makeThreadProjectionFixture } = await import("../../test-fixtures");
+  state.threadState = Atom.make<AsyncResult.AsyncResult<EnvironmentThreadState>>(
+    AsyncResult.success({
+      ...EMPTY_ENVIRONMENT_THREAD_STATE,
+      data: Option.some(makeThreadProjectionFixture()),
+    }),
+  ).pipe(Atom.keepAlive);
+  return {
+    ...(await importOriginal()),
+    environmentThreadDetails: createEnvironmentThreadDetailAtoms(() => state.threadState),
+  };
+});
+
 vi.mock(import("../../state/use-atom-command"), async (importOriginal) => ({
   ...(await importOriginal()),
-  useAtomCommand: ((command: unknown) =>
-    command === "imported-review" ? state.review : state.promote) as never,
+  useAtomCommand: (() => async () => undefined) as never,
 }));
 
 vi.mock(import("../../assets/assetUrls"), async (importOriginal) => ({
@@ -56,22 +76,16 @@ vi.mock(import("../../assets/assetUrls"), async (importOriginal) => ({
 }));
 
 import "~/index.css";
+import { EMPTY_ENVIRONMENT_THREAD_STATE } from "@t3tools/client-runtime/state/threads";
+
 import { act, render as renderUi } from "../../../test/render";
-import { QueuedRunsControl, type QueuedRunsControlHandle } from "./QueuedRunsControl";
+import { makeStreamingTimelineFixture, makeThreadProjectionFixture } from "../../test-fixtures";
+import { QueuedRunsControl } from "./QueuedRunsControl";
+import { ExpandedImageDialog } from "./ExpandedImageDialog";
+import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 
-vi.mock(
-  import("../../jones/importedHistory/commands"),
-  () => ({ importedHistoryCommands: { review: "imported-review" } }) as never,
-);
-
-import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
-import { handleComposerEnter } from "./composerSubmission";
 function setup() {
-  state.projection = null;
   state.workflow = null;
-  state.queuedRunStart = undefined;
-  state.review.mockReset();
-  state.promote.mockReset().mockResolvedValue(undefined);
 }
 
 const baseProps = {
@@ -84,11 +98,77 @@ const baseProps = {
   onCancelEdit: () => undefined,
   timestampFormat: "locale",
   onOpenThread: () => undefined,
+  onImageExpand: () => undefined,
 } satisfies ComponentProps<typeof QueuedRunsControl>;
 
 async function renderQueue(props: Partial<ComponentProps<typeof QueuedRunsControl>> = {}) {
   return renderUi(<QueuedRunsControl {...baseProps} {...props} />);
 }
+
+it.each([false, true])(
+  "opens queued images in the existing gallery, pending=%s",
+  async (pending) => {
+    setup();
+    const attachments = ["first.png", "second.png"].map((name) => ({
+      type: "image" as const,
+      id: name,
+      name,
+      mimeType: "image/png",
+      sizeBytes: 128,
+    }));
+    state.workflow = {
+      activeRun: null,
+      queuedRuns: pending
+        ? []
+        : [
+            {
+              run: { id: "run:queued", userMessageId: "message:queued" },
+              text: "Later",
+              attachments,
+            },
+          ],
+    };
+    function QueueWithGallery() {
+      const [preview, setPreview] = useState<ExpandedImagePreview | null>(null);
+      return (
+        <>
+          <QueuedRunsControl
+            {...baseProps}
+            optimisticMessages={
+              pending
+                ? [
+                    {
+                      id: MessageId.make("message:pending"),
+                      inputIntent: "queued_turn",
+                      text: "Later",
+                      attachments: attachments.map((attachment) => ({
+                        ...attachment,
+                        previewUrl: `https://assets.test/${attachment.id}`,
+                      })),
+                    },
+                  ]
+                : []
+            }
+            onImageExpand={setPreview}
+          />
+          {preview ? (
+            <ExpandedImageDialog preview={preview} onClose={() => setPreview(null)} />
+          ) : null}
+        </>
+      );
+    }
+    await using _screen = await renderUi(<QueueWithGallery />);
+
+    await page.getByRole("button", { name: "Preview second.png", exact: true }).click();
+    await expect.element(page.getByRole("dialog")).toBeVisible();
+    await expect.element(page.getByText("second.png (2/2)", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Previous media", exact: true }).click();
+    await expect.element(page.getByText("first.png (1/2)", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Back, close image preview", exact: true }).click();
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+    await expect.element(page.getByText("Later", { exact: true })).toBeVisible();
+  },
+);
 
 it("previews assistant quotes as readable text and preserves the citation when editing", async () => {
   setup();
@@ -105,7 +185,11 @@ it("previews assistant quotes as readable text and preserves the citation when e
     suffix: "",
   });
   const quoteAndText = `${quote}\n\nWhy per worktree?`;
-  state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
+  const inlineImage = formatComposerContextReference({
+    kind: "image",
+    contextId: toComposerContextId("header"),
+    label: "header.png",
+  });
   state.workflow = {
     activeRun: { id: "run:active" },
     canPromoteToSteer: true,
@@ -120,6 +204,11 @@ it("previews assistant quotes as readable text and preserves the citation when e
         text: quoteAndText,
         attachments: [],
       },
+      {
+        run: { id: "run:inline-image", userMessageId: "message:inline-image" },
+        text: `Make the header look like ${inlineImage} and keep the logo.`,
+        attachments: [{ type: "image", id: "attachment:header", name: "header.png" }],
+      },
     ],
   };
   const onEditQueuedRun = vi.fn();
@@ -128,6 +217,11 @@ it("previews assistant quotes as readable text and preserves the citation when e
   await expect.element(page.getByText(quotedText, { exact: true })).toBeVisible();
   await expect
     .element(page.getByText(`${quotedText} Why per worktree?`, { exact: true }))
+    .toBeVisible();
+  await expect
+    .element(
+      page.getByText("Make the header look like header.png and keep the logo.", { exact: true }),
+    )
     .toBeVisible();
 
   await page.getByRole("button", { name: "Edit queued message", exact: true }).nth(1).click();
@@ -144,7 +238,6 @@ it("shows who sent a queued message and folds automation and agent prompts", asy
     createdAt: DateTime.makeUnsafe("2026-10-27T12:00:00.000Z"),
     ...fields,
   });
-  state.projection = { projection: { messages: [] } };
   state.workflow = {
     activeRun: { id: "run:active" },
     canPromoteToSteer: true,
@@ -167,6 +260,19 @@ it("shows who sent a queued message and folds automation and agent prompts", asy
         },
       ],
       [
+        "run:linked",
+        "Linked review finished.",
+        {
+          createdBy: "agent",
+          creationSource: "mcp",
+          linkedSender: {
+            environmentId: "environment:linked",
+            threadId: "thread:linked-lead",
+            title: "Title when sent",
+          },
+        },
+      ],
+      [
         "run:server",
         "Continue where you left off.",
         {
@@ -183,6 +289,8 @@ it("shows who sent a queued message and folds automation and agent prompts", asy
   };
   const onOpenThread = vi.fn();
   await using _screen = await renderQueue({ onOpenThread });
+  // Four rows collapse the queue.
+  await page.getByRole("button", { name: "Show all 4 queued" }).click();
 
   const automation = page.getByRole("button", { name: /PR dispatcher/ });
   await expect.element(automation).toHaveAttribute("aria-expanded", "false");
@@ -192,8 +300,12 @@ it("shows who sent a queued message and folds automation and agent prompts", asy
   await expect.element(page.getByRole("link", { name: "Open automation" })).toBeInTheDocument();
 
   await expect.element(page.getByRole("button", { name: /Release lead/ })).toBeVisible();
-  await page.getByRole("button", { name: "Open thread" }).click({ force: true });
-  expect(onOpenThread).toHaveBeenCalledExactlyOnceWith("thread:lead");
+  await page.getByRole("button", { name: "Open thread" }).nth(0).click({ force: true });
+  expect(onOpenThread).toHaveBeenCalledExactlyOnceWith("thread:lead", "environment:test");
+  // A sender in a connected linked environment keeps the title it sent and opens there.
+  await expect.element(page.getByRole("button", { name: /Title when sent/ })).toBeVisible();
+  await page.getByRole("button", { name: "Open thread" }).nth(1).click({ force: true });
+  expect(onOpenThread).toHaveBeenLastCalledWith("thread:linked-lead", "environment:linked");
 
   await expect.element(page.getByText("Sent by T3 Code")).toBeVisible();
   await expect.element(page.getByText("Continue where you left off.")).toBeVisible();
@@ -201,7 +313,6 @@ it("shows who sent a queued message and folds automation and agent prompts", asy
 
 it("stays inside the timeline scroller instead of growing the chat column", async () => {
   setup();
-  state.projection = { projection: { messages: [] } };
   state.workflow = {
     activeRun: { id: "run:active" },
     canPromoteToSteer: true,
@@ -229,490 +340,62 @@ it("stays inside the timeline scroller instead of growing the chat column", asyn
   expect(column.scrollHeight).toBe(column.clientHeight);
 });
 
-const labels = (container: HTMLElement) =>
-  [...container.querySelectorAll("[aria-label]")].map((element) =>
-    element.getAttribute("aria-label"),
-  );
-
-describe("QueuedRunsControl automatic completion delivery", () => {
-  it("does not render a queue control when only hidden delivery remains", async () => {
-    state.projection = {
-      projection: {
-        thread: { historyOrigin: "native" },
-        messages: [
-          {
-            delegatedCompletion: {
-              parentRunId: "run:parent",
-              generation: 1,
-              taskIds: ["task:child"],
-            },
-            id: "message:completion",
-          },
-        ],
-      },
-    };
-    state.workflow = {
-      activeRun: { id: "run:active" },
-      canPromoteToSteer: true,
-      canReorder: true,
-      queuedRuns: [],
-    };
-
-    await using screen = await renderQueue();
-    const view = screen.container;
-
-    expect(view.childElementCount).toBe(0);
-  });
-});
-
-describe("QueuedRunsControl attachments and edit mode", () => {
-  const workflowWithAttachment = () => ({
+it("does not re-render while assistant text streams into the thread", async () => {
+  setup();
+  state.workflow = {
     activeRun: { id: "run:active" },
     canPromoteToSteer: true,
     canReorder: true,
     queuedRuns: [
       {
         run: { id: "run:queued", userMessageId: "message:queued" },
-        text: "Queued with a screenshot",
-        attachments: [
-          {
-            type: "image",
-            id: "attachment-1",
-            name: "screenshot.png",
-            mimeType: "image/png",
-            sizeBytes: 128,
-          },
-        ],
+        text: "Run the tests next",
+        attachments: [],
       },
     ],
-  });
-
-  it("renders an attachment thumbnail on the queued row", async () => {
-    state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
-    state.workflow = workflowWithAttachment();
-
-    await using screen = await renderQueue();
-    const view = screen.container;
-
-    expect(view.querySelector("img")?.getAttribute("src")).toBe("https://assets.test/attachment-1");
-    expect(view.textContent).toContain("Queued with a screenshot");
-    expect(labels(view)).toContain("Edit queued message");
-    expect(labels(view)).toContain("Reorder queued message (drag, or press the arrow keys)");
-    expect(labels(view)).not.toContain("Move queued message up");
-  });
-
-  it("drops the optimistic pending row once the projection holds its message", async () => {
-    state.projection = {
-      projection: {
-        thread: { historyOrigin: "native" },
-        messages: [{ id: "message:acknowledged", text: "hello" }],
-      },
-    };
-    state.workflow = {
-      activeRun: { id: "run:active" },
-      canPromoteToSteer: true,
-      canReorder: true,
-      queuedRuns: [],
-    };
-
-    await using screen = await renderQueue({
-      optimisticMessages: [
-        {
-          id: "message:acknowledged" as never,
-          inputIntent: "queued_turn",
-          text: "hello",
-          attachments: [],
-        },
-      ],
-    });
-    const view = screen.container;
-
-    expect(view.childElementCount).toBe(0);
-  });
-
-  it("keeps the original queued message visible while editing", async () => {
-    state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
-    state.workflow = workflowWithAttachment();
-
-    await using screen = await renderQueue({ editingRunId: "run:queued" as never });
-    const view = screen.container;
-
-    expect(view.textContent).toContain("Queued with a screenshot");
-  });
-});
-
-describe("QueuedRunsControl empty composer Enter", () => {
-  it("uses one queue item in order and shares the send lock with the arrow action", async () => {
-    const ref = createRef<QueuedRunsControlHandle>();
-    const onSubmit = vi.fn();
-    let finishSend: (() => void) | undefined;
-    state.promote.mockClear();
-    state.promote.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finishSend = resolve;
-        }),
-    );
-    const first = {
-      run: { id: "run:first", userMessageId: "message:first" },
-      text: "first",
-      attachments: [],
-    };
-    const second = {
-      run: { id: "run:second", userMessageId: "message:second" },
-      text: "second",
-      attachments: [],
-    };
-    const workflow = {
-      activeRun: { id: "run:active" },
-      canPromoteToSteer: true,
-      canReorder: true,
-      queuedRuns: [second, first],
-    };
-    state.workflow = workflow;
-    state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
-    const control = () => (
-      <QueuedRunsControl
-        ref={ref}
-        environmentId={"environment:test" as never}
-        optimisticMessages={[]}
-        threadId={"thread:test" as never}
-        editingRunId={null}
-        editBlockedReason={null}
-        timestampFormat="locale"
-        onOpenThread={() => undefined}
-        onEditQueuedRun={() => undefined}
-        onCancelEdit={() => undefined}
-      />
-    );
-    const enter = (repeat = false) =>
-      handleComposerEnter({
-        event: {
-          key: "Enter",
-          shiftKey: false,
-          altKey: false,
-          metaKey: false,
-          ctrlKey: false,
-          isComposing: false,
-          keyCode: 13,
-          repeat,
-        },
-        intent: {
-          keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
-          platform: "Linux",
-          isSoftwareKeyboardOpen: false,
-          isDraftThread: false,
-          isRunning: true,
-          prompt: "",
-        },
-        hasDraftContext: false,
-        queueActionDisabled: false,
-        onSteerNextQueuedMessage: () => ref.current?.steerNext(false) ?? false,
-        onSubmit,
-      });
-    await using screen = await renderUi(control());
-    const container = screen.container;
-    try {
-      const rowAction = [...container.querySelectorAll("button")].find(
-        (button) => button.textContent?.trim() === "Steer",
-      );
-      expect(rowAction).toBeDefined();
-      // Enter and a row click race before React can publish its busy state.
-      await act(async () => {
-        expect(enter()).toBe(true);
-        rowAction!.click();
-        expect(enter()).toBe(true);
-      });
-      expect(state.promote).toHaveBeenCalledExactlyOnceWith({
-        environmentId: "environment:test",
-        input: { threadId: "thread:test", queuedRunId: "run:second", targetRunId: "run:active" },
-      });
-      expect(onSubmit).not.toHaveBeenCalled();
-      await act(async () => {
-        finishSend!();
-      });
-      state.workflow = { ...workflow, queuedRuns: [first] };
-      state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
-      await screen.rerender(control());
-      await act(async () => {
-        expect(enter(true)).toBe(true);
-      });
-      expect(state.promote).toHaveBeenCalledTimes(1);
-      await act(async () => {
-        expect(enter()).toBe(true);
-      });
-      expect(state.promote).toHaveBeenLastCalledWith({
-        environmentId: "environment:test",
-        input: { threadId: "thread:test", queuedRunId: "run:first", targetRunId: "run:active" },
-      });
-      expect(state.promote).toHaveBeenCalledTimes(2);
-      await act(async () => {
-        finishSend!();
-      });
-      state.workflow = { ...workflow, queuedRuns: [] };
-      state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
-      await screen.rerender(control());
-      expect(enter()).toBe(true);
-      expect(onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
-      expect(state.promote).toHaveBeenCalledTimes(2);
-    } finally {
-      await act(async () => {
-        finishSend?.();
-      });
-      await screen.unmount();
-      state.promote.mockReset();
-      state.promote.mockImplementation(async () => undefined);
-      state.projection = null;
-      state.workflow = null;
-    }
-  });
-});
-
-describe("QueuedRunsControl selected run start", () => {
-  function idleQueue(historyOrigin: "native" | "v1_import" = "native") {
-    setup();
-    state.projection = {
-      projection: { thread: { historyOrigin }, messages: [], runs: [], providerThreads: [] },
-    };
-    state.workflow = {
-      activeRun: null,
-      canSendNow: true,
-      canPromoteToSteer: false,
-      canReorder: true,
-      queuedRuns: [
-        {
-          run: { id: "run:queued", userMessageId: "message:queued" },
-          messageId: "message:queued",
-          text: "Queued request",
-          attachments: [],
-        },
-      ],
-    };
-  }
-
-  function sendButton(view: HTMLElement) {
-    return [...view.querySelectorAll("button")].find(
-      (button) => button.textContent?.trim() === "Send now",
-    )!;
-  }
-
-  it.each([undefined, false])("refuses older/unsupported servers (%s)", async (capability) => {
-    idleQueue();
-    state.queuedRunStart = capability;
-    const ref = createRef<QueuedRunsControlHandle>();
-    await using screen = await renderQueue({ ref });
-    expect(sendButton(screen.container).disabled).toBe(true);
-    await act(() => {
-      sendButton(screen.container).click();
-      expect(ref.current?.steerNext(false)).toBe(false);
-    });
-    expect(state.promote).not.toHaveBeenCalled();
-  });
-
-  it("starts exactly the selected queued run when the server advertises support", async () => {
-    idleQueue();
-    state.queuedRunStart = true;
-    await using screen = await renderQueue();
-    expect(sendButton(screen.container).disabled).toBe(false);
-    await act(() => sendButton(screen.container).click());
-    expect(state.promote).toHaveBeenCalledExactlyOnceWith({
-      environmentId: "environment:test",
-      input: { threadId: "thread:test", runId: "run:queued" },
-    });
-  });
-
-  it.each(["completed run", "native context"])(
-    "returns to ordinary queued sending after continuation establishes %s",
-    async (transition) => {
-      idleQueue("v1_import");
-      state.queuedRunStart = true;
-      const onImportedHistoryChoice = vi.fn();
-      const ref = createRef<QueuedRunsControlHandle>();
-      const control = () => (
-        <QueuedRunsControl
-          {...baseProps}
-          ref={ref}
-          onImportedHistoryChoice={onImportedHistoryChoice}
-        />
-      );
-      await using screen = await renderUi(control());
-      expect(sendButton(screen.container).disabled).toBe(true);
-      expect(screen.container.textContent).toContain("Review imported history");
-      state.projection = {
-        projection: {
-          thread: { historyOrigin: "v1_import" },
-          messages: [],
-          runs: transition === "completed run" ? [{ status: "completed" }] : [],
-          providerThreads:
-            transition === "native context"
-              ? [
-                  {
-                    providerSessionId: "session:continued",
-                    nativeThreadRef: null,
-                    nativeConversationHeadRef: null,
-                  },
-                ]
-              : [],
-        },
-      };
-      await screen.rerender(control());
-      expect(screen.container.textContent).not.toContain("Review imported history");
-      expect(sendButton(screen.container).disabled).toBe(false);
-      await act(async () => {
-        expect(ref.current?.steerNext(false)).toBe(true);
-      });
-      expect(state.promote).toHaveBeenCalledExactlyOnceWith({
-        environmentId: baseProps.environmentId,
-        input: { threadId: baseProps.threadId, runId: "run:queued" },
-      });
-      expect(state.review).not.toHaveBeenCalled();
-      expect(onImportedHistoryChoice).not.toHaveBeenCalled();
-    },
-  );
-
-  it("keeps imported history behind review even when selected-run start is supported", async () => {
-    idleQueue("v1_import");
-    state.queuedRunStart = true;
-    const ref = createRef<QueuedRunsControlHandle>();
-    await using screen = await renderQueue({ ref, onImportedHistoryChoice: vi.fn() });
-    expect(sendButton(screen.container).disabled).toBe(true);
-    expect(
-      [...screen.container.querySelectorAll("button")].some(
-        (button) => button.textContent?.trim() === "Review imported history" && !button.disabled,
-      ),
-    ).toBe(true);
-    await act(() => {
-      sendButton(screen.container).click();
-      expect(ref.current?.steerNext(false)).toBe(false);
-    });
-    expect(state.promote).not.toHaveBeenCalled();
-  });
-});
-
-describe("imported history queue review ownership", () => {
-  const queued = {
-    run: { id: "run:queued", userMessageId: "message:queued" },
-    messageId: "message:queued",
-    text: "Continue from history",
-    attachments: [],
   };
-  const setup = (hasQueue = true, providerThreads: unknown[] = []) => {
-    state.projection = {
-      projection: {
-        thread: { historyOrigin: "v1_import" },
-        messages: [],
-        runs: [],
-        providerThreads,
-      },
-    };
-    state.workflow = {
-      activeRun: null,
-      canPromoteToSteer: false,
-      canReorder: true,
-      queuedRuns: hasQueue ? [queued] : [],
-    };
-  };
-  it.each([false, true])("does not own a saved-choice banner with queue=%s", async (hasQueue) => {
-    setup(hasQueue);
-    await using screen = await renderQueue();
-    const view = screen.container;
-    expect(view.querySelector('[data-testid="duplicate-imported-banner"]')).toBeNull();
-  });
-  it("delivers the reviewed snapshot to the sole banner owner", async () => {
-    setup();
-    state.review.mockResolvedValue({
-      _tag: "Success",
-      value: {
-        status: "available",
-        reviewedBasis: "a".repeat(64),
-        reason: null,
-      },
-    });
-    const onImportedHistoryChoice = vi.fn();
-    await using screen = await renderQueue({ onImportedHistoryChoice });
-    const view = screen.container;
-    const review = [...view.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("Review imported history"),
+  const base = makeThreadProjectionFixture();
+  // Each delta replaces only the streaming reply; every other item keeps its identity.
+  const timeline = makeStreamingTimelineFixture().visibleTurnItems;
+  const thread = (text: string, done = false) => {
+    const items = timeline.map((entry) =>
+      entry.item.type === "assistant_message" && entry.item.streaming
+        ? {
+            ...entry,
+            item: done
+              ? { ...entry.item, text, streaming: false, status: "completed" as const }
+              : { ...entry.item, text },
+          }
+        : entry,
     );
-    expect(review).toBeDefined();
-    await act(async () => review!.click());
-    expect(onImportedHistoryChoice).toHaveBeenCalledTimes(1);
-    const choice = onImportedHistoryChoice.mock.calls[0]![0];
-    expect(choice).toMatchObject({
-      environmentId: baseProps.environmentId,
-      threadId: baseProps.threadId,
-      prepared: {
-        delivery: { type: "queued_run", runId: queued.run.id, messageId: queued.messageId },
-      },
+    return AsyncResult.success<EnvironmentThreadState>({
+      ...EMPTY_ENVIRONMENT_THREAD_STATE,
+      data: Option.some({
+        ...base,
+        turnItems: items.map(({ item }) => item),
+        visibleTurnItems: items,
+      }),
     });
-    expect(choice.prepared.unchanged()).toBe(true);
-    expect(view.querySelector('[data-testid="duplicate-imported-banner"]')).toBeNull();
-  });
-  it.each(["queue changed", "route changed", "continuation started"])(
-    "discards a review when %s while it is pending",
-    async (change) => {
-      setup();
-      let finishReview!: (result: unknown) => void;
-      state.review.mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            finishReview = resolve;
-          }),
-      );
-      const onImportedHistoryChoice = vi.fn();
-      await using screen = await renderQueue({ onImportedHistoryChoice });
-      await act(async () => {
-        [...screen.container.querySelectorAll("button")]
-          .find((button) => button.textContent?.includes("Review imported history"))!
-          .click();
-      });
-      if (change === "queue changed") {
-        state.projection = {
-          projection: { ...(state.projection as { projection: object }).projection },
-        };
-        state.workflow = {
-          activeRun: null,
-          canPromoteToSteer: false,
-          canReorder: true,
-          queuedRuns: [queued, { ...queued, run: { ...queued.run, id: "run:second" } }],
-        };
-      } else if (change === "continuation started") {
-        setup(true, [
-          {
-            providerSessionId: "session:continued",
-            nativeThreadRef: null,
-            nativeConversationHeadRef: null,
-          },
-        ]);
-      }
-      await screen.rerender(
-        <QueuedRunsControl
-          {...baseProps}
-          threadId={change === "route changed" ? ThreadId.make("thread:other") : baseProps.threadId}
-          onImportedHistoryChoice={onImportedHistoryChoice}
-        />,
-      );
-      await act(async () => {
-        finishReview({
-          _tag: "Success",
-          value: { status: "available", reviewedBasis: "a".repeat(64), reason: null },
-        });
-      });
-      expect(onImportedHistoryChoice).not.toHaveBeenCalled();
-    },
+  };
+  const registry = AtomRegistry.make();
+  await using stack = new AsyncDisposableStack();
+  stack.defer(() => registry.dispose());
+  registry.set(state.threadState, thread("Hel"));
+  let renders = 0;
+  await using _screen = await renderUi(
+    <RegistryContext.Provider value={registry}>
+      <Profiler id="queue" onRender={() => (renders += 1)}>
+        <QueuedRunsControl {...baseProps} />
+      </Profiler>
+    </RegistryContext.Provider>,
   );
+  await expect.element(page.getByText("Run the tests next", { exact: true })).toBeVisible();
+  const settled = renders;
 
-  it("offers no imported review once native provider context exists", async () => {
-    setup(true, [
-      {
-        providerSessionId: "session:existing",
-        nativeThreadRef: null,
-        nativeConversationHeadRef: null,
-      },
-    ]);
-    await using screen = await renderQueue({ onImportedHistoryChoice: vi.fn() });
-    const view = screen.container;
-    expect(view.textContent).not.toContain("Review imported history");
-    expect(view.textContent).toContain(queued.text);
-  });
+  await act(() => registry.set(state.threadState, thread("Hello")));
+  await act(() => registry.set(state.threadState, thread("Hello there")));
+  expect(renders).toBe(settled);
+
+  await act(() => registry.set(state.threadState, thread("Hello there", true)));
+  expect(renders).toBeGreaterThan(settled);
 });

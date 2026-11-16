@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { ChevronRightIcon } from "lucide-react";
-import { Fragment, type ReactNode, type RefObject, useRef } from "react";
+import { Fragment, type RefObject, useRef } from "react";
 
 import { environmentThreadShells } from "~/state/threads";
 import {
@@ -18,11 +18,7 @@ import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ScrollArea } from "../ui/scroll-area";
-import {
-  updateEverythingRowHasWork,
-  type RestartingMachine,
-  type UpdateEverythingRow,
-} from "./updateEverything.logic";
+import type { RestartingMachine, UpdateEverythingRow } from "./updateEverything.logic";
 
 const isRunning = (status: string) =>
   status === "preparing" || status === "starting" || status === "running";
@@ -51,8 +47,6 @@ interface UpdateEverythingDialogProps {
   readonly rows: ReadonlyArray<UpdateEverythingRow>;
   readonly restarts: ReadonlyArray<RestartingMachine>;
   readonly onConfirm: () => void;
-  readonly onProvidersOnly?: () => void;
-  readonly buildReview?: ReactNode;
   /** Overrides the "Update N machines?" title, for an update-track switch. */
   readonly title?: string;
   readonly confirmLabel?: string;
@@ -104,8 +98,6 @@ function UpdateEverythingDialogContent({
   rows,
   restarts,
   onConfirm,
-  onProvidersOnly,
-  buildReview,
   cancelRef,
   title,
   confirmLabel = "Update",
@@ -133,7 +125,7 @@ function UpdateEverythingDialogContent({
   const running = stopped + continuing;
   const threads = `${running} running ${running === 1 ? "thread" : "threads"}`;
   const restarting = new Set(restarts.map((machine) => machine.environmentId));
-  const updating = rows.filter(updateEverythingRowHasWork);
+  const updating = rows.filter((row) => row.app !== null || row.providers.length > 0);
   const skipped = rows.filter((row) => row.skipped !== null);
 
   return (
@@ -159,34 +151,37 @@ function UpdateEverythingDialogContent({
       </AlertDialogHeader>
       <ScrollArea scrollFade>
         <div className="flex flex-col gap-3 px-6 pb-4">
-          {buildReview}
           {notes.map((note) => (
             <p key={note} className="text-muted-foreground text-sm">
               {note}
             </p>
           ))}
           {/* Machine names truncate first. Provider lists wrap between names, never inside one. */}
-          <div className="grid grid-cols-[minmax(4rem,max-content)_max-content_minmax(min-content,1fr)_max-content] gap-x-4 text-sm">
-            <div className="col-span-full grid grid-cols-subgrid border-b pb-1.5 text-muted-foreground text-xs">
-              <span>Machine</span>
-              <span>T3 Code</span>
-              <span>Providers</span>
-              <span />
+          <div
+            role="table"
+            className="grid grid-cols-[minmax(4rem,max-content)_max-content_minmax(min-content,1fr)_max-content] gap-x-4 text-sm"
+          >
+            <div
+              role="row"
+              className="col-span-full grid grid-cols-subgrid border-b pb-1.5 text-muted-foreground text-xs"
+            >
+              <span role="columnheader">Machine</span>
+              <span role="columnheader">T3 Code</span>
+              <span role="columnheader">Providers</span>
+              <span role="columnheader" />
             </div>
             {updating.map((row) => (
               <div
                 key={row.environmentId ?? "this-app"}
+                role="row"
                 className="col-span-full grid grid-cols-subgrid border-b border-border/50 py-1.5 last:border-b-0"
               >
-                <span className="max-w-32 min-w-0">
-                  <MiddleTruncate value={row.label} />
+                <span role="cell" className="max-w-32 min-w-0">
+                  <span className="sr-only">{row.label}</span>
+                  <MiddleTruncate value={row.label} aria-hidden />
                 </span>
-                <span>
-                  {row.app !== null
-                    ? APP_LABELS[row.app]
-                    : row.jonesHandoffNotice
-                      ? "Install status"
-                      : null}
+                <span role="cell">
+                  {row.app !== null ? APP_LABELS[row.app] : null}
                   {row.app === null && row.skipped !== null ? (
                     <span className="text-muted-foreground">Skipped</span>
                   ) : null}
@@ -194,12 +189,7 @@ function UpdateEverythingDialogContent({
                     <span className="block text-muted-foreground text-xs">restarts last</span>
                   ) : null}
                 </span>
-                <span>
-                  {row.jonesHandoffNotice ? (
-                    <span className="block text-muted-foreground text-xs">
-                      {row.jonesHandoffNotice}
-                    </span>
-                  ) : null}
+                <span role="cell">
                   {row.providers.map((provider, index) => (
                     <Fragment key={provider}>
                       <span className="whitespace-nowrap">{provider}</span>
@@ -207,7 +197,7 @@ function UpdateEverythingDialogContent({
                     </Fragment>
                   ))}
                 </span>
-                <span className="text-right">
+                <span role="cell" className="text-right">
                   {row.environmentId !== null && restarting.has(row.environmentId) ? (
                     <RunningThreads environmentId={row.environmentId} />
                   ) : null}
@@ -254,11 +244,6 @@ function UpdateEverythingDialogContent({
         <AlertDialogClose ref={cancelRef} render={<Button variant="outline" disabled={busy} />}>
           Cancel
         </AlertDialogClose>
-        {onProvidersOnly !== undefined ? (
-          <Button variant="outline" disabled={busy} onClick={onProvidersOnly}>
-            Update providers only
-          </Button>
-        ) : null}
         <Button disabled={disabledReason !== null || busy} onClick={onConfirm}>
           {confirmLabel}
         </Button>

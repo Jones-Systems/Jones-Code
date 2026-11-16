@@ -1,4 +1,3 @@
-import { ProviderInstanceId } from "@t3tools/contracts";
 import {
   DEFAULT_SERVER_SETTINGS,
   ServerSettings,
@@ -81,49 +80,59 @@ describe("applyServerConfigProjection settingsUpdated", () => {
   });
 });
 
-describe("applyServerConfigProjection provider order", () => {
-  it.each(["settingsUpdated", "snapshot"] as const)(
-    "preserves reordered providers and reuses unchanged values on %s",
-    (type) => {
-      const claude = ProviderInstanceId.make("claude");
-      const codex = ProviderInstanceId.make("codex");
-      const settings = {
-        favorites: [{ provider: "claude", model: "opus" }],
-        providerInstances: {
-          claude: { driver: "claudeAgent", config: { launchArgs: "" } },
-          codex: { driver: "codex" },
-        },
-      };
-      const config = {
-        environment: { capabilities: {} },
-        settings,
-      } as unknown as ServerConfig;
-      const current = Option.some({
-        config,
-        latestEvent: {} as ServerConfigStreamEvent,
-        source: "live" as const,
-      });
-      const reorderedSettings = {
-        favorites: [{ provider: "claude", model: "opus" }],
-        providerInstances: {
-          codex: { driver: "codex" },
-          claude: { driver: "claudeAgent", config: { launchArgs: "" } },
-        },
-      };
-      const event = (type === "snapshot"
-        ? { type, config: { ...config, settings: reorderedSettings } }
-        : { type, payload: { settings: reorderedSettings } }) as unknown as ServerConfigStreamEvent;
+describe("applyServerConfigProjection provider catalogs", () => {
+  const provider = (fields: Record<string, unknown>) =>
+    ({
+      instanceId: "claude",
+      checkedAt: "a",
+      models: [],
+      ...fields,
+    }) as unknown as ServerConfig["providers"][number];
+  const projection = (providers: ServerConfig["providers"]) =>
+    Option.some({
+      config: { providers } as unknown as ServerConfig,
+      latestEvent: {} as ServerConfigStreamEvent,
+      source: "cache" as const,
+    });
+  const apply = (current: ReturnType<typeof projection>, event: unknown) =>
+    Option.getOrThrow(applyServerConfigProjection(current, event as ServerConfigStreamEvent)).config
+      .providers[0]!;
 
-      const next = applyServerConfigProjection(current, event);
-      const nextSettings = Option.getOrThrow(next).config.settings;
-      expect(Object.keys(nextSettings.providerInstances)).toEqual(["codex", "claude"]);
-      expect(nextSettings.providerInstances).not.toBe(settings.providerInstances);
-      expect(nextSettings.providerInstances[codex]).toBe(settings.providerInstances.codex);
-      expect(nextSettings.providerInstances[claude]).toBe(settings.providerInstances.claude);
-      expect(nextSettings.favorites).toBe(settings.favorites);
-      expect(Option.getOrThrow(applyServerConfigProjection(next, event)).config.settings).toBe(
-        nextSettings,
-      );
-    },
-  );
+  it("keeps held slash commands and skills when the server sends a digest in their place", () => {
+    const slashCommands = [{ name: "compact" }];
+    const skills = [{ name: "review", path: "/skills/review", enabled: true }];
+    const held = provider({
+      slashCommands,
+      skills,
+      catalogDigest: "d1",
+      loadedCatalogDigest: "d1",
+    });
+    const sent = (fields: Record<string, unknown>) =>
+      provider({ slashCommands: [], skills: [], catalogDigest: "d1", ...fields });
+
+    const reconnected = apply(projection([held]), {
+      type: "snapshot",
+      config: { providers: [sent({ checkedAt: "b" })] },
+    });
+    expect(reconnected).toMatchObject({ checkedAt: "b", loadedCatalogDigest: "d1" });
+    expect(reconnected.slashCommands).toBe(slashCommands);
+    expect(reconnected.skills).toBe(skills);
+
+    // A changed catalog keeps the stale lists; the old marker says they need a reload.
+    const { slashCommands: _c, skills: _s, ...delta } = sent({ catalogDigest: "d2" });
+    const changed = apply(projection([held]), {
+      type: "providerStatusDeltas",
+      payload: { providers: [delta] },
+    });
+    expect(changed).toMatchObject({ catalogDigest: "d2", loadedCatalogDigest: "d1" });
+    expect(changed.skills).toBe(skills);
+
+    // Lists cached before digests existed carry over without a marker.
+    const legacy = apply(projection([provider({ slashCommands, skills })]), {
+      type: "providerStatuses",
+      payload: { providers: [sent({})] },
+    });
+    expect(legacy.slashCommands).toBe(slashCommands);
+    expect(legacy.loadedCatalogDigest).toBeUndefined();
+  });
 });

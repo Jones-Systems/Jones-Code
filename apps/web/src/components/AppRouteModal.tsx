@@ -1,7 +1,6 @@
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
 import { useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { ownsProviderReorderKey } from "~/jones/settings/providerReorderKeyboard";
 
 import { useNativeTitlebarHeight } from "../lib/windowControlsOverlay";
 import { useCloseAppModal } from "./sidebar/mainAppLocation";
@@ -32,16 +31,17 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
       open={open}
       // Portaled layers outside this tree (toasts, Clerk, confirm dialogs) are not backdrop presses.
       disablePointerDismissal
-      onOpenChange={(nextOpen, details) => {
+      onOpenChange={(nextOpen, eventDetails) => {
         if (nextOpen) return;
+        // Esc from a layer outside Base UI (Clerk's modals) is that layer's to handle.
+        const target = eventDetails.event.target;
         if (
-          details.reason === "escape-key" &&
-          ownsProviderReorderKey("Escape", details.event.target)
+          eventDetails.reason === "escape-key" &&
+          target !== document.body &&
+          target instanceof Node &&
+          !popupRef.current?.contains(target)
         ) {
-          // Let the document-owned drag sensor cancel before a later Esc dismisses Settings.
-          details.cancel();
-          details.allowPropagation();
-          return;
+          return eventDetails.cancel();
         }
         // Closing unmounts a focused field without a blur, so commit-on-blur rows would
         // drop what was typed. Blur first so they commit.
@@ -63,7 +63,9 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
               "--app-modal-sm-top": `max(1.5rem, ${nativeTitlebarHeight}px)`,
             } as CSSProperties
           }
-          className="fixed inset-0 z-50 flex items-center justify-center sm:p-6 sm:pt-(--app-modal-sm-top) lg:p-10"
+          // Electron hit-tests drag regions under the backdrop regardless of z-index; without
+          // this, presses above the modal move the window instead of dismissing it.
+          className="fixed inset-0 z-50 flex items-center justify-center [-webkit-app-region:no-drag] sm:p-6 sm:pt-(--app-modal-sm-top) lg:p-10"
           onPointerDown={(event) => {
             backdropPressRef.current = event.target === event.currentTarget;
           }}
@@ -73,10 +75,6 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
           }}
         >
           <DialogPrimitive.Popup
-            onKeyDown={(event) => {
-              // Base UI consumes composite keys here; the active drag sensor owns them.
-              if (ownsProviderReorderKey(event.key, event.target)) event.preventBaseUIHandler();
-            }}
             ref={popupRef}
             initialFocus={popupRef}
             finalFocus={false}

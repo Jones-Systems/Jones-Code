@@ -16,21 +16,19 @@ import type { ComposerHandleRef } from "../../composerHandleContext";
 import { DEFAULT_INTERACTION_MODE } from "../../types";
 import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
-import { pendingSends } from "../../jones/pendingSends/store";
-import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
 import type { makeThreadErrorSetter } from "../ChatView.logic";
 import { draftSendState } from "./chatViewSend";
 import type { useTimelineFollow } from "./useTimelineFollow";
 import type { useUsageLimitsPanel } from "./useUsageLimitsPanel";
 
 interface ComposerResumeInput {
-  readonly isImportedHistory: boolean;
   readonly environmentId: EnvironmentId;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
   readonly activeThread: EnvironmentThreadShell | undefined;
   readonly resumableRunId: RunId | null;
   readonly hasHeldQueuedRuns: boolean;
+  readonly canResume: boolean;
   readonly isSendBusy: boolean;
   readonly isRevertingCheckpoint: boolean;
   readonly threadDetailLoading: boolean;
@@ -51,7 +49,7 @@ interface ComposerResumeInput {
 }
 
 /**
- * Resumes an interrupted run ("Continue where you left off.") and/or releases the turns held
+ * Resumes an interrupted run and/or releases the turns held
  * in its queue. Shares the per-route send lock with the composer's send paths.
  */
 export function useComposerResume(input: ComposerResumeInput) {
@@ -62,6 +60,7 @@ export function useComposerResume(input: ComposerResumeInput) {
     activeThread,
     resumableRunId,
     hasHeldQueuedRuns,
+    canResume,
     isSendBusy,
     isRevertingCheckpoint,
     threadDetailLoading,
@@ -74,7 +73,9 @@ export function useComposerResume(input: ComposerResumeInput) {
     scrollToEnd,
     setThreadError,
   } = input;
-  const startThreadTurn = usePendingTurn();
+  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
+    reportFailure: false,
+  });
   const resumeThreadQueue = useOrchestrationCommand(threadEnvironment.resumeThreadQueue, {
     reportFailure: false,
   });
@@ -87,7 +88,7 @@ export function useComposerResume(input: ComposerResumeInput) {
   const onResume = async () => {
     if (
       !activeThread ||
-      (resumableRunId === null && !hasHeldQueuedRuns) ||
+      !canResume ||
       isSendBusy ||
       isResuming ||
       isRevertingCheckpoint ||
@@ -98,13 +99,6 @@ export function useComposerResume(input: ComposerResumeInput) {
       return;
     }
     const threadId = activeThread.id;
-    if (input.isImportedHistory && resumableRunId !== null) {
-      setThreadError(
-        threadId,
-        "Review a continuation in the composer before resuming imported history.",
-      );
-      return;
-    }
     sendInFlightRef.current = true;
     setResumingThreadKeys((current) => new Set(current).add(routeThreadKey));
     setThreadError(threadId, null);
@@ -117,17 +111,6 @@ export function useComposerResume(input: ComposerResumeInput) {
       // threads it holds the other thread's model.
       const modelSelection = composerRef.current?.getSendContext().selectedModelSelection;
       const createdAt = new Date().toISOString();
-      const messageId = newMessageId();
-      const message = {
-        id: messageId,
-        role: "user" as const,
-        text: "Continue where you left off.",
-        runId: null,
-        createdAt,
-        updatedAt: createdAt,
-        streaming: false,
-      };
-      pendingSends.admit(environmentId, threadId, message);
       const settingsResult = await persistThreadSettingsForNextTurn({
         threadId,
         createdAt,
@@ -137,21 +120,17 @@ export function useComposerResume(input: ComposerResumeInput) {
         runtimeMode,
         interactionMode: DEFAULT_INTERACTION_MODE,
       });
-      if (settingsResult._tag === "Failure") {
-        pendingSends.failBeforeDispatch(environmentId, threadId, messageId);
-        return settingsResult;
-      }
+      if (settingsResult._tag === "Failure") return settingsResult;
       const turnResult = await startThreadTurn({
         environmentId,
         input: {
           threadId,
-          createdAt,
           manualContinuationOfRunId: resumableRunId,
           ...(modelSelection ? { modelSelection } : {}),
           message: {
-            messageId,
+            messageId: newMessageId(),
             role: "user",
-            text: message.text,
+            text: "",
             attachments: [],
           },
           runtimeMode,

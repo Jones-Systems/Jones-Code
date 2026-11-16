@@ -25,9 +25,6 @@ import {
   omitOlderSettledShells,
   shellStreamItemFromEnrichmentRefresh,
   shellStreamItemsFromInitialSnapshot,
-  shellSnapshotForSubscriber,
-  shellStreamItemFromThreadShell,
-  toShellApplicationEvent,
   shouldPublishShellApplicationEvent,
   skipUnchangedThreadShells,
 } from "./ShellStream.ts";
@@ -41,8 +38,8 @@ const emptyShellSnapshot = {
 } as OrchestrationV2ShellSnapshot;
 
 describe("subagent shell events", () => {
-  const stored = (threadId: string, type: string) =>
-    ({ event: { threadId, type, payload: {} } }) as ApplicationStoredEvent;
+  const stored = (threadId: string, type: string, itemType = "command_execution") =>
+    ({ event: { threadId, type, payload: { type: itemType } } }) as ApplicationStoredEvent;
 
   it("keeps regular threads and subagent state changes while omitting subagent transcript updates", () => {
     const subagents = new Set(["child"]);
@@ -52,6 +49,14 @@ describe("subagent shell events", () => {
     expect(
       shouldPublishShellApplicationEvent(stored("child", "turn-item.updated"), subagents),
     ).toBe(false);
+    for (const itemType of ["secret_request", "link_request", "user_message"]) {
+      expect(
+        shouldPublishShellApplicationEvent(
+          stored("child", "turn-item.updated", itemType),
+          subagents,
+        ),
+      ).toBe(true);
+    }
     expect(shouldPublishShellApplicationEvent(stored("child", "node.updated"), subagents)).toBe(
       false,
     );
@@ -84,61 +89,59 @@ describe("subagent shell events", () => {
 });
 
 it.effect("coalesces a slow shell subscriber by identity and location in sequence order", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const input = yield* Queue.unbounded<
-        Extract<OrchestrationV2ShellStreamItem, { readonly sequence: number }>,
-        Cause.Done
-      >();
-      const drained = yield* Deferred.make<void>();
-      const shell = shellFixture({ id: ThreadId.make("same"), title: "Before" });
-      const project = {
-        id: ProjectId.make("same"),
-        title: "Before",
-        workspaceRoot: "/workspace/same",
-        repositoryIdentity: null,
-        defaultModelSelection: null,
-        scripts: [],
-        createdAt: "2026-09-01T00:00:00Z",
-        updatedAt: "2026-09-01T00:00:00Z",
-      };
-      const initial = {
-        kind: "thread.updated" as const,
-        sequence: 1,
-        location: "active" as const,
-        thread: shell,
-      };
-      const updates = [
-        { kind: "project.updated", sequence: 2, project },
-        { ...initial, sequence: 3 },
-        { ...initial, sequence: 4, location: "archive" },
-        { ...initial, sequence: 5, thread: { ...shell, id: ThreadId.make("other") } },
-        {
-          kind: "project.updated",
-          sequence: 6,
-          project: { ...project, id: ProjectId.make("other") },
-        },
-        { kind: "project.removed", sequence: 7, projectId: project.id },
-        { kind: "thread.removed", sequence: 8, location: "active", threadId: shell.id },
-        { kind: "project.updated", sequence: 9, project: { ...project, title: "Recreated" } },
-        { ...initial, sequence: 10, thread: { ...shell, title: "Recreated" } },
-        { kind: "thread.removed", sequence: 11, location: "archive", threadId: shell.id },
-      ] satisfies Array<Extract<OrchestrationV2ShellStreamItem, { readonly sequence: number }>>;
-      const pull = yield* Stream.toPull(
-        bufferShellLiveStream(
-          Stream.fromQueue(input).pipe(Stream.ensuring(Deferred.succeed(drained, undefined))),
-          { maxItems: 6, maxSerializedBytes: 1_500 },
-        ),
-      );
-      yield* Queue.offer(input, initial);
-      expect(yield* pull).toEqual([initial]);
-      yield* Queue.offerAll(input, updates);
-      yield* Queue.end(input);
-      // Finish producing the burst while the first batch is still awaiting its ACK.
-      yield* Deferred.await(drained);
-      expect(yield* pull).toEqual([updates[3], updates[4], updates[7], updates[8], updates[9]]);
-    }),
-  ),
+  Effect.gen(function* () {
+    const input = yield* Queue.unbounded<
+      Extract<OrchestrationV2ShellStreamItem, { readonly sequence: number }>,
+      Cause.Done
+    >();
+    const drained = yield* Deferred.make<void>();
+    const shell = shellFixture({ id: ThreadId.make("same"), title: "Before" });
+    const project = {
+      id: ProjectId.make("same"),
+      title: "Before",
+      workspaceRoot: "/workspace/same",
+      repositoryIdentity: null,
+      defaultModelSelection: null,
+      scripts: [],
+      createdAt: "2026-09-01T00:00:00Z",
+      updatedAt: "2026-09-01T00:00:00Z",
+    };
+    const initial = {
+      kind: "thread.updated" as const,
+      sequence: 1,
+      location: "active" as const,
+      thread: shell,
+    };
+    const updates = [
+      { kind: "project.updated", sequence: 2, project },
+      { ...initial, sequence: 3 },
+      { ...initial, sequence: 4, location: "archive" },
+      { ...initial, sequence: 5, thread: { ...shell, id: ThreadId.make("other") } },
+      {
+        kind: "project.updated",
+        sequence: 6,
+        project: { ...project, id: ProjectId.make("other") },
+      },
+      { kind: "project.removed", sequence: 7, projectId: project.id },
+      { kind: "thread.removed", sequence: 8, location: "active", threadId: shell.id },
+      { kind: "project.updated", sequence: 9, project: { ...project, title: "Recreated" } },
+      { ...initial, sequence: 10, thread: { ...shell, title: "Recreated" } },
+      { kind: "thread.removed", sequence: 11, location: "archive", threadId: shell.id },
+    ] satisfies Array<Extract<OrchestrationV2ShellStreamItem, { readonly sequence: number }>>;
+    const pull = yield* Stream.toPull(
+      bufferShellLiveStream(
+        Stream.fromQueue(input).pipe(Stream.ensuring(Deferred.succeed(drained, undefined))),
+        { maxItems: 6, maxSerializedBytes: 1_500 },
+      ),
+    );
+    yield* Queue.offer(input, initial);
+    expect(yield* pull).toEqual([initial]);
+    yield* Queue.offerAll(input, updates);
+    yield* Queue.end(input);
+    // Finish producing the burst while the first batch is still awaiting its ACK.
+    yield* Deferred.await(drained);
+    expect(yield* pull).toEqual([updates[3], updates[4], updates[7], updates[8], updates[9]]);
+  }),
 );
 
 function shellFixture(overrides: Partial<OrchestrationV2ThreadShell>): OrchestrationV2ThreadShell {
@@ -360,101 +363,96 @@ describe("shellStreamItemsFromInitialSnapshot", () => {
 
 describe("composeShellStreamWithEnrichment", () => {
   it.effect("preserves pending repository resolutions while an enrichment ACK is withheld", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        // Match ProjectEnrichmentService's sliding notifications and the WS batching path.
-        const changes = yield* Effect.acquireRelease(
-          PubSub.sliding<{ readonly workspaceRoot: string }>(256),
-          PubSub.shutdown,
-        );
-        const subscription = yield* PubSub.subscribe(changes);
-        const pull = yield* Stream.toPull(
-          composeShellStreamWithEnrichment({
-            initial: Stream.empty,
-            tail: Stream.empty,
-            enrichment: Stream.fromSubscription(subscription).pipe(
-              Stream.groupedWithin(64, Duration.millis(25)),
-              Stream.map((changes) =>
-                shellStreamItemFromEnrichmentRefresh({
-                  snapshot: emptyShellSnapshot,
-                  changes,
-                }),
-              ),
+    Effect.gen(function* () {
+      // Match ProjectEnrichmentService's sliding notifications and the WS batching path.
+      const changes = yield* Effect.acquireRelease(
+        PubSub.sliding<{ readonly workspaceRoot: string }>(256),
+        PubSub.shutdown,
+      );
+      const subscription = yield* PubSub.subscribe(changes);
+      const pull = yield* Stream.toPull(
+        composeShellStreamWithEnrichment({
+          initial: Stream.empty,
+          tail: Stream.empty,
+          enrichment: Stream.fromSubscription(subscription).pipe(
+            Stream.groupedWithin(64, Duration.millis(25)),
+            Stream.map((changes) =>
+              shellStreamItemFromEnrichmentRefresh({
+                snapshot: emptyShellSnapshot,
+                changes,
+              }),
             ),
-          }),
-        );
-
-        const firstRoots = Array.from({ length: 64 }, (_, index) => `/workspace/first-${index}`);
-        yield* PubSub.publishAll(
-          changes,
-          firstRoots.map((workspaceRoot) => ({ workspaceRoot })),
-        );
-        expect(yield* pull).toMatchObject([{ resolvedRepositoryIdentityRoots: firstRoots }]);
-
-        // The next completion can be batched before the client acknowledges the first.
-        yield* PubSub.publish(changes, { workspaceRoot: "/workspace/pending" });
-        yield* Effect.yieldNow;
-        yield* TestClock.adjust(Duration.millis(25));
-        const laterRoots = Array.from({ length: 256 }, (_, index) => `/workspace/later-${index}`);
-        yield* PubSub.publishAll(
-          changes,
-          laterRoots.map((workspaceRoot) => ({ workspaceRoot })),
-        );
-
-        const resumed = yield* Stream.fromPull(Effect.succeed(pull)).pipe(
-          Stream.takeUntil(
-            (item) =>
-              item.resolvedRepositoryIdentityRoots?.includes("/workspace/later-255") ?? false,
           ),
-          Stream.runCollect,
-        );
-        expect(resumed.flatMap((item) => item.resolvedRepositoryIdentityRoots ?? [])).toEqual([
-          "/workspace/pending",
-          ...laterRoots,
-        ]);
-      }),
-    ),
+        }),
+      );
+
+      const firstRoots = Array.from({ length: 64 }, (_, index) => `/workspace/first-${index}`);
+      yield* PubSub.publishAll(
+        changes,
+        firstRoots.map((workspaceRoot) => ({ workspaceRoot })),
+      );
+      expect(yield* pull).toMatchObject([{ resolvedRepositoryIdentityRoots: firstRoots }]);
+
+      // The next completion can be batched before the client acknowledges the first.
+      yield* PubSub.publish(changes, { workspaceRoot: "/workspace/pending" });
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.millis(25));
+      const laterRoots = Array.from({ length: 256 }, (_, index) => `/workspace/later-${index}`);
+      yield* PubSub.publishAll(
+        changes,
+        laterRoots.map((workspaceRoot) => ({ workspaceRoot })),
+      );
+
+      const resumed = yield* Stream.fromPull(Effect.succeed(pull)).pipe(
+        Stream.takeUntil(
+          (item) => item.resolvedRepositoryIdentityRoots?.includes("/workspace/later-255") ?? false,
+        ),
+        Stream.runCollect,
+      );
+      expect(resumed.flatMap((item) => item.resolvedRepositoryIdentityRoots ?? [])).toEqual([
+        "/workspace/pending",
+        ...laterRoots,
+      ]);
+    }),
   );
 
   it.effect("keeps a merged shell batch charged while the client withholds its ACK", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const update = yield* Deferred.make<void>();
-        const closed = yield* Deferred.make<void>();
-        const initial = {
-          kind: "thread.removed" as const,
-          sequence: 1,
-          location: "active" as const,
-          threadId: ThreadId.make("thread-a"),
-        };
-        const pull = yield* Stream.toPull(
-          composeShellStreamWithEnrichment({
-            initial: Stream.empty,
-            tail: bufferShellLiveStream(
-              Stream.concat(
-                Stream.succeed(initial),
-                Stream.fromEffect(Deferred.await(update)).pipe(
-                  Stream.map(() => ({ ...initial, sequence: 2 })),
-                ),
-              ).pipe(Stream.ensuring(Deferred.succeed(closed, undefined))),
-              { maxItems: 1 },
-            ),
-            enrichment: Stream.empty,
-          }),
-        );
-        expect(yield* pull).toEqual([initial]);
-        // Let the merge producer run while the client still withholds its ACK.
-        yield* Effect.yieldNow;
-        yield* Deferred.succeed(update, undefined);
-        yield* Deferred.await(closed);
-        const result = yield* Stream.fromPull(Effect.succeed(pull)).pipe(
-          Stream.runDrain,
-          Effect.result,
-        );
-        expect(result._tag).toBe("Failure");
-        if (result._tag === "Failure") expect(result.failure._tag).toBe("LiveStreamBufferError");
-      }),
-    ),
+    Effect.gen(function* () {
+      const update = yield* Deferred.make<void>();
+      const closed = yield* Deferred.make<void>();
+      const initial = {
+        kind: "thread.removed" as const,
+        sequence: 1,
+        location: "active" as const,
+        threadId: ThreadId.make("thread-a"),
+      };
+      const pull = yield* Stream.toPull(
+        composeShellStreamWithEnrichment({
+          initial: Stream.empty,
+          tail: bufferShellLiveStream(
+            Stream.concat(
+              Stream.succeed(initial),
+              Stream.fromEffect(Deferred.await(update)).pipe(
+                Stream.map(() => ({ ...initial, sequence: 2 })),
+              ),
+            ).pipe(Stream.ensuring(Deferred.succeed(closed, undefined))),
+            { maxItems: 1 },
+          ),
+          enrichment: Stream.empty,
+        }),
+      );
+      expect(yield* pull).toEqual([initial]);
+      // Let the merge producer run while the client still withholds its ACK.
+      yield* Effect.yieldNow;
+      yield* Deferred.succeed(update, undefined);
+      yield* Deferred.await(closed);
+      const result = yield* Stream.fromPull(Effect.succeed(pull)).pipe(
+        Stream.runDrain,
+        Effect.result,
+      );
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure._tag).toBe("LiveStreamBufferError");
+    }),
   );
 
   it.effect(
@@ -685,98 +683,6 @@ describe("skipUnchangedThreadShells", () => {
       Stream.runCollect,
       Effect.map((items) => Array.from(items, (item) => ("sequence" in item ? item.sequence : -1))),
     );
-
-  const guestFamily = (pendingGuestMessageCount: number | undefined) => {
-    const root = shell("root", { status: "completed", activityRunStatus: null });
-    const middle = shell("middle", {
-      status: "completed",
-      activityRunStatus: null,
-      lineage: { rootThreadId: root.id, parentThreadId: root.id, relationshipToParent: "subagent" },
-    });
-    const leaf = shell("leaf", {
-      status: "completed",
-      activityRunStatus: null,
-      pendingGuestMessageCount,
-      lineage: {
-        rootThreadId: root.id,
-        parentThreadId: middle.id,
-        relationshipToParent: "subagent",
-      },
-    });
-    return [root, middle, leaf];
-  };
-  const snapshot = (threads: ReadonlyArray<OrchestrationV2ThreadShell>, omitIdleSubagents = true) =>
-    shellSnapshotForSubscriber(
-      { ...emptyShellSnapshot, threads },
-      { omitIdleSubagents, omitOlderSettled: true, now: at(0) },
-    );
-
-  it("keeps the pending guest leaf and complete ancestor chain in the actual opted-in snapshot", () => {
-    const family = guestFamily(1);
-    expect(snapshot(family).snapshot.threads.map(({ id }) => id)).toEqual([
-      "root",
-      "middle",
-      "leaf",
-    ]);
-    expect(snapshot(family, false).snapshot.threads).toEqual(family);
-    for (const count of [0, undefined]) {
-      expect(snapshot(guestFamily(count)).snapshot.threads.map(({ id }) => id)).toEqual([
-        "root",
-        "middle",
-      ]);
-    }
-  });
-
-  it.effect(
-    "delivers late guest-only updates and resolution after an omitted child without transcript leakage",
-    () =>
-      Effect.gen(function* () {
-        const initial = snapshot(guestFamily(0));
-        expect(initial.snapshot.threads.map(({ id }) => id)).toEqual(["root", "middle"]);
-        const before = guestFamily(0)[2]!;
-        const pending = { ...before, pendingGuestMessageCount: 1 };
-        const dismissed = { ...before, pendingGuestMessageCount: 0 };
-        const guestEvents = [before, pending, dismissed].map((thread, index) => {
-          const stored = {
-            sequence: index + 1,
-            event: { threadId: thread.id, type: "thread.guest-share-updated" },
-          } as ApplicationStoredEvent;
-          expect(shouldPublishShellApplicationEvent(stored, initial.subagentThreadIds)).toBe(true);
-          const event = toShellApplicationEvent(stored);
-          if (!("event" in event)) throw new Error("Expected thread event");
-          return shellStreamItemFromThreadShell({ stored: event, shell: thread });
-        });
-        expect(
-          shouldPublishShellApplicationEvent(
-            { event: { threadId: before.id, type: "message.updated" } } as ApplicationStoredEvent,
-            initial.subagentThreadIds,
-          ),
-        ).toBe(false);
-        const items = yield* composeShellStreamWithEnrichment({
-          initial: Stream.fromIterable(
-            shellStreamItemsFromInitialSnapshot({
-              snapshot: initial.snapshot,
-              resolvedRepositoryIdentityRoots: [],
-            }),
-          ),
-          tail: Stream.fromIterable(guestEvents).pipe(skipUnchangedThreadShells),
-          enrichment: Stream.empty,
-        }).pipe(Stream.runCollect);
-        expect(items[0]).toMatchObject({
-          kind: "snapshot",
-          snapshot: { threads: initial.snapshot.threads },
-        });
-        expect(items.slice(1)).toEqual(guestEvents);
-        expect(
-          items
-            .slice(1)
-            .map((item) =>
-              item.kind === "thread.updated" ? item.thread.pendingGuestMessageCount : null,
-            ),
-        ).toEqual([0, 1, 0]);
-        expect(snapshot(guestFamily(1)).snapshot.threads).toHaveLength(3);
-      }),
-  );
 
   it.effect("sends the next update after a removal", () =>
     Effect.gen(function* () {

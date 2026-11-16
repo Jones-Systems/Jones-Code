@@ -1,34 +1,104 @@
-import { decodeMigrationPlan, type MigrationPlan } from "../jones/updates/migrationPlan.ts";
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
-import {
-  decodeStagedQualifiedRuntime,
-  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
-  type StagedQualifiedRuntime,
-} from "../jones/cloud/qualifiedRuntime.ts";
-import {
-  assertQualifiedTrialBinding,
-  decodeQualifiedTrialReceipt,
-  decodeQualifiedTrialGrant,
-  type QualifiedTrialReceipt,
-  type QualifiedTrialGrant,
-} from "../jones/cloud/qualifiedStartup.ts";
 
-// Protocol 4 retains standalone executables and durably phases trials with
-// native authority fencing before rollback; launchers survive self-updates.
+// Protocol 4 launchers coordinate selection writes and reconcile the unit. A remote update
+// replaces only the child, so an installed protocol-3 launcher stays until a local update or
+// service install restarts the service.
 export const SERVICE_LAUNCHER_PROTOCOL = 4 as const;
-export const LEGACY_SERVICE_LAUNCHER_PROTOCOL = 3 as const;
+/** Launchers this runtime runs under. Protocol 3 has the same IPC and durable format, and
+    refusing it stops every remote update until someone opens a shell on the host. */
+export type SupportedLauncherProtocol = 3 | typeof SERVICE_LAUNCHER_PROTOCOL;
+export const isSupportedLauncherProtocol = (
+  protocol: unknown,
+): protocol is SupportedLauncherProtocol =>
+  protocol === 3 || protocol === SERVICE_LAUNCHER_PROTOCOL;
 export const SERVICE_LAUNCHER_CONTEXT_ENV = "T3_SERVICE_LAUNCHER_CONTEXT";
 export const SERVICE_ENV_FILE = "service.env";
 export const SERVICE_STATE_FILE = "service-state.json";
-/** Written by the launcher just before an explicit stop kills its child, so
-    the child can tell "the service is going away" from "the launcher is about
-    to start my replacement" while a pending update is recorded. */
+/** Set by the unit or launch agent to its own file name, so the launcher can
+    find the definition that started it. */
+export const SERVICE_UNIT_ENV = "T3_BOOT_SERVICE_UNIT";
+/** Written before explicit stop to distinguish shutdown from update handoff. */
 export const SERVICE_STOP_MARKER_FILE = ".service-stopping";
-/** Written by `t3 update` when the unit was repointed at a new version but the
-    running service was deliberately left on the old one. The launcher removes
-    it when it starts (whoever restarted the service), so while it exists the
-    service is known to be behind its unit and status reports it that way. */
+/** Marks a repointed unit whose service still runs the old version; launcher startup clears it. */
 export const SERVICE_RESTART_PENDING_FILE = ".restart-pending";
+/** Held by a Windows launcher while it runs: Task Scheduler tracks only the task's console host. */
+export const SERVICE_LAUNCHER_LOCK_FILE = "service-launcher.lock";
+/** Held by a launcher while it has, or is about to start, a server: an SSH launch waits for that
+    server instead of starting its own. Released while the launcher idles. */
+export const SERVICE_SERVING_LOCK_FILE = "service-serving.lock";
+
+const unquoteSystemdValue = (raw: string) =>
+  (raw.startsWith('"') && raw.endsWith('"')
+    ? raw.slice(1, -1).replaceAll('\\"', '"').replaceAll("\\\\", "\\")
+    : raw
+  ).replaceAll("%%", "%");
+
+const unescapeXmlText = (value: string) =>
+  value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&");
+
+const unquoteWindowsArgument = (raw: string) =>
+  unescapeXmlText(raw).replace(/(\\+)$/, (slashes) => slashes.slice(slashes.length / 2));
+
+/** Whether Task Scheduler's copy of a task is disabled as a whole, not one of its triggers. */
+export const serviceTaskIsDisabled = (taskXml: string): boolean =>
+  /<Settings>[\s\S]*?<\/Settings>/.exec(taskXml)?.[0].includes("<Enabled>false</Enabled>") === true;
+
+/** A task as Task Scheduler should hold it while its service must stay stopped. */
+export const disabledServiceTask = (taskXml: string): string =>
+  serviceTaskIsDisabled(taskXml)
+    ? taskXml
+    : taskXml.replace("  </Settings>", "    <Enabled>false</Enabled>\n  </Settings>");
+
+export function serviceUnitEnvironmentValueOf(
+  contents: string,
+  name: "T3CODE_HOME" | "T3CODE_INSTALL_BIN_DIR",
+): string | undefined {
+  const systemd = new RegExp(`^Environment=${name}=(.*)$`, "m").exec(contents)?.[1];
+  if (systemd !== undefined) return unquoteSystemdValue(systemd.trim());
+  const plist = new RegExp(`<key>${name}</key>\\s*<string>([^<]*)</string>`).exec(contents)?.[1];
+  return plist === undefined ? undefined : unescapeXmlText(plist);
+}
+
+export function serviceUnitBaseDirOf(contents: string): string | undefined {
+  const unix = serviceUnitEnvironmentValueOf(contents, "T3CODE_HOME");
+  if (unix !== undefined) return unix;
+  const task = /<Arguments>[^<]* "--base-dir" "([^"]*)"/.exec(contents)?.[1];
+  return task === undefined ? undefined : unquoteWindowsArgument(task);
+}
+
+/**
+ * The user unit directory a systemd manager reads, from its UnitPath property. The persistent
+ * control directory identifies the manager's config root despite UnitPath overrides.
+ */
+export function systemdUnitDirectoryOf(unitPath: ReadonlyArray<string>): string | undefined {
+  const controlDirectory = unitPath.find(
+    (directory) =>
+      directory.startsWith("/") &&
+      directory.endsWith("/systemd/user.control") &&
+      unitPath.includes(directory.slice(0, -".control".length)),
+  );
+  return controlDirectory?.slice(0, -".control".length);
+}
+
+/** The file systemd or launchd appends the service's output to. */
+export function serviceUnitLogPathOf(contents: string): string | undefined {
+  const systemd = /^StandardOutput=append:(.*)$/m.exec(contents)?.[1];
+  if (systemd !== undefined) return unquoteSystemdValue(systemd.trim());
+  const plist = /<key>StandardOutPath<\/key>\s*<string>([^<]*)<\/string>/.exec(contents)?.[1];
+  return plist === undefined ? undefined : unescapeXmlText(plist);
+}
+
+/** The executable an installed unit, plist, or task starts: the launcher's runtime. */
+export function serviceUnitProgramOf(contents: string): string | undefined {
+  const systemd = /^ExecStart=("(?:\\.|[^"\\])*"|\S+)/m.exec(contents)?.[1];
+  if (systemd !== undefined) return unquoteSystemdValue(systemd);
+  const plist = /<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]*)<\/string>/.exec(
+    contents,
+  )?.[1];
+  if (plist !== undefined) return unescapeXmlText(plist);
+  const task = /<Arguments>--headless "([^"]*)"/.exec(contents)?.[1];
+  return task === undefined ? undefined : unquoteWindowsArgument(task);
+}
 
 export interface PendingServiceUpdate {
   readonly id: string;
@@ -36,23 +106,9 @@ export interface PendingServiceUpdate {
   readonly targetVersion: string;
   readonly dbPath: string;
   readonly status: "pending";
-  readonly migrationPlan?: MigrationPlan;
-  readonly phase: "accepted" | "trial-ready";
-  readonly qualified?: StagedQualifiedRuntime;
-  readonly startupReceipt?: QualifiedTrialReceipt;
-  readonly stateRecovery?: "clone-required" | "clone-or-copy";
 }
 
-interface LegacyPendingServiceUpdate extends Omit<PendingServiceUpdate, "phase"> {}
-
-export type ServiceUpdateRecord =
-  | PendingServiceUpdate
-  | (ServerSelfUpdateOutcome & {
-      readonly migrationPlan?: MigrationPlan;
-      readonly qualified?: StagedQualifiedRuntime;
-      readonly startupReceipt?: QualifiedTrialReceipt;
-      readonly stateRecovery?: "clone-required" | "clone-or-copy";
-    });
+export type ServiceUpdateRecord = PendingServiceUpdate | ServerSelfUpdateOutcome;
 
 export interface ServiceState {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL;
@@ -61,120 +117,38 @@ export interface ServiceState {
 }
 
 export interface ServiceLauncherContext {
-  readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL | typeof LEGACY_SERVICE_LAUNCHER_PROTOCOL;
+  readonly protocol: SupportedLauncherProtocol;
   readonly childVersion: string;
-  /** The running launcher's own version; absence does not imply it matches the child. */
-  readonly launcherVersion?: string;
-  readonly qualifiedUpdatesProtocol?: 1;
-  readonly qualifiedRecoveryProtocol?: 1;
-  readonly stateRecoveryPolicyProtocol?: 1;
-  readonly updateOperationsProtocol?: 1;
-  readonly updateRetirementProtocol?: 1;
-  /** The launcher answers `reconcile-update` from its durable operation outcomes. */
-  readonly updateOutcomeProtocol?: 1;
-  readonly updateSettlementProtocol?: 1;
-  readonly launcherHandoffProtocol?: 1;
-  readonly startupGateProtocol?: 1;
-  readonly update?: ServiceUpdateRecord | LegacyPendingServiceUpdate;
+  readonly update?: ServiceUpdateRecord;
 }
-
-export interface ServiceUpdateRetirement {
-  readonly operationId: string;
-  readonly environmentId: string;
-  readonly currentVersion: string;
-  readonly expectedInstalledSource: string;
-  readonly targetSource: string;
-  readonly stagedHandle: string;
-}
-
-export interface ServiceUpdateReconciliationRequest {
-  readonly operationId: string;
-  readonly requestId: string;
-}
-
-export type ServiceUpdateReconciliationRefusal =
-  | "not-failed"
-  | "not-found"
-  | "insufficient-evidence"
-  | "restore-pending"
-  | "active-changed"
-  | "trial-evidence-present"
-  | "retired-evidence-mismatch"
-  | "settlement-write-failed";
-
-export type ServiceUpdateReconciliationResult =
-  | { readonly result: "settled" | "already-settled" }
-  | { readonly result: "refused"; readonly reason: ServiceUpdateReconciliationRefusal };
 
 export type ServiceLauncherChildMessage =
-  | { readonly type: "runtime-ready"; readonly childVersion: string; readonly queryId: number }
-  | { readonly type: "request-launcher-handoff"; readonly queryId: number }
-  | ({ readonly type: "reconcile-failed-update" } & ServiceUpdateReconciliationRequest)
-  | ({
-      readonly type: "record-retired-operation";
-      readonly retiredLocation: string;
-    } & ServiceUpdateReconciliationRequest)
-  | ({ readonly type: "request-retire-update" } & ServiceUpdateRetirement)
-  | {
-      /** Asks how a handoff ended; `queryId` pairs the answer with this question. */
-      readonly type: "reconcile-update";
-      readonly operationId: string;
-      readonly queryId: number;
-    }
   | {
       readonly type: "request-update";
-      readonly stateRecovery?: "clone-required" | "clone-or-copy";
-      readonly qualifiedRecoveryProtocol?: 1;
       readonly targetVersion: string;
       readonly dbPath: string;
-      readonly stagedHandle?: string;
-      readonly operationId?: string;
     }
   | {
       readonly type: "prepared";
       readonly updateId: string;
-      readonly startupGateProtocol?: 1;
-      readonly qualified?: QualifiedTrialReceipt;
     };
 
 export type ServiceLauncherParentMessage =
-  | { readonly type: "runtime-ready-accepted"; readonly queryId: number }
-  | {
-      readonly type: "launcher-handoff-outcome";
-      readonly queryId: number;
-      readonly outcome: "accepted" | "deferred" | "unavailable";
-    }
-  | ({ readonly type: "update-reconciled" } & ServiceUpdateReconciliationRequest &
-      ServiceUpdateReconciliationResult)
-  | {
-      readonly type: "update-outcome";
-      readonly operationId: string;
-      readonly queryId: number;
-      readonly outcome: "accepted" | "rejected" | "unknown";
-      readonly reason?: string;
-    }
-  | {
-      readonly type: "update-retired";
-      readonly operationId: string;
-      readonly stagedHandle: string;
-      readonly retired: boolean;
-      readonly reason?: string;
-    }
   | {
       readonly type: "update-accepted";
       readonly updateId: string;
-      readonly migrationPlan?: MigrationPlan;
     }
   | {
       readonly type: "update-rejected";
       readonly reason: string;
-      readonly operationId?: string;
     }
   | {
       readonly type: "committed";
       readonly updateId: string;
-      readonly startupGateProtocol?: 1;
-      readonly qualified?: QualifiedTrialGrant;
+    }
+  | {
+      /** Shut down as on SIGTERM, which Windows cannot deliver. */
+      readonly type: "stop";
     };
 
 const SEMVER_NUMBER = "(?:0|[1-9]\\d*)";
@@ -193,40 +167,6 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   if (!isRecord(value)) return undefined;
   const { id, fromVersion, targetVersion, status } = value;
   if (
-    value.stateRecovery !== undefined &&
-    ((value.stateRecovery !== "clone-required" && value.stateRecovery !== "clone-or-copy") ||
-      value.qualified === undefined)
-  )
-    return undefined;
-  const stateRecovery = value.stateRecovery as "clone-required" | "clone-or-copy" | undefined;
-  const migrationPlan =
-    value.migrationPlan === undefined ? undefined : decodeMigrationPlan(value.migrationPlan);
-  if (value.migrationPlan !== undefined && migrationPlan === undefined) return undefined;
-  const qualified =
-    value.qualified === undefined ? undefined : decodeStagedQualifiedRuntime(value.qualified);
-  const startupReceipt =
-    value.startupReceipt === undefined
-      ? undefined
-      : decodeQualifiedTrialReceipt(value.startupReceipt);
-  if (value.startupReceipt !== undefined) {
-    if (startupReceipt === undefined || qualified === undefined || typeof id !== "string")
-      return undefined;
-    try {
-      assertQualifiedTrialBinding({ updateId: id, qualified, receipt: startupReceipt });
-    } catch {
-      return undefined;
-    }
-  }
-  if (
-    value.qualified !== undefined &&
-    (qualified === undefined ||
-      qualified.binding.activeVersion !== fromVersion ||
-      qualified.receipt.version !== targetVersion ||
-      (qualified.protocol !== RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
-        qualified.receipt.installedSourceSha !== qualified.binding.activeSourceSha))
-  )
-    return undefined;
-  if (
     typeof id !== "string" ||
     id.trim() === "" ||
     typeof fromVersion !== "string" ||
@@ -237,22 +177,8 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
     return undefined;
   }
   if (status === "pending") {
-    return typeof value.dbPath === "string" &&
-      value.dbPath.trim() !== "" &&
-      (qualified === undefined || value.dbPath === qualified.binding.dbPath) &&
-      (value.phase === "accepted" || value.phase === "trial-ready")
-      ? {
-          id,
-          fromVersion,
-          targetVersion,
-          dbPath: value.dbPath,
-          status,
-          phase: value.phase,
-          ...(stateRecovery === undefined ? {} : { stateRecovery }),
-          ...(qualified === undefined ? {} : { qualified }),
-          ...(startupReceipt === undefined ? {} : { startupReceipt }),
-          ...(migrationPlan === undefined ? {} : { migrationPlan }),
-        }
+    return typeof value.dbPath === "string" && value.dbPath.trim() !== ""
+      ? { id, fromVersion, targetVersion, dbPath: value.dbPath, status }
       : undefined;
   }
   if (
@@ -264,10 +190,6 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
       fromVersion,
       targetVersion,
       status,
-      ...(stateRecovery === undefined ? {} : { stateRecovery }),
-      ...(qualified === undefined ? {} : { qualified }),
-      ...(startupReceipt === undefined ? {} : { startupReceipt }),
-      ...(migrationPlan === undefined ? {} : { migrationPlan }),
       ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
     };
   }
@@ -315,12 +237,12 @@ export function decodeServiceState(value: unknown): ServiceState | undefined {
   if (!isRecord(value)) return undefined;
   const update = value.update === undefined ? undefined : decodeServiceUpdate(value.update);
   if (
-    value.protocol !== SERVICE_LAUNCHER_PROTOCOL ||
+    // A protocol-3 installer can select a protocol-4 runtime.
+    !isSupportedLauncherProtocol(value.protocol) ||
     typeof value.activeVersion !== "string" ||
     !isExactServiceVersion(value.activeVersion) ||
     (value.update !== undefined && update === undefined) ||
     (update !== undefined &&
-      update.qualified === undefined &&
       compareExactServiceVersions(update.targetVersion, update.fromVersion) <= 0) ||
     (update?.status === "pending" && update.fromVersion !== value.activeVersion) ||
     (update?.status === "committed" && update.targetVersion !== value.activeVersion) ||
@@ -339,6 +261,24 @@ export function decodeServiceState(value: unknown): ServiceState | undefined {
 export function parseServiceState(value: string): ServiceState | undefined {
   try {
     return decodeServiceState(JSON.parse(value) as unknown);
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseLegacyServiceState(value: string) {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (
+      !isRecord(parsed) ||
+      Object.keys(parsed).length !== 2 ||
+      parsed.protocol !== 2 ||
+      typeof parsed.activeVersion !== "string" ||
+      !isExactServiceVersion(parsed.activeVersion)
+    ) {
+      return undefined;
+    }
+    return { protocol: 2, activeVersion: parsed.activeVersion } as const;
   } catch {
     return undefined;
   }
@@ -375,40 +315,14 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
   }
   if (
     !isRecord(parsed) ||
-    ("launcherHandoffProtocol" in parsed &&
-      (parsed.launcherHandoffProtocol !== 1 ||
-        parsed.protocol !== SERVICE_LAUNCHER_PROTOCOL ||
-        parsed.startupGateProtocol !== 1)) ||
-    ("qualifiedRecoveryProtocol" in parsed && parsed.qualifiedRecoveryProtocol !== 1) ||
-    ("stateRecoveryPolicyProtocol" in parsed && parsed.stateRecoveryPolicyProtocol !== 1) ||
-    (parsed.protocol !== SERVICE_LAUNCHER_PROTOCOL &&
-      parsed.protocol !== LEGACY_SERVICE_LAUNCHER_PROTOCOL) ||
+    !isSupportedLauncherProtocol(parsed.protocol) ||
     typeof parsed.childVersion !== "string" ||
     !isExactServiceVersion(parsed.childVersion)
   ) {
     return undefined;
   }
-  const update =
-    parsed.update === undefined
-      ? undefined
-      : parsed.protocol === SERVICE_LAUNCHER_PROTOCOL
-        ? decodeServiceUpdate(parsed.update)
-        : decodeLegacyServiceUpdate(parsed.update);
+  const update = parsed.update === undefined ? undefined : decodeServiceUpdate(parsed.update);
   if (parsed.update !== undefined && update === undefined) return undefined;
-  if (update?.stateRecovery !== undefined && parsed.stateRecoveryPolicyProtocol !== 1)
-    return undefined;
-  if (
-    update?.qualified?.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
-    parsed.qualifiedRecoveryProtocol !== 1
-  )
-    return undefined;
-  if (
-    parsed.protocol === SERVICE_LAUNCHER_PROTOCOL &&
-    update?.status === "pending" &&
-    "phase" in update &&
-    update.phase !== "trial-ready"
-  )
-    return undefined;
   const selectedVersion =
     update?.status === "pending" || update?.status === "committed"
       ? update.targetVersion
@@ -421,286 +335,38 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
   return {
     protocol: parsed.protocol,
     childVersion: parsed.childVersion,
-    ...(typeof parsed.launcherVersion === "string" && isExactServiceVersion(parsed.launcherVersion)
-      ? { launcherVersion: parsed.launcherVersion }
-      : {}),
-    ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
-    ...(parsed.qualifiedRecoveryProtocol === 1 ? { qualifiedRecoveryProtocol: 1 as const } : {}),
-    ...(parsed.stateRecoveryPolicyProtocol === 1
-      ? { stateRecoveryPolicyProtocol: 1 as const }
-      : {}),
-    ...(parsed.updateOperationsProtocol === 1 ? { updateOperationsProtocol: 1 as const } : {}),
-    ...(parsed.updateRetirementProtocol === 1 ? { updateRetirementProtocol: 1 as const } : {}),
-    ...(parsed.updateOutcomeProtocol === 1 ? { updateOutcomeProtocol: 1 as const } : {}),
-    ...(parsed.updateSettlementProtocol === 1 ? { updateSettlementProtocol: 1 as const } : {}),
-    ...(parsed.launcherHandoffProtocol === 1 ? { launcherHandoffProtocol: 1 as const } : {}),
-    ...(parsed.startupGateProtocol === 1 ? { startupGateProtocol: 1 as const } : {}),
     ...(update === undefined ? {} : { update }),
   };
 }
-
-function decodeLegacyServiceUpdate(
-  value: unknown,
-): ServiceUpdateRecord | LegacyPendingServiceUpdate | undefined {
-  if (!isRecord(value)) return undefined;
-  // Legacy decoding must reject qualified context, never erase its identity and permit ID-only recovery.
-  if (
-    value.qualified !== undefined ||
-    value.startupReceipt !== undefined ||
-    value.stateRecovery !== undefined
-  )
-    return undefined;
-  if (value.status !== "pending") return decodeServiceUpdate(value);
-  const { id, fromVersion, targetVersion, dbPath, status } = value;
-  return typeof id === "string" &&
-    id.trim() !== "" &&
-    typeof fromVersion === "string" &&
-    isExactServiceVersion(fromVersion) &&
-    typeof targetVersion === "string" &&
-    isExactServiceVersion(targetVersion) &&
-    typeof dbPath === "string" &&
-    dbPath.trim() !== ""
-    ? { id, fromVersion, targetVersion, dbPath, status }
-    : undefined;
-}
-
-const OPERATION_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
-const isQueryId = (value: unknown): value is number =>
-  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
 export function decodeServiceLauncherChildMessage(
   value: unknown,
 ): ServiceLauncherChildMessage | undefined {
   if (!isRecord(value)) return undefined;
-  if (value.type === "runtime-ready")
-    return isQueryId(value.queryId) &&
-      typeof value.childVersion === "string" &&
-      isExactServiceVersion(value.childVersion)
-      ? { type: value.type, queryId: value.queryId, childVersion: value.childVersion }
-      : undefined;
-  if (value.type === "request-launcher-handoff")
-    return isQueryId(value.queryId) ? { type: value.type, queryId: value.queryId } : undefined;
-
-  if (value.type === "reconcile-failed-update" || value.type === "record-retired-operation") {
-    if (
-      typeof value.operationId !== "string" ||
-      !OPERATION_ID.test(value.operationId) ||
-      typeof value.requestId !== "string" ||
-      !OPERATION_ID.test(value.requestId)
-    )
-      return undefined;
-    if (value.type === "record-retired-operation") {
-      if (
-        typeof value.retiredLocation !== "string" ||
-        value.retiredLocation.length === 0 ||
-        value.retiredLocation.length > 1024
-      )
-        return undefined;
-      return {
-        type: value.type,
-        operationId: value.operationId,
-        requestId: value.requestId,
-        retiredLocation: value.retiredLocation,
-      };
-    }
-    return { type: value.type, operationId: value.operationId, requestId: value.requestId };
-  }
-  if (value.type === "reconcile-update")
-    return typeof value.operationId === "string" &&
-      OPERATION_ID.test(value.operationId) &&
-      isQueryId(value.queryId)
-      ? { type: value.type, operationId: value.operationId, queryId: value.queryId }
-      : undefined;
-  if (value.type === "request-retire-update") {
-    const keys = [
-      "operationId",
-      "environmentId",
-      "currentVersion",
-      "expectedInstalledSource",
-      "targetSource",
-      "stagedHandle",
-    ] as const;
-    if (
-      keys.some((key) => typeof value[key] !== "string" || value[key] === "") ||
-      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
-        String(value.operationId),
-      )
-    )
-      return undefined;
-    return {
-      type: "request-retire-update",
-      ...Object.fromEntries(keys.map((key) => [key, value[key]])),
-    } as Extract<ServiceLauncherChildMessage, { type: "request-retire-update" }>;
-  }
   if (
     value.type === "request-update" &&
     typeof value.targetVersion === "string" &&
     typeof value.dbPath === "string"
   ) {
-    if (
-      value.stateRecovery !== undefined &&
-      ((value.stateRecovery !== "clone-required" && value.stateRecovery !== "clone-or-copy") ||
-        typeof value.stagedHandle !== "string" ||
-        value.stagedHandle.trim() === "")
-    )
-      return undefined;
-    if (value.stagedHandle !== undefined && typeof value.stagedHandle !== "string")
-      return undefined;
-    if (
-      "qualifiedRecoveryProtocol" in value &&
-      (value.qualifiedRecoveryProtocol !== 1 || value.stagedHandle === undefined)
-    )
-      return undefined;
-    if (
-      value.operationId !== undefined &&
-      (typeof value.operationId !== "string" ||
-        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
-          value.operationId,
-        ) ||
-        value.stagedHandle === undefined)
-    )
-      return undefined;
-    return {
-      type: value.type,
-      ...(value.stateRecovery === undefined
-        ? {}
-        : { stateRecovery: value.stateRecovery as "clone-required" | "clone-or-copy" }),
-      targetVersion: value.targetVersion,
-      dbPath: value.dbPath,
-      ...(typeof value.stagedHandle === "string" ? { stagedHandle: value.stagedHandle } : {}),
-      ...(value.qualifiedRecoveryProtocol === 1 ? { qualifiedRecoveryProtocol: 1 as const } : {}),
-      ...(typeof value.operationId === "string" ? { operationId: value.operationId } : {}),
-    };
+    return { type: value.type, targetVersion: value.targetVersion, dbPath: value.dbPath };
   }
-  if (value.type !== "prepared" || typeof value.updateId !== "string") return undefined;
-  if (value.qualified !== undefined || value.startupGateProtocol !== undefined) {
-    const qualified = decodeQualifiedTrialReceipt(value.qualified);
-    if (
-      value.startupGateProtocol !== 1 ||
-      qualified === undefined ||
-      qualified.updateId !== value.updateId
-    )
-      return undefined;
-    return { type: value.type, updateId: value.updateId, startupGateProtocol: 1, qualified };
-  }
-  return { type: value.type, updateId: value.updateId };
+  return value.type === "prepared" && typeof value.updateId === "string"
+    ? { type: value.type, updateId: value.updateId }
+    : undefined;
 }
 
 export function decodeServiceLauncherParentMessage(
   value: unknown,
 ): ServiceLauncherParentMessage | undefined {
   if (!isRecord(value)) return undefined;
-  if (value.type === "runtime-ready-accepted")
-    return isQueryId(value.queryId) ? { type: value.type, queryId: value.queryId } : undefined;
-  if (value.type === "launcher-handoff-outcome")
-    return isQueryId(value.queryId) &&
-      (value.outcome === "accepted" ||
-        value.outcome === "deferred" ||
-        value.outcome === "unavailable")
-      ? { type: value.type, queryId: value.queryId, outcome: value.outcome }
-      : undefined;
-
-  if (value.type === "update-reconciled") {
-    if (
-      typeof value.operationId !== "string" ||
-      !OPERATION_ID.test(value.operationId) ||
-      typeof value.requestId !== "string" ||
-      !OPERATION_ID.test(value.requestId)
-    )
-      return undefined;
-    const identity = {
-      type: value.type,
-      operationId: value.operationId,
-      requestId: value.requestId,
-    } as const;
-    if (
-      (value.result === "settled" || value.result === "already-settled") &&
-      value.reason === undefined
-    )
-      return { ...identity, result: value.result };
-    if (
-      value.result === "refused" &&
-      typeof value.reason === "string" &&
-      [
-        "not-failed",
-        "not-found",
-        "insufficient-evidence",
-        "restore-pending",
-        "active-changed",
-        "trial-evidence-present",
-        "retired-evidence-mismatch",
-        "settlement-write-failed",
-      ].includes(value.reason)
-    )
-      return {
-        ...identity,
-        result: "refused",
-        reason: value.reason as ServiceUpdateReconciliationRefusal,
-      };
-    return undefined;
-  }
-  if (value.type === "update-outcome") {
-    if (
-      typeof value.operationId !== "string" ||
-      !isQueryId(value.queryId) ||
-      (value.outcome !== "accepted" &&
-        value.outcome !== "rejected" &&
-        value.outcome !== "unknown") ||
-      (value.reason !== undefined && typeof value.reason !== "string")
-    )
-      return undefined;
-    return {
-      type: value.type,
-      operationId: value.operationId,
-      queryId: value.queryId,
-      outcome: value.outcome,
-      ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
-    };
-  }
-  if (value.type === "update-retired") {
-    if (
-      typeof value.operationId !== "string" ||
-      typeof value.stagedHandle !== "string" ||
-      typeof value.retired !== "boolean" ||
-      (value.reason !== undefined && typeof value.reason !== "string")
-    )
-      return undefined;
-    return {
-      type: "update-retired",
-      operationId: value.operationId,
-      stagedHandle: value.stagedHandle,
-      retired: value.retired,
-      ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
-    };
-  }
   if (value.type === "update-rejected" && typeof value.reason === "string") {
-    if (value.operationId !== undefined && typeof value.operationId !== "string") return undefined;
-    return {
-      type: value.type,
-      reason: value.reason,
-      ...(typeof value.operationId === "string" ? { operationId: value.operationId } : {}),
-    };
+    return { type: value.type, reason: value.reason };
   }
   if (value.type === "update-accepted" && typeof value.updateId === "string") {
-    const migrationPlan =
-      value.migrationPlan === undefined ? undefined : decodeMigrationPlan(value.migrationPlan);
-    if (value.migrationPlan !== undefined && migrationPlan === undefined) return undefined;
-    return {
-      type: value.type,
-      updateId: value.updateId,
-      ...(migrationPlan === undefined ? {} : { migrationPlan }),
-    };
+    return { type: value.type, updateId: value.updateId };
   }
-  if (value.type !== "committed" || typeof value.updateId !== "string") return undefined;
-  if (value.qualified !== undefined || value.startupGateProtocol !== undefined) {
-    const qualified = decodeQualifiedTrialGrant(value.qualified);
-    if (
-      value.startupGateProtocol !== 1 ||
-      qualified === undefined ||
-      qualified.updateId !== value.updateId
-    )
-      return undefined;
-    return { type: value.type, updateId: value.updateId, startupGateProtocol: 1, qualified };
-  }
-  return { type: value.type, updateId: value.updateId };
+  if (value.type === "stop") return { type: value.type };
+  return value.type === "committed" && typeof value.updateId === "string"
+    ? { type: value.type, updateId: value.updateId }
+    : undefined;
 }

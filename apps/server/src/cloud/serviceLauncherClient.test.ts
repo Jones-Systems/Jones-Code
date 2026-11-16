@@ -1,166 +1,26 @@
-import { expect, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Logger from "effect/Logger";
+import * as PlatformError from "effect/PlatformError";
+import { assert, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as Duration from "effect/Duration";
-import * as Schema from "effect/Schema";
-import { TestClock } from "effect/testing";
-import * as NetAddress from "effect/net/NetAddress";
-import {
-  decodeServiceLauncherContext,
-  decodeServiceLauncherChildMessage,
-  decodeServiceLauncherParentMessage,
-} from "./serviceProtocol.ts";
-import type {
-  QualifiedTrialReceipt,
-  QualifiedTrialRuntimeWitness,
-} from "../jones/cloud/qualifiedStartup.ts";
-import { decodeQualifiedTrialGrant } from "../jones/cloud/qualifiedStartup.ts";
 
 import {
-  LEGACY_SERVICE_LAUNCHER_PROTOCOL,
   SERVICE_LAUNCHER_CONTEXT_ENV,
   SERVICE_LAUNCHER_PROTOCOL,
   type ServiceLauncherChildMessage,
   type ServiceLauncherParentMessage,
 } from "./serviceProtocol.ts";
+import { posixLauncherScript } from "./pinnedRuntime.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
-import * as UpdateAdmission from "../jones/updates/UpdateAdmissionFence.ts";
-
-// Frozen parent decoder from PR239 d3e6f8e843a0477542380a4ec0d9ae02a1084053.
-// Its grant validator remains shared and unchanged; retain this body to prove additive wire compatibility.
-function decodePr239ParentMessage(value: unknown): ServiceLauncherParentMessage | undefined {
-  const isRecord = (value: unknown): value is Record<string, unknown> =>
-    typeof value === "object" && value !== null && !Array.isArray(value);
-  if (!isRecord(value)) return undefined;
-  if (value.type === "update-rejected" && typeof value.reason === "string") {
-    return { type: value.type, reason: value.reason };
-  }
-  if (value.type === "update-accepted" && typeof value.updateId === "string") {
-    return { type: value.type, updateId: value.updateId };
-  }
-  if (value.type !== "committed" || typeof value.updateId !== "string") return undefined;
-  if (value.qualified !== undefined || value.startupGateProtocol !== undefined) {
-    const qualified = decodeQualifiedTrialGrant(value.qualified);
-    if (
-      value.startupGateProtocol !== 1 ||
-      qualified === undefined ||
-      qualified.updateId !== value.updateId
-    )
-      return undefined;
-    return { type: value.type, updateId: value.updateId, startupGateProtocol: 1, qualified };
-  }
-  return { type: value.type, updateId: value.updateId };
-}
-
-function qualifiedFixture(protocol: 3 | 4 = 4, startupGateProtocol?: 1) {
-  const fromVersion = "0.0.0-preview.20261002.100";
-  const targetVersion = "0.0.0-preview.20261002.101.1";
-  const receipt: QualifiedTrialReceipt = {
-    protocol: 4,
-    startupGateProtocol: 1,
-    updateId: "qualified-trial",
-    stagedHandle: "11111111-1111-4111-8111-111111111111",
-    home: "/fixture",
-    databasePath: "/fixture/userdata/statev2.sqlite",
-    serviceUserdata: "/fixture/userdata",
-    environmentId: "native-fixture",
-    version: targetVersion,
-    sourceSha: "a".repeat(40),
-    sourceTree: "b".repeat(40),
-    listener: { family: "IPv4", address: "127.0.0.1", port: 43123, scopeId: 0 },
-    processId: 123,
-    resumeHeld: true,
-  };
-  const qualified = {
-    protocol: 1,
-    stagedHandle: receipt.stagedHandle,
-    binding: {
-      baseDir: receipt.home,
-      dbPath: receipt.databasePath,
-      environmentId: receipt.environmentId,
-      activeVersion: fromVersion,
-      activeSourceSha: "c".repeat(40),
-    },
-    receipt: {
-      protocol: 1,
-      repository: "Jones-Systems/Jones-Code",
-      channel: "jones-main",
-      version: targetVersion,
-      sourceSha: receipt.sourceSha,
-      sourceTree: receipt.sourceTree,
-      installedSourceSha: "c".repeat(40),
-      runId: 101,
-      runAttempt: 1,
-      artifactId: 102,
-      workflow: ".github/workflows/artifact-cli-linux.yml",
-      artifactDigest: `sha256:${"d".repeat(64)}`,
-      archiveSha256: "e".repeat(64),
-      payloadSha256: "f".repeat(64),
-      platform: "linux",
-      architecture: "x64",
-    },
-  };
-  const pending = {
-    id: receipt.updateId,
-    fromVersion,
-    targetVersion,
-    dbPath: receipt.databasePath,
-    status: "pending",
-    phase: "trial-ready",
-    qualified,
-  };
-  const context = {
-    protocol,
-    childVersion: targetVersion,
-    qualifiedUpdatesProtocol: 1,
-    ...(startupGateProtocol === undefined ? {} : { startupGateProtocol }),
-    update: pending,
-  };
-  const host = new FakeLauncherProcess(context);
-  const events: string[] = [];
-  const operations = {
-    receipt: async () => {
-      events.push("receipt");
-      return receipt;
-    },
-    assertUnreserved: async () => {
-      events.push("unreserved");
-    },
-    reserve: async () => {
-      events.push("reserved");
-    },
-  };
-  const witness: QualifiedTrialRuntimeWitness = {
-    home: receipt.home,
-    databasePath: receipt.databasePath,
-    serviceUserdata: receipt.serviceUserdata,
-    environmentId: receipt.environmentId,
-    version: targetVersion,
-    processId: receipt.processId,
-    buildMetadata: {
-      jonesSource: {
-        repository: "Jones-Systems/Jones-Code",
-        sha: receipt.sourceSha,
-        tree: receipt.sourceTree,
-      },
-    },
-    listener: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
-  };
-  const make = () =>
-    makeClient(host, targetVersion).pipe(
-      Effect.provideService(ServiceLauncherClient.QualifiedTrialOperations, operations),
-    );
-  return { host, context, pending, receipt, events, operations, witness, make };
-}
-
-const encodeContextFixture = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 class FakeLauncherProcess {
   readonly connected: boolean;
   readonly env: Record<string, string | undefined>;
   readonly sent: ServiceLauncherChildMessage[] = [];
-  readonly sentSignal = Promise.withResolvers<void>();
   readonly #listeners = new Map<string, Set<(...args: ReadonlyArray<unknown>) => void>>();
 
   constructor(context: unknown, connected = true) {
@@ -170,7 +30,6 @@ class FakeLauncherProcess {
 
   send = (message: ServiceLauncherChildMessage, callback?: (error: Error | null) => void) => {
     this.sent.push(message);
-    this.sentSignal.resolve();
     callback?.(null);
     return true;
   };
@@ -185,305 +44,76 @@ class FakeLauncherProcess {
     this.#listeners.get(event)?.delete(listener);
   };
 
-  listenerCount() {
-    return [...this.#listeners.values()].reduce((count, listeners) => count + listeners.size, 0);
-  }
-
-  disconnect() {
-    for (const listener of this.#listeners.get("disconnect") ?? []) listener();
-  }
-
-  emitUnknown(message: unknown) {
-    for (const listener of this.#listeners.get("message") ?? []) listener(message);
-  }
-
   emit(message: ServiceLauncherParentMessage) {
     for (const listener of this.#listeners.get("message") ?? []) listener(message);
   }
 }
 
-const makeClient = (
-  host: FakeLauncherProcess,
-  currentVersion: string,
-  suppliedFence?: UpdateAdmission.UpdateAdmissionFence["Service"],
-) =>
-  Effect.gen(function* () {
-    const fence = suppliedFence ?? (yield* UpdateAdmission.make);
-    return yield* ServiceLauncherClient.make({ currentVersion }).pipe(
-      Effect.provideService(UpdateAdmission.UpdateAdmissionFence, fence),
-      Effect.provideService(ServiceLauncherClient.ServiceLauncherHostProcess, host),
-      Effect.provideService(HostProcess.Environment, host.env),
-    );
-  });
+const makeClient = (host: FakeLauncherProcess, currentVersion: string) =>
+  ServiceLauncherClient.make({ currentVersion }).pipe(
+    Effect.provideService(ServiceLauncherClient.ServiceLauncherHostProcess, host),
+    Effect.provideService(HostProcess.Environment, host.env),
+    Effect.provide(NodeServices.layer),
+  );
 
-it.effect("reports launcher and child versions separately without inferring missing metadata", () =>
-  Effect.gen(function* () {
-    for (const protocol of [LEGACY_SERVICE_LAUNCHER_PROTOCOL, SERVICE_LAUNCHER_PROTOCOL]) {
-      for (const launcherVersion of ["0.1.0", undefined, "invalid", null]) {
-        const host = new FakeLauncherProcess({
-          protocol,
-          childVersion: "1.0.0",
-          launcherVersion,
-        });
-        const client = yield* makeClient(host, "1.0.0");
-        expect(client.managed).toBe(true);
-        expect(client.currentVersion).toBe("1.0.0");
-        expect(client.launcherVersion).toBe(launcherVersion === "0.1.0" ? "0.1.0" : undefined);
-        expect(host.sent).toEqual([]);
-        expect(host.listenerCount()).toBe(0);
-      }
-    }
-  }),
-);
-
-it.effect("gates both settlement requests without sending IPC to an older launcher", () =>
-  Effect.gen(function* () {
-    for (const capability of [undefined, 2]) {
-      const host = new FakeLauncherProcess({
-        protocol: 4,
-        childVersion: "1.0.0",
-        updateSettlementProtocol: capability,
-      });
-      const client = yield* makeClient(host, "1.0.0");
-      expect(client.qualifiedSettlement).toBe(false);
-      const input = {
-        operationId: "12345678-1234-4234-8234-123456789abc",
-        requestId: "22345678-1234-4234-8234-123456789abc",
-      };
-      expect(yield* client.reconcileFailedUpdate!(input)).toEqual({
-        result: "refused",
-        reason: "capability-unsupported",
-      });
-      expect(
-        yield* client.recordRetiredOperation!({ ...input, retiredLocation: "retired/operation" }),
-      ).toEqual({ result: "refused", reason: "capability-unsupported" });
-      expect(host.sent).toEqual([]);
-      expect(host.listenerCount()).toBe(0);
-    }
-  }),
-);
-
-it.effect("correlates settlement replies by both IDs and releases IPC listeners", () =>
-  Effect.gen(function* () {
-    for (const type of ["reconcile-failed-update", "record-retired-operation"] as const) {
-      for (const result of ["settled", "already-settled", "refused"] as const) {
-        const host = new FakeLauncherProcess({
-          protocol: 4,
-          childVersion: "1.0.0",
-          updateSettlementProtocol: 1,
-        });
-        const client = yield* makeClient(host, "1.0.0");
-        expect(client.qualifiedSettlement).toBe(true);
-        const input = {
-          operationId: "12345678-1234-4234-8234-123456789abc",
-          requestId: "22345678-1234-4234-8234-123456789abc",
-        };
-        const request = yield* Effect.forkChild(
-          type === "reconcile-failed-update"
-            ? client.reconcileFailedUpdate!(input)
-            : client.recordRetiredOperation!({ ...input, retiredLocation: "retired/operation" }),
-          { startImmediately: true },
-        );
-        yield* Effect.promise(() => host.sentSignal.promise);
-        expect(host.sent).toEqual([
-          {
-            type,
-            ...input,
-            ...(type === "record-retired-operation"
-              ? { retiredLocation: "retired/operation" }
-              : {}),
-          },
-        ]);
-        const reply = {
-          type: "update-reconciled" as const,
-          ...input,
-          ...(result === "refused"
-            ? { result, reason: "insufficient-evidence" as const }
-            : { result }),
-        };
-        host.emit({ ...reply, requestId: "32345678-1234-4234-8234-123456789abc" });
-        host.emit({ ...reply, operationId: "32345678-1234-4234-8234-123456789abc" });
-        host.emitUnknown({ ...reply, result: "refused", reason: "invented-success" });
-        expect(host.listenerCount()).toBe(2);
-        host.emit(reply);
-        expect(yield* Fiber.join(request)).toEqual(
-          result === "refused" ? { result, reason: "insufficient-evidence" } : { result },
-        );
-        expect(host.listenerCount()).toBe(0);
-      }
-    }
-  }),
-);
-
-it.effect("a lost settlement response remains unknown and detaches its listeners", () =>
-  Effect.gen(function* () {
-    for (const failure of ["disconnect", "timeout"] as const) {
-      const host = new FakeLauncherProcess({
-        protocol: 4,
-        childVersion: "1.0.0",
-        updateSettlementProtocol: 1,
-      });
-      const client = yield* makeClient(host, "1.0.0");
-      const request = yield* Effect.forkChild(
-        client.reconcileFailedUpdate!({
-          operationId: "12345678-1234-4234-8234-123456789abc",
-          requestId: "22345678-1234-4234-8234-123456789abc",
-        }).pipe(Effect.flip),
-        { startImmediately: true },
-      );
-      yield* Effect.promise(() => host.sentSignal.promise);
-      if (failure === "disconnect") host.disconnect();
-      else yield* TestClock.adjust("31 seconds");
-      expect((yield* Fiber.join(request)).operation).toBe(failure);
-      expect(host.sent).toHaveLength(1);
-      expect(host.listenerCount()).toBe(0);
-    }
-  }),
-);
-
-it.effect(
-  "requires explicit caller-operation support and correlates acceptance to the exact ID",
-  () =>
+// regression: #34502 a remote update never replaces the launcher, so an installed one stays protocol 3
+it.effect.each([3, SERVICE_LAUNCHER_PROTOCOL])(
+  "waits for a protocol-%i launcher to durably commit the trial update ID, then moves owned launchers",
+  (protocol) =>
     Effect.gen(function* () {
-      const context = {
-        protocol: SERVICE_LAUNCHER_PROTOCOL,
-        childVersion: "1.0.0",
-        qualifiedUpdatesProtocol: 1,
-        startupGateProtocol: 1,
-      };
-      const input = {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-trial-" });
+      const baseDir = path.join(root, ".t3");
+      const exe = (version: string) => path.join(baseDir, "runtime/versions", version, "t3");
+      const installed = path.join(root, ".local/bin/t3");
+      for (const file of [exe("1.0.0"), exe("1.1.0")]) {
+        yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+        yield* fs.writeFileString(file, "");
+      }
+      yield* fs.makeDirectory(path.dirname(installed), { recursive: true });
+      yield* fs.symlink(exe("1.0.0"), installed);
+
+      const pending = {
+        id: "update-1",
+        fromVersion: "1.0.0",
         targetVersion: "1.1.0",
-        dbPath: "/synthetic/statev2.sqlite",
-        stagedHandle: "22345678-1234-4234-8234-123456789abc",
-        operationId: "12345678-1234-4234-8234-123456789abc",
+        dbPath: "/tmp/state.sqlite",
+        status: "pending" as const,
       };
-      const oldHost = new FakeLauncherProcess(context);
-      const oldClient = yield* makeClient(oldHost, "1.0.0");
-      expect((yield* oldClient.requestUpdate(input).pipe(Effect.flip))._tag).toBe(
-        "ServiceLauncherRejectedError",
-      );
-      expect(oldHost.sent).toEqual([]);
-      const host = new FakeLauncherProcess({ ...context, updateOperationsProtocol: 1 });
-      const client = yield* makeClient(host, "1.0.0");
-      const request = yield* Effect.forkChild(client.requestUpdate(input), {
+      const host = new FakeLauncherProcess({ protocol, childVersion: "1.1.0", update: pending });
+      host.env["HOME"] = root;
+      const client = yield* makeClient(host, "1.1.0");
+      const prepared = yield* Effect.forkChild(client.prepareTrial({ baseDir }), {
         startImmediately: true,
       });
-      yield* Effect.promise(() => host.sentSignal.promise);
-      host.emit({ type: "update-accepted", updateId: "other-operation" });
-      expect(host.listenerCount()).toBe(2);
-      host.emit({ type: "update-accepted", updateId: input.operationId });
-      expect(yield* Fiber.join(request)).toBe(input.operationId);
-      expect(host.sent).toEqual([{ type: "request-update", ...input }]);
-      expect(host.listenerCount()).toBe(0);
-    }),
-);
-
-it.effect("refuses an older launcher before sending historical-receipt admission", () =>
-  Effect.gen(function* () {
-    const context = {
-      protocol: SERVICE_LAUNCHER_PROTOCOL,
-      childVersion: "1.0.0",
-      qualifiedUpdatesProtocol: 1,
-      startupGateProtocol: 1,
-    };
-    const input = {
-      targetVersion: "1.1.0",
-      dbPath: "/synthetic/statev2.sqlite",
-      stagedHandle: "22345678-1234-4234-8234-123456789abc",
-      qualifiedRecoveryProtocol: 1 as const,
-    };
-    const oldHost = new FakeLauncherProcess(context);
-    const oldClient = yield* makeClient(oldHost, "1.0.0");
-    expect((yield* oldClient.requestUpdate(input).pipe(Effect.flip))._tag).toBe(
-      "ServiceLauncherRejectedError",
-    );
-    expect(oldHost.sent).toEqual([]);
-    const host = new FakeLauncherProcess({ ...context, qualifiedRecoveryProtocol: 1 });
-    const client = yield* makeClient(host, "1.0.0");
-    expect(client.qualifiedRecovery).toBe(true);
-    const request = yield* Effect.forkChild(client.requestUpdate(input), {
-      startImmediately: true,
-    });
-    yield* Effect.promise(() => host.sentSignal.promise);
-    host.emit({ type: "update-accepted", updateId: "accepted-recovery" });
-    expect(yield* Fiber.join(request)).toBe("accepted-recovery");
-    expect(host.sent).toEqual([{ type: "request-update", ...input }]);
-  }),
-);
-
-it.effect("waits for the launcher to durably commit the trial update ID", () =>
-  Effect.gen(function* () {
-    const pending = {
-      id: "update-1",
-      fromVersion: "1.0.0",
-      targetVersion: "1.1.0",
-      dbPath: "/tmp/state.sqlite",
-      status: "pending" as const,
-      phase: "trial-ready" as const,
-    };
-    const host = new FakeLauncherProcess({
-      protocol: SERVICE_LAUNCHER_PROTOCOL,
-      childVersion: "1.1.0",
-      update: pending,
-    });
-    const client = yield* makeClient(host, "1.1.0");
-    const prepared = yield* Effect.forkChild(client.prepareTrial, { startImmediately: true });
-    yield* Effect.yieldNow;
-    expect(host.sent).toEqual([{ type: "prepared", updateId: "update-1" }]);
-
-    const committed = {
-      id: pending.id,
-      fromVersion: pending.fromVersion,
-      targetVersion: pending.targetVersion,
-      status: "committed" as const,
-    };
-    host.emit({ type: "committed", updateId: committed.id });
-    expect(yield* Fiber.join(prepared)).toEqual(committed);
-  }),
-);
-
-it.effect(
-  "completes a trial started by the legacy launcher without authorizing another update",
-  () =>
-    Effect.gen(function* () {
-      const host = new FakeLauncherProcess({
-        protocol: LEGACY_SERVICE_LAUNCHER_PROTOCOL,
-        childVersion: "1.1.0",
-        update: {
-          id: "legacy-update",
-          fromVersion: "1.0.0",
-          targetVersion: "1.1.0",
-          dbPath: "/tmp/state.sqlite",
-          status: "pending",
-        },
-      });
-      const client = yield* makeClient(host, "1.1.0");
-      const prepared = yield* Effect.forkChild(client.prepareTrial, { startImmediately: true });
       yield* Effect.yieldNow;
-      expect(host.sent).toEqual([{ type: "prepared", updateId: "legacy-update" }]);
-      host.emit({ type: "committed", updateId: "legacy-update" });
-      expect(yield* Fiber.join(prepared)).toMatchObject({ status: "committed" });
-    }),
-);
+      expect(host.sent).toEqual([{ type: "prepared", updateId: "update-1" }]);
+      assert.equal(yield* fs.readLink(installed), exe("1.0.0"));
 
-it.effect(
-  "requires a launcher upgrade before a legacy-managed server can request another update",
-  () =>
-    Effect.gen(function* () {
-      const host = new FakeLauncherProcess({
-        protocol: LEGACY_SERVICE_LAUNCHER_PROTOCOL,
+      const committed = {
+        id: pending.id,
+        fromVersion: pending.fromVersion,
+        targetVersion: pending.targetVersion,
+        status: "committed" as const,
+      };
+      host.emit({ type: "committed", updateId: committed.id });
+      expect(yield* Fiber.join(prepared)).toEqual(committed);
+      assert.equal(yield* fs.readFileString(installed), posixLauncherScript(exe("1.1.0")));
+
+      // A later start replays the stored outcome; user pins made since then stay put.
+      yield* fs.remove(installed);
+      yield* fs.symlink(exe("1.0.0"), installed);
+      const restarted = new FakeLauncherProcess({
+        protocol,
         childVersion: "1.1.0",
+        update: committed,
       });
-      const client = yield* makeClient(host, "1.1.0");
-      const error = yield* client
-        .requestUpdate({ targetVersion: "1.2.0", dbPath: "/tmp/state.sqlite" })
-        .pipe(Effect.flip);
-      expect(error).toMatchObject({
-        _tag: "ServiceLauncherRejectedError",
-        reason: "The installed service launcher must be upgraded before another remote update.",
-      });
-      expect(host.sent).toEqual([]);
-    }),
+      restarted.env["HOME"] = root;
+      const restartedClient = yield* makeClient(restarted, "1.1.0");
+      expect(yield* restartedClient.prepareTrial({ baseDir })).toEqual(committed);
+      assert.equal(yield* fs.readLink(installed), exe("1.0.0"));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("returns the launcher-generated ID only after update acceptance", () =>
@@ -527,6 +157,24 @@ it.effect("preserves a launcher rejection as a distinct error", () =>
   }),
 );
 
+it.effect("stops the server when the launcher asks over IPC", () =>
+  Effect.gen(function* () {
+    const host = new FakeLauncherProcess({
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
+      childVersion: "1.0.0",
+    });
+    const stopped = yield* Effect.forkChild(
+      ServiceLauncherClient.awaitServiceLauncherStop({ currentVersion: "1.0.0" }).pipe(
+        Effect.provideService(ServiceLauncherClient.ServiceLauncherHostProcess, host),
+        Effect.provideService(HostProcess.Environment, host.env),
+      ),
+      { startImmediately: true },
+    );
+    host.emit({ type: "stop" });
+    yield* Fiber.join(stopped);
+  }),
+);
+
 it.effect("rejects contradictory trial context instead of leaving activation closed", () =>
   Effect.gen(function* () {
     const host = new FakeLauncherProcess({
@@ -538,423 +186,11 @@ it.effect("rejects contradictory trial context instead of leaving activation clo
         targetVersion: "1.2.0",
         dbPath: "/tmp/state.sqlite",
         status: "pending",
-        phase: "trial-ready",
       },
     });
     const error = yield* makeClient(host, "1.1.0").pipe(Effect.flip);
     expect(error.message).toBe("The service launcher supplied invalid startup context.");
   }),
-);
-
-it.effect("does not send a qualified Install to a launcher without Jones capability", () =>
-  Effect.gen(function* () {
-    const host = new FakeLauncherProcess({
-      protocol: SERVICE_LAUNCHER_PROTOCOL,
-      childVersion: "1.0.0",
-    });
-    const client = yield* makeClient(host, "1.0.0");
-    expect(client.qualifiedUpdates).toBe(false);
-    const error = yield* client
-      .requestUpdate({
-        targetVersion: "0.0.0-preview.20261002.101.1",
-        dbPath: "/fixture/userdata/state.sqlite",
-        stagedHandle: "fixed-handle",
-      })
-      .pipe(Effect.flip);
-    expect(error.message).toContain("bootstrap-required");
-    expect(host.sent).toEqual([]);
-  }),
-);
-
-it.effect("permits qualified staging but sends no Install without the startup gate", () =>
-  Effect.gen(function* () {
-    const host = new FakeLauncherProcess({
-      protocol: SERVICE_LAUNCHER_PROTOCOL,
-      childVersion: "1.0.0",
-      qualifiedUpdatesProtocol: 1,
-    });
-    const client = yield* makeClient(host, "1.0.0");
-    expect(client.qualifiedStaging).toBe(true);
-    expect(client.qualifiedUpdates).toBe(false);
-    const error = yield* client
-      .requestUpdate({
-        targetVersion: "0.0.0-preview.20261002.101.1",
-        dbPath: "/fixture/userdata/state.sqlite",
-        stagedHandle: "11111111-1111-4111-8111-111111111111",
-      })
-      .pipe(Effect.flip);
-    expect(error.message).toContain("bootstrap-required");
-    expect(host.sent).toEqual([]);
-  }),
-);
-
-it.effect("keeps a qualified staged handle fixed through launcher acceptance", () =>
-  Effect.gen(function* () {
-    const host = new FakeLauncherProcess({
-      protocol: SERVICE_LAUNCHER_PROTOCOL,
-      childVersion: "1.0.0",
-      qualifiedUpdatesProtocol: 1,
-      startupGateProtocol: 1,
-    });
-    const client = yield* makeClient(host, "1.0.0");
-    expect(client.qualifiedUpdates).toBe(true);
-    const install = {
-      targetVersion: "0.0.0-preview.20261002.101.1",
-      dbPath: "/fixture/userdata/state.sqlite",
-      stagedHandle: "fixed-handle",
-    };
-    const requested = yield* Effect.forkChild(client.requestUpdate(install), {
-      startImmediately: true,
-    });
-    yield* Effect.yieldNow;
-    expect(host.sent).toEqual([{ type: "request-update", ...install }]);
-    host.emit({ type: "update-accepted", updateId: "qualified-id" });
-    expect(yield* Fiber.join(requested)).toBe("qualified-id");
-  }),
-);
-
-it.effect("excludes legacy release outcomes from readonly Jones terminal state", () =>
-  Effect.gen(function* () {
-    const outcome = {
-      id: "retained-transaction",
-      fromVersion: "1.0.0",
-      targetVersion: "1.1.0",
-      status: "rolled-back" as const,
-      reason: "candidate-exited",
-    };
-    const host = new FakeLauncherProcess({
-      protocol: SERVICE_LAUNCHER_PROTOCOL,
-      childVersion: "1.0.0",
-      qualifiedUpdatesProtocol: 1,
-      startupGateProtocol: 1,
-      update: outcome,
-    });
-    const client = yield* makeClient(host, "1.0.0");
-    expect(client.qualifiedStartupOutcome).toBeUndefined();
-    expect(client.qualifiedStartupOutcome).toBeUndefined();
-    expect(host.sent).toEqual([]);
-  }),
-);
-
-it("retains PR239 staged-handle requests and accepts additive migration plans in its parent decoder", () => {
-  const fixture = qualifiedFixture(4, 1);
-  const request = {
-    type: "request-update" as const,
-    targetVersion: fixture.pending.targetVersion,
-    dbPath: fixture.receipt.databasePath,
-    stagedHandle: fixture.receipt.stagedHandle,
-  };
-  expect(decodeServiceLauncherChildMessage(request)).toEqual(request);
-  const migrationPlan = { pendingUpstream: [103], pendingJones: [105] };
-  expect(
-    decodePr239ParentMessage({
-      type: "update-accepted",
-      updateId: fixture.pending.id,
-      migrationPlan,
-    }),
-  ).toEqual({ type: "update-accepted", updateId: fixture.pending.id });
-  const committed = {
-    type: "committed" as const,
-    updateId: fixture.pending.id,
-    startupGateProtocol: 1 as const,
-    qualified: { ...fixture.receipt, generation: fixture.pending.id },
-  };
-  expect(decodePr239ParentMessage({ ...committed, migrationPlan })).toEqual(committed);
-  expect(
-    decodePr239ParentMessage({ ...committed, migrationPlan, startupGateProtocol: 2 }),
-  ).toBeUndefined();
-});
-
-it.effect("establishes the qualified outcome only after exact grant and durable reservation", () =>
-  Effect.gen(function* () {
-    const fixture = qualifiedFixture(4, 1);
-    const client = yield* fixture.make();
-    expect(client.requiresQualifiedTrialGate).toBe(true);
-    yield* client.prepareTrial.pipe(Effect.flip);
-    expect(fixture.host.sent).toEqual([]);
-    const prepared = yield* Effect.forkChild(client.prepareQualifiedTrial(fixture.witness), {
-      startImmediately: true,
-    });
-    yield* Effect.promise(() => fixture.host.sentSignal.promise);
-    expect(fixture.host.sent).toEqual([
-      {
-        type: "prepared",
-        updateId: fixture.pending.id,
-        startupGateProtocol: 1,
-        qualified: fixture.receipt,
-      },
-    ]);
-    expect(fixture.events).toEqual(["receipt", "unreserved"]);
-    expect(client.qualifiedStartupOutcome).toBeUndefined();
-    fixture.host.emit({
-      type: "committed",
-      updateId: fixture.pending.id,
-      startupGateProtocol: 1,
-      qualified: { ...fixture.receipt, generation: fixture.pending.id },
-    });
-    const outcome = yield* Fiber.join(prepared);
-    expect(fixture.events).toEqual(["receipt", "unreserved", "reserved"]);
-    expect(client.qualifiedStartupOutcome).toEqual(outcome);
-    expect(yield* client.prepareTrial).toEqual(outcome);
-    expect((yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation).toBe(
-      "qualified-replay",
-    );
-    expect(fixture.host.sent).toHaveLength(1);
-    expect(fixture.host.listenerCount()).toBe(0);
-  }),
-);
-
-it.effect("holds qualified pending context without a startup gate before sending", () =>
-  Effect.gen(function* () {
-    const fixture = qualifiedFixture(4);
-    expect(
-      decodeServiceLauncherContext(encodeContextFixture(fixture.context))?.update,
-    ).toHaveProperty("qualified");
-    const client = yield* fixture.make();
-    expect(client.requiresQualifiedTrialGate).toBe(true);
-    expect((yield* client.prepareTrial.pipe(Effect.flip)).operation).toBe("qualified-proof");
-    expect((yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation).toBe(
-      "qualified-proof",
-    );
-    expect(fixture.events).toEqual([]);
-    expect(fixture.host.sent).toEqual([]);
-  }),
-);
-
-it.effect("rejects legacy qualified context instead of stripping its identity", () =>
-  Effect.gen(function* () {
-    const fixture = qualifiedFixture(3);
-    expect(decodeServiceLauncherContext(encodeContextFixture(fixture.context))).toBeUndefined();
-    expect((yield* fixture.make().pipe(Effect.flip)).operation).toBe("decode-context");
-    expect(fixture.host.sent).toEqual([]);
-  }),
-);
-
-it.effect.each(["legacy", "mismatch", "malformed"] as const)(
-  "refuses %s committed proof and fences another exchange",
-  (mode) =>
-    Effect.gen(function* () {
-      const fixture = qualifiedFixture(4, 1);
-      const client = yield* fixture.make();
-      const prepared = yield* Effect.forkChild(
-        client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip),
-        { startImmediately: true },
-      );
-      yield* Effect.promise(() => fixture.host.sentSignal.promise);
-      const grant = { ...fixture.receipt, generation: fixture.pending.id };
-      fixture.host.emitUnknown({
-        type: "committed",
-        updateId: fixture.pending.id,
-        ...(mode === "legacy"
-          ? {}
-          : {
-              startupGateProtocol: 1,
-              qualified:
-                mode === "malformed"
-                  ? { ...grant, processId: undefined }
-                  : { ...grant, processId: 999 },
-            }),
-      });
-      expect((yield* Fiber.join(prepared)).operation).toBe("qualified-proof");
-      expect(fixture.events).toEqual(["receipt", "unreserved"]);
-      expect(
-        (yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation,
-      ).toBe("qualified-replay");
-      expect(fixture.host.sent).toHaveLength(1);
-      expect(fixture.host.listenerCount()).toBe(0);
-    }),
-);
-
-it.effect.each(["cancel", "timeout", "disconnect"] as const)(
-  "cleans listeners and never retries after %s",
-  (mode) =>
-    Effect.gen(function* () {
-      const fixture = qualifiedFixture(4, 1);
-      const client = yield* fixture.make();
-      const prepared = yield* Effect.forkChild(
-        client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip),
-        { startImmediately: true },
-      );
-      yield* Effect.promise(() => fixture.host.sentSignal.promise);
-      if (mode === "cancel") yield* Fiber.interrupt(prepared);
-      else {
-        if (mode === "timeout") yield* TestClock.adjust(Duration.seconds(30));
-        else fixture.host.disconnect();
-        expect((yield* Fiber.join(prepared)).operation).toBe(mode);
-      }
-      expect(fixture.host.listenerCount()).toBe(0);
-      expect(fixture.events).toEqual(["receipt", "unreserved"]);
-      expect(
-        (yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation,
-      ).toBe("qualified-replay");
-      expect(fixture.host.sent).toHaveLength(1);
-    }),
-);
-
-it.effect("keeps a grant uncommitted to startup if durable reservation fails", () =>
-  Effect.gen(function* () {
-    const fixture = qualifiedFixture(4, 1);
-    fixture.operations.reserve = async () => {
-      throw new Error("synthetic fsync uncertainty");
-    };
-    const client = yield* fixture.make();
-    const prepared = yield* Effect.forkChild(
-      client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip),
-      { startImmediately: true },
-    );
-    yield* Effect.promise(() => fixture.host.sentSignal.promise);
-    fixture.host.emit({
-      type: "committed",
-      updateId: fixture.pending.id,
-      startupGateProtocol: 1,
-      qualified: { ...fixture.receipt, generation: fixture.pending.id },
-    });
-    expect((yield* Fiber.join(prepared)).operation).toBe("qualified-reservation");
-    expect(client.qualifiedStartupOutcome).toBeUndefined();
-    expect((yield* client.prepareTrial.pipe(Effect.flip)).operation).toBe("qualified-proof");
-  }),
-);
-
-it.effect("rejects an occupied resume marker before exchange and never replays it", () =>
-  Effect.gen(function* () {
-    const fixture = qualifiedFixture(4, 1);
-    fixture.operations.assertUnreserved = async () => {
-      throw new Error("occupied marker");
-    };
-    const client = yield* fixture.make();
-    expect((yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation).toBe(
-      "qualified-proof",
-    );
-    expect(fixture.host.sent).toEqual([]);
-    expect((yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation).toBe(
-      "qualified-replay",
-    );
-  }),
-);
-
-it.effect(
-  "drains cancelled reservation I/O before startup finalization without opening recovery",
-  () =>
-    Effect.gen(function* () {
-      const fixture = qualifiedFixture(4, 1);
-      const started = Promise.withResolvers<void>();
-      const release = Promise.withResolvers<void>();
-      fixture.operations.reserve = async () => {
-        started.resolve();
-        await release.promise;
-        fixture.events.push("reservation-drained");
-      };
-      const client = yield* fixture.make();
-      const prepared = yield* Effect.forkChild(client.prepareQualifiedTrial(fixture.witness), {
-        startImmediately: true,
-      });
-      yield* Effect.promise(() => fixture.host.sentSignal.promise);
-      fixture.host.emit({
-        type: "committed",
-        updateId: fixture.pending.id,
-        startupGateProtocol: 1,
-        qualified: { ...fixture.receipt, generation: fixture.pending.id },
-      });
-      yield* Effect.promise(() => started.promise);
-      const cancelled = yield* Effect.forkChild(Fiber.interrupt(prepared), {
-        startImmediately: true,
-      });
-      expect(fixture.events).not.toContain("reservation-drained");
-      release.resolve();
-      yield* Fiber.join(cancelled);
-      expect(fixture.events).toContain("reservation-drained");
-      expect(client.qualifiedStartupOutcome).toBeUndefined();
-      expect(fixture.host.listenerCount()).toBe(0);
-      expect((yield* client.prepareTrial.pipe(Effect.flip)).operation).toBe("qualified-proof");
-    }),
-);
-
-it("rejects malformed supplied IPC proofs without converting them into ID-only messages", () => {
-  const fixture = qualifiedFixture(4, 1);
-  expect(
-    decodeServiceLauncherChildMessage({
-      type: "prepared",
-      updateId: fixture.pending.id,
-      qualified: fixture.receipt,
-    }),
-  ).toBeUndefined();
-  expect(
-    decodeServiceLauncherParentMessage({
-      type: "committed",
-      updateId: fixture.pending.id,
-      startupGateProtocol: 1,
-    }),
-  ).toBeUndefined();
-});
-
-it.effect(
-  "requires retirement capability and correlates a retirement after the install caller times out",
-  () =>
-    Effect.gen(function* () {
-      const context = {
-        protocol: SERVICE_LAUNCHER_PROTOCOL,
-        childVersion: "1.0.0",
-        qualifiedUpdatesProtocol: 1,
-        startupGateProtocol: 1,
-        updateOperationsProtocol: 1,
-      };
-      const input = {
-        operationId: "12345678-1234-4234-8234-123456789abc",
-        stagedHandle: "22345678-1234-4234-8234-123456789abc",
-        environmentId: "synthetic",
-        currentVersion: "1.0.0",
-        expectedInstalledSource: "a".repeat(40),
-        targetSource: "b".repeat(40),
-      };
-      const oldHost = new FakeLauncherProcess(context);
-      const old = yield* makeClient(oldHost, "1.0.0");
-      expect(old.qualifiedRetirement).toBe(false);
-      expect((yield* old.retireUpdate!(input)).retired).toBe(false);
-      expect(oldHost.sent).toEqual([]);
-      const host = new FakeLauncherProcess({ ...context, updateRetirementProtocol: 1 });
-      const client = yield* makeClient(host, "1.0.0");
-      const install = yield* Effect.forkChild(
-        client
-          .requestUpdate({
-            operationId: input.operationId,
-            stagedHandle: input.stagedHandle,
-            targetVersion: "1.1.0",
-            dbPath: "/synthetic/statev2.sqlite",
-          })
-          .pipe(Effect.result),
-        { startImmediately: true },
-      );
-      yield* Effect.promise(() => host.sentSignal.promise);
-      yield* TestClock.adjust(Duration.seconds(30));
-      expect((yield* Fiber.join(install))._tag).toBe("Failure");
-      const retire = yield* Effect.forkChild(client.retireUpdate!(input), {
-        startImmediately: true,
-      });
-      yield* Effect.yieldNow;
-      host.emit({ type: "update-accepted", updateId: input.operationId });
-      host.emit({
-        type: "update-retired",
-        operationId: input.operationId,
-        stagedHandle: "different",
-        retired: true,
-      });
-      expect(host.listenerCount()).toBe(2);
-      host.emit({
-        type: "update-retired",
-        operationId: input.operationId,
-        stagedHandle: input.stagedHandle,
-        retired: false,
-        reason: "The operation was accepted before retirement.",
-      });
-      expect(yield* Fiber.join(retire)).toEqual({
-        retired: false,
-        reason: "The operation was accepted before retirement.",
-      });
-      expect(host.listenerCount()).toBe(0);
-      expect(
-        decodeServiceLauncherChildMessage({ type: "request-retire-update", ...input }),
-      ).toEqual({ type: "request-retire-update", ...input });
-    }),
 );
 
 it.effect("ignores launcher context inherited without an IPC channel", () =>
@@ -972,338 +208,121 @@ it.effect("ignores launcher context inherited without an IPC channel", () =>
   }),
 );
 
-it.effect(
-  "asks for a handoff outcome only with capability and pairs each answer with its question",
-  () =>
-    Effect.gen(function* () {
-      const context = {
-        protocol: SERVICE_LAUNCHER_PROTOCOL,
-        childVersion: "1.0.0",
-        qualifiedUpdatesProtocol: 1,
-        startupGateProtocol: 1,
-        updateOperationsProtocol: 1,
-      };
-      const operationId = "12345678-1234-4234-8234-123456789abc";
-      const oldHost = new FakeLauncherProcess(context);
-      const old = yield* makeClient(oldHost, "1.0.0");
-      expect(old.qualifiedOutcomes).toBe(false);
-      expect((yield* old.reconcileUpdate!(operationId)).outcome).toBe("unknown");
-      expect(oldHost.sent).toEqual([]);
-
-      const host = new FakeLauncherProcess({ ...context, updateOutcomeProtocol: 1 });
-      const client = yield* makeClient(host, "1.0.0");
-      expect(client.qualifiedOutcomes).toBe(true);
-      // A question the launcher never answers proves nothing and leaves no listener behind.
-      const unanswered = yield* Effect.forkChild(client.reconcileUpdate!(operationId), {
-        startImmediately: true,
-      });
-      yield* TestClock.adjust(Duration.seconds(30));
-      const timedOut = yield* Fiber.join(unanswered).pipe(Effect.flip);
-      expect(timedOut.operation).toBe("timeout");
-      expect(host.listenerCount()).toBe(0);
-      const asked = yield* Effect.forkChild(client.reconcileUpdate!(operationId), {
-        startImmediately: true,
-      });
-      expect(host.sent).toEqual([
-        { type: "reconcile-update", operationId, queryId: 1 },
-        { type: "reconcile-update", operationId, queryId: 2 },
-      ]);
-      // The late answer to the first question, and one for another operation, are ignored.
-      host.emit({ type: "update-outcome", operationId, queryId: 1, outcome: "rejected" });
-      host.emit({
-        type: "update-outcome",
-        operationId: "22345678-1234-4234-8234-123456789abc",
-        queryId: 2,
-        outcome: "rejected",
-      });
-      expect(host.listenerCount()).toBe(2);
-      host.emit({ type: "update-outcome", operationId, queryId: 2, outcome: "accepted" });
-      expect(yield* Fiber.join(asked)).toEqual({ outcome: "accepted" });
-      expect(host.listenerCount()).toBe(0);
-      expect(
-        decodeServiceLauncherContext(JSON.stringify({ ...context, updateOutcomeProtocol: 2 }))
-          ?.updateOutcomeProtocol,
-      ).toBeUndefined();
-    }),
-);
-
-it.effect("drains the actual shared native-use scope before sending a direct handoff", () =>
-  Effect.gen(function* () {
-    const fence = yield* UpdateAdmission.make;
-    const host = new FakeLauncherProcess({
-      protocol: SERVICE_LAUNCHER_PROTOCOL,
-      childVersion: "1.0.0",
-    });
-    const client = yield* makeClient(host, "1.0.0", fence);
-    const entered = Promise.withResolvers<Effect.Effect<void>>();
-    const release = Promise.withResolvers<void>();
-    const native = yield* Effect.scoped(
+it.layer(NodeServices.layer)("self-update launchers", (it) => {
+  it.effect(
+    "updates custom install and PATH launchers, including versions older than fromVersion",
+    () =>
       Effect.gen(function* () {
-        const use = yield* fence.nativeUse;
-        entered.resolve(use.invalidated);
-        yield* Effect.promise(() => release.promise);
-      }),
-    ).pipe(Effect.forkChild);
-    const invalidated = yield* Effect.promise(() => entered.promise);
-    const request = yield* client
-      .requestUpdate({ targetVersion: "2.0.0", dbPath: "/fixture/state.sqlite" })
-      .pipe(Effect.forkChild);
-    yield* invalidated;
-    expect(host.sent).toEqual([]);
-    release.resolve();
-    yield* Fiber.join(native);
-    yield* Effect.promise(() => host.sentSignal.promise);
-    host.emit({ type: "update-accepted", updateId: "direct-shared" });
-    expect(yield* Fiber.join(request)).toBe("direct-shared");
-    const refused = yield* Effect.scoped(fence.nativeUse).pipe(Effect.result);
-    expect(refused._tag).toBe("Failure");
-  }),
-);
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" });
+        const baseDir = path.join(root, ".t3");
+        const exe = (version: string) => path.join(baseDir, "runtime/versions", version, "t3");
+        const installed = path.join(root, "custom/bin/t3");
+        const onPath = path.join(root, "bin/t3");
+        for (const file of [exe("1.0.0"), exe("1.5.0"), exe("2.0.0")]) {
+          yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+          yield* fs.writeFileString(file, "");
+        }
+        yield* fs.makeDirectory(path.dirname(installed), { recursive: true });
+        yield* fs.writeFileString(installed, posixLauncherScript(exe("1.5.0")), { mode: 0o755 });
+        yield* fs.makeDirectory(path.dirname(onPath), { recursive: true });
+        yield* fs.symlink(exe("1.0.0"), onPath);
 
-it.effect("reopens the same fence only after a definitive launcher rejection", () =>
-  Effect.gen(function* () {
-    const fence = yield* UpdateAdmission.make;
-    const host = new FakeLauncherProcess({
-      protocol: SERVICE_LAUNCHER_PROTOCOL,
-      childVersion: "1.0.0",
-    });
-    const client = yield* makeClient(host, "1.0.0", fence);
-    const request = yield* client
-      .requestUpdate({ targetVersion: "2.0.0", dbPath: "/fixture/state.sqlite" })
-      .pipe(Effect.result, Effect.forkChild);
-    yield* Effect.promise(() => host.sentSignal.promise);
-    host.emit({ type: "update-rejected", reason: "declined fixture" });
-    expect((yield* Fiber.join(request))._tag).toBe("Failure");
-    yield* Effect.scoped(fence.nativeUse);
-  }),
-);
+        yield* ServiceLauncherClient.repointLaunchers({ baseDir, targetVersion: "2.0.0" }).pipe(
+          Effect.provideService(HostProcess.Environment, {
+            HOME: root,
+            T3CODE_INSTALL_BIN_DIR: path.dirname(installed),
+            PATH: path.dirname(onPath),
+          }),
+        );
 
-it.effect(
-  "refuses strict state policy on old launchers before running install work, and scopes policy to the exact operation",
-  () =>
+        // The script is rewritten and the legacy symlink becomes one.
+        assert.equal(yield* fs.readFileString(installed), posixLauncherScript(exe("2.0.0")));
+        assert.equal(yield* fs.readFileString(onPath), posixLauncherScript(exe("2.0.0")));
+      }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+  );
+
+  it.effect("still moves the PATH launcher when the install bin one cannot be rewritten", () =>
     Effect.gen(function* () {
-      const context = {
-        protocol: SERVICE_LAUNCHER_PROTOCOL,
-        childVersion: "1.0.0",
-        qualifiedUpdatesProtocol: 1,
-        startupGateProtocol: 1,
-        updateOperationsProtocol: 1,
-      };
-      const input = {
-        targetVersion: "1.1.0",
-        dbPath: "/synthetic/statev2.sqlite",
-        stagedHandle: "22345678-1234-4234-8234-123456789abc",
-        operationId: "12345678-1234-4234-8234-123456789abc",
-      };
-      const oldHost = new FakeLauncherProcess(context);
-      const old = yield* makeClient(oldHost, "1.0.0");
-      let entered = false;
-      yield* old.withStateRecoveryPolicy!(
-        input.operationId,
-        "clone-required",
-        Effect.sync(() => {
-          entered = true;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" });
+      const baseDir = path.join(root, ".t3");
+      const exe = (version: string) => path.join(baseDir, "runtime/versions", version, "t3");
+      const installed = path.join(root, ".local/bin/t3");
+      const onPath = path.join(root, "bin/t3");
+      for (const file of [exe("1.0.0"), exe("2.0.0")]) {
+        yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+        yield* fs.writeFileString(file, "");
+      }
+      for (const link of [installed, onPath]) {
+        yield* fs.makeDirectory(path.dirname(link), { recursive: true });
+        yield* fs.symlink(exe("1.0.0"), link);
+      }
+      const warnings: unknown[] = [];
+      const logger = Logger.make(({ logLevel, message }) => {
+        if (logLevel === "Warn") warnings.push(message);
+      });
+      const failingFs = FileSystem.FileSystem.of({
+        ...fs,
+        rename: (source, destination) =>
+          destination === installed
+            ? Effect.fail(
+                new PlatformError.PlatformError(
+                  new PlatformError.SystemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "rename",
+                    pathOrDescriptor: destination,
+                  }),
+                ),
+              )
+            : fs.rename(source, destination),
+      });
+
+      yield* ServiceLauncherClient.repointLaunchers({ baseDir, targetVersion: "2.0.0" }).pipe(
+        Effect.provideService(HostProcess.Environment, {
+          HOME: root,
+          PATH: path.dirname(onPath),
         }),
-      ).pipe(Effect.flip);
-      yield* old.requestUpdate({ ...input, stateRecovery: "clone-required" }).pipe(Effect.flip);
-      expect(entered).toBe(false);
-      expect(oldHost.sent).toEqual([]);
-      const host = new FakeLauncherProcess({ ...context, stateRecoveryPolicyProtocol: 1 });
-      const client = yield* makeClient(host, "1.0.0");
-      expect(client.stateRecoveryPolicy).toBe(true);
-      const request = yield* Effect.forkChild(
-        client.withStateRecoveryPolicy!(
-          input.operationId,
-          "clone-required",
-          client.requestUpdate(input),
-        ),
-        { startImmediately: true },
+        Effect.provideService(FileSystem.FileSystem, failingFs),
+        Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
       );
-      yield* Effect.promise(() => host.sentSignal.promise);
-      expect(host.sent).toEqual([
-        { type: "request-update", ...input, stateRecovery: "clone-required" },
-      ]);
-      host.emit({ type: "update-accepted", updateId: input.operationId });
-      expect(yield* Fiber.join(request)).toBe(input.operationId);
-      // The policy scope closes, while this accepted instance stays fenced until exit.
-      yield* client.withStateRecoveryPolicy!(input.operationId, "clone-or-copy", Effect.void);
-      const legacyHost = new FakeLauncherProcess({ ...context, stateRecoveryPolicyProtocol: 1 });
-      const legacyClient = yield* makeClient(legacyHost, "1.0.0");
-      const legacy = yield* Effect.forkChild(legacyClient.requestUpdate(input), {
-        startImmediately: true,
-      });
-      yield* Effect.promise(() => legacyHost.sentSignal.promise);
-      expect(legacyHost.sent.at(-1)).toEqual({ type: "request-update", ...input });
-      legacyHost.emit({ type: "update-accepted", updateId: input.operationId });
-      yield* Fiber.join(legacy);
-      yield* client.withStateRecoveryPolicy!(
-        input.operationId,
-        "clone-required",
-        Effect.fail("synthetic failure"),
-      ).pipe(Effect.flip);
-      // Failure releases the scope too, allowing a subsequent explicit policy.
-      yield* client.withStateRecoveryPolicy!(input.operationId, "clone-or-copy", Effect.void);
-    }),
-);
 
-it("decodes optional state policy capability and refuses malformed policy without weakening old requests", () => {
-  const context = { protocol: SERVICE_LAUNCHER_PROTOCOL, childVersion: "1.0.0" };
-  expect(decodeServiceLauncherContext(JSON.stringify(context))).toEqual(context);
-  expect(
-    decodeServiceLauncherContext(JSON.stringify({ ...context, stateRecoveryPolicyProtocol: 1 })),
-  ).toEqual({ ...context, stateRecoveryPolicyProtocol: 1 });
-  for (const flag of [0, 2, null, "1", true])
-    expect(
-      decodeServiceLauncherContext(
-        JSON.stringify({ ...context, stateRecoveryPolicyProtocol: flag }),
-      ),
-    ).toBeUndefined();
-  const request = {
-    type: "request-update",
-    targetVersion: "1.1.0",
-    dbPath: "/synthetic/state.sqlite",
-    stagedHandle: "stage",
-  };
-  expect(decodeServiceLauncherChildMessage(request)).toEqual(request);
-  for (const stateRecovery of ["clone-required", "clone-or-copy"])
-    expect(decodeServiceLauncherChildMessage({ ...request, stateRecovery })).toEqual({
-      ...request,
-      stateRecovery,
-    });
-  for (const stateRecovery of [null, "copy", "", 1, true])
-    expect(decodeServiceLauncherChildMessage({ ...request, stateRecovery })).toBeUndefined();
-  expect(
-    decodeServiceLauncherChildMessage({
-      ...request,
-      stagedHandle: undefined,
-      stateRecovery: "clone-required",
-    }),
-  ).toBeUndefined();
-});
+      assert.lengthOf(warnings, 1);
+      assert.include(JSON.stringify(warnings), installed);
+      assert.equal(yield* fs.readLink(installed), exe("1.0.0"));
+      assert.equal(yield* fs.readFileString(onPath), posixLauncherScript(exe("2.0.0")));
+    }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+  );
 
-it.effect(
-  "preserves the legacy default wire request for clone-or-copy on a launcher without the policy flag",
-  () =>
+  it.effect("leaves unowned install files and PATH symlinks untouched after self-update", () =>
     Effect.gen(function* () {
-      const host = new FakeLauncherProcess({
-        protocol: SERVICE_LAUNCHER_PROTOCOL,
-        childVersion: "1.0.0",
-        qualifiedUpdatesProtocol: 1,
-        startupGateProtocol: 1,
-        updateOperationsProtocol: 1,
-      });
-      const client = yield* makeClient(host, "1.0.0");
-      const input = {
-        targetVersion: "1.1.0",
-        dbPath: "/synthetic/statev2.sqlite",
-        stagedHandle: "22345678-1234-4234-8234-123456789abc",
-        operationId: "12345678-1234-4234-8234-123456789abc",
-      };
-      const request = yield* Effect.forkChild(
-        client.requestUpdate({ ...input, stateRecovery: "clone-or-copy" }),
-        { startImmediately: true },
-      );
-      yield* Effect.promise(() => host.sentSignal.promise);
-      expect(host.sent).toEqual([{ type: "request-update", ...input }]);
-      host.emit({ type: "update-accepted", updateId: input.operationId });
-      expect(yield* Fiber.join(request)).toBe(input.operationId);
-    }),
-);
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" });
+      const baseDir = path.join(root, ".t3");
+      const installed = path.join(root, ".local/bin/t3");
+      const onPath = path.join(root, "bin/t3");
+      const foreign = path.join(root, "other-home/runtime/versions/1.0.0/t3");
+      const target = path.join(baseDir, "runtime/versions/2.0.0/t3");
+      for (const file of [installed, foreign, target]) {
+        yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+        yield* fs.writeFileString(file, "user-owned file");
+      }
+      yield* fs.makeDirectory(path.dirname(onPath), { recursive: true });
+      yield* fs.symlink(foreign, onPath);
 
-it.effect(
-  "exposes handoff only with explicit launcher support and correlates actual-ready and handoff replies",
-  () =>
-    Effect.gen(function* () {
-      const context = {
-        protocol: 4,
-        childVersion: "1.0.0",
-        launcherVersion: "0.9.0",
-        startupGateProtocol: 1,
-        launcherHandoffProtocol: 1,
-      };
-      const older = yield* makeClient(
-        new FakeLauncherProcess({
-          protocol: 4,
-          childVersion: "1.0.0",
-          startupGateProtocol: 1,
+      yield* ServiceLauncherClient.repointLaunchers({ baseDir, targetVersion: "2.0.0" }).pipe(
+        Effect.provideService(HostProcess.Environment, {
+          HOME: root,
+          PATH: path.dirname(onPath),
         }),
-        "1.0.0",
       );
-      expect(older.markRuntimeReady).toBeUndefined();
-      expect(older.requestLauncherHandoff).toBeUndefined();
-      const host = new FakeLauncherProcess(context);
-      const client = yield* makeClient(host, "1.0.0");
-      const ready = yield* client.markRuntimeReady!.pipe(Effect.forkChild);
-      yield* Effect.promise(() => host.sentSignal.promise);
-      const sent = host.sent[0];
-      expect(sent?.type).toBe("runtime-ready");
-      if (sent?.type !== "runtime-ready") return yield* Effect.die("Missing ready message");
-      host.emit({ type: "runtime-ready-accepted", queryId: sent.queryId + 1 });
-      expect(ready.pollUnsafe()).toBeUndefined();
-      host.emit({ type: "runtime-ready-accepted", queryId: sent.queryId });
-      yield* Fiber.join(ready);
-      const sentHandoff = Promise.withResolvers<ServiceLauncherChildMessage>();
-      const send = host.send;
-      host.send = (message, callback) => {
-        const result = send(message, callback);
-        if (message.type === "request-launcher-handoff") sentHandoff.resolve(message);
-        return result;
-      };
-      const handoff = yield* client.requestLauncherHandoff!.pipe(Effect.forkChild);
-      const request = yield* Effect.promise(() => sentHandoff.promise);
-      expect(request?.type).toBe("request-launcher-handoff");
-      if (request?.type !== "request-launcher-handoff")
-        return yield* Effect.die("Missing handoff request");
-      host.emit({
-        type: "launcher-handoff-outcome",
-        queryId: request.queryId,
-        outcome: "deferred",
-      });
-      expect(yield* Fiber.join(handoff)).toBe("deferred");
-      expect(host.listenerCount()).toBe(0);
-    }),
-);
 
-it("strictly decodes additive handoff capabilities and bounded IPC while retaining protocol4", () => {
-  const context = {
-    protocol: 4,
-    childVersion: "1.0.0",
-    startupGateProtocol: 1,
-    launcherHandoffProtocol: 1,
-  };
-  expect(decodeServiceLauncherContext(JSON.stringify(context))?.launcherHandoffProtocol).toBe(1);
-  for (const change of [
-    { launcherHandoffProtocol: 2 },
-    { launcherHandoffProtocol: null },
-    { launcherHandoffProtocol: "1" },
-    { protocol: 3 },
-    { startupGateProtocol: undefined },
-  ])
-    expect(decodeServiceLauncherContext(JSON.stringify({ ...context, ...change }))).toBeUndefined();
-  for (const message of [
-    { type: "runtime-ready", childVersion: "1.0.0", queryId: 1 },
-    { type: "request-launcher-handoff", queryId: 2 },
-  ]) {
-    expect(decodeServiceLauncherChildMessage(message)).toEqual(message);
-    for (const queryId of [-1, 0, 1.5, null, "1"])
-      expect(decodeServiceLauncherChildMessage({ ...message, queryId })).toBeUndefined();
-  }
-  expect(
-    decodeServiceLauncherChildMessage({
-      type: "runtime-ready",
-      childVersion: "../outside",
-      queryId: 1,
-    }),
-  ).toBeUndefined();
-  for (const outcome of ["accepted", "deferred", "unavailable"]) {
-    const message = { type: "launcher-handoff-outcome", queryId: 1, outcome };
-    expect(decodeServiceLauncherParentMessage(message)).toEqual(message);
-  }
-  expect(
-    decodeServiceLauncherParentMessage({
-      type: "launcher-handoff-outcome",
-      queryId: 1,
-      outcome: "unknown",
-    }),
-  ).toBeUndefined();
+      assert.equal(yield* fs.readFileString(installed), "user-owned file");
+      assert.equal(yield* fs.readLink(onPath), foreign);
+    }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+  );
 });

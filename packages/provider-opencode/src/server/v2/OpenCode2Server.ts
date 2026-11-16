@@ -1,3 +1,4 @@
+import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/snapshotProbe";
 // One OpenCode 2 process serves all directories; share it across instance threads.
 import type { OpenCodeClient } from "@opencode/client/effect";
 import * as Context from "effect/Context";
@@ -11,20 +12,15 @@ import * as HttpClientError from "effect/http/HttpClientError";
 import * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
 import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import * as OpenCode2Client from "./OpenCode2Client.ts";
-import * as OpenCodeCreationPolicy from "@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy";
 
-const INFO_TIMEOUT = "5 seconds";
+const INFO_TIMEOUT_MS = 5_000;
 
 export interface OpenCode2Connection extends OpenCode2Client.OpenCode2Api {
   readonly url: string;
   readonly version: string;
   readonly external: boolean;
-  readonly ownedProcess?: {
-    readonly runtimeGeneration: string;
-    readonly isRunning: Effect.Effect<boolean>;
-    readonly incarnation?: OpenCodeCreationPolicy.OpenCodePhysicalIncarnation;
-    readonly isCurrent?: Effect.Effect<boolean>;
-  };
+  /** Only owned processes have an authoritative lifetime signal. */
+  readonly processExit?: Effect.Effect<void>;
 }
 
 export class OpenCode2Server extends Context.Service<
@@ -32,9 +28,9 @@ export class OpenCode2Server extends Context.Service<
   {
     readonly withConnection: <A, E, R>(
       use: (connection: OpenCode2Connection) => Effect.Effect<A, E, R>,
-      creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks,
-      consumerKind?: "models" | "inventory" | "session" | "other",
     ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
+    /** Drops a configured server's verified connection, so the next use reads its version again. */
+    readonly forget: Effect.Effect<void>;
   }
 >()("@t3tools/provider-opencode/server/v2/OpenCode2Server") {}
 
@@ -57,7 +53,7 @@ export const serverEnvironment = (
   return { ...rest, OPENCODE_PASSWORD: Redacted.value(password) };
 };
 
-const httpFailureOf = (cause: unknown): HttpClientError.HttpClientError | undefined => {
+export const httpFailureOf = (cause: unknown): HttpClientError.HttpClientError | undefined => {
   if (HttpClientError.isHttpClientError(cause)) return cause;
   if (
     P.isTagged(cause, "ClientError") &&
@@ -84,10 +80,10 @@ const describeInfoFailure = (cause: unknown) => {
 };
 
 /** Only server info proves readiness; keep credential-bearing failure details out of client text. */
-export const verifyServer = (client: OpenCodeClient) =>
+export const verifyServer = (client: OpenCodeClient, environment?: NodeJS.ProcessEnv) =>
   client.server.info().pipe(
     Effect.timeoutOrElse({
-      duration: INFO_TIMEOUT,
+      duration: resolveProviderProbeTimeoutMs("opencode", INFO_TIMEOUT_MS, environment),
       orElse: () =>
         Effect.fail(
           new OpenCodeRuntime.OpenCodeRuntimeError({
@@ -119,7 +115,6 @@ export const verifyServer = (client: OpenCodeClient) =>
   );
 
 export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
-  readonly authority?: OpenCodeCreationPolicy.OpenCodeQualifiedAuthority;
   readonly binaryPath: string;
   readonly serverUrl: string;
   readonly serverPassword: string;
@@ -133,7 +128,7 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
     external: boolean,
   ) {
     const api = yield* opencode.connect({ baseUrl: url, password });
-    const version = yield* verifyServer(api.client);
+    const version = yield* verifyServer(api.client, input.environment);
     return { ...api, url, version, external } satisfies OpenCode2Connection;
   });
   let latest: OpenCode2Connection | undefined;
@@ -149,61 +144,32 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
       Effect.tap(remember),
     );
     return OpenCode2Server.of({
-      withConnection: Effect.fn("OpenCode2Server.withConnection")(function (
-        use,
-        _hooks,
-        consumerKind = "other",
-      ) {
+      withConnection: Effect.fn("OpenCode2Server.withConnection")(function (use) {
         return Effect.suspend(() => (latest === undefined ? connect : Effect.succeed(latest))).pipe(
-          Effect.flatMap((connection) =>
-            OpenCodeCreationPolicy.authorizeConsumption(
-              undefined,
-              input.authority,
-              consumerKind,
-            ).pipe(Effect.andThen(() => use(connection))),
-          ),
+          Effect.flatMap(use),
         );
+      }),
+      forget: Effect.sync(() => {
+        latest = undefined;
       }),
     });
   }
 
   const password = yield* generatePassword;
   const owner = yield* OpenCodeServerOwner.make({
-    ...(input.authority !== undefined ? { authority: input.authority } : {}),
     binaryPath: input.binaryPath,
     directory: input.directory,
     environment: serverEnvironment(input.environment, password),
     verify: (url) => connectTo(url, password, false).pipe(Effect.flatMap(remember)),
   });
   return OpenCode2Server.of({
-    withConnection: Effect.fn("OpenCode2Server.withConnection")(
-      function (use, creationHooks, consumerKind) {
-        return owner.withServer(
-          (server) => {
-            // The owner verifies every server it starts before lending it out.
-            if (latest?.url !== server.url) {
-              return Effect.die(new Error("OpenCode 2 server was lent before verification."));
-            }
-            if (
-              server.runtimeGeneration !== undefined &&
-              (latest.ownedProcess?.runtimeGeneration !== server.runtimeGeneration ||
-                latest.ownedProcess?.incarnation !== server.ownedProcess?.incarnation)
-            ) {
-              latest = {
-                ...latest,
-                ownedProcess: Object.freeze({
-                  runtimeGeneration: server.runtimeGeneration,
-                  isRunning: server.isRunning,
-                  ...(server.ownedProcess !== undefined ? server.ownedProcess : {}),
-                }),
-              };
-            }
-            return use(latest);
-          },
-          creationHooks,
-          consumerKind,
-        );
-      },
-    ),
+    withConnection: Effect.fn("OpenCode2Server.withConnection")(function (use) {
+      return owner.withServer((server) =>
+        latest?.url === server.url
+          ? use({ ...latest, processExit: server.exitCode.pipe(Effect.asVoid) })
+          : Effect.die(new Error("OpenCode 2 server was lent before verification.")),
+      );
+    }),
+    forget: Effect.void,
   });
 });

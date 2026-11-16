@@ -10,6 +10,7 @@ import {
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
+  ClientServerSettingsPatch,
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
@@ -37,42 +38,27 @@ const decodeStringOnlyEnvironment = Schema.decodeUnknownSync(
   ),
 );
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+const decodeClientServerSettingsPatch = Schema.decodeUnknownSync(ClientServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
-describe("storage cleanup settings", () => {
-  it("decodes older settings without enabling retirement and accepts additive covered classes", () => {
-    const legacy = decodeServerSettings({ storageCleanup: { worktreeSettledAfterDays: null } });
-    expect(legacy.storageCleanup.worktreeSettledScope).toBe("branch-retained");
-    expect(legacy.storageCleanup.worktreeCoveredDiscard).toEqual([]);
-    expect(legacy.storageCleanup.worktreeSettledAfterDays).toBeNull();
-    expect(
-      decodeServerSettingsPatch({ storageCleanup: { worktreeCoveredDiscard: ["declared_cache"] } })
-        .storageCleanup?.worktreeCoveredDiscard,
-    ).toEqual(["declared_cache"]);
-  });
+it("drops theme defaults from a client's settings patch", () => {
+  expect(
+    decodeClientServerSettingsPatch({
+      newWorktreesStartFromOrigin: false,
+      defaultTheme: "grove",
+      defaultThemeSetAt: "2026-11-13T00:00:00.000Z",
+      defaultAppearance: "dark",
+      defaultAppearanceSetAt: "2026-11-13T00:00:00.000Z",
+    }),
+  ).toEqual({ newWorktreesStartFromOrigin: false });
+});
 
-  it("decodes explicit install retention modes and rejects unknown modes", () => {
-    for (const installRetention of ["propose", "retire"] as const) {
-      expect(
-        decodeServerSettings({ storageCleanup: { installRetention } }).storageCleanup
-          .installRetention,
-      ).toBe(installRetention);
-      expect(decodeServerSettingsPatch({ storageCleanup: { installRetention } })).toEqual({
-        storageCleanup: { installRetention },
-      });
-    }
-    expect(() =>
-      decodeServerSettingsPatch({ storageCleanup: { installRetention: "age-only" } }),
-    ).toThrow();
-  });
+describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();
     expect(decodeServerSettings({}).storageCleanup).toEqual({
-      installRetention: "propose",
-      worktreeSettledScope: "branch-retained",
-      worktreeCoveredDiscard: [],
       worktreeAfterDays: null,
       worktreeSettledAfterDays: null,
       worktreeOnMerge: false,
@@ -432,17 +418,17 @@ describe("ServerSettings environment icon", () => {
 
 const decodeDeviceHostSettings = Schema.decodeSync(ServerSettings);
 
-// `deviceHosts` as it was decoded before EAS hosts existed: an SSH host needs a target.
+// `deviceHosts` as it was decoded before Expo hosts existed: an SSH host needs a target.
 const decodeOlderDeviceHostSettings = Schema.decodeUnknownSync(
   Schema.Struct({
     deviceHosts: Schema.Array(Schema.Struct({ id: Schema.String, target: Schema.String })),
   }),
 );
 
-it("keeps EAS hosts out of the SSH host list servers and clients before EAS hosts decode", () => {
+it("keeps Expo hosts out of the SSH host list servers and clients before Expo hosts decode", () => {
   const settings = decodeDeviceHostSettings({
     deviceHosts: [{ id: "mini", label: "Mac mini", target: "user@mini" }],
-    easDeviceHosts: [{ kind: "eas", id: "eas", label: "EAS Simulator" }],
+    easDeviceHosts: [{ kind: "eas", id: "eas", label: "Expo Simulators" }],
   });
   const wire = encodeServerSettings(settings);
   expect(decodeOlderDeviceHostSettings(wire).deviceHosts).toEqual([
@@ -453,7 +439,7 @@ it("keeps EAS hosts out of the SSH host list servers and clients before EAS host
 
 it("validates remote device hosts and rejects ambiguous host ids", () => {
   const host = { id: "mini", label: "Mac mini", target: "user@mini", port: 2222 };
-  // Hosts saved before EAS hosts existed have no `kind`; they are SSH hosts.
+  // Hosts saved before Expo hosts existed have no `kind`; they are SSH hosts.
   expect(decodeDeviceHostSettings({ deviceHosts: [host] }).deviceHosts).toEqual([
     { kind: "ssh", ...host },
   ]);
@@ -544,19 +530,6 @@ describe("voice settings", () => {
     expect(() => decodeClientSettingsPatch({ speechCorrectionWord: "x".repeat(51) })).toThrow();
     expect(DEFAULT_SERVER_SETTINGS.speechProjectCustomWords).toEqual([]);
     expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain("speechProjectCustomWords");
-  });
-
-  it("keeps Jones defaults for linked environments and auto-settle", () => {
-    expect(decodeServerSettings({}).linkedEnvironmentsEnabled).toBe(true);
-    expect(DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays).toBe(3);
-  });
-
-  it("stores the transcription model and resources on the environment", () => {
-    expect(DEFAULT_SERVER_SETTINGS).toMatchObject({
-      speechModelId: "handy-computer/parakeet-unified-en-0.6b-gguf",
-      speechAcceleration: "auto",
-      speechModelUnloadTimeout: "min_15",
-    });
   });
 });
 

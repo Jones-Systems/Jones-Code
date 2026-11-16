@@ -1,4 +1,3 @@
-import { threadTitleVerdict } from "@t3tools/provider-core/server/jones/ThreadTitleAssessment";
 import {
   DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
   MUSE_DEFAULT_MODEL,
@@ -24,8 +23,8 @@ import {
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import {
+  generatedThreadTitle,
   investigationUnsupported,
-  remoteRequestEvaluationUnsupported,
   TranscriptionPostProcessingOutput,
 } from "@t3tools/provider-core/server/textGenerationOperations";
 import {
@@ -37,7 +36,6 @@ import {
 import {
   sanitizeCommitSubject,
   sanitizePrTitle,
-  sanitizeThreadTitle,
   toJsonSchemaObject,
 } from "@t3tools/provider-core/server/textGenerationUtils";
 
@@ -350,15 +348,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
       ...buildThreadTitlePrompt(input),
       modelSelection: input.modelSelection,
     });
-    return {
-      title: sanitizeThreadTitle(generated.title),
-      ...(input.titleAssessment
-        ? {
-            assessment: threadTitleVerdict(generated),
-            ...(generated.needsRefinement === true ? { needsRefinement: true } : {}),
-          }
-        : {}),
-    };
+    return { title: yield* generatedThreadTitle(generated.title) };
   });
   const generateTranscriptionPostProcessing: ProviderTextGeneration["generateTranscriptionPostProcessing"] =
     Effect.fn("MuseTextGeneration.generateTranscriptionPostProcessing")(function* (input) {
@@ -372,7 +362,6 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
   return {
-    evaluateRemoteRequest: () => Effect.fail(remoteRequestEvaluationUnsupported("Muse Code")),
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

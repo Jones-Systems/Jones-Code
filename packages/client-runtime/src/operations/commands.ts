@@ -1,8 +1,3 @@
-import { resolveDefaultWorktreeBaseBranch } from "@t3tools/shared/git";
-import { requireMonitorGuardedSettle } from "../jones/threadMonitor/guardedSettle.ts";
-import type { GuardedThreadSettlement } from "@t3tools/contracts/jones/guardedThreadSettlement";
-import { requireQueuedRunStart } from "../jones/queue/commands.ts";
-export { promoteQueuedBatch, type PromoteQueuedBatchInput } from "../jones/queue/commands.ts";
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
 import {
   type ThreadLinkedPullRequest,
@@ -11,7 +6,6 @@ import {
   CheckpointScopeId,
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationV2CheckpointUnavailableError,
-  OrchestrationDispatchCommandError,
   WS_METHODS,
   type ChatAttachment,
   MessageId,
@@ -37,10 +31,20 @@ import {
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
-import { getInitialServerConfig, request } from "../rpc/client.ts";
-import { freezePreparedTurnRequest } from "./jonesPreparedTurn.ts";
+import * as EnvironmentSupervisor from "../connection/supervisor.ts";
+import {
+  EnvironmentRpcUnavailableError,
+  getInitialServerConfig,
+  isRpcClientError,
+  request,
+} from "../rpc/client.ts";
 
 interface CommandMetadata {
   readonly commandId?: CommandId;
@@ -97,12 +101,11 @@ export interface DeleteThreadInput extends ThreadCommandInput {
 }
 export type ArchiveThreadInput = ThreadCommandInput;
 export type UnarchiveThreadInput = ThreadCommandInput;
-export interface SettleThreadInput extends ThreadCommandInput {
-  readonly guard?: GuardedThreadSettlement;
-}
+export type SettleThreadInput = ThreadCommandInput;
 
 export interface UnsettleThreadInput extends ThreadCommandInput {
   readonly reason: "user";
+  readonly restoreUnsettledAt?: string | null;
 }
 
 export interface PinThreadInput extends ThreadCommandInput {
@@ -168,17 +171,14 @@ interface StartThreadBootstrap {
   readonly prepareWorktree?: {
     readonly requireWorktree?: boolean;
     readonly projectCwd: string;
-    readonly baseBranch?: string;
+    readonly baseBranch: string;
     readonly branch?: string;
     readonly startFromOrigin?: boolean;
   };
-  readonly conversation?: boolean;
   readonly runSetupScript?: boolean;
 }
 
 export interface StartThreadTurnInput extends ThreadCommandInput {
-  /** Client-only capability hint; never sent in the launch payload. */
-  readonly serverResolvesWorktreeBase?: boolean;
   readonly manualContinuationOfRunId?: RunId;
   readonly message: {
     readonly messageId: MessageId;
@@ -189,17 +189,16 @@ export interface StartThreadTurnInput extends ThreadCommandInput {
     readonly idleCompaction?: import("@t3tools/contracts").OrchestrationV2IdleCompaction;
   };
   readonly modelSelection?: ModelSelection;
-  readonly modelSelectionExplicit?: boolean;
   readonly titleSeed?: string;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly bootstrap?: StartThreadBootstrap;
   readonly sourceProposedPlan?: { readonly threadId: ThreadId; readonly planId: PlanId };
   readonly dispatchMode?: "auto" | "queue" | "steer" | "restart" | "start";
-  /** False prevents automatic tool-boundary steering of queued replies. */
-  readonly allowQueuedToolBoundaryDelivery?: boolean;
   /** Start a new provider session; needs the server's `freshContext` capability. */
   readonly freshContext?: boolean;
+  /** Defaults to true. Callers with their own retry queue opt out so a dead socket fails fast. */
+  readonly resendAfterSocketLoss?: boolean;
 }
 
 export interface InterruptThreadTurnInput extends ThreadCommandInput {
@@ -261,11 +260,6 @@ export interface PromoteQueuedRunInput extends ThreadCommandInput {
   readonly targetRunId: RunId;
 }
 
-export interface ReorderQueuedRunInput extends ThreadCommandInput {
-  readonly runId: RunId;
-  readonly beforeRunId: RunId | null;
-}
-
 export interface CancelQueuedRunInput extends ThreadCommandInput {
   readonly runId: RunId;
 }
@@ -298,6 +292,62 @@ const allocateCommandId = Effect.fn("EnvironmentCommands.allocateCommandId")(fun
 
 const dispatch = (command: OrchestrationV2Command) =>
   request(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command);
+
+// The socket can close after the server accepted the frame but before it answered.
+// The server replays an accepted commandId from its receipt, so the same command
+// waits out reconnect backoff until the supervisor stops trying. The resend cap
+// stops a frame that kills the socket from looping.
+const MAX_LOST_TRANSPORT_RESENDS = 2;
+
+// A live socket can still carry a command the host never answers; the heartbeat
+// alone would leave the send pending forever.
+const MESSAGE_DISPATCH_TIMEOUT = "60 seconds";
+
+const dispatchMessage = Effect.fn("EnvironmentCommands.dispatchMessage")(function* (
+  command: Extract<OrchestrationV2Command, { type: "message.dispatch" }>,
+  resendAfterSocketLoss: boolean,
+) {
+  const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+  const attempt = dispatch(command).pipe(
+    Effect.timeoutOrElse({
+      duration: MESSAGE_DISPATCH_TIMEOUT,
+      orElse: () =>
+        Effect.fail(
+          new EnvironmentRpcUnavailableError({
+            environmentId: supervisor.target.environmentId,
+            message: `${supervisor.target.label} did not confirm the message within 60 seconds.`,
+          }),
+        ),
+    }),
+  );
+  if (!resendAfterSocketLoss) return yield* attempt;
+  for (let resends = 0; ; resends += 1) {
+    const attemptSession = yield* SubscriptionRef.get(supervisor.session);
+    const exit = yield* Effect.exit(attempt);
+    if (Exit.isSuccess(exit)) return exit.value;
+    // Closing the session interrupts the request, which can beat the protocol error.
+    const lostTransport =
+      Cause.hasInterruptsOnly(exit.cause) ||
+      exit.cause.reasons.some((reason) => reason._tag === "Fail" && isRpcClientError(reason.error));
+    if (!lostTransport || resends >= MAX_LOST_TRANSPORT_RESENDS) return yield* exit;
+    const replacement = yield* Effect.raceFirst(
+      SubscriptionRef.changes(supervisor.session).pipe(
+        Stream.filter(
+          (session) =>
+            Option.isSome(session) &&
+            !(Option.isSome(attemptSession) && session.value === attemptSession.value),
+        ),
+        Stream.runHead,
+      ),
+      SubscriptionRef.changes(supervisor.state).pipe(
+        Stream.filter((state) => state.phase === "available" || state.phase === "blocked"),
+        Stream.runHead,
+        Effect.as(Option.none()),
+      ),
+    );
+    if (Option.isNone(replacement)) return yield* exit;
+  }
+});
 
 const getProjection = (threadId: ThreadId) =>
   request(ORCHESTRATION_V2_WS_METHODS.getThreadProjection, { threadId });
@@ -514,13 +564,7 @@ export const unarchiveThread = Effect.fn("EnvironmentCommands.unarchiveThread")(
 export const settleThread = Effect.fn("EnvironmentCommands.settleThread")(function* (
   input: SettleThreadInput,
 ) {
-  if (input.guard !== undefined) yield* requireMonitorGuardedSettle();
-  return yield* dispatch({
-    type: "thread.settle",
-    commandId: yield* allocateCommandId(input),
-    threadId: input.threadId,
-    ...(input.guard === undefined ? {} : { guard: input.guard }),
-  });
+  return yield* simpleThreadCommand("thread.settle", input);
 });
 
 export const pinThread = Effect.fn("EnvironmentCommands.pinThread")(function* (
@@ -586,6 +630,9 @@ export const unsettleThread = Effect.fn("EnvironmentCommands.unsettleThread")(fu
     commandId: yield* allocateCommandId(input),
     threadId: input.threadId,
     reason: input.reason,
+    ...(input.restoreUnsettledAt === undefined
+      ? {}
+      : { restoreUnsettledAt: input.restoreUnsettledAt }),
   });
 });
 
@@ -695,10 +742,9 @@ export const setThreadInteractionMode = Effect.fn("EnvironmentCommands.setThread
   },
 );
 
-export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTurn")(function* (
+export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(function* (
   input: StartThreadTurnInput,
 ) {
-  input = structuredClone(input);
   const commandId = yield* allocateCommandId(input);
   const attachments = yield* persistAttachments(
     input.threadId,
@@ -711,87 +757,59 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
     attachments,
   );
   const bootstrap = input.bootstrap?.createThread;
-  let prepareWorktree = input.bootstrap?.prepareWorktree;
-  if (
-    prepareWorktree !== undefined &&
-    prepareWorktree.baseBranch === undefined &&
-    input.serverResolvesWorktreeBase !== true
-  ) {
-    const result = yield* request(WS_METHODS.vcsListRefs, {
-      cwd: prepareWorktree.projectCwd,
-      limit: 100,
-    });
-    const baseBranch = result.isRepo ? resolveDefaultWorktreeBaseBranch(result.refs) : null;
-    if (baseBranch === null) {
-      return yield* new OrchestrationDispatchCommandError({
-        message:
-          "Unable to select a base branch for the new worktree. Choose a base ref and retry.",
-      });
-    }
-    prepareWorktree = { ...prepareWorktree, baseBranch };
-  }
+  const prepareWorktree = input.bootstrap?.prepareWorktree;
   if (bootstrap !== undefined || prepareWorktree !== undefined) {
     const existingProjection =
       bootstrap === undefined ? yield* getProjection(input.threadId) : null;
     const thread = bootstrap ?? existingProjection!.thread;
     const workspaceStrategy =
-      input.bootstrap?.conversation === true
+      prepareWorktree !== undefined
         ? {
-            type: "auto" as const,
-            ...(bootstrap?.branch == null ? {} : { baseRef: bootstrap.branch }),
+            type: "worktree" as const,
+            baseRef: prepareWorktree.baseBranch,
+            ...(prepareWorktree.branch === undefined ? {} : { branch: prepareWorktree.branch }),
+            ...(prepareWorktree.startFromOrigin === undefined
+              ? {}
+              : { startFromOrigin: prepareWorktree.startFromOrigin }),
           }
-        : prepareWorktree !== undefined
+        : bootstrap?.worktreePath
           ? {
-              type: "worktree" as const,
-              ...(prepareWorktree.baseBranch === undefined
-                ? {}
-                : { baseRef: prepareWorktree.baseBranch }),
-              ...(prepareWorktree.branch === undefined ? {} : { branch: prepareWorktree.branch }),
-              ...(prepareWorktree.startFromOrigin === undefined
-                ? {}
-                : { startFromOrigin: prepareWorktree.startFromOrigin }),
+              type: "existing_worktree" as const,
+              worktreePath: bootstrap.worktreePath,
+              ...(bootstrap.branch === null ? {} : { branch: bootstrap.branch }),
             }
-          : bootstrap?.worktreePath
-            ? {
-                type: "existing_worktree" as const,
-                worktreePath: bootstrap.worktreePath,
-                ...(bootstrap.branch === null ? {} : { branch: bootstrap.branch }),
-              }
-            : {
-                type: "root" as const,
-                ...(bootstrap?.branch === null || bootstrap?.branch === undefined
-                  ? {}
-                  : { branch: bootstrap.branch }),
-              };
-    return freezePreparedTurnRequest({
-      method: ORCHESTRATION_V2_WS_METHODS.launchThread,
-      payload: {
-        commandId,
-        creationSource: input.creationSource ?? "web",
-        threadId: input.threadId,
-        ...(bootstrap === undefined ? { reuseExistingThread: true } : {}),
-        projectId: thread.projectId,
-        title: input.titleSeed ?? thread.title,
-        generateTitle: input.titleSeed !== undefined,
-        modelSelection: input.modelSelection ?? thread.modelSelection,
-        runtimeMode: input.runtimeMode,
-        interactionMode: input.interactionMode,
-        workspaceStrategy,
-        initialMessage: {
-          messageId: input.message.messageId,
-          text: input.message.text,
-          ...(context ? { context } : {}),
-          attachments,
-        },
+          : {
+              type: "root" as const,
+              ...(bootstrap?.branch === null || bootstrap?.branch === undefined
+                ? {}
+                : { branch: bootstrap.branch }),
+            };
+    return yield* request(ORCHESTRATION_V2_WS_METHODS.launchThread, {
+      commandId,
+      creationSource: input.creationSource ?? "web",
+      threadId: input.threadId,
+      ...(bootstrap === undefined ? { reuseExistingThread: true } : {}),
+      projectId: thread.projectId,
+      title: input.titleSeed ?? thread.title,
+      generateTitle: input.titleSeed !== undefined,
+      modelSelection: input.modelSelection ?? thread.modelSelection,
+      runtimeMode: input.runtimeMode,
+      interactionMode: input.interactionMode,
+      workspaceStrategy,
+      initialMessage: {
+        messageId: input.message.messageId,
+        text: input.message.text,
+        ...(context ? { context } : {}),
+        attachments,
       },
     });
   }
 
   const requestedMode = input.dispatchMode ?? "auto";
+  const resendAfterSocketLoss = input.resendAfterSocketLoss ?? true;
   if (requestedMode === "start") {
-    return freezePreparedTurnRequest({
-      method: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
-      payload: {
+    return yield* dispatchMessage(
+      {
         type: "message.dispatch",
         commandId,
         createdBy: "user",
@@ -808,71 +826,22 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
           : { idleCompaction: input.message.idleCompaction }),
         attachments,
         ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-        ...(input.modelSelectionExplicit === undefined
-          ? {}
-          : { modelSelectionExplicit: input.modelSelectionExplicit }),
         ...(input.sourceProposedPlan === undefined
           ? {}
           : { sourcePlanRef: input.sourceProposedPlan }),
         ...(input.freshContext ? { freshContext: true } : {}),
         dispatchMode: { type: "start_immediately" },
       },
-    });
+      resendAfterSocketLoss,
+    );
   }
 
-  const capabilities = (yield* getInitialServerConfig()).environment.capabilities;
-  const serverResolvesCommandContext = capabilities.serverResolvedCommandContext === true;
-  const creationSource = input.creationSource ?? "web";
-  const queuedToolBoundaryEligible =
-    input.allowQueuedToolBoundaryDelivery !== false &&
-    (creationSource === "web" || creationSource === "mobile") &&
-    (requestedMode === "queue" || requestedMode === "auto") &&
-    capabilities.queuedToolBoundaryDelivery === true;
-  const projection = serverResolvesCommandContext ? null : yield* getProjection(input.threadId);
-  const activeRun = projection?.runs.findLast(
-    (run) =>
-      run.status === "preparing" ||
-      run.status === "starting" ||
-      run.status === "running" ||
-      run.status === "waiting",
-  );
-  const activeProviderThread =
-    activeRun === undefined
-      ? undefined
-      : projection?.providerThreads.find((thread) => thread.id === activeRun.providerThreadId);
-  const activeProviderSession =
-    activeProviderThread?.providerSessionId === null ||
-    activeProviderThread?.providerSessionId === undefined
-      ? undefined
-      : projection?.providerSessions.find(
-          (session) => session.id === activeProviderThread.providerSessionId,
-        );
-  const turnCapabilities = activeProviderSession?.capabilities.turns;
-  const dispatchMode = serverResolvesCommandContext
-    ? requestedMode === "queue"
+  const dispatchMode =
+    requestedMode === "queue"
       ? ({ type: "queue_after_active" } as const)
-      : ({ type: "start_immediately" } as const)
-    : activeRun === undefined
-      ? ({ type: "start_immediately" } as const)
-      : requestedMode === "steer"
-        ? ({ type: "steer_active", targetRunId: activeRun.id } as const)
-        : requestedMode === "restart"
-          ? ({ type: "restart_active", targetRunId: activeRun.id } as const)
-          : requestedMode === "queue"
-            ? ({ type: "queue_after_active" } as const)
-            : turnCapabilities?.supportsActiveSteering === true
-              ? ({ type: "steer_active", targetRunId: activeRun.id } as const)
-              : turnCapabilities?.supportsQueuedMessages === true
-                ? ({ type: "queue_after_active" } as const)
-                : turnCapabilities?.supportsSteeringByInterruptRestart === true
-                  ? ({ type: "restart_active", targetRunId: activeRun.id } as const)
-                  : ({ type: "queue_after_active" } as const);
-  const shouldSendTitleSeed =
-    input.titleSeed !== undefined &&
-    (serverResolvesCommandContext || projection?.messages.length === 0);
-  return freezePreparedTurnRequest({
-    method: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
-    payload: {
+      : ({ type: "start_immediately" } as const);
+  return yield* dispatchMessage(
+    {
       type: "message.dispatch",
       commandId,
       createdBy: "user",
@@ -885,39 +854,17 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
         ? {}
         : { idleCompaction: input.message.idleCompaction }),
       attachments,
-      ...(shouldSendTitleSeed ? { titleSeed: input.titleSeed } : {}),
+      ...(input.titleSeed === undefined ? {} : { titleSeed: input.titleSeed }),
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-      ...(input.modelSelectionExplicit === undefined
-        ? {}
-        : { modelSelectionExplicit: input.modelSelectionExplicit }),
       ...(input.sourceProposedPlan === undefined
         ? {}
         : { sourcePlanRef: input.sourceProposedPlan }),
       ...(input.freshContext ? { freshContext: true } : {}),
-      ...(serverResolvesCommandContext && requestedMode !== "queue"
-        ? { deliveryIntent: requestedMode }
-        : {}),
+      ...(requestedMode !== "queue" ? { deliveryIntent: requestedMode } : {}),
       dispatchMode,
-      ...(queuedToolBoundaryEligible ? { queuedToolBoundaryEligible: true } : {}),
     },
-  });
-});
-
-export type PreparedThreadTurn = Effect.Success<ReturnType<typeof prepareThreadTurn>>;
-
-export const dispatchPreparedThreadTurn = Effect.fn(
-  "EnvironmentCommands.dispatchPreparedThreadTurn",
-)(function* (prepared: PreparedThreadTurn) {
-  if (prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
-    return yield* request(prepared.method, prepared.payload);
-  }
-  return yield* request(prepared.method, prepared.payload);
-});
-
-export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(function* (
-  input: StartThreadTurnInput,
-) {
-  return yield* dispatchPreparedThreadTurn(yield* prepareThreadTurn(input));
+    resendAfterSocketLoss,
+  );
 });
 
 export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThreadTurn")(function* (
@@ -1076,7 +1023,12 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
           ? candidate.ordinalWithinScope === 0 && candidate.appRunOrdinal === null
           : candidate.appRunOrdinal === input.turnCount,
       );
-    if (checkpoint === undefined || checkpoint.status !== "ready") {
+    if (
+      checkpoint === undefined ||
+      // Missing snapshots support conversation rewind only.
+      (checkpoint.status !== "ready" &&
+        !(input.restoreFiles === false && checkpoint.status === "missing"))
+    ) {
       const target =
         input.checkpointId === undefined
           ? `run ordinal ${input.turnCount ?? "unknown"}`
@@ -1164,7 +1116,6 @@ export const mergeThreadBack = Effect.fn("EnvironmentCommands.mergeThreadBack")(
 export const resumeThreadQueue = Effect.fn("EnvironmentCommands.resumeThreadQueue")(function* (
   input: ResumeThreadQueueInput,
 ) {
-  if (input.runId !== undefined) yield* requireQueuedRunStart();
   return yield* dispatch({
     ...(input.runId === undefined
       ? { type: "queue.resume" as const }
@@ -1183,18 +1134,6 @@ export const promoteQueuedRun = Effect.fn("EnvironmentCommands.promoteQueuedRun"
     threadId: input.threadId,
     queuedRunId: input.queuedRunId,
     targetRunId: input.targetRunId,
-  });
-});
-
-export const reorderQueuedRun = Effect.fn("EnvironmentCommands.reorderQueuedRun")(function* (
-  input: ReorderQueuedRunInput,
-) {
-  return yield* dispatch({
-    type: "queued-run.reorder",
-    commandId: yield* allocateCommandId(input),
-    threadId: input.threadId,
-    runId: input.runId,
-    beforeRunId: input.beforeRunId,
   });
 });
 
@@ -1288,41 +1227,3 @@ export const unlinkThreadPullRequest = Effect.fn("EnvironmentCommands.unlinkThre
     });
   },
 );
-
-export const prepareImportedHistoryMessage = Effect.fn(
-  "EnvironmentCommands.prepareImportedHistoryMessage",
-)(function* (input: StartThreadTurnInput) {
-  const commandId = yield* allocateCommandId(input);
-  const attachments = yield* persistAttachments(
-    input.threadId,
-    input.message.messageId,
-    input.message.attachments,
-  );
-  const context = remapComposerContextAttachments(
-    input.message.context,
-    input.message.attachments,
-    attachments,
-  );
-  return {
-    type: "message.dispatch" as const,
-    commandId,
-    createdBy: "user" as const,
-    creationSource: input.creationSource ?? "web",
-    threadId: input.threadId,
-    messageId: input.message.messageId,
-    text: input.message.text,
-    attachments,
-    ...(context === undefined ? {} : { context }),
-    ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-    ...(input.modelSelectionExplicit === undefined
-      ? {}
-      : { modelSelectionExplicit: input.modelSelectionExplicit }),
-    runtimeMode: input.runtimeMode,
-    interactionMode: input.interactionMode,
-    ...(input.sourceProposedPlan === undefined ? {} : { sourcePlanRef: input.sourceProposedPlan }),
-    ...(input.manualContinuationOfRunId === undefined
-      ? {}
-      : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
-    dispatchMode: { type: "start_immediately" as const },
-  };
-});

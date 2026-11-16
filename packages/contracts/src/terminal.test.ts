@@ -2,10 +2,11 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  chunkTerminalWrite,
   DEFAULT_TERMINAL_ID,
+  TERMINAL_WRITE_MAX_LENGTH,
   TerminalError,
   TerminalOpenInput,
-  TerminalWriteInput,
   TerminalProviderEnvironmentError,
 } from "./terminal.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
@@ -51,35 +52,22 @@ describe("TerminalOpenInput", () => {
   });
 });
 
-describe("optional project-script write observation", () => {
-  const ordinary = { threadId: "thread", terminalId: "terminal", data: " build\r" };
-  const observation = {
-    invocationId: "4a792973-8d01-4eb5-a710-e34c74f57c6b",
-    projectId: "project",
-    scriptId: "build",
-  };
-  it("keeps legacy writes identical and decodes the bounded additive descriptor", () => {
-    expect(decodeSync(TerminalWriteInput, ordinary)).toEqual(ordinary);
-    expect(decodeSync(TerminalWriteInput, { ...ordinary, observation })).toEqual({
-      ...ordinary,
-      observation,
-    });
-    expect(
-      decodeSync(TerminalWriteInput, {
-        ...ordinary,
-        observation: { ...observation, worktreePath: "/caller-cannot-bind-physical-target" },
-      }),
-    ).toEqual({ ...ordinary, observation });
+describe("chunkTerminalWrite", () => {
+  it("splits oversized writes so every chunk fits the contract", () => {
+    const chunks = chunkTerminalWrite("y".repeat(TERMINAL_WRITE_MAX_LENGTH * 2 + 5));
+    expect(chunks.map((chunk) => chunk.length)).toEqual([
+      TERMINAL_WRITE_MAX_LENGTH,
+      TERMINAL_WRITE_MAX_LENGTH,
+      5,
+    ]);
+    expect(chunks.join("")).toHaveLength(TERMINAL_WRITE_MAX_LENGTH * 2 + 5);
   });
-  it("rejects oversized or malformed descriptors without weakening existing write bounds", () => {
-    for (const value of [
-      { ...observation, invocationId: "not-a-uuid" },
-      { ...observation, projectId: "x".repeat(257) },
-      { ...observation, scriptId: "x".repeat(257) },
-    ])
-      expect(() => decodeSync(TerminalWriteInput, { ...ordinary, observation: value })).toThrow();
-    expect(() =>
-      decodeSync(TerminalWriteInput, { ...ordinary, data: "x".repeat(65537) }),
-    ).toThrow();
+
+  it("does not cut a surrogate pair in half at the boundary", () => {
+    const data = `${"z".repeat(TERMINAL_WRITE_MAX_LENGTH - 1)}😀tail`;
+    const chunks = chunkTerminalWrite(data);
+    expect(chunks[0]).toHaveLength(TERMINAL_WRITE_MAX_LENGTH - 1);
+    expect(chunks[1]).toBe("😀tail");
+    expect(chunks.join("")).toBe(data);
   });
 });

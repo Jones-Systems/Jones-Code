@@ -1,16 +1,25 @@
 import type { ProjectId } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import { generateSpreadPinOrderKeys, pinOrderKeyBetween } from "@t3tools/shared/pinOrderKey";
 import type { EnvironmentThreadShell } from "./models.ts";
-import { planPinnedReorder, toSortableTimestamp } from "@t3tools/shared/jones/pinOrder";
+
+export { generateSpreadPinOrderKeys, pinOrderKeyBetween } from "@t3tools/shared/pinOrderKey";
 
 export interface ThreadSortInput {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly latestUserMessageAt?: string | null;
+  readonly latestUserAuthoredMessageAt?: string | null;
   readonly messages?: ReadonlyArray<{
     readonly createdAt: string;
     readonly role: string;
   }>;
+}
+
+export function toSortableTimestamp(iso: string | undefined): number | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 export type SettledThreadTimestampInput = Pick<
@@ -75,6 +84,18 @@ function getFirstSortableTimestamp(...values: Array<string | null | undefined>):
 }
 
 function getLatestUserMessageTimestamp(thread: ThreadSortInput): number {
+  // Agents also post in the user role; only what the user wrote counts. A thread
+  // the user never wrote in counts from its creation; older servers omit the field.
+  if (thread.latestUserAuthoredMessageAt !== undefined) {
+    return (
+      getFirstSortableTimestamp(
+        thread.latestUserAuthoredMessageAt,
+        thread.createdAt,
+        thread.updatedAt,
+      ) ?? Number.NEGATIVE_INFINITY
+    );
+  }
+
   if (thread.latestUserMessageAt) {
     const latestUserMessageTimestamp = toSortableTimestamp(thread.latestUserMessageAt);
     if (latestUserMessageTimestamp !== null) {
@@ -162,15 +183,73 @@ export function getLatestThreadForProject<
   return latest;
 }
 
-// Jones: the pinned-order helpers live in @t3tools/shared so the server's MCP
-// pin placement plans keys exactly as the sidebars do.
-export {
-  generateSpreadPinOrderKeys,
-  pinOrderKeyBetween,
-  planPinnedReorder,
-  sortPinnedThreadsByOrderKey,
-  toSortableTimestamp,
-} from "@t3tools/shared/jones/pinOrder";
+export function planPinnedReorder(input: {
+  readonly orderedIds: readonly string[];
+  /** Include retained keys from hidden rows; only orderedIds receive writes. */
+  readonly keysById: ReadonlyMap<string, string | null | undefined>;
+  readonly movedId: string;
+}): ReadonlyArray<{ readonly id: string; readonly orderKey: string }> {
+  const { orderedIds, keysById, movedId } = input;
+  const visibleIds = new Set(orderedIds);
+  const reservedKeys = new Set(
+    [...keysById].flatMap(([id, key]) => (!visibleIds.has(id) && key != null ? [key] : [])),
+  );
+  const movedIndex = orderedIds.indexOf(movedId);
+  if (movedIndex === -1) return [];
+  const beforeId = movedIndex > 0 ? orderedIds[movedIndex - 1] : null;
+  const afterId = movedIndex < orderedIds.length - 1 ? orderedIds[movedIndex + 1] : null;
+  const beforeKey = beforeId != null ? (keysById.get(beforeId) ?? null) : null;
+  const afterKey = afterId != null ? (keysById.get(afterId) ?? null) : null;
+  const beforeUsable = beforeId === null || beforeKey != null;
+  const afterUsable = afterId === null || afterKey != null;
+  if (beforeUsable && afterUsable) {
+    let key = pinOrderKeyBetween(beforeKey, afterKey);
+    while (key !== null && reservedKeys.has(key)) key = pinOrderKeyBetween(key, afterKey);
+    if (key !== null) return [{ id: movedId, orderKey: key }];
+  }
+  const keys = generateSpreadPinOrderKeys(orderedIds.length + reservedKeys.size)
+    .filter((key) => !reservedKeys.has(key))
+    .slice(0, orderedIds.length);
+  return orderedIds.flatMap((id, index) => {
+    const key = keys[index]!;
+    return keysById.get(id) === key ? [] : [{ id, orderKey: key }];
+  });
+}
+
+export function sortPinnedThreadsByOrderKey<
+  T extends {
+    readonly id: string;
+    readonly createdAt: string;
+    readonly pinOrderKey?: string | null | undefined;
+    /** Thread ids are only unique within an environment, and the pinned
+        block merges environments — the tiebreak needs both parts or two
+        clients could render equal-key threads in stream-arrival order. */
+    readonly environmentId?: string | undefined;
+  },
+>(threads: readonly T[]): T[] {
+  if (threads.length < 2) return [...threads];
+  const keyed: T[] = [];
+  const keyless: T[] = [];
+  for (const thread of threads) {
+    (thread.pinOrderKey != null ? keyed : keyless).push(thread);
+  }
+  const identityTiebreak = (left: T, right: T) =>
+    left.id.localeCompare(right.id) ||
+    (left.environmentId ?? "").localeCompare(right.environmentId ?? "");
+  keyed.sort((left, right) => {
+    const leftKey = left.pinOrderKey!;
+    const rightKey = right.pinOrderKey!;
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : identityTiebreak(left, right);
+  });
+  const timestamps = new Map(
+    keyless.map((thread) => [thread, toSortableTimestamp(thread.createdAt) ?? 0]),
+  );
+  keyless.sort(
+    (left, right) =>
+      timestamps.get(right)! - timestamps.get(left)! || identityTiebreak(left, right),
+  );
+  return [...keyed, ...keyless];
+}
 
 export function sortActiveThreadsByOrderKey<
   T extends {
@@ -205,21 +284,4 @@ export function sortActiveThreadsByOrderKey<
       (left.environmentId ?? "").localeCompare(right.environmentId ?? "")
     );
   });
-}
-
-export function planPinnedMove(input: {
-  readonly orderedIds: readonly string[];
-  readonly keysById: ReadonlyMap<string, string | null | undefined>;
-  readonly movedId: string;
-  readonly direction: "up" | "down";
-}): ReadonlyArray<{ readonly id: string; readonly orderKey: string }> | null {
-  const { orderedIds, keysById, movedId, direction } = input;
-  const from = orderedIds.indexOf(movedId);
-  if (from === -1) return null;
-  const to = direction === "up" ? from - 1 : from + 1;
-  if (to < 0 || to >= orderedIds.length) return null;
-  const newOrder = [...orderedIds];
-  newOrder.splice(from, 1);
-  newOrder.splice(to, 0, movedId);
-  return planPinnedReorder({ orderedIds: newOrder, keysById, movedId });
 }

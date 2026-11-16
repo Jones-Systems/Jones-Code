@@ -1,4 +1,3 @@
-import * as ConversationPolicy from "../../../jones/conversationWorkspace/ConversationPolicy.ts";
 import {
   WorktreeMcpFailure,
   OrchestratorMcpEnvironmentTarget,
@@ -8,13 +7,12 @@ import {
   WorktreeMcpHandoffInput,
   WorktreeMcpHandoffResult,
   WorktreeMcpStatusResult,
-  WorktreeProvenanceEntry,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as WorktreeMcpService from "../../WorktreeMcpService.ts";
@@ -39,8 +37,9 @@ const WorktreeHandoffTool = Tool.make("t3_worktree_handoff", {
   .annotate(Tool.Title, "Hand off thread to a git worktree")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const WorktreeStatusTool = Tool.make("t3_worktree_status", {
   description:
@@ -58,25 +57,22 @@ const WorktreeStatusTool = Tool.make("t3_worktree_status", {
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
-  .annotate(Tool.OpenWorld, false);
+  .annotate(Tool.OpenWorld, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const WorktreeListTool = Tool.make("t3_worktree_list", {
   description:
-    "List branch refs and checkout paths for a thread's workspace. Omit `threadId` for this thread. Detached worktrees with no branch are left out of refs; provenance includes known detached and historical incarnations. Use provenancePath to look up a path within this project.",
+    "List branch refs and checkout paths for a thread's workspace. Omit `threadId` for this thread. Detached worktrees with no branch are left out.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
-    provenancePath: Schema.optional(Schema.String),
     query: VcsListRefsInput.fields.query,
     cursor: VcsListRefsInput.fields.cursor,
     limit: VcsListRefsInput.fields.limit,
     refKind: VcsListRefsInput.fields.refKind,
     includeMatchingRemoteRefs: VcsListRefsInput.fields.includeMatchingRemoteRefs,
   }),
-  success: Schema.Struct({
-    ...VcsListRefsResult.fields,
-    provenance: Schema.optional(Schema.Array(WorktreeProvenanceEntry)),
-  }),
+  success: VcsListRefsResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies: [
@@ -88,53 +84,7 @@ const WorktreeListTool = Tool.make("t3_worktree_list", {
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
-const sourceTool = <Name extends string, Fields extends Schema.Struct.Fields>(
-  name: Name,
-  parameters: Schema.Struct<Fields>,
-  description: string,
-) =>
-  Tool.make(name, {
-    description,
-    parameters,
-    success: Schema.Struct({ commit: Schema.String, content: Schema.String }),
-    failure: WorktreeToolFailure,
-    failureMode: "return",
-    dependencies: [
-      McpInvocationContext.McpInvocationContext,
-      ConversationPolicy.ConversationPolicy,
-    ],
-  })
-    .annotate(Tool.Readonly, true)
-    .annotate(Tool.Destructive, false)
-    .annotate(Tool.Idempotent, true);
-const SourceRead = sourceTool(
-  "t3_source_read",
-  Schema.Struct({ path: Schema.String }),
-  "Read a file blob at this conversation turn's recorded source commit. Symlinks return their blob, never a filesystem target. Output/time are bounded. Read root instructions here before working.",
-);
-const SourceList = sourceTool(
-  "t3_source_list",
-  Schema.Struct({ path: Schema.optional(Schema.String) }),
-  "List a tree at the recorded source commit, without a worktree or filesystem reads. Empty path lists the root.",
-);
-const SourceSearch = sourceTool(
-  "t3_source_search",
-  Schema.Struct({ query: Schema.String, path: Schema.optional(Schema.String) }),
-  "Search committed source for literal text at the recorded source commit. No worktree, text conversion, external grep or fetch; bounded output/time.",
-);
-const SourceHistory = sourceTool(
-  "t3_source_history",
-  Schema.Struct({
-    operation: Schema.Literals(["log", "show", "diff"]),
-    from: Schema.optional(Schema.String),
-  }),
-  "Read bounded log/show/diff from Git objects at the recorded source commit. Diff requires an exact from commit. Never fetches, runs external diff or text conversion, or writes objects/refs/index.",
-);
 export const WorktreeToolkit = Toolkit.make(
-  SourceRead,
-  SourceList,
-  SourceSearch,
-  SourceHistory,
   WorktreeHandoffTool,
   WorktreeStatusTool,
   WorktreeListTool,

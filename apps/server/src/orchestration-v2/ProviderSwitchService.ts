@@ -1,13 +1,7 @@
 import {
-  executionProjection,
-  executionWorkspace,
-} from "../jones/threadConfiguration/executionSelection.ts";
-import {
   ModelSelection,
   OrchestrationV2ThreadProjection,
   ProviderSessionId,
-  type OrchestrationV2ProviderThread,
-  ProviderThreadId,
   ThreadId,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
@@ -18,12 +12,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import {
-  interruptedPendingProviderThread,
-  preparingPendingProviderThread,
-  type ProviderSwitchBeforeStartEvidence,
-} from "../jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts";
-
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import {
   decideProviderSessionTransition,
@@ -32,11 +20,8 @@ import {
 
 export interface ProviderSwitchPlanV2 {
   readonly instanceChanged: boolean;
-  readonly modelChanged: boolean;
-  readonly targetProviderThreadId: ProviderThreadId | null;
   readonly releaseProviderSessionIds: ReadonlyArray<ProviderSessionId>;
   readonly transition: ProviderSessionTransition;
-  readonly rebindPendingProviderThread?: OrchestrationV2ProviderThread;
 }
 
 export class ProviderSwitchPlanError extends Schema.TaggedError<ProviderSwitchPlanError>()(
@@ -53,11 +38,8 @@ export interface ProviderSwitchServiceV2Shape {
     readonly projection: Pick<
       OrchestrationV2ThreadProjection,
       "thread" | "providerSessions" | "providerThreads"
-    > &
-      Partial<Pick<OrchestrationV2ThreadProjection, "runs">>;
+    >;
     readonly targetModelSelection: ModelSelection;
-    readonly beforeStartEvidence?: ProviderSwitchBeforeStartEvidence;
-    readonly rebindPreparing?: true;
   }) => Effect.Effect<ProviderSwitchPlanV2, ProviderSwitchPlanError>;
 }
 
@@ -80,11 +62,9 @@ export const layer: Layer.Layer<
     const adapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
     return ProviderSwitchServiceV2.of({
       plan: Effect.fn("ProviderSwitchService.plan")(
-        function* ({ projection, targetModelSelection, beforeStartEvidence, rebindPreparing }) {
-          projection = executionProjection(projection);
+        function* ({ projection, targetModelSelection }) {
           const current = projection.thread.modelSelection;
           const instanceChanged = current.instanceId !== targetModelSelection.instanceId;
-          const modelChanged = current.model !== targetModelSelection.model;
           const getMetadata = (instanceId: typeof current.instanceId) =>
             adapters.getMetadata !== undefined
               ? adapters.getMetadata(instanceId)
@@ -109,108 +89,34 @@ export const layer: Layer.Layer<
               (left, right) =>
                 DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
             );
-          const boundProviderThread = projection.providerThreads.find(
+          const currentSession = currentSessions.find(isLiveProviderSession);
+          const negotiatedCapabilities =
+            currentSession?.capabilities ?? currentSessions[0]?.capabilities;
+          const currentProviderThread = projection.providerThreads.find(
             (thread) =>
               thread.id === projection.thread.activeProviderThreadId &&
-              thread.providerInstanceId === current.instanceId,
+              thread.providerInstanceId === current.instanceId &&
+              thread.nativeThreadRef !== null,
           );
-          const boundSession = currentSessions.find(
-            (session) => session.id === boundProviderThread?.providerSessionId,
-          );
-          const currentSession =
-            boundProviderThread === undefined
-              ? currentSessions.find(isLiveProviderSession)
-              : boundSession !== undefined && isLiveProviderSession(boundSession)
-                ? boundSession
-                : undefined;
-          const negotiatedCapabilities =
-            currentSession?.capabilities ??
-            boundSession?.capabilities ??
-            (boundProviderThread === undefined ? currentSessions[0]?.capabilities : undefined);
-          const currentProviderThread =
-            boundProviderThread?.nativeThreadRef != null ? boundProviderThread : undefined;
-          const currentDriver = Option.isSome(currentInstance)
-            ? currentInstance.value.driver
-            : (projection.providerThreads.find(
-                (thread) =>
-                  thread.appThreadId === projection.thread.id &&
-                  thread.ownerNodeId === null &&
-                  thread.providerInstanceId === current.instanceId,
-              )?.driver ?? currentSessions[0]?.driver);
-          const rebindPendingProviderThread =
-            instanceChanged &&
-            Option.isSome(currentInstance) &&
-            Option.isSome(targetInstance) &&
-            currentInstance.value.driver === targetInstance.value.driver &&
-            targetInstance.value.enabled
-              ? ((currentInstance.value.driver === "codex"
-                  ? interruptedPendingProviderThread(projection, beforeStartEvidence)
-                  : undefined) ??
-                (rebindPreparing === true &&
-                beforeStartEvidence?.providerThreads[0]?.driver === targetInstance.value.driver
-                  ? preparingPendingProviderThread(projection, beforeStartEvidence)
-                  : undefined))
-              : undefined;
-          const hasCurrentHistory =
-            currentSessions.length > 0 ||
-            projection.providerThreads.some(
-              (thread) =>
-                thread.appThreadId === projection.thread.id &&
-                thread.ownerNodeId === null &&
-                thread.providerInstanceId === current.instanceId,
-            );
-          if (
-            instanceChanged &&
-            hasCurrentHistory &&
-            rebindPendingProviderThread === undefined &&
-            currentDriver === "codex" &&
-            Option.isSome(targetInstance) &&
-            targetInstance.value.driver === "codex" &&
-            targetInstance.value.enabled
-          ) {
-            // A saved Codex conversation must survive an account switch;
-            // handoff would create another one.
-            if (
-              Option.isNone(currentInstance) ||
-              currentInstance.value.continuationKey.trim().length === 0 ||
-              currentInstance.value.continuationKey !== targetInstance.value.continuationKey
-            ) {
-              return yield* new ProviderSwitchPlanError({
-                threadId: projection.thread.id,
-                targetProviderInstanceId: targetModelSelection.instanceId,
-                cause:
-                  "Cannot switch Codex accounts because the saved conversation is not compatible with the target account. Check that both accounts share the Codex sessions directory.",
-              });
-            }
-            const nativeRef = currentProviderThread?.nativeThreadRef;
-            if (
-              currentProviderThread?.appThreadId !== projection.thread.id ||
-              currentProviderThread.ownerNodeId !== null ||
-              currentProviderThread.driver !== "codex" ||
-              nativeRef?.driver !== "codex" ||
-              nativeRef.nativeId === null ||
-              nativeRef.nativeId.trim().length === 0
-            ) {
-              return yield* new ProviderSwitchPlanError({
-                threadId: projection.thread.id,
-                targetProviderInstanceId: targetModelSelection.instanceId,
-                cause:
-                  "Cannot switch Codex accounts without a valid saved conversation. Check that both accounts share the Codex sessions directory.",
-              });
-            }
-          }
           const selectionTransition =
             current.instanceId === targetModelSelection.instanceId &&
             !modelSelectionsEqual(current, targetModelSelection) &&
             Option.isSome(targetAdapter) &&
             Option.isSome(currentInstance) &&
             (currentSession !== undefined || currentProviderThread !== undefined)
-              ? yield* targetAdapter.value.planSelectionTransition({
-                  current,
-                  target: targetModelSelection,
-                  sessionCapabilities: negotiatedCapabilities ?? currentInstance.value.capabilities,
-                })
+              ? negotiatedCapabilities === undefined
+                ? // No session record left to switch in place; the next session starts with it.
+                  ({ type: "apply_on_next_turn" } as const)
+                : yield* targetAdapter.value.planSelectionTransition({
+                    current,
+                    target: targetModelSelection,
+                    sessionCapabilities: negotiatedCapabilities,
+                  })
               : undefined;
+          // A selection change keeps the thread where it is. A shared session's cwd is the
+          // workspace of whichever thread opened it, not a move of this thread.
+          const workspace =
+            projection.thread.worktreePath ?? currentSession?.cwd ?? "<unresolved-workspace>";
           const transition =
             Option.isNone(targetInstance) || Option.isNone(targetAdapter)
               ? ({
@@ -231,10 +137,7 @@ export const layer: Layer.Layer<
                           modelSelection: current,
                           runtimeMode: projection.thread.runtimeMode,
                           interactionMode: projection.thread.interactionMode,
-                          workspace: executionWorkspace(
-                            projection.thread.worktreePath,
-                            currentSession,
-                          ),
+                          workspace,
                         },
                   target: {
                     driver: targetInstance.value.driver,
@@ -245,10 +148,7 @@ export const layer: Layer.Layer<
                     modelSelection: targetModelSelection,
                     runtimeMode: projection.thread.runtimeMode,
                     interactionMode: projection.thread.interactionMode,
-                    workspace:
-                      projection.thread.worktreePath ??
-                      currentSession?.cwd ??
-                      "<unresolved-workspace>",
+                    workspace,
                     available: targetInstance.value.enabled,
                   },
                   ...(selectionTransition === undefined ? {} : { selectionTransition }),
@@ -260,17 +160,6 @@ export const layer: Layer.Layer<
               cause: transition.reason,
             });
           }
-          const targetProviderThread = projection.providerThreads
-            .filter(
-              (thread) =>
-                thread.appThreadId === projection.thread.id &&
-                thread.ownerNodeId === null &&
-                thread.providerInstanceId === targetModelSelection.instanceId,
-            )
-            .toSorted(
-              (left, right) =>
-                DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
-            )[0];
           const releaseProviderSessionIds = projection.providerSessions
             .filter((session) => {
               if (!isLiveProviderSession(session)) return false;
@@ -286,11 +175,8 @@ export const layer: Layer.Layer<
             .map((session) => session.id);
           return {
             instanceChanged,
-            modelChanged,
-            targetProviderThreadId: targetProviderThread?.id ?? null,
             releaseProviderSessionIds,
             transition,
-            ...(rebindPendingProviderThread === undefined ? {} : { rebindPendingProviderThread }),
           };
         },
         (effect, { projection, targetModelSelection }) =>

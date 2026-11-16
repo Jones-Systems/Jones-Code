@@ -1,4 +1,3 @@
-import type { WorkspacePdfSession } from "../../jones/filePreview/workspacePdfSession";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type KeybindingCommand,
@@ -46,8 +45,6 @@ import { readLocalApi } from "~/localApi";
 import { cn } from "~/lib/utils";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "~/state/server";
 
-const PdfPreview = lazy(() => import("./PdfPreview"));
-
 /**
  * The page reports the keys, and a page script can report any key it likes,
  * so only commands that change what the reader sees are here, never one that
@@ -78,13 +75,7 @@ export const isPdfPreviewFile = (path: string): boolean =>
 const PdfViewer = lazy(() => import("./PdfViewer"));
 
 // The document stays mounted while each revision gets a fresh PDF.js document.
-function PdfDocument(props: {
-  src: string;
-  title: string;
-  documentKey: string;
-  pdfSession?: WorkspacePdfSession | undefined;
-  onRetry?: (() => void | Promise<void>) | undefined;
-}) {
+function PdfDocument(props: { src: string; title: string; documentKey: string }) {
   const [view, setView] = useState<PdfViewState>({ page: 0, offset: 0, zoom: null, left: 0 });
   return (
     <PdfDocumentRevision
@@ -93,9 +84,7 @@ function PdfDocument(props: {
       title={props.title}
       positionKey={props.documentKey}
       initialView={view}
-      onRetry={props.onRetry}
       onViewChange={setView}
-      pdfSession={props.pdfSession}
     />
   );
 }
@@ -106,9 +95,7 @@ function PdfDocumentRevision(props: {
   title: string;
   positionKey: string;
   initialView: PdfViewState;
-  pdfSession?: WorkspacePdfSession | undefined;
   onViewChange: (view: PdfViewState) => void;
-  onRetry?: (() => void | Promise<void>) | undefined;
 }) {
   const [src] = useState(props.src);
   // The Electron shell does not enable PDF plugins. WebKit embeds on iOS
@@ -118,21 +105,6 @@ function PdfDocumentRevision(props: {
     navigator.pdfViewerEnabled &&
     !/iPad|iPhone|iPod/.test(navigator.userAgent) &&
     !(navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const load = props.pdfSession?.load(src);
-  if (props.onRetry)
-    return (
-      <Suspense fallback={<FileSurfaceLoading />}>
-        <PdfPreview
-          src={src}
-          title={props.title}
-          onRetry={props.onRetry}
-          initialPosition={props.pdfSession?.readPosition}
-          onPositionChange={
-            load && props.pdfSession ? (view) => props.pdfSession!.remember(load, view) : undefined
-          }
-        />
-      </Suspense>
-    );
   return native ? (
     // oxlint-disable-next-line react/iframe-missing-sandbox -- Chromium's PDF plugin requires an unsandboxed frame; src is an exact-file asset grant.
     <iframe
@@ -162,21 +134,17 @@ export function BrowserDocumentFrame(props: {
   readonly title: string;
   readonly pdf: boolean;
   readonly htmlRender?: boolean;
-  readonly onRetry?: () => void | Promise<void>;
   readonly threadRef?: ScopedThreadRef | undefined;
   /** Stable resource identity and revision; defaults to src for callers that reload on URL changes. */
   readonly documentKey?: string | undefined;
   /** Resource identity without its revision, so PDF reloads can retain the reading position. */
   readonly documentId?: string | undefined;
-  readonly pdfSession?: WorkspacePdfSession | undefined;
 }) {
   const key = props.documentKey ?? props.src;
   return props.pdf ? (
     <PdfDocument
       key={props.documentId ?? key}
       documentKey={key}
-      pdfSession={props.pdfSession}
-      onRetry={props.onRetry}
       src={props.src}
       title={props.title}
     />
@@ -200,8 +168,9 @@ function FileDocument(props: { readonly src: string; readonly title: string }) {
     <iframe
       src={src}
       title={props.title}
-      className="min-h-0 flex-1 border-0 bg-white"
-      sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"
+      className="min-h-0 flex-1 border-0"
+      style={{ backgroundColor: "Canvas" }}
+      sandbox="allow-scripts allow-forms allow-popups allow-downloads"
     />
   );
 }
@@ -333,7 +302,7 @@ export function HtmlRenderDocument(props: {
     }
     const imageRequest = readHtmlRenderImageRequest(event.data);
     if (imageRequest !== undefined) {
-      setExpandedImage({ images: [{ src: imageRequest.src, name: imageRequest.name }], index: 0 });
+      setExpandedImage({ images: [...imageRequest.images], index: imageRequest.index });
     }
   });
   // Attach at commit because a fast page may post its initial height before passive effects run.

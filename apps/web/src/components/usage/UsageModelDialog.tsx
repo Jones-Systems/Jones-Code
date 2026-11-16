@@ -15,9 +15,14 @@ import {
 } from "../ui/dialog";
 import { UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
 import { UsageShareBar } from "./UsageShareBar";
-import { costTypeSegments, speedCostSegments, tokenTypeSegments } from "./usageBreakdown";
+import {
+  cacheHitRate,
+  costPerMillionTokens,
+  costTypeSegments,
+  speedCostSegments,
+  tokenTypeSegments,
+} from "./usageBreakdown";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
-import { UsageModelTokenStats } from "../../jones/usage/UsageModelTokenStats";
 
 export interface UsageChartWindow {
   readonly days: readonly string[];
@@ -50,6 +55,14 @@ export function UsageModelDialog({
   const providers = [model.provider];
   const presentation = PROVIDER_PRESENTATION[model.provider];
   const costUnknown = isModelCostUnknown(model);
+  const hitRate = cacheHitRate(model);
+  const perMillion = costPerMillionTokens(model);
+  const stats = [
+    { label: "Cost", value: costUnknown ? "Unpriced" : formatUsd(model.costUsd) },
+    { label: "Tokens", value: formatTokens(model.totalTokens) },
+    perMillion === null ? null : { label: "Per 1M tokens", value: formatUsd(perMillion) },
+    hitRate === null ? null : { label: "Cache hit", value: formatPercent(hitRate) },
+  ].filter((stat) => stat !== null);
 
   return (
     <Dialog
@@ -75,7 +88,14 @@ export function UsageModelDialog({
         </DialogHeader>
         <DialogPanel>
           <div className="flex flex-col gap-8">
-            <UsageModelTokenStats model={model} />
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+              {stats.map((stat) => (
+                <div key={stat.label} className="flex min-w-0 flex-col gap-0.5">
+                  <dt className="text-xs text-muted-foreground">{stat.label}</dt>
+                  <dd className="text-2xl font-semibold text-foreground">{stat.value}</dd>
+                </div>
+              ))}
+            </dl>
 
             {/* Unpriced cost is unknown, not zero, so its trend shows tokens. */}
             <UsageProviderChart

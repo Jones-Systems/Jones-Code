@@ -1,5 +1,5 @@
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import type { InteractionUpdate, RunResult } from "@cursor/sdk";
+import type { InteractionUpdate, RunResult, SteerAckOutcome } from "@cursor/sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   ProviderReplayEntry,
@@ -17,9 +17,7 @@ import * as Schema from "effect/Schema";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
-import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
 import * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk";
@@ -215,6 +213,7 @@ function replayRunnerError(
 export function makeCursorAgentSdkReplayRunner(
   transcript: CursorAgentSdkReplayTranscript,
 ): CursorAgentSdk.CursorAgentSdkRunner["Service"] {
+  const steerAcks = new Map<string, Deferred.Deferred<SteerAckOutcome>>();
   let cursor = 0;
   let failure: CursorAgentSdkReplayError | null = null;
   let cursorAdvanced = makeSignal();
@@ -308,16 +307,19 @@ export function makeCursorAgentSdkReplayRunner(
           );
         }
         if (entry.type === "expect_outbound") {
-          const expectedCancel = {
-            type: "run.cancel",
-            runId,
-          };
-          if (!sameFrame(entry.frame, expectedCancel)) {
+          const type =
+            typeof entry.frame === "object" && entry.frame !== null
+              ? Reflect.get(entry.frame, "type")
+              : undefined;
+          if (
+            (type !== "run.cancel" && type !== "run.steer") ||
+            Reflect.get(entry.frame as object, "runId") !== runId
+          ) {
             return yield* recordFailure(
               new CursorReplayFrameMismatchError({
                 scenario: transcript.scenario,
                 cursor,
-                expected: expectedCancel,
+                expected: { type: "run.cancel | run.steer", runId },
                 actual: entry.frame,
               }),
             );
@@ -380,6 +382,23 @@ export function makeCursorAgentSdkReplayRunner(
           yield* Effect.yieldNow;
           continue;
         }
+        if (frame.type === "run.steered") {
+          const ack = steerAcks.get(frame.runId);
+          if (ack === undefined || frame.runId !== runId) {
+            return yield* recordFailure(
+              new CursorReplayFrameMismatchError({
+                scenario: transcript.scenario,
+                cursor,
+                expected: { runId },
+                actual: frame,
+              }),
+            );
+          }
+          advance();
+          steerAcks.delete(runId);
+          yield* Deferred.succeed(ack, frame.outcome);
+          continue;
+        }
         if (frame.type === "run.completed") {
           if (frame.result.id !== runId) {
             return yield* recordFailure(
@@ -416,57 +435,47 @@ export function makeCursorAgentSdkReplayRunner(
             options: CursorAgentSdk.loggedCursorAgentOptions(input.options),
           });
           const opened = consumeInbound("agent.opened");
-          let lastReader: { running: boolean } | undefined;
           const session: CursorAgentSdk.CursorAgentSdkSession = {
             agentId: opened.agentId,
             send: (sendInput) =>
-              Effect.gen(function* () {
-                const started = yield* Effect.try({
-                  try: () => {
-                    assertOutbound({
-                      type: "run.start",
-                      message: sendInput.message,
-                      options: CursorAgentSdk.loggedCursorSendOptions(sendInput.options),
-                    });
-                    return consumeInbound("run.started");
-                  },
-                  catch: (cause) => replayRunnerError(transcript, cause, "replay.session.send"),
-                });
-                // Retain one reader independently of wait callers, as the real SDK runner does.
-                // A replay failure is no native-success witness.
-                const nativeWait = yield* Effect.cached(
-                  waitForRun(started.runId, sendInput).pipe(
-                    Effect.mapError((cause) =>
-                      replayRunnerError(transcript, cause, "replay.run.wait"),
+              Effect.try({
+                try: () => {
+                  assertOutbound({
+                    type: "run.start",
+                    message: sendInput.message,
+                    options: CursorAgentSdk.loggedCursorSendOptions(sendInput.options),
+                  });
+                  const started = consumeInbound("run.started");
+                  const run: CursorAgentSdk.CursorAgentSdkRun = {
+                    runId: started.runId,
+                    agentId: started.agentId,
+                    wait: waitForRun(started.runId, sendInput).pipe(
+                      Effect.mapError((cause) =>
+                        replayRunnerError(transcript, cause, "replay.run.wait"),
+                      ),
                     ),
-                  ),
-                );
-                const reader = { running: true };
-                lastReader = reader;
-                yield* nativeWait.pipe(
-                  Effect.ensuring(
-                    Effect.sync(() => {
-                      reader.running = false;
-                      if (lastReader === reader) cursorAdvanced.resolve();
+                    steer: Effect.fn("CursorReplay.steer")(function* (text) {
+                      const ack = yield* Deferred.make<SteerAckOutcome>();
+                      steerAcks.set(started.runId, ack);
+                      yield* Effect.try({
+                        try: () =>
+                          assertOutbound({ type: "run.steer", runId: started.runId, text }),
+                        catch: (cause) => replayRunnerError(transcript, cause, "replay.run.steer"),
+                      });
+                      return yield* Deferred.await(ack);
                     }),
-                  ),
-                  Effect.exit,
-                  Effect.forkDetach({ startImmediately: true }),
-                );
-                return {
-                  runId: started.runId,
-                  agentId: started.agentId,
-                  nativeWait,
-                  wait: nativeWait,
-                  cancel: Effect.try({
-                    try: () =>
-                      assertOutbound({
-                        type: "run.cancel",
-                        runId: started.runId,
-                      }),
-                    catch: (cause) => replayRunnerError(transcript, cause, "replay.run.cancel"),
-                  }),
-                } satisfies CursorAgentSdk.CursorAgentSdkRun;
+                    cancel: Effect.try({
+                      try: () =>
+                        assertOutbound({
+                          type: "run.cancel",
+                          runId: started.runId,
+                        }),
+                      catch: (cause) => replayRunnerError(transcript, cause, "replay.run.cancel"),
+                    }),
+                  };
+                  return run;
+                },
+                catch: (cause) => replayRunnerError(transcript, cause, "replay.session.send"),
               }),
             listMessages: Effect.try({
               try: () => {
@@ -478,23 +487,13 @@ export function makeCursorAgentSdkReplayRunner(
               },
               catch: (cause) => replayRunnerError(transcript, cause, "replay.agent.messages.list"),
             }),
-            close: Effect.gen(function* () {
-              // Let the owned reader deliver recorded inbound completion before close.
-              // An expected outbound call (including cancel) must still match immediately.
-              while (lastReader?.running === true && failure === null) {
-                const entry = transcript.entries[cursor];
-                if (entry?.type !== "emit_inbound" && entry?.type !== "runtime_exit") break;
-                const signal = cursorAdvanced;
-                yield* Effect.promise(() => signal.promise);
-              }
-              yield* Effect.try({
-                try: () =>
-                  assertOutbound({
-                    type: "agent.close",
-                    agentId: opened.agentId,
-                  }),
-                catch: (cause) => replayRunnerError(transcript, cause, "replay.agent.close"),
-              });
+            close: Effect.try({
+              try: () =>
+                assertOutbound({
+                  type: "agent.close",
+                  agentId: opened.agentId,
+                }),
+              catch: (cause) => replayRunnerError(transcript, cause, "replay.agent.close"),
             }),
           };
           return session;
@@ -507,13 +506,11 @@ export function makeCursorAgentSdkReplayRunner(
           throw failure;
         }
         if (cursor !== transcript.entries.length) {
-          throw recordFailure(
-            new CursorReplayIncompleteError({
-              scenario: transcript.scenario,
-              cursor,
-              remaining: transcript.entries.length - cursor,
-            }),
-          );
+          throw new CursorReplayIncompleteError({
+            scenario: transcript.scenario,
+            cursor,
+            remaining: transcript.entries.length - cursor,
+          });
         }
       },
       catch: (cause) => replayRunnerError(transcript, cause, "replay.assertComplete"),
@@ -537,13 +534,7 @@ function layerCursorAgentSdkReplay(
           ? Effect.void
           : runner.assertComplete.pipe(Effect.orDie),
       );
-      // Adapter shutdown also checks completeness. A shared restart transcript is
-      // complete only after its final runtime; its owner asserts the original runner.
-      return CursorAgentSdk.CursorAgentSdkRunner.of(
-        options?.assertCompleteOnFinalize === false
-          ? { ...runner, assertComplete: Effect.void }
-          : runner,
-      );
+      return CursorAgentSdk.CursorAgentSdkRunner.of(runner);
     }),
   );
 }
@@ -576,10 +567,7 @@ export function layer(
     Layer.provide(
       Layer.mergeAll(
         layerCursorAgentSdkReplay(transcript, options),
-        Layer.effect(
-          ProviderHost.ProviderHost,
-          Effect.map(ProviderHost.ProviderHost, (host) => ({ ...host, appIdentity: APP_IDENTITY })),
-        ).pipe(Layer.provide(TestProviderHost.layer()), Layer.provide(NodeServices.layer)),
+        TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
         layerHostEnvironment,
         NodeServices.layer,
         IdAllocator.layer,
@@ -706,6 +694,7 @@ interface CursorReplayRecordingInput {
   readonly apiKey?: string;
   readonly interruptAfterToolStart?: boolean;
   readonly interruptAfterRunStartPromptIndex?: number;
+  readonly steerAfterRunStartPromptIndex?: number;
   readonly restartBeforePromptIndex?: number;
 }
 
@@ -852,6 +841,11 @@ export const recordCursorAgentSdkReplayTranscript = Effect.fn(
     prompt: string,
     index: number,
   ) {
+    if (
+      input.steerAfterRunStartPromptIndex !== undefined &&
+      index === input.steerAfterRunStartPromptIndex + 1
+    )
+      return;
     const interruptAfterRunStart = input.interruptAfterRunStartPromptIndex === index;
     const firstUpdate = yield* Deferred.make<void>();
     const toolStarted = yield* Deferred.make<void>();
@@ -874,6 +868,15 @@ export const recordCursorAgentSdkReplayTranscript = Effect.fn(
     });
     sent = true;
     const waiting = yield* run.wait.pipe(Effect.forkChild({ startImmediately: true }));
+    if (input.steerAfterRunStartPromptIndex === index) {
+      yield* awaitSignal(firstUpdate, "Cursor SDK activity before steering");
+      const steerText = input.prompts[index + 1];
+      if (run.steer === undefined || steerText === undefined)
+        return yield* invalid("Steering requires a following prompt and Run.steer.");
+      const outcome = yield* run.steer(steerText);
+      if (outcome !== "complete_delivered")
+        return yield* invalid("The running turn did not accept the steer.");
+    }
     if (interruptAfterRunStart) {
       yield* awaitSignal(firstUpdate, "Cursor SDK run activity before interrupt");
       yield* run.cancel;

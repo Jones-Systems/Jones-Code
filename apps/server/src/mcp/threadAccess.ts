@@ -1,6 +1,7 @@
-import * as ProviderSessions from "../orchestration-v2/ProviderSessionManager.ts";
-import * as Option from "effect/Option";
-import type { ProjectionRecordField } from "../orchestration-v2/ProjectionStore.ts";
+import type {
+  ProjectionRecordField,
+  ProjectionRecordFilter,
+} from "../orchestration-v2/ProjectionStore.ts";
 import {
   CommandId,
   OrchestratorMcpFailure,
@@ -17,26 +18,53 @@ import * as Effect from "effect/Effect";
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
+import { fencingLinkOrigin } from "./linkOrigin.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
+const delegatedTaskPrefix = "thread:delegated-task:";
+
+const suggestedThreadId = (threadId: ThreadId) => {
+  if (!threadId.startsWith(delegatedTaskPrefix)) return ThreadId.make(`mcp:${threadId}`);
+  const rest = threadId.slice(delegatedTaskPrefix.length);
+  // encodeURIComponent throws on lone surrogates, which a JSON string can carry.
+  if (!rest.isWellFormed()) return null;
+  const encoded = encodeURIComponent(rest);
+  return encoded === rest ? null : ThreadId.make(`${delegatedTaskPrefix}${encoded}`);
+};
+
 /**
- * Threads an agent starts over MCP are `mcp:<uuid>`, and agents often paste the
- * bare uuid. The id is never rewritten, so permission checks keyed on it still
- * hold; the miss only names a live thread the caller could read by its full id.
+ * Agents paste bare uuids for `mcp:<uuid>` threads and unencoded delegated-task ids.
+ * The id is never rewritten, so permission checks keyed on it still hold; the miss
+ * only names a live thread the caller could read by its full id. Ids from another
+ * machine miss here too. The link hint is static: listing links probes peers.
  */
 export const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")(function* (
   threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getThreadShell">,
+  scope: McpInvocationContext.McpInvocationScope,
   threadId: ThreadId,
   message: string,
 ) {
-  const prefixed = ThreadId.make(`mcp:${threadId}`);
-  const shell = yield* threads.getThreadShell(prefixed).pipe(Effect.orElseSucceed(() => null));
+  const suggested = suggestedThreadId(threadId);
+  const shell =
+    suggested === null
+      ? null
+      : yield* threads.getThreadShell(suggested).pipe(Effect.orElseSucceed(() => null));
+  const mcpHint =
+    shell === null || shell.deletedAt !== null ? "" : ` Did you mean \`${suggested}\`?`;
+  const caller =
+    scope.thread === undefined
+      ? null
+      : yield* threads.getThreadShell(scope.thread.threadId).pipe(Effect.orElseSucceed(() => null));
+  // A peer link's caller would be pointed at this machine's links, and a fenced one may not use them.
+  const linksHint =
+    scope.linkedEnvironments === false ||
+    scope.client?.linked === true ||
+    fencingLinkOrigin({ scope, caller: caller ?? undefined }) !== undefined
+      ? ""
+      : " Thread ids belong to one environment: for a thread on a linked one, find it with `t3_environment_links` and pass its `environmentId` to a tool that takes one.";
   return yield* new OrchestratorMcpFailure({
     code: "thread_not_found",
-    message:
-      shell === null || shell.deletedAt !== null
-        ? message
-        : `${message} Did you mean \`${prefixed}\`?`,
+    message: `${message}${mcpHint}${linksHint}`,
   });
 });
 
@@ -50,7 +78,8 @@ export const dispatchFailure = (
   error: OrchestratorV2Error | ThreadManagement.ThreadManagementProviderInstanceDisabledError,
 ) =>
   error._tag === "ThreadManagementProviderInstanceDisabledError" ||
-  error._tag === "OrchestratorRuntimeModeAboveCeilingError"
+  error._tag === "OrchestratorRuntimeModeAboveCeilingError" ||
+  error._tag === "OrchestratorProviderSelectionBusyError"
     ? new OrchestratorMcpFailure({ code: "invalid_request", message: error.message })
     : (error._tag === "OrchestratorDispatchError" ||
           error._tag === "OrchestratorCommandRejectedError") &&
@@ -115,11 +144,18 @@ export const loadCaller = Effect.fn("mcp.loadCaller")(function* () {
 
 export const assertTargetWithinLimits = (
   limits: CallerLimits,
-  target: { readonly runtimeMode: RuntimeMode; readonly interactionMode: ProviderInteractionMode },
+  target: Pick<OrchestrationV2ThreadShell, "id" | "runtimeMode" | "interactionMode">,
 ) =>
   resolveRuntimeMode(limits.runtimeMode, target.runtimeMode).pipe(
     Effect.andThen(resolveInteractionMode(limits.interactionMode, target.interactionMode)),
     Effect.asVoid,
+    Effect.mapError(
+      (error) =>
+        new OrchestratorMcpFailure({
+          code: error.code,
+          message: `Thread "${target.id}" runs in ${target.runtimeMode}/${target.interactionMode}, above this caller's ${limits.runtimeMode}/${limits.interactionMode} limit. For linked calls, this limit is also capped by the link's approved access. This call does not create an approval request. Have the user act directly in the target thread through an authorized client.`,
+        }),
+    ),
   );
 
 /** Background subagents retain credentials until provider exit; archived threads and other instances cannot act. */
@@ -140,39 +176,16 @@ export const isLiveCallerShell = (
       false));
 
 /** Thread callers need a live run or its background subagent in an unarchived thread. OAuth clients rely on their session and ceiling. */
-export function assertLiveCaller({ caller, scope, threads }: Caller) {
+export function assertLiveCaller({ caller, scope }: Caller) {
   if (caller === undefined) return Effect.void;
-  return Effect.gen(function* () {
-    if (isLiveCallerShell(caller, scope.thread?.providerInstanceId)) return;
-    const manager = yield* Effect.serviceOption(ProviderSessions.ProviderSessionManagerV2);
-    if (
-      caller.archivedAt === null &&
-      caller.deletedAt === null &&
-      scope.thread !== undefined &&
-      Option.isSome(manager)
-    ) {
-      const records = yield* threads
-        .getThreadRecords(caller.id, ["runs", "providerThreads"])
-        .pipe(Effect.mapError(unavailable));
-      const run = records.runs.find((run) => run.id === caller.activeRunId);
-      const provider = records.providerThreads.find((row) => row.id === run?.providerThreadId);
-      if (
-        run?.providerInstanceId === scope.thread.providerInstanceId &&
-        provider?.providerSessionId != null &&
-        (yield* manager.value.isMcpCallerAttached({
-          threadId: caller.id,
-          providerSessionId: provider.providerSessionId,
-          providerInstanceId: scope.thread.providerInstanceId,
-          mcpCredentialId: scope.thread.providerSessionId,
-        }))
-      )
-        return;
-    }
-    return yield* new OrchestratorMcpFailure({
-      code: "parent_not_active",
-      message: "The calling provider no longer owns an active thread run.",
-    });
-  });
+  return isLiveCallerShell(caller, scope.thread?.providerInstanceId)
+    ? Effect.void
+    : Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "parent_not_active",
+          message: "The calling provider no longer owns an active thread run.",
+        }),
+      );
 }
 
 export const assertFullAccess = (context: Caller, message: string) =>
@@ -206,16 +219,22 @@ const resolveThreadId = (context: Caller, threadId: ThreadId | undefined) =>
 
 export const readThread = Effect.fn("mcp.readThread")(function* <
   K extends ProjectionRecordField = never,
->(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
+>(threadId?: ThreadId, fields: ReadonlyArray<K> = [], filter?: ProjectionRecordFilter) {
   const context = yield* readCaller();
   const targetId = yield* resolveThreadId(context, threadId);
   const shell = yield* context.threads.getThreadShell(targetId).pipe(Effect.mapError(unavailable));
   if (shell === null || shell.deletedAt !== null) {
-    return yield* threadNotFound(context.threads, targetId, "The thread was not found.");
+    return yield* threadNotFound(
+      context.threads,
+      context.scope,
+      targetId,
+      "The thread was not found.",
+    );
   }
   const projection = yield* context.threads
     .getProjectThreadRecords({ projectId: shell.projectId, threadId: targetId }, fields, {
       turnItemTypes: ["user_input_request"],
+      ...filter,
     })
     .pipe(
       Effect.mapError((error) =>
@@ -228,23 +247,6 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
       ),
     );
   return { ...context, projection };
-});
-
-export const readMessageWritableThread = Effect.fn("mcp.readMessageWritableThread")(function* <
-  K extends ProjectionRecordField = never,
->(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
-  const context = yield* readThread(threadId, fields);
-  if (
-    (context.scope.client?.linked === true ||
-      (context.caller !== undefined && context.caller.id !== context.projection.thread.id)) &&
-    context.projection.thread.threadMessagesBlocked === true
-  ) {
-    return yield* new OrchestratorMcpFailure({
-      code: "capability_denied",
-      message: `Thread ${context.projection.thread.id} is blocking messages from other threads.`,
-    });
-  }
-  return context;
 });
 
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {

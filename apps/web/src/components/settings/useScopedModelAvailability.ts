@@ -5,8 +5,10 @@ import {
 } from "@t3tools/contracts";
 
 import { mergeEnvironmentSettings } from "../../hooks/useSettings";
-import { scopedModelDisabledReason } from "../../jones/settings/modelSelectionCorrespondence";
-import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import {
+  getCustomModelOptionsByInstance,
+  getTextGenerationModelOptionsByInstance,
+} from "../../modelSelection";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -18,26 +20,15 @@ import { useSettingsScope } from "./SettingsScopeContext";
 export function useScopedModelDisabledReason(
   settings: UnifiedSettings,
   entries: readonly ProviderInstanceEntry[],
-  options: { readonly textGeneration?: boolean } = { textGeneration: true },
+  textGeneration = false,
 ) {
-  const { target, targets } = useSettingsScope();
+  const { targets } = useSettingsScope();
   const { environments } = useEnvironments();
   const providersByEnvironment = useEnvironmentProviders();
   return (instanceId: ProviderInstanceId, model: string): string | null => {
     const sourceEntry = entries.find((entry) => entry.instanceId === instanceId);
     const shownGenerator = textGeneratorForSelection(settings, instanceId);
     for (const candidate of targets) {
-      if (target && candidate.environmentId !== target.environmentId) {
-        const reason = scopedModelDisabledReason(
-          { representative: target, providersByEnvironment },
-          candidate,
-          { instanceId, model },
-          mergeEnvironmentSettings(candidate.settings, settings),
-          options.textGeneration,
-        );
-        if (reason) return reason;
-        continue;
-      }
       const environment = environments.find(
         (entry) => entry.environmentId === candidate.environmentId,
       );
@@ -61,16 +52,18 @@ export function useScopedModelDisabledReason(
         candidate.settings,
         candidate.projectId,
       ).find((option) => option.instanceId === instanceId);
-      const modelOptions = getCustomModelOptionsByInstance(
+      const optionsForInstance = textGeneration
+        ? getTextGenerationModelOptionsByInstance
+        : getCustomModelOptionsByInstance;
+      const options = optionsForInstance(
         mergeEnvironmentSettings(candidate.settings, settings),
         providers,
       ).get(instanceId);
       if (
         !entry?.enabled ||
         !entry.isAvailable ||
-        (options.textGeneration && entry.snapshot.supportsTextGeneration === false) ||
         entry.driverKind !== sourceEntry?.driverKind ||
-        !modelOptions?.some((option) => option.slug === model && !option.isUnavailable)
+        !options?.some((option) => option.slug === model && !option.isUnavailable)
       ) {
         return unavailable;
       }

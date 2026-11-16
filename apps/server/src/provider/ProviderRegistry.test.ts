@@ -1,4 +1,3 @@
-import * as Option from "effect/Option";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import { vi } from "vite-plus/test";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -18,6 +17,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -36,19 +36,25 @@ import {
   ServerSettingsError,
   ServerProvider,
   type ServerProviderSlashCommand,
+  type ServerProviderUpdateState,
+  type ServerProviderVersionAdvisoryStatus,
   type ServerSettings as ContractServerSettings,
 } from "@t3tools/contracts";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { WindowsShellEnvironment } from "@t3tools/shared/shell";
 import { deepMerge } from "@t3tools/shared/Struct";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 
-import { checkCodexProviderStatus, type CodexAppServerProviderSnapshot } from "./CodexProvider.ts";
+import {
+  checkCodexProviderStatus,
+  mapCodexModelCapabilities,
+  type CodexAppServerProviderSnapshot,
+} from "./CodexProvider.ts";
 import { BUNDLED_CLAUDE_MODEL_CATALOG } from "./ClaudeModelCatalog.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
-import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as AntigravityInstallation from "./AntigravityInstallation.ts";
 import * as ModelManifest from "./ModelManifest.ts";
@@ -59,10 +65,12 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
 import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as ProviderInstallationGate from "./ProviderInstallationGate.ts";
 import * as ProviderInstanceRegistryHydration from "./ProviderInstanceRegistryHydration.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import {
   readProviderStatusCache,
   resolveProviderStatusCachePath,
@@ -76,6 +84,7 @@ import type {
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import * as ProviderRegistry from "./ProviderRegistry.ts";
+import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "@t3tools/provider-core/server/maintenanceResolver";
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
@@ -86,7 +95,9 @@ const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodedDefaultServerSettings = encodeServerSettings(DEFAULT_SERVER_SETTINGS);
 
-const disabledDefaultSlots = (...drivers: ReadonlyArray<string>) =>
+const disabledDefaultSlots = (
+  ...drivers: ReadonlyArray<string>
+): ContractServerSettings["providerInstances"] =>
   Object.fromEntries(
     drivers.map((driver) => [
       ProviderInstanceId.make(driver),
@@ -144,6 +155,135 @@ const layerBackgroundPolicyAlwaysRun = Layer.mock(BackgroundPolicy.BackgroundPol
   }),
   shouldRunScopeWork: () => Effect.succeed(true),
   shouldRunOpportunisticWork: Effect.succeed(true),
+});
+
+const makeWorkspaceRescanHarness = Effect.gen(function* () {
+  const instanceId = ProviderInstanceId.make("claude");
+  const driver = ProviderDriverKind.make("claudeCode");
+  const provider = {
+    instanceId,
+    driver,
+    status: "ready",
+    enabled: true,
+    installed: true,
+    auth: { status: "authenticated" },
+    checkedAt: "1970-01-01T00:00:00.000Z",
+    version: "1.0.0",
+    models: [],
+    slashCommands: [],
+    skills: [],
+  } as const satisfies ServerProvider;
+  const scans = yield* Queue.unbounded<{
+    readonly cwd: string;
+    readonly result: Deferred.Deferred<ProviderWorkspaceSnapshot>;
+  }>();
+  const makeInstance = Effect.gen(function* () {
+    const rescans = yield* Queue.unbounded<string>();
+    const reports = yield* Queue.unbounded<string>();
+    const instance: ProviderInstance = {
+      instanceId,
+      driverKind: driver,
+      continuationIdentity: { driverKind: driver, continuationKey: "claude:rescan-test" },
+      displayName: undefined,
+      enabled: true,
+      snapshot: {
+        resolveMaintenance: () =>
+          Effect.succeed(
+            makeManualOnlyProviderMaintenanceCapabilities({
+              provider: driver,
+              packageName: null,
+            }),
+          ),
+        getSnapshot: Effect.succeed(provider),
+        refresh: Effect.succeed(provider),
+        streamChanges: Stream.empty,
+        applyUsageLimits: () => Effect.void,
+      },
+      // A pull-based stream pulls the next report only after the registry queued the last.
+      workspaceRescans: Stream.fromQueue(rescans).pipe(
+        Stream.tap((cwd) => Queue.offer(reports, cwd)),
+      ),
+      snapshotForCwd: (cwd) =>
+        Effect.gen(function* () {
+          const result = yield* Deferred.make<ProviderWorkspaceSnapshot>();
+          yield* Queue.offer(scans, { cwd, result });
+          return yield* Deferred.await(result);
+        }),
+      orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+      textGeneration: {} as ProviderInstance["textGeneration"],
+    };
+    return { instance, rescans, reports };
+  });
+  const first = yield* makeInstance;
+  const instances = yield* Ref.make([first.instance]);
+  const changes = yield* PubSub.unbounded<void>();
+  const scope = yield* Scope.make();
+  yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+  const services = yield* Layer.build(
+    ProviderRegistry.layer.pipe(
+      Layer.provide(layerUnusedMutator),
+      Layer.provideMerge(
+        Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+          getInstance: (id) =>
+            Ref.get(instances).pipe(Effect.map((all) => all.find((i) => i.instanceId === id))),
+          listInstances: Ref.get(instances),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.fromPubSub(changes),
+          subscribeChanges: PubSub.subscribe(changes),
+        }),
+      ),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-workspace-rescan-" })),
+      Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+    ),
+  ).pipe(Scope.provide(scope));
+  const registry = yield* ProviderRegistry.ProviderRegistry.pipe(Effect.provide(services));
+  const snapshot = (name: string): ProviderWorkspaceSnapshot => ({
+    ...provider,
+    skills: [{ name, path: `/workspace/${name}/SKILL.md`, enabled: true }],
+  });
+  const nextScan = Effect.fnUntraced(function* (cwd: string) {
+    const scan = yield* Queue.take(scans);
+    assert.equal(scan.cwd, cwd);
+    return (name: string) => Deferred.succeed(scan.result, snapshot(name));
+  });
+  const refresh = (cwd: string, fresh = false) =>
+    registry.refreshWorkspaceSnapshot({ instanceId, cwd, fresh });
+  const seed = Effect.fnUntraced(function* (cwd: string) {
+    const pending = yield* refresh(cwd).pipe(Effect.forkChild);
+    const complete = yield* nextScan(cwd);
+    yield* complete("initial");
+    yield* Fiber.join(pending);
+  });
+  // A later requested cwd reaching the serial consumer proves the previous rescan settled,
+  // including when that rescan correctly publishes no change. Seed "/barrier" first; it rescans
+  // to the skills it was seeded with, so it never stamps workspaceRescannedAt.
+  const drainRescans = Effect.gen(function* () {
+    yield* Queue.offer(first.rescans, "/barrier");
+    const complete = yield* nextScan("/barrier");
+    yield* complete("initial");
+  });
+  const skillsOf = (cwd: string) =>
+    Effect.map(registry.getProviders, (providers) =>
+      providers[0]?.workspaceSnapshots?.find((s) => s.cwd === cwd)?.skills?.map((s) => s.name),
+    );
+  const rescannedAtOf = Effect.map(
+    registry.getProviders,
+    (providers) => providers[0]?.workspaceRescannedAt,
+  );
+  return {
+    first,
+    makeInstance,
+    instances,
+    changes,
+    registry,
+    scans,
+    nextScan,
+    refresh,
+    seed,
+    drainRescans,
+    skillsOf,
+    rescannedAtOf,
+  };
 });
 
 function selectDescriptor(
@@ -331,11 +471,88 @@ const awaitPersistedProvider = (
     Effect.forkScoped,
   );
 
+const codexUpdateSnapshot = (advisory: ServerProviderVersionAdvisoryStatus) =>
+  ({
+    instanceId: ProviderInstanceId.make("codex"),
+    driver: ProviderDriverKind.make("codex"),
+    status: "ready",
+    enabled: true,
+    installed: true,
+    auth: { status: "authenticated" },
+    checkedAt: "2026-06-10T00:00:00.000Z",
+    version: "1.0.0",
+    models: [],
+    slashCommands: [],
+    skills: [],
+    versionAdvisory: {
+      status: advisory,
+      currentVersion: "1.0.0",
+      latestVersion: advisory === "unknown" ? null : advisory === "current" ? "1.0.0" : "2.0.0",
+      updateCommand: null,
+      canUpdate: true,
+      checkedAt: "2026-06-10T00:00:00.000Z",
+      message: null,
+    },
+  }) as const satisfies ServerProvider;
+
+const makeUpdateState = (status: ServerProviderUpdateState["status"]) =>
+  ({
+    status,
+    startedAt: "2026-06-10T00:00:00.000Z",
+    finishedAt: status === "queued" || status === "running" ? null : "2026-06-10T00:01:00.000Z",
+    message: `update ${status}`,
+    output: null,
+  }) satisfies ServerProviderUpdateState;
+
+// One Codex instance whose probe returns whatever `snapshot` currently holds.
+const buildRegistryOverSnapshot = Effect.fn("buildRegistryOverSnapshot")(function* (
+  snapshot: Ref.Ref<ServerProvider>,
+) {
+  const driver = ProviderDriverKind.make("codex");
+  const instance = {
+    instanceId: ProviderInstanceId.make("codex"),
+    driverKind: driver,
+    continuationIdentity: { driverKind: driver, continuationKey: "codex:instance:codex" },
+    displayName: undefined,
+    enabled: true,
+    snapshot: {
+      resolveMaintenance: () =>
+        Effect.succeed(
+          makeManualOnlyProviderMaintenanceCapabilities({ provider: driver, packageName: null }),
+        ),
+      getSnapshot: Ref.get(snapshot),
+      refresh: Ref.get(snapshot),
+      streamChanges: Stream.empty,
+      applyUsageLimits: () => Effect.void,
+    },
+    orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+    textGeneration: {} as ProviderInstance["textGeneration"],
+  } satisfies ProviderInstance;
+  const layerInstanceRegistry = Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+    getInstance: (instanceId) =>
+      Effect.succeed(instanceId === instance.instanceId ? instance : undefined),
+    listInstances: Effect.succeed([instance]),
+    listUnavailable: Effect.succeed([]),
+    streamChanges: Stream.empty,
+    subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+  });
+  const scope = yield* Scope.make();
+  yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+  return yield* Layer.build(
+    ProviderRegistry.layer.pipe(
+      Layer.provide(layerUnusedMutator),
+      Layer.provideMerge(layerInstanceRegistry),
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-provider-registry-update-state-" }),
+      ),
+      Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
+      Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+    ),
+  ).pipe(Scope.provide(scope));
+});
+
 const layerTestNodeServices = Layer.mergeAll(
   ProviderLatestVersions.layer,
-  layerUnusedMutator,
-  ProcessAttribution.layer,
-  PortScanner.layerTest,
   NodeServices.layer,
   NodeCrypto.layer,
   Layer.mock(CodexManagedTokenBroker.CodexManagedTokenBroker)({
@@ -418,6 +635,20 @@ it.layer(
       }),
     );
 
+    it.effect("allows a slow successful Codex probe with a configured budget", () =>
+      Effect.gen(function* () {
+        const fiber = yield* checkCodexProviderStatus(
+          defaultCodexSettings,
+          () => Effect.sleep("22 seconds").pipe(Effect.as(makeCodexProbeSnapshot())),
+          { T3CODE_CODEX_PROBE_TIMEOUT_MS: "60000" },
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust("22 seconds");
+        const status = yield* Fiber.join(fiber);
+        assert.strictEqual(status.status, "ready");
+        assert.strictEqual(status.auth.status, "authenticated");
+      }),
+    );
+
     it.effect("labels the plan the usage read reports over the cached login plan", () =>
       Effect.gen(function* () {
         const statusWithUsagePlan = (planType: string | null) =>
@@ -466,6 +697,25 @@ it.layer(
       }),
     );
 
+    it.effect("names the instance's CODEX_HOME in the sign-in hint for a custom home", () =>
+      Effect.gen(function* () {
+        const homePath = "/srv/codex-work-home";
+        const status = yield* checkCodexProviderStatus(
+          decodeCodexSettings({ binaryPath: "codex", homePath }),
+          () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                account: { account: null, requiresOpenaiAuth: true },
+              }),
+            ),
+        );
+
+        assert.strictEqual(status.auth.status, "unauthenticated");
+        assert.include(status.message ?? "", "CODEX_HOME");
+        assert.include(status.message ?? "", homePath);
+      }),
+    );
+
     it.effect("returns ready with unknown auth when app-server does not require OpenAI auth", () =>
       Effect.gen(function* () {
         const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
@@ -481,6 +731,84 @@ it.layer(
 
         assert.strictEqual(status.status, "ready");
         assert.strictEqual(status.auth.status, "unknown");
+      }),
+    );
+
+    it.effect("offers cyber access only on catalog models that advertise it", () =>
+      Effect.gen(function* () {
+        const catalogModel = (slug: string, cyber?: Array<"standard" | "daybreakBlue">) => ({
+          slug,
+          name: slug,
+          isCustom: false,
+          capabilities: mapCodexModelCapabilities({
+            additionalSpeedTiers: [],
+            ...(cyber ? { availableAccessPrograms: { cyber } } : {}),
+            defaultReasoningEffort: "medium",
+            description: slug,
+            displayName: slug,
+            hidden: false,
+            id: slug,
+            isDefault: false,
+            model: slug,
+            supportedReasoningEfforts: [],
+          }),
+        });
+        const defaultPrograms = (snapshot: Partial<CodexAppServerProviderSnapshot>) =>
+          checkCodexProviderStatus(decodeCodexSettings({ customModels: ["my-model"] }), () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                models: [
+                  catalogModel("both", ["standard", "daybreakBlue"]),
+                  catalogModel("daybreak-only", ["daybreakBlue"]),
+                  catalogModel("plain"),
+                ],
+                ...snapshot,
+              }),
+            ),
+          ).pipe(
+            Effect.map((status) =>
+              Object.fromEntries(
+                status.models.map((model) => {
+                  const descriptor = model.capabilities?.optionDescriptors?.find(
+                    (option) => option.id === "cyberAccessProgram",
+                  );
+                  return [
+                    model.slug,
+                    descriptor?.type === "select"
+                      ? (descriptor.currentValue ?? "no default")
+                      : null,
+                  ];
+                }),
+              ),
+            ),
+          );
+
+        assert.deepStrictEqual(yield* defaultPrograms({ daybreakEnabled: false }), {
+          both: "standard",
+          "daybreak-only": "daybreakBlue",
+          plain: null,
+          "my-model": null,
+        });
+        assert.deepStrictEqual(yield* defaultPrograms({ daybreakEnabled: true }), {
+          both: "daybreakBlue",
+          "daybreak-only": "daybreakBlue",
+          plain: null,
+          "my-model": null,
+        });
+        // An unread config keeps the choice but cannot know Codex's default.
+        assert.deepStrictEqual(yield* defaultPrograms({}), {
+          both: "no default",
+          "daybreak-only": "no default",
+          plain: null,
+          "my-model": null,
+        });
+        assert.deepStrictEqual(
+          yield* defaultPrograms({
+            account: { account: { type: "apiKey" }, requiresOpenaiAuth: false },
+            cyberAccessProgramsUnavailable: true,
+          }),
+          { both: null, "daybreak-only": null, plain: null, "my-model": null },
+        );
       }),
     );
 
@@ -591,6 +919,86 @@ it.layer(
       }),
     );
 
+    it.effect("shows Codex usage that answers after three seconds inside the probe budget", () =>
+      Effect.gen(function* () {
+        const usageRequested = yield* Deferred.make<void>();
+        const spawner = ChildProcessSpawner.make(() =>
+          Effect.gen(function* () {
+            const scope = yield* Effect.scope;
+            const output = yield* Queue.unbounded<Uint8Array>();
+            const send = (message: unknown) =>
+              Queue.offer(output, encoder.encode(`${JSON.stringify(message)}\n`));
+            const results: Record<string, unknown> = {
+              initialize: {
+                userAgent: "codex_cli_rs/0.167.0",
+                codexHome: "/nonexistent-codex-home",
+                platformFamily: "unix",
+                platformOs: "linux",
+              },
+              "account/read": {
+                account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+                requiresOpenaiAuth: true,
+              },
+              "config/read": { config: {}, origins: {} },
+              "skills/list": { data: [] },
+              "model/list": { data: [] },
+            };
+            const answer = (line: string) => {
+              const { id, method } = JSON.parse(line) as { id?: number; method?: string };
+              if (id === undefined || method === undefined) return Effect.void;
+              if (method !== "account/rateLimits/read") {
+                return send({ id, result: results[method] ?? {} });
+              }
+              return Deferred.succeed(usageRequested, undefined).pipe(
+                Effect.andThen(Effect.sleep("4 seconds")),
+                Effect.andThen(
+                  send({
+                    id,
+                    result: {
+                      rateLimits: {
+                        limitId: "codex",
+                        planType: "pro",
+                        primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 2e9 },
+                      },
+                      rateLimitsByLimitId: null,
+                      rateLimitResetCredits: null,
+                      accountId: null,
+                    },
+                  }),
+                ),
+                Effect.forkIn(scope),
+              );
+            };
+            const decoder = new TextDecoder();
+            let buffered = "";
+            return ChildProcessSpawner.makeHandle({
+              ...mockHandle({ stdout: "", stderr: "", code: 0 }),
+              exitCode: Effect.never,
+              isRunning: Effect.succeed(true),
+              stdin: Sink.forEach((chunk: Uint8Array) => {
+                buffered += decoder.decode(chunk, { stream: true });
+                const lines = buffered.split("\n");
+                buffered = lines.pop() ?? "";
+                return Effect.forEach(lines.filter(Boolean), answer, { discard: true });
+              }),
+              stdout: Stream.fromQueue(output),
+            });
+          }),
+        );
+        const fiber = yield* checkCodexProviderStatus(defaultCodexSettings).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(usageRequested);
+        yield* TestClock.adjust("25 seconds");
+        const status = yield* Fiber.join(fiber);
+
+        assert.strictEqual(status.auth.status, "authenticated");
+        assert.isUndefined(status.usageLimits?.unavailable);
+        assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 42);
+      }),
+    );
+
     it.effect("does not run --version when the Codex executable cannot start", () =>
       Effect.gen(function* () {
         if ((yield* HostProcess.Platform) === "win32") return;
@@ -617,6 +1025,74 @@ it.layer(
   });
 
   describe("ProviderRegistry.layer", () => {
+    it("marks folder catalogs pending when a machine refresh changes the machine models", () => {
+      const machineModel = {
+        slug: "opencode/big-pickle",
+        name: "Big Pickle",
+        isCustom: false,
+        capabilities: null,
+      } satisfies ServerProvider["models"][number];
+      const projectModel = { ...machineModel, slug: "uni/medium-gpt", name: "Medium GPT" };
+      const addedModel = { ...machineModel, slug: "opencode/new", name: "New" };
+      const provider = {
+        instanceId: ProviderInstanceId.make("opencode"),
+        driver: ProviderDriverKind.make("opencode"),
+        status: "ready",
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        checkedAt: "2026-03-25T00:00:00.000Z",
+        version: "2.0.0",
+        models: [machineModel],
+        slashCommands: [],
+        skills: [],
+      } satisfies ServerProvider;
+      const withCatalog = ProviderRegistry.upsertProviderWorkspaceSnapshot(
+        ProviderRegistry.upsertProviderWorkspaceSnapshot(provider, "/project", {
+          ...provider,
+          workspaceModels: [machineModel, projectModel],
+        }),
+        "/plain",
+        provider,
+      );
+
+      const unchanged = ProviderRegistry.mergeProviderSnapshot(withCatalog, provider);
+      assert.deepStrictEqual(
+        unchanged.workspaceSnapshots?.map((snapshot) => snapshot.cwd),
+        ["/project", "/plain"],
+      );
+      // A machine health refresh must not read as a rescan, nor erase the last one.
+      const rescanned = { ...withCatalog, workspaceRescannedAt: "2026-03-25T00:01:00.000Z" };
+      assert.equal(
+        ProviderRegistry.mergeProviderSnapshot(rescanned, provider).workspaceRescannedAt,
+        "2026-03-25T00:01:00.000Z",
+      );
+      assert.equal(
+        ProviderRegistry.mergeProviderSnapshot(rescanned, {
+          ...provider,
+          workspaceRescannedAt: "2026-03-25T00:02:00.000Z",
+        }).workspaceRescannedAt,
+        "2026-03-25T00:02:00.000Z",
+      );
+      assert.equal(unchanged.workspaceRescannedAt, undefined);
+      const changed = ProviderRegistry.mergeProviderSnapshot(withCatalog, {
+        ...provider,
+        models: [machineModel, addedModel],
+      });
+      assert.deepStrictEqual(
+        changed.workspaceSnapshots?.map(({ cwd, models, modelsPending }) => ({
+          cwd,
+          models,
+          modelsPending,
+        })),
+        [
+          { cwd: "/project", models: [machineModel, projectModel], modelsPending: true },
+          // Its folder may define a model the machine catalog just dropped.
+          { cwd: "/plain", models: undefined, modelsPending: true },
+        ],
+      );
+    });
+
     it("stores workspace skills, commands and options without changing machine metadata", () => {
       const provider = {
         instanceId: ProviderInstanceId.make("codex"),
@@ -631,11 +1107,15 @@ it.layer(
         slashCommands: [{ name: "global" }],
         skills: [{ name: "global", path: "/global/SKILL.md", enabled: true }],
       } satisfies ServerProvider;
+      const projectModels = [
+        { slug: "project-model", name: "Project Model", isCustom: false, capabilities: null },
+      ] satisfies ServerProvider["models"];
       const scopedSnapshot = {
         ...provider,
         checkedAt: "2026-03-25T00:01:00.000Z",
         slashCommands: [{ name: "project" }],
         skills: [{ name: "project", path: "/project/SKILL.md", enabled: true }],
+        workspaceModels: projectModels,
         optionDescriptors: [
           {
             id: "agent",
@@ -663,6 +1143,7 @@ it.layer(
           slashCommands: scopedSnapshot.slashCommands,
           skills: scopedSnapshot.skills,
           optionDescriptors: scopedSnapshot.optionDescriptors,
+          models: projectModels,
         },
       ]);
 
@@ -670,6 +1151,7 @@ it.layer(
         ...scopedSnapshot,
         slashCommands: [COMPACT_SLASH_COMMAND],
         slashCommandsPending: true,
+        workspaceModelsPending: true,
       } satisfies ProviderWorkspaceSnapshot;
       const partial = ProviderRegistry.upsertProviderWorkspaceSnapshot(
         result,
@@ -678,6 +1160,8 @@ it.layer(
       );
       assert.deepStrictEqual(partial.workspaceSnapshots?.[0]?.slashCommands, [{ name: "project" }]);
       assert.strictEqual(partial.workspaceSnapshots?.[0]?.slashCommandsPending, true);
+      assert.deepStrictEqual(partial.workspaceSnapshots?.[0]?.models, projectModels);
+      assert.strictEqual(partial.workspaceSnapshots?.[0]?.modelsPending, true);
       const otherProject = ProviderRegistry.upsertProviderWorkspaceSnapshot(
         partial,
         "/other-project",
@@ -695,6 +1179,14 @@ it.layer(
         { name: "replacement" },
       ]);
       assert.strictEqual(recovered.workspaceSnapshots?.[0]?.slashCommandsPending, undefined);
+      assert.deepStrictEqual(recovered.workspaceSnapshots?.[0]?.models, projectModels);
+      assert.strictEqual(recovered.workspaceSnapshots?.[0]?.modelsPending, undefined);
+      const withoutModels = ProviderRegistry.upsertProviderWorkspaceSnapshot(
+        recovered,
+        "/project",
+        { ...scopedSnapshot, workspaceModels: undefined },
+      );
+      assert.strictEqual(withoutModels.workspaceSnapshots?.[0]?.models, undefined);
 
       const { optionDescriptors, ...failedSnapshot } = scopedSnapshot;
       const firstFailure = ProviderRegistry.upsertProviderWorkspaceSnapshot(
@@ -776,6 +1268,7 @@ it.layer(
       } as const satisfies ServerProvider;
       const refreshedProvider = {
         ...previousProvider,
+        status: "warning",
         checkedAt: "2026-04-14T00:01:00.000Z",
         models: [],
         slashCommands: [],
@@ -883,32 +1376,36 @@ it.layer(
       );
     });
 
-    it("drops Grok models a completed probe no longer advertises", () => {
+    it.each([
+      ["grok", "warning"],
+      ["cursor", "error"],
+      ["muse", "error"],
+      ["fx", "warning"],
+    ] as const)("drops %s models a completed listing no longer returns", (driver, failedStatus) => {
       const previousProvider = {
-        instanceId: ProviderInstanceId.make("grok"),
-        driver: ProviderDriverKind.make("grok"),
+        instanceId: ProviderInstanceId.make(driver),
+        driver: ProviderDriverKind.make(driver),
         status: "ready",
         enabled: true,
         installed: true,
         auth: { status: "authenticated" },
-        checkedAt: "2026-09-30T00:00:00.000Z",
-        version: "1.0.44",
+        checkedAt: "2026-10-30T00:00:00.000Z",
+        version: "1.0.0",
         models: [
-          { slug: "grok-4.7", name: "Grok 4.7", isCustom: false, capabilities: null },
-          { slug: "codexhub-removed", name: "Removed", isCustom: false, capabilities: null },
+          { slug: "current-model", name: "Current", isCustom: false, capabilities: null },
+          { slug: "retired-model", name: "Retired", isCustom: false, capabilities: null },
         ],
         slashCommands: [],
         skills: [],
       } as const satisfies ServerProvider;
       const refreshedProvider = {
         ...previousProvider,
-        checkedAt: "2026-09-30T00:01:00.000Z",
+        checkedAt: "2026-10-30T00:01:00.000Z",
         models: [previousProvider.models[0]],
       } satisfies ServerProvider;
-      const acpFailedProvider = {
+      const failedProvider = {
         ...refreshedProvider,
-        status: "warning",
-        message: "Grok CLI is installed but ACP initialize failed.",
+        status: failedStatus,
       } satisfies ServerProvider;
 
       assert.deepStrictEqual(
@@ -916,12 +1413,44 @@ it.layer(
         [previousProvider.models[0]],
       );
       assert.deepStrictEqual(
-        ProviderRegistry.mergeProviderSnapshot(previousProvider, acpFailedProvider).models,
+        ProviderRegistry.mergeProviderSnapshot(previousProvider, failedProvider).models,
         [...previousProvider.models],
       );
     });
 
-    it("retains stale OpenCode models when a refresh fails", () => {
+    it.each(["kiro", "claudeAgent"] as const)(
+      "keeps %s models a ready probe can omit",
+      (driver) => {
+        const previousProvider = {
+          instanceId: ProviderInstanceId.make(driver),
+          driver: ProviderDriverKind.make(driver),
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-10-30T00:00:00.000Z",
+          version: "1.0.0",
+          models: [
+            { slug: "built-in-model", name: "Built-in", isCustom: false, capabilities: null },
+            { slug: "listed-model", name: "Listed", isCustom: false, capabilities: null },
+          ],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const partialProvider = {
+          ...previousProvider,
+          checkedAt: "2026-10-30T00:01:00.000Z",
+          models: [previousProvider.models[0]],
+        } satisfies ServerProvider;
+
+        assert.deepStrictEqual(
+          ProviderRegistry.mergeProviderSnapshot(previousProvider, partialProvider).models,
+          [...previousProvider.models],
+        );
+      },
+    );
+
+    it("retains stale OpenCode models when a refresh fails or lists none", () => {
       const previousProvider = {
         instanceId: ProviderInstanceId.make("opencode"),
         driver: ProviderDriverKind.make("opencode"),
@@ -971,6 +1500,21 @@ it.layer(
         ProviderRegistry.mergeProviderSnapshot(previousProvider, refreshedProvider).skills,
         previousProvider.skills,
       );
+
+      const emptyCatalogProvider = {
+        ...refreshedProvider,
+        status: "warning",
+        message: "OpenCode 2 is running, but it did not list any models yet.",
+        slashCommands: [],
+        skills: [],
+      } satisfies ServerProvider;
+      const mergedEmptyCatalog = ProviderRegistry.mergeProviderSnapshot(
+        previousProvider,
+        emptyCatalogProvider,
+      );
+      assert.deepStrictEqual(mergedEmptyCatalog.models, [...previousProvider.models]);
+      assert.deepStrictEqual(mergedEmptyCatalog.slashCommands, previousProvider.slashCommands);
+      assert.deepStrictEqual(mergedEmptyCatalog.skills, previousProvider.skills);
     });
 
     describe("Pi model inventories", () => {
@@ -1107,7 +1651,6 @@ it.layer(
               {
                 getInstance: (id) =>
                   Effect.succeed(id === instance.instanceId ? instance : undefined),
-                getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
                 listInstances: Effect.succeed([instance]),
                 listUnavailable: Effect.succeed([]),
                 streamChanges: Stream.empty,
@@ -1233,6 +1776,9 @@ it.layer(
                   }),
                 ),
               getSnapshot: Ref.get(currentProvider),
+              isAwaitingFirstCheck: Ref.get(currentProvider).pipe(
+                Effect.map((provider) => provider === pendingProvider),
+              ),
               refresh: Ref.get(nextProvider).pipe(
                 Effect.tap((provider) => Ref.set(currentProvider, provider)),
               ),
@@ -1247,7 +1793,6 @@ it.layer(
             {
               getInstance: (id) =>
                 Effect.succeed(id === instance.instanceId ? instance : undefined),
-              getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1267,6 +1812,23 @@ it.layer(
                 ? retainedModels
                 : [customModel, ...cachedProvider.models];
               assert.deepStrictEqual((yield* registry.getProviders)[0]?.models, expectedModels);
+              if (!restarted) {
+                const probeFields = ({ status, installed, auth, version }: ServerProvider) => ({
+                  status,
+                  installed,
+                  auth,
+                  version,
+                });
+                // Boot reads the probe state from the cache, not the pending snapshot, and never persists the pending one.
+                assert.deepStrictEqual(
+                  probeFields((yield* registry.getProviders)[0]!),
+                  probeFields(cachedProvider),
+                );
+                assert.deepStrictEqual(
+                  probeFields((yield* readProviderStatusCache(filePath))!),
+                  probeFields(cachedProvider),
+                );
+              }
 
               yield* registry.refreshInstance(instance.instanceId);
               assert.deepStrictEqual(
@@ -1295,6 +1857,84 @@ it.layer(
           Effect.provide(
             ServerConfig.layerTest(process.cwd(), {
               prefix: "t3-codex-retired-model-cache-",
+            }).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+          ),
+        ),
+      );
+      it.effect("keeps a check that finished before boot over the cached status", () =>
+        Effect.gen(function* () {
+          const config = yield* ServerConfig.ServerConfig;
+          const filePath = yield* resolveProviderStatusCachePath({
+            cacheDir: config.providerStatusCacheDir,
+            instanceId: cachedProvider.instanceId,
+          });
+          const instance = {
+            instanceId: cachedProvider.instanceId,
+            driverKind: cachedProvider.driver,
+            continuationIdentity: {
+              driverKind: cachedProvider.driver,
+              continuationKey: "codex:instance:codex-personal",
+            },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              resolveMaintenance: () =>
+                Effect.succeed(
+                  makeManualOnlyProviderMaintenanceCapabilities({
+                    provider: cachedProvider.driver,
+                    packageName: null,
+                  }),
+                ),
+              getSnapshot: Effect.succeed(failedProvider),
+              isAwaitingFirstCheck: Effect.succeed(false),
+              refresh: Effect.succeed(failedProvider),
+              streamChanges: Stream.empty,
+              applyUsageLimits: () => Effect.void,
+            },
+            orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+          } satisfies ProviderInstance;
+          const layerInstanceRegistry = Layer.succeed(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            {
+              getInstance: (id) =>
+                Effect.succeed(id === instance.instanceId ? instance : undefined),
+              listInstances: Effect.succeed([instance]),
+              listUnavailable: Effect.succeed([]),
+              streamChanges: Stream.empty,
+              subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+            },
+          );
+
+          // First boot has no cache file; the second has a stale ready one.
+          for (const hasCache of [false, true]) {
+            if (hasCache) {
+              yield* writeProviderStatusCache({
+                filePath,
+                provider: { ...cachedProvider, status: "ready" },
+              });
+            }
+            yield* Effect.gen(function* () {
+              const registry = yield* ProviderRegistry.ProviderRegistry;
+              assert.strictEqual((yield* registry.getProviders)[0]?.status, failedProvider.status);
+              assert.strictEqual(
+                (yield* readProviderStatusCache(filePath))?.status,
+                failedProvider.status,
+              );
+            }).pipe(
+              Effect.provide(
+                ProviderRegistry.layer.pipe(
+                  Layer.provide(layerInstanceRegistry),
+                  Layer.provide(layerUnusedMutator),
+                ),
+              ),
+              Effect.scoped,
+            );
+          }
+        }).pipe(
+          Effect.provide(
+            ServerConfig.layerTest(process.cwd(), {
+              prefix: "t3-codex-probed-before-boot-",
             }).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
           ),
         ),
@@ -1498,6 +2138,8 @@ it.layer(
       Effect.gen(function* () {
         const forceRefreshCalls = yield* Ref.make(0);
         const manifest = yield* Ref.make(ModelManifest.BUNDLED_MODEL_MANIFEST);
+        const updateEvents = yield* Ref.make<ReadonlyArray<string>>([]);
+        const hookFails = yield* Ref.make(false);
         const makeInstance = (name: string) =>
           Effect.gen(function* () {
             const driver = ProviderDriverKind.make("codex");
@@ -1517,7 +2159,7 @@ it.layer(
             } as const satisfies ServerProvider;
             const invalidations = yield* Ref.make(0);
             const probes = yield* Ref.make(0);
-            const maintenanceReads = yield* Ref.make<ReadonlyArray<boolean>>([]);
+            const maintenanceReads = yield* Ref.make<ReadonlyArray<boolean | "afterUpdate">>([]);
             const instance = {
               instanceId,
               driverKind: driver,
@@ -1542,7 +2184,25 @@ it.layer(
                 streamChanges: Stream.empty,
                 applyUsageLimits: () => Effect.void,
               },
-              invalidateCaches: Ref.update(invalidations, (count) => count + 1),
+              invalidateCaches: Ref.update(invalidations, (count) => count + 1).pipe(
+                Effect.andThen(
+                  Ref.update(updateEvents, (events) => [...events, `invalidate:${name}`]),
+                ),
+              ),
+              afterUpdate: Ref.update(maintenanceReads, (reads) => [
+                ...reads,
+                "afterUpdate" as const,
+              ]).pipe(
+                Effect.andThen(
+                  Ref.update(updateEvents, (events) => [...events, `afterUpdate:${name}`]),
+                ),
+                Effect.andThen(Ref.get(hookFails)),
+                Effect.flatMap((fails) =>
+                  fails
+                    ? Effect.fail(new ProviderDriverError({ driver, instanceId, detail: "hook" }))
+                    : Effect.void,
+                ),
+              ),
               orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
               textGeneration: {} as ProviderInstance["textGeneration"],
             } satisfies ProviderInstance;
@@ -1557,7 +2217,6 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instances.find((instance) => instance.instanceId === instanceId)),
-            getCatalogSource: (id) => instances.find((instance) => instance.instanceId === id),
             listInstances: Effect.succeed(instances),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -1631,6 +2290,30 @@ it.layer(
           assert.strictEqual(yield* Ref.get(second.probes), probesBefore + 1);
           // A changed manifest also rechecks latest CLI versions.
           assert.strictEqual(yield* readCachedVersion("codex_second-package", "3.0.0"), "3.0.0");
+
+          yield* first.takeMaintenanceReads;
+          yield* Ref.set(updateEvents, []);
+          yield* registry.refreshAfterUpdate(first.instance.driverKind, first.instance.instanceId);
+          assert.deepStrictEqual((yield* first.takeMaintenanceReads).slice(0, 2), [
+            "afterUpdate",
+            true,
+          ]);
+          assert.notInclude(yield* second.takeMaintenanceReads, "afterUpdate");
+          // Instances sharing the replaced service must not cache its old version.
+          assert.strictEqual((yield* Ref.get(updateEvents))[0], "afterUpdate:codex_first");
+
+          // A failed hook leaves the probe to report what is running.
+          yield* Ref.set(hookFails, true);
+          const probesBeforeFailedHook = yield* Ref.get(first.probes);
+          const refreshed = yield* registry.refreshAfterUpdate(
+            first.instance.driverKind,
+            first.instance.instanceId,
+          );
+          assert.strictEqual(yield* Ref.get(first.probes), probesBeforeFailedHook + 1);
+          assert.include(
+            refreshed.map((provider) => provider.instanceId),
+            first.instance.instanceId,
+          );
         }).pipe(
           Effect.provide(
             ProviderRegistry.layer.pipe(
@@ -1705,7 +2388,6 @@ it.layer(
             {
               getInstance: (requestedId) =>
                 Effect.succeed(requestedId === instanceId ? instance : undefined),
-              getCatalogSource: (id) => (id === instanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1742,6 +2424,330 @@ it.layer(
             assert.strictEqual(yield* Ref.get(scans), 1);
           }).pipe(Effect.provide(runtimeServices));
         }),
+    );
+
+    it.effect(
+      "rebuilds only instances missing their CLI when a refresh finds a new Windows PATH",
+      () => {
+        const env: NodeJS.ProcessEnv = { PATH: "C:\\Windows" };
+        return Effect.gen(function* () {
+          const driver = ProviderDriverKind.make("codex");
+          const makeInstance = (id: string, installed: boolean): ProviderInstance => {
+            const instanceId = ProviderInstanceId.make(id);
+            const provider = {
+              instanceId,
+              driver,
+              status: installed ? "ready" : "error",
+              enabled: true,
+              installed,
+              auth: { status: "unknown" },
+              checkedAt: "1970-01-01T00:00:00.000Z",
+              version: null,
+              models: [],
+              slashCommands: [],
+              skills: [],
+            } as const satisfies ServerProvider;
+            return {
+              instanceId,
+              driverKind: driver,
+              continuationIdentity: { driverKind: driver, continuationKey: `codex:${id}` },
+              displayName: undefined,
+              enabled: true,
+              snapshot: {
+                resolveMaintenance: () =>
+                  Effect.succeed(
+                    makeManualOnlyProviderMaintenanceCapabilities({
+                      provider: driver,
+                      packageName: null,
+                    }),
+                  ),
+                getSnapshot: Effect.succeed(provider),
+                refresh: Effect.succeed(provider),
+                streamChanges: Stream.empty,
+                applyUsageLimits: () => Effect.void,
+              },
+              orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+              textGeneration: {} as ProviderInstance["textGeneration"],
+            };
+          };
+          const instances = [makeInstance("present", true), makeInstance("missing", false)];
+          const rebuilt: Array<ReadonlyArray<ProviderInstanceId>> = [];
+          const changes = yield* PubSub.unbounded<void>();
+          const registry = yield* ProviderRegistry.ProviderRegistry.pipe(
+            Effect.provide(
+              ProviderRegistry.layer.pipe(
+                Layer.provide(
+                  Layer.mock(ProviderInstanceRegistryMutator.ProviderInstanceRegistryMutator)({
+                    rebuild: (ids) => Effect.sync(() => void rebuilt.push(ids)),
+                  }),
+                ),
+                Layer.provideMerge(
+                  Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+                    getInstance: (id) => Effect.succeed(instances.find((i) => i.instanceId === id)),
+                    listInstances: Effect.succeed(instances),
+                    listUnavailable: Effect.succeed([]),
+                    streamChanges: Stream.fromPubSub(changes),
+                    subscribeChanges: PubSub.subscribe(changes),
+                  }),
+                ),
+                Layer.provideMerge(
+                  ServerConfig.layerTest(process.cwd(), { prefix: "t3-provider-registry-path-" }),
+                ),
+                Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+              ),
+            ),
+          );
+
+          yield* registry.refresh();
+
+          assert.strictEqual(env.PATH, "C:\\Windows;C:\\Tools");
+          assert.deepStrictEqual(rebuilt, [[ProviderInstanceId.make("missing")]]);
+        }).pipe(
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(HostProcess.Environment, env),
+          Effect.provideService(WindowsShellEnvironment, () =>
+            Effect.succeed({ PATH: "C:\\Windows;C:\\Tools" }),
+          ),
+        );
+      },
+    );
+
+    it.effect("rescans a requested cwd whose snapshot is still current", () =>
+      Effect.gen(function* () {
+        const h = yield* makeWorkspaceRescanHarness;
+        yield* h.seed("/barrier");
+        yield* h.seed("/workspace");
+        assert.deepEqual(yield* h.skillsOf("/workspace"), ["initial"]);
+        yield* Queue.offer(h.first.rescans, "/workspace");
+        const complete = yield* h.nextScan("/workspace");
+        yield* complete("hook");
+        yield* h.drainRescans;
+        assert.deepEqual(yield* h.skillsOf("/workspace"), ["hook"]);
+        // Clients that fetched the old skills are told to fetch again.
+        const scannedAt = (yield* h.registry.getProviders)[0]?.workspaceSnapshots?.find(
+          (snapshot) => snapshot.cwd === "/workspace",
+        )?.checkedAt;
+        assert.isString(scannedAt);
+        assert.equal(yield* h.rescannedAtOf, scannedAt);
+      }),
+    );
+
+    it.effect("stamps a rescan whose awaited scan already published the change", () =>
+      Effect.gen(function* () {
+        const h = yield* makeWorkspaceRescanHarness;
+        yield* h.seed("/barrier");
+        yield* h.seed("/workspace");
+        const ordinary = yield* h.refresh("/workspace", true).pipe(Effect.forkChild);
+        const completeOrdinary = yield* h.nextScan("/workspace");
+        yield* Queue.offer(h.first.rescans, "/workspace");
+        yield* Queue.take(h.first.reports);
+        // Let the consumer reach its wait on the running scan.
+        yield* TestClock.adjust(0);
+        yield* completeOrdinary("hook");
+        yield* Fiber.join(ordinary);
+        const completeRescan = yield* h.nextScan("/workspace");
+        yield* completeRescan("hook");
+        yield* h.drainRescans;
+        assert.isString(yield* h.rescannedAtOf);
+      }),
+    );
+
+    it.effect("leaves workspaceRescannedAt unset when a rescan changes nothing", () =>
+      Effect.gen(function* () {
+        const h = yield* makeWorkspaceRescanHarness;
+        yield* h.seed("/barrier");
+        yield* h.seed("/workspace");
+        yield* Queue.offer(h.first.rescans, "/workspace");
+        const complete = yield* h.nextScan("/workspace");
+        yield* complete("initial");
+        yield* h.drainRescans;
+        assert.deepEqual(yield* h.skillsOf("/workspace"), ["initial"]);
+        assert.equal(yield* h.rescannedAtOf, undefined);
+      }),
+    );
+
+    it.effect("starts no scan for a reported cwd nobody requested", () =>
+      Effect.gen(function* () {
+        const h = yield* makeWorkspaceRescanHarness;
+        yield* h.seed("/barrier");
+        yield* Queue.offer(h.first.rescans, "/unrequested");
+        // The next scan being the barrier's shows the report started none.
+        yield* h.drainRescans;
+        assert.deepEqual(yield* h.skillsOf("/unrequested"), undefined);
+      }),
+    );
+
+    it.effect("rescans after an initial scan in flight when the hook report arrives", () =>
+      Effect.gen(function* () {
+        const h = yield* makeWorkspaceRescanHarness;
+        yield* h.seed("/barrier");
+        const initial = yield* h.refresh("/workspace").pipe(Effect.forkChild);
+        const completeInitial = yield* h.nextScan("/workspace");
+        yield* Queue.offer(h.first.rescans, "/workspace");
+        yield* Queue.take(h.first.reports);
+        // Let the consumer reach its wait on the running scan.
+        yield* TestClock.adjust(0);
+        yield* completeInitial("initial");
+        // The requesting client's reply is its only copy of the scan, so the rescan must not
+        // supersede it.
+        const reply = yield* Fiber.join(initial);
+        assert.deepEqual(
+          reply[0]?.workspaceSnapshots
+            ?.find((s) => s.cwd === "/workspace")
+            ?.skills?.map((s) => s.name),
+          ["initial"],
+        );
+        const completeRescan = yield* h.nextScan("/workspace");
+        yield* completeRescan("hook");
+        yield* h.drainRescans;
+        assert.deepEqual(yield* h.skillsOf("/workspace"), ["hook"]);
+      }),
+    );
+
+    it.effect("lets a fresh refresh started while a rescan waits keep its own result", () =>
+      Effect.gen(function* () {
+        const h = yield* makeWorkspaceRescanHarness;
+        yield* h.seed("/barrier");
+        const initial = yield* h.refresh("/workspace").pipe(Effect.forkChild);
+        const completeInitial = yield* h.nextScan("/workspace");
+        yield* Queue.offer(h.first.rescans, "/workspace");
+        yield* Queue.take(h.first.reports);
+        // Let the consumer reach its wait on the running scan.
+        yield* TestClock.adjust(0);
+        const fresh = yield* h.refresh("/workspace", true).pipe(Effect.forkChild);
+        const completeFresh = yield* h.nextScan("/workspace");
+        yield* completeInitial("initial");
+        yield* completeFresh("fresh");
+        yield* Fiber.join(initial);
+        const reply = yield* Fiber.join(fresh);
+        assert.deepEqual(
+          reply[0]?.workspaceSnapshots
+            ?.find((s) => s.cwd === "/workspace")
+            ?.skills?.map((s) => s.name),
+          ["fresh"],
+        );
+        // The rescan joins the fresh scan, so the next scan started is the barrier's.
+        yield* h.drainRescans;
+        assert.deepEqual(yield* h.skillsOf("/workspace"), ["fresh"]);
+      }),
+    );
+
+    it.effect("ignores a queued rescan from a replaced instance", () =>
+      Effect.gen(function* () {
+        const h = yield* makeWorkspaceRescanHarness;
+        yield* h.seed("/workspace");
+        const replacement = yield* h.makeInstance;
+        const rebuilt = yield* h.registry.streamChanges.pipe(
+          Stream.filter((providers) => providers[0]?.workspaceSnapshots === undefined),
+          Stream.runHead,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Ref.set(h.instances, [replacement.instance]);
+        yield* PubSub.publish(h.changes, undefined);
+        yield* Fiber.join(rebuilt);
+        yield* h.seed("/workspace");
+        yield* h.seed("/barrier");
+        // The forwarder pulls the second report only after queueing the first.
+        yield* Queue.offerAll(h.first.rescans, ["/workspace", "/workspace"]);
+        yield* Queue.take(h.first.reports);
+        yield* Queue.take(h.first.reports);
+        yield* Queue.offer(replacement.rescans, "/barrier");
+        // A scan started for the stale report would come before the barrier's.
+        const completeBarrier = yield* h.nextScan("/barrier");
+        yield* completeBarrier("barrier");
+        assert.deepEqual(yield* h.skillsOf("/workspace"), ["initial"]);
+      }),
+    );
+
+    it.effect("scans scanCwd and keys the workspace snapshot by cwd", () =>
+      Effect.gen(function* () {
+        const driver = ProviderDriverKind.make("codex");
+        const instanceId = ProviderInstanceId.make("codex");
+        const provider = {
+          instanceId,
+          driver,
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-06-10T00:00:00.000Z",
+          version: "1.0.0",
+          models: [],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const scannedDirectories = yield* Ref.make<ReadonlyArray<string>>([]);
+        const instance: ProviderInstance = {
+          instanceId,
+          driverKind: driver,
+          continuationIdentity: { driverKind: driver, continuationKey: "codex:instance:codex" },
+          displayName: undefined,
+          enabled: true,
+          snapshot: {
+            resolveMaintenance: () =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({
+                  provider: driver,
+                  packageName: null,
+                }),
+              ),
+            getSnapshot: Effect.succeed(provider),
+            refresh: Effect.succeed(provider),
+            streamChanges: Stream.empty,
+            applyUsageLimits: () => Effect.void,
+          },
+          snapshotForCwd: (directory) =>
+            Ref.update(scannedDirectories, (directories) => [...directories, directory]).pipe(
+              Effect.as({
+                ...provider,
+                skills: [{ name: "finalize", path: `${directory}/finalize`, enabled: true }],
+              }),
+            ),
+          orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+          textGeneration: {} as ProviderInstance["textGeneration"],
+        };
+        const layerInstanceRegistry = Layer.succeed(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          {
+            getInstance: (requestedId) =>
+              Effect.succeed(requestedId === instanceId ? instance : undefined),
+            listInstances: Effect.succeed([instance]),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+          },
+        );
+        const scope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+        const runtimeServices = yield* Layer.build(
+          ProviderRegistry.layer.pipe(
+            Layer.provide(layerUnusedMutator),
+            Layer.provideMerge(layerInstanceRegistry),
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), {
+                prefix: "t3-provider-registry-scan-cwd-",
+              }),
+            ),
+            Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          ),
+        ).pipe(Scope.provide(scope));
+
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          const providers = yield* registry.refreshWorkspaceSnapshot({
+            instanceId,
+            cwd: "/worktree",
+            scanCwd: "/project",
+          });
+          assert.deepStrictEqual(yield* Ref.get(scannedDirectories), ["/project"]);
+          assert.deepStrictEqual(
+            providers[0]?.workspaceSnapshots
+              ?.find((snapshot) => snapshot.cwd === "/worktree")
+              ?.skills?.map((skill) => skill.path),
+            ["/project/finalize"],
+          );
+        }).pipe(Effect.provide(runtimeServices));
+      }),
     );
 
     it.effect("publishes workspace skills while machine health is in error", () =>
@@ -1802,7 +2808,6 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(requestedId === instanceId ? instance : undefined),
-            getCatalogSource: (id) => (id === instanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -1870,6 +2875,123 @@ it.layer(
       }),
     );
 
+    it.effect("rescans a folder whose model catalog could not be read before its TTL", () =>
+      Effect.gen(function* () {
+        const driver = ProviderDriverKind.make("opencode");
+        const instanceId = ProviderInstanceId.make("opencode");
+        const machineModel = {
+          slug: "opencode/big-pickle",
+          name: "Big Pickle",
+          isCustom: false,
+          capabilities: null,
+        } satisfies ServerProvider["models"][number];
+        const projectModel = { ...machineModel, slug: "uni/medium-gpt", name: "Medium GPT" };
+        const provider = {
+          instanceId,
+          driver,
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-06-10T00:00:00.000Z",
+          version: "2.0.0",
+          models: [machineModel],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const machineProvider = yield* Ref.make<ServerProvider>(provider);
+        const scanResult = yield* Ref.make<ProviderWorkspaceSnapshot>({
+          ...provider,
+          slashCommandsPending: false,
+          workspaceModelsPending: true,
+        });
+        const instance: ProviderInstance = {
+          instanceId,
+          driverKind: driver,
+          continuationIdentity: {
+            driverKind: driver,
+            continuationKey: "opencode:instance:opencode",
+          },
+          displayName: undefined,
+          enabled: true,
+          snapshot: {
+            resolveMaintenance: () =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({
+                  provider: driver,
+                  packageName: null,
+                }),
+              ),
+            getSnapshot: Ref.get(machineProvider),
+            refresh: Ref.get(machineProvider),
+            streamChanges: Stream.empty,
+            applyUsageLimits: () => Effect.void,
+          },
+          snapshotForCwd: () => Ref.get(scanResult),
+          orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+          textGeneration: {} as ProviderInstance["textGeneration"],
+        };
+        const layerInstanceRegistry = Layer.succeed(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          {
+            getInstance: (requestedId) =>
+              Effect.succeed(requestedId === instanceId ? instance : undefined),
+            listInstances: Effect.succeed([instance]),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.flatMap(PubSub.unbounded<void>(), PubSub.subscribe),
+          },
+        );
+        const scope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+        const runtimeServices = yield* Layer.build(
+          ProviderRegistry.layer.pipe(
+            Layer.provide(layerUnusedMutator),
+            Layer.provideMerge(layerInstanceRegistry),
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), {
+                prefix: "t3-provider-registry-pending-workspace-models-",
+              }),
+            ),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ).pipe(Scope.provide(scope));
+
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          const workspaceOf = Effect.map(
+            registry.getProviders,
+            (providers) => providers[0]?.workspaceSnapshots?.[0],
+          );
+          yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/project" });
+          const unread = yield* workspaceOf;
+          assert.strictEqual(unread?.models, undefined);
+          assert.strictEqual(unread?.modelsPending, true);
+
+          const workspaceModels = [machineModel, projectModel];
+          yield* Ref.set(scanResult, { ...provider, slashCommandsPending: false, workspaceModels });
+          yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/project" });
+          const recovered = yield* workspaceOf;
+          assert.deepStrictEqual(recovered?.models, workspaceModels);
+          assert.strictEqual(recovered?.modelsPending, undefined);
+
+          // A fresh refresh whose machine models change still publishes the folder read it ran.
+          const addedModel = { ...machineModel, slug: "opencode/new", name: "New" };
+          const nextWorkspaceModels = [machineModel, addedModel, projectModel];
+          yield* Ref.set(machineProvider, { ...provider, models: [machineModel, addedModel] });
+          yield* Ref.set(scanResult, {
+            ...provider,
+            slashCommandsPending: false,
+            workspaceModels: nextWorkspaceModels,
+          });
+          yield* registry.refreshWorkspaceSnapshot({ instanceId, cwd: "/project", fresh: true });
+          const rescanned = yield* workspaceOf;
+          assert.deepStrictEqual(rescanned?.models, nextWorkspaceModels);
+          assert.strictEqual(rescanned?.modelsPending, undefined);
+        }).pipe(Effect.provide(runtimeServices));
+      }),
+    );
+
     it.effect("shares one in-flight pass between concurrent untargeted refreshes", () =>
       Effect.gen(function* () {
         const driver = ProviderDriverKind.make("codex");
@@ -1924,7 +3046,6 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(instances.find((instance) => instance.instanceId === requestedId)),
-            getCatalogSource: (id) => instances.find((instance) => instance.instanceId === id),
             listInstances: Effect.succeed(instances),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2038,8 +3159,6 @@ it.layer(
                     current.find((instance) => instance.instanceId === requestedId),
                   ),
                 ),
-              getCatalogSource: (requestedId) =>
-                Ref.getUnsafe(instances).find((instance) => instance.instanceId === requestedId),
               listInstances: Ref.get(instances),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -2169,7 +3288,6 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(requestedId === instanceId ? instance : undefined),
-            getCatalogSource: (id) => (id === instanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2259,6 +3377,7 @@ it.layer(
         } as const satisfies ServerProvider;
         const refreshedProvider = {
           ...initialProvider,
+          status: "warning",
           checkedAt: "2026-04-14T00:01:00.000Z",
           models: [],
         } satisfies ServerProvider;
@@ -2293,7 +3412,6 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === cursorInstanceId ? instance : undefined),
-            getCatalogSource: (id) => (id === cursorInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2395,7 +3513,6 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === claudeInstanceId ? instance : undefined),
-            getCatalogSource: (id) => (id === claudeInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2585,7 +3702,6 @@ it.layer(
             {
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === openCodeInstanceId ? instance : undefined),
-              getCatalogSource: (id) => (id === openCodeInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -2690,7 +3806,6 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
-            getCatalogSource: (id) => (id === codexInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2731,230 +3846,66 @@ it.layer(
       }),
     );
 
-    it.effect("keeps consuming registry changes after one sync fails", () =>
-      Effect.gen(function* () {
-        const codexDriver = ProviderDriverKind.make("codex");
-        const codexInstanceId = ProviderInstanceId.make("codex");
-        const claudeDriver = ProviderDriverKind.make("claudeAgent");
-        const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
-        const codexProvider = {
-          instanceId: codexInstanceId,
-          driver: codexDriver,
-          status: "ready",
-          enabled: true,
-          installed: true,
-          auth: { status: "authenticated" },
-          checkedAt: "2026-04-29T10:00:00.000Z",
-          version: "1.0.0",
-          models: [],
-          slashCommands: [],
-          skills: [],
-        } as const satisfies ServerProvider;
-        const claudeProvider = {
-          instanceId: claudeInstanceId,
-          driver: claudeDriver,
-          status: "ready",
-          enabled: true,
-          installed: true,
-          auth: { status: "authenticated" },
-          checkedAt: "2026-04-29T10:01:00.000Z",
-          version: "1.0.0",
-          models: [],
-          slashCommands: [],
-          skills: [],
-        } as const satisfies ServerProvider;
-        const makeInstance = (provider: ServerProvider): ProviderInstance => ({
-          instanceId: provider.instanceId,
-          driverKind: provider.driver,
-          continuationIdentity: {
-            driverKind: provider.driver,
-            continuationKey: `${provider.driver}:instance:${provider.instanceId}`,
-          },
-          displayName: undefined,
-          enabled: true,
-          snapshot: {
-            resolveMaintenance: () =>
-              Effect.succeed(
-                makeManualOnlyProviderMaintenanceCapabilities({
-                  provider: provider.driver,
-                  packageName: null,
-                }),
-              ),
-            getSnapshot: Effect.succeed(provider),
-            refresh: Effect.succeed(provider),
-            streamChanges: Stream.empty,
-            applyUsageLimits: () => Effect.void,
-          },
-          orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
-          textGeneration: {} as ProviderInstance["textGeneration"],
-        });
-        const codexInstance = makeInstance(codexProvider);
-        const claudeInstance = makeInstance(claudeProvider);
-        const changes = yield* PubSub.unbounded<void>();
-        const instancesRef = yield* Ref.make<ReadonlyArray<ProviderInstance>>([codexInstance]);
-        const failNextList = yield* Ref.make(false);
-        const wait = () => Effect.yieldNow;
-        const layerInstanceRegistry = Layer.succeed(
-          ProviderInstanceRegistry.ProviderInstanceRegistry,
-          {
-            getCatalogSource: (id) =>
-              Ref.getUnsafe(instancesRef).find((instance) => instance.instanceId === id),
-            getInstance: (instanceId) =>
-              Ref.get(instancesRef).pipe(
-                Effect.map((instances) =>
-                  instances.find((instance) => instance.instanceId === instanceId),
-                ),
-              ),
-            listInstances: Effect.gen(function* () {
-              const shouldFail = yield* Ref.get(failNextList);
-              if (shouldFail) {
-                yield* Ref.set(failNextList, false);
-                return yield* Effect.die(new Error("simulated registry list failure"));
-              }
-              return yield* Ref.get(instancesRef);
-            }),
-            listUnavailable: Effect.succeed([]),
-            streamChanges: Stream.fromPubSub(changes),
-            subscribeChanges: PubSub.subscribe(changes),
-          },
-        );
-        const scope = yield* Scope.make();
-        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-        const runtimeServices = yield* Layer.build(
-          ProviderRegistry.layer.pipe(
-            Layer.provideMerge(layerInstanceRegistry),
-            Layer.provideMerge(
-              ServerConfig.layerTest(process.cwd(), {
-                prefix: "t3-provider-registry-sync-failure-",
-              }),
-            ),
-            Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
-            Layer.provideMerge(NodeServices.layer),
-          ),
-        ).pipe(Scope.provide(scope));
+    describe("update results across refreshes", () => {
+      const instanceId = ProviderInstanceId.make("codex");
 
-        yield* Effect.gen(function* () {
-          const registry = yield* ProviderRegistry.ProviderRegistry;
-          assert.deepStrictEqual(yield* registry.getProviders, [
-            withBundledCompatibility(codexProvider),
-          ]);
+      it.effect.each([
+        { status: "unchanged", advisory: "current", retired: true },
+        { status: "failed", advisory: "current", retired: true },
+        { status: "unchanged", advisory: "behind_latest", retired: false },
+        { status: "failed", advisory: "behind_latest", retired: false },
+        // The probe publishes `unknown` until the latest-version check lands.
+        { status: "unchanged", advisory: "unknown", retired: false },
+        { status: "queued", advisory: "current", retired: false },
+        { status: "running", advisory: "current", retired: false },
+        { status: "succeeded", advisory: "current", retired: false },
+        { status: "failed", advisory: "unknown", retired: false },
+      ] as const)(
+        "a $status update result is retired: $retired when a refresh reports the provider $advisory",
+        ({ status, advisory, retired }) =>
+          Effect.gen(function* () {
+            const snapshot = yield* Ref.make<ServerProvider>(codexUpdateSnapshot("behind_latest"));
+            const runtimeServices = yield* buildRegistryOverSnapshot(snapshot);
 
-          yield* Ref.set(failNextList, true);
-          yield* PubSub.publish(changes, undefined);
+            yield* Effect.gen(function* () {
+              const registry = yield* ProviderRegistry.ProviderRegistry;
+              const state = makeUpdateState(status);
+              yield* registry.setProviderMaintenanceActionState({
+                instanceId,
+                action: "update",
+                state,
+              });
+              yield* Ref.set(snapshot, codexUpdateSnapshot(advisory));
 
-          yield* Ref.set(instancesRef, [codexInstance, claudeInstance]);
-          yield* PubSub.publish(changes, undefined);
+              const [refreshed] = yield* registry.refresh(ProviderDriverKind.make("codex"));
 
-          let providers = yield* registry.getProviders;
-          for (
-            let attempt = 0;
-            attempt < 50 && !providers.some((provider) => provider.instanceId === claudeInstanceId);
-            attempt += 1
-          ) {
-            yield* wait();
-            providers = yield* registry.getProviders;
-          }
+              expect(refreshed?.updateState).toEqual(retired ? undefined : state);
+            }).pipe(Effect.provide(runtimeServices));
+          }),
+      );
 
-          assert.deepStrictEqual(
-            providers.map((provider) => provider.instanceId).toSorted(),
-            [codexInstanceId, claudeInstanceId].toSorted(),
-          );
-        }).pipe(Effect.provide(runtimeServices));
-      }),
-    );
-
-    it.effect("propagates real Codex probe failures to the aggregator at boot", () =>
-      Effect.gen(function* () {
-        const missingBinary = `t3code_codex_missing_`;
-        const serverSettings = yield* makeMutableServerSettingsService(
-          decodeServerSettings(
-            deepMerge(encodedDefaultServerSettings, {
-              providerInstances: {
-                ...disabledDefaultSlots("codex", "claudeAgent", "cursor", "grok", "opencode"),
-                codex_personal: {
-                  driver: "codex",
-                  displayName: "Codex Personal",
-                  enabled: true,
-                  config: {
-                    binaryPath: missingBinary,
-                    homePath: `/tmp/${missingBinary}_home`,
-                  },
-                },
-              },
-            }),
-          ),
-        );
-        const scope = yield* Scope.make();
-        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-        const layerProviderRegistry = ProviderRegistry.layer.pipe(
-          Layer.provideMerge(
-            ProviderInstanceRegistryHydration.layer.pipe(
-              Layer.provideMerge(ProcessAttribution.layer),
-            ),
-          ),
-          Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
-          Layer.provideMerge(
-            Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
-          ),
-          Layer.provideMerge(ServerSecretStore.layer),
-          Layer.provideMerge(
-            ServerConfig.layerTest(process.cwd(), {
-              prefix: "t3-provider-registry-",
-            }),
-          ),
-          Layer.provideMerge(layerTestHttpClient),
-          Layer.provideMerge(
-            Layer.succeed(
-              ProviderEventLoggers.ProviderEventLoggers,
-              ProviderEventLoggers.NoOpProviderEventLoggers,
-            ),
-          ),
-          Layer.provideMerge(ProviderLatestVersions.layer),
-          Layer.provideMerge(McpProviderSessions.layer),
-          Layer.provideMerge(ModelManifest.layerTest),
-          Layer.provideMerge(ResetCreditCoordinator.layerTest),
-          Layer.provideMerge(
-            OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
-          ),
-          Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
-        );
-        const runtimeServices = yield* Layer.build(layerProviderRegistry).pipe(
-          Scope.provide(scope),
-        );
-
-        yield* Effect.gen(function* () {
-          const registry = yield* ProviderRegistry.ProviderRegistry;
-          const failedProbe = (providers: ReadonlyArray<ServerProvider>) =>
-            providers.find((provider) => provider.instanceId === "codex_personal")?.status ===
-            "error";
-          const update = yield* registry.streamChanges.pipe(
-            Stream.filter(failedProbe),
-            Stream.runHead,
-            Effect.forkScoped({ startImmediately: true }),
-          );
-          let providers = yield* registry.getProviders;
-          if (!failedProbe(providers)) providers = Option.getOrThrow(yield* Fiber.join(update));
-          const codexPersonal = providers.find(
-            (provider) => provider.instanceId === "codex_personal",
-          );
-          assert.notStrictEqual(
-            codexPersonal,
-            undefined,
-            `Expected the aggregator to know about codex_personal; instead saw: ${providers
-              .map((provider) => provider.instanceId)
-              .join(", ")}`,
-          );
-          assert.strictEqual(
-            codexPersonal?.status,
-            "error",
-            "Real Codex probe against a missing binary should surface as 'error' in the aggregator",
-          );
-          assert.strictEqual(codexPersonal?.installed, false);
-          assert.include(codexPersonal?.message, missingBinary);
-          assert.include(codexPersonal?.message, "Settings → Providers → Codex → Binary path");
-        }).pipe(Effect.provide(runtimeServices));
-      }),
-    );
+      it.effect.each(["failed", "unchanged"] as const)(
+        "keeps a %s recommended-version install after a current refresh",
+        (status) =>
+          Effect.gen(function* () {
+            const snapshot = yield* Ref.make<ServerProvider>(codexUpdateSnapshot("current"));
+            const runtimeServices = yield* buildRegistryOverSnapshot(snapshot);
+            yield* Effect.gen(function* () {
+              const registry = yield* ProviderRegistry.ProviderRegistry;
+              const state = makeUpdateState(status);
+              const input = {
+                instanceId,
+                action: "update" as const,
+                state,
+                targetVersion: "0.9.0",
+              };
+              yield* registry.setProviderMaintenanceActionState(input);
+              const [refreshed] = yield* registry.refresh(ProviderDriverKind.make("codex"));
+              expect(refreshed?.updateState).toEqual(state);
+            }).pipe(Effect.provide(runtimeServices));
+          }),
+      );
+    });
 
     it.effect("re-probes when settings change the codex binaryPath", () =>
       Effect.gen(function* () {
@@ -2991,8 +3942,13 @@ it.layer(
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
           Layer.provideMerge(
             ProviderInstanceRegistryHydration.layer.pipe(
-              Layer.provide(PortScanner.layerTest),
-              Layer.provide(ProcessAttribution.layer),
+              Layer.provide(
+                Layer.mergeAll(
+                  PortScanner.layerTest,
+                  ProviderInstallationGate.layer,
+                  SqlitePersistence.layerMemory,
+                ),
+              ),
             ),
           ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
@@ -3112,8 +4068,13 @@ it.layer(
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
           Layer.provideMerge(
             ProviderInstanceRegistryHydration.layer.pipe(
-              Layer.provide(PortScanner.layerTest),
-              Layer.provide(ProcessAttribution.layer),
+              Layer.provide(
+                Layer.mergeAll(
+                  PortScanner.layerTest,
+                  ProviderInstallationGate.layer,
+                  SqlitePersistence.layerMemory,
+                ),
+              ),
             ),
           ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
@@ -3244,15 +4205,19 @@ it.layer(
           Layer.provideMerge(ProviderLatestVersions.layer),
           Layer.provideMerge(McpProviderSessions.layer),
           Layer.provideMerge(ResetCreditCoordinator.layerTest),
-          Layer.provideMerge(ProcessAttribution.layer),
           Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
         ),
       );
       readSeed = false;
       const services = yield* Layer.build(
         ProviderInstanceRegistryHydration.layer.pipe(
-          Layer.provide(PortScanner.layerTest),
-          Layer.provide(ProcessAttribution.layer),
+          Layer.provide(
+            Layer.mergeAll(
+              PortScanner.layerTest,
+              ProviderInstallationGate.layer,
+              SqlitePersistence.layerMemory,
+            ),
+          ),
         ),
       ).pipe(Effect.provide(dependencies));
       failCurrentRead = input.failCurrentRead ?? false;
@@ -3685,6 +4650,7 @@ it.layer(
         );
         assert.strictEqual(status.status, "ready");
         assert.strictEqual(status.auth.status, "authenticated");
+        assert.strictEqual(status.auth.label, "Claude API Key");
       }).pipe(
         Effect.provide(
           layerMockSpawner((args) => {

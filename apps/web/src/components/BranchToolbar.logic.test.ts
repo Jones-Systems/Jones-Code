@@ -1,29 +1,23 @@
-import { type VcsRef } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, RunId, type VcsRef } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { dedupeRemoteBranchesWithLocalMatches } from "@t3tools/shared/git";
 import {
   deriveLocalBranchNameFromRemoteRef,
+  isWorktreeChangeBlocked,
   resolveBranchSelectionTarget,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
-  resolveAutomaticWorktreeBaseBranch,
   resolveBranchToolbarPrBranch,
+  resolveConfirmedSelectedRef,
+  resolveDefaultWorktreeBaseBranch,
   resolveLocalCheckoutBranchMismatch,
+  resolveLockedWorkspaceLabel,
   sanitizeNewRefName,
   shouldIncludeBranchPickerItem,
+  isBranchHoldCurrent,
 } from "./BranchToolbar.logic";
 
 describe("resolveDraftEnvModeAfterBranchChange", () => {
-  it("keeps conversation selection when choosing its recorded source base", () => {
-    expect(
-      resolveDraftEnvModeAfterBranchChange({
-        nextWorktreePath: null,
-        currentWorktreePath: null,
-        effectiveEnvMode: "auto",
-      }),
-    ).toBe("auto");
-  });
-
   it("switches to local mode when returning from an existing worktree to the main worktree", () => {
     expect(
       resolveDraftEnvModeAfterBranchChange({
@@ -53,6 +47,24 @@ describe("resolveBranchToolbarPrBranch", () => {
         resolvedActiveBranch: "feature/next",
       }),
     ).toBeNull();
+  });
+});
+
+describe("resolveDefaultWorktreeBaseBranch", () => {
+  it("offers nothing while a clone has no refs, then the default branch once they are listed", () => {
+    expect(resolveDefaultWorktreeBaseBranch([])).toBeNull();
+    expect(
+      resolveDefaultWorktreeBaseBranch([
+        { name: "feature", isDefault: false, current: true },
+        { name: "staging", isDefault: true, current: false },
+      ]),
+    ).toBe("staging");
+    expect(
+      resolveDefaultWorktreeBaseBranch([
+        { name: "other", isDefault: false, current: false },
+        { name: "feature", isDefault: false, current: true },
+      ]),
+    ).toBe("feature");
   });
 });
 
@@ -100,6 +112,16 @@ describe("resolveEffectiveEnvMode", () => {
         draftThreadEnvMode: undefined,
       }),
     ).toBe("local");
+  });
+});
+
+describe("resolveLockedWorkspaceLabel", () => {
+  it.each([
+    ["/home/me/.t3/worktrees/app/t3-ff466c42", "t3-ff466c42"],
+    ["/home/me/.t3/worktrees/app/t3-ff466c42/", "t3-ff466c42"],
+    ["C:\\Users\\me\\worktrees\\feature-x", "feature-x"],
+  ])("names the worktree at %s", (path, label) => {
+    expect(resolveLockedWorkspaceLabel(path, "worktree")).toBe(label);
   });
 });
 
@@ -191,6 +213,7 @@ describe("resolveBranchSelectionTarget", () => {
       checkoutCwd: "/repo",
       nextWorktreePath: "/repo",
       reuseExistingWorktree: true,
+      staysInActiveCheckout: false,
     });
     expect(
       resolveBranchSelectionTarget({
@@ -205,6 +228,7 @@ describe("resolveBranchSelectionTarget", () => {
       checkoutCwd: "/repo/.t3/worktrees/feature-b",
       nextWorktreePath: "/repo/.t3/worktrees/feature-b",
       reuseExistingWorktree: true,
+      staysInActiveCheckout: false,
     });
   });
 
@@ -232,6 +256,8 @@ describe("resolveBranchSelectionTarget", () => {
         checkoutCwd: "/repo",
         nextWorktreePath: null,
         reuseExistingWorktree: true,
+        // A ref listed in the thread's own checkout may be stale, so it is checked out, not assumed.
+        staysInActiveCheckout: activeWorktreePath === null,
       });
     }
   });
@@ -250,8 +276,38 @@ describe("resolveBranchSelectionTarget", () => {
       checkoutCwd: "/repo/.t3/worktrees/feature-a",
       nextWorktreePath: "/repo/.t3/worktrees/feature-a",
       reuseExistingWorktree: false,
+      staysInActiveCheckout: true,
     });
   });
+});
+
+describe("isWorktreeChangeBlocked", () => {
+  const runtime = (status: "preparing" | "running" | "completed") => ({
+    status,
+    activeRunId: status === "completed" ? null : RunId.make("run"),
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerName: null,
+    lastError: null,
+  });
+
+  it.each([
+    ["preparing", "/repo/wt-a", null, true],
+    ["running", "/repo/wt-a", "/repo/wt-b", true],
+    ["running", null, "/repo/wt-b", true],
+    ["running", "/repo/wt-a", "/repo/wt-a", false],
+    ["completed", "/repo/wt-a", null, false],
+  ] as const)(
+    "a %s turn moving %s -> %s is blocked: %s",
+    (status, currentWorktreePath, nextWorktreePath, blocked) => {
+      expect(
+        isWorktreeChangeBlocked({
+          runtime: runtime(status),
+          currentWorktreePath,
+          nextWorktreePath,
+        }),
+      ).toBe(blocked);
+    },
+  );
 });
 
 describe("shouldIncludeBranchPickerItem", () => {
@@ -278,6 +334,60 @@ describe("shouldIncludeBranchPickerItem", () => {
   });
 });
 
+describe("isBranchHoldCurrent", () => {
+  const environmentId = EnvironmentId.make("env-a");
+  const hold = {
+    branch: "feature",
+    environmentId,
+    checkouts: [{ cwd: "/repo", replaces: "main" }],
+  };
+  const current = { canonicalBranch: "main", environmentId, cwd: "/repo" };
+
+  it("keeps showing the checked-out branch while status still reports the old one", () => {
+    expect(isBranchHoldCurrent(hold, current)).toBe(true);
+  });
+
+  it("lets go once status moves, even to a different branch than the checkout", () => {
+    for (const canonicalBranch of ["feature", "other", null]) {
+      expect(isBranchHoldCurrent(hold, { ...current, canonicalBranch })).toBe(false);
+    }
+  });
+
+  it("does not apply to another checkout that happens to be on the old branch", () => {
+    expect(isBranchHoldCurrent(hold, { ...current, cwd: "/other" })).toBe(false);
+  });
+
+  it("follows a thread moving from its worktree to the project root", () => {
+    const moveHold = {
+      branch: "main",
+      environmentId,
+      checkouts: [
+        { cwd: "/repo-feature", replaces: "feature" },
+        { cwd: "/repo", replaces: "dev" },
+      ],
+    };
+    expect(
+      isBranchHoldCurrent(moveHold, {
+        environmentId,
+        cwd: "/repo-feature",
+        canonicalBranch: "feature",
+      }),
+    ).toBe(true);
+    expect(
+      isBranchHoldCurrent(moveHold, { environmentId, cwd: "/repo", canonicalBranch: "dev" }),
+    ).toBe(true);
+    expect(
+      isBranchHoldCurrent(moveHold, { environmentId, cwd: "/repo", canonicalBranch: "main" }),
+    ).toBe(false);
+  });
+
+  it("does not apply to the same path on another environment", () => {
+    expect(
+      isBranchHoldCurrent(hold, { ...current, environmentId: EnvironmentId.make("env-b") }),
+    ).toBe(false);
+  });
+});
+
 describe("sanitizeNewRefName", () => {
   it("collapses a run of whitespace into a single dash", () => {
     expect(sanitizeNewRefName("new   branch")).toBe("new-branch");
@@ -298,53 +408,27 @@ describe("sanitizeNewRefName", () => {
   });
 });
 
-describe("resolveAutomaticWorktreeBaseBranch", () => {
-  const pendingSelection = {
-    effectiveEnvMode: "worktree" as const,
-    envLocked: false,
-    activeWorktreePath: null,
-    activeThreadBranch: null,
-    worktreeBaseBranchCandidate: null,
+describe("resolveConfirmedSelectedRef", () => {
+  const listed: VcsRef = {
+    name: "previous",
+    isRemote: false,
+    current: false,
+    isDefault: false,
+    worktreePath: "/worktree-b",
   };
 
-  it("suppresses a late default during submission and after bootstrap writes the worktree", () => {
-    const metadataWrites: Array<{ branch: string; worktreePath: null }> = [];
-    const applyAutomaticSelection = (
-      input: Parameters<typeof resolveAutomaticWorktreeBaseBranch>[0],
-    ) => {
-      const branch = resolveAutomaticWorktreeBaseBranch(input);
-      if (branch !== null) metadataWrites.push({ branch, worktreePath: null });
-    };
-    applyAutomaticSelection(pendingSelection);
-    applyAutomaticSelection({
-      ...pendingSelection,
-      envLocked: true,
-      worktreeBaseBranchCandidate: "develop",
-    });
-    applyAutomaticSelection({
-      ...pendingSelection,
-      activeWorktreePath: "/repo/worktree",
-      worktreeBaseBranchCandidate: "develop",
-    });
-    expect(metadataWrites).toEqual([]);
-    applyAutomaticSelection({ ...pendingSelection, worktreeBaseBranchCandidate: "develop" });
-    expect(metadataWrites).toEqual([{ branch: "develop", worktreePath: null }]);
-  });
-
-  it("keeps an explicit choice and never auto-selects in the local checkout", () => {
-    expect(
-      resolveAutomaticWorktreeBaseBranch({
-        ...pendingSelection,
-        activeThreadBranch: "chosen/base",
-        worktreeBaseBranchCandidate: "develop",
-      }),
-    ).toBeNull();
-    expect(
-      resolveAutomaticWorktreeBaseBranch({
-        ...pendingSelection,
-        effectiveEnvMode: "local",
-        worktreeBaseBranchCandidate: "develop",
-      }),
-    ).toBeNull();
+  it.each([
+    [
+      "the claimed worktree still has it checked out",
+      [{ ...listed, current: true }],
+      "/worktree-b",
+    ],
+    ["the claimed worktree has moved to another branch", [], null],
+    ["the claimed worktree lists it but not as current", [listed], null],
+    ["the read failed", null, null],
+  ] as const)("%s", (_label, refs, expected) => {
+    expect(resolveConfirmedSelectedRef(listed, refs === null ? null : { refs }).worktreePath).toBe(
+      expected,
+    );
   });
 });

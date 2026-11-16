@@ -1,12 +1,5 @@
-import { threadKey } from "@t3tools/client-runtime/state/entities";
-import { backgroundWorkHoldsCompletion as upstreamBackgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
-import {
-  animateSidebarLayoutChanges,
-  resolveSidebarThreadSection,
-  resolveSidebarRowAccessibility,
-} from "./Sidebar.logic";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { isThreadWorking as isSidebarThreadWorking } from "@t3tools/client-runtime/state/thread-inbox";
 import * as DateTime from "effect/DateTime";
 import { deriveActiveWorkStartedAt } from "../session-logic.ts";
@@ -16,17 +9,15 @@ import { AsyncResult } from "effect/reactivity";
 import {
   shouldCreateNewThreadInCurrentProject,
   deleteSelectedThreadEntries,
-  filterSidebarOperatingThreads,
-  isSidebarThreadOperating,
-  filterSidebarV2VisibleThreads,
   getFallbackThreadIdAfterDelete,
   hasUnseenCompletion,
-  resolveSidebarRowThreadId,
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
   resolveSidebarSweepKeys,
+  resolveSidebarRowStatus,
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
+  resolveWindowTitleThreadStatus,
   resolveWorkingStartedAt,
   searchSidebarThreads,
   shouldRecedeSidebarThread,
@@ -69,221 +60,6 @@ import {
 } from "./sidebar/routeReveal";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
-
-describe("filterSidebarOperatingThreads", () => {
-  const runtime = {
-    status: "running" as const,
-    activeRunId: RunId.make("run-operating"),
-    providerInstanceId: ProviderInstanceId.make("codex"),
-    providerName: "Codex",
-    lastError: null,
-    updatedAt: "2026-10-02T12:00:00Z",
-  };
-  const thread = (id: string, overrides: ThreadFixtureOverrides = {}) =>
-    makeThreadFixture({ id: ThreadId.make(id), ...overrides });
-  const tasks = [{ taskId: "monitor", kind: "monitor" as const }];
-  const threads = [
-    thread("pinned", { runtime, pinnedAt: "2026-10-02T12:00:00Z" }),
-    thread("idle"),
-    thread("settled-background", { settledOverride: "settled", pendingBackgroundTasks: tasks }),
-    thread("snoozed-monitor", {
-      snoozedUntil: "2099-01-01T00:00:00Z",
-      pendingBackgroundTasks: tasks,
-    }),
-    thread("approval", { runtime, hasPendingApprovals: true }),
-    thread("approval-with-fleet", { hasPendingApprovals: true, pendingBackgroundTasks: tasks }),
-    thread("archived-running", { archivedAt: "2026-10-02T12:00:00Z", runtime }),
-  ];
-
-  it("keeps operating rows in original order across shelves and foreground waits", () => {
-    expect(
-      filterSidebarOperatingThreads(threads, true, isSidebarThreadOperating).map((item) => item.id),
-    ).toEqual(["pinned", "settled-background", "snoozed-monitor", "approval-with-fleet"]);
-  });
-
-  it("restores the unchanged collection when the filter is cleared", () => {
-    expect(filterSidebarOperatingThreads(threads, false, isSidebarThreadOperating)).toBe(threads);
-    expect(threads).toHaveLength(7);
-  });
-
-  it("has no rows when none of the threads are operating", () => {
-    expect(
-      filterSidebarOperatingThreads([threads[1]!, threads[4]!], true, isSidebarThreadOperating),
-    ).toEqual([]);
-  });
-
-  it.each(["preparing", "queued", "starting", "running", "waiting"] as const)(
-    "uses V2 foreground activity status %s",
-    (status) =>
-      expect(
-        isSidebarThreadOperating(thread("foreground", { runtime: { ...runtime, status } })),
-      ).toBe(true),
-  );
-
-  it.each(["completed", "failed", "interrupted", "cancelled", "rolled_back", "idle"] as const)(
-    "does not count inactive runtime status %s without background work",
-    (status) =>
-      expect(
-        isSidebarThreadOperating(thread("inactive", { runtime: { ...runtime, status } })),
-      ).toBe(false),
-  );
-
-  it.each(["command", "monitor", "subagent", "background_task"] as const)(
-    "retains independent %s work during foreground waits",
-    (kind) => {
-      for (const wait of [
-        { hasPendingApprovals: true },
-        { hasPendingUserInput: true },
-        {
-          interactionMode: "plan" as const,
-          hasActionableProposedPlan: true,
-          latestRun: makeLatestRun(),
-        },
-      ]) {
-        const blocked = thread("blocked", { runtime: { ...runtime, activeRunId: null }, ...wait });
-        expect(isSidebarThreadOperating(blocked)).toBe(false);
-        expect(
-          isSidebarThreadOperating({
-            ...blocked,
-            pendingBackgroundTasks: [{ taskId: "bg", kind }],
-          }),
-        ).toBe(true);
-      }
-    },
-  );
-
-  it("drops stopped work and restores the idle row when the filter is cleared", () => {
-    const stopped = thread("pinned", {
-      runtime: { ...runtime, status: "interrupted", activeRunId: null },
-    });
-    const stoppedThreads = [stopped, threads[1]!];
-    expect(stoppedThreads.filter(isSidebarThreadOperating)).toHaveLength(0);
-    expect(filterSidebarOperatingThreads(stoppedThreads, true, isSidebarThreadOperating)).toEqual(
-      [],
-    );
-    expect(filterSidebarOperatingThreads(stoppedThreads, false, isSidebarThreadOperating)).toBe(
-      stoppedThreads,
-    );
-  });
-
-  it("removes an archived thread even when background work remains", () => {
-    const background = thread("background", { pendingBackgroundTasks: tasks });
-    expect(isSidebarThreadOperating(background)).toBe(true);
-    expect(isSidebarThreadOperating({ ...background, archivedAt: "2026-10-02T12:00:00Z" })).toBe(
-      false,
-    );
-  });
-
-  it("stops counting background work when its projected roster clears", () => {
-    const background = thread("background", { pendingBackgroundTasks: tasks });
-    expect(isSidebarThreadOperating(background)).toBe(true);
-    const finished = { ...background, pendingBackgroundTasks: [] };
-    expect(isSidebarThreadOperating(finished)).toBe(false);
-    expect(filterSidebarOperatingThreads([finished], true, isSidebarThreadOperating)).toEqual([]);
-    expect(filterSidebarOperatingThreads([finished], false, isSidebarThreadOperating)).toEqual([
-      finished,
-    ]);
-  });
-
-  it("counts only visible scoped parent threads before search narrows the rows", () => {
-    const running = thread("parent", { runtime, title: "Other task" });
-    const match = thread("match", { runtime, title: "Needle" });
-    const child = thread("child", {
-      runtime,
-      lineage: {
-        rootThreadId: running.id,
-        parentThreadId: running.id,
-        relationshipToParent: "subagent",
-      },
-    });
-    const archived = thread("archived", { runtime, archivedAt: "2026-10-02T12:00:00Z" });
-    const elsewhere = thread("elsewhere", { runtime, projectId: ProjectId.make("other-project") });
-    const visible = filterSidebarV2VisibleThreads(
-      [running, child, match, archived, elsewhere],
-      new Set([`${running.environmentId}:${running.projectId}`]),
-      new Set(),
-    );
-    const active = filterSidebarOperatingThreads(visible, true, isSidebarThreadOperating);
-    expect(visible.filter(isSidebarThreadOperating)).toHaveLength(2);
-    expect(active.map((item) => item.id)).toEqual(["parent", "match"]);
-    const matches = searchSidebarThreads(active, "Needle");
-    expect(matches.titleMatches.map((item) => item.id)).toEqual(["match"]);
-    expect(matches.contentMatches).toEqual([]);
-    expect(visible.filter(isSidebarThreadOperating)).toHaveLength(2);
-  });
-});
-
-describe("resolveSidebarRowAccessibility", () => {
-  it.each([
-    {
-      title: "Can you audit the UI?",
-      statusLabel: "Working",
-      projectDisplayName: "T3 Code",
-      isActive: true,
-      expected: { label: "Can you audit the UI?, Working, T3 Code", current: "page" },
-    },
-    {
-      title: "The audit is done",
-      statusLabel: null,
-      projectDisplayName: "T3 Code",
-      isActive: false,
-      expected: { label: "The audit is done, T3 Code", current: undefined },
-    },
-    {
-      title: "Untitled task",
-      statusLabel: null,
-      projectDisplayName: null,
-      isActive: false,
-      expected: { label: "Untitled task", current: undefined },
-    },
-  ])("leads with the title without folding row actions into its name: %j", (input) => {
-    const { expected, ...state } = input;
-    expect(resolveSidebarRowAccessibility(state)).toEqual(expected);
-  });
-});
-
-describe("animateSidebarLayoutChanges", () => {
-  const baseArgs: Parameters<AnimateLayoutChanges>[0] = {
-    active: null,
-    containerId: "pinned-threads",
-    isDragging: false,
-    isSorting: false,
-    id: "thread-a",
-    index: 1,
-    items: ["thread-b", "thread-a"],
-    newIndex: 0,
-    previousItems: ["thread-a", "thread-b"],
-    previousContainerId: "pinned-threads",
-    transition: { duration: 200, easing: "ease" },
-    wasDragging: true,
-  };
-
-  it("does not replay layout movement after the pointer is released", () => {
-    expect(defaultAnimateLayoutChanges(baseArgs)).toBe(true);
-    expect(animateSidebarLayoutChanges(baseArgs)).toBe(false);
-  });
-
-  it("keeps layout movement while the user is sorting", () => {
-    expect(animateSidebarLayoutChanges({ ...baseArgs, isSorting: true })).toBe(true);
-  });
-});
-
-describe("resolveSidebarThreadSection", () => {
-  it("keeps a pinned thread in the pinned shelf", () => {
-    expect(resolveSidebarThreadSection({ snoozed: false, settled: false, pinned: true })).toBe(
-      "pinned",
-    );
-  });
-
-  it("keeps lifecycle shelves authoritative over a stale pin", () => {
-    expect(resolveSidebarThreadSection({ snoozed: true, settled: true, pinned: true })).toBe(
-      "snoozed",
-    );
-    expect(resolveSidebarThreadSection({ snoozed: false, settled: true, pinned: true })).toBe(
-      "settled",
-    );
-  });
-});
 
 describe("deleteSelectedThreadEntries", () => {
   const entries = [{ threadKey: "one" }, { threadKey: "two" }, { threadKey: "three" }] as const;
@@ -358,104 +134,6 @@ describe("deleteSelectedThreadEntries", () => {
       deletedThreadKeys: testCase.deletedThreadKeys,
       firstFailure: testCase.firstFailure,
     });
-  });
-});
-
-describe("sidebar thread lineage helpers", () => {
-  it("maps an open subagent to its nearest visible ancestor's sidebar row", () => {
-    const environmentId = EnvironmentId.make("environment-row");
-    const otherEnvironmentId = EnvironmentId.make("environment-other");
-    const subagentOf = (id: string, parentId: ThreadId, environment = environmentId) =>
-      makeThreadFixture({
-        id: ThreadId.make(id),
-        environmentId: environment,
-        lineage: {
-          rootThreadId: parentId,
-          parentThreadId: parentId,
-          relationshipToParent: "subagent",
-        },
-      });
-    const root = makeThreadFixture({ id: ThreadId.make("thread-root"), environmentId });
-    const fork = makeThreadFixture({
-      id: ThreadId.make("thread-fork"),
-      environmentId,
-      lineage: {
-        rootThreadId: root.id,
-        parentThreadId: root.id,
-        relationshipToParent: "fork",
-      },
-    });
-    const child = subagentOf("thread-child", root.id);
-    const grandchild = subagentOf("thread-grandchild", child.id);
-    const forkChild = subagentOf("thread-fork-child", fork.id);
-    const orphan = subagentOf("thread-orphan", ThreadId.make("thread-missing"));
-    const elsewhere = subagentOf("thread-elsewhere", root.id, otherEnvironmentId);
-    const threads = [root, fork, child, grandchild, forkChild, orphan, elsewhere];
-
-    expect(resolveSidebarRowThreadId(child.id, environmentId, threads)).toBe(root.id);
-    expect(resolveSidebarRowThreadId(grandchild.id, environmentId, threads)).toBe(root.id);
-    expect(resolveSidebarRowThreadId(forkChild.id, environmentId, threads)).toBe(fork.id);
-    expect(resolveSidebarRowThreadId(elsewhere.id, otherEnvironmentId, threads)).toBe(elsewhere.id);
-    expect(resolveSidebarRowThreadId(orphan.id, environmentId, threads)).toBe(orphan.id);
-    const loopA = subagentOf("thread-loop-a", ThreadId.make("thread-loop-b"));
-    const loopB = subagentOf("thread-loop-b", loopA.id);
-    expect(resolveSidebarRowThreadId(loopA.id, environmentId, [loopA, loopB])).toBe(loopA.id);
-  });
-
-  it("keeps only top-level, unarchived threads in the Sidebar V2 project scope", () => {
-    const parentId = ThreadId.make("thread-parent");
-    const projectId = ProjectId.make("project-visible");
-    const environmentId = EnvironmentId.make("environment-visible");
-    const root = makeThreadFixture({
-      id: parentId,
-      environmentId,
-      projectId,
-    });
-    const subagent = makeThreadFixture({
-      id: ThreadId.make("thread-subagent"),
-      environmentId,
-      projectId,
-      lineage: {
-        rootThreadId: parentId,
-        parentThreadId: parentId,
-        relationshipToParent: "subagent",
-      },
-    });
-    const fork = makeThreadFixture({
-      id: ThreadId.make("thread-fork"),
-      environmentId,
-      projectId,
-      lineage: {
-        rootThreadId: parentId,
-        parentThreadId: parentId,
-        relationshipToParent: "fork",
-      },
-    });
-    const archived = makeThreadFixture({
-      id: ThreadId.make("thread-archived"),
-      environmentId,
-      projectId,
-      archivedAt: "2026-01-02T00:00:00.000Z",
-    });
-    const otherProject = makeThreadFixture({
-      id: ThreadId.make("thread-other-project"),
-      environmentId,
-      projectId: ProjectId.make("project-other"),
-    });
-
-    const delegated = makeThreadFixture({
-      id: ThreadId.make("thread-delegated-here"),
-      environmentId,
-      projectId,
-    });
-
-    expect(
-      filterSidebarV2VisibleThreads(
-        [root, subagent, fork, archived, otherProject, delegated],
-        new Set([`${environmentId}:${projectId}`]),
-        new Set([threadKey({ environmentId, threadId: delegated.id })]),
-      ).map((thread) => thread.id),
-    ).toEqual([parentId, fork.id]);
   });
 });
 
@@ -591,6 +269,66 @@ describe("resolveSidebarThreadStatus", () => {
         runtime: { ...runtime, status: "idle" as const, lastError: "persisted" },
       }),
     ).toBe("waiting");
+  });
+
+  it("titles the window with live work and requests only", () => {
+    const cases = [
+      [{ ...idle, hasPendingApprovals: true, runtime }, "Needs approval"],
+      [{ ...idle, hasPendingUserInput: true }, "Needs your input"],
+      [{ ...idle, runtime: { ...runtime, status: "preparing" as const } }, "Working"],
+      [{ ...idle, runtime }, "Working"],
+      [{ ...idle, runtime, pendingGuestMessageCount: 1 }, "Working"],
+      [{ ...idle, runtime, blockedOnThreadWait: true }, "Working"],
+      [{ ...idle, runtime: { ...runtime, status: "idle" as const } }, null],
+      [{ ...idle, runtime: { ...runtime, status: "failed" as const } }, null],
+      [{ ...idle, runtime: { ...runtime, status: "completed" as const } }, null],
+      [idle, null],
+    ] as const;
+    for (const [thread, title] of cases) {
+      expect(resolveWindowTitleThreadStatus(thread)).toBe(title);
+    }
+  });
+});
+
+describe("resolveSidebarRowStatus", () => {
+  const failedRuntime = {
+    status: "failed" as const,
+    activeRunId: null,
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerName: "Codex",
+    lastError: "Provider turn failed.",
+    updatedAt: "2026-03-09T10:05:00.000Z",
+  };
+  const failed = {
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default" as const,
+    runtime: failedRuntime,
+    latestRun: { ...makeLatestRun(), status: "failed" as const },
+  };
+
+  it("settles a failure the user opened to ready, without showing Done", () => {
+    expect(resolveSidebarRowStatus({ ...failed, lastVisitedAt: undefined })).toBe("failed");
+
+    const opened = { ...failed, lastVisitedAt: "2026-03-09T10:06:00.000Z" };
+    expect(resolveSidebarRowStatus(opened)).toBe("ready");
+    expect(hasUnseenCompletion(opened)).toBe(false);
+    // A runtime failure without a failed run has no date, so a visit cannot settle it.
+    expect(resolveSidebarRowStatus({ ...opened, latestRun: null })).toBe("failed");
+  });
+
+  it("does not show a stopped run as an unseen completion", () => {
+    for (const status of ["interrupted", "cancelled"] as const) {
+      const stopped = {
+        ...failed,
+        runtime: { ...failedRuntime, status, lastError: null },
+        latestRun: { ...makeLatestRun(), status },
+        lastVisitedAt: "2026-03-09T10:01:00.000Z",
+      };
+      expect(hasUnseenCompletion(stopped)).toBe(false);
+      expect(resolveThreadStatusPill({ thread: stopped })).toBeNull();
+    }
   });
 });
 
@@ -736,34 +474,7 @@ describe("resolveThreadStatusPill", () => {
     });
   });
 
-  it("keeps an active turn working when background tasks are also present", () => {
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
-        },
-      }),
-    ).toMatchObject({ label: "Working", pulse: true });
-  });
-
-  it("does not show waiting after the background task roster clears", () => {
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...baseThread,
-          pendingBackgroundTasks: [],
-          runtime: {
-            ...baseThread.runtime,
-            status: "idle",
-            activeRunId: null,
-          },
-        },
-      }),
-    ).toBeNull();
-  });
-
-  it("does not infer an input request from a settled plan turn with a proposed plan", () => {
+  it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -777,7 +488,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toBeNull();
+    ).toMatchObject({ label: "Plan Ready", pulse: false });
   });
 
   it("does not manufacture completed state without a client visit marker", () => {
@@ -938,6 +649,7 @@ describe("getFallbackThreadIdAfterDelete", () => {
       deletedThreadIds: new Set([ThreadId.make("thread-active"), ThreadId.make("thread-newest")]),
       sortOrder: "created_at",
       now: "2026-03-09T10:10:00.000Z",
+      delegatedUnderParent: new Set(),
     });
 
     expect(fallbackThreadId).toBe(ThreadId.make("thread-next"));
@@ -948,6 +660,7 @@ describe("getFallbackThreadIdAfterDelete", () => {
       "snoozed",
       { snoozedUntil: "2099-01-01T00:00:00.000Z", snoozedAt: "2026-03-09T10:06:00.000Z" },
     ],
+    ["delegated", { id: ThreadId.make("thread-delegated") }],
     ["settled", { settledOverride: "settled", settledAt: "2026-03-09T10:06:00.000Z" }],
     [
       "side chat",
@@ -993,6 +706,12 @@ describe("getFallbackThreadIdAfterDelete", () => {
       deletedThreadId: ThreadId.make("thread-active"),
       sortOrder: "created_at",
       now: "2026-03-09T10:10:00.000Z",
+      delegatedUnderParent: new Set([
+        threadKey({
+          environmentId: localEnvironmentId,
+          threadId: ThreadId.make("thread-delegated"),
+        }),
+      ]),
     });
 
     expect(fallbackThreadId).toBe(ThreadId.make("thread-visible"));
@@ -1244,11 +963,11 @@ describe("unseen completion with background work", () => {
       pill: "Completed",
     },
     {
-      roster: "legacy Jones monitor",
+      roster: "dev server watchdog",
       task: { kind: "monitor" },
-      status: "waiting",
-      receded: true,
-      pill: "Waiting",
+      status: "ready",
+      receded: false,
+      pill: "Completed",
     },
     {
       roster: "awaited command",
@@ -1258,11 +977,6 @@ describe("unseen completion with background work", () => {
       pill: "Waiting",
     },
   ] as const)("presents a completed thread with a $roster roster", (expected) => {
-    // The upstream core keeps unmarked monitors nonblocking; the Jones presenter
-    // retains the fork's monitor-waiting policy without changing that core helper.
-    expect(upstreamBackgroundWorkHoldsCompletion([expected.task])).toBe(
-      expected.task.kind !== "monitor" && "awaited" in expected.task,
-    );
     const thread = presentThreadShell(localEnvironmentId, {
       ...makeThreadFixture().source,
       latestRunId: RunId.make("run-background-completion"),
@@ -1795,6 +1509,7 @@ describe("resolveSidebarRouteReveal", () => {
       resolveSidebarRouteReveal({
         reveal: { observedKey: "environment-test:other", pendingKey: null },
         routeKey: hiddenKey,
+        routeKeyInPlace: false,
         isSearching: false,
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
@@ -1809,6 +1524,7 @@ describe("resolveSidebarRouteReveal", () => {
       resolveSidebarRouteReveal({
         reveal: { observedKey: hiddenKey, pendingKey: null },
         routeKey: hiddenKey,
+        routeKeyInPlace: false,
         isSearching: false,
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
@@ -1825,6 +1541,7 @@ describe("resolveSidebarRouteReveal", () => {
       resolveSidebarRouteReveal({
         reveal,
         routeKey,
+        routeKeyInPlace: false,
         isSearching: false,
         scopedProjectKeys,
         delegatedUnderParent: new Set(),
@@ -1839,6 +1556,7 @@ describe("resolveSidebarRouteReveal", () => {
       resolveSidebarRouteReveal({
         reveal: { observedKey: hiddenKey, pendingKey: hiddenKey },
         routeKey: hiddenKey,
+        routeKeyInPlace: false,
         isSearching: true,
         scopedProjectKeys,
         delegatedUnderParent: new Set(),

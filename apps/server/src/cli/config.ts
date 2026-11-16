@@ -1,4 +1,3 @@
-import { Configuration as FleetCheckpointConfiguration } from "../jones/fleetCheckpoint/Configuration.ts";
 import * as NetService from "@t3tools/shared/Net";
 import {
   OtlpHeadersFromString,
@@ -28,7 +27,7 @@ import { resolveServiceLauncherMode } from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
-import { resolveServerParallelismProfile } from "../jones/serverParallelism/config.ts";
+import { resolveHostCliCommand } from "./invocation.ts";
 
 const modeFlag = Flag.Literals("mode", ServerConfig.RuntimeMode.literals).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
@@ -103,14 +102,6 @@ export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
 );
 
 const EnvServerConfig = Config.all({
-  fleetCheckpoint: Config.schema(
-    Schema.fromJsonString(FleetCheckpointConfiguration),
-    "JONES_FLEET_CHECKPOINT_COMMAND",
-  ).pipe(Config.option, Config.map(Option.getOrUndefined)),
-  serverParallelismProfile: Config.String("JONES_SERVER_PARALLELISM_PROFILE").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
-  ),
   logLevel: Config.LogLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   traceMinLevel: Config.LogLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
   traceTimingEnabled: Config.Boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(true)),
@@ -146,10 +137,6 @@ const EnvServerConfig = Config.all({
   ),
   port: Config.Port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.String("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  nativeAuthorityStateDir: Config.String("T3CODE_NATIVE_AUTHORITY_STATE_DIR").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
-  ),
   t3Home: Config.String("T3CODE_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
   devUrl: Config.URL("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
   devAllowedOrigins: Config.String("T3CODE_DEV_ALLOWED_ORIGINS").pipe(
@@ -291,17 +278,6 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
   const env = yield* EnvServerConfig;
-  const serverParallelism = yield* Effect.try({
-    try: () => resolveServerParallelismProfile(env.serverParallelismProfile),
-    catch: () =>
-      new Config.ConfigError(
-        new Schema.SchemaError(
-          new SchemaIssue.InvalidValue({
-            message: "JONES_SERVER_PARALLELISM_PROFILE must be laptop or vps.",
-          }),
-        ),
-      ),
-  });
   const normalizedFlags = {
     mode: flags.mode ?? Option.none(),
     port: flags.port ?? Option.none(),
@@ -366,14 +342,8 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   );
   const rawCwd = Option.getOrElse(normalizedFlags.cwd, () => process.cwd());
   const cwd = path.resolve(yield* expandHomePath(rawCwd.trim()));
-  const configuredAuthorityStateDir = env.nativeAuthorityStateDir?.trim();
-  const authorityStateDir =
-    configuredAuthorityStateDir === undefined || configuredAuthorityStateDir === ""
-      ? undefined
-      : path.resolve(yield* expandHomePath(configuredAuthorityStateDir));
   const derivedPaths = yield* ServerConfig.deriveServerPaths(baseDir, devUrl, {
     baseDirIsExplicit: Option.isSome(explicitBaseDir),
-    ...(authorityStateDir === undefined ? {} : { authorityStateDir }),
   });
   // An interactive CLI must not start over a discovered server. Lifetime locking
   // and supervisor handoff are separate; this preflight cannot arbitrate two starts.
@@ -386,8 +356,13 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
       runtime.value.pid !== process.pid &&
       isProcessAlive(runtime.value.pid)
     ) {
+      // Bare `t3 pair` prefers a linked worktree's `.t3`, so always name this home.
+      const { command: pairCommand } = yield* resolveHostCliCommand("pair", [
+        "--base-dir",
+        baseDir,
+      ]);
       return yield* new CliError.UserError({
-        cause: `A T3 Code server is already running for ${baseDir} (pid ${runtime.value.pid}, ${runtime.value.origin}). Connect to that server, stop it before starting another, or use a different --base-dir.`,
+        cause: `A T3 Code server is already running for ${baseDir} (pid ${runtime.value.pid}, ${runtime.value.origin}). To open it, run \`${pairCommand}\` and open the pairing URL it prints. To start another server, stop this one first or use a different --base-dir.`,
       });
     }
   }
@@ -414,10 +389,9 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const shellEnvironmentPrepared = bootstrap?.shellEnvironmentPrepared;
   const desktopTelemetryFd = bootstrap?.desktopTelemetryFd;
   const desktopTelemetryControlFd = bootstrap?.desktopTelemetryControlFd;
+  const desktopAppUpdate = bootstrap?.desktopAppUpdate;
   const desktopBrowserFd = bootstrap?.desktopBrowserFd;
   const desktopBrowserControlFd = bootstrap?.desktopBrowserControlFd;
-  const desktopNativeOwnerInputFd = bootstrap?.desktopNativeOwnerInputFd;
-  const desktopNativeOwnerOutputFd = bootstrap?.desktopNativeOwnerOutputFd;
   const resourceMonitorPath = bootstrap?.resourceMonitorPath;
   const autoBootstrapProjectFromCwd = Option.getOrElse(
     resolveOptionPrecedence(
@@ -511,7 +485,6 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   );
 
   const config: ServerConfig.ServerConfig["Service"] = {
-    serverParallelism,
     logLevel,
     traceMinLevel: env.traceMinLevel,
     traceTimingEnabled: env.traceTimingEnabled,
@@ -550,12 +523,10 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ...(shellEnvironmentPrepared === undefined ? {} : { shellEnvironmentPrepared }),
     desktopTelemetryFd,
     desktopTelemetryControlFd,
+    ...(desktopAppUpdate === undefined ? {} : { desktopAppUpdate }),
     desktopBrowserFd,
     desktopBrowserControlFd,
-    desktopNativeOwnerInputFd,
-    desktopNativeOwnerOutputFd,
     resourceMonitorPath,
-    fleetCheckpoint: env.fleetCheckpoint,
     autoBootstrapProjectFromCwd,
     logWebSocketEvents,
     tailscaleServeEnabled,

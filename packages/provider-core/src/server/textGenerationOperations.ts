@@ -1,18 +1,9 @@
 import * as Effect from "effect/Effect";
-import { threadTitleVerdict } from "./jones/ThreadTitleAssessment.ts";
 import * as Schema from "effect/Schema";
 
 import { type ChatAttachment, type ModelSelection, TextGenerationError } from "@t3tools/contracts";
 import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
-
-import {
-  buildRemoteRequestEvaluationPrompt,
-  RemoteRequestEvaluationResult,
-  remoteRequestEvaluationUnsupported,
-} from "./jones/remoteRequestEvaluation.ts";
-export { remoteRequestEvaluationUnsupported } from "./jones/remoteRequestEvaluation.ts";
-export { buildRemoteRequestEvaluationPrompt } from "./jones/remoteRequestEvaluation.ts";
 
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {
@@ -80,39 +71,20 @@ export const decodeJsonReply = <S extends Schema.Top>(
   );
 };
 
-const compiledDecodeUnknownEffect1 = Schema.decodeUnknownEffect(RemoteRequestEvaluationResult);
+export const generatedThreadTitle = (raw: string) => {
+  const title = sanitizeThreadTitle(raw);
+  // Some models echo the output schema's key instead of a title.
+  return title.toLowerCase() === "title"
+    ? Effect.fail(
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: 'The model returned the placeholder title "title".',
+        }),
+      )
+    : Effect.succeed(title);
+};
 
-export function fromRunner(
-  name: string,
-  run: Runner,
-  /** Opt in only when the runner disables task tools, including MCP and browsing. */
-  capabilities?: { readonly remoteRequestEvaluation: "tool-less" },
-): ProviderTextGeneration {
-  const evaluateRemoteRequest: ProviderTextGeneration["evaluateRemoteRequest"] = Effect.fn(
-    `${name}.evaluateRemoteRequest`,
-  )(function* (input) {
-    if (capabilities?.remoteRequestEvaluation !== "tool-less") {
-      return yield* remoteRequestEvaluationUnsupported(name);
-    }
-    const prompt = yield* buildRemoteRequestEvaluationPrompt(input);
-    const generated = yield* run({
-      operation: "evaluateRemoteRequest",
-      cwd: input.cwd,
-      modelSelection: input.modelSelection,
-      ...prompt,
-    });
-    return yield* compiledDecodeUnknownEffect1(generated).pipe(
-      Effect.mapError(
-        (cause) =>
-          new TextGenerationError({
-            operation: "evaluateRemoteRequest",
-            detail: `${name} returned invalid structured output.`,
-            cause,
-          }),
-      ),
-    );
-  });
-
+export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(
     `${name}.generateCommitMessage`,
   )(function* (input) {
@@ -184,8 +156,8 @@ export function fromRunner(
       modelSelection: input.modelSelection,
       attachments: input.attachments,
       ...buildThreadTitlePrompt({
-        titleAssessment: input.titleAssessment,
         message: input.message,
+        projectTitle: input.projectTitle,
         previousTitle: input.previousTitle,
         forkSource: input.forkSource,
         linkedContext: input.linkedContext,
@@ -194,9 +166,8 @@ export function fromRunner(
       }),
     });
     return {
-      title: sanitizeThreadTitle(generated.title),
-      ...(generated.needsRefinement === true ? { needsRefinement: true } : {}),
-      ...(input.titleAssessment ? { assessment: threadTitleVerdict(generated) } : {}),
+      title: yield* generatedThreadTitle(generated.title),
+      ...(generated.needsRefinement ? { needsRefinement: true } : {}),
     };
   });
 
@@ -224,7 +195,6 @@ export function fromRunner(
   });
 
   return {
-    evaluateRemoteRequest,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

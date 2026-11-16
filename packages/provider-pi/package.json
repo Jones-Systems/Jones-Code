@@ -18,16 +18,12 @@
     "./server/usage": {
       "types": "./src/server/usage.ts",
       "import": "./src/server/usage.ts"
-    },
-    "./server/mcpExtensionSource": {
-      "types": "./src/server/mcpExtensionSource.ts",
-      "import": "./src/server/mcpExtensionSource.ts"
     }
   },
   "scripts": {
     "typecheck": "vp run tsrs:typecheck",
-    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
-    "test": "vp test run --config ../../vite.config.ts --dir ."
+    "test": "vp test run --config ../../vite.config.ts --dir .",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit"
   },
   "dependencies": {
     "@t3tools/contracts": "workspace:*",

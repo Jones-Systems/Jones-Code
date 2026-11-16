@@ -1,4 +1,3 @@
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import type { AgentAwarenessThread } from "../orchestration-v2/ProjectionStore.ts";
 import {
   isListedThreadLineage,
@@ -17,13 +16,13 @@ import {
 import {
   type SubagentRequestAwareness,
   projectThreadAwarenessV2,
-  subagentAwaitsApproval,
+  subagentAwaitsUser,
+  turnItemCanChangeUserWait,
 } from "@t3tools/shared/agentAwareness";
 import { turnItemUpdateCanEndBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import { normalizeRelayIssuer, RELAY_ACTIVITY_PUBLISH_TYP } from "@t3tools/shared/relayJwt";
-
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -52,6 +51,7 @@ import {
 import { EnvironmentSigningKey } from "../cloud/environmentKeys.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { forkParked } from "../serverActivation.ts";
 
@@ -77,7 +77,7 @@ function isTurnItemPayload(
   );
 }
 
-export function shouldPublishAgentAwarenessEvent(
+function shouldPublishAgentAwarenessEvent(
   event: Pick<OrchestrationV2DomainEvent, "type"> & { readonly payload?: unknown },
 ): boolean {
   if (
@@ -118,6 +118,7 @@ export function shouldPublishAgentAwarenessEvent(
     case "thread.active-reordered":
     case "thread.tags-updated":
     case "thread.visited":
+    case "thread.visit-recorded":
     case "thread.marked-unread":
     case "thread.runtime-mode-updated":
     case "thread.interaction-mode-updated":
@@ -130,8 +131,11 @@ export function shouldPublishAgentAwarenessEvent(
     case "provider-session.detached":
     case "provider-turn.updated":
     case "turn-item.updated":
-      return isTurnItemPayload(event.payload) && turnItemUpdateCanEndBackgroundWork(event.payload);
-    case "provider-session.detach-requested":
+      return (
+        isTurnItemPayload(event.payload) &&
+        (turnItemUpdateCanEndBackgroundWork(event.payload) ||
+          turnItemCanChangeUserWait(event.payload))
+      );
     case "message.updated":
     case "plan.updated":
     case "checkpoint-scope.created":
@@ -311,7 +315,7 @@ interface SubagentAlert {
 }
 
 const waitingApprovalId = (thread: AgentAwarenessThread | null) =>
-  thread !== null && thread.archivedAt === null && subagentAwaitsApproval(thread)
+  thread !== null && thread.archivedAt === null && subagentAwaitsUser(thread)
     ? thread.pendingRuntimeRequest?.id
     : undefined;
 
@@ -357,10 +361,25 @@ function resolveAgentAwarenessRelayPublishSnapshot(input: {
     state?.phase !== projectThreadAwarenessV2(awarenessInput)?.phase;
   return {
     projectId: input.thread.value.projectId,
-    state: sanitizeRelayAgentActivityState(state),
+    state: snoozedCompletion(input.thread.value, state)
+      ? null
+      : sanitizeRelayAgentActivityState(state),
     subagentWait: childDrivesWait ? input.pendingSubagentRequest : null,
     reason: "snapshot",
   };
+}
+
+// Checked at completion time, so a completion processed after the wake stays silent too.
+function snoozedCompletion(
+  thread: AgentAwarenessThread,
+  state: { readonly phase: string } | null,
+): boolean {
+  if (state?.phase !== "completed" || thread.latestRunCompletedAt == null) return false;
+  const completedAt = DateTime.toEpochMillis(thread.latestRunCompletedAt);
+  if (thread.snoozedAt != null && completedAt < DateTime.toEpochMillis(thread.snoozedAt)) {
+    return false;
+  }
+  return isSnoozed(thread, completedAt);
 }
 
 function terminalWorkSinceStart(thread: AgentAwarenessThread, startedAt: number): boolean {
@@ -380,7 +399,7 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
   return input.threads
     .filter((thread) => {
       // Publishing a waiting subagent republishes its top-level thread.
-      if (subagentAwaitsApproval(thread)) return true;
+      if (subagentAwaitsUser(thread)) return true;
       const project = projectById.get(thread.projectId);
       if (!project) {
         return false;
@@ -761,7 +780,11 @@ export const make = Effect.gen(function* () {
       if (requestId !== entry.requestId) subagentRequests.set(childId, { ...entry, requestId });
       // The newest wait is the one to announce.
       if (pending === null || DateTime.isGreaterThan(child.updatedAt, pending.updatedAt)) {
-        pending = { requestId, updatedAt: child.updatedAt };
+        pending = {
+          requestId,
+          updatedAt: child.updatedAt,
+          waitsForInput: child.pendingRuntimeRequest?.kind === "user_input",
+        };
       }
     }
     return pending;
@@ -846,15 +869,13 @@ export const make = Effect.gen(function* () {
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
     const projectSnapshot = yield* projects.snapshot;
-    const activitySnapshot = yield* threads
-      .getAgentAwarenessSnapshot()
-      .pipe(NodeSqliteClient.readOnly);
+    const activitySnapshot = yield* threads.getAgentAwarenessSnapshot();
     // Live children aren't listed, but a waiting one makes its top-level thread wait.
     const liveChildren = yield* Effect.forEach(
-      (yield* threads.listActiveShellIndex().pipe(NodeSqliteClient.readOnly)).filter(
+      (yield* threads.listActiveShellIndex()).filter(
         (thread) => thread.lineage.relationshipToParent === "subagent" && thread.mayBeLive,
       ),
-      (thread) => readAwarenessThread(thread.id).pipe(NodeSqliteClient.readOnly),
+      (thread) => readAwarenessThread(thread.id),
     );
     const activeThreadIds = resolveAgentAwarenessRelayActiveThreadIds({
       environmentId,

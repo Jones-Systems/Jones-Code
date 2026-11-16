@@ -1,8 +1,3 @@
-import {
-  isDelegatedTaskShownUnderParent,
-  pendingSubagentRequestsByThread,
-  subagentRequest,
-} from "@t3tools/shared/jones/threadAttention";
 import type {
   EnvironmentId,
   OrchestrationV2ShellSnapshot,
@@ -11,13 +6,16 @@ import type {
   ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
-import { isListedThreadLineage, OrchestrationV2ThreadShell } from "@t3tools/contracts";
+import {
+  isListedThreadLineage,
+  isProviderNativeSubagentThread,
+  OrchestrationV2ThreadShell,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Atom } from "effect/reactivity";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
-import { createQuietShellList } from "../jones/shellPublication/batchedPublication.ts";
 import { hiddenThreadKeys, NO_HIDDEN_THREADS } from "./threadTagFilter.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
@@ -32,7 +30,7 @@ import {
 const EMPTY_THREADS: ReadonlyArray<OrchestrationV2ThreadShell> = Object.freeze([]);
 const EMPTY_SCOPED_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
 const EMPTY_THREAD_INDEX: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> = new Map();
-const EMPTY_SUBAGENT_REQUESTS: ReadonlyMap<ThreadId, PendingSubagentRequest> = new Map();
+const EMPTY_SUBAGENT_REQUESTS: ReadonlyMap<ThreadId, never> = new Map<ThreadId, never>();
 const EMPTY_SIDE_CHATS_BY_PARENT: ReadonlyMap<
   ThreadId,
   ReadonlyArray<OrchestrationV2ThreadShell>
@@ -43,6 +41,26 @@ const EMPTY_THREAD_REFS_BY_PROJECT: ReadonlyMap<
   ReadonlyArray<ScopedThreadRef>
 > = new Map();
 
+// An async question outlives the subagent's run, but once that run ends the
+// parent is no longer waiting on the answer, so it stops counting as input.
+// The activity run stays set when a follow-up is queued behind a blocked run;
+// older servers omit it, so fall back to the latest run's status.
+const isChildRunLive = (
+  thread: Pick<OrchestrationV2ThreadShell, "activityRunStatus" | "status">,
+) =>
+  thread.activityRunStatus !== undefined
+    ? thread.activityRunStatus !== null
+    : thread.status === "preparing" ||
+      thread.status === "starting" ||
+      thread.status === "running" ||
+      thread.status === "waiting";
+
+/**
+ * Whether a thread shows under its parent rather than in thread lists: a
+ * subagent, a side chat, or a task a linked environment delegated here whose parent the
+ * client lists (`delegatedUnderParent`, by thread key). A task whose parent
+ * the client cannot list stays in the lists, so its work is never out of reach.
+ */
 export function isShownUnderParent(
   ref: ScopedThreadRef,
   lineage: OrchestrationV2ThreadShell["lineage"],
@@ -51,6 +69,74 @@ export function isShownUnderParent(
   return !isListedThreadLineage(lineage) || delegatedUnderParent.has(threadKey(ref));
 }
 
+// Subagents, side chats and tasks delegated from a listed parent have no list row,
+// so an open one is represented by its nearest listed ancestor. A broken chain
+// (missing or archived parent, cycle) resolves to the thread itself, which then matches no row.
+export function resolveListedAncestorThreadRef(
+  ref: ScopedThreadRef,
+  threads: readonly Pick<
+    EnvironmentThreadShell,
+    "id" | "environmentId" | "lineage" | "delegatedFrom" | "archivedAt"
+  >[],
+): ScopedThreadRef {
+  const findThread = (target: ScopedThreadRef) =>
+    threads.find(
+      (thread) => thread.id === target.threadId && thread.environmentId === target.environmentId,
+    );
+  const visited = new Set<string>();
+  let current = ref;
+  let thread = findThread(current);
+  while (thread !== undefined) {
+    let parent: ScopedThreadRef;
+    if (!isListedThreadLineage(thread.lineage)) {
+      if (thread.lineage.parentThreadId === null) return ref;
+      parent = { environmentId: thread.environmentId, threadId: thread.lineage.parentThreadId };
+    } else if (thread.delegatedFrom != null) {
+      parent = {
+        environmentId: thread.delegatedFrom.environmentId,
+        threadId: thread.delegatedFrom.threadId,
+      };
+      // Mirrors delegatedUnderParent: a task whose parent is not listed keeps its own row.
+      if (findThread(parent)?.archivedAt !== null) return current;
+    } else {
+      return current;
+    }
+    if (visited.has(threadKey(current))) return ref;
+    visited.add(threadKey(current));
+    current = parent;
+    thread = findThread(current);
+  }
+  return ref;
+}
+
+/** Provider-native
+    subagents ask on their parent, so they are skipped. */
+function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSubagentRequest | null {
+  const kind = thread.pendingRuntimeRequest?.kind;
+  if (
+    kind === undefined ||
+    kind === "auth_refresh" ||
+    (thread.lineage.relationshipToParent !== "subagent" && thread.delegatedFrom === undefined) ||
+    isProviderNativeSubagentThread(thread) ||
+    !isChildRunLive(thread)
+  ) {
+    return null;
+  }
+  return kind === "user_input" ? "user_input" : "approval";
+}
+
+/** A user-only card keeps its mark through roll-ups; clients see it as user_input. */
+type RolledUpRequest = PendingSubagentRequest | "user_only_input";
+
+const rolledUpRequest = (
+  thread: OrchestrationV2ThreadShell,
+  request: PendingSubagentRequest | null,
+): RolledUpRequest | null =>
+  request === "user_input" && thread.pendingRuntimeRequest?.userOnly === true
+    ? "user_only_input"
+    : request;
+
+/** A side chat asks its user directly, so questions roll up to the parent as well as approvals. */
 function sideChatRequest(thread: OrchestrationV2ThreadShell): PendingSubagentRequest | null {
   const kind = thread.pendingRuntimeRequest?.kind;
   if (kind === undefined || kind === "auth_refresh" || thread.lineage.sideChat !== true) {
@@ -59,9 +145,56 @@ function sideChatRequest(thread: OrchestrationV2ThreadShell): PendingSubagentReq
   return kind === "user_input" ? "user_input" : "approval";
 }
 
+/**
+ * The threads to flag for a subagent's live approval, up its
+ * subagent chain and through a side chat to its parent. `delegated` are tasks this
+ * environment's threads delegated to linked environments, with what each one, or its
+ * own subagents, asks.
+ */
+function pendingSubagentRequestsByThread(
+  threads: ReadonlyArray<OrchestrationV2ThreadShell>,
+  delegated: ReadonlyArray<{
+    readonly parentThreadId: ThreadId;
+    readonly request: RolledUpRequest;
+  }> = [],
+): ReadonlyMap<ThreadId, RolledUpRequest> {
+  const requests = new Map<ThreadId, RolledUpRequest>();
+  let byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | undefined;
+  const flag = (firstParentId: ThreadId | null, request: RolledUpRequest, seen: Set<ThreadId>) => {
+    // The coordinator answers child questions; approvals and user-only cards need the user.
+    if (request === "user_input") return;
+    byId ??= new Map(threads.map((thread) => [thread.id, thread] as const));
+    let parentId = firstParentId;
+    while (parentId !== null && !seen.has(parentId)) {
+      seen.add(parentId);
+      if (requests.get(parentId) !== "approval") requests.set(parentId, request);
+      const parent = byId.get(parentId);
+      parentId =
+        parent?.lineage.relationshipToParent === "subagent" || parent?.lineage.sideChat === true
+          ? parent.lineage.parentThreadId
+          : null;
+    }
+  };
+  for (const child of threads) {
+    const parentId = child.lineage.parentThreadId;
+    if (child.lineage.sideChat === true) {
+      const request = sideChatRequest(child);
+      if (parentId !== null && request !== null && requests.get(parentId) !== "approval") {
+        requests.set(parentId, request);
+      }
+      continue;
+    }
+    if (child.lineage.relationshipToParent !== "subagent") continue;
+    const request = rolledUpRequest(child, subagentRequest(child));
+    if (request !== null) flag(parentId, request, new Set([child.id]));
+  }
+  for (const task of delegated) flag(task.parentThreadId, task.request, new Set());
+  return requests.size === 0 ? EMPTY_SUBAGENT_REQUESTS : requests;
+}
+
 const sameRequests = (
-  left: ReadonlyMap<ThreadId, PendingSubagentRequest>,
-  right: ReadonlyMap<ThreadId, PendingSubagentRequest>,
+  left: ReadonlyMap<ThreadId, RolledUpRequest>,
+  right: ReadonlyMap<ThreadId, RolledUpRequest>,
 ) =>
   left.size === right.size &&
   [...right].every(([threadId, request]) => left.get(threadId) === request);
@@ -188,7 +321,7 @@ export function createEnvironmentThreadShellAtoms(input: {
   // environments run for it, so two environments delegating to each other
   // never read each other's totals.
   const localSubagentRequestsAtom = Atom.family((environmentId: EnvironmentId) => {
-    let previous = EMPTY_SUBAGENT_REQUESTS;
+    let previous: ReadonlyMap<ThreadId, RolledUpRequest> = EMPTY_SUBAGENT_REQUESTS;
     return Atom.make((get) => {
       const next = pendingSubagentRequestsByThread(get(environmentThreadsAtom(environmentId)));
       if (sameRequests(previous, next)) return previous;
@@ -219,7 +352,7 @@ export function createEnvironmentThreadShellAtoms(input: {
         else tasks.push(task);
       }
     }
-    let flags = new Map<EnvironmentId, ReadonlyMap<ThreadId, PendingSubagentRequest>>();
+    let flags = new Map<EnvironmentId, ReadonlyMap<ThreadId, RolledUpRequest>>();
     const requestsOf = (environmentId: EnvironmentId) =>
       flags.get(environmentId) ?? get(localSubagentRequestsAtom(environmentId));
     for (let changed = tasksByDelegator.size > 0; changed;) {
@@ -227,7 +360,7 @@ export function createEnvironmentThreadShellAtoms(input: {
       const next = new Map(flags);
       for (const [environmentId, tasks] of tasksByDelegator) {
         const delegated = tasks.flatMap(({ runsIn, thread, parentThreadId }) => {
-          const own = subagentRequest(thread);
+          const own = rolledUpRequest(thread, subagentRequest(thread));
           const nested = requestsOf(runsIn).get(thread.id);
           const request = own === "approval" ? own : (nested ?? own);
           return request === null ? [] : [{ parentThreadId, request }];
@@ -247,11 +380,15 @@ export function createEnvironmentThreadShellAtoms(input: {
   }).pipe(Atom.withLabel("environment-delegated-subagent-requests"));
 
   const pendingSubagentRequestsAtom = Atom.family((environmentId: EnvironmentId) => {
-    let previous = EMPTY_SUBAGENT_REQUESTS;
+    let previous: ReadonlyMap<ThreadId, PendingSubagentRequest> = EMPTY_SUBAGENT_REQUESTS;
     return Atom.make((get) => {
-      const next =
+      const rolledUp =
         get(delegatedSubagentRequestsAtom).get(environmentId) ??
         get(localSubagentRequestsAtom(environmentId));
+      const next = new Map<ThreadId, PendingSubagentRequest>();
+      for (const [threadId, request] of rolledUp) {
+        next.set(threadId, request === "user_only_input" ? "user_input" : request);
+      }
       if (sameRequests(previous, next)) return previous;
       previous = next;
       return next;
@@ -563,25 +700,18 @@ export function createEnvironmentThreadShellAtoms(input: {
 
   // Lists that arrange threads read this, so a running thread's streaming
   // ticks reach only what reads its live shell.
-  const keepQuietShellList = createQuietShellList<EnvironmentThreadShell>(
-    (thread) => threadKey({ environmentId: thread.environmentId, threadId: thread.id }),
-    sameApartFromStreaming,
-  );
+  let previousQuietThreadShells: ReadonlyArray<EnvironmentThreadShell> = [];
   const quietThreadShellsAtom = Atom.make((get) => {
     const next: EnvironmentThreadShell[] = [];
     const hidden = get(hiddenThreadKeysAtom);
-    // Jones: aggregate the shared source index directly. Thousands of list-only
-    // point subscriptions otherwise reevaluate for every streaming count tick.
-    for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
-      const requests = get(pendingSubagentRequestsAtom(environmentId));
-      const index = get(environmentThreadIndexAtom(environmentId));
-      for (const thread of get(environmentThreadsAtom(environmentId))) {
-        if (hidden.has(threadKey({ environmentId, threadId: thread.id }))) continue;
-        const source = index.get(thread.id);
-        if (source !== undefined) next.push(scopedThread(environmentId, source, requests));
-      }
+    for (const ref of get(threadRefsAtom)) {
+      if (hidden.has(threadKey(ref))) continue;
+      const shell = get(quietThreadShellAtomFamily(threadKey(ref)));
+      if (shell !== null) next.push(shell);
     }
-    return keepQuietShellList(next);
+    if (arrayElementsEqual(previousQuietThreadShells, next)) return previousQuietThreadShells;
+    previousQuietThreadShells = next;
+    return next;
   }).pipe(Atom.withLabel("environment-quiet-thread-shell-list"));
 
   let previousDelegatedUnderParent: ReadonlySet<string> = new Set();
@@ -591,15 +721,12 @@ export function createEnvironmentThreadShellAtoms(input: {
     for (const environmentId of environmentIds) {
       for (const thread of get(environmentThreadsAtom(environmentId))) {
         const parent = thread.delegatedFrom;
-        if (parent === undefined) continue;
         if (
-          isDelegatedTaskShownUnderParent(
-            thread,
-            environmentIds.has(parent.environmentId)
-              ? get(environmentThreadIndexAtom(parent.environmentId))
-              : null,
-            get(localSubagentRequestsAtom(environmentId)),
-          )
+          parent !== undefined &&
+          environmentIds.has(parent.environmentId) &&
+          // An archived parent leaves navigation; its task there stays listed on its own.
+          get(environmentThreadIndexAtom(parent.environmentId)).get(parent.threadId)?.archivedAt ===
+            null
         ) {
           next.add(threadKey({ environmentId, threadId: thread.id }));
         }

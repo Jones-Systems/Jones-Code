@@ -1,9 +1,3 @@
-import { environmentServerConfigsAtom } from "../../state/server";
-import { pendingNewThread } from "../../jones/pendingSends/newThread";
-import { pendingSends } from "../../jones/pendingSends/store";
-import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
-import { clearSubmittedComposer } from "./composerSendRecovery";
-import type { ComposerThreadDraftState } from "../../composerDraftStore";
 import {
   type EnvironmentId,
   type ModelSelection,
@@ -13,12 +7,9 @@ import {
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type {
-  EnvironmentThreadShell,
-  EnvironmentProject,
-} from "@t3tools/client-runtime/state/shell";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { useNavigate } from "@tanstack/react-router";
-import { newMessageId, newThreadId } from "~/lib/utils";
+import { newMessageId } from "~/lib/utils";
 import { collapseExpandedComposerCursor } from "../../composer-logic";
 import {
   type ComposerThreadTarget,
@@ -30,12 +21,13 @@ import type { ComposerHandleRef } from "../../composerHandleContext";
 import { releaseDraftAttachments } from "../../lib/attachmentUploadQueue";
 import type { buildMessageContext } from "../../lib/composerContextRecords";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
+import { threadEnvironment } from "../../state/threads";
+import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { DEFAULT_INTERACTION_MODE } from "../../types";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {
   boundAttachmentIds,
-  optimisticMessageAttachments,
   type ComposerSendSnapshot,
   type makeThreadErrorSetter,
   withMessageContext,
@@ -52,7 +44,6 @@ import type { useLocalDispatchState } from "./useLocalDispatchState";
 
 interface MultipleModelSendInput {
   readonly environmentId: EnvironmentId;
-  readonly activeThread: EnvironmentThreadShell | undefined;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
   readonly draftId: DraftId | null;
@@ -85,7 +76,10 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     setThreadError,
   } = input;
   const navigate = useNavigate();
-  const startThreadTurn = usePendingTurn();
+  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
+    reportFailure: false,
+  });
+  const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
   const fanoutSelectionsAtom = draftFanoutSelectionsAtom(routeThreadKey);
   const { sendInFlight: sendInFlightRef, uncertainSubmissions: uncertainSubmissionsRef } =
     draftSendState(routeThreadKey);
@@ -103,12 +97,11 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     readFileBlockReason,
     buildOutgoingMessageContext,
     isCurrentSend,
-    submittedComposerDraft,
+    draftChangedDuringPreparation,
   }: {
     readonly threadId: ThreadId;
     readonly project: EnvironmentProject;
-    readonly branch: string | null;
-    readonly submittedComposerDraft: ComposerThreadDraftState | null;
+    readonly branch: string;
     readonly selections: ReadonlyArray<ModelSelection>;
     readonly targets: ReadonlyArray<MultipleModelTarget>;
     readonly sendSnapshot: ComposerSendSnapshot;
@@ -121,43 +114,9 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     ) => ReturnType<typeof buildMessageContext>;
     /** False once a newer send from this composer started. */
     readonly isCurrentSend: () => boolean;
+    readonly draftChangedDuringPreparation: () => boolean;
   }) => {
     const { attachments: attachmentsSnapshot, messageText } = sendSnapshot;
-    const planned = targets.map((target) => {
-      const retryKey = JSON.stringify([
-        routeThreadKey,
-        target.selection.instanceId,
-        target.selection.model,
-      ]);
-      const uncertainThreadId = uncertainSubmissionsRef.current.get(retryKey);
-      const targetThreadId = uncertainThreadId ?? newThreadId();
-      const messageId = newMessageId();
-      if (!uncertainThreadId) {
-        pendingSends.admit(environmentId, targetThreadId, {
-          id: messageId,
-          role: "user",
-          text: target.text,
-          runId: null,
-          createdAt,
-          updatedAt: createdAt,
-          streaming: false,
-          attachments: optimisticMessageAttachments(attachmentsSnapshot),
-        });
-        if (input.activeThread)
-          pendingSends.attachThread(
-            environmentId,
-            targetThreadId,
-            pendingNewThread(
-              input.activeThread,
-              targetThreadId,
-              target.text.slice(0, 80),
-              target.selection,
-              createdAt,
-            ),
-          );
-      }
-      return { target, retryKey, targetThreadId, messageId };
-    });
     const failedSelections: ModelSelection[] = [];
     let clearedDraft = false;
     let releasedComposer = false;
@@ -167,6 +126,8 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     // fails every selection; the draft restore below still runs.
     const sendResult = await settlePromise(async () => {
       const attachments = await attachmentsPromise;
+      if (draftChangedDuringPreparation())
+        throw new Error("Draft changed while preparing this message. Review it and send again.");
       const fileBlockReason = readFileBlockReason();
       if (fileBlockReason !== null) throw new Error(fileBlockReason);
       const context = buildOutgoingMessageContext(
@@ -176,22 +137,15 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
         text: messageText,
         attachments: attachmentsSnapshot,
       });
-      clearedDraft =
-        clearSubmittedComposer({
-          routeThreadKey,
-          currentRouteThreadKeyRef,
-          composerDraftTarget,
-          promptRef,
-          expectedDraft: submittedComposerDraft,
-          isCurrentSend,
-          resetCursor: () => composerRef.current?.resetCursorState(),
-        }) !== null;
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      clearedDraft = true;
       const clearedDraftSnapshot = useComposerDraftStore
         .getState()
         .getComposerDraft(composerDraftTarget);
       const submittedSelections = appAtomRegistry.get(fanoutSelectionsAtom);
       canRestoreDraft = () =>
-        clearedDraft &&
         currentRouteThreadKeyRef.current === routeThreadKey &&
         isCurrentSend() &&
         useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ===
@@ -199,14 +153,13 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
         appAtomRegistry.get(fanoutSelectionsAtom) === submittedSelections;
       setThreadError(threadId, null);
       const starts = Promise.all(
-        planned.map(async ({ target, retryKey, targetThreadId, messageId }) => {
+        targets.map(async (target) => {
           const started = await startFanoutThread({
-            retryKey,
-            targetThreadId,
-            whenAccepted: (callback) =>
-              pendingSends.whenAccepted(environmentId, targetThreadId, messageId, callback),
-            failureKnownUnsent: () =>
-              pendingSends.get(environmentId, targetThreadId, messageId)?.delivery === "failed",
+            retryKey: JSON.stringify([
+              routeThreadKey,
+              target.selection.instanceId,
+              target.selection.model,
+            ]),
             model: target.selection.model,
             uncertainSubmissions: uncertainSubmissionsRef.current,
             start: (targetThreadId) => {
@@ -214,11 +167,8 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                 environmentId,
                 input: {
                   threadId: targetThreadId,
-                  serverResolvesWorktreeBase:
-                    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)
-                      ?.environment.capabilities.worktreeDefaultBase === true,
                   message: {
-                    messageId,
+                    messageId: newMessageId(),
                     role: "user",
                     attachments,
                     ...withMessageContext({
@@ -243,7 +193,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                     },
                     prepareWorktree: {
                       projectCwd: project.workspaceRoot,
-                      ...(branch === null ? {} : { baseBranch: branch }),
+                      baseBranch: branch,
                       requireWorktree: true,
                       ...(startFromOrigin ? { startFromOrigin: true } : {}),
                     },
@@ -281,12 +231,6 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     });
     if (sendResult._tag === "Failure") {
       const error = squashAtomCommandFailure(sendResult);
-      for (const plannedTarget of planned)
-        pendingSends.failBeforeDispatch(
-          environmentId,
-          plannedTarget.targetThreadId,
-          plannedTarget.messageId,
-        );
       failedSelections.push(...selections);
       setThreadError(threadId, error instanceof Error ? error.message : "Failed to send messages.");
     }
@@ -295,10 +239,13 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
       if (clearedDraft) {
         restoreComposerDraft(composerDraftTarget, sendSnapshot);
         if (composerRef.current && currentRouteThreadKeyRef.current === routeThreadKey) {
-          promptRef.current = messageText;
+          promptRef.current = sendSnapshot.draftText;
           composerRef.current.resetCursorState({
-            cursor: collapseExpandedComposerCursor(messageText, messageText.length),
-            prompt: messageText,
+            cursor: collapseExpandedComposerCursor(
+              sendSnapshot.draftText,
+              sendSnapshot.draftText.length,
+            ),
+            prompt: sendSnapshot.draftText,
             detectTrigger: true,
           });
         }

@@ -1,6 +1,3 @@
-import { setPendingUserInputCustomAnswer } from "./pendingUserInput";
-import { buildPendingUserInputAnswers } from "./pendingUserInput";
-import { togglePendingUserInputOptionSelection } from "./pendingUserInput";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { formatInlineContextReference } from "./lib/composerContextReferences";
@@ -8,10 +5,12 @@ import { threadContextReference } from "./lib/composerContextRecords";
 import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 
 import {
+  answerContextRecords,
   carryDisplacedCustomAnswerIntoPrompt,
   derivePendingUserInputProgress,
   projectPendingUserInputAnswer,
   threadContextsReferencedByAnswer,
+  withdrawDisplacedCustomAnswerFromPrompt,
 } from "./pendingUserInput";
 
 describe("projectPendingUserInputAnswer", () => {
@@ -30,19 +29,56 @@ describe("projectPendingUserInputAnswer", () => {
     );
   });
 
-  it("leaves plain answers unchanged when the draft has unreferenced thread records", () => {
-    expect(projectPendingUserInputAnswer("Plain answer", [record], record.environmentId)).toBe(
-      "Plain answer",
-    );
+  // regression: #28022, #36293 review comment and preview annotation chips in an answer reached the agent as bare links
+  it("sends thread draft chips with their full content", () => {
+    const reviewComment = {
+      id: "file-comment-1",
+      sectionId: "branch",
+      sectionTitle: "Changes",
+      filePath: "notes.md",
+      startIndex: 2,
+      endIndex: 2,
+      rangeLabel: "+2",
+      text: "Rename this to line two updated",
+      diff: "@@ -0,0 +2,1 @@\n+line two changed",
+      fenceLanguage: "diff",
+    };
+    const annotation = {
+      id: "annotation-1",
+      pageUrl: "http://localhost:3000/",
+      pageTitle: "Home",
+      comment: "FIRST NOTE: this features section looks too bare; add three feature cards",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const records = answerContextRecords(undefined, {
+      reviewComments: [reviewComment],
+      previewAnnotations: [annotation],
+    });
+    const answer = `See my notes: ${records
+      .map((record) =>
+        formatInlineContextReference({
+          kind: record.kind,
+          contextId: record.contextId,
+          label: record.label,
+        }),
+      )
+      .join(" ")}`;
+    const projected = projectPendingUserInputAnswer(answer, records);
+    expect(projected).toContain("Rename this to line two updated");
+    expect(projected).toContain("+line two changed");
+    expect(projected).toContain(`comment: ${annotation.comment}`);
   });
 
   // regression: #18789 answers to pending questions lost exact text and option values
   it("preserves option values and exact answer text", () => {
     const options = [" first\t", "second"];
-    expect(projectPendingUserInputAnswer(options, [record], record.environmentId)).toBe(options);
-    expect(projectPendingUserInputAnswer("  Edited answer\n", [record], record.environmentId)).toBe(
-      "  Edited answer\n",
-    );
+    expect(projectPendingUserInputAnswer(options, [record])).toBe(options);
+    expect(projectPendingUserInputAnswer("  Edited answer\n", [record])).toBe("  Edited answer\n");
   });
 });
 
@@ -149,30 +185,39 @@ describe("carryDisplacedCustomAnswerIntoPrompt", () => {
   });
 });
 
-it("keeps a message choice and multiline note, clears the choice explicitly, and leaves live replacement intact", () => {
-  const question = {
-    id: "notes",
-    header: "Scope",
-    question: "Which scope?",
-    options: [{ label: "Local", description: "This host" }],
-    multiSelect: false,
-  };
-  const options = { notes: true };
-  const selected = togglePendingUserInputOptionSelection(question, undefined, "Local", options);
-  const draft = setPendingUserInputCustomAnswer(
-    selected,
-    " First line\nSecond line ",
-    question,
-    options,
-  );
-  expect(buildPendingUserInputAnswers([question], { notes: draft }, options)).toEqual({
-    notes: "Local\nNote: First line\nSecond line",
+describe("withdrawDisplacedCustomAnswerFromPrompt", () => {
+  // regression: #35205 an answer restored with undo stayed in the thread draft and was sent twice
+  it("takes set-aside text back out of the thread draft and leaves the rest", () => {
+    const setAside = carryDisplacedCustomAnswerIntoPrompt("", "first answer ");
+    expect(withdrawDisplacedCustomAnswerFromPrompt(setAside, "first answer ")).toBe("");
+
+    const afterDraft = carryDisplacedCustomAnswerIntoPrompt("draft", "first answer");
+    expect(withdrawDisplacedCustomAnswerFromPrompt(afterDraft, "first answer")).toBe("draft");
+
+    const beforeSecond = carryDisplacedCustomAnswerIntoPrompt(setAside, "second answer");
+    expect(
+      withdrawDisplacedCustomAnswerFromPrompt(beforeSecond, "first answer", ["second answer"]),
+    ).toBe("second answer");
+
+    const between = carryDisplacedCustomAnswerIntoPrompt(afterDraft, "second answer");
+    expect(
+      withdrawDisplacedCustomAnswerFromPrompt(between, "first answer", ["second answer"]),
+    ).toBe("draft\n\nsecond answer");
   });
-  const cleared = togglePendingUserInputOptionSelection(question, draft, "Local", options);
-  expect(buildPendingUserInputAnswers([question], { notes: cleared }, options)).toEqual({
-    notes: "First line\nSecond line",
+
+  it("removes its own copy, not equal text inside a later set-aside answer", () => {
+    const first = carryDisplacedCustomAnswerIntoPrompt("", "foo");
+    const both = carryDisplacedCustomAnswerIntoPrompt(first, "bar\n\nfoo");
+    expect(withdrawDisplacedCustomAnswerFromPrompt(both, "foo", ["bar\n\nfoo"])).toBe("bar\n\nfoo");
   });
-  expect(buildPendingUserInputAnswers([question], { notes: draft })).toEqual({
-    notes: "First line\nSecond line",
+
+  it("leaves a thread draft that no longer holds the set-aside text where it was put", () => {
+    expect(withdrawDisplacedCustomAnswerFromPrompt("first answer, edited", "first answer")).toBe(
+      "first answer, edited",
+    );
+    expect(withdrawDisplacedCustomAnswerFromPrompt("my first answer", "first answer")).toBe(
+      "my first answer",
+    );
+    expect(withdrawDisplacedCustomAnswerFromPrompt("draft", "  ")).toBe("draft");
   });
 });

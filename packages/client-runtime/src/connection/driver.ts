@@ -20,14 +20,13 @@ import {
   connectionRoutes,
   routeEntry,
   routeHttpBaseUrl,
+  routeKeepsItsHost,
   sendsTokenInClear,
   usableRoutes,
 } from "./routes.ts";
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as RpcSession from "../rpc/session.ts";
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
-import { preflightBetterRoute } from "../jones/connection/betterRouteRecovery.ts";
-import { withRouteAttemptBudget } from "../jones/connection/routeAttemptBudget.ts";
 
 export type ConnectionDriverProgress =
   | {
@@ -60,10 +59,6 @@ export class ConnectionDriver extends Context.Service<
       entry: ConnectionCatalogEntry,
       reportProgress: (progress: ConnectionDriverProgress) => Effect.Effect<void>,
     ) => Effect.Effect<EnvironmentConnectionLease, ConnectionAttemptError, Scope.Scope>;
-    readonly preflightForRecovery?: (
-      entry: ConnectionCatalogEntry,
-      route: ConnectionRoute,
-    ) => Effect.Effect<boolean>;
     readonly preflight: (
       entry: ConnectionCatalogEntry,
       route: ConnectionRoute,
@@ -78,7 +73,6 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
   checkRoute: (route: ConnectionRoute) => Effect.Effect<RouteCheck>,
   connectRoute: (
     route: ConnectionRoute,
-    hasFallback: boolean,
   ) => Effect.Effect<EnvironmentConnectionLease, ConnectionAttemptError, R | Scope.Scope>,
 ) {
   const routes = usableRoutes(entry);
@@ -91,9 +85,9 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
   let transient: ConnectionAttemptError | undefined;
   let blocked: ConnectionAttemptError | undefined;
   // Each route gets its own scope so a half-open session closes before the next try.
-  const attempt = Effect.fnUntraced(function* (route: ConnectionRoute, hasFallback: boolean) {
+  const attempt = Effect.fnUntraced(function* (route: ConnectionRoute) {
     const routeScope = yield* Scope.fork(attemptScope);
-    const result = yield* connectRoute(route, hasFallback).pipe(
+    const result = yield* connectRoute(route).pipe(
       Scope.provide(routeScope),
       Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : Scope.close(routeScope, exit))),
       Effect.result,
@@ -117,22 +111,22 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
       silent.push({ route, index });
       continue;
     }
-    const result = yield* attempt(route, index < routes.length - 1 || silent.length > 0);
+    const result = yield* attempt(route);
     if (result._tag === "Success") return result.success;
     // An incompatible server is the same server on every route.
     if (result.failure.reason === "unsupported") return yield* result.failure;
   }
-  // A slow route that answered after the head start goes before one that is
-  // still dead, which can hold an attempt open far longer than its probe.
   const late = yield* Effect.forEach(silent, ({ index }) => Fiber.join(checks[index]!), {
     concurrency: "unbounded",
   });
-  const retry = [
-    ...silent.filter((_, position) => late[position] !== "silent"),
-    ...silent.filter((_, position) => late[position] === "silent"),
-  ];
-  for (const [index, { route }] of retry.entries()) {
-    const result = yield* attempt(route, index < retry.length - 1);
+  const answeredLate = silent.filter((_, position) => late[position] !== "silent");
+  const stillSilent = silent.filter((_, position) => late[position] === "silent");
+  for (const { route } of [...answeredLate, ...stillSilent]) {
+    // A route still silent after its whole check can hold the attempt open far
+    // longer than the check did. Once another route failed in a way that
+    // retries, the retry reaches it sooner than waiting here would.
+    if (transient !== undefined && stillSilent.some((entry) => entry.route === route)) break;
+    const result = yield* attempt(route);
     if (result._tag === "Success") return result.success;
     if (result.failure.reason === "unsupported") return yield* result.failure;
   }
@@ -155,7 +149,7 @@ export const make = Effect.gen(function* () {
 
   // The descriptor is public, so this sends no credential to whatever
   // answers at a saved LAN address on a different network.
-  const checkDescriptor = (httpBaseUrl: string, environmentId: string) =>
+  const checkDescriptor = (httpBaseUrl: string, environmentId: string, keepsItsHost: boolean) =>
     fetchRemoteEnvironmentDescriptor({
       httpBaseUrl,
       timeoutMs: ROUTE_CHECK_TIMEOUT_MS,
@@ -163,7 +157,9 @@ export const make = Effect.gen(function* () {
       Effect.option,
       // The connect this check leads to skips its own read. Every answer, even a
       // failure, replaces what an older check remembered.
-      Effect.tap((descriptor) => remote.rememberCheckedDescriptor(httpBaseUrl, descriptor)),
+      Effect.tap((descriptor) =>
+        remote.rememberCheckedDescriptor(httpBaseUrl, descriptor, keepsItsHost),
+      ),
       Effect.map((descriptor): RouteCheck =>
         Option.exists(descriptor, (value) => value.environmentId === environmentId)
           ? "answered"
@@ -177,7 +173,7 @@ export const make = Effect.gen(function* () {
   const checkRoute = (entry: ConnectionCatalogEntry, route: ConnectionRoute) => {
     const httpBaseUrl = routeHttpBaseUrl(route);
     if (httpBaseUrl === null) return Effect.succeed<RouteCheck>("unchecked");
-    return checkDescriptor(httpBaseUrl, entry.target.environmentId).pipe(
+    return checkDescriptor(httpBaseUrl, entry.target.environmentId, routeKeepsItsHost(route)).pipe(
       Effect.withSpan("ConnectionDriver.checkRoute", {
         attributes: { "connection.target.kind": route.target._tag },
       }),
@@ -185,7 +181,11 @@ export const make = Effect.gen(function* () {
   };
 
   const checkHost = (prepared: PreparedConnection) =>
-    checkDescriptor(prepared.httpBaseUrl, prepared.environmentId).pipe(
+    checkDescriptor(
+      prepared.httpBaseUrl,
+      prepared.environmentId,
+      prepared.httpBaseUrl.startsWith("https:"),
+    ).pipe(
       Effect.withSpan("ConnectionDriver.checkHost", {
         attributes: { "connection.target.kind": prepared.target._tag },
       }),
@@ -205,37 +205,29 @@ export const make = Effect.gen(function* () {
     return yield* connectOverRoutes(
       entry,
       (route) => checkRoute(entry, route),
-      (route, hasFallback) =>
-        withRouteAttemptBudget(
-          hasFallback,
-          Effect.gen(function* () {
-            const prepared = yield* resolver.prepare(routeEntry(entry, route));
-            yield* reportProgress({ stage: "opening", prepared });
-            const session = yield* sessions.connect(prepared);
-            return { prepared, session } satisfies EnvironmentConnectionLease;
-          }),
-          (lease) =>
-            Effect.gen(function* () {
-              const { prepared, session } = lease;
-              yield* reportProgress({ stage: "synchronizing", prepared });
-              yield* session.ready;
-              // The server closes a socket when its session expires, unless the same key renewed it.
-              if (prepared.httpAuthorization?._tag === "Dpop") {
-                yield* remote
-                  .renewDpopBeforeExpiry({
-                    expectedEnvironmentId: prepared.environmentId,
-                    expiresAtEpochMs: prepared.httpAuthorization.expiresAtEpochMs,
-                  })
-                  .pipe(
-                    Effect.catch((error) =>
-                      Effect.logWarning("Could not renew the connection's credential.", { error }),
-                    ),
-                    Effect.forkScoped,
-                  );
-              }
-              return lease;
-            }),
-        ),
+      Effect.fnUntraced(function* (route) {
+        yield* reportProgress({ stage: "preparing" });
+        const prepared = yield* resolver.prepare(routeEntry(entry, route));
+        yield* reportProgress({ stage: "opening", prepared });
+        const session = yield* sessions.connect(prepared);
+        yield* reportProgress({ stage: "synchronizing", prepared });
+        yield* session.ready;
+        // The server closes a socket when its session expires, unless the same key renewed it.
+        if (prepared.httpAuthorization?._tag === "Dpop") {
+          yield* remote
+            .renewDpopBeforeExpiry({
+              expectedEnvironmentId: prepared.environmentId,
+              expiresAtEpochMs: prepared.httpAuthorization.expiresAtEpochMs,
+            })
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("Could not renew the connection's credential.", { error }),
+              ),
+              Effect.forkScoped,
+            );
+        }
+        return { prepared, session } satisfies EnvironmentConnectionLease;
+      }),
     );
   });
 
@@ -255,10 +247,7 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("ConnectionDriver.preflight"),
     );
 
-  const preflightForRecovery = (entry: ConnectionCatalogEntry, route: ConnectionRoute) =>
-    preflightBetterRoute(entry, route, checkRoute(entry, route), resolver.prepare);
-
-  return ConnectionDriver.of({ connect, preflight, preflightForRecovery, checkHost });
+  return ConnectionDriver.of({ connect, preflight, checkHost });
 });
 
 export const layer = Layer.effect(ConnectionDriver, make);

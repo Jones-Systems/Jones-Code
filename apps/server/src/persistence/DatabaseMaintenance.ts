@@ -14,11 +14,7 @@ import * as NodeOS from "node:os";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
-import * as SettlementCompactionPreflight from "../jones/persistence/settlementCompactionPreflight.ts";
-
-import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
-import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { rebuildMessageSearch } from "../orchestration-v2/messageSearchIndex.ts";
 
 export class DatabaseMissingError extends Schema.TaggedError<DatabaseMissingError>()(
@@ -32,9 +28,17 @@ export class DatabaseMissingError extends Schema.TaggedError<DatabaseMissingErro
 
 export class DatabaseInUseError extends Schema.TaggedError<DatabaseInUseError>()(
   "DatabaseInUseError",
-  { path: Schema.String, cause: Schema.Defect() },
+  {
+    path: Schema.String,
+    cause: Schema.Defect(),
+    pid: Schema.optional(Schema.Int),
+    serviceManaged: Schema.optional(Schema.Boolean),
+  },
 ) {
   override get message() {
+    if (this.pid !== undefined) {
+      return `Stop T3 Code server process ${this.pid}${this.serviceManaged ? "" : ", which the background service did not start,"} before repairing the database.`;
+    }
     return "Stop the T3 Code server and desktop app, including any version before 0.1.0, before repairing the database.";
   }
 }
@@ -75,11 +79,8 @@ export class DiskSpaceCheckError extends Schema.TaggedError<DiskSpaceCheckError>
   }
 }
 
-const isJonesSettlementProofMigrationRequired = Schema.is(
-  SettlementCompactionPreflight.JonesSettlementProofMigrationRequiredError,
-);
+export type DatabaseCompactStep = "prune-events" | "vacuum" | "rebuild-search" | "checkpoint";
 
-/** Offline inspection and repair of a T3 state database, for `t3 doctor`. */
 export class DatabaseMaintenance extends Context.Service<
   DatabaseMaintenance,
   {
@@ -93,23 +94,23 @@ export class DatabaseMaintenance extends Context.Service<
       },
       DatabaseMissingError | DatabaseInspectError
     >;
-    /** Compacts history, then VACUUMs into incremental auto_vacuum. Refuses while a server has it open. */
-    readonly compact: (databasePath: string) => Effect.Effect<
+    /**
+     * Compacts history, then VACUUMs into incremental auto_vacuum. Refuses while a server has it open.
+     * Calls `onStep` as each step starts; VACUUM time grows with the whole database size.
+     */
+    readonly compact: (
+      databasePath: string,
+      onStep?: (step: DatabaseCompactStep) => Effect.Effect<void>,
+    ) => Effect.Effect<
       {
         readonly beforeBytes: number;
         readonly afterBytes: number;
         readonly deletedEventCount: number;
         readonly deletedReceiptCount: number;
       },
-      | DatabaseMissingError
-      | DatabaseInUseError
-      | DatabaseCompactError
-      | SettlementCompactionPreflight.JonesSettlementProofMigrationRequiredError
+      DatabaseMissingError | DatabaseInUseError | DatabaseCompactError
     >;
-    /**
-     * Deletes the database from before 0.1.0 kept beside this one. Versions
-     * before 0.1.0 read only that file; this one stays intact.
-     */
+    /** Deletes only the pre-0.1.0 database; earlier versions still use it. */
     readonly removeLegacyDatabase: (
       databasePath: string,
     ) => Effect.Effect<void, DatabaseInUseError | LegacyDatabaseRemoveError>;
@@ -186,27 +187,30 @@ const make = Effect.gen(function* () {
   );
 
   const compact = Effect.fn("DatabaseMaintenance.compact")(
-    function* (databasePath: string) {
+    function* (
+      databasePath: string,
+      onStep: (step: DatabaseCompactStep) => Effect.Effect<void> = () => Effect.void,
+    ) {
       yield* locate(databasePath);
       const beforeBytes = Number((yield* fs.stat(databasePath)).size);
       const result = yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        // Held through compaction and VACUUM.
         yield* lockExclusively(databasePath);
         const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
-        // Offline doctor bypasses startup migrations; settlement evidence must be preserved first.
-        yield* SettlementCompactionPreflight.requireSettlementProofsBeforeCompaction;
+        yield* onStep("prune-events");
         const summary = yield* maintenance.pruneEventStore();
+        yield* onStep("vacuum");
         // VACUUM is required to enable incremental auto_vacuum on existing databases.
         yield* sql`PRAGMA auto_vacuum = INCREMENTAL`;
         yield* sql`VACUUM`;
+        yield* onStep("rebuild-search");
         yield* rebuildMessageSearch(sql);
+        yield* onStep("checkpoint");
         yield* sql`PRAGMA wal_checkpoint(TRUNCATE)`;
         return summary;
       }).pipe(
         Effect.provide(
           ProjectionMaintenance.layer.pipe(
-            Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
             Layer.provideMerge(NodeSqliteClient.layer({ filename: databasePath })),
           ),
         ),
@@ -222,9 +226,7 @@ const make = Effect.gen(function* () {
     (effect, databasePath) =>
       effect.pipe(
         Effect.mapError((cause) =>
-          isDomainError(cause) || isJonesSettlementProofMigrationRequired(cause)
-            ? cause
-            : new DatabaseCompactError({ path: databasePath, cause }),
+          isDomainError(cause) ? cause : new DatabaseCompactError({ path: databasePath, cause }),
         ),
       ),
   );

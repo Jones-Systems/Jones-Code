@@ -3601,7 +3601,9 @@
     "apps/web/src/hooks/useSettings.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/provider/startFailureMessage.ts": "jones-owned",
     "apps/server/src/jones/provider/startFailureMessage.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/start-failure-message.json": "jones-owned"
+    "scripts/jones/boundary/fragments/start-failure-message.json": "jones-owned",
+    ".github/workflows/issue-vouch.yml": "upstream-deleted",
+    ".github/workflows/pr-limits.yml": "upstream-deleted"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

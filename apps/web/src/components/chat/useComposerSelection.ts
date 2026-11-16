@@ -1,9 +1,3 @@
-import {
-  type ComposerModelSelectOptions,
-  withShortcutEffort,
-} from "../../jones/composer/composerModelEffortShortcuts";
-import { matchesProviderModelLock } from "../../jones/composer/ProviderInstanceShortcuts";
-import { type ProviderInstanceEntry, isProviderInstancePickerReady } from "../../providerInstances";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { UnifiedSettings } from "@t3tools/contracts";
 import type { Dispatch } from "react";
@@ -24,20 +18,22 @@ import { type SetStateAction } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { toastManager } from "../ui/toast";
 import { resolveAppModelSelectionForInstance } from "../../modelSelection";
-import { resolveNewDraftStartFromOrigin } from "../../lib/chatThreadActions";
-import { type DraftThreadEnvMode, useComposerDraftStore } from "../../composerDraftStore";
+import {
+  draftModelSelectionApplies,
+  resolveNewDraftStartFromOrigin,
+  threadHasStarted,
+} from "../../lib/chatThreadActions";
+import {
+  type DraftThreadEnvMode,
+  isSameModel,
+  useComposerDraftStore,
+} from "../../composerDraftStore";
 import {
   getStartedThreadModelChangeBlockReason,
   deriveLockedProvider,
-  resolveComposerPickerModelSelection,
   makeModelDisabledReason,
 } from "../ChatView.logic";
 interface ComposerSelectionInput {
-  readonly providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry>;
-  readonly lockedContinuationGroupKey: string | null;
-  readonly isEnvironmentChanging: boolean;
-  readonly activeEnvironmentUnavailable: boolean;
-  readonly isRevertingCheckpoint: boolean;
   readonly environmentId: EnvironmentId;
   readonly composerDraftTarget: ComposerThreadTarget;
   readonly draftThread: DraftSessionState | null;
@@ -69,11 +65,6 @@ interface ComposerSelectionInput {
  */
 export function useComposerSelection(input: ComposerSelectionInput) {
   const {
-    providerInstanceEntries,
-    lockedContinuationGroupKey,
-    isEnvironmentChanging,
-    activeEnvironmentUnavailable,
-    isRevertingCheckpoint,
     environmentId,
     composerDraftTarget,
     draftThread,
@@ -138,27 +129,11 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const onProviderModelSelect = (
     instanceId: ProviderInstanceId,
     model: string,
-    options?: ComposerModelSelectOptions,
+    options?: { focusComposer?: boolean },
   ) => {
-    if (
-      !activeThread ||
-      isEnvironmentChanging ||
-      activeEnvironmentUnavailable ||
-      isRevertingCheckpoint
-    )
-      return;
-    // Look up the configured instance so model normalization and custom
-    // model lookup stay scoped to that exact instance. Unknown instance ids
-    // are rejected by returning early; the server remains authoritative too.
-    const configuredEntry = providerInstanceEntries.find(
-      (entry) => entry.instanceId === instanceId,
-    );
-    if (!configuredEntry || !isProviderInstancePickerReady(configuredEntry)) {
-      if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
-    }
-    const entry = configuredEntry.snapshot;
-    const resolvedDriverKind = entry.driver;
+    if (!activeThread) return;
+    const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
+    const resolvedDriverKind = entry?.driver ?? null;
     if (
       !supportsProviderSwitchingViaHandoff &&
       lockedProvider !== null &&
@@ -170,43 +145,71 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     }
     if (
       !supportsProviderSwitchingViaHandoff &&
-      !matchesProviderModelLock(
-        configuredEntry,
-        lockedProvider,
-        lockedContinuationGroupKey,
-        activeRuntime?.providerInstanceId ?? activeThread.modelSelection.instanceId,
-      )
+      lockedProvider !== null &&
+      activeRuntime?.providerInstanceId
     ) {
-      if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
+      const currentEntry = providerStatuses.find(
+        (snapshot) => snapshot.instanceId === activeRuntime.providerInstanceId,
+      );
+      if (
+        currentEntry?.continuation?.groupKey &&
+        entry?.continuation?.groupKey &&
+        currentEntry.continuation.groupKey !== entry.continuation.groupKey
+      ) {
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
+      }
     }
+    // The picker lists an unavailable model only as the active selection, so re-picking keeps it.
     const resolvedModel = resolveAppModelSelectionForInstance(
       instanceId,
       settings,
       providerStatuses,
       model,
+      { preserveUnavailableSelection: true },
     );
-    if (!resolvedModel) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    const storedDraft = useComposerDraftStore.getState().getComposerDraft(threadRef);
+    const draft = draftModelSelectionApplies(storedDraft, threadHasStarted(activeThread))
+      ? storedDraft
+      : null;
+    const shownInstanceId =
+      draft?.activeProvider ??
+      activeRuntime?.providerInstanceId ??
+      activeThread.modelSelection.instanceId;
+    const shownSelection =
+      draft?.modelSelectionByProvider[shownInstanceId] ?? activeThread.modelSelection;
+    if (
+      !resolvedModel ||
+      (instanceId === shownInstanceId &&
+        shownSelection.instanceId === instanceId &&
+        shownSelection.model === resolvedModel)
+    ) {
+      // Re-picking the shown model keeps its options and saves it again if that save failed.
+      if (resolvedModel && !isLocalDraftThread) applyThreadModelPick(threadRef);
       if (options?.focusComposer !== false) scheduleComposerFocus();
       return;
     }
-    // Resolve remembered traits first; a shortcut supplies its explicit effort
-    // before the complete model selection is persisted.
-    const store = useComposerDraftStore.getState();
-    const draft = store.getComposerDraft(composerDraftTarget);
-    const currentInstance = draft?.activeProvider ?? activeThread.modelSelection.instanceId;
-    const currentSelection =
-      draft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
-    const pickerSelection = resolveComposerPickerModelSelection({
-      instanceId,
-      model: resolvedModel,
-      currentSelection,
-      rememberedOptions: store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel],
-    });
-    const nextModelSelection = options?.effort
-      ? withShortcutEffort(pickerSelection, resolvedModel, entry.models, options.effort)
-      : pickerSelection;
-    if (!nextModelSelection) return;
+    const rememberedOptions =
+      useComposerDraftStore.getState().stickyOptionsByModelByProvider[instanceId]?.[resolvedModel];
+    const threadSelection = activeThread.modelSelection;
+    // This pick replaces the stored options, so the thread's own model carries them over.
+    const pickOptions =
+      rememberedOptions !== undefined && rememberedOptions.length > 0
+        ? rememberedOptions
+        : threadSelection.instanceId === instanceId &&
+            entry !== undefined &&
+            isSameModel(
+              { providers: providerStatuses, selectedProvider: entry.driver, settings },
+              threadSelection,
+              { instanceId, model: resolvedModel },
+            )
+          ? threadSelection.options
+          : undefined;
+    const nextModelSelection: ModelSelection =
+      pickOptions !== undefined && pickOptions.length > 0
+        ? { instanceId, model: resolvedModel, options: [...pickOptions] }
+        : { instanceId, model: resolvedModel };
     const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
       hasStartedSession: activeRuntime !== null,
       supportsProviderSwitchingViaHandoff,
@@ -223,14 +226,10 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       if (options?.focusComposer !== false) scheduleComposerFocus();
       return;
     }
-    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
-    setComposerDraftModelSelection(
-      threadRef,
-      nextModelSelection,
-      // A complete snapshot: an absent options field means "start from the
-      // model default", not "keep the previous model's options".
-      { explicit: true, replaceOptions: true },
-    );
+    setComposerDraftModelSelection(threadRef, nextModelSelection, {
+      explicit: true,
+      replaceOptions: true,
+    });
     setStickyComposerModelSelection(nextModelSelection);
     if (!isLocalDraftThread) applyThreadModelPick(threadRef);
     if (options?.focusComposer !== false) scheduleComposerFocus();

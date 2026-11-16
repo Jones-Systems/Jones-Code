@@ -1,10 +1,3 @@
-import { installSelectedSyntheticPresentation } from "./jones/testing/SyntheticPresentation.ts";
-import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as Option from "effect/Option";
-import * as PlannedUpdateContinuity from "./jones/updates/PlannedUpdateContinuityService.ts";
-import { activatePlannedUpdateContinuity } from "./jones/updates/plannedContinuityStartup.ts";
-import * as ServerUpdateContinuation from "./orchestration-v2/ServerUpdateContinuation.ts";
 import {
   CommandId,
   DEFAULT_MODEL,
@@ -17,6 +10,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import { formatHostForUrl, isWildcardHost } from "@t3tools/shared/hostClassification";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
@@ -32,19 +26,19 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import type * as NetAddress from "effect/net/NetAddress";
 
 import * as ServerConfig from "./config.ts";
-import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import { flushCompileCache } from "./compileCache.ts";
 import * as Keybindings from "./keybindings.ts";
+import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunch from "./orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagement from "./orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -55,19 +49,8 @@ import { forkParked, forkParkedFiber } from "./serverActivation.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { getServerOwners } from "./telemetry/Identify.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
-import * as JonesTrialStartup from "./jones/updates/trialStartup.ts";
-import { startLauncherHandoff } from "./jones/updates/launcherHandoff.ts";
-import {
-  logStartupPairingIssued,
-  maybeOpenBrowser as maybeOpenJonesBrowser,
-} from "./jones/startupAccessLogging.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import {
-  formatHeadlessServeOutput,
-  formatHostForUrl,
-  isWildcardHost,
-  issueHeadlessServeAccessInfo,
-} from "./startupAccess.ts";
+import { formatHeadlessServeOutput, issueHeadlessServeAccessInfo } from "./startupAccess.ts";
 
 export class ServerRuntimeStartupError extends Schema.TaggedError<ServerRuntimeStartupError>()(
   "ServerRuntimeStartupError",
@@ -86,22 +69,8 @@ export class ServerRuntimeStartupError extends Schema.TaggedError<ServerRuntimeS
 export class ServerRuntimeStartup extends Context.Service<
   ServerRuntimeStartup,
   {
-    readonly capturePlannedUpdate?: (
-      input: Parameters<PlannedUpdateContinuity.PlannedUpdateContinuity["Service"]["capture"]>[0],
-    ) => Effect.Effect<void, ServerRuntimeStartupError>;
-    readonly markRunningProviderSessionsForContinuation: Effect.Effect<
-      ReadonlyArray<ThreadId>,
-      ServerRuntimeStartupError
-    >;
-    readonly markOptedInProviderSessionsForContinuation: Effect.Effect<
-      ReadonlyArray<ThreadId>,
-      ServerRuntimeStartupError
-    >;
-    readonly clearProviderSessionContinuationMarkers: (
-      threadIds: ReadonlyArray<ThreadId>,
-    ) => Effect.Effect<void, ServerRuntimeStartupError>;
     readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
-    readonly markHttpListening: (address: NetAddress.SocketAddress) => Effect.Effect<void>;
+    readonly markHttpListening: Effect.Effect<void>;
     readonly enqueueCommand: <A, E>(
       effect: Effect.Effect<A, E>,
     ) => Effect.Effect<A, E | ServerRuntimeStartupError>;
@@ -177,11 +146,11 @@ export const makeCommandGate = Effect.gen(function* () {
 const recordStartupHeartbeat = Effect.gen(function* () {
   const analytics = yield* AnalyticsService.AnalyticsService;
   const projects = yield* ProjectService.ProjectService;
-  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
+  const threads = yield* ThreadManagement.ThreadManagementService;
 
   const { threadCount, projectCount } = yield* Effect.all({
     projects: projects.snapshot,
-    threadCount: metadata.count.pipe(NodeSqliteClient.readOnly),
+    threadCount: threads.countThreads(),
   }).pipe(
     Effect.map(({ projects: projectSnapshot, threadCount }) => ({
       projectCount: projectSnapshot.projects.length,
@@ -292,7 +261,7 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
   const randomUUID = random.uuidV4();
   const serverConfig = yield* ServerConfig.ServerConfig;
   const projects = yield* ProjectService.ProjectService;
-  const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
+  const threads = yield* ThreadManagement.ThreadManagementService;
   const threadLaunch = yield* ThreadLaunch.ThreadLaunchService;
   const path = yield* Path.Path;
 
@@ -301,16 +270,27 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
 
   if (serverConfig.autoBootstrapProjectFromCwd) {
     const threadModelSelection = getAutoBootstrapThreadModelSelection();
-    const { project } = yield* projects.bootstrap({
-      commandId: CommandId.make(yield* randomUUID),
-      projectId: ProjectId.make(yield* randomUUID),
-      title: path.basename(serverConfig.cwd) || "project",
-      workspaceRoot: serverConfig.cwd,
-    });
-    const existingThread = (yield* metadata.list({
-      projectId: project.id,
-      location: "active",
-    })).threads.find((thread) => isListedThreadLineage(thread.lineage));
+    const bootstrapped = yield* projects
+      .bootstrap({
+        commandId: CommandId.make(yield* randomUUID),
+        projectId: ProjectId.make(yield* randomUUID),
+        title: path.basename(serverConfig.cwd) || "project",
+        workspaceRoot: serverConfig.cwd,
+      })
+      .pipe(
+        // A folder the project rules refuse must not stop the server from starting there.
+        Effect.catchTags({
+          ProjectInvalidError: (error) =>
+            Effect.logWarning("Skipped bootstrap project", { detail: error.detail }).pipe(
+              Effect.as(undefined),
+            ),
+        }),
+      );
+    if (bootstrapped === undefined) return {} satisfies AutoBootstrapWelcomeTargets;
+    const { project } = bootstrapped;
+    const existingThread = (yield* threads.listActiveShellIndex()).find(
+      (thread) => thread.projectId === project.id && isListedThreadLineage(thread.lineage),
+    );
     if (existingThread === undefined) {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const settings = yield* serverSettings.getSettings;
@@ -325,7 +305,7 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: resolveProjectSettings(settings, project.id, project).settings
             .defaultRuntimeMode,
-          workspaceStrategy: { type: "auto" },
+          workspaceStrategy: { type: "root" },
           createdBy: "system",
           creationSource: "server",
         })
@@ -437,61 +417,36 @@ export const startEffectWorkerWithRelay = Effect.fn(
   );
 });
 
-export const runOrderedV2StartupPhases = Effect.fn(
-  "serverRuntimeStartup.runOrderedV2StartupPhases",
-)(function* <
-  Import,
-  Recovery,
-  Bootstrap,
-  ImportError,
-  RecoveryError,
-  DelegationError,
-  WorkerError,
-  BootstrapError,
-  ImportContext,
-  RecoveryContext,
-  DelegationContext,
-  WorkerContext,
-  BootstrapContext,
-  TrialError = never,
-  TrialContext = never,
->(input: {
-  readonly awaitTrialCommit?: Effect.Effect<void, TrialError, TrialContext>;
-  readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
-  readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
-  readonly recoverCodexFailover?: Effect.Effect<void, DelegationError, DelegationContext>;
-  readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
-  readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
-  readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
-}) {
-  yield* input.awaitTrialCommit ?? Effect.void;
-  yield* input.importLegacyShells;
-  const recovery = yield* input.recover;
-  yield* input.recoverCodexFailover ?? Effect.void;
-  yield* input.recoverDelegatedTasks;
-  yield* input.startEffectWorker;
-  const bootstrap = yield* input.autoBootstrap;
-  return { recovery, bootstrap } as const;
-});
-
-export const runRuntimeShutdown = Effect.fn("serverRuntimeStartup.runRuntimeShutdown")(function* <
-  PrepareError,
-  ReconcileError,
-  R,
->(input: {
-  readonly continuationWritesAllowed: boolean;
-  readonly prepareForShutdown: Effect.Effect<void, PrepareError, R>;
-  readonly shutdownSessions: Effect.Effect<void, never, R>;
-  readonly reconcile: Effect.Effect<void, ReconcileError, R>;
-}) {
-  // An unactivated native trial owns local cleanup but must preserve paired continuation state.
-  if (!input.continuationWritesAllowed) {
-    yield* input.shutdownSessions;
-    return;
-  }
-  yield* input.prepareForShutdown.pipe(Effect.ensuring(input.shutdownSessions));
-  yield* input.reconcile;
-});
+const runOrderedV2StartupPhases = Effect.fn("serverRuntimeStartup.runOrderedV2StartupPhases")(
+  function* <
+    Import,
+    Recovery,
+    Bootstrap,
+    ImportError,
+    RecoveryError,
+    DelegationError,
+    WorkerError,
+    BootstrapError,
+    ImportContext,
+    RecoveryContext,
+    DelegationContext,
+    WorkerContext,
+    BootstrapContext,
+  >(input: {
+    readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
+    readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
+    readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
+    readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
+    readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
+  }) {
+    yield* input.importLegacyShells;
+    const recovery = yield* input.recover;
+    yield* input.recoverDelegatedTasks;
+    yield* input.startEffectWorker;
+    const bootstrap = yield* input.autoBootstrap;
+    return { recovery, bootstrap } as const;
+  },
+);
 
 const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: StartupOptions) {
   const serverConfig = yield* ServerConfig.ServerConfig;
@@ -507,28 +462,8 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const random = yield* SecureRandom.SecureRandom;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
 
-  const plannedContinuity = yield* Effect.serviceOption(
-    PlannedUpdateContinuity.PlannedUpdateContinuity,
-  );
-
-  const continuationContext = yield* Effect.context<
-    | Effect.Services<typeof ServerUpdateContinuation.markRunningProviderSessionsForContinuation>
-    | Effect.Services<typeof ServerUpdateContinuation.markOptedInProviderSessionsForContinuation>
-    | Effect.Services<
-        ReturnType<typeof ServerUpdateContinuation.clearProviderSessionContinuationMarkers>
-      >
-  >();
-  const continuationError = (cause: unknown) =>
-    new ServerRuntimeStartupError({
-      mode: serverConfig.mode,
-      host: serverConfig.host ?? null,
-      port: serverConfig.port,
-      cause,
-    });
   const commandGate = yield* makeCommandGate;
-  const httpListening = yield* Deferred.make<NetAddress.SocketAddress>();
-  const nativeTrial = yield* JonesTrialStartup.hasJonesTrialAuthority;
-  const trialActivated = yield* Ref.make(false);
+  const httpListening = yield* Deferred.make<void>();
   const effectWorkerFiber = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
 
   yield* Effect.addFinalizer(() =>
@@ -545,18 +480,11 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       if (workerFiber !== null) {
         yield* Fiber.interrupt(workerFiber).pipe(Effect.ignore);
       }
-      yield* runRuntimeShutdown({
-        continuationWritesAllowed: !nativeTrial || (yield* Ref.get(trialActivated)),
-        prepareForShutdown: providerRuntimeRecovery.prepareForShutdown,
-        shutdownSessions: providerSessions.shutdown,
-        reconcile: providerRuntimeRecovery
-          .reconcile("shutdown")
-          .pipe(
-            Effect.flatMap((reconciliation) =>
-              Effect.logInfo("V2 orchestration shutdown reconciliation completed", reconciliation),
-            ),
-          ),
-      });
+      yield* providerRuntimeRecovery.prepareForShutdown.pipe(
+        Effect.ensuring(providerSessions.shutdown),
+      );
+      const reconciliation = yield* providerRuntimeRecovery.reconcile("shutdown");
+      yield* Effect.logInfo("V2 orchestration shutdown reconciliation completed", reconciliation);
     }).pipe(
       Effect.withSpan("server.shutdown"),
       Effect.catchCause((cause) =>
@@ -601,26 +529,20 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     const welcomeBase = yield* resolveWelcomeBase;
     const environment = yield* serverEnvironment.getDescriptor;
     const legacyMigrationThreadCount = yield* legacyV1ThreadImporter.pendingThreadCount;
+    if (legacyMigrationThreadCount > 0) {
+      yield* lifecycleEvents.publish({
+        version: 1,
+        type: "legacyThreadMigration",
+        payload: {
+          status: "running",
+          totalThreadCount: legacyMigrationThreadCount,
+        },
+      });
+    }
     const { recovery, bootstrap: bootstrapTargets } = yield* runOrderedV2StartupPhases({
-      awaitTrialCommit: JonesTrialStartup.awaitSelectedJonesTrialStartup({
-        waitUntilParked: Deferred.await(httpListening).pipe(
-          Effect.andThen(options?.awaitAuxiliaryParked ?? Effect.void),
-          Effect.asVoid,
-        ),
-        observedListener: Deferred.await(httpListening),
-      }),
       importLegacyShells: runStartupPhase(
         "orchestration-v2.legacy-v1.import-shells",
-        Effect.gen(function* () {
-          if (legacyMigrationThreadCount > 0) {
-            yield* lifecycleEvents.publish({
-              version: 1,
-              type: "legacyThreadMigration",
-              payload: { status: "running", totalThreadCount: legacyMigrationThreadCount },
-            });
-          }
-          return yield* legacyV1ThreadImporter.reconcileShells;
-        }).pipe(
+        legacyV1ThreadImporter.reconcileShells.pipe(
           Effect.tap((summary) =>
             summary.importedThreadCount === 0
               ? Effect.void
@@ -628,32 +550,10 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           ),
         ),
       ),
-      recover: runStartupPhase(
-        "orchestration-v2.recovery",
-        Effect.gen(function* () {
-          if (Option.isSome(plannedContinuity))
-            yield* activatePlannedUpdateContinuity({
-              baseDir: serverConfig.baseDir,
-              dbPath: serverConfig.dbPath,
-              launcher,
-              continuity: plannedContinuity.value,
-            }).pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("Planned update continuity remains held", { cause }),
-              ),
-            );
-          return yield* providerRuntimeRecovery.recover;
-        }),
-      ),
-      recoverCodexFailover: runStartupPhase(
-        "orchestration-v2.codex-failover.recover",
-        orchestrator.recoverCodexFailover ?? Effect.void,
-      ),
+      recover: runStartupPhase("orchestration-v2.recovery", providerRuntimeRecovery.recover),
       recoverDelegatedTasks: runStartupPhase(
         "orchestration-v2.delegated-tasks.recover",
-        orchestrator.recoverDelegatedTasks.pipe(
-          Effect.andThen(orchestrator.recoverPlannedUpdateQueues ?? Effect.void),
-        ),
+        orchestrator.recoverDelegatedTasks,
       ),
       startEffectWorker: runStartupPhase(
         "orchestration-v2.effect-worker.start",
@@ -734,9 +634,9 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           yield* Effect.logDebug("startup phase: browser open check");
           const startupBrowserTarget = yield* resolveStartupBrowserTarget;
           if (serverConfig.mode !== "desktop") {
-            yield* logStartupPairingIssued;
+            yield* announceStartupPairingUrl(startupBrowserTarget);
           }
-          yield* runStartupPhase("browser.open", maybeOpenJonesBrowser(startupBrowserTarget));
+          yield* runStartupPhase("browser.open", maybeOpenBrowser(startupBrowserTarget));
         }
       }),
     );
@@ -745,8 +645,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     yield* runStartupPhase("http.wait", Deferred.await(httpListening));
     yield* runStartupPhase("auxiliary-roots.parked", options?.awaitAuxiliaryParked ?? Effect.void);
 
-    const updateOutcome = yield* launcher.prepareTrial;
-    yield* installSelectedSyntheticPresentation();
+    const updateOutcome = yield* launcher.prepareTrial({ baseDir: serverConfig.baseDir });
 
     yield* Effect.logDebug("startup phase: publishing welcome event", {
       environmentId: environment.environmentId,
@@ -768,10 +667,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       }),
     );
 
-    yield* (options?.activate ?? Effect.void).pipe(
-      Effect.andThen(Ref.set(trialActivated, true)),
-      Effect.uninterruptible,
-    );
+    yield* options?.activate ?? Effect.void;
     yield* Effect.logDebug("Accepting commands");
     yield* commandGate.signalCommandReady;
     yield* Effect.logDebug("startup phase: publishing ready event");
@@ -789,8 +685,6 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     );
     yield* Effect.logDebug("startup phase: complete");
     yield* flushCompileCache;
-    yield* launcher.markRuntimeReady ?? Effect.void;
-    yield* startLauncherHandoff(launcher);
   }).pipe(
     Effect.withSpan("server.startup", {
       kind: "server",
@@ -824,29 +718,8 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   );
 
   return {
-    capturePlannedUpdate: (
-      input: Parameters<PlannedUpdateContinuity.PlannedUpdateContinuity["Service"]["capture"]>[0],
-    ) =>
-      Option.isSome(plannedContinuity)
-        ? plannedContinuity.value.capture(input).pipe(Effect.mapError(continuationError))
-        : Effect.fail(continuationError("Planned update continuity is not configured.")),
-    markRunningProviderSessionsForContinuation:
-      ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
-        Effect.provide(continuationContext),
-        Effect.mapError(continuationError),
-      ),
-    markOptedInProviderSessionsForContinuation:
-      ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
-        Effect.provide(continuationContext),
-        Effect.mapError(continuationError),
-      ),
-    clearProviderSessionContinuationMarkers: (ids) =>
-      ServerUpdateContinuation.clearProviderSessionContinuationMarkers(ids).pipe(
-        Effect.provide(continuationContext),
-        Effect.mapError(continuationError),
-      ),
     awaitCommandReady: commandGate.awaitCommandReady,
-    markHttpListening: (address) => Deferred.succeed(httpListening, address).pipe(Effect.asVoid),
+    markHttpListening: Deferred.succeed(httpListening, undefined),
     enqueueCommand: commandGate.enqueueCommand,
   } satisfies ServerRuntimeStartup["Service"];
 });

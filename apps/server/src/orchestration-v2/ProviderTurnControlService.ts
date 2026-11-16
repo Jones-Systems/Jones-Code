@@ -1,12 +1,7 @@
-import {
-  GoalNotificationNotDelivered,
-  GoalNotificationDeliveryUnknown,
-  isGoalNotificationNotDelivered,
-} from "../jones/goals/GoalNotificationDelivery.ts";
-import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
+  type ModelSelection,
   type NodeId,
   ProviderSessionId,
   ProviderThreadId,
@@ -14,22 +9,29 @@ import {
   RunAttemptId,
   ThreadId,
 } from "@t3tools/contracts";
-import * as Clock from "effect/Clock";
 import type * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import { ProviderControlDeadline } from "@t3tools/provider-core/server/jones/providerControlOutcome";
-import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as EventSink from "./EventSink.ts";
-import { awaitRestartTerminal } from "../jones/orchestration/RestartPreparation.ts";
-import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-import { STOP_CHILD_BUDGET_MS, STOP_RECOVERY_BUDGET_MS } from "../jones/provider/stopBudgets.ts";
+
+const yieldToRuntime = Effect.yieldNow.pipe(
+  Effect.andThen(
+    Effect.promise(
+      () =>
+        new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        }),
+    ),
+  ),
+);
 
 export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnControlError>()(
   "ProviderTurnControlError",
@@ -38,6 +40,7 @@ export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnCon
     operation: Schema.Literals(["interrupt", "restart", "steer"]),
     providerTurnId: ProviderTurnId,
     turnCompleted: Schema.optional(Schema.Boolean),
+    steerDeclined: Schema.optional(Schema.Boolean),
     /** The provider never confirmed the stop; Force stop is the way out. */
     unresponsive: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
@@ -67,8 +70,30 @@ export interface ProviderTurnControlServiceV2Shape {
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
     readonly messageId: MessageId;
-    readonly messageIds?: ReadonlyArray<MessageId>;
+    readonly modelSelection?: ModelSelection;
   }) => Effect.Effect<void, ProviderTurnControlError>;
+  /** Best effort: a turn that ended or moved sessions picks the selection up when it next starts. */
+  readonly applyModelSelection: (input: {
+    readonly threadId: ThreadId;
+    readonly providerSessionId: ProviderSessionId;
+    readonly providerThreadId: ProviderThreadId;
+    readonly modelSelection: ModelSelection;
+  }) => Effect.Effect<
+    void,
+    | ProjectionStore.ProjectionStoreV2Error
+    | ProviderSessionManager.ProviderSessionManagerV2Error
+    | ProviderAdapter.ProviderAdapterV2Error
+  >;
+  /** Best effort: a provider thread that is no longer live picks the title up when its next turn starts. */
+  readonly applyThreadTitle: (input: {
+    readonly threadId: ThreadId;
+    readonly title: string;
+  }) => Effect.Effect<
+    void,
+    | ProjectionStore.ProjectionStoreV2Error
+    | ProviderSessionManager.ProviderSessionManagerV2Error
+    | ProviderAdapter.ProviderAdapterV2Error
+  >;
   readonly interruptAndAwaitTerminal: (input: {
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
@@ -87,14 +112,14 @@ export class ProviderTurnControlServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnControlServiceV2,
   never,
+  | EventSink.EventSinkV2
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
-  | EventSink.EventSinkV2
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
+    const eventSink = yield* EventSink.EventSinkV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const sink = yield* EventSink.EventSinkV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
 
     const load = Effect.fn("ProviderTurnControlService.load")(function* (input: {
@@ -123,10 +148,7 @@ export const layer: Layer.Layer<
           threadId: input.threadId,
           operation: input.operation,
           providerTurnId: input.providerTurnId,
-          cause:
-            context.message?.notification === undefined
-              ? "The recorded provider execution target is no longer valid."
-              : new GoalNotificationNotDelivered(),
+          cause: "The recorded provider execution target is no longer valid.",
         });
       }
       // A restart-session command commits the replacement binding before its
@@ -146,8 +168,7 @@ export const layer: Layer.Layer<
             threadId: input.threadId,
             operation: "steer",
             providerTurnId: input.providerTurnId,
-            turnCompleted:
-              providerTurn.status === "completed" || context.message?.notification !== undefined,
+            turnCompleted: providerTurn.status === "completed",
             cause: "The provider turn ended before the steering message was delivered.",
           });
         }
@@ -177,7 +198,7 @@ export const layer: Layer.Layer<
           );
           return {
             context,
-            providerThread,
+            providerThread: interruptProviderThread,
             providerTurn,
             session: Option.none(),
           };
@@ -186,26 +207,72 @@ export const layer: Layer.Layer<
           threadId: input.threadId,
           operation: input.operation,
           providerTurnId: input.providerTurnId,
-          cause:
-            context.message?.notification === undefined
-              ? `Provider session ${input.providerSessionId} is not active.`
-              : new GoalNotificationNotDelivered(),
+          cause: `Provider session ${input.providerSessionId} is not active.`,
         });
       }
-      return {
-        context,
-        providerThread: targetsRecordedSession
-          ? providerThread
-          : { ...interruptProviderThread, providerInstanceId: session.value.instanceId },
-        providerTurn,
-        session,
-      };
+      return { context, providerThread: interruptProviderThread, providerTurn, session };
+    });
+
+    const awaitSettled = Effect.fn("ProviderTurnControlService.awaitSettled")(function* (
+      threadId: ThreadId,
+      target: ProjectionStore.ProjectionProviderControlTarget,
+    ) {
+      const isSettled = projections
+        .getProviderControlContext(threadId, target)
+        .pipe(
+          Effect.map(
+            ({ providerTurn, attempt }) =>
+              providerTurn?.status !== "running" && attempt?.status !== "running",
+          ),
+        );
+      const afterSequence = yield* eventSink.latestSequence({ threadId });
+      if (yield* isSettled) return;
+      yield* eventSink.stream({ threadId, afterSequence }).pipe(
+        Stream.filter(
+          ({ event }) =>
+            event.type === "provider-turn.updated" || event.type === "run-attempt.updated",
+        ),
+        Stream.mapEffect(() => isSettled),
+        Stream.takeUntil((settled) => settled),
+        Stream.runDrain,
+      );
     });
 
     return ProviderTurnControlServiceV2.of({
+      applyModelSelection: Effect.fn("ProviderTurnControlService.applyModelSelection")(
+        function* (input) {
+          const { providerThread, providerTurn } = yield* projections.getRunningTurnContext(
+            input.threadId,
+          );
+          if (
+            providerThread?.id !== input.providerThreadId ||
+            providerThread.providerSessionId !== input.providerSessionId ||
+            providerTurn === undefined
+          ) {
+            return;
+          }
+          const session = yield* sessions.get(input.providerSessionId);
+          if (Option.isNone(session) || session.value.applyModelSelection === undefined) return;
+          yield* session.value.applyModelSelection({
+            providerThread,
+            modelSelection: input.modelSelection,
+          });
+        },
+      ),
+      applyThreadTitle: Effect.fn("ProviderTurnControlService.applyThreadTitle")(function* (input) {
+        const { thread, providerThreads } = yield* projections.getThreadRecords(input.threadId, [
+          "providerThreads",
+        ]);
+        const providerThread = providerThreads.find(
+          (candidate) => candidate.id === thread.activeProviderThreadId,
+        );
+        if (!providerThread?.providerSessionId) return;
+        const session = yield* sessions.get(providerThread.providerSessionId);
+        if (Option.isNone(session) || session.value.applyThreadTitle === undefined) return;
+        yield* session.value.applyThreadTitle({ providerThread, title: input.title });
+      }),
       interrupt: Effect.fn("ProviderTurnControlService.interrupt")(
         function* (input) {
-          const interruptDeadline = (yield* Clock.currentTimeMillis) + STOP_CHILD_BUDGET_MS;
           const loaded = yield* load({ ...input, operation: "interrupt" });
           const session = Option.isSome(loaded.session)
             ? loaded.session
@@ -246,7 +313,6 @@ export const layer: Layer.Layer<
               requestRuntimeRestart: true,
             })
             .pipe(
-              Effect.provideService(ProviderControlDeadline, interruptDeadline),
               Effect.catchTags({
                 ProviderAdapterInterruptTimeoutError: (cause) =>
                   Effect.fail(
@@ -260,24 +326,15 @@ export const layer: Layer.Layer<
                   ),
               }),
             );
-          const remaining = Math.max(0, interruptDeadline - (yield* Clock.currentTimeMillis));
-          // Use real time; ingestion fibers do not advance TestClock and would leave Stop blocked.
-          yield* Effect.gen(function* () {
-            const deadline = (yield* Clock.currentTimeMillis) + Math.min(remaining, 2_000);
-            while (
-              loaded.providerTurn.status === "running" &&
-              (yield* Clock.currentTimeMillis) < deadline
-            ) {
-              const current = yield* projections.getProviderControlContext(input.threadId, input);
-              if (
-                current.providerTurn?.status !== "running" &&
-                current.attempt?.status !== "running"
-              ) {
-                return;
-              }
-              yield* Effect.sleep("10 millis");
-            }
-          }).pipe(Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()));
+          if (loaded.providerTurn.status === "running") {
+            // Let native terminal ingestion finalize the attempt before the Stop follow-up repairs it.
+            const { runAttemptId } = loaded.providerTurn;
+            yield* awaitSettled(input.threadId, {
+              providerThreadId: input.providerThreadId,
+              providerTurnId: input.providerTurnId,
+              ...(runAttemptId === null ? {} : { attemptId: runAttemptId }),
+            }).pipe(Effect.timeoutOption("2 seconds"));
+          }
         },
         (effect, input) =>
           effect.pipe(
@@ -311,18 +368,36 @@ export const layer: Layer.Layer<
             return;
           }
 
-          yield* loaded.session.value
-            .interruptTurn({
-              providerThread: loaded.providerThread,
-              providerTurnId: loaded.providerTurn.id,
-              preserveGoal: true,
-            })
-            .pipe(Effect.timeout(STOP_RECOVERY_BUDGET_MS));
+          yield* loaded.session.value.interruptTurn({
+            providerThread: loaded.providerThread,
+            providerTurnId: loaded.providerTurn.id,
+          });
 
-          yield* awaitRestartTerminal({
-            target: input,
-            projections,
-            sink,
+          for (let remaining = 1_000; remaining > 0; remaining -= 1) {
+            const { providerTurn, attempt } = yield* projections.getProviderControlContext(
+              input.threadId,
+              {
+                providerThreadId: input.providerThreadId,
+                providerTurnId: input.providerTurnId,
+                attemptId: input.interruptedAttemptId,
+              },
+            );
+            if (
+              providerTurn !== undefined &&
+              providerTurn.status !== "running" &&
+              attempt !== undefined &&
+              attempt.status !== "running"
+            ) {
+              return;
+            }
+            // Yield through Node's event loop; detached ingestion cannot advance a deterministic Effect clock.
+            yield* yieldToRuntime;
+          }
+          return yield* new ProviderTurnControlError({
+            threadId: input.threadId,
+            operation: "restart",
+            providerTurnId: input.providerTurnId,
+            cause: `Provider turn ${input.providerTurnId} did not terminalize before restart.`,
           });
         },
         (effect, input) =>
@@ -342,19 +417,6 @@ export const layer: Layer.Layer<
       steer: Effect.fn("ProviderTurnControlService.steer")(
         function* (input) {
           const context = yield* projections.getProviderControlContext(input.threadId, input);
-          if (context.message?.notification !== undefined && context.run !== undefined) {
-            const stopped = yield* projections.getThreadRecords(input.threadId, ["turnItems"], {
-              turnItemTypes: ["run_interrupt_request"],
-              turnItemRunIds: [context.run.id],
-            });
-            if (stopped.turnItems.length > 0)
-              return yield* new ProviderTurnControlError({
-                threadId: input.threadId,
-                operation: "steer",
-                providerTurnId: input.providerTurnId,
-                cause: new GoalNotificationNotDelivered(),
-              });
-          }
           const ownership = context.message?.delegatedCompletion;
           if (ownership !== undefined) {
             const projection = yield* projections.getThreadRecords(input.threadId, ["runs"], {
@@ -382,56 +444,22 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
-          let batchPayload: { text: string; attachments: typeof message.attachments } | undefined;
-          if (input.messageIds !== undefined) {
-            const records = yield* projections.getThreadRecords(input.threadId, ["messages"], {
-              messageIds: input.messageIds,
-            });
-            const messages = input.messageIds.map((id) =>
-              records.messages.find((row) => row.id === id),
-            );
-            if (
-              messages.length === 0 ||
-              input.messageIds[0] !== input.messageId ||
-              new Set(input.messageIds).size !== input.messageIds.length ||
-              messages.some(
-                (row) =>
-                  row === undefined || row.runId !== run.id || row.threadId !== input.threadId,
-              )
-            )
-              return yield* new ProviderTurnControlError({
-                threadId: input.threadId,
-                operation: "steer",
-                providerTurnId: input.providerTurnId,
-                cause: "The persisted batch membership changed.",
-              });
-            const plan = planQueuedSteerBatch(
-              messages.map((row) => ({ message: row!, eligible: true })),
-            );
-            if (plan.count !== messages.length)
-              return yield* new ProviderTurnControlError({
-                threadId: input.threadId,
-                operation: "steer",
-                providerTurnId: input.providerTurnId,
-                cause: "The persisted batch exceeds the steering budget.",
-              });
-            batchPayload = plan;
-          }
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
               runId: run.id,
               providerThread: loaded.providerThread,
               providerTurnId: loaded.providerTurn.id,
+              ...(input.modelSelection === undefined
+                ? {}
+                : { modelSelection: input.modelSelection }),
               message: {
                 messageId: message.id,
-                text:
-                  batchPayload?.text ??
-                  projectComposerContextForProvider({
-                    text: message.text,
-                    records: message.context?.records ?? [],
-                  }),
-                attachments: batchPayload?.attachments ?? message.attachments,
+                text: projectComposerContextForProvider({
+                  text: message.text,
+                  records: message.context?.records ?? [],
+                }),
+                attachments: message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
                 ...(message.scheduledTaskId === undefined
@@ -443,34 +471,31 @@ export const layer: Layer.Layer<
               },
             })
             .pipe(
+              Effect.catchTags({
+                ProviderAdapterSteerDeclinedError: (cause) =>
+                  Effect.fail(
+                    new ProviderTurnControlError({
+                      threadId: input.threadId,
+                      operation: "steer",
+                      providerTurnId: input.providerTurnId,
+                      steerDeclined: true,
+                      cause,
+                    }),
+                  ),
+              }),
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  if (isProviderTurnControlError(cause)) return yield* cause;
                   const current = yield* projections.getProviderControlContext(
                     input.threadId,
                     input,
                   );
-                  // A plain rejection from a turn the projection shows completed took nothing in.
-                  // Typed outcomes and every other notification failure stay unknown.
-                  const rejectedByCompletedTurn =
-                    findSteerFailure(cause) === undefined &&
-                    current.providerTurn?.status === "completed";
-                  if (
-                    message.notification !== undefined &&
-                    !isGoalNotificationNotDelivered(cause) &&
-                    !rejectedByCompletedTurn
-                  ) {
-                    return yield* new ProviderTurnControlError({
-                      threadId: input.threadId,
-                      operation: "steer",
-                      providerTurnId: input.providerTurnId,
-                      cause: new GoalNotificationDeliveryUnknown({ cause }),
-                    });
-                  }
+                  const status = current.providerTurn?.status;
                   return yield* new ProviderTurnControlError({
                     threadId: input.threadId,
                     operation: "steer",
                     providerTurnId: input.providerTurnId,
-                    turnCompleted: isGoalNotificationNotDelivered(cause) || rejectedByCompletedTurn,
+                    turnCompleted: status === "completed",
                     cause,
                   });
                 }),

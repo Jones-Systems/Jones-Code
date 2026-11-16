@@ -1,4 +1,4 @@
-import { useProviderWorkspaceRefresh } from "../../jones/providerWorkspaceRefresh/useProviderWorkspaceRefresh";
+import { threadPullRequestKeyOf } from "@t3tools/client-runtime/thread-pull-requests";
 import * as Dialog from "../../components/ui/Dialog";
 import type {
   EnvironmentId,
@@ -53,9 +53,12 @@ import {
   formatComposerModelMention,
   rankComposerModelMentions,
 } from "@t3tools/client-runtime/composer-model-mentions";
-import { useState } from "react";
+import { useAtomRefresh } from "@effect/atom-react";
+import { Atom } from "effect/reactivity";
+import { useEffect, useState } from "react";
 
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
+import { providerWorkspaceSnapshotRefresh } from "../../state/provider-workspace-snapshot-refresh";
 import {
   useComposerPathSearch,
   useComposerPullRequestSearch,
@@ -64,6 +67,10 @@ import {
 import type { ModelOption } from "../../lib/modelOptions";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
 import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
+
+const idleWorkspaceSnapshotRefreshAtom: Atom.Atom<unknown> = Atom.make<void>(undefined).pipe(
+  Atom.withLabel("mobile:provider-workspace-snapshot-refresh:idle"),
+);
 
 function composerSelectionAtEnd(draftMessage: string): ComposerEditorSelection {
   return { start: draftMessage.length, end: draftMessage.length };
@@ -249,6 +256,7 @@ export function useComposerCommandMenu({
   enabled = true,
   onChangeDraftMessage,
   onUsageLimits,
+  onOpenModelPicker,
   modelOptions,
   modelProviders,
   onFreshSession,
@@ -273,6 +281,8 @@ export function useComposerCommandMenu({
   readonly enabled?: boolean;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onUsageLimits?: () => void;
+  /** `/model` opens this picker instead of inserting text. */
+  readonly onOpenModelPicker: () => void;
   readonly modelOptions?: ReadonlyArray<ModelOption>;
   readonly modelProviders?: ReadonlyArray<ServerProvider>;
   /** Arms a fresh session for the next message; absent where `/clear` is unavailable. */
@@ -298,12 +308,26 @@ export function useComposerCommandMenu({
   const skills = selectedProviderStatus
     ? resolveProviderSkillsForCwd(selectedProviderStatus, projectCwd)
     : [];
-  useProviderWorkspaceRefresh({
-    environmentId,
-    projectCwd,
-    provider: selectedProviderStatus,
+  const selectedProviderInstanceId = selectedProviderStatus?.instanceId;
+  const refreshWorkspaceSnapshot = useAtomRefresh(
+    environmentId && projectCwd && selectedProviderInstanceId
+      ? providerWorkspaceSnapshotRefresh({
+          environmentId,
+          instanceId: selectedProviderInstanceId,
+          cwd: projectCwd,
+        })
+      : idleWorkspaceSnapshotRefreshAtom,
+  );
+  // Every draft change rechecks a stale snapshot, including drafts written by
+  // another surface (a prompt link) that never move the editor selection.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refreshes the provider workspace snapshot atom whenever the draft text changes from any surface
+  useEffect(() => {
+    refreshWorkspaceSnapshot();
+  }, [
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Draft changes are the recheck signal.
     draftMessage,
-  });
+    refreshWorkspaceSnapshot,
+  ]);
   const onSelectionChange = (nextSelection: ComposerEditorSelection) => {
     setSelection(nextSelection);
   };
@@ -319,9 +343,10 @@ export function useComposerCommandMenu({
     cwd: trigger?.kind === "path" ? projectCwd : null,
     query: trigger?.kind === "path" ? trigger.query : null,
   });
-  // Mounts older settled threads matching the mention, which shells may leave out.
+  // Mounts older settled threads matching the mention, here and on linked machines, which shells
+  // may leave out.
   useThreadSearch(
-    trigger?.kind === "path" && environmentId ? [environmentId] : [],
+    trigger?.kind === "path" && environmentId ? [environmentId, ...linkedEnvironments.keys()] : [],
     trigger?.kind === "path" ? trigger.query : "",
     { titlesOnly: true },
   );
@@ -338,7 +363,7 @@ export function useComposerCommandMenu({
 
     if (trigger.kind === "pull-request") {
       return pullRequestSearch.entries.map((entry) => ({
-        id: `pr:${entry.projectId}:${entry.repository}:${entry.number}`,
+        id: `pr:${entry.projectId}:${threadPullRequestKeyOf(entry)}`,
         type: "pull-request",
         pullRequest: {
           number: entry.number,
@@ -606,11 +631,18 @@ export function useComposerCommandMenu({
       return;
     }
 
-    if (item.type === "slash-command" && item.command === "clear" && onFreshSession) {
+    const clearTriggerThen = (action: () => void) => {
       const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
       setSelection({ start: cleared.cursor, end: cleared.cursor });
       onChangeDraftMessage(cleared.text);
-      onFreshSession();
+      action();
+    };
+    if (item.type === "slash-command" && item.command === "model") {
+      clearTriggerThen(onOpenModelPicker);
+      return;
+    }
+    if (item.type === "slash-command" && item.command === "clear" && onFreshSession) {
+      clearTriggerThen(onFreshSession);
       return;
     }
     if (
@@ -618,10 +650,7 @@ export function useComposerCommandMenu({
       item.command.name === USAGE_LIMITS_COMMAND.name &&
       onUsageLimits
     ) {
-      const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
-      setSelection({ start: cleared.cursor, end: cleared.cursor });
-      onChangeDraftMessage(cleared.text);
-      onUsageLimits();
+      clearTriggerThen(onUsageLimits);
       return;
     }
 

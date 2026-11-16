@@ -1,96 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off
 // @effect-diagnostics globalTimers:off
-// @effect-diagnostics globalDate:off
-// The launcher supervises the server child for the boot service and must keep
-// working across server versions, so it stays on Node built-ins with no Effect
-// runtime: it is the one part of the executable that cannot depend on the
-// rest of it being loadable.
+// The launcher must survive unloadable server versions; use Node built-ins without Effect.
 import * as NodeChildProcess from "node:child_process";
-import { SERVER_CHILD_SHUTDOWN_GRACE_MS } from "./jones/cloud/shutdownBudget.ts";
-import { proposeRuntimeStagingRetention } from "./jones/cloud/runtimeStagingRetention.ts";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import packageJson from "../package.json" with { type: "json" };
-import {
-  publishLauncherCapabilityReceipt,
-  readLauncherCapabilityReceipt,
-  retractLauncherCapabilityReceipt,
-} from "./jones/cloud/launcherCapability.ts";
-import {
-  readLauncherPointer,
-  readLauncherHandoff,
-  requestLauncherHandoff,
-  settleLauncherHandoff,
-} from "./jones/cloud/launcherPointer.ts";
-import { launcherHandoffProcessesQuiet } from "./jones/cloud/launcherHandoffProcesses.ts";
-import {
-  launcherDriftNotice,
-  QualifiedCommitFailure,
-  qualifiedRollbackRefusal,
-  type QualifiedCommitAttempt,
-} from "./jones/cloud/qualifiedCommitAttempt.ts";
-import {
-  verifyStagedQualifiedRuntime,
-  readQualifiedRuntimeReceipt,
-  withQualifiedRuntimeLock,
-  QUALIFIED_UPDATES_PROTOCOL,
-  QUALIFIED_RECOVERY_PROTOCOL,
-  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
-  qualifiedStagingTiming,
-  retainQualifiedAttemptTimings,
-  type QualifiedDigestOptions,
-  type QualifiedDigestTiming,
-  type StagedQualifiedRuntime,
-} from "./jones/cloud/qualifiedRuntime.ts";
-
-import { withStoppedServerOwnership } from "./jones/cloud/stoppedServerOwnership.ts";
-import {
-  assertQualifiedTrialBinding,
-  readJonesStartupGateProtocol,
-  type QualifiedTrialReceipt,
-} from "./jones/cloud/qualifiedStartup.ts";
-import {
-  QUALIFIED_STARTUP_STATE_FILES,
-  copyQualifiedBackupFile,
-  readQualifiedBackupReceipt,
-  preflightQualifiedBackup,
-  removeQualifiedRecoveryPayload,
-  retainQualifiedAdvancedState,
-  restoreQualifiedBackupFile,
-  writeQualifiedBackupReceipt,
-  type QualifiedBackupAdapter,
-} from "./jones/cloud/qualifiedBackup.ts";
-
-import {
-  decodeServicePreflightResult,
-  qualifiedServicePreflightFailure,
-} from "./jones/cloud/servicePreflightResult.ts";
-import type { MigrationPlan } from "./jones/updates/migrationPlan.ts";
-import {
-  archiveUpdateOperation,
-  assertNoUnreconciledUpdateOperations,
-  evaluateLegacyUpdateSettlement,
-  FailedOperationUnsettledError,
-  operationBinding,
-  publishUpdateOperationSettlement,
-  readOperationReservation,
-  readUpdateOperationCause,
-  readUpdateOperationSettlement,
-  reconcileUpdateOperation,
-  reserveUpdateOperation,
-  resolveUpdateOperation,
-  settleAbandonedUpdateOperations,
-  verifyRetiredUpdateOperation,
-  writeFailedUpdateOperation,
-  writeUpdateOperationCause,
-  type UpdateOperationCause,
-  type UpdateOperationSettlement,
-} from "./jones/updates/launcherOperation.ts";
-
-import { assertStageNotRevoked, retireNativeStage } from "./jones/updates/stageRevocation.ts";
 import * as NodeUtil from "node:util";
+import { acquireServiceSelectionLock } from "./cloud/serviceSelectionLock.ts";
+import { isNoCopyOnWrite, markNoCopyOnWrite } from "./noCopyOnWrite.ts";
 
 import type {
   PendingServiceUpdate,
@@ -99,40 +17,49 @@ import type {
   ServiceLauncherParentMessage,
   ServiceState,
   ServiceUpdateRecord,
-  ServiceUpdateReconciliationResult,
 } from "./cloud/serviceProtocol.ts";
 import {
   compareExactServiceVersions,
   decodeServiceLauncherChildMessage,
   isExactServiceVersion,
+  parseLegacyServiceState,
+  disabledServiceTask,
   parseServiceState,
+  serviceTaskIsDisabled,
+  serviceUnitBaseDirOf,
+  serviceUnitLogPathOf,
   SERVICE_ENV_FILE,
+  SERVICE_LAUNCHER_LOCK_FILE,
+  SERVICE_SERVING_LOCK_FILE,
   SERVICE_LAUNCHER_CONTEXT_ENV,
   SERVICE_LAUNCHER_PROTOCOL,
   SERVICE_STATE_FILE,
   SERVICE_RESTART_PENDING_FILE,
   SERVICE_STOP_MARKER_FILE,
+  SERVICE_UNIT_ENV,
+  systemdUnitDirectoryOf,
 } from "./cloud/serviceProtocol.ts";
-
 import {
-  advanceNativeStoreAuthorityForBaseDir,
-  fenceNativeStoreAuthorityForBaseDir,
-} from "./environment/nativeStoreAuthorityPersistence.ts";
+  legacyOwnerStartedBeforeRecord,
+  legacyOwnerStartTimeCommand,
+} from "./legacyServerOwner.ts";
 
 const HANDOFF_DELAY_MS = 2_000;
 /**
  * Migrations count toward it and can scale with the database: tens of GB on a cold page cache
  * take minutes. A missed window rolls back the database, so the next attempt pays the same cost.
  */
-export const PREPARED_TIMEOUT_MS = 30 * 60_000;
-// Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone
-// launcher stays independent of the Effect-backed contracts package.
+const PREPARED_TIMEOUT_MS = 30 * 60_000;
+const TERMINATE_GRACE_MS = 5_000;
+// Keep SQLite startup and journaling from turning a full filesystem into a restart loop.
+const MIN_SERVICE_START_FREE_BYTES = 64 * 1024 ** 2;
+const DISK_SPACE_RETRY_MS = 30_000;
+// A replacement started by a handoff waits up to two minutes for the stopping launcher.
+const LOCK_RETRY_MS = 500;
+const LOCK_ATTEMPTS = 240;
+// Match contracts' SERVER_EXIT_CODE_STATE_DIR_OWNED without depending on Effect.
 const STATE_DIR_OWNED_EXIT_CODE = 78;
-// The server abandons a launcher exchange after 30 seconds (serviceLauncherClient).
-// Past this fence, measured from message receipt, a qualified Install is not
-// accepted and a qualified pointer is not committed. The margin covers the
-// durable write and reply on a responsive host; it is not a guarantee.
-const QUALIFIED_EXCHANGE_FENCE_MS = 25_000;
+const STATE_DIR_OWNER_POLL_MS = 30_000;
 
 type TerminalStatus = "committed" | "rolled-back" | "failed";
 type ChildRole = "active" | "trial";
@@ -154,82 +81,193 @@ const runtimePaths = (baseDir: string, version: string) => {
   };
 };
 
-class QualifiedCandidatePreflightError extends Error {}
-
-const preflightQualifiedCandidate = async (
-  baseDir: string,
-  staged: StagedQualifiedRuntime,
-): Promise<MigrationPlan | undefined> => {
-  const env = { ...process.env };
-  delete env[SERVICE_LAUNCHER_CONTEXT_ENV];
-  const result = await new Promise<{ readonly code: number | null; readonly stdout: string }>(
-    (resolve, reject) => {
-      NodeChildProcess.execFile(
-        runtimePaths(baseDir, staged.receipt.version).entryPath,
-        [
-          "__service-preflight",
-          "--database-path",
-          staged.binding.dbPath,
-          "--launcher-protocol",
-          String(SERVICE_LAUNCHER_PROTOCOL),
-        ],
-        { env, timeout: 30_000, maxBuffer: 64 * 1024, encoding: "utf8" },
-        (error, stdout) => {
-          if (
-            error !== null &&
-            (typeof error.code !== "number" ||
-              error.killed ||
-              (error.signal !== null && error.signal !== undefined))
-          ) {
-            reject(
-              new Error("startup-gate-unavailable: Could not preflight the qualified candidate.", {
-                cause: error,
-              }),
-            );
-            return;
-          }
-          resolve({ code: error === null ? 0 : Number(error.code), stdout });
-        },
-      );
-    },
-  );
-  const reason = qualifiedServicePreflightFailure({
-    ...result,
-    version: staged.receipt.version,
-    ...(staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
-      ? { requiredQualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL }
-      : {}),
-  });
-  if (reason !== undefined) throw new QualifiedCandidatePreflightError(reason);
-  const preflight = decodeServicePreflightResult(JSON.parse(result.stdout.trim()) as unknown);
-  return preflight?.status === "ready" ? preflight.migrationPlan : undefined;
-};
-
 const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
   command: paths.entryPath,
   args: ["serve"],
 });
 
+/**
+ * The unit or launch agent that `t3 service install` wrote. Its program names
+ * the runtime that ran the install, and a remote update never replaces it, so
+ * after a commit the launcher points it at the committed runtime. Otherwise the
+ * next start lands on a runtime that nothing in the service state records.
+ */
+export interface ServiceUnit {
+  readonly path: string;
+  /** systemd and Task Scheduler keep a loaded copy; launchd re-reads the plist at bootstrap. */
+  readonly reload: () => Promise<void>;
+}
+
+const runSchtasks = (...args: ReadonlyArray<string>) =>
+  NodeUtil.promisify(NodeChildProcess.execFile)("schtasks", args, {
+    windowsHide: true,
+    timeout: 30_000,
+  });
+
+/**
+ * Registering replaces the task, so one the CLI disabled to keep the service stopped is
+ * registered disabled. The caller holds the unit lease, as the CLI does to disable it.
+ */
+export async function registerServiceTask(
+  unitPath: string,
+  taskName: string,
+  schtasks: (...args: ReadonlyArray<string>) => Promise<{ readonly stdout: string }> = runSchtasks,
+): Promise<void> {
+  const register = (xmlPath: string) => schtasks("/Create", "/XML", xmlPath, "/TN", taskName, "/F");
+  const registered = await schtasks("/Query", "/TN", taskName, "/XML");
+  if (!serviceTaskIsDisabled(registered.stdout)) {
+    await register(unitPath);
+    return;
+  }
+  const disabledPath = `${unitPath}.${process.pid}.disabled`;
+  try {
+    const unit = await NodeFSP.readFile(unitPath, "utf8");
+    await NodeFSP.writeFile(disabledPath, disabledServiceTask(unit));
+    await register(disabledPath);
+  } finally {
+    await NodeFSP.rm(disabledPath, { force: true });
+  }
+}
+
+// The manager's environment can differ from the one it gives services (environment.d).
+async function readSystemdUnitDirectory(): Promise<string | undefined> {
+  try {
+    const { stdout } = await NodeUtil.promisify(NodeChildProcess.execFile)(
+      "busctl",
+      [
+        "--user",
+        "--json=short",
+        "get-property",
+        "org.freedesktop.systemd1",
+        "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager",
+        "UnitPath",
+      ],
+      { timeout: 5_000 },
+    );
+    const { data } = JSON.parse(stdout) as { readonly data?: unknown };
+    return Array.isArray(data) && data.every((entry) => typeof entry === "string")
+      ? systemdUnitDirectoryOf(data)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function serviceUnitFromEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ServiceUnit | undefined> {
+  const unitName = env[SERVICE_UNIT_ENV]?.trim();
+  if (!unitName) return undefined;
+  if (unitName.endsWith(".xml")) {
+    const localAppData = env.LOCALAPPDATA?.trim();
+    if (!localAppData) return undefined;
+    const path = NodePath.win32.join(localAppData, "t3code", unitName);
+    const taskName = serviceTaskName(env.USERDOMAIN ?? "", env.USERNAME ?? "");
+    return { path, reload: () => registerServiceTask(path, taskName) };
+  }
+  const home = env.HOME?.trim();
+  if (!home) return undefined;
+  if (unitName.endsWith(".plist")) {
+    return {
+      path: NodePath.join(home, "Library", "LaunchAgents", unitName),
+      reload: () => Promise.resolve(),
+    };
+  }
+  const xdgConfigHome = env.XDG_CONFIG_HOME?.trim();
+  const unitDir =
+    (await readSystemdUnitDirectory()) ??
+    NodePath.join(
+      xdgConfigHome && NodePath.isAbsolute(xdgConfigHome)
+        ? xdgConfigHome
+        : NodePath.join(home, ".config"),
+      "systemd",
+      "user",
+    );
+  return {
+    path: NodePath.join(unitDir, unitName),
+    reload: () =>
+      new Promise((resolve, reject) => {
+        NodeChildProcess.spawn("systemctl", ["--user", "daemon-reload"], {
+          stdio: "ignore",
+          timeout: 30_000,
+        })
+          .once("error", reject)
+          .once("exit", (code, signal) =>
+            code === 0
+              ? resolve()
+              : reject(new Error(`systemctl --user daemon-reload exited with ${code ?? signal}`)),
+          );
+      }),
+  };
+}
+
+// systemd's ExecStart value, or the plist string or task argument before __service-launcher.
+// Only the version segment changes, so quoted or escaped paths stay as rendered.
+// The launch agent's PATH names a versions directory without the executable; leave it.
+const SERVICE_UNIT_PROGRAMS = [
+  /^(ExecStart=.*?[\\/]runtime[\\/]versions[\\/])([^\\/\s"]+)([\\/]t3)(?=["\s])/m,
+  /(<string>[^<]*?[\\/]runtime[\\/]versions[\\/])([^\\/<]+)([\\/]t3<\/string>\s*<string>__service-launcher<\/string>)/,
+  /(<Arguments>--headless "[^"<]*?[\\/]runtime[\\/]versions[\\/])([^\\/"<]+)([\\/]t3\.exe" "__service-launcher")/,
+] as const;
+
+/**
+ * The unit contents with their program pointed at `version`'s runtime. A unit
+ * already at that version or a newer one is returned unchanged: `t3 update`
+ * may have repointed it to a later version while this commit was in flight.
+ */
+function repointServiceUnit(contents: string, version: string): string {
+  for (const program of SERVICE_UNIT_PROGRAMS) {
+    const match = program.exec(contents);
+    if (match === null) continue;
+    const [, prefix = "", current = "", suffix = ""] = match;
+    if (isExactServiceVersion(current) && compareExactServiceVersions(current, version) >= 0) {
+      return contents;
+    }
+    return contents.replace(program, () => `${prefix}${version}${suffix}`);
+  }
+  return contents;
+}
+
+const SERVICE_LOG_MAX_BYTES = 10 * 1024 * 1024;
+const SERVICE_LOG_CHECK_INTERVAL_MS = 10 * 60_000;
+
+/**
+ * The service manager holds the log open for appending, so it is copied aside and emptied in
+ * place rather than renamed. The copy is best effort: on a full disk the truncate frees space.
+ */
+async function boundServiceLog(logPath: string): Promise<void> {
+  const size = await NodeFSP.stat(logPath).then(
+    (stats) => stats.size,
+    () => 0,
+  );
+  if (size <= SERVICE_LOG_MAX_BYTES) return;
+  const archivePath = `${logPath}.1`;
+  const pendingArchivePath = `${archivePath}.tmp`;
+  await NodeFSP.copyFile(logPath, pendingArchivePath)
+    .then(() => NodeFSP.rename(pendingArchivePath, archivePath))
+    .catch(() => NodeFSP.rm(pendingArchivePath, { force: true }).catch(() => undefined));
+  await NodeFSP.truncate(logPath, 0).catch(() => undefined);
+}
+
+async function serviceLogPath(
+  options: LauncherOptions,
+  serviceUnit: ServiceUnit | undefined,
+): Promise<string | undefined> {
+  if (options.logFile !== undefined) return options.logFile;
+  if (serviceUnit === undefined) return undefined;
+  const contents = await NodeFSP.readFile(serviceUnit.path, "utf8").catch(() => undefined);
+  return contents === undefined ? undefined : serviceUnitLogPathOf(contents);
+}
+
 const DB_FILE_SUFFIXES = ["", "-wal", "-shm"] as const;
 const RESTORE_MARKER = ".restore-pending";
-const PAIRED_SETTINGS = QUALIFIED_STARTUP_STATE_FILES;
 
 const databaseBackupDir = (baseDir: string, updateId: string) =>
   NodePath.join(baseDir, "runtime", "db-backup", updateId);
 
 const databaseBackupFile = (backupDir: string, suffix: (typeof DB_FILE_SUFFIXES)[number]) =>
   NodePath.join(backupDir, suffix === "" ? "database" : `database${suffix}`);
-
-export const configuredDatabasePathForBaseDir = (baseDir: string): string =>
-  NodePath.resolve(baseDir, "userdata", "statev2.sqlite");
-
-const validateDatabasePathForBaseDir = (baseDir: string, databasePath: string): string => {
-  const configuredPath = configuredDatabasePathForBaseDir(baseDir);
-  if (NodePath.resolve(databasePath) !== configuredPath) {
-    throw new Error("Service update database path must be the configured userdata/statev2.sqlite.");
-  }
-  return configuredPath;
-};
 
 async function pathExists(target: string): Promise<boolean> {
   try {
@@ -281,9 +319,7 @@ async function syncFile(filePath: string): Promise<void> {
   }
 }
 
-// Flushes a directory entry so a rename into it survives power loss. Windows
-// has no directory fsync: the handle opens but sync fails with EPERM, and
-// NTFS journals the rename on its own.
+// Fsync makes renames durable; Windows returns EPERM and NTFS journals them itself.
 async function syncDirectory(directory: string): Promise<void> {
   const handle = await NodeFSP.open(directory, "r");
   try {
@@ -295,20 +331,21 @@ async function syncDirectory(directory: string): Promise<void> {
   }
 }
 
-function runCp(args: ReadonlyArray<string>): Promise<boolean> {
+function runCp(args: ReadonlyArray<string>, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
-    NodeChildProcess.execFile("cp", args, (error) => resolve(error === null));
+    NodeChildProcess.execFile("cp", args, { signal }, (error) => resolve(error === null));
   });
 }
 
-/**
- * Node's own clone flag is not used: on macOS `fs.copyFile` falls back to a full copy.
- */
-async function copyDatabaseFile(source: string, destination: string): Promise<void> {
+// macOS fs.copyFile clone flags fall back to full copies.
+async function copyDatabaseFile(
+  source: string,
+  destination: string,
+  signal?: AbortSignal,
+): Promise<void> {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
   const platform = process.platform;
-  // `cp -c` replaces the destination with a new file, which would cut a
-  // hard-linked database off from its other links; copy into it instead.
+  // cp -c replaces files and breaks hard links; copy into hard-linked destinations instead.
   const hardLinked =
     platform === "darwin" &&
     ((await NodeFSP.stat(destination).catch(() => undefined))?.nlink ?? 1) > 1;
@@ -318,16 +355,17 @@ async function copyDatabaseFile(source: string, destination: string): Promise<vo
       : platform === "linux"
         ? ["--reflink=auto", source, destination]
         : undefined;
-  if (args === undefined || !(await runCp(args))) await NodeFSP.copyFile(source, destination);
+  if (args !== undefined && (await runCp(args, signal))) return;
+  signal?.throwIfAborted();
+  await NodeFSP.copyFile(source, destination);
 }
 
 const GIB = 1024 ** 3;
-/**
- * Clones share blocks, but the trial server diverges from them as it writes,
- * migrations included, so a cloned backup still needs room for that churn.
- */
+// Cloned backups still need headroom for trial writes and migrations to diverge.
 const CLONED_BACKUP_MIN_HEADROOM_BYTES = GIB;
 const CLONED_BACKUP_HEADROOM_FRACTION = 0.1;
+// While the online backup holds its snapshot, the live WAL and its copy can each reach the server's 128 MiB gate.
+const ONLINE_BACKUP_WAL_HEADROOM_BYTES = 2 * 128 * 1024 ** 2;
 
 async function statDatabaseFiles(dbPath: string): Promise<ReadonlyArray<NodeFS.Stats>> {
   const stats: Array<NodeFS.Stats> = [];
@@ -341,12 +379,7 @@ async function statDatabaseFiles(dbPath: string): Promise<ReadonlyArray<NodeFS.S
   return stats;
 }
 
-/**
- * - macOS: `cp -c` clones within one APFS volume and silently copies
- *   anywhere else, so every existing database file must share the backup
- *   directory's device, whose filesystem type must match the system volume's,
- *   which is always APFS.
- */
+// cp -c silently copies across volumes; require one device matching the APFS system volume's filesystem type.
 async function backupCanClone(dbPath: string, backupRoot: string): Promise<boolean> {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
   const platform = process.platform;
@@ -392,13 +425,12 @@ const filesystemBackupSpaceProbe: BackupSpaceProbe = {
 
 // A killed launcher skips the backup's cleanup, and retries only clear their own update's copy.
 // Update requests are refused while one is pending, so no staging directory is still in use here.
-// A paired snapshot's staging has unknown prior effects, so recovery keeps it for reconciliation.
 async function removeAbandonedBackupCopies(backupRoot: string): Promise<void> {
   for (const entry of await NodeFSP.readdir(backupRoot)) {
     if (!entry.endsWith(".staging")) continue;
-    const staging = NodePath.join(backupRoot, entry);
-    if (await pathExists(NodePath.join(staging, "paired-binding.json"))) continue;
-    await NodeFSP.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    await NodeFSP.rm(NodePath.join(backupRoot, entry), { recursive: true, force: true }).catch(
+      () => undefined,
+    );
   }
 }
 
@@ -411,10 +443,11 @@ export async function databaseBackupBlocker(
   const { readFreeBytes, canClone } = { ...filesystemBackupSpaceProbe, ...probe };
   const backupRoot = NodePath.join(baseDir, "runtime", "db-backup");
   await NodeFSP.mkdir(backupRoot, { recursive: true, mode: 0o700 });
+  if (await isNoCopyOnWrite(dbPath)) await markNoCopyOnWrite(backupRoot);
   await removeAbandonedBackupCopies(backupRoot);
   const [files, free] = await Promise.all([statDatabaseFiles(dbPath), readFreeBytes(backupRoot)]);
   const size = files.reduce((total, file) => total + file.size, 0);
-  const fullCopyBytes = size * 1.05;
+  const fullCopyBytes = size * 1.05 + ONLINE_BACKUP_WAL_HEADROOM_BYTES;
   if (free >= fullCopyBytes) return undefined;
   const clonedBytes = Math.max(
     CLONED_BACKUP_MIN_HEADROOM_BYTES,
@@ -426,97 +459,102 @@ export async function databaseBackupBlocker(
   return `Not enough free disk space to back up the database before updating: ${gb(needed)} GB needed, ${gb(free)} GB free. Free up disk space and try again. The server was not stopped.`;
 }
 
-/**
- * A completed backup is never overwritten because a restarted launcher may be looking at
- * database writes from an earlier attempt by the same trial.
- */
+// A child-process copy: closing any descriptor this process opens on the database drops the snapshot's POSIX locks.
+async function copyWithoutOpening(source: string, destination: string): Promise<void> {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
+  if (process.platform === "win32") return NodeFSP.copyFile(source, destination);
+  if (!(await runCp([source, destination]))) throw new Error(`cp ${source} failed.`);
+}
+
+// Copies the main file while the server runs; an open read transaction stops SQLite resetting the WAL,
+// which `finish` copies after the stop and which overrides any page the copy caught mid-checkpoint.
+// `-shm` is left out: its backfill count would make SQLite trust those pages. Past the WAL size gate,
+// a write-heavy server's new writes wait, uncommitted, until the server stops.
+async function startOnlineDatabaseBackup(
+  baseDir: string,
+  pending: PendingServiceUpdate,
+  probe: Partial<BackupSpaceProbe> = {},
+): Promise<(() => Promise<void>) | undefined> {
+  const backupDir = databaseBackupDir(baseDir, pending.id);
+  if (await pathExists(backupDir)) return undefined;
+  const { canClone } = { ...filesystemBackupSpaceProbe, ...probe };
+  if (await canClone(pending.dbPath, NodePath.dirname(backupDir)).catch(() => true))
+    return undefined;
+  const NodeSqlite = await import("node:sqlite").catch(() => undefined);
+  if (NodeSqlite === undefined) return undefined;
+
+  const stagingDir = `${backupDir}.staging`;
+  const discardStaging = () =>
+    NodeFSP.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+  const fallBack = async (cause: unknown) => {
+    await discardStaging();
+    process.stderr.write(
+      `[service-launcher] Copying the database while the server runs failed; backing it up offline: ${cause instanceof Error ? cause.message : String(cause)}\n`,
+    );
+    return undefined;
+  };
+  let snapshot: InstanceType<typeof NodeSqlite.DatabaseSync> | undefined;
+  // SQLite keeps -wal beside the resolved file, not beside a symlink to it.
+  let dbPath = pending.dbPath;
+  const release = () => {
+    try {
+      snapshot?.close();
+    } catch {}
+    snapshot = undefined;
+  };
+  try {
+    await discardStaging();
+    await NodeFSP.mkdir(stagingDir, { recursive: true, mode: 0o700 });
+    dbPath = await NodeFSP.realpath(pending.dbPath);
+    snapshot = new NodeSqlite.DatabaseSync(dbPath, { readOnly: true });
+    const mode = String(snapshot.prepare("PRAGMA journal_mode").get()?.journal_mode);
+    if (mode.toLowerCase() !== "wal") throw new Error(`journal_mode is ${mode}, not wal.`);
+    snapshot.exec("BEGIN");
+    snapshot.prepare("SELECT count(*) FROM sqlite_schema").get();
+    const mainCopy = databaseBackupFile(stagingDir, "");
+    await copyWithoutOpening(dbPath, mainCopy);
+    await syncFile(mainCopy);
+  } catch (cause) {
+    release();
+    return fallBack(cause);
+  }
+  return async () => {
+    try {
+      const wal = `${dbPath}-wal`;
+      if (!(await pathExists(wal)))
+        throw new Error("the WAL disappeared while the snapshot was open.");
+      const walCopy = databaseBackupFile(stagingDir, "-wal");
+      await copyWithoutOpening(wal, walCopy);
+      await syncFile(walCopy);
+      release();
+      await NodeFSP.rename(stagingDir, backupDir);
+      await syncDirectory(NodePath.dirname(backupDir));
+    } catch (cause) {
+      release();
+      await fallBack(cause);
+    }
+  };
+}
+
+// Preserve completed backups; restarted trials may already have changed the live database.
 async function backupDatabaseOnce(
   baseDir: string,
   pending: PendingServiceUpdate,
-  adapter?: QualifiedBackupAdapter,
+  signal: AbortSignal,
 ): Promise<void> {
-  validateDatabasePathForBaseDir(baseDir, pending.dbPath);
   const backupDir = databaseBackupDir(baseDir, pending.id);
-  if (await pathExists(backupDir)) {
-    if (!(await databaseBackupAvailable(baseDir, pending.id))) {
-      throw new Error("Cannot use an incomplete database backup.");
-    }
-    if (pending.qualified !== undefined) await validatePairedBackup(baseDir, pending, backupDir);
-    if (
-      pending.stateRecovery === "clone-required" &&
-      (await readQualifiedBackupReceipt(baseDir, pending.id))?.method !== "clone"
-    )
-      throw new Error(
-        "recovery-clone-unavailable: The retained snapshot does not prove a strict clone.",
-      );
-    return;
-  }
+  if (await pathExists(backupDir)) return;
 
   const stagingDir = `${backupDir}.staging`;
-  if (pending.qualified !== undefined && (await pathExists(stagingDir)))
-    throw new Error("An occupied paired snapshot staging path was preserved for reconciliation.");
-  if (pending.qualified === undefined)
-    await NodeFSP.rm(stagingDir, { recursive: true, force: true });
+  await NodeFSP.rm(stagingDir, { recursive: true, force: true });
   await NodeFSP.mkdir(stagingDir, { recursive: true, mode: 0o700 });
   try {
-    const startedAt = new Date().toISOString();
-    const started = performance.now();
-    let method: "clone" | "copy" = "clone";
-    let bytes = 0;
-    let copyMs = 0;
-    let syncMs = 0;
-    if (pending.qualified !== undefined) {
-      for (const suffix of DB_FILE_SUFFIXES) {
-        const source = `${pending.dbPath}${suffix}`;
-        if (suffix !== "" && !(await pathExists(source))) continue;
-        const destination = databaseBackupFile(stagingDir, suffix);
-        const copyStarted = performance.now();
-        const copied = await copyQualifiedBackupFile(source, destination, adapter, {
-          cloneRequired: pending.stateRecovery === "clone-required",
-        });
-        copyMs += performance.now() - copyStarted;
-        bytes += copied.bytes;
-        if (copied.method === "copy") method = "copy";
-        const syncStarted = performance.now();
-        await syncFile(destination);
-        syncMs += performance.now() - syncStarted;
-      }
-      const settingsTiming = await backupPairedSettings(
-        baseDir,
-        stagingDir,
-        adapter,
-        pending.stateRecovery === "clone-required",
-      );
-      bytes += settingsTiming.bytes;
-      if (settingsTiming.method === "copy") method = "copy";
-      copyMs += settingsTiming.copyMs;
-      syncMs += settingsTiming.syncMs;
-      const bindingPath = NodePath.join(stagingDir, "paired-binding.json");
-      await NodeFSP.writeFile(
-        bindingPath,
-        JSON.stringify({ transactionId: pending.id, qualified: pending.qualified }),
-        { flag: "wx", mode: 0o600 },
-      );
-      const bindingSyncStarted = performance.now();
-      await syncFile(bindingPath);
-      syncMs += performance.now() - bindingSyncStarted;
-      await writeQualifiedBackupReceipt(stagingDir, {
-        protocol: 1,
-        updateId: pending.id,
-        method,
-        bytes,
-        startedAt,
-        completedAt: new Date().toISOString(),
-        durationMs: performance.now() - started,
-        copyMs,
-        syncMs,
-      });
-    }
-    for (const suffix of pending.qualified === undefined ? DB_FILE_SUFFIXES : []) {
+    for (const suffix of DB_FILE_SUFFIXES) {
+      signal.throwIfAborted();
       const source = `${pending.dbPath}${suffix}`;
       if (suffix !== "" && !(await pathExists(source))) continue;
       const destination = databaseBackupFile(stagingDir, suffix);
-      await copyDatabaseFile(source, destination);
+      await copyDatabaseFile(source, destination, signal);
       await syncFile(destination);
     }
     await NodeFSP.rename(stagingDir, backupDir);
@@ -527,105 +565,13 @@ async function backupDatabaseOnce(
   }
 }
 
-async function backupPairedSettings(
-  baseDir: string,
-  destination: string,
-  adapter?: QualifiedBackupAdapter,
-  cloneRequired = false,
-): Promise<{
-  readonly copyMs: number;
-  readonly syncMs: number;
-  readonly bytes: number;
-  readonly method: "clone" | "copy";
-}> {
-  const present: string[] = [];
-  let bytes = 0;
-  let method: "clone" | "copy" = "clone";
-  let copyMs = 0;
-  let syncMs = 0;
-  for (const name of PAIRED_SETTINGS) {
-    const source = NodePath.join(baseDir, "userdata", name);
-    if (!(await pathExists(source))) continue;
-    const stat = await NodeFSP.lstat(source);
-    if (!stat.isFile() || stat.isSymbolicLink())
-      throw new Error("Startup settings must be regular files.");
-    const target = NodePath.join(destination, name);
-    const copyStarted = performance.now();
-    const copied = await copyQualifiedBackupFile(source, target, adapter, { cloneRequired });
-    bytes += copied.bytes;
-    if (copied.method === "copy") method = "copy";
-    copyMs += performance.now() - copyStarted;
-    const syncStarted = performance.now();
-    await syncFile(target);
-    syncMs += performance.now() - syncStarted;
-    present.push(name);
-  }
-  const manifest = NodePath.join(destination, "paired-settings.json");
-  await NodeFSP.writeFile(manifest, JSON.stringify(present), { flag: "wx", mode: 0o600 });
-  const syncStarted = performance.now();
-  await syncFile(manifest);
-  syncMs += performance.now() - syncStarted;
-  return { copyMs, syncMs, bytes, method };
-}
-
-async function restorePairedSettings(baseDir: string, backupDir: string): Promise<void> {
-  const manifest: unknown = JSON.parse(
-    await NodeFSP.readFile(NodePath.join(backupDir, "paired-settings.json"), "utf8"),
-  );
-  if (
-    !Array.isArray(manifest) ||
-    manifest.some(
-      (name) => typeof name !== "string" || !PAIRED_SETTINGS.some((allowed) => name === allowed),
-    )
-  )
-    throw new Error("Paired settings receipt is invalid.");
-  for (const name of PAIRED_SETTINGS) {
-    const target = NodePath.join(baseDir, "userdata", name);
-    if (manifest.includes(name)) {
-      await restoreQualifiedBackupFile(NodePath.join(backupDir, name), target);
-    } else await NodeFSP.rm(target, { force: true });
-  }
-  await syncDirectory(NodePath.join(baseDir, "userdata"));
-}
-
-async function validatePairedBackup(
-  baseDir: string,
-  pending: PendingServiceUpdate,
-  directory: string,
-): Promise<void> {
-  const bindingPath = NodePath.join(directory, "paired-binding.json");
-  const stat = await NodeFSP.lstat(bindingPath);
-  if (!stat.isFile() || stat.isSymbolicLink())
-    throw new Error("Paired backup binding is not a regular file.");
-  const binding: unknown = JSON.parse(await NodeFSP.readFile(bindingPath, "utf8"));
-  if (
-    JSON.stringify(binding) !==
-      JSON.stringify({ transactionId: pending.id, qualified: pending.qualified }) ||
-    pending.qualified?.binding.baseDir !== (await NodeFSP.realpath(baseDir))
-  )
-    throw new Error("Paired backup belongs to a different transaction or native home.");
-  const settings = await NodeFSP.lstat(NodePath.join(directory, "paired-settings.json"));
-  if (!settings.isFile() || settings.isSymbolicLink())
-    throw new Error("Paired backup settings receipt is incomplete.");
-}
-
-const databaseBackupAvailable = async (baseDir: string, updateId: string): Promise<boolean> => {
-  try {
-    const stat = await NodeFSP.lstat(databaseBackupFile(databaseBackupDir(baseDir, updateId), ""));
-    return stat.isFile() && !stat.isSymbolicLink();
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw cause;
-  }
-};
-
 const restoreMarkerPath = (baseDir: string, updateId: string) =>
   NodePath.join(databaseBackupDir(baseDir, updateId), RESTORE_MARKER);
 
 const databaseRestorePending = (baseDir: string, pending: PendingServiceUpdate) =>
   pathExists(restoreMarkerPath(baseDir, pending.id));
 
-/** Mark rollback before changing live files so launcher recovery cannot boot a partial restore. */
+// Mark before live writes so recovery cannot boot a partial restore.
 async function markDatabaseRestorePending(backupDir: string): Promise<void> {
   const markerPath = NodePath.join(backupDir, RESTORE_MARKER);
   if (!(await pathExists(markerPath))) {
@@ -639,11 +585,7 @@ async function markDatabaseRestorePending(backupDir: string): Promise<void> {
   }
 }
 
-/**
- * The file a restore writes for `path`: where its symlinks lead, even when the
- * last target is missing, as after a crash between `cp -c` removing a file
- * and cloning over it.
- */
+// Resolve symlink targets even if a crashed cp -c left the final target missing.
 async function restoreTarget(path: string): Promise<string> {
   let current = path;
   for (let hops = 0; hops < 40; hops++) {
@@ -658,8 +600,7 @@ async function restoreTarget(path: string): Promise<string> {
       throw cause;
     });
     if (link === undefined) return current;
-    // Joined without normalizing: a `..` in the link must follow directory links
-    // the way the filesystem does, not cancel a path segment.
+    // Do not normalize .. before following directory symlinks; match filesystem resolution.
     current = NodePath.isAbsolute(link)
       ? link
       : `${await NodeFSP.realpath(NodePath.dirname(current))}${NodePath.sep}${link}`;
@@ -671,41 +612,30 @@ async function restoreDatabaseBackup(
   baseDir: string,
   pending: PendingServiceUpdate,
 ): Promise<void> {
-  validateDatabasePathForBaseDir(baseDir, pending.dbPath);
   const backupDir = databaseBackupDir(baseDir, pending.id);
-  if (!(await databaseBackupAvailable(baseDir, pending.id))) {
-    fenceNativeStoreAuthorityForBaseDir(baseDir);
-    throw new Error("Cannot rollback while the native database backup is missing.");
-  }
-  // Persist restore intent before moving live files or fencing authority; restart
-  // resumes the same rename journal and never captures partly restored state.
-  if (pending.qualified !== undefined) {
-    await validatePairedBackup(baseDir, pending, backupDir);
-  }
+  if (!(await pathExists(backupDir))) return;
+
   await markDatabaseRestorePending(backupDir);
-  fenceNativeStoreAuthorityForBaseDir(baseDir);
-  if (pending.qualified !== undefined)
-    await retainQualifiedAdvancedState(baseDir, pending.dbPath, backupDir);
   const directories = new Set([NodePath.dirname(pending.dbPath)]);
+  // SQLite keeps -wal and -shm beside the resolved database file, not beside a symlink to it.
+  const mainTarget = await restoreTarget(pending.dbPath);
   for (const suffix of DB_FILE_SUFFIXES) {
-    const livePath = `${pending.dbPath}${suffix}`;
+    const livePath = suffix === "" ? pending.dbPath : `${mainTarget}${suffix}`;
+    if (livePath !== `${pending.dbPath}${suffix}`) {
+      await NodeFSP.rm(`${pending.dbPath}${suffix}`, { force: true });
+    }
     const source = databaseBackupFile(backupDir, suffix);
     if (await pathExists(source)) {
-      // Restore through the symlink target so replacing a clone preserves the link itself.
+      // Restore into the symlink target; cloning would replace the link.
       const target = await restoreTarget(livePath);
-      if (pending.qualified !== undefined) await restoreQualifiedBackupFile(source, target);
-      else {
-        await copyDatabaseFile(source, target);
-        await syncFile(target);
-      }
+      await copyDatabaseFile(source, target);
+      await syncFile(target);
       directories.add(NodePath.dirname(target));
     } else {
       await NodeFSP.rm(livePath, { force: true });
     }
   }
   for (const directory of directories) await syncDirectory(directory);
-  if (pending.qualified !== undefined) await restorePairedSettings(baseDir, backupDir);
-  advanceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
 }
 
 async function discardDatabaseBackup(baseDir: string, updateId: string): Promise<void> {
@@ -715,48 +645,28 @@ async function discardDatabaseBackup(baseDir: string, updateId: string): Promise
   await syncDirectory(NodePath.dirname(backupDir));
 }
 
-function recoveryCleanupCategory(cause: unknown): string {
-  const category =
-    cause instanceof Error
-      ? /^recovery-cleanup: ([a-z][a-z-]{0,63})$/.exec(cause.message)?.[1]
-      : undefined;
-  return category === undefined ? "" : ` (${category})`;
-}
-
-async function cleanupTerminalDatabaseBackup(
-  baseDir: string,
-  pending: PendingServiceUpdate,
-  terminal?: "committed" | "rolled-back" | "failed-before-trial",
-  required = false,
-): Promise<void> {
-  try {
-    if (pending.qualified === undefined) await discardDatabaseBackup(baseDir, pending.id);
-    else if (terminal !== undefined)
-      await removeQualifiedRecoveryPayload(
-        baseDir,
-        pending.id,
-        pending.dbPath,
-        { transactionId: pending.id, qualified: pending.qualified },
-        terminal,
-      );
-  } catch (cause) {
-    if (required) throw cause;
-    process.stderr.write(
-      `[service-launcher] Recovery payload cleanup did not finish${recoveryCleanupCategory(cause)}; the durable update outcome is unchanged and remaining recovery files were retained.\n`,
-    );
-  }
-}
-
 export async function readServiceState(filePath: string): Promise<ServiceState> {
   const contents = await NodeFSP.readFile(filePath, "utf8");
-  const state = parseServiceState(contents);
+  const state = parseServiceState(contents) ?? adoptLegacyServiceState(contents);
   if (state === undefined) throw new Error("Service state is invalid or unsupported.");
   return state;
 }
 
+// An older coordinator can write protocol 2 beside a newer runtime. Adopt
+// only its install record, in memory: rewriting it outside the selection lock
+// could replace state a concurrent install wrote after this read.
+function adoptLegacyServiceState(contents: string): ServiceState | undefined {
+  const legacy = parseLegacyServiceState(contents);
+  return legacy && { protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: legacy.activeVersion };
+}
+
 export async function writeServiceState(filePath: string, state: ServiceState): Promise<void> {
+  await NodeFSP.mkdir(NodePath.dirname(filePath), { recursive: true, mode: 0o700 });
+  await replaceFileDurably(filePath, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function replaceFileDurably(filePath: string, contents: string): Promise<void> {
   const directory = NodePath.dirname(filePath);
-  await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
   const tempPath = NodePath.join(
     directory,
     `.${NodePath.basename(filePath)}.${process.pid}.${NodeCrypto.randomUUID()}`,
@@ -764,7 +674,7 @@ export async function writeServiceState(filePath: string, state: ServiceState): 
   let handle: NodeFSP.FileHandle | undefined;
   try {
     handle = await NodeFSP.open(tempPath, "wx", 0o600);
-    await handle.writeFile(`${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await handle.writeFile(contents, "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;
@@ -799,13 +709,6 @@ function terminalUpdate<S extends TerminalStatus>(input: {
     fromVersion: input.pending.fromVersion,
     targetVersion: input.pending.targetVersion,
     status: input.status,
-    ...(input.pending.stateRecovery === undefined
-      ? {}
-      : { stateRecovery: input.pending.stateRecovery }),
-    ...(input.pending.qualified === undefined ? {} : { qualified: input.pending.qualified }),
-    ...(input.pending.migrationPlan === undefined
-      ? {}
-      : { migrationPlan: input.pending.migrationPlan }),
     ...(input.reason === undefined ? {} : { reason: input.reason }),
   };
 }
@@ -830,11 +733,16 @@ function waitForExit(child: NodeChildProcess.ChildProcess): Promise<void> {
 
 async function terminateChild(
   child: NodeChildProcess.ChildProcess,
-  signal: NodeJS.Signals = "SIGTERM",
+  signal: NodeJS.Signals,
+  overIpc: boolean,
 ): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill(signal);
-  const force = setTimeout(() => child.kill("SIGKILL"), SERVER_CHILD_SHUTDOWN_GRACE_MS);
+  if (overIpc) {
+    await sendMessage(child, { type: "stop" }).catch(() => child.kill(signal));
+  } else {
+    child.kill(signal);
+  }
+  const force = setTimeout(() => child.kill("SIGKILL"), TERMINATE_GRACE_MS);
   try {
     await waitForExit(child);
   } finally {
@@ -842,206 +750,217 @@ async function terminateChild(
   }
 }
 
+/** Task Scheduler names are machine-wide, so each Windows account runs its own task. */
+export const serviceTaskName = (domain: string, userName: string) => `t3code-${domain}-${userName}`;
+
+export const serviceLauncherLockPath = (baseDir: string) =>
+  NodePath.join(baseDir, "runtime", SERVICE_LAUNCHER_LOCK_FILE);
+
+// An exclusive SQLite transaction, like the server's owner lock: the OS drops it when the holder dies.
+async function tryAcquireSqliteLock(
+  lockPath: string,
+  busyTimeoutMs = 0,
+): Promise<{ readonly close: () => void } | undefined> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(lockPath);
+  try {
+    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN EXCLUSIVE;`);
+    return db;
+  } catch (cause) {
+    db.close();
+    if (cause instanceof Error && "errcode" in cause && cause.errcode === 5) return undefined;
+    throw cause;
+  }
+}
+
+export async function serviceLauncherIsRunning(lockPath: string): Promise<boolean> {
+  if (!NodeFS.existsSync(lockPath)) return false;
+  const lock = await tryAcquireSqliteLock(lockPath);
+  lock?.close();
+  return lock === undefined;
+}
+
+const servingLockPath = (baseDir: string) =>
+  NodePath.join(baseDir, "runtime", SERVICE_SERVING_LOCK_FILE);
+
+/** Whether a launcher has, or is about to start, a server for this home. An idle one does not. */
+export const serviceLauncherIsServing = (baseDir: string): Promise<boolean> =>
+  serviceLauncherIsRunning(servingLockPath(baseDir)).catch(() => false);
+
+/** Resolves once no launcher holds the lock; the caller bounds the wait through `signal`. */
+export async function waitForServiceLauncherExit(
+  lockPath: string,
+  signal: AbortSignal,
+): Promise<void> {
+  while (await serviceLauncherIsRunning(lockPath)) {
+    signal.throwIfAborted();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+// Mirror acquireServerOwnership: the lock, then a live pre-lock server-runtime.json owner;
+// leave other failures for server startup to report.
+export async function stateDirOwned(baseDir: string): Promise<boolean> {
+  const stateDir = NodePath.join(baseDir, "userdata");
+  const lock = await tryAcquireSqliteLock(NodePath.join(stateDir, "server-owner.sqlite")).catch(
+    () => null,
+  );
+  if (lock === null) return false;
+  if (lock === undefined) return true;
+  lock.close();
+  let record: unknown;
+  try {
+    record = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(stateDir, "server-runtime.json"), "utf8"),
+    );
+  } catch {
+    return false;
+  }
+  if (typeof record !== "object" || record === null || "ownerId" in record) return false;
+  const pid = "pid" in record ? record.pid : undefined;
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EPERM")) return false;
+  }
+  const recordedAt = Date.parse(
+    "startedAt" in record && typeof record.startedAt === "string" ? record.startedAt : "",
+  );
+  if (!Number.isFinite(recordedAt)) return true;
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
+  const platform = process.platform;
+  const { command, args, env } = legacyOwnerStartTimeCommand(pid, platform);
+  const output = await new Promise<string | undefined>((resolve) =>
+    NodeChildProcess.execFile(
+      command,
+      args,
+      { env: { ...process.env, ...env }, timeout: 2_000, maxBuffer: 16_384 },
+      (error, stdout) => resolve(error === null ? stdout : undefined),
+    ),
+  );
+  return legacyOwnerStartedBeforeRecord(output, recordedAt, platform);
+}
+
 const stopMarkerPath = (baseDir: string) =>
   NodePath.join(baseDir, "runtime", SERVICE_STOP_MARKER_FILE);
 const restartPendingPath = (baseDir: string) =>
   NodePath.join(baseDir, "runtime", SERVICE_RESTART_PENDING_FILE);
 
-// Native seams let restart tests interrupt each durable prefix without touching a real service.
-interface LauncherRecoveryIO {
-  readonly verify: typeof verifyStagedQualifiedRuntime;
-  readonly ownership: typeof withStoppedServerOwnership;
-  readonly failedOutcome: typeof writeFailedUpdateOperation;
-  readonly cleanup: typeof cleanupTerminalDatabaseBackup;
-  readonly settle: typeof publishUpdateOperationSettlement;
-  readonly cause: typeof writeUpdateOperationCause;
-  readonly writeState: typeof writeServiceState;
-}
-
 export class Launcher {
   readonly #baseDir: string;
-  readonly #launcherVersion: string;
-  readonly #handoffProcessesQuiet: typeof launcherHandoffProcessesQuiet;
-  readonly #healthyChildren = new WeakSet<ManagedChild>();
   readonly #statePath: string;
-  readonly #startupGateProtocol: 1 | undefined;
-  readonly #preparedTimeoutMs: number;
-  readonly #backupAdapter: QualifiedBackupAdapter | undefined;
-  readonly #updateOperationIO: {
-    readonly archive: typeof archiveUpdateOperation;
-    readonly reserve: typeof reserveUpdateOperation;
-  };
-  readonly #now: () => number;
   #state: ServiceState;
   #child: ManagedChild | null = null;
   #timer: NodeJS.Timeout | undefined;
-  #handoffHealthTimer: NodeJS.Timeout | undefined;
-  readonly #handoffReadyDeadline = new WeakMap<ManagedChild, number>();
-  readonly #digestTimings = new Map<string, QualifiedDigestTiming[]>();
   #transitions: Promise<void> = Promise.resolve();
   #stopRequested = false;
+  readonly #stopSignal = new AbortController();
   #stopping = false;
   #done = false;
-  #exitCode = 0;
-
-  get exitCode(): number {
-    return this.#exitCode;
-  }
-  // Bound to one update: a commit attempt never blocks a later update's rollback.
-  #qualifiedCommitAttempt: QualifiedCommitAttempt | undefined;
   readonly #completion = Promise.withResolvers<void>();
   readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
+  readonly #serviceUnit: ServiceUnit | undefined;
   readonly #environment: Readonly<NodeJS.ProcessEnv>;
-  readonly #recoveryIO: LauncherRecoveryIO;
-  // A disconnected child's retries cannot reach this launcher. Keep its bounded reply cache local.
-  readonly #reconciliationReplies = new WeakMap<
-    ManagedChild,
-    Map<string, ServiceUpdateReconciliationResult>
-  >();
+  readonly #stateDirOwnerPollMs: number;
+  #stateDirFreeProbes = 0;
+  readonly #output: number | undefined;
+  readonly #lockPath: string | undefined;
+  #servingLock: { readonly close: () => void } | undefined;
+  readonly #stopChildOverIpc: boolean;
 
   constructor(
     baseDir: string,
     state: ServiceState,
     options: {
       readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
-      readonly launcherVersion?: string;
-      readonly handoffProcessesQuiet?: typeof launcherHandoffProcessesQuiet;
-      readonly startupGateProtocol?: 1;
-      readonly preparedTimeoutMs?: number;
-      readonly backupAdapter?: QualifiedBackupAdapter;
-      readonly recoveryIO?: Partial<LauncherRecoveryIO>;
-      readonly updateOperationIO?: {
-        readonly archive: typeof archiveUpdateOperation;
-        readonly reserve: typeof reserveUpdateOperation;
-      };
-      /** Monotonic milliseconds for the qualified exchange fence; injectable in tests. */
-      readonly now?: () => number;
+      readonly serviceUnit?: ServiceUnit;
       readonly environment?: Readonly<NodeJS.ProcessEnv>;
+      readonly stateDirOwnerPollMs?: number;
+      /** Launcher and server output, for managers that cannot redirect it. */
+      readonly output?: number;
+      /** Makes this the only launcher for its home; a replacement waits for the one stopping. */
+      readonly lockPath?: string;
+      /** Windows `kill()` is TerminateProcess, which skips the server's shutdown finalizers. */
+      readonly stopChildOverIpc?: boolean;
     } = {},
   ) {
     this.#baseDir = baseDir;
-    this.#launcherVersion = options.launcherVersion ?? packageJson.version;
-    this.#handoffProcessesQuiet = options.handoffProcessesQuiet ?? launcherHandoffProcessesQuiet;
+    this.#stateDirOwnerPollMs = options.stateDirOwnerPollMs ?? STATE_DIR_OWNER_POLL_MS;
     this.#backupSpaceProbe = options.backupSpaceProbe;
+    this.#serviceUnit = options.serviceUnit;
     this.#environment = { ...(options.environment ?? process.env) };
+    this.#output = options.output;
+    this.#lockPath = options.lockPath;
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
+    this.#stopChildOverIpc = options.stopChildOverIpc ?? process.platform === "win32";
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
-    this.#startupGateProtocol = options.startupGateProtocol;
-    this.#preparedTimeoutMs = options.preparedTimeoutMs ?? PREPARED_TIMEOUT_MS;
-    this.#backupAdapter = options.backupAdapter;
-    this.#recoveryIO = {
-      verify: verifyStagedQualifiedRuntime,
-      ownership: withStoppedServerOwnership,
-      failedOutcome: writeFailedUpdateOperation,
-      cleanup: cleanupTerminalDatabaseBackup,
-      settle: publishUpdateOperationSettlement,
-      cause: writeUpdateOperationCause,
-      writeState: writeServiceState,
-      ...options.recoveryIO,
-    };
-    this.#updateOperationIO = options.updateOperationIO ?? {
-      archive: archiveUpdateOperation,
-      reserve: reserveUpdateOperation,
-    };
-    this.#now = options.now ?? (() => performance.now());
-  }
-
-  #exchangeExpired(receivedAt: number): boolean {
-    return this.#now() - receivedAt > QUALIFIED_EXCHANGE_FENCE_MS;
   }
 
   async run(): Promise<void> {
-    const ownership = Promise.withResolvers<void>();
-    // Queue recovery before stop() can enqueue shutdown, even while acquiring
-    // the cross-process lock. Signal receipt still writes its marker promptly.
-    this.#enqueue(async () => {
-      await ownership.promise;
-      await this.#recover();
-      await this.#proposeRuntimeRetention();
-    });
-    try {
-      await withQualifiedRuntimeLock(this.#baseDir, "service-launcher-lock", async () => {
-        // Read the selected pointer after acquiring ownership, never trust the
-        // snapshot supplied before a competing launcher/CLI transition.
-        this.#state = await readServiceState(this.#statePath);
-        ownership.resolve();
-        return this.#runOwned();
-      });
-    } catch (cause) {
-      ownership.reject(cause);
-      await this.#transitions;
-      await this.#completion.promise.catch(() => undefined);
-      throw cause;
-    }
-  }
-
-  async #runOwned(): Promise<void> {
     const onSigterm = () => void this.stop("SIGTERM");
     const onSigint = () => void this.stop("SIGINT");
     process.once("SIGTERM", onSigterm);
     process.once("SIGINT", onSigint);
     try {
-      await this.#completion.promise;
+      const lock =
+        this.#lockPath === undefined ? undefined : await this.#acquireLock(this.#lockPath);
+      try {
+        // The launcher that held the lock may have moved the state since main read it.
+        if (lock !== undefined) this.#state = await readServiceState(this.#statePath);
+        // A stop that arrived before this point leaves nothing to start or recover.
+        if (!this.#stopRequested) this.#enqueue(() => this.#recover());
+        await this.#completion.promise;
+      } finally {
+        if (lock !== undefined) {
+          // Releasing the lock says this launcher is done with the home.
+          await this.#transitions.catch(() => undefined);
+          lock.close();
+        }
+      }
     } finally {
+      this.#releaseServing();
       process.off("SIGTERM", onSigterm);
       process.off("SIGINT", onSigint);
     }
   }
 
-  async #proposeRuntimeRetention(): Promise<void> {
+  async #acquireLock(lockPath: string): Promise<{ readonly close: () => void } | undefined> {
+    for (let attempt = 1; !this.#stopRequested; attempt++) {
+      const lock = await tryAcquireSqliteLock(lockPath);
+      if (lock !== undefined) return lock;
+      if (attempt >= LOCK_ATTEMPTS) {
+        throw new Error("Another T3 Code service launcher still runs for this T3 home.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_MS));
+    }
+    return undefined;
+  }
+
+  // Advisory: without it an SSH launch may start its own server, as it does beside no service.
+  async #claimServing(): Promise<void> {
+    // An SSH launch probes this lock for a moment; wait out that probe.
+    this.#servingLock ??= await tryAcquireSqliteLock(servingLockPath(this.#baseDir), 250).catch(
+      () => undefined,
+    );
+  }
+
+  #releaseServing(): void {
+    this.#servingLock?.close();
+    this.#servingLock = undefined;
+  }
+
+  #terminate(child: NodeChildProcess.ChildProcess, signal: NodeJS.Signals = "SIGTERM") {
+    return terminateChild(child, signal, this.#stopChildOverIpc);
+  }
+
+  // Diagnostics are best-effort: a full log filesystem must not stop the launcher waiting for space.
+  #log(line: string): void {
     try {
-      await proposeRuntimeStagingRetention(this.#baseDir);
-    } catch {
-      process.stderr.write(
-        "[service-launcher] Runtime retention proposal held; generations preserved.\n",
-      );
-    }
-  }
-
-  #digestOptions(
-    operationId: string | undefined,
-    mode: "full" | "receipt",
-    role: QualifiedDigestTiming["role"],
-  ): QualifiedDigestOptions {
-    return {
-      mode,
-      retainVerification: true,
-      eventLoop: "worker",
-      role,
-      onDigestTiming: (timing) => this.#recordDigestTiming(operationId, timing),
-    };
-  }
-
-  #recordDigestTiming(operationId: string | undefined, timing: QualifiedDigestTiming): void {
-    process.stderr.write(`${JSON.stringify(timing)}\n`);
-    if (operationId === undefined) return;
-    const records = this.#digestTimings.get(operationId) ?? [];
-    if (
-      records.length < 128 &&
-      !records.some((prior) => JSON.stringify(prior) === JSON.stringify(timing))
-    )
-      records.push(timing);
-    this.#digestTimings.set(operationId, records);
-    if (this.#digestTimings.size > 64) {
-      const oldest = this.#digestTimings.keys().next().value;
-      if (oldest !== undefined) this.#digestTimings.delete(oldest);
-    }
-  }
-
-  async #retainDigestTimings(update: ServiceUpdateRecord | undefined): Promise<void> {
-    if (update === undefined || update.status === "pending" || update.qualified === undefined)
-      return;
-    try {
-      await retainQualifiedAttemptTimings(
-        this.#baseDir,
-        update.id,
-        this.#digestTimings.get(update.id) ?? [],
-      );
-      this.#digestTimings.delete(update.id);
-    } catch {
-      // Diagnostics cannot change the committed pointer or replace the original update failure.
-      process.stderr.write("[service-launcher] Update timing evidence could not be retained.\n");
-    }
+      if (this.#output === undefined) process.stderr.write(line);
+      else NodeFS.writeSync(this.#output, line);
+    } catch {}
   }
 
   #enqueue(transition: () => Promise<void>): void {
@@ -1059,52 +978,30 @@ export class Launcher {
     this.#clearTimer();
     const child = this.#child?.process;
     this.#child = null;
-    try {
-      if (child !== undefined) {
-        await terminateChild(child);
-        await this.#retractCapability(child);
-      }
-    } catch (cause) {
-      this.#completion.reject(
-        new Error("Launcher shutdown evidence could not be reconciled.", { cause }),
-      );
-      return;
-    }
+    if (child !== undefined) await this.#terminate(child);
     this.#completion.reject(error);
   }
 
-  async #retractCapability(child: NodeChildProcess.ChildProcess): Promise<void> {
-    if (this.#startupGateProtocol === 1 && child.pid !== undefined)
-      await retractLauncherCapabilityReceipt(this.#baseDir, process.pid, child.pid);
-  }
-
   async stop(signal: NodeJS.Signals): Promise<void> {
-    const alreadyRequested = this.#stopRequested;
-    this.#stopRequested = true;
-    // Write the stop marker synchronously on signal receipt before the child's shutdown finalizer.
-    // A queued update may already be terminating that child. systemd KillMode=mixed signals the launcher
-    // first; launchd signals only its main process, so both platforms establish the marker before child signals.
+    // Write synchronously on signal receipt; a terminating child needs the marker in its finalizer.
     try {
       NodeFS.writeFileSync(stopMarkerPath(this.#baseDir), "", { mode: 0o600 });
-    } catch {
-      // Err toward keeping the tunnel; the next link or unlink reconciles it.
-    }
-    if (alreadyRequested || this.#stopping) {
+    } catch {}
+    if (this.#stopRequested || this.#stopping) {
       await this.#completion.promise.catch(() => undefined);
       return;
     }
+    this.#stopRequested = true;
+    this.#stopSignal.abort();
     this.#clearTimer();
     this.#enqueue(async () => {
-      // Let an ordinary update transition already in progress start its replacement
-      // before this queued stop tears it down. That replacement owns the
-      // pre-activation tunnel cleanup path and observes the marker above.
+      // Let in-progress updates start replacements first; replacements observe the marker and own pre-activation tunnel cleanup.
       this.#stopping = true;
+      // An exit-78 transition queued before this one may have started the owner poll.
+      this.#clearTimer();
       const child = this.#child?.process;
       this.#child = null;
-      if (child !== undefined) {
-        await terminateChild(child, signal);
-        await this.#retractCapability(child);
-      }
+      if (child !== undefined) await this.#terminate(child, signal);
       this.#done = true;
       this.#completion.resolve();
     });
@@ -1114,60 +1011,123 @@ export class Launcher {
   #clearTimer(): void {
     clearTimeout(this.#timer);
     this.#timer = undefined;
-    clearTimeout(this.#handoffHealthTimer);
-    this.#handoffHealthTimer = undefined;
+  }
+
+  async #serviceStartDiskSpaceBlocker(): Promise<string | undefined> {
+    const databasePath =
+      this.#state.update?.status === "pending"
+        ? this.#state.update.dbPath
+        : NodePath.join(this.#baseDir, "userdata", "statev2.sqlite");
+    const resolvedDatabasePath = await restoreTarget(databasePath).catch(() => databasePath);
+    const freeBytes = async (directory: string): Promise<number> => {
+      try {
+        return await filesystemBackupSpaceProbe.readFreeBytes(directory);
+      } catch (cause) {
+        const parent = NodePath.dirname(directory);
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT" && parent !== directory) {
+          return freeBytes(parent);
+        }
+        return Number.POSITIVE_INFINITY;
+      }
+    };
+    const available = await Promise.all([
+      freeBytes(this.#baseDir),
+      freeBytes(NodePath.dirname(resolvedDatabasePath)),
+    ]);
+    const free = Math.min(...available);
+    return free < MIN_SERVICE_START_FREE_BYTES
+      ? `T3 Code needs at least ${MIN_SERVICE_START_FREE_BYTES} bytes free before starting the server; ${free} bytes available.`
+      : undefined;
+  }
+
+  async #deferForDiskSpace(retry: () => Promise<void>): Promise<boolean> {
+    const reason = await this.#serviceStartDiskSpaceBlocker();
+    if (reason === undefined) return false;
+    // A stop during the probe must not arm a retry that outlives it.
+    if (this.#stopRequested) return true;
+    this.#clearTimer();
+    this.#releaseServing();
+    this.#log(`[service-launcher] ${reason} Waiting for free space before retrying.\n`);
+    this.#timer = setInterval(
+      () =>
+        this.#enqueue(async () => {
+          if (this.#child !== null || this.#stopping) return;
+          if ((await this.#serviceStartDiskSpaceBlocker()) !== undefined) return;
+          this.#clearTimer();
+          await this.#claimServing();
+          await retry();
+        }),
+      DISK_SPACE_RETRY_MS,
+    );
+    return true;
+  }
+
+  async #selectState(next: ServiceState): Promise<void> {
+    const release = await acquireServiceSelectionLock(this.#statePath);
+    try {
+      const selected = await readServiceState(this.#statePath);
+      // Local installs replace the selection and clear its update record. An old
+      // launcher must not restore its own selection when asked to update again.
+      if (
+        selected.activeVersion !== this.#state.activeVersion ||
+        selected.update?.id !== this.#state.update?.id ||
+        selected.update?.status !== this.#state.update?.status
+      ) {
+        throw new Error("Service selection changed. Restart the service before updating.");
+      }
+      await writeServiceState(this.#statePath, next);
+      this.#state = next;
+    } finally {
+      release();
+    }
   }
 
   async #recover(): Promise<void> {
-    // A fresh launcher clears stale explicit-stop markers so later update handoffs retain their tunnel.
-    // A deferred t3 update restart completes only when the launcher reaches the marker's expected version.
-    // A launch between marker creation and new-state publication still runs the old version, so keep its marker.
+    await this.#claimServing();
+    // Clear old stop markers to preserve future tunnels; clear restart-pending only for the awaited version to avoid CLI races.
     await NodeFSP.rm(stopMarkerPath(this.#baseDir), { force: true }).catch(() => undefined);
-    // The launcher that reserved an operation it never recorded as pending is gone.
-    await settleAbandonedUpdateOperations(this.#baseDir, this.#state.update).catch(
-      (cause: unknown) =>
-        process.stderr.write(
-          `[service-launcher] Abandoned update operations remain unresolved: ${cause instanceof Error ? cause.message : String(cause)}\n`,
-        ),
-    );
     const restartPending = restartPendingPath(this.#baseDir);
-    const awaitedVersion = await NodeFSP.readFile(restartPending, "utf8").catch(() => undefined);
-    if (awaitedVersion?.trim() === this.#state.activeVersion) {
-      await NodeFSP.rm(restartPending, { force: true }).catch(() => undefined);
+    try {
+      const release = await acquireServiceSelectionLock(this.#statePath);
+      try {
+        const selected = await readServiceState(this.#statePath);
+        const awaitedVersion = await NodeFSP.readFile(restartPending, "utf8").catch(
+          () => undefined,
+        );
+        const awaited = awaitedVersion?.trim();
+        if (
+          selected.activeVersion === this.#state.activeVersion &&
+          selected.update?.id === this.#state.update?.id &&
+          selected.update?.status === this.#state.update?.status &&
+          awaited !== undefined &&
+          isExactServiceVersion(awaited) &&
+          compareExactServiceVersions(awaited, this.#state.activeVersion) <= 0
+        ) {
+          await NodeFSP.rm(restartPending, { force: true });
+        }
+      } finally {
+        release();
+      }
+    } catch (error) {
+      process.stderr.write(
+        `[service-launcher] Could not clear ${restartPending}: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
     }
     const update = this.#state.update;
     if (update?.status !== "pending") {
-      if (update !== undefined && update.qualified === undefined) {
+      if (update !== undefined) {
         await discardDatabaseBackup(this.#baseDir, update.id).catch(() => undefined);
       }
-      await this.#startChild(this.#state.activeVersion, "active", update);
-      return;
-    }
-    if (update.qualified !== undefined) {
-      // Pending restart recovery holds state ownership before changing the old pair.
-      if (update.phase === "accepted") {
-        await this.#recoveryIO.ownership(this.#baseDir, () =>
-          this.#finishWithoutTrial(update, "launcher-restarted", false),
-        );
-        await this.#startChild(this.#state.activeVersion, "active", this.#state.update);
-      } else await this.#returnToPrevious(update, "rolled-back", "launcher-restarted");
-      return;
-    }
-    if (update.phase === "accepted") {
-      if (!(await runtimeExists(this.#baseDir, update.targetVersion))) {
-        await this.#finishWithoutTrial(update, "target-runtime-missing");
-        return;
+      try {
+        await this.#startChild(this.#state.activeVersion, "active", update);
+      } finally {
+        if (update !== undefined) await this.#repointServiceUnit(this.#state.activeVersion);
       }
-      await this.#startTrial(update);
       return;
     }
     if (await databaseRestorePending(this.#baseDir, update)) {
       await this.#returnToPrevious(update, "failed", "rollback-interrupted");
       return;
-    }
-    if (!(await databaseBackupAvailable(this.#baseDir, update.id))) {
-      fenceNativeStoreAuthorityForBaseDir(this.#baseDir);
-      throw new Error("Cannot recover a trial-ready update without its database backup.");
     }
     if (!(await runtimeExists(this.#baseDir, update.targetVersion))) {
       await this.#returnToPrevious(update, "failed", "target-runtime-missing");
@@ -1177,241 +1137,50 @@ export class Launcher {
   }
 
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
-    if (pending.qualified !== undefined) {
-      try {
-        const staged = await this.#recoveryIO.verify(
-          this.#baseDir,
-          pending.fromVersion,
-          pending.qualified.stagedHandle,
-          undefined,
-          this.#digestOptions(pending.id, "receipt", "launcher-admission"),
-        );
-        if (JSON.stringify(staged) !== JSON.stringify(pending.qualified))
-          throw new Error("The qualified trial binding changed after handoff.");
-      } catch (cause) {
-        if (pending.phase === "accepted")
-          await this.#recordPretrialCause(pending, "reverify", cause);
-        throw cause;
-      }
-    }
-    if (pending.phase === "accepted") {
-      let step: UpdateOperationCause["step"] = "ownership";
-      try {
-        const backup = () => {
-          step = "backup";
-          return backupDatabaseOnce(this.#baseDir, pending, this.#backupAdapter);
-        };
-        if (pending.qualified !== undefined)
-          await this.#recoveryIO.ownership(this.#baseDir, backup);
-        else await backup();
-      } catch (cause) {
-        if (pending.qualified !== undefined) {
-          await this.#recordPretrialCause(pending, step, cause);
-          throw cause;
-        }
-        await this.#finishWithoutTrial(pending, "db-backup-failed");
-        return;
-      }
-    } else if (!(await databaseBackupAvailable(this.#baseDir, pending.id))) {
-      fenceNativeStoreAuthorityForBaseDir(this.#baseDir);
-      throw new Error("Cannot start a trial-ready update without its database backup.");
-    }
-    let trialReady = pending;
-    if (pending.phase === "accepted") {
-      trialReady = { ...pending, phase: "trial-ready" };
-      const next: ServiceState = { ...this.#state, update: trialReady };
-      await writeServiceState(this.#statePath, next);
-      this.#state = next;
-      await this.#retainDigestTimings(next.update);
-    }
+    if (await this.#deferForDiskSpace(() => this.#startTrial(pending))) return;
     try {
-      await this.#startChild(trialReady.targetVersion, "trial", trialReady);
-    } catch (cause) {
-      if (pending.qualified !== undefined) throw cause;
-      await this.#returnToPrevious(trialReady, "failed", "candidate-start-failed");
-    }
-  }
-
-  async #finishWithoutTrial(
-    pending: PendingServiceUpdate,
-    reason: string,
-    startChild = true,
-  ): Promise<void> {
-    const outcome = terminalUpdate({ pending, status: "failed", reason });
-    const next: ServiceState = {
-      ...this.#state,
-      activeVersion: pending.fromVersion,
-      update: outcome,
-    };
-    if (
-      pending.qualified !== undefined &&
-      pending.phase === "accepted" &&
-      reason === "launcher-restarted" &&
-      (await readOperationReservation(this.#baseDir, pending.id)) !== undefined
-    ) {
-      if (pending.startupReceipt !== undefined)
-        throw new Error("Pre-trial recovery has trial evidence; settlement held.");
-      const evaluated = await this.#evaluateFailedSettlement(outcome);
-      if (evaluated.result === "refused")
-        throw new Error(`Pre-trial settlement held: ${evaluated.reason}`);
-      await this.#settleFailedUpdate(pending, "launcher-recorded");
-      await this.#recoveryIO.writeState(this.#statePath, next);
-      this.#state = next;
-      await this.#retainDigestTimings(next.update);
-      if (startChild) await this.#startChild(next.activeVersion, "active", outcome);
+      await backupDatabaseOnce(this.#baseDir, pending, this.#stopSignal.signal);
+    } catch {
+      // A stop aborts the copy and leaves the update pending for the next start.
+      if (this.#stopRequested) return;
+      await this.#returnToPrevious(pending, "failed", "db-backup-failed");
       return;
     }
-    await writeServiceState(this.#statePath, next);
-    this.#state = next;
-    await this.#retainDigestTimings(next.update);
-    await cleanupTerminalDatabaseBackup(
-      this.#baseDir,
-      pending,
-      reason === "launcher-restarted" && pending.phase === "accepted"
-        ? "failed-before-trial"
-        : undefined,
-    );
-    if (startChild) await this.#startChild(next.activeVersion, "active", outcome);
-  }
-
-  async #recordPretrialCause(
-    pending: PendingServiceUpdate,
-    step: UpdateOperationCause["step"],
-    cause: unknown,
-  ): Promise<void> {
-    const code =
-      cause instanceof Error &&
-      "code" in cause &&
-      typeof cause.code === "string" &&
-      /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(cause.code)
-        ? cause.code
-        : `qualified-${step}-failed`;
+    if (this.#stopRequested) return;
     try {
-      await this.#recoveryIO.cause(this.#baseDir, {
-        schema: 1,
-        operationId: pending.id,
-        step,
-        code,
-        message: cause instanceof Error ? cause.message : "Qualified preparation failed.",
-      });
+      await this.#startChild(pending.targetVersion, "trial", pending);
     } catch {
-      // Diagnostic failure must never replace the exception that deliberately restarts the launcher.
-      process.stderr.write(
-        "[service-launcher] Pre-trial cause could not be retained; original failure preserved.\n",
-      );
+      await this.#returnToPrevious(pending, "failed", "candidate-start-failed");
     }
-  }
-
-  async #evaluateFailedSettlement(update: ServiceUpdateRecord) {
-    const active = await readQualifiedRuntimeReceipt(
-      this.#baseDir,
-      this.#state.activeVersion,
-      undefined,
-      this.#digestOptions(this.#state.update?.id, "receipt", "child-start"),
-    );
-    return evaluateLegacyUpdateSettlement({
-      baseDir: this.#baseDir,
-      operationId: update.id,
-      current: update,
-      active: { activeVersion: this.#state.activeVersion, activeSourceSha: active.sourceSha },
-    });
-  }
-
-  async #settleFailedUpdate(
-    pending: PendingServiceUpdate,
-    basis: "launcher-recorded" | "legacy-reconciled",
-  ) {
-    const digests = await this.#recoveryIO.failedOutcome(this.#baseDir, pending);
-    const staging = await NodeFSP.lstat(
-      `${databaseBackupDir(this.#baseDir, pending.id)}.staging`,
-    ).catch((cause: NodeJS.ErrnoException) => {
-      if (cause.code === "ENOENT") return undefined;
-      throw cause;
-    });
-    if (staging !== undefined)
-      throw new Error(
-        "recovery-cleanup: snapshot staging has unknown prior effects; settlement held.",
-      );
-    const payloadExisted = await pathExists(databaseBackupDir(this.#baseDir, pending.id));
-    await this.#recoveryIO.cleanup(this.#baseDir, pending, "failed-before-trial", true);
-    const cause = await readUpdateOperationCause(this.#baseDir, pending.id);
-    const receipt: UpdateOperationSettlement = {
-      schema: 1,
-      operationId: pending.id,
-      status: "failed",
-      settlement: "no-effect",
-      basis,
-      ...digests,
-      evidence: {
-        phaseAtFailure: "accepted",
-        nativeReason: "launcher-restarted",
-        candidateStarted: false,
-        activeVersion: pending.fromVersion,
-        activeSourceSha: pending.qualified!.binding.activeSourceSha,
-        recoveryPayload: payloadExisted ? "removed" : "absent",
-        restorePending: false,
-        cause: cause === undefined ? null : cause.message || cause.code,
-        writerLauncherVersion: this.#launcherVersion,
-        recordedAt: new Date().toISOString(),
-      },
-    };
-    return this.#recoveryIO.settle(this.#baseDir, receipt);
   }
 
   async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
     if (this.#stopping) return;
+    if (
+      await this.#deferForDiskSpace(() =>
+        role === "trial" && update?.status === "pending"
+          ? this.#startTrial(update)
+          : this.#startChild(version, role, update),
+      )
+    )
+      return;
     if (!(await runtimeExists(this.#baseDir, version))) {
       throw new Error(`Selected t3@${version} runtime is missing or incomplete.`);
     }
     if (this.#stopping) return;
-    if (update?.qualified !== undefined) {
-      const receipt = await readQualifiedRuntimeReceipt(
-        this.#baseDir,
-        version,
-        undefined,
-        this.#digestOptions(
-          update?.id,
-          role === "trial" ? "full" : "receipt",
-          role === "trial" ? "launcher-activation" : "child-start",
-        ),
-      );
-      const expectedSource =
-        version === update.qualified.receipt.version
-          ? update.qualified.receipt.sourceSha
-          : update.qualified.binding.activeSourceSha;
-      if (receipt.sourceSha !== expectedSource)
-        throw new Error(
-          "Selected runtime source no longer matches its native installation transaction.",
-        );
-    }
     const paths = runtimePaths(this.#baseDir, version);
-    const pointer =
-      this.#startupGateProtocol === 1 ? await readLauncherPointer(this.#baseDir) : undefined;
     const context: ServiceLauncherContext = {
-      ...(pointer === undefined ? {} : { launcherHandoffProtocol: 1 as const }),
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
-      launcherVersion: this.#launcherVersion,
-      qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
-      qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL,
-      stateRecoveryPolicyProtocol: 1,
-      updateOperationsProtocol: 1,
-      updateRetirementProtocol: 1,
-      updateOutcomeProtocol: 1,
-      updateSettlementProtocol: 1,
-      ...(this.#startupGateProtocol === undefined
-        ? {}
-        : { startupGateProtocol: this.#startupGateProtocol }),
       ...(update === undefined ? {} : { update }),
     };
     const spawnArguments = runtimeSpawnArguments(paths);
     const child = NodeChildProcess.spawn(spawnArguments.command, spawnArguments.args, {
-      env: {
-        ...this.#environment,
-        T3CODE_HOME: this.#baseDir,
-        [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context),
-      },
-      stdio: ["inherit", "inherit", "inherit", "ipc"],
+      env: { ...this.#environment, [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context) },
+      stdio:
+        this.#output === undefined
+          ? ["inherit", "inherit", "inherit", "ipc"]
+          : ["ignore", this.#output, this.#output, "ipc"],
     });
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => reject(error);
@@ -1423,7 +1192,7 @@ export class Launcher {
       });
     });
     if (this.#stopping) {
-      await terminateChild(child);
+      await this.#terminate(child);
       return;
     }
 
@@ -1434,422 +1203,36 @@ export class Launcher {
     };
     this.#child = managed;
     child.on("message", (value) => {
-      // Receipt time, before queueing, is the closest launcher-side bound on
-      // when the child's exchange timer started.
-      const receivedAt = this.#now();
       const message = decodeServiceLauncherChildMessage(value);
-      if (message !== undefined)
-        this.#enqueue(() => this.#handleMessage(managed, message, receivedAt));
-      else if (
-        update?.qualified !== undefined &&
-        typeof value === "object" &&
-        value !== null &&
-        "type" in value &&
-        value.type === "prepared"
-      ) {
-        this.#enqueue(() =>
-          Promise.reject(
-            new Error("Qualified child supplied malformed startup proof; transaction retained."),
-          ),
-        );
-      }
+      if (message !== undefined) this.#enqueue(() => this.#handleMessage(managed, message));
     });
     child.once("exit", (code, signal) =>
       this.#enqueue(() => this.#handleExit(managed, code, signal)),
     );
 
-    await this.#publishCapability(managed);
-
-    if (role === "active") {
-      if (pointer?.pendingVersion === this.#launcherVersion) {
-        this.#handoffReadyDeadline.set(managed, this.#now() + this.#preparedTimeoutMs);
-        this.#handoffHealthTimer = setTimeout(
-          () =>
-            this.#enqueue(async () => {
-              if (this.#child === managed && !this.#healthyChildren.has(managed) && !this.#stopping)
-                throw new Error(
-                  "Pending launcher child did not become healthy before the startup deadline.",
-                );
-            }),
-          this.#preparedTimeoutMs,
-        );
-      }
-      await this.#emitDriftNotice(version);
-    }
-
     if (role === "trial") {
       this.#timer = setTimeout(
         () => this.#enqueue(() => this.#handlePreparedTimeout(managed)),
-        this.#preparedTimeoutMs,
+        PREPARED_TIMEOUT_MS,
       );
     }
   }
 
-  async #handleMessage(
-    child: ManagedChild,
-    message: ServiceLauncherChildMessage,
-    receivedAt: number,
-  ): Promise<void> {
+  async #handleMessage(child: ManagedChild, message: ServiceLauncherChildMessage): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
-    if (message.type === "runtime-ready") {
-      if (
-        message.childVersion !== child.version ||
-        child.role !== "active" ||
-        this.#startupGateProtocol !== 1 ||
-        this.#stopRequested ||
-        (await readLauncherPointer(this.#baseDir)) === undefined
-      )
-        throw new Error("Launcher health message differs from the selected child.");
-      const deadline = this.#handoffReadyDeadline.get(child);
-      if (deadline !== undefined && receivedAt > deadline)
-        throw new Error("Pending launcher child readiness arrived after its startup deadline.");
-      this.#assertQualifiedChildLive(child);
-      const capability = await readLauncherCapabilityReceipt(this.#baseDir, {
-        launcherVersion: this.#launcherVersion,
-        launcherPid: process.pid,
-        childVersion: child.version,
-        childPid: child.process.pid!,
-      });
-      if (capability?.launcherHandoffProtocol !== 1)
-        throw new Error("Launcher health has no bound published capability.");
-      await settleLauncherHandoff(this.#baseDir, this.#launcherVersion, child.version);
-      this.#assertQualifiedChildLive(child);
-      this.#healthyChildren.add(child);
-      clearTimeout(this.#handoffHealthTimer);
-      this.#handoffHealthTimer = undefined;
-      await this.#publishCapability(child);
-      await this.#emitDriftNotice(child.version);
-      await sendMessage(child.process, {
-        type: "runtime-ready-accepted",
-        queryId: message.queryId,
-      });
-      return;
-    }
-    if (message.type === "request-launcher-handoff") {
-      await this.#handleLauncherHandoff(child, message.queryId);
-      return;
-    }
-    if (message.type === "reconcile-failed-update" || message.type === "record-retired-operation") {
-      await this.#handleSettlementRequest(child, message);
-      return;
-    }
-    if (message.type === "reconcile-update") {
-      // Answered in IPC order, after every earlier request from this child has finished.
-      const resolved = await resolveUpdateOperation(
-        this.#baseDir,
-        message.operationId,
-        this.#state.update,
-      ).catch(() => ({ outcome: "unknown" as const }));
-      await sendMessage(child.process, {
-        type: "update-outcome",
-        operationId: message.operationId,
-        queryId: message.queryId,
-        ...resolved,
-      }).catch(() => undefined);
-      return;
-    }
-    if (message.type === "request-retire-update") {
-      let retired = false;
-      let reason: string | undefined;
-      try {
-        if (
-          child.role !== "active" ||
-          child.version !== this.#state.activeVersion ||
-          this.#startupGateProtocol !== 1 ||
-          this.#stopRequested
-        )
-          throw new Error("Only the selected active qualified server can retire a stage.");
-        await retireNativeStage(this.#baseDir, child.version, this.#state.update, message);
-        retired = true;
-      } catch (cause) {
-        reason = cause instanceof Error ? cause.message : "Native stage retirement is uncertain.";
-      }
-      await sendMessage(child.process, {
-        type: "update-retired",
-        operationId: message.operationId,
-        stagedHandle: message.stagedHandle,
-        retired,
-        ...(reason === undefined ? {} : { reason }),
-      });
-      return;
-    }
     if (message.type === "request-update") {
-      await this.#handleUpdateRequest(child, message, receivedAt);
+      await this.#handleUpdateRequest(child, message);
       return;
     }
-    await this.#handlePrepared(child, message, receivedAt);
-  }
-
-  async #emitDriftNotice(childVersion: string): Promise<void> {
-    const pointer =
-      this.#startupGateProtocol === 1 ? await readLauncherPointer(this.#baseDir) : undefined;
-    const last = pointer === undefined ? undefined : await readLauncherHandoff(this.#baseDir);
-    const status =
-      pointer === undefined
-        ? undefined
-        : last?.targetVersion === childVersion &&
-            (last.status === "requested" || last.status === "rejected")
-          ? last.status
-          : "waiting";
-    const notice = launcherDriftNotice(this.#launcherVersion, childVersion, status);
-    if (notice !== undefined) process.stderr.write(notice);
-  }
-
-  async #publishCapability(child: ManagedChild): Promise<void> {
-    if (this.#startupGateProtocol !== 1) return;
-    if (child.process.pid === undefined)
-      throw new Error("Spawned child has no native process identity.");
-    const pointer = await readLauncherPointer(this.#baseDir);
-    const lastHandoff =
-      pointer === undefined ? undefined : await readLauncherHandoff(this.#baseDir);
-    await publishLauncherCapabilityReceipt({
-      schema: 1,
-      baseDir: this.#baseDir,
-      launcherVersion: this.#launcherVersion,
-      launcherPid: process.pid,
-      launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
-      qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
-      startupGateProtocol: 1,
-      updateSettlementProtocol: 1,
-      childPid: child.process.pid,
-      childVersion: child.version,
-      ...(pointer === undefined
-        ? {}
-        : {
-            launcherHandoffProtocol: 1 as const,
-            launcherPointer: {
-              currentVersion: pointer.currentVersion,
-              attempts: pointer.attempts,
-              ...(pointer.pendingVersion === undefined
-                ? {}
-                : { pendingVersion: pointer.pendingVersion }),
-            },
-          }),
-      ...(lastHandoff === undefined ? {} : { lastHandoff }),
-    });
-  }
-
-  async #handleLauncherHandoff(child: ManagedChild, queryId: number): Promise<void> {
-    const reply = (outcome: "accepted" | "deferred" | "unavailable") =>
-      sendMessage(child.process, { type: "launcher-handoff-outcome", queryId, outcome });
-    const update = this.#state.update;
-    const pointer = await readLauncherPointer(this.#baseDir);
-    if (
-      pointer === undefined ||
-      this.#launcherVersion === child.version ||
-      update?.status !== "committed" ||
-      update.qualified === undefined ||
-      update.startupReceipt === undefined ||
-      update.targetVersion !== child.version
-    ) {
-      await reply("unavailable");
-      return;
-    }
-    const previous = await readLauncherHandoff(this.#baseDir);
-    if (previous?.status === "rejected" && previous.targetVersion === child.version) {
-      await reply("unavailable");
-      return;
-    }
-    if (
-      this.#stopRequested ||
-      child.role !== "active" ||
-      !this.#healthyChildren.has(child) ||
-      pointer.currentVersion !== this.#launcherVersion ||
-      child.process.pid === undefined ||
-      !(await this.#handoffProcessesQuiet(process.pid, child.process.pid, pointer.program))
-    ) {
-      await reply("deferred");
-      return;
-    }
-    this.#assertQualifiedChildLive(child);
-    try {
-      const retained = await readQualifiedRuntimeReceipt(
-        this.#baseDir,
-        pointer.currentVersion,
-        undefined,
-        this.#digestOptions(update.id, "full", "launcher-activation"),
-      );
-      const selected = await readQualifiedRuntimeReceipt(
-        this.#baseDir,
-        child.version,
-        undefined,
-        this.#digestOptions(update.id, "full", "launcher-activation"),
-      );
-      if (
-        retained.sourceSha !== update.qualified.binding.activeSourceSha ||
-        JSON.stringify(selected) !== JSON.stringify(update.qualified.receipt)
-      )
-        throw new Error("Launcher handoff qualified runtime identity differs.");
-    } catch {
-      process.stderr.write(
-        "[service-launcher] Automatic launcher handoff refused changed or unverifiable runtime bytes.\n",
-      );
-      await reply("unavailable");
-      return;
-    }
-    // run() already holds the launcher lock for its whole lifetime. Never acquire it here.
-    const requested = await requestLauncherHandoff(
-      this.#baseDir,
-      {
-        requestId: update.id,
-        fromVersion: this.#launcherVersion,
-        targetVersion: child.version,
-      },
-      async () => {
-        this.#assertQualifiedChildLive(child);
-        return (
-          !this.#stopRequested &&
-          child.process.pid !== undefined &&
-          (await this.#handoffProcessesQuiet(process.pid, child.process.pid, pointer.program))
-        );
-      },
-    );
-    if (requested?.status === "deferred") {
-      await reply("deferred");
-      return;
-    }
-    if (requested === undefined) {
-      await reply("unavailable");
-      return;
-    }
-    this.#assertQualifiedChildLive(child);
-    await this.#publishCapability(child);
-    await reply("accepted");
-    this.#stopping = true;
-    this.#clearTimer();
-    await terminateChild(child.process, "SIGTERM");
-    await this.#retractCapability(child.process);
-    this.#child = null;
-    this.#done = true;
-    // A bounded nonzero manager restart uses the immutable shim and its three-attempt budget.
-    this.#exitCode = 75;
-    this.#completion.resolve();
-  }
-
-  async #handleSettlementRequest(
-    child: ManagedChild,
-    message: Extract<
-      ServiceLauncherChildMessage,
-      { type: "reconcile-failed-update" | "record-retired-operation" }
-    >,
-  ): Promise<void> {
-    let replies = this.#reconciliationReplies.get(child);
-    if (replies === undefined) {
-      replies = new Map();
-      this.#reconciliationReplies.set(child, replies);
-    }
-    const key = `${message.operationId}:${message.requestId}`;
-    let result = replies.get(key);
-    if (result === undefined) {
-      // Never evict a reply and reinterpret its request ID. A new child gets its own budget.
-      result =
-        replies.size >= 256
-          ? { result: "refused", reason: "settlement-write-failed" }
-          : await this.#reconcileFailedRequest(child, message);
-      if (replies.size < 256) replies.set(key, result);
-    }
-    await sendMessage(child.process, {
-      type: "update-reconciled",
-      operationId: message.operationId,
-      requestId: message.requestId,
-      ...result,
-    });
-  }
-
-  async #reconcileFailedRequest(
-    child: ManagedChild,
-    message: Extract<
-      ServiceLauncherChildMessage,
-      { type: "reconcile-failed-update" | "record-retired-operation" }
-    >,
-  ): Promise<ServiceUpdateReconciliationResult> {
-    if (
-      child.role !== "active" ||
-      child.version !== this.#state.activeVersion ||
-      this.#stopRequested ||
-      this.#state.update?.status === "pending"
-    )
-      return { result: "refused", reason: "insufficient-evidence" };
-    try {
-      const existing = await readUpdateOperationSettlement(this.#baseDir, message.operationId);
-      if (existing !== undefined) {
-        if (
-          message.type === "record-retired-operation" &&
-          (existing.basis !== "retired-exception" ||
-            existing.evidence.retiredLocation !== message.retiredLocation)
-        )
-          return { result: "refused", reason: "retired-evidence-mismatch" };
-        // Re-flush an existing receipt before acknowledging a prior publication prefix.
-        await this.#recoveryIO.settle(this.#baseDir, existing);
-        return { result: "already-settled" };
-      }
-      if (message.type === "record-retired-operation") {
-        const evidence = await verifyRetiredUpdateOperation({
-          baseDir: this.#baseDir,
-          operationId: message.operationId,
-          retiredLocation: message.retiredLocation,
-        });
-        if (evidence.result === "refused") return evidence;
-        const settled = await this.#recoveryIO.settle(this.#baseDir, {
-          schema: 1,
-          operationId: message.operationId,
-          status: "failed",
-          settlement: "no-effect",
-          basis: "retired-exception",
-          reservationSha256: evidence.reservationSha256,
-          outcomeSha256: evidence.outcomeSha256,
-          evidence: {
-            retiredLocation: evidence.retiredLocation,
-            recordedAt: new Date().toISOString(),
-            writerLauncherVersion: this.#launcherVersion,
-          },
-        });
-        return { result: settled.result };
-      }
-      const active = await readQualifiedRuntimeReceipt(
-        this.#baseDir,
-        this.#state.activeVersion,
-        undefined,
-        this.#digestOptions(this.#state.update?.id, "receipt", "child-start"),
-      );
-      const evaluated = await evaluateLegacyUpdateSettlement({
-        baseDir: this.#baseDir,
-        operationId: message.operationId,
-        current: this.#state.update,
-        active: { activeVersion: this.#state.activeVersion, activeSourceSha: active.sourceSha },
-      });
-      if (evaluated.result === "refused") return evaluated;
-      await this.#updateOperationIO.archive(this.#baseDir, evaluated.current);
-      const pending: PendingServiceUpdate = {
-        ...evaluated.current,
-        status: "pending",
-        phase: "accepted",
-        dbPath: evaluated.binding.dbPath,
-      };
-      const settled = await this.#settleFailedUpdate(pending, "legacy-reconciled");
-      return { result: settled.result };
-    } catch {
-      return { result: "refused", reason: "settlement-write-failed" };
-    }
+    await this.#handlePrepared(child, message.updateId);
   }
 
   async #handleUpdateRequest(
     child: ManagedChild,
     message: Extract<ServiceLauncherChildMessage, { readonly type: "request-update" }>,
-    receivedAt: number,
   ): Promise<void> {
-    const reject = async (reason: string) => {
-      // This request ends here without acceptance; its receipts must say so before it answers.
-      if (message.operationId !== undefined)
-        await settleAbandonedUpdateOperations(this.#baseDir, this.#state.update).catch(
-          () => undefined,
-        );
-      await sendMessage(child.process, {
-        type: "update-rejected",
-        reason,
-        ...(message.operationId === undefined ? {} : { operationId: message.operationId }),
-      });
-    };
+    const reject = (reason: string) =>
+      sendMessage(child.process, { type: "update-rejected", reason });
     if (child.role !== "active") {
       await reject("Only the active server can request an update.");
       return;
@@ -1857,58 +1240,6 @@ export class Launcher {
     if (child.version !== this.#state.activeVersion) {
       await reject("The requesting server is not the selected active version.");
       return;
-    }
-    if (message.stagedHandle !== undefined) {
-      try {
-        await assertStageNotRevoked(this.#baseDir, message.stagedHandle, message.operationId);
-      } catch (cause) {
-        await reject(cause instanceof Error ? cause.message : "Stage revocation is uncertain.");
-        return;
-      }
-    }
-    if (message.operationId !== undefined) {
-      const existing = await reconcileUpdateOperation(
-        this.#baseDir,
-        message.operationId,
-        this.#state.update,
-      );
-      if (existing.state !== "absent") {
-        if (existing.state === "rejected") {
-          await reject("The launcher already refused this update operation; start another.");
-          return;
-        }
-        if (existing.state === "blocked") {
-          await reject("The update operation is ambiguous and requires reconciliation.");
-          return;
-        }
-        const retainedPolicy =
-          this.#state.update?.id === message.operationId
-            ? this.#state.update.stateRecovery
-            : undefined;
-        if ((retainedPolicy ?? "clone-or-copy") !== (message.stateRecovery ?? "clone-or-copy")) {
-          await reject(
-            "recovery-policy-conflict: The retained native operation cannot prove this requested policy.",
-          );
-          return;
-        }
-        const reserved = await readOperationReservation(this.#baseDir, message.operationId).catch(
-          () => undefined,
-        );
-        if (
-          reserved === undefined ||
-          reserved.binding.stagedHandle !== message.stagedHandle ||
-          reserved.binding.dbPath !== message.dbPath ||
-          reserved.binding.targetVersion !== message.targetVersion
-        ) {
-          await reject("The update operation is ambiguous or its immutable binding changed.");
-          return;
-        }
-        await sendMessage(child.process, {
-          type: "update-accepted",
-          updateId: message.operationId,
-        });
-        return;
-      }
     }
     if (this.#state.update?.status === "pending") {
       await reject("Another server update is already pending.");
@@ -1918,17 +1249,7 @@ export class Launcher {
       await reject("The requested target is not an exact version.");
       return;
     }
-    if (
-      (message.targetVersion.includes("-preview.") || child.version.includes("-preview.")) &&
-      message.stagedHandle === undefined
-    ) {
-      await reject("Jones previews require a qualified staged handle and explicit Install.");
-      return;
-    }
-    if (
-      message.stagedHandle === undefined &&
-      compareExactServiceVersions(message.targetVersion, child.version) <= 0
-    ) {
+    if (compareExactServiceVersions(message.targetVersion, child.version) <= 0) {
       await reject("Remote updates must select a newer server version.");
       return;
     }
@@ -1936,168 +1257,40 @@ export class Launcher {
       await reject("The requested database path is not absolute.");
       return;
     }
-    try {
-      validateDatabasePathForBaseDir(this.#baseDir, message.dbPath);
-    } catch {
-      await reject("The requested database path is not the configured userdata/statev2.sqlite.");
-      return;
-    }
     if (!(await runtimeExists(this.#baseDir, message.targetVersion))) {
       await reject("The requested target runtime is missing or incomplete.");
       return;
     }
-    if (message.stagedHandle !== undefined && this.#startupGateProtocol !== 1) {
-      await reject("bootstrap-required: The qualified startup gate is not bound on this launcher.");
-      return;
-    }
-    const previous = this.#state.update;
-    if (
-      message.stagedHandle !== undefined &&
-      previous?.qualified !== undefined &&
-      (previous.status === "committed" || previous.status === "rolled-back")
-    ) {
-      try {
-        await removeQualifiedRecoveryPayload(
-          this.#baseDir,
-          previous.id,
-          previous.qualified.binding.dbPath,
-          { transactionId: previous.id, qualified: previous.qualified },
-          previous.status,
-        );
-      } catch (cause) {
-        await reject(
-          `recovery-cleanup-required: Previous qualified recovery payload could not be safely removed${recoveryCleanupCategory(cause)}; the current server remains active.`,
-        );
-        return;
-      }
-    }
-    let qualified: StagedQualifiedRuntime | undefined;
-    let stagingTiming: QualifiedDigestTiming | undefined;
-    let migrationPlan: MigrationPlan | undefined;
-    if (message.stagedHandle !== undefined) {
-      try {
-        qualified = await verifyStagedQualifiedRuntime(
-          this.#baseDir,
-          child.version,
-          message.stagedHandle,
-          undefined,
-          this.#digestOptions(message.operationId, "receipt", "launcher-admission"),
-        );
-        stagingTiming = await qualifiedStagingTiming(this.#baseDir, qualified.receipt.version);
-        if (
-          qualified.receipt.version !== message.targetVersion ||
-          qualified.binding.dbPath !== message.dbPath
-        )
-          throw new Error("Install target differs from its staged handle.");
-        if (child.process.pid === undefined)
-          throw new Error("The requesting child has no native process identity.");
-        if (
-          qualified.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
-          message.qualifiedRecoveryProtocol !== QUALIFIED_RECOVERY_PROTOCOL
-        )
-          throw new QualifiedCandidatePreflightError(
-            "qualified-recovery-unsupported: The current server cannot read historical enrollment receipts.",
-          );
-        migrationPlan = await preflightQualifiedCandidate(this.#baseDir, qualified);
-        await preflightQualifiedBackup(this.#baseDir, message.dbPath, this.#backupAdapter, {
-          cloneRequired: message.stateRecovery === "clone-required",
-        });
-        if (this.#child !== child || this.#stopRequested || this.#stopping)
-          throw new Error("The requesting child stopped during candidate preflight.");
-      } catch (cause) {
-        await reject(
-          cause instanceof QualifiedCandidatePreflightError ||
-            (cause instanceof Error &&
-              (cause.message.startsWith("startup-gate-unavailable:") ||
-                cause.message.startsWith("recovery-capacity:") ||
-                cause.message.startsWith("recovery-clone-unavailable:")))
-            ? cause.message
-            : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
-        );
-        return;
-      }
-    }
-    // A check that cannot run refuses the update too: the alternative is
-    // stopping the server without knowing whether the backup fits.
-    const backupBlocker =
-      qualified !== undefined && message.stateRecovery !== undefined
-        ? undefined
-        : await databaseBackupBlocker(this.#baseDir, message.dbPath, this.#backupSpaceProbe).catch(
-            (error: unknown) =>
-              `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
-          );
+    // Failed checks must refuse updates rather than stop the server with unknown backup capacity.
+    const backupBlocker = await databaseBackupBlocker(
+      this.#baseDir,
+      message.dbPath,
+      this.#backupSpaceProbe,
+    ).catch(
+      (error: unknown) =>
+        `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
+    );
     if (!child.process.connected) return;
     if (backupBlocker !== undefined) {
       await reject(backupBlocker);
       return;
     }
-    if (message.stagedHandle !== undefined) {
-      if (this.#child !== child || this.#stopRequested || this.#stopping) return;
-      if (this.#exchangeExpired(receivedAt)) {
-        // The requester may already have reported a timeout; never accept,
-        // record or stop behind it. A disconnected requester needs no reply.
-        await reject(
-          "request-expired: Install preflight outlasted the server's launcher exchange; Install was not admitted.",
-        ).catch(() => undefined);
-        return;
-      }
-    }
-    try {
-      if (message.stagedHandle !== undefined)
-        await assertStageNotRevoked(this.#baseDir, message.stagedHandle, message.operationId);
-      await this.#updateOperationIO.archive(this.#baseDir, this.#state.update);
-      await settleAbandonedUpdateOperations(this.#baseDir, this.#state.update);
-      await assertNoUnreconciledUpdateOperations(this.#baseDir, this.#state.update);
-      if (message.operationId !== undefined) {
-        if (qualified === undefined) {
-          await reject("An operation ID requires a qualified staged runtime.");
-          return;
-        }
-        await this.#updateOperationIO.reserve(
-          this.#baseDir,
-          message.operationId,
-          operationBinding(qualified),
-        );
-      }
-    } catch (cause) {
-      // A failed fsync may leave a reservation; the refusal records it as rejected
-      // while the unchanged active child continues serving.
-      await reject(
-        cause instanceof FailedOperationUnsettledError
-          ? `failed-operation-unsettled: ${cause.operationId} requires reconciliation before another Install; the current server remains active.`
-          : "operation-reconciliation-required: Native operation receipts could not be durably prepared; the current server remains active.",
-      );
-      return;
-    }
-    if (qualified !== undefined && this.#exchangeExpired(receivedAt)) {
-      // Receipt preparation can consume the exchange budget too. The refusal
-      // records the reservation as rejected; no Install was accepted.
-      await reject(
-        "request-expired: Native operation preparation outlasted the server's launcher exchange; Install was not admitted.",
-      ).catch(() => undefined);
-      return;
-    }
+
     const pending: PendingServiceUpdate = {
-      id: message.operationId ?? NodeCrypto.randomUUID(),
+      id: NodeCrypto.randomUUID(),
       fromVersion: child.version,
       targetVersion: message.targetVersion,
       dbPath: message.dbPath,
       status: "pending",
-      phase: "accepted",
-      ...(message.stateRecovery === undefined ? {} : { stateRecovery: message.stateRecovery }),
-      ...(qualified === undefined ? {} : { qualified }),
-      ...(migrationPlan === undefined ? {} : { migrationPlan }),
     };
-    if (stagingTiming !== undefined) this.#recordDigestTiming(pending.id, stagingTiming);
     const next: ServiceState = { ...this.#state, update: pending };
-    await writeServiceState(this.#statePath, next);
-    this.#state = next;
-    await this.#retainDigestTimings(next.update);
-    await sendMessage(child.process, {
-      type: "update-accepted",
-      updateId: pending.id,
-      ...(migrationPlan === undefined ? {} : { migrationPlan }),
-    });
+    try {
+      await this.#selectState(next);
+    } catch (error) {
+      await reject(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    await sendMessage(child.process, { type: "update-accepted", updateId: pending.id });
     this.#timer = setTimeout(() => this.#enqueue(() => this.#beginTrial(child)), HANDOFF_DELAY_MS);
   }
 
@@ -2107,18 +1300,19 @@ export class Launcher {
       return;
     }
     this.#timer = undefined;
+    // Anything thrown outside its own fallback still leaves the offline backup to run.
+    const finishOnlineBackup = await startOnlineDatabaseBackup(
+      this.#baseDir,
+      pending,
+      this.#backupSpaceProbe,
+    ).catch(() => undefined);
     this.#child = null;
-    await terminateChild(child.process);
-    await this.#retractCapability(child.process);
+    await this.#terminate(child.process);
+    await finishOnlineBackup?.();
     await this.#startTrial(pending);
   }
 
-  async #handlePrepared(
-    child: ManagedChild,
-    message: Extract<ServiceLauncherChildMessage, { readonly type: "prepared" }>,
-    receivedAt: number,
-  ): Promise<void> {
-    const updateId = message.updateId;
+  async #handlePrepared(child: ManagedChild, updateId: string): Promise<void> {
     const pending = this.#state.update;
     if (
       child.role !== "trial" ||
@@ -2132,121 +1326,60 @@ export class Launcher {
       }
       throw new Error("Trial child reported prepared for an unexpected update.");
     }
-    let startupReceipt: QualifiedTrialReceipt | undefined;
-    if (pending.qualified !== undefined) {
-      if (
-        message.startupGateProtocol !== 1 ||
-        message.qualified === undefined ||
-        this.#startupGateProtocol !== 1
-      )
-        throw new Error(
-          "Qualified startup proof is required before pointer commit; transaction retained.",
-        );
-      startupReceipt = message.qualified;
-      assertQualifiedTrialBinding({
-        updateId: pending.id,
-        qualified: pending.qualified,
-        receipt: startupReceipt,
-      });
-      const home = await NodeFSP.realpath(this.#baseDir);
-      const serviceUserdata = await NodeFSP.realpath(NodePath.join(home, "userdata"));
-      const database = await NodeFSP.realpath(pending.dbPath);
-      const receipt = await readQualifiedRuntimeReceipt(
-        this.#baseDir,
-        pending.targetVersion,
-        undefined,
-        this.#digestOptions(pending.id, "receipt", "child-start"),
-      );
-      const environment = (
-        await NodeFSP.readFile(NodePath.join(this.#baseDir, "userdata", "environment-id"), "utf8")
-      ).trim();
-      if (
-        JSON.stringify(receipt) !== JSON.stringify(pending.qualified.receipt) ||
-        environment !== pending.qualified.binding.environmentId ||
-        startupReceipt.home !== home ||
-        startupReceipt.serviceUserdata !== serviceUserdata ||
-        startupReceipt.databasePath !== database ||
-        startupReceipt.processId !== child.process.pid ||
-        startupReceipt.version !== child.version ||
-        startupReceipt.sourceSha !== receipt.sourceSha ||
-        startupReceipt.sourceTree !== receipt.sourceTree
-      ) {
-        throw new Error(
-          "Qualified startup observed identity mismatched the captured child; transaction retained.",
-        );
-      }
-    }
-    if (pending.qualified !== undefined) {
-      if (child.process.pid === undefined) throw new Error("Trial writer identity is unavailable.");
-      this.#assertQualifiedChildLive(child);
-      if (this.#exchangeExpired(receivedAt)) {
-        // The trial may have abandoned its prepared exchange and could never
-        // reserve resume. No pointer write was attempted, so the ordinary
-        // pre-commit rollback applies.
-        this.#clearTimer();
-        await this.#returnToPrevious(pending, "rolled-back", "prepared-exchange-expired", child);
-        return;
-      }
-    }
     this.#clearTimer();
-    const committed = {
-      ...terminalUpdate({ pending, status: "committed" }),
-      ...(startupReceipt === undefined ? {} : { startupReceipt }),
-    };
+    const committed = terminalUpdate({ pending, status: "committed" });
     const next: ServiceState = {
       ...this.#state,
       activeVersion: pending.targetVersion,
       update: committed,
     };
-    if (pending.qualified !== undefined) {
-      this.#assertQualifiedChildLive(child);
-      // From this point a failed fsync/response can leave a committed pointer; rollback is forbidden.
-      this.#qualifiedCommitAttempt = { updateId: pending.id, step: "pointer-write" };
-    }
+    await this.#selectState(next);
+    child.role = "active";
+    await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
     try {
-      await writeServiceState(this.#statePath, next);
-      this.#state = next;
-      await this.#retainDigestTimings(next.update);
-      if (pending.qualified !== undefined) {
-        this.#qualifiedCommitAttempt = { updateId: pending.id, step: "post-write-liveness" };
-        this.#assertQualifiedChildLive(child);
-      }
-      child.role = "active";
-      await this.#emitDriftNotice(child.version);
-      if (pending.qualified !== undefined)
-        this.#qualifiedCommitAttempt = { updateId: pending.id, step: "committed-message" };
-      await sendMessage(child.process, {
-        type: "committed",
-        updateId: committed.id,
-        ...(startupReceipt === undefined
-          ? {}
-          : {
-              startupGateProtocol: 1 as const,
-              qualified: { ...startupReceipt, generation: committed.id },
-            }),
-      });
-      await cleanupTerminalDatabaseBackup(this.#baseDir, pending, "committed");
-      await this.#proposeRuntimeRetention();
-    } catch (cause) {
-      const attempt = this.#qualifiedCommitAttempt;
-      if (pending.qualified === undefined || attempt?.updateId !== pending.id) throw cause;
-      throw new QualifiedCommitFailure(attempt, cause);
+      await sendMessage(child.process, { type: "committed", updateId: committed.id });
+    } finally {
+      await this.#repointServiceUnit(committed.targetVersion);
     }
   }
 
-  #assertQualifiedChildLive(child: ManagedChild): void {
-    if (
-      this.#stopRequested ||
-      this.#stopping ||
-      this.#child !== child ||
-      child.process.pid === undefined ||
-      child.process.exitCode !== null ||
-      child.process.signalCode !== null ||
-      !child.process.connected
-    )
-      throw new Error("Qualified child liveness or stop intent changed; transaction retained.");
-    // The PID belongs to this captured spawn, never a path/name search.
-    process.kill(child.process.pid, 0);
+  // Selection is durable before this best-effort unit reconciliation.
+  async #repointServiceUnit(version: string): Promise<void> {
+    const unit = this.#serviceUnit;
+    if (unit === undefined) return;
+    try {
+      const release = await acquireServiceSelectionLock(unit.path);
+      try {
+        // The installer writes state before the unit under this lease. Do not
+        // acquire its state lease here: the installer takes that lease first.
+        const selected = await readServiceState(this.#statePath);
+        if (
+          selected.activeVersion !== this.#state.activeVersion ||
+          selected.update?.id !== this.#state.update?.id ||
+          selected.update?.status !== this.#state.update?.status
+        ) {
+          return;
+        }
+        const contents = await NodeFSP.readFile(unit.path, "utf8");
+        const installedBaseDir = serviceUnitBaseDirOf(contents);
+        if (
+          installedBaseDir === undefined ||
+          NodePath.resolve(installedBaseDir) !== NodePath.resolve(this.#baseDir)
+        ) {
+          return;
+        }
+        const repointed = repointServiceUnit(contents, version);
+        if (repointed !== contents) await replaceFileDurably(unit.path, repointed);
+        // A previous rename may have succeeded before reload failed.
+        await unit.reload();
+      } finally {
+        release();
+      }
+    } catch (error) {
+      process.stderr.write(
+        `[service-launcher] Could not point ${unit.path} at t3@${version}: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
   }
 
   async #handlePreparedTimeout(child: ManagedChild): Promise<void> {
@@ -2265,7 +1398,6 @@ export class Launcher {
   ): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
     this.#child = null;
-    await this.#retractCapability(child.process);
     if (code === STATE_DIR_OWNED_EXIT_CODE) {
       await this.#idleWhileStateDirOwned();
       return;
@@ -2280,7 +1412,6 @@ export class Launcher {
         pending,
         "rolled-back",
         `candidate-exited:${String(code ?? signal ?? "unknown")}`,
-        child,
       );
       return;
     }
@@ -2291,34 +1422,67 @@ export class Launcher {
       await this.#startTrial(pending);
       return;
     }
+    if (
+      await this.#deferForDiskSpace(() =>
+        this.#startChild(child.version, "active", this.#state.update),
+      )
+    )
+      return;
     throw new Error(`Active child exited unexpectedly (${String(code ?? signal ?? "unknown")}).`);
   }
 
-  /**
-   * Exiting would make systemd or launchd start another refused server, so stay
-   * idle until stopped or restarted. A pending update fails without restoring
-   * its backup: the other owner may have written to the database since.
-   */
+  // Stay idle until the lock frees to avoid supervisor restart loops. A pending update resumes its
+  // trial, since the other owner may have migrated the database past fromVersion. It stays pending
+  // only once its backup is gone, so no later trial, even after a launcher restart, restores it over
+  // the other owner's writes; exit 78 comes before the child opens the database.
   async #idleWhileStateDirOwned(): Promise<void> {
     this.#clearTimer();
     const pending = this.#state.update;
     if (pending?.status === "pending") {
-      const next: ServiceState = {
-        ...this.#state,
-        activeVersion: pending.fromVersion,
-        update: terminalUpdate({ pending, status: "failed", reason: "state-dir-owned" }),
-      };
-      await writeServiceState(this.#statePath, next);
-      this.#state = next;
-      await this.#retainDigestTimings(next.update);
-      if (pending.qualified === undefined)
-        await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+      const discarded = await discardDatabaseBackup(this.#baseDir, pending.id).then(
+        () => true,
+        () => false,
+      );
+      if (!discarded) {
+        const next: ServiceState = {
+          ...this.#state,
+          activeVersion: pending.fromVersion,
+          update: terminalUpdate({ pending, status: "failed", reason: "state-dir-owned" }),
+        };
+        await this.#selectState(next);
+        await this.#repointServiceUnit(next.activeVersion);
+      }
     }
-    // Signal listeners alone do not keep Node alive.
-    this.#timer = setInterval(() => {}, 2_147_483_647);
-    process.stderr.write(
-      "[service-launcher] Another T3 Code server owns this T3 home. Stop it, then restart this service.\n",
+    this.#releaseServing();
+    this.#log(
+      "[service-launcher] Another T3 Code server owns this T3 home. This service starts again once it stops.\n",
     );
+    this.#stateDirFreeProbes = 0;
+    // The interval also keeps Node alive: signal listeners alone do not.
+    this.#timer = setInterval(
+      () => this.#enqueue(() => this.#reclaimStateDir()),
+      this.#stateDirOwnerPollMs,
+    );
+  }
+
+  async #reclaimStateDir(): Promise<void> {
+    if (this.#stopRequested) {
+      this.#clearTimer();
+      return;
+    }
+    if (this.#timer === undefined || this.#child !== null) return;
+    const owned = await stateDirOwned(this.#baseDir);
+    // A stop during the probe clears the timer.
+    if (this.#timer === undefined) return;
+    // A relaunching desktop app frees the home for a few seconds; leave it that gap.
+    this.#stateDirFreeProbes = owned ? 0 : this.#stateDirFreeProbes + 1;
+    if (this.#stateDirFreeProbes < 2) return;
+    this.#clearTimer();
+    await this.#claimServing();
+    this.#log("[service-launcher] The T3 home is free again. Starting the server.\n");
+    const update = this.#state.update;
+    if (update?.status === "pending") await this.#startTrial(update);
+    else await this.#startChild(this.#state.activeVersion, "active", update);
   }
 
   async #returnToPrevious(
@@ -2327,51 +1491,117 @@ export class Launcher {
     reason: string,
     child?: ManagedChild,
   ): Promise<void> {
-    const refusal =
-      pending.qualified === undefined
-        ? undefined
-        : qualifiedRollbackRefusal(this.#qualifiedCommitAttempt, pending.id, reason);
-    if (refusal !== undefined) throw new Error(refusal);
     if (child !== undefined) {
       this.#child = null;
-      await terminateChild(child.process);
-      await this.#retractCapability(child.process);
+      await this.#terminate(child.process);
     }
-    const restore = async () => {
-      await restoreDatabaseBackup(this.#baseDir, pending);
-      const outcome = terminalUpdate({ pending, status, reason });
-      const next: ServiceState = {
-        ...this.#state,
-        activeVersion: pending.fromVersion,
-        update: outcome,
-      };
-      await writeServiceState(this.#statePath, next);
-      this.#state = next;
-      await this.#retainDigestTimings(next.update);
-      await cleanupTerminalDatabaseBackup(
-        this.#baseDir,
-        pending,
-        status === "rolled-back" ? "rolled-back" : undefined,
-      );
+    if (await this.#deferForDiskSpace(() => this.#returnToPrevious(pending, status, reason)))
+      return;
+    await restoreDatabaseBackup(this.#baseDir, pending);
+    const outcome = terminalUpdate({ pending, status, reason });
+    const next: ServiceState = {
+      ...this.#state,
+      activeVersion: pending.fromVersion,
+      update: outcome,
     };
-    if (pending.qualified !== undefined) await withStoppedServerOwnership(this.#baseDir, restore);
-    else await restore();
-    await this.#startChild(this.#state.activeVersion, "active", this.#state.update);
+    await this.#selectState(next);
+    await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+    try {
+      await this.#startChild(next.activeVersion, "active", outcome);
+    } finally {
+      await this.#repointServiceUnit(next.activeVersion);
+    }
   }
 }
 
-export async function main(): Promise<void> {
-  const baseDir = process.env.T3CODE_HOME?.trim();
-  if (baseDir === undefined || baseDir === "") {
+/** Task Scheduler cannot set variables or redirect output, so a Windows task passes them as flags. */
+export interface LauncherOptions {
+  readonly baseDir?: string | undefined;
+  readonly logFile?: string | undefined;
+  readonly serviceUnit?: string | undefined;
+}
+
+export async function main(options: LauncherOptions = {}): Promise<void> {
+  const baseDir = options.baseDir ?? process.env.T3CODE_HOME;
+  if (baseDir === undefined || baseDir.trim() === "") {
     throw new Error("T3CODE_HOME is required by the T3 Code service launcher.");
   }
-  const environment = await readServiceEnvironment(baseDir);
-  const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
-  const state = await readServiceState(statePath);
-  const launcher = new Launcher(baseDir, state, {
-    environment,
-    startupGateProtocol: readJonesStartupGateProtocol(),
-  });
-  await launcher.run();
-  if (launcher.exitCode !== 0) process.exitCode = launcher.exitCode;
+  const output =
+    options.logFile === undefined ? undefined : NodeFS.openSync(options.logFile, "a", 0o600);
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
+  const windows = process.platform === "win32";
+  let logTimer: NodeJS.Timeout | undefined;
+  // A failed stderr write (ENOSPC on a redirected log) is emitted asynchronously; without a listener it is fatal.
+  process.stderr.on("error", () => undefined);
+  try {
+    // What the service manager started the launcher with. It locates the unit; service.env
+    // changes only what the server gets.
+    const managerEnvironment = {
+      ...process.env,
+      T3CODE_HOME: baseDir,
+      ...(options.serviceUnit === undefined ? {} : { [SERVICE_UNIT_ENV]: options.serviceUnit }),
+    };
+    const environment = await readServiceEnvironment(baseDir, managerEnvironment);
+    const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
+    const contents = await NodeFSP.readFile(statePath, "utf8");
+    let state = parseServiceState(contents);
+    if (state === undefined) {
+      state = adoptLegacyServiceState(contents);
+      if (state === undefined) throw new Error("Service state is invalid or unsupported.");
+      if (!(await runtimeExists(baseDir, state.activeVersion))) {
+        throw new Error(`Selected t3@${state.activeVersion} runtime is missing or incomplete.`);
+      }
+    }
+    const serviceUnit = await serviceUnitFromEnvironment(managerEnvironment);
+    const logPath = await serviceLogPath(options, serviceUnit);
+    if (logPath !== undefined) {
+      await boundServiceLog(logPath);
+      logTimer = setInterval(
+        () => void boundServiceLog(logPath),
+        SERVICE_LOG_CHECK_INTERVAL_MS,
+      ).unref();
+    }
+    const launcher = new Launcher(baseDir, state, {
+      environment,
+      ...(serviceUnit === undefined ? {} : { serviceUnit }),
+      ...(output === undefined ? {} : { output }),
+      ...(windows ? { lockPath: serviceLauncherLockPath(baseDir) } : {}),
+    });
+    // Ending a scheduled task kills its console host without a signal; the console read fails instead.
+    const watchConsole = windows && process.stdin.isTTY === true;
+    const onConsoleLost = () => void launcher.stop("SIGTERM");
+    if (watchConsole) {
+      process.stdin.on("error", () => undefined);
+      process.stdin.once("close", onConsoleLost);
+      process.stdin.resume();
+    }
+    try {
+      await launcher.run();
+    } finally {
+      if (watchConsole) {
+        process.stdin.off("close", onConsoleLost);
+        process.stdin.destroy();
+      }
+    }
+  } catch (cause) {
+    if (output !== undefined) {
+      NodeFS.writeSync(
+        output,
+        `[service-launcher] ${cause instanceof Error ? cause.message : String(cause)}\n`,
+      );
+    }
+    // Agents the server left behind keep the console host, and so the task, running; ending it
+    // lets the next repeating trigger start the service again.
+    if (windows && options.serviceUnit !== undefined) {
+      const taskName = serviceTaskName(process.env.USERDOMAIN ?? "", process.env.USERNAME ?? "");
+      NodeChildProcess.spawnSync("schtasks", ["/End", "/TN", taskName], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    }
+    throw cause;
+  } finally {
+    clearInterval(logTimer);
+    if (output !== undefined) NodeFS.closeSync(output);
+  }
 }

@@ -1,22 +1,19 @@
-import * as Deferred from "effect/Deferred";
-import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CodexSettings, type ProviderReplayTranscript } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
-import * as CodexError from "effect-codex-app-server/errors";
+import type * as CodexError from "effect-codex-app-server/errors";
 import * as CodexReplay from "effect-codex-app-server/replay";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
-import { materializeCodexReplayAppIdentity } from "../../jones/runtimeIdentity/CodexReplayIdentity.ts";
-
 import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
+import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import {
   makeReplayServerConfig,
@@ -24,8 +21,6 @@ import {
 } from "../testkit/ProviderReplayHarness.ts";
 import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
-
-export { makeReplayServerConfig } from "../testkit/ProviderReplayHarness.ts";
 
 const DEFAULT_CODEX_SETTINGS = Schema.decodeSync(CodexSettings)({});
 
@@ -78,22 +73,13 @@ export function withCodexReplayChildMetadata(
     raw: {
       ...client.raw,
       request: (method, params) =>
-        method === "server/diagnostics"
-          ? Effect.fail(
-              new CodexError.CodexAppServerRequestError({
-                code: -32601,
-                errorMessage: "Synthetic diagnostics unsupported",
-              }),
-            )
-          : (method === "thread/read" || method === "thread/resume") &&
-              Predicate.isObject(params) &&
-              (method === "thread/read"
-                ? params.includeTurns === false
-                : params.excludeTurns === true) &&
-              typeof params.threadId === "string" &&
-              childThreadIds.has(params.threadId)
-            ? readMetadata(params.threadId, method)
-            : client.raw.request(method, params),
+        (method === "thread/read" || method === "thread/resume") &&
+        Predicate.isObject(params) &&
+        (method === "thread/read" ? params.includeTurns === false : params.excludeTurns === true) &&
+        typeof params.threadId === "string" &&
+        childThreadIds.has(params.threadId)
+          ? readMetadata(params.threadId, method)
+          : client.raw.request(method, params),
     },
   };
 }
@@ -110,31 +96,18 @@ function metadataFromTranscript(transcript: ProviderReplayTranscript): {
   };
 }
 
-export function makeCodexReplayClientFactory(input: {
+export function layer(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
-}): CodexAdapterV2.CodexAppServerClientFactoryShape {
-  const replayLayer = (options: CodexClient.CodexAppServerClientOptions) =>
+}) {
+  const layerReplay =
     input.driver === undefined
-      ? CodexReplay.layerReplay(input.transcript, options)
-      : CodexReplay.layerReplayWithDriver(input.driver, options);
-  const recordedGoalControl = input.transcript.entries.some(
-    (entry) =>
-      entry.type === "expect_outbound" &&
-      Predicate.isObject(entry.frame) &&
-      (entry.frame.method === "thread/goal/get" || entry.frame.method === "thread/goal/set"),
-  );
-  return {
+      ? CodexReplay.layerReplay(input.transcript)
+      : CodexReplay.layerReplayWithDriver(input.driver);
+  const layerReplayClientFactory = Layer.succeed(CodexAdapterV2.CodexAppServerClientFactory, {
     open: (openInput) =>
       Effect.gen(function* () {
-        const processExited = yield* Deferred.make<void>();
-        openInput.captureProcessExit?.(Deferred.await(processExited));
-        yield* Effect.addFinalizer(() => Deferred.succeed(processExited, undefined));
-        const context = yield* Layer.build(
-          replayLayer(
-            openInput.onTermination === undefined ? {} : { onTermination: openInput.onTermination },
-          ),
-        ).pipe(
+        const context = yield* Layer.build(layerReplay).pipe(
           Effect.mapError(
             (cause) =>
               new ProviderAdapter.ProviderAdapterOpenSessionError({
@@ -145,35 +118,11 @@ export function makeCodexReplayClientFactory(input: {
           ),
         );
         return yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
-          Effect.map((replayClient): CodexClient.CodexAppServerClient["Service"] => {
-            const client = withCodexReplayChildMetadata(replayClient, input.transcript);
-            return {
-              ...client,
-              raw: {
-                ...client.raw,
-                request: (method, params) =>
-                  // Older fixtures model no active goal. Recorded goal control and all writes
-                  // stay on strict replay so compatibility cannot hide an unexpected mutation.
-                  !recordedGoalControl && method === "thread/goal/get"
-                    ? Effect.succeed({ goal: null })
-                    : client.raw.request(method, params),
-              },
-            };
-          }),
+          Effect.map((client) => withCodexReplayChildMetadata(client, input.transcript)),
           Effect.provide(context),
         );
       }),
-  };
-}
-
-function makeCodexProviderAdapterRegistryReplayLayer(input: {
-  readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
-  readonly driver?: CodexReplay.CodexAppServerReplayDriver;
-}) {
-  const replayClientFactoryLayer = Layer.succeed(
-    CodexAdapterV2.CodexAppServerClientFactory,
-    makeCodexReplayClientFactory(input),
-  );
+  });
   const layerServerConfig = Layer.effect(
     ServerConfig.ServerConfig,
     makeReplayServerConfig(input.transcript.scenario).pipe(Effect.orDie),
@@ -189,20 +138,18 @@ function makeCodexProviderAdapterRegistryReplayLayer(input: {
   ).pipe(
     Layer.provide(
       Layer.mergeAll(
-        replayClientFactoryLayer,
+        layerReplayClientFactory,
         layerServerConfig,
         NodeServices.layer,
         NodeCrypto.layer,
         IdAllocator.layer,
-        ControlAdmission.layer,
+        PortScanner.layerTest,
       ),
     ),
   );
 
   return layerRegistry;
 }
-
-export const layer = makeCodexProviderAdapterRegistryReplayLayer;
 
 const decodeCodexAppServerReplayTranscript = Schema.decodeUnknownEffect(
   CodexReplay.CodexAppServerReplayTranscript,
@@ -214,7 +161,7 @@ export const CodexOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness
 > = {
   driver: CodexAdapterV2.CODEX_DRIVER_KIND,
   decodeTranscript: (transcript) =>
-    decodeCodexAppServerReplayTranscript(materializeCodexReplayAppIdentity(transcript)).pipe(
+    decodeCodexAppServerReplayTranscript(transcript).pipe(
       Effect.mapError(
         (cause) =>
           new CodexReplayTranscriptDecodeError({

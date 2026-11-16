@@ -1,7 +1,9 @@
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -32,8 +34,7 @@ import {
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
 } from "../provider/Drivers/ClaudeHome.ts";
-import { classifyClaudeEvaluatorLaunchArgs } from "./jones/claudeEvaluatorLaunch.ts";
-import { claudeCommandFailure } from "./jones/claudeCommandFailure.ts";
+import { readClaudeLaunchArgSettings } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 /** `--tools` takes bare names; patterns go in the allow list. */
@@ -72,43 +73,41 @@ const decodeClaudeOutput = Schema.decodeEffect(
 // error_max_structured_output_retries report through `errors` instead.
 const ClaudeErrorResult = Schema.Struct({
   is_error: Schema.Literal(true),
-  result: Schema.optionalKey(Schema.Unknown),
-  errors: Schema.optionalKey(Schema.Unknown),
+  result: Schema.optionalKey(Schema.String),
+  errors: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 const isClaudeErrorResult = Schema.is(ClaudeErrorResult);
 const decodeJsonOption = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 // Claude reports JSON errors on stdout; stderr may contain only wrapper notices.
-function claudeErrorResult(stdout: string, surfaceErrorList: boolean): string | undefined {
+function claudeErrorResult(stdout: string): string | undefined {
   const output = Option.getOrUndefined(decodeJsonOption(stdout));
   const messages: ReadonlyArray<unknown> = Array.isArray(output) ? output : [output];
-  const errors = messages.filter(isClaudeErrorResult);
-  const details = errors.map((message) => {
-    if (typeof message.result === "string") return message.result.trim();
-    // The errors list is opaque to a remote evaluator, so it never reaches the caller.
-    if (!surfaceErrorList || !Array.isArray(message.errors)) return "";
-    return (
-      message.errors
-        .filter((error): error is string => typeof error === "string")
+  return messages
+    .filter(isClaudeErrorResult)
+    .map((message) =>
+      (
+        message.result ??
         // error_during_execution mixes CLI telemetry into the list.
-        .filter((error) => !error.startsWith("[ede_diagnostic]"))
-        .join("\n")
-        .trim()
-    );
-  });
-  return (
-    details.findLast((detail) => detail.length > 0) ??
-    (errors.length > 0 ? "Claude CLI reported an error without details." : undefined)
-  );
+        message.errors?.filter((error) => !error.startsWith("[ede_diagnostic]")).join("\n") ??
+        ""
+      ).trim(),
+    )
+    .findLast((result) => result.length > 0);
 }
 
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
   claudeSettings: ClaudeSettings,
   environment?: NodeJS.ProcessEnv,
   modelCatalog: Effect.Effect<ClaudeModelCatalog> = Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG),
+  routeModelCatalog: (
+    catalog: ClaudeModelCatalog,
+    cwd: string,
+  ) => Effect.Effect<ClaudeModelCatalog> = Effect.succeed,
 ) {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
   const scopedModelCatalog = modelCatalog.pipe(
     Effect.map((catalog) => scopeClaudeModelCatalog(catalog, claudeSettings.customModels)),
@@ -155,24 +154,26 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
   }: TextGenerationOperations.Request<S>): Effect.fn.Return<
     S["Type"],
     TextGenerationError,
-    S["DecodingServices"]
+    S["DecodingServices"] | Scope.Scope
   > {
-    const evaluatorLaunch =
-      operation === "evaluateRemoteRequest"
-        ? classifyClaudeEvaluatorLaunchArgs(claudeSettings.launchArgs)
-        : undefined;
-    if (evaluatorLaunch?.qualified === false) {
-      return yield* new TextGenerationError({ operation, detail: evaluatorLaunch.detail });
-    }
-    const catalog = yield* scopedModelCatalog;
+    const workingDirectory =
+      operation === "generateThreadTitle"
+        ? yield* fileSystem
+            .makeTempDirectoryScoped({ prefix: "t3code-claude-title-" })
+            .pipe(
+              Effect.mapError((cause) =>
+                normalizeCliError("claude", operation, cause, "Failed to create title directory"),
+              ),
+            )
+        : cwd;
+    const catalog = yield* routeModelCatalog(yield* scopedModelCatalog, workingDirectory);
     const resolvedModelSelection = {
       ...modelSelection,
       model: resolveClaudeModelSlug(catalog, modelSelection.model),
     };
-    const jsonSchema = toJsonSchemaObject(outputSchemaJson);
     const jsonSchemaStr = yield* encodeJsonForOperation(
       operation,
-      jsonSchema,
+      toJsonSchemaObject(outputSchemaJson),
       "Failed to encode structured output schema.",
     );
     const caps = getClaudeCatalogModelCapabilities(catalog, resolvedModelSelection.model);
@@ -202,7 +203,18 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         : undefined;
     const fastMode =
       fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
+    const launchArgSettings = yield* readClaudeLaunchArgSettings({
+      settings: claudeSettings,
+      cwd,
+      fileSystem,
+      path,
+    }).pipe(
+      Effect.mapError(
+        (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
+      ),
+    );
     const settings = {
+      ...launchArgSettings,
       disableAllHooks: true,
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
@@ -217,16 +229,6 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
       noSessionPersistence: boolean,
     ) {
-      const workingDirectory =
-        operation === "generateThreadTitle" || operation === "evaluateRemoteRequest"
-          ? yield* fileSystem
-              .makeTempDirectoryScoped({ prefix: "t3code-claude-title-" })
-              .pipe(
-                Effect.mapError((cause) =>
-                  normalizeCliError("claude", operation, cause, "Failed to create title directory"),
-                ),
-              )
-          : cwd;
       const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
       const spawnCommand = yield* resolveSpawnCommand(
         claudeSettings.binaryPath || "claude",
@@ -251,14 +253,12 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
                 CLAUDE_INVESTIGATION_DENIED,
               ]
             : ["--tools", ""]),
-          ...(operation === "evaluateRemoteRequest" ? ["--disallowedTools", "mcp__*"] : []),
           "--disable-slash-commands",
           ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
           // managed-mcp.json already isolates servers and makes Claude reject this flag.
           ...(managedMcpConfig ? [] : ["--strict-mcp-config"]),
           "--permission-mode",
           "dontAsk",
-          ...(evaluatorLaunch?.qualified ? evaluatorLaunch.args : []),
         ],
         { env: claudeEnvironment },
       );
@@ -303,15 +303,21 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         () => runClaudeCommand(false),
       ),
       Effect.flatMap(({ stdout, stderr, exitCode }) => {
-        const detail = claudeCommandFailure({
-          stdout,
-          stderr,
-          exitCode,
-          reportedError: claudeErrorResult(stdout, operation !== "evaluateRemoteRequest"),
-        });
-        return detail === undefined
-          ? Effect.succeed(stdout)
-          : Effect.fail(new TextGenerationError({ operation, detail }));
+        if (exitCode === 0) return Effect.succeed(stdout);
+        const stderrDetail = stderr.trim();
+        const stdoutDetail = stdout.trim();
+        const detail =
+          claudeErrorResult(stdoutDetail) ??
+          (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
+        return Effect.fail(
+          new TextGenerationError({
+            operation,
+            detail:
+              detail.length > 0
+                ? `Claude CLI command failed: ${detail}`
+                : `Claude CLI command failed with code ${exitCode}.`,
+          }),
+        );
       }),
       Effect.scoped,
       Effect.timeoutOption(investigate?.timeoutMs ?? CLAUDE_TIMEOUT_MS),
@@ -357,7 +363,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
   });
 
-  return TextGenerationOperations.fromRunner("ClaudeTextGeneration", runClaudeJson, {
-    remoteRequestEvaluation: "tool-less",
-  });
+  return TextGenerationOperations.fromRunner(
+    "ClaudeTextGeneration",
+    <S extends Schema.Top>(request: TextGenerationOperations.Request<S>) =>
+      Effect.scoped(runClaudeJson(request)),
+  );
 });

@@ -1,18 +1,9 @@
-import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
-import * as EventSink from "../orchestration-v2/EventSink.ts";
-import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
-import * as Sqlite from "../persistence/Sqlite.ts";
-import { Tool } from "effect/ai";
-import * as PeerMcpClient from "./PeerMcpClient.ts";
-import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
-import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
-  MessageId,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
   type SourceControlCloneRepositoryInput,
@@ -23,9 +14,12 @@ import {
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
@@ -45,7 +39,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
@@ -90,39 +84,20 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
     Effect.map((sessionId) => ({ ...base, linkOrigin: { sessionId, label: "T3 Code · Laptop" } })),
   );
   const users = { ...liveThreadShell(usersThread, { runtimeMode: "auto" }), projectId: boxProject };
-  const run = (status: OrchestrationV2Run["status"]): OrchestrationV2Run => ({
-    id: boxRun,
-    threadId: boxThread,
-    ordinal: 1,
-    providerInstanceId: base.providerInstanceId,
-    modelSelection: base.modelSelection,
-    providerThreadId: null,
-    userMessageId: MessageId.make("message:box-auto"),
-    rootNodeId: null,
-    activeAttemptId: null,
-    status,
-    requestedAt: base.updatedAt,
-    startedAt: base.updatedAt,
-    completedAt: status === "completed" ? base.updatedAt : null,
-    checkpointId: null,
-    contextHandoffId: null,
-  });
+  const run = (status: OrchestrationV2Run["status"]) =>
+    ({ id: boxRun, status }) as unknown as OrchestrationV2Run;
   const shellOf = (threadId: ThreadId): Effect.Effect<OrchestrationV2ThreadShell | null> =>
     threadId === boxThread ? linked : Effect.succeed(threadId === usersThread ? users : null);
   const projectionOf = (threadId: ThreadId) =>
     shellOf(threadId).pipe(
-      Effect.flatMap((thread) =>
-        thread === null
-          ? Effect.die(new Error(`Unknown peer fixture thread: ${threadId}`))
-          : Effect.succeed({ ...idleThreadProjection(thread), runs: [run("running")] }),
-      ),
+      Effect.map((thread) => ({ thread, runs: [run("running")], runtimeRequests: [] }) as never),
     );
   return Layer.mock(ThreadManagement.ThreadManagementService)({
     getThreadShell: shellOf,
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
-    getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
+    getShellSnapshot: () => linked.pipe(Effect.map((shell) => ({ threads: [shell] }) as never)),
     sendToThread: (input) =>
       Ref.update(seen, (current) => ({ ...current, sends: [...current.sends, input] })).pipe(
         Effect.as({ run: run("running"), delivery: "started" } as never),
@@ -160,12 +135,8 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
         stops: [...current.stops, `delegated-tasks.stop ${input.threadId}`],
       })),
     waitForThread: (input) =>
-      Ref.updateAndGet(seen, (current) => ({ ...current, waits: [...current.waits, input] })).pipe(
-        Effect.map(({ waits }) => ({
-          threadId: input.threadId,
-          run: run(waits.length < 3 ? "running" : "completed"),
-          timedOut: waits.length < 3,
-        })),
+      Ref.update(seen, (current) => ({ ...current, waits: [...current.waits, input] })).pipe(
+        Effect.as({ threadId: input.threadId, run: run("completed"), timedOut: false }),
       ),
   });
 };
@@ -195,7 +166,21 @@ const boxLaunches = (seen: Ref.Ref<Seen>) =>
 const boxProjects = (seen: Ref.Ref<Seen>) =>
   Layer.merge(
     Layer.mock(ProjectService.ProjectService)({
-      getById: () => Effect.succeedNone,
+      getById: (id) =>
+        Effect.succeed(
+          id === boxProject
+            ? Option.some({
+                id,
+                title: "t3code",
+                workspaceRoot: "/box/t3code",
+                defaultModelSelection: null,
+                scripts: [],
+                createdAt: "2026-10-18T00:00:00.000Z",
+                updatedAt: "2026-10-18T00:00:00.000Z",
+                deletedAt: null,
+              })
+            : Option.none(),
+        ),
       create: (input) =>
         Ref.update(seen, (current) => ({
           ...current,
@@ -237,49 +222,36 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       McpHttpServer.layerOrchestratorToolkit,
       McpHttpServer.layerProjectRegistration,
       McpHttpServer.layerThreadToolkit,
-    )
-      .pipe(
-        Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
-        Layer.provide(NodeCrypto.layer),
-        Layer.provide(Sqlite.layerMemory),
-        Layer.provide(
-          Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
-            getByCommandId: () => Effect.succeedNone,
-          }),
-        ),
-        Layer.provide(Layer.mock(EventSink.EventSinkV2)({})),
-        Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)({})),
-      )
-      .pipe(
-        Layer.provide(boxThreads(seen, linkSession)),
-        Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
-        Layer.provide(boxLaunches(seen)),
-        Layer.provide(
-          Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-            namedProjectsRoot: "/projects",
-          }),
-        ),
-        Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-        Layer.provide(boxProjects(seen)),
-        Layer.provide(
-          ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-forwarding-box-" }).pipe(
-            Layer.provide(NodeServices.layer),
-          ),
-        ),
-        Layer.provide(NodeServices.layer),
-        Layer.provide(
-          Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
-        ),
-        Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
-        Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
-        Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
-        Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-        Layer.provide(ServerSettings.layerTest()),
-        Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
-        Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
-        Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
-        Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+    ).pipe(
+      Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+      Layer.provide(NodeCrypto.layer),
+      Layer.provide(boxThreads(seen, linkSession)),
+      Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+      Layer.provide(boxLaunches(seen)),
+      Layer.provide(
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
       ),
+      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(boxProjects(seen)),
+      Layer.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-forwarding-box-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+      Layer.provide(NodeServices.layer),
+      Layer.provide(
+        Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+      ),
+      Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+      Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+      Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
+      Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+      Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+      Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+    ),
   );
 
 const mcpClient = McpSchema.McpServerClient.of({
@@ -350,19 +322,16 @@ const makeLaptop = Effect.gen(function* () {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderRegistry.ProviderRegistry)({}),
-        Sqlite.layerMemory,
-        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
-          getByCommandId: () => Effect.succeedNone,
-        }),
-        Layer.mock(EventSink.EventSinkV2)({}),
-        Layer.mock(Orchestrator.OrchestratorV2)({}),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         ServerSettings.layerTest(),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        // No thread here delegated to the box, so a send there is no follow-up.
+        Layer.mock(RemoteDelegation.RemoteDelegation)({
+          followUp: (_scope, _environmentId, _request, sent) => Effect.succeed(sent),
+        }),
         Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
       ),
     ),
@@ -446,6 +415,12 @@ it.effect("an agent here works on a linked environment's threads within its own 
       });
       expect(sent.isError).toBe(false);
       expect(sent.structuredContent).toMatchObject({ threadId: boxThread, delivery: "started" });
+      // The box records which thread here sent it.
+      expect((yield* Ref.get(seen)).sends[0]?.linkedSender).toEqual({
+        environmentId: laptop.environmentId,
+        threadId: "thread:laptop-full",
+        title: "thread:laptop-full",
+      });
 
       // A plan-mode agent here may not steer that thread there: the box
       // refuses it, because the call carries the agent's own modes.
@@ -499,15 +474,8 @@ it.effect("keeps a forwarded wait short and its retries scoped to the caller", (
         status: "completed",
         timedOut: false,
       });
-      // Three pieces of at most 50 s each, the later ones pinned to the run
-      // the first one found.
-      expect(
-        (yield* Ref.get(seen)).waits.map(({ timeoutMs, runId }) => [timeoutMs, runId]),
-      ).toEqual([
-        [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, undefined],
-        [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, boxRun],
-        [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, boxRun],
-      ]);
+      // One capped piece, so the caller's MCP request returns before its client times out.
+      expect((yield* Ref.get(seen)).waits.map(({ timeoutMs }) => timeoutMs)).toEqual([45_000]);
 
       const send = (caller: string, clientRequestId: string) =>
         a.call(caller, "t3_thread_send", {
@@ -740,153 +708,35 @@ it.effect("refuses what a linked environment cannot take before anything leaves"
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect(
-  "refuses sends before mutation on an old receiver while reads and Stop remain available",
-  () => {
-    let supportsPolicy = false;
-    const calls: Array<Parameters<PeerMcpClient.PeerMcpClient["Service"]["call"]>[0]> = [];
-    const scope: McpInvocationContext.McpInvocationScope = {
-      environmentId: laptop.environmentId,
-      requestNamespace: "source-session",
-      issuedAt: 1,
-      capabilities: new Set(["orchestration"]),
-      client: undefined,
-      thread: {
-        threadId: ThreadId.make("thread:source"),
-        providerSessionId: "source-session",
-        providerInstanceId: ProviderInstanceId.make("codex"),
-      },
-    };
-    return Effect.gen(function* () {
-      const forwarding = yield* PeerForwarding.PeerForwarding;
-      const send = () =>
-        forwarding.call(scope, OrchestratorToolkit.tools.t3_thread_send, box.environmentId, {
-          threadId: boxThread,
-          message: "Carry on.",
-          clientRequestId: "same-operation",
-        });
-      const refused = yield* send().pipe(Effect.flip);
-      expect(refused.code).toBe("capability_denied");
-      expect(calls.map((call) => call.tool)).toEqual(["t3_thread_read"]);
-      yield* forwarding.readThread(scope, box.environmentId, { threadId: boxThread });
-      yield* forwarding.interruptThread(scope, box.environmentId, {
-        threadId: boxThread,
-        stop: true,
+it.effect("refuses a launch there above the link's access, naming the link", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const seen = yield* Ref.make<Seen>(nothingSeen);
+      const linkSession = yield* Ref.make("");
+      const b = yield* serveBox(seen, linkSession);
+      const a = yield* makeLaptop;
+      yield* linkTo(a.links, b, "auto");
+      yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
+
+      // A full-access agent here asks for more than the link allows there.
+      const launchAboveLink = a.call("thread:laptop-full", "t3_thread_launch", {
+        environmentId: box.environmentId,
+        projectId: boxProject,
+        title: "Run the suite there",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        message: "Run the suite.",
+        runtimeMode: "full-access",
       });
-      expect(calls.map((call) => call.tool)).toEqual([
-        "t3_thread_read",
-        "t3_thread_read",
-        "t3_thread_interrupt",
-      ]);
-      supportsPolicy = true;
-      yield* send();
-      yield* send();
-      const sent = calls.filter((call) => call.tool === "t3_thread_send");
-      expect(sent).toHaveLength(2);
-      expect(sent[0]?.arguments.clientRequestId).toBe(sent[1]?.arguments.clientRequestId);
-      expect(sent[0]?.origin).toEqual(sent[1]?.origin);
-      expect(sent[0]?.origin).toMatchObject({
-        environmentId: laptop.environmentId,
-        thread: { threadId: "thread:source" },
-      });
-      const expectedOrigin = {
-        schemaVersion: "t3.linked-message-origin/v1",
-        environmentId: laptop.environmentId,
-        thread: { threadId: "thread:source", title: "thread:source" },
-      };
-      expect(sent[0]?.origin).toEqual(expectedOrigin);
-      expect(sent[0]?.context).toMatchObject({
-        thread: { threadId: "thread:source", title: "thread:source" },
-        project: { projectId: "project:mcp-test", title: "Source project" },
-      });
-      yield* forwarding.call(scope, ProjectToolkit.tools.t3_thread_launch, box.environmentId, {
-        title: "Remote task",
-        message: "Do the work.",
-      });
-      yield* forwarding.call(scope, OrchestratorToolkit.tools.t3_thread_link, box.environmentId, {
-        action: "accept",
-        from: { environmentId: laptop.environmentId, threadId: ThreadId.make("thread:source") },
-      });
-      yield* forwarding.call(scope, OrchestratorToolkit.tools.schedule_task, box.environmentId, {
-        prompt: "Check the work.",
-        schedule: { type: "interval", everyMs: 3_600_000 },
-      });
-      yield* forwarding.waitForThread(scope, box.environmentId, { threadId: boxThread });
-      const mutations = calls.filter((call) =>
-        ["t3_thread_send", "t3_thread_launch", "t3_thread_link", "schedule_task"].includes(
-          call.tool,
-        ),
-      );
-      expect(mutations).toHaveLength(5);
-      for (const call of mutations) {
-        expect(call.context).toMatchObject({
-          thread: { threadId: "thread:source", title: "thread:source" },
-          project: { projectId: "project:mcp-test", title: "Source project" },
-        });
-        expect(call.origin).toEqual(call.tool === "schedule_task" ? undefined : expectedOrigin);
-      }
-      expect(
-        calls
-          .filter((call) =>
-            ["t3_thread_read", "t3_thread_interrupt", "t3_thread_wait"].includes(call.tool),
-          )
-          .every((call) => call.context === undefined),
-      ).toBe(true);
-      yield* forwarding.call(scope, OrchestratorToolkit.tools.t3_thread_goal, box.environmentId, {
-        threadId: boxThread,
-        action: "pause",
-      });
-      expect(calls.at(-1)?.context).toBeUndefined();
-      yield* forwarding.call(
-        scope,
-        OrchestratorToolkit.tools.schedule_task.annotate(Tool.Readonly, true),
-        box.environmentId,
-        { prompt: "Read only.", schedule: { type: "interval", everyMs: 3_600_000 } },
-      );
-      expect(calls.at(-1)?.context).toBeUndefined();
-      expect(
-        calls
-          .filter((call) => call.tool === "t3_thread_read")
-          .every((call) => call.origin === undefined),
-      ).toBe(true);
-    }).pipe(
-      Effect.provide(
-        PeerForwarding.layer.pipe(
-          Layer.provide(NodeCrypto.layer),
-          Layer.provide(Layer.mock(PeerLinks.PeerLinks)({ enabled: Effect.succeed(true) })),
-          Layer.provide(
-            Layer.mock(ProjectService.ProjectService)({
-              getById: (id) => Effect.succeedSome({ id, title: "Source project" } as never),
-            }),
-          ),
-          Layer.provide(
-            Layer.mock(ThreadManagement.ThreadManagementService)({
-              getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
-            }),
-          ),
-          Layer.provide(
-            Layer.mock(PeerMcpClient.PeerMcpClient)({
-              call: (input) =>
-                Effect.sync(() => {
-                  calls.push(input);
-                  return (
-                    input.tool === "t3_thread_wait"
-                      ? { timedOut: false }
-                      : input.tool === "t3_thread_read" && supportsPolicy
-                        ? {
-                            remoteMessagePolicy: {
-                              schemaVersion: "t3.linked-message-policy/v1",
-                              authenticatedOrigin: true,
-                              incomingAcceptance: true,
-                            },
-                          }
-                        : {}
-                  ) as never;
-                }),
-            }),
-          ),
-        ),
-      ),
-    );
-  },
+      const { message } = failureOf(yield* launchAboveLink);
+      expect(message).toContain('"Box"');
+      expect(message).toContain("auto");
+      expect(message).toContain("full-access");
+      expect(message).not.toContain("parent mode");
+      expect((yield* Ref.get(seen)).launches).toEqual([]);
+
+      // Once the link has expired, that is what the agent needs to hear.
+      yield* TestClock.adjust(Duration.days(31));
+      expect(failureOf(yield* launchAboveLink).message).toContain("expired");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

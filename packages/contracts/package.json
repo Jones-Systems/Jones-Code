@@ -1,40 +1,12 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "files": [
     "dist"
   ],
   "type": "module",
   "exports": {
-    "./jones/workstreamsPersonal": {
-      "types": "./src/jones/workstreamsPersonal.ts",
-      "import": "./src/jones/workstreamsPersonal.ts"
-    },
-    "./jones/workstreamsPersonalRpc": {
-      "types": "./src/jones/workstreamsPersonalRpc.ts",
-      "import": "./src/jones/workstreamsPersonalRpc.ts"
-    },
-    "./jones/deliveryEvidence": {
-      "types": "./src/jones/deliveryEvidence.ts",
-      "import": "./src/jones/deliveryEvidence.ts"
-    },
-    "./jones/shellDestinationFence": {
-      "types": "./src/jones/shellDestinationFence.ts",
-      "import": "./src/jones/shellDestinationFence.ts"
-    },
-    "./jones/userResponseRequest": {
-      "types": "./src/jones/userResponseRequest.ts",
-      "import": "./src/jones/userResponseRequest.ts"
-    },
-    "./jones/fleet-updates": {
-      "types": "./src/jones/fleetUpdates/index.ts",
-      "import": "./src/jones/fleetUpdates/index.ts"
-    },
-    "./conversationLibrary": {
-      "types": "./src/conversationLibrary.ts",
-      "import": "./src/conversationLibrary.ts"
-    },
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts"
@@ -46,76 +18,12 @@
     "./relay": {
       "types": "./src/relay.ts",
       "import": "./src/relay.ts"
-    },
-    "./jones/organizationMetadata": {
-      "types": "./src/jones/organizationMetadata.ts",
-      "import": "./src/jones/organizationMetadata.ts"
-    },
-    "./jones/jonesUpdates": {
-      "types": "./src/jones/jonesUpdates.ts",
-      "import": "./src/jones/jonesUpdates.ts"
-    },
-    "./jones/jonesOperations": {
-      "types": "./src/jones/jonesOperations.ts",
-      "import": "./src/jones/jonesOperations.ts"
-    },
-    "./jones/installPlan": {
-      "types": "./src/jones/installPlan.ts",
-      "import": "./src/jones/installPlan.ts"
-    },
-    "./jones/designRequests": {
-      "types": "./src/jones/designRequests.ts",
-      "import": "./src/jones/designRequests.ts"
-    },
-    "./jones/threadAttention": {
-      "types": "./src/jones/threadAttention.ts",
-      "import": "./src/jones/threadAttention.ts"
-    },
-    "./jones/threadReferenceExcerpt": {
-      "types": "./src/jones/threadReferenceExcerpt.ts",
-      "import": "./src/jones/threadReferenceExcerpt.ts"
-    },
-    "./jones/threadReferenceExcerptRpc": {
-      "types": "./src/jones/threadReferenceExcerptRpc.ts",
-      "import": "./src/jones/threadReferenceExcerptRpc.ts"
-    },
-    "./jones/linkedThreads": {
-      "types": "./src/jones/linkedThreads.ts",
-      "import": "./src/jones/linkedThreads.ts"
-    },
-    "./jones/linkedThreadsCapability": {
-      "types": "./src/jones/linkedThreadsCapability.ts",
-      "import": "./src/jones/linkedThreadsCapability.ts"
-    },
-    "./jones/linkedThreadsRpc": {
-      "types": "./src/jones/linkedThreadsRpc.ts",
-      "import": "./src/jones/linkedThreadsRpc.ts"
-    },
-    "./jones/workstreamsSnapshot": {
-      "types": "./src/jones/workstreamsSnapshot.ts",
-      "import": "./src/jones/workstreamsSnapshot.ts"
-    },
-    "./jones/desktopThreadMonitor": {
-      "types": "./src/jones/desktopThreadMonitor.ts",
-      "import": "./src/jones/desktopThreadMonitor.ts"
-    },
-    "./jones/guardedThreadSettlement": {
-      "types": "./src/jones/guardedThreadSettlement.ts",
-      "import": "./src/jones/guardedThreadSettlement.ts"
-    },
-    "./jones/fleetCheckpoint": {
-      "types": "./src/jones/fleetCheckpoint.ts",
-      "import": "./src/jones/fleetCheckpoint.ts"
-    },
-    "./jones/authClientPresentation": {
-      "types": "./src/jones/authClientPresentation.ts",
-      "import": "./src/jones/authClientPresentation.ts"
     }
   },
   "scripts": {
     "typecheck": "vp run tsrs:typecheck",
-    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
-    "test": "vp test run --config ../../vite.config.ts --dir ."
+    "test": "vp test run --config ../../vite.config.ts --dir .",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit"
   },
   "dependencies": {
     "effect": "catalog:"

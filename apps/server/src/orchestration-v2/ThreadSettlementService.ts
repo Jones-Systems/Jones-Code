@@ -1,24 +1,14 @@
-import * as RetirementReceipts from "../jones/workspaceRetirement/Receipts.ts";
-import * as RetirementRuntime from "../jones/workspaceRetirement/Runtime.ts";
-import * as SettlementRecovery from "../jones/workspaceRetirement/SettlementRecovery.ts";
-import * as RetirementConfig from "../config.ts";
-import * as SqlClient from "effect/sql/SqlClient";
-import type * as Scope from "effect/Scope";
-import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
-import { backgroundRead } from "../jones/serverParallelism/readClassification.ts";
-import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
-import * as Option from "effect/Option";
-import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
 import {
   backgroundWorkHoldsCompletion,
+  isPullRequestWatchTask,
   turnItemUpdateCanEndBackgroundWork,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { resolveProjectSettings, resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   CommandId,
   isOrchestrationV2WorkActive,
-  ThreadId,
+  type ThreadId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
@@ -32,14 +22,11 @@ import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
-import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
-import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
-import { beforeCleanup } from "../jones/workspaceLifecycle/NativeBoundary.ts";
-import { workModeSettlementActivity } from "../jones/workMode/Settlement.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -48,10 +35,10 @@ import * as TerminalManager from "../terminal/Manager.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
+import { makeNoPullRequestRechecks } from "./noPullRequestRechecks.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-
-const isRetirementError = Schema.is(RetirementReceipts.RetirementError);
+import { QUIET_AFTER_MS, QUIET_SYNC_INTERVAL_MS } from "./PullRequestSyncReactor.ts";
 
 export interface SettlementPullRequest {
   readonly state: "open" | "closed" | "merged";
@@ -73,6 +60,17 @@ function latestMillis(values: ReadonlyArray<number | null>): number | null {
     if (latest === null || value > latest) latest = value;
   }
   return latest;
+}
+
+function threadActivityAtMs(thread: ProjectionStore.ProjectionSettlementCandidate): number {
+  return (
+    latestMillis([
+      toMillis(thread.latestUserMessageAt),
+      toMillis(thread.latestRunRequestedAt),
+      toMillis(thread.latestRunStartedAt),
+      toMillis(thread.latestRunCompletedAt),
+    ]) ?? DateTime.toEpochMillis(thread.createdAt)
+  );
 }
 
 function pullRequestMatchesProject(
@@ -170,7 +168,10 @@ export function isAutoSettlementCandidate(
   // A guest is waiting on the owner; settling would hide the Request.
   if ((thread.pendingGuestMessageCount ?? 0) > 0) return false;
   if (thread.activityRunStatus != null) return false;
-  if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) return false;
+  const pendingTasks = thread.pendingBackgroundTasks ?? [];
+  if (backgroundWorkHoldsCompletion(pendingTasks)) return false;
+  // Settling ends a watch, which would silently drop a reviewer's later comments.
+  if (pendingTasks.some(isPullRequestWatchTask)) return false;
   if (threadHasQueuedTurnStart(thread, nowMs)) return false;
   // Interrupted runs must keep the same snooze protection the sidebar shows.
   return !isSnoozed(thread, nowMs);
@@ -240,13 +241,7 @@ export function resolveAutoSettlementAt(input: {
           };
   }
   if (!isAutoSettlementCandidate(thread, input.nowMs)) return null;
-  const activityAtMs =
-    latestMillis([
-      toMillis(thread.latestUserMessageAt),
-      toMillis(thread.latestRunRequestedAt),
-      toMillis(thread.latestRunStartedAt),
-      toMillis(thread.latestRunCompletedAt),
-    ]) ?? DateTime.toEpochMillis(thread.createdAt);
+  const activityAtMs = threadActivityAtMs(thread);
   if (pullRequest !== null && pullRequestSettles(thread, pullRequest, input.autoSettleOnMerge)) {
     return DateTime.makeUnsafe(activityAtMs);
   }
@@ -326,74 +321,74 @@ export const make = Effect.gen(function* () {
   // A shell merge or close sends no event, and the branch lookup caches an open pull request for
   // a minute, so these threads' next lookup reads the host fresh.
   const shellClosedThreads = new Set<ThreadId>();
+  // Each summary read can be a host CLI process (one `az` per read on Azure DevOps), so a quiet
+  // open pull request is read on the sync reactor's quiet cadence rather than every sweep.
+  const quietOpenReadAt = new Map<string, number>();
+  const quietReadKey = (reference: {
+    readonly projectId: string;
+    readonly repository: string;
+    readonly number: number;
+  }) => `${reference.projectId}\0${reference.repository.toLowerCase()}\0${reference.number}`;
+  // A host can finish a merge minutes after the app's merge action and its refresh, and Azure's
+  // updatedAt never moves while open, so pull requests stay on the fast cadence for a while after.
+  // Sweeps that started before the pause fail the same check, so their reads record nothing.
+  let quietPausedAtMs = Number.NEGATIVE_INFINITY;
+  const pauseQuietReads = Effect.fn("ThreadSettlementServiceV2.pauseQuietReads")(function* () {
+    quietPausedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
+    quietOpenReadAt.clear();
+  });
   const terminals = yield* TerminalManager.TerminalManager;
   const projectScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   // Repeated thread.settled retains settledAt; run the action only once per settlement.
   const settleActionRunAt = new Map<ThreadId, number>();
-  const retirementSql = yield* Effect.serviceOption(SqlClient.SqlClient);
-  const retirementConfig = yield* Effect.serviceOption(RetirementConfig.ServerConfig);
-  const retirementScope = yield* Effect.scope;
-  const retirement = Option.isSome(retirementSql)
-    ? yield* RetirementReceipts.Receipts.pipe(
-        Effect.provide(RetirementReceipts.layer),
-        Effect.provideService(SqlClient.SqlClient, retirementSql.value),
-      )
-    : null;
-  const recordRetirementProposal = Effect.fn("ThreadSettlementServiceV2.recordRetirementProposal")(
-    function* (thread: Pick<OrchestrationV2ThreadShell, "id" | "projectId">, worktreePath: string) {
-      if (Option.isNone(retirementSql) || Option.isNone(retirementConfig)) return;
-      const project = yield* projectStore.get(thread.projectId);
-      if (Option.isNone(project)) return;
-      const rules = resolveWorktreeCleanup(yield* settingsService.getSettings, thread.projectId);
-      yield* RetirementRuntime.evaluate({
-        cause: "settlement",
-        worktree: worktreePath,
-        projectRoot: project.value.workspaceRoot,
-        threadId: thread.id,
-        rules,
-        execute: false,
-        admit: Effect.void,
-        revalidate: Effect.void,
-      }).pipe(
-        Effect.provideService(SqlClient.SqlClient, retirementSql.value),
-        Effect.provideService(RetirementConfig.ServerConfig, retirementConfig.value),
-        Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
-        Effect.catch(() => Effect.void),
-      );
-    },
-  );
+  const noPullRequestRechecks = makeNoPullRequestRechecks();
 
   const sweep = Effect.fn("ThreadSettlementServiceV2.sweep")(function* (
     mergedPullRequest: PullRequestService.PullRequestMergeEvent | null,
     threadId?: ThreadId,
   ) {
+    // A thread that is not a candidate now (still running) must not keep a merged PR's quiet entry.
+    if (mergedPullRequest !== null) yield* pauseQuietReads();
     const settings = yield* settingsService.getSettings;
-    if (!autoSettlementConfigured(settings)) {
-      return;
-    }
-    const threads = yield* projections.getSettlementCandidates(threadId).pipe(backgroundRead);
+    const automaticSettlementEnabled = autoSettlementConfigured(settings);
+    const threads = yield* projections.getSettlementCandidates(threadId);
     if (threads.length === 0) return;
-    const projectShells = yield* projectStore.listShells().pipe(backgroundRead);
+    const projectShells = yield* projectStore.listShells();
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const projects = new Map(projectShells.map((project) => [project.id, project]));
+    for (const [key, readAtMs] of quietOpenReadAt) {
+      if (nowMs - readAtMs >= QUIET_SYNC_INTERVAL_MS) quietOpenReadAt.delete(key);
+    }
     // Merge events resweep all candidates because unlinked threads settle through branch lookup.
-    const candidates = threads.filter((thread) => isAutoSettlementCandidate(thread, nowMs));
-    const settlementActivity = yield* workModeSettlementActivity(
-      { getThreadRecords: (...args) => projections.getThreadRecords(...args).pipe(backgroundRead) },
-      settings,
-      candidates,
-      nowMs,
+    const candidates = threads.filter(
+      (thread) =>
+        (automaticSettlementEnabled || thread.lineage.relationshipToParent === "subagent") &&
+        isAutoSettlementCandidate(thread, nowMs),
     );
 
     // Runs per candidate thread, thousands per sweep on busy servers; the sweep owns the span.
     const settleThread = Effect.fnUntraced(
       function* (thread: (typeof candidates)[number], pullRequest: SettlementPullRequest | null) {
+        if (thread.lineage.relationshipToParent === "subagent") {
+          // The store returns a subagent only once its parent is done, so it
+          // settles with the parent and never runs its own lookup.
+          const uuid = yield* random.uuidV4();
+          yield* orchestrator.dispatch({
+            type: "thread.auto-settle",
+            commandId: CommandId.make(`server:auto-settle:${thread.id}:${uuid}`),
+            threadId: thread.id,
+            snapshotAt: thread.updatedAt,
+          });
+          return null;
+        }
         // thread.auto-settle does not recheck settings, so read them per decision; reads are cached.
-        const serverSettings = yield* settingsService.getSettings;
-        const currentSettings = resolveProjectSettings(serverSettings, thread.projectId).settings;
+        const currentSettings = resolveProjectSettings(
+          yield* settingsService.getSettings,
+          thread.projectId,
+        ).settings;
         const decisionNow = yield* DateTime.now;
         const settledAt = resolveAutoSettlementAt({
-          thread: settlementActivity(thread, serverSettings),
+          thread,
           pullRequest,
           nowMs: DateTime.toEpochMillis(decisionNow),
           autoSettleAfterDays: currentSettings.sidebarAutoSettleAfterDays,
@@ -427,10 +422,11 @@ export const make = Effect.gen(function* () {
     const lookupCandidates = (yield* Effect.forEach(
       candidates,
       (thread) => {
+        if (thread.lineage.relationshipToParent === "subagent") return settleThread(thread, null);
         const projectSettings = resolveProjectSettings(settings, thread.projectId).settings;
         // Skip no-op decisions; actual settlement still reads fresh settings before dispatch.
         const settledAt = resolveAutoSettlementAt({
-          thread: settlementActivity(thread, settings),
+          thread,
           pullRequest: null,
           nowMs,
           autoSettleAfterDays: projectSettings.sidebarAutoSettleAfterDays,
@@ -509,7 +505,7 @@ export const make = Effect.gen(function* () {
         const { settings } = resolveProjectSettings(currentSettings, thread.projectId);
         return (
           resolveAutoSettlementAt({
-            thread: settlementActivity(thread, currentSettings),
+            thread,
             pullRequest,
             nowMs: DateTime.toEpochMillis(decisionNow),
             autoSettleAfterDays: settings.sidebarAutoSettleAfterDays,
@@ -535,6 +531,13 @@ export const make = Effect.gen(function* () {
         if (!matchesMerge && !projects.has(reference.projectId)) {
           return yield* Effect.die(new Error("linked pull request project not found"));
         }
+        const readKey = quietReadKey(reference);
+        const shellClosed =
+          group.filter((member) => shellClosedThreads.delete(member.id)).length > 0;
+        if (shellClosed) quietOpenReadAt.delete(readKey);
+        else if (!matchesMerge && quietOpenReadAt.has(readKey)) {
+          return { state: "open", closedAt: null, mergedAt: null } satisfies SettlementPullRequest;
+        }
         const summary = matchesMerge
           ? ({
               state: "merged",
@@ -547,8 +550,16 @@ export const make = Effect.gen(function* () {
                 repository: reference.repository,
                 number: reference.number,
               },
-              { recoverTransientFailure: false },
+              { recoverTransientFailure: false, bypassCache: shellClosed },
             );
+        if (
+          "updatedAt" in summary &&
+          summary.state === "open" &&
+          nowMs - quietPausedAtMs >= QUIET_SYNC_INTERVAL_MS &&
+          nowMs - Date.parse(summary.updatedAt) >= QUIET_AFTER_MS
+        ) {
+          quietOpenReadAt.set(readKey, nowMs);
+        }
         const terminal = {
           state: summary.state,
           closedAt: summary.closedAt ?? null,
@@ -578,8 +589,33 @@ export const make = Effect.gen(function* () {
         return yield* Effect.die(new Error("thread project not found"));
       }
       const refresh = group.filter((member) => shellClosedThreads.delete(member.id)).length > 0;
-      return yield* git.branchPullRequest({ cwd, branch: thread.branch }, { refresh });
+      const key = lookupKey(thread);
+      if (scheduledLookups !== null && !refresh && !scheduledLookups.has(key)) return undefined;
+      // Remembered git state is enough to rule a thread out; only an answer
+      // that would settle it is confirmed against fresh git state.
+      const remembered = yield* git.branchPullRequest(
+        { cwd, branch: thread.branch },
+        { refresh, confirmTerminal: false },
+      );
+      noPullRequestRechecks.record(key, nowMs, remembered !== null);
+      if (refresh || remembered === null || remembered.state === "open") return remembered;
+      if (!(yield* wouldSettle(group, remembered))) return undefined;
+      return yield* git.branchPullRequest({ cwd, branch: thread.branch }, { freshGitState: true });
     });
+
+    // A merge, a shell close and a thread's own events read at once; only scheduled sweeps wait.
+    const scheduledLookups =
+      mergedPullRequest !== null || threadId !== undefined
+        ? null
+        : noPullRequestRechecks.select(
+            nowMs,
+            [...groups]
+              .filter(([key]) => key.startsWith('["branch",'))
+              .map(([key, group]) => ({
+                key,
+                activityAtMs: Math.max(...group.map(threadActivityAtMs)),
+              })),
+          );
 
     yield* Effect.forEach(
       groups.values(),
@@ -602,6 +638,7 @@ export const make = Effect.gen(function* () {
         ),
       { concurrency: 8, discard: true },
     );
+    if (threadId === undefined) noPullRequestRechecks.retain(groups);
   });
 
   const runSweep = (
@@ -618,11 +655,20 @@ export const make = Effect.gen(function* () {
           }),
       ),
     );
+  let fullSweepPending = false;
   // A thread that just stopped must not wait behind a full sweep or another thread's host
   // reads: clients hold it in Working only briefly, so a late settle makes it appear and then vanish.
-  const fullSweeps = yield* makeDrainableWorker(() =>
-    runSweep(null).pipe(Effect.andThen(recoverSettlements)),
-  );
+  const fullSweeps = yield* makeDrainableWorker(() => {
+    // Clear at the start so events during this sweep can request one follow-up.
+    fullSweepPending = false;
+    return runSweep(null);
+  });
+  const enqueueFullSweep = () =>
+    Effect.suspend(() => {
+      if (fullSweepPending) return Effect.void;
+      fullSweepPending = true;
+      return fullSweeps.enqueue(undefined);
+    });
   const threadSweeps = yield* FiberSet.make<void>();
   const threadSweepSlots = yield* Semaphore.make(8);
   // One sweep per thread at a time; events during a running sweep coalesce into one more pass.
@@ -652,181 +698,43 @@ export const make = Effect.gen(function* () {
 
   // Skip settle scripts in shared checkouts where other threads may still work.
   const cleanUpSettledThread = Effect.fn("ThreadSettlementServiceV2.cleanUpSettledThread")(
-    function* ({
-      threadId,
-      expected,
-    }: {
-      threadId: ThreadId;
-      expected?: RetirementReceipts.SettlementIntent;
-    }) {
+    function* (threadId: ThreadId) {
       const settled = yield* projections.getThread(threadId);
       if (settled.settledOverride !== "settled") return;
-      if (
-        expected &&
-        (settled.worktreePath !== expected.worktree ||
-          settled.settledAt === null ||
-          DateTime.formatIso(settled.settledAt) !== expected.settled_at)
-      )
-        return;
       yield* terminals.closeOnSettle({ threadId });
-      const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
-      const afterClose = yield* projections.getThread(threadId);
-      if (
-        afterClose.settledOverride !== "settled" ||
-        toMillis(afterClose.settledAt) !== toMillis(settled.settledAt) ||
-        toMillis(afterClose.updatedAt) !== toMillis(settled.updatedAt)
-      )
-        return;
-      if (Option.isSome(conversations)) yield* conversations.value.dispose(threadId, false);
       const worktreePath = settled.worktreePath;
       if (worktreePath === null || !(yield* fileSystem.exists(worktreePath))) return;
       // Recheck after closing and worktree I/O; re-engaged threads must not be cleaned up.
       const thread = yield* projections.getThread(threadId);
-      if (
-        thread.settledOverride !== "settled" ||
-        thread.worktreePath !== worktreePath ||
-        thread.projectId !== settled.projectId ||
-        thread.branch !== settled.branch ||
-        toMillis(thread.settledAt) !== toMillis(settled.settledAt)
-      )
-        return;
+      if (thread.settledOverride !== "settled") return;
       const settledAtMs = toMillis(thread.settledAt);
+      if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
+      // The parent's worktree belongs to the parent; shared-worktree children
+      // skip duplicate cleanup there.
       if (
-        settledAtMs === null ||
-        (retirement === null && settleActionRunAt.get(threadId) === settledAtMs)
-      )
-        return;
-      const retirementIntent =
-        retirement === null
-          ? null
-          : yield* retirement.settlement(
-              threadId,
-              worktreePath,
-              DateTime.formatIso(thread.settledAt!),
-            );
-      if (retirement !== null && retirementIntent === null) return;
-      if (expected && retirementIntent?.event_id !== expected.event_id) return;
-      if (retirementIntent !== null && retirementIntent.script_state !== "pending") return;
-      yield* withOperation(
-        {
-          id: `settle:${threadId}:${settledAtMs}`,
-          kind: "preservation",
-          threadId,
-          boundaries: ["settle-script"],
-          inherit: false,
-          check: Effect.gen(function* () {
-            const current = yield* projections.getThread(threadId);
-            if (
-              current.settledOverride !== "settled" ||
-              toMillis(current.settledAt) !== settledAtMs ||
-              current.projectId !== thread.projectId ||
-              current.worktreePath !== worktreePath ||
-              current.branch !== thread.branch ||
-              toMillis(current.updatedAt) !== toMillis(thread.updatedAt)
-            )
-              return yield* new LifecycleError({ reason: "stale" });
+        thread.lineage.relationshipToParent === "subagent" &&
+        thread.lineage.parentThreadId !== null
+      ) {
+        const parent = yield* projections.getThread(thread.lineage.parentThreadId).pipe(
+          Effect.catchTags({
+            ProjectionStoreThreadNotFoundError: () => Effect.succeed(null),
           }),
-        },
-        beforeCleanup({
-          threadId,
-          boundary: "settle-script",
-          id: `settle:${threadId}:${settledAtMs}`,
-        }),
-      );
-      if (
-        retirement !== null &&
-        retirementIntent !== null &&
-        !(yield* retirement.startScript(retirementIntent.event_id, expected !== undefined))
-      )
-        return;
-      if (retirement !== null && retirementIntent !== null)
-        yield* retirement
-          .outcome(retirementIntent.event_id, {
-            state: "held",
-            reasonCodes: ["settle_script_pending"],
-            receiptId: null,
-            fingerprint: null,
-            paths: [],
-            details: [
-              {
-                reason: "settle_script_pending",
-                target: worktreePath,
-                root: worktreePath,
-                fact: "The durable settle-script intent has started and its completion is pending.",
-                missingFact: "durable_settle_script_completion",
-                lineage: [{ threadId }],
-                nextAction:
-                  "Wait for the actual script completion; ten minutes without completion holds retirement.",
-              },
-            ],
-            outputObligations: [],
-          })
-          .pipe(
-            Effect.catch((cause) =>
-              Effect.logWarning("Settle-script observation unavailable", { threadId, cause }),
-            ),
-          );
-      const run = yield* projectScripts
-        .runForThread({
-          threadId,
-          projectId: thread.projectId,
-          worktreePath,
-          trigger: "settle",
-          observeCompletion: {},
-        })
-        .pipe(
-          Effect.tapError(() =>
-            retirement !== null && retirementIntent !== null
-              ? retirement
-                  .outcome(
-                    retirementIntent.event_id,
-                    SettlementRecovery.held(
-                      retirementIntent,
-                      "settle_script_holder_unverified",
-                      "Script launch failed after durable issuance; its effects are unknown.",
-                      "Verify actual script completion or exact holder absence; do not replay this intent.",
-                    ),
-                  )
-                  .pipe(Effect.ignore)
-              : Effect.void,
-          ),
         );
+        if (parent?.worktreePath === worktreePath) return;
+      }
+      const run = yield* projectScripts.runForThread({
+        threadId,
+        projectId: thread.projectId,
+        worktreePath,
+        trigger: "settle",
+        observeCompletion: {},
+      });
       settleActionRunAt.set(threadId, settledAtMs);
-      const complete = (exitCode: number) =>
-        retirement !== null && retirementIntent !== null
-          ? retirement
-              .finishScript(
-                retirementIntent.event_id,
-                exitCode === 0 ? "completed" : "failed",
-                exitCode,
-              )
-              .pipe(Effect.andThen(recordRetirementProposal(thread, worktreePath)))
-          : Effect.void;
       if (run.status === "started" && run.completion) {
-        yield* run.completion.pipe(
-          Effect.orElseSucceed(() => ({ exitCode: null })),
-          Effect.flatMap((result) => {
-            if (result.exitCode !== null) return complete(result.exitCode);
-            return retirement !== null && retirementIntent !== null
-              ? retirement.outcome(
-                  retirementIntent.event_id,
-                  SettlementRecovery.held(
-                    retirementIntent,
-                    "settle_script_holder_unverified",
-                    "The script completion observer ended without a command exit result.",
-                    "Observe actual command completion or verify the exact native holder and descendants absent; do not replay this intent.",
-                  ),
-                )
-              : Effect.void;
-          }),
-          Effect.catch((cause) =>
-            Effect.logWarning("Durable settle-script completion held", { threadId, cause }),
-          ),
-          Effect.forkIn(retirementScope),
-        );
-      } else if (run.status !== "started") yield* complete(0);
+        yield* run.completion.pipe(Effect.forkDetach);
+      }
     },
-    (effect, { threadId }) =>
+    (effect, threadId) =>
       effect.pipe(
         Effect.catchCauseIf(
           (cause) => !Cause.hasInterruptsOnly(cause),
@@ -839,47 +747,13 @@ export const make = Effect.gen(function* () {
       ),
   );
 
-  const recoverSettlements =
-    retirement === null
-      ? Effect.void
-      : yield* SettlementRecovery.make(
-          retirement,
-          (intent) =>
-            cleanUpSettledThread({
-              threadId: ThreadId.make(intent.thread_id),
-              expected: intent,
-            }).pipe(
-              Effect.mapError((cause) =>
-                isRetirementError(cause)
-                  ? cause
-                  : new RetirementReceipts.RetirementError({
-                      reason: "settlement_resume_unavailable",
-                      target: intent.worktree,
-                      cause,
-                    }),
-              ),
-            ),
-          (thread, worktree) =>
-            recordRetirementProposal(thread, worktree).pipe(
-              Effect.mapError((cause) =>
-                isRetirementError(cause)
-                  ? cause
-                  : new RetirementReceipts.RetirementError({
-                      reason: "settlement_proposal_unavailable",
-                      target: worktree,
-                      cause,
-                    }),
-              ),
-            ),
-        ).pipe(
-          Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
-          Effect.map((recover) => recover()),
-        );
-
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
       case "thread.settled":
-        return cleanUpSettledThread({ threadId: event.threadId });
+        return cleanUpSettledThread(event.threadId).pipe(Effect.andThen(enqueueFullSweep()));
+      case "thread.archived":
+      case "thread.deleted":
+        return enqueueFullSweep();
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
       case "provider-session.detached":
@@ -927,31 +801,14 @@ export const make = Effect.gen(function* () {
   const start: ThreadSettlementServiceV2["Service"]["start"] = Effect.fn(
     "ThreadSettlementServiceV2.start",
   )(function* () {
-    const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
-    if (Option.isSome(dependencyChanges)) {
-      const subscription = yield* dependencyChanges.value.subscribe;
-      yield* Stream.fromSubscription(subscription).pipe(
-        Stream.runForEach((change) =>
-          Effect.forEach(change.threadIds, enqueueThread, { discard: true }),
-        ),
-        Effect.forkScoped,
-      );
-    }
     const settingsChanges = yield* settingsService.subscribeChanges;
     const mergedPullRequests = yield* pullRequests.subscribeMerges;
-    // Capture the replay baseline before admitting sweep side effects or delayed subscription.
-    const events = yield* orchestrator.acquireDomainEvents.pipe(
-      Effect.catch((cause) =>
-        Effect.logWarning("Settlement event baseline unavailable; durable sweeps retain recovery", {
-          cause,
-        }).pipe(Effect.as(Stream.empty)),
-      ),
-    );
+    const events = orchestrator.streamDomainEvents;
     const initialSettings = yield* settingsService.getSettings.pipe(Effect.orDie);
     let lastSettlementSettings = autoSettlementSettingsKey(initialSettings);
     yield* forkParked(
       Effect.gen(function* () {
-        yield* fullSweeps.enqueue(undefined);
+        yield* enqueueFullSweep();
         yield* fullSweeps.drain;
       }).pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.asVoid),
     );
@@ -962,10 +819,11 @@ export const make = Effect.gen(function* () {
           return Effect.void;
         }
         lastSettlementSettings = key;
-        return fullSweeps.enqueue(undefined);
+        return enqueueFullSweep();
       }),
     );
     yield* forkParked(Stream.runForEach(mergedPullRequests, (event) => runSweep(event)));
+    yield* forkParked(Stream.runForEach(pullRequests.subscribeRefreshes, pauseQuietReads));
     yield* forkParked(
       Stream.runForEach(events, processEvent).pipe(
         Effect.catchCause((cause) =>

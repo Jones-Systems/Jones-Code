@@ -190,6 +190,10 @@ export const sendPageCommand = async (
     else webContents.reload();
     return {};
   }
+  if (method === "Page.stopLoading") {
+    webContents.stop();
+    return {};
+  }
   if (!FOCUS_ROUTED_INPUT.has(method) || webContents.focusedFrame) {
     return debuggee.sendCommand(method, params);
   }

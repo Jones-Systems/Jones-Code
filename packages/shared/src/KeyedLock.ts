@@ -1,15 +1,11 @@
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
+import * as FiberSet from "effect/FiberSet";
 import * as Ref from "effect/Ref";
+import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 
 export interface KeyedLock<Key> {
   readonly withLock: <A, E, R>(key: Key, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
-  /** Runs only if the key has no holder or waiter; otherwise returns None without running `effect`. */
-  readonly tryWithLock: <A, E, R>(
-    key: Key,
-    effect: Effect.Effect<A, E, R>,
-  ) => Effect.Effect<Option.Option<A>, E, R>;
   readonly activeKeys: Effect.Effect<ReadonlyArray<Key>>;
 }
 
@@ -57,26 +53,34 @@ export const make = Effect.fn("KeyedLock.make")(function* <Key>(): Effect.fn.Ret
         (semaphore) => semaphore.withPermit(effect),
         () => release(key),
       ),
-    tryWithLock: <A, E, R>(
-      key: Key,
-      effect: Effect.Effect<A, E, R>,
-    ): Effect.Effect<Option.Option<A>, E, R> =>
-      Effect.acquireUseRelease(
-        Effect.flatMap(Semaphore.make(1), (semaphore) =>
-          Ref.modify(locks, (current) => {
-            // Reserving the key also respects waiters whose permit has not been handed over yet.
-            if (current.has(key)) return [Option.none<Semaphore.Semaphore>(), current] as const;
-            const next = new Map(current);
-            next.set(key, { semaphore, users: 1 });
-            return [Option.some(semaphore), next] as const;
-          }),
-        ),
-        (reserved): Effect.Effect<Option.Option<A>, E, R> =>
-          Option.isSome(reserved)
-            ? reserved.value.withPermitsIfAvailable(1)(effect)
-            : Effect.succeed(Option.none<A>()),
-        (reserved) => (Option.isSome(reserved) ? release(key) : Effect.void),
-      ),
     activeKeys: Effect.map(Ref.get(locks), (current) => Array.from(current.keys())),
   } satisfies KeyedLock<Key>;
+});
+
+export interface KeyedRunner<Key> {
+  /** Forks `effect` to run once every effect passed earlier for `key` has finished. */
+  readonly run: <R>(
+    key: Key,
+    effect: Effect.Effect<void, never, R>,
+  ) => Effect.Effect<void, never, R>;
+}
+
+/**
+ * For a stream consumer whose handler waits on a per-key lock: a busy key delays only its own
+ * later effects. The forked fiber starts immediately, so it queues on the key's FIFO semaphore
+ * before `run` returns; that keeps each key's effects in `run` order.
+ */
+export const makeRunner = Effect.fn("KeyedLock.makeRunner")(function* <Key>(): Effect.fn.Return<
+  KeyedRunner<Key>,
+  never,
+  Scope.Scope
+> {
+  const lock = yield* make<Key>();
+  const fibers = yield* FiberSet.make<void, never>();
+  return {
+    run: (key, effect) =>
+      FiberSet.run(fibers, lock.withLock(key, effect), { startImmediately: true }).pipe(
+        Effect.asVoid,
+      ),
+  } satisfies KeyedRunner<Key>;
 });

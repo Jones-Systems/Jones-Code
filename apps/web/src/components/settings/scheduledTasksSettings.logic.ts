@@ -5,7 +5,7 @@ import {
   type ProjectId,
   ScheduledTaskId,
   type ScheduledTask,
-  type OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  type ScheduledTaskSchedule,
   type ScheduledTaskThreadMode,
   type ScheduledTaskUpsertSchedule,
   scheduledTaskThreadMode,
@@ -23,6 +23,7 @@ import {
   webhookFilterDraftsChanged,
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
+import { scheduleTimeZoneLabel } from "@t3tools/client-runtime/scheduled-task-time-zone";
 
 import {
   resolveProjectSettings,
@@ -31,6 +32,37 @@ import {
 import type { ProviderInstanceEntry } from "../../providerInstances";
 
 import type { ResolvedSettingsScope } from "./settingsScope";
+
+export const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
+const ONCE_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
+export function scheduleLabel(
+  schedule: ScheduledTaskSchedule,
+  timeZone?: string,
+  runAt?: string | null,
+): string {
+  if (schedule.type === "webhook") return "On webhook";
+  if (schedule.type === "once") return `Once, ${ONCE_FORMATTER.format(new Date(schedule.runAt))}`;
+  if (schedule.type === "interval") {
+    const minutes = schedule.everyMs / 60_000;
+    return Number.isInteger(minutes)
+      ? `Every ${minutes} min`
+      : `Every ${Math.round(schedule.everyMs / 1000)} sec`;
+  }
+  const weekdays = schedule.weekdays ?? [];
+  const days =
+    weekdays.length === 0
+      ? "Daily"
+      : weekdays.length === 5 && weekdays.every((day) => day >= 1 && day <= 5)
+        ? "Weekdays"
+        : weekdays.map((day) => WEEKDAY_LABELS[day]).join(", ");
+  const zone = scheduleTimeZoneLabel(timeZone, runAt);
+  return `${days} at ${schedule.timeOfDay}${zone === undefined ? "" : ` ${zone}`}`;
+}
 
 export function matchesScheduledTaskScope(
   scope: ResolvedSettingsScope,
@@ -58,7 +90,7 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
 }
 
 export type ScheduleMode = "fixed" | "once" | "interval" | "webhook";
-export type WorkspaceMode = "auto" | "root" | "worktree" | "existing_worktree";
+export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 
 export interface DraftState {
   readonly editingId: string | null;
@@ -78,7 +110,6 @@ export interface DraftState {
   readonly threadMode: ScheduledTaskThreadMode;
   readonly workspaceMode: WorkspaceMode;
   readonly baseRef: string;
-  readonly autoBranch?: string;
   readonly startFromOrigin: boolean;
   readonly existingWorktreePath: string;
   readonly modelKey: string;
@@ -125,6 +156,8 @@ export function scheduleDraftErrors(draft: DraftState) {
       ];
     return [];
   }
+  if (draft.scheduleMode === "fixed" && !draft.timeOfDay)
+    return [{ title: "Invalid run time", description: "Pick a time." }];
   if (draft.scheduleMode !== "webhook") return [];
   if (parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes) === undefined)
     return [
@@ -235,7 +268,7 @@ export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedul
   const selectedEveryDay = draft.weekdays.size === 0 || draft.weekdays.size === 7;
   return {
     type: "fixed_time",
-    timeOfDay: draft.timeOfDay || "09:00",
+    timeOfDay: draft.timeOfDay,
     ...(selectedEveryDay ? {} : { weekdays: [...draft.weekdays].toSorted() }),
   };
 }
@@ -264,13 +297,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     threadId: task.threadId ?? "",
     threadMode: scheduledTaskThreadMode(task),
     workspaceMode: task.workspaceStrategy.type,
-    ...(task.workspaceStrategy.type === "auto" && task.workspaceStrategy.branch !== undefined
-      ? { autoBranch: task.workspaceStrategy.branch }
-      : {}),
-    baseRef:
-      task.workspaceStrategy.type === "worktree" || task.workspaceStrategy.type === "auto"
-        ? (task.workspaceStrategy.baseRef ?? "")
-        : "main",
+    baseRef: task.workspaceStrategy.type === "worktree" ? task.workspaceStrategy.baseRef : "main",
     startFromOrigin:
       task.workspaceStrategy.type === "worktree"
         ? (task.workspaceStrategy.startFromOrigin ?? false)
@@ -305,41 +332,6 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     filters,
     savedFilters: filters,
   };
-}
-
-export function worktreeStrategyFromDraft(
-  draft: Pick<DraftState, "baseRef" | "startFromOrigin">,
-): Extract<OrchestrationV2ThreadLaunchWorkspaceStrategy, { type: "worktree" }> {
-  const baseRef = draft.baseRef.trim();
-  return {
-    type: "worktree",
-    ...(baseRef ? { baseRef } : {}),
-    startFromOrigin: draft.startFromOrigin,
-  };
-}
-
-export function workspaceStrategyFromDraft(
-  draft: Pick<
-    DraftState,
-    "workspaceMode" | "baseRef" | "autoBranch" | "startFromOrigin" | "existingWorktreePath"
-  >,
-): OrchestrationV2ThreadLaunchWorkspaceStrategy {
-  switch (draft.workspaceMode) {
-    case "auto": {
-      const baseRef = draft.baseRef.trim();
-      return {
-        type: "auto",
-        ...(baseRef ? { baseRef } : {}),
-        ...(draft.autoBranch === undefined ? {} : { branch: draft.autoBranch }),
-      };
-    }
-    case "root":
-      return { type: "root" };
-    case "existing_worktree":
-      return { type: "existing_worktree", worktreePath: draft.existingWorktreePath.trim() };
-    case "worktree":
-      return worktreeStrategyFromDraft(draft);
-  }
 }
 
 export function moveDraftToThread(

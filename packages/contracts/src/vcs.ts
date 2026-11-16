@@ -260,20 +260,22 @@ export class VcsUnsupportedOperationError extends Schema.TaggedError<VcsUnsuppor
   }
 }
 
-/** Checkpoint capture is forbidden from Git's physical primary checkout. */
-export class VcsPrimaryCheckoutCheckpointError extends Schema.TaggedError<VcsPrimaryCheckoutCheckpointError>()(
-  "VcsPrimaryCheckoutCheckpointError",
+export class VcsCheckpointStorageError extends Schema.TaggedError<VcsCheckpointStorageError>()(
+  "VcsCheckpointStorageError",
   {
     operation: Schema.String,
     cwd: Schema.String,
+    stage: Schema.Literals(["isolate", "publish"]),
+    cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `VCS checkpoint capture refused in ${this.operation}: ${this.cwd} is Git's primary checkout.`;
+    return `Could not ${this.stage} checkpoint objects.`;
   }
 }
 
 export const VcsError = Schema.Union([
+  VcsCheckpointStorageError,
   VcsProcessSpawnError,
   VcsProcessExitError,
   VcsProcessTimeoutError,
@@ -283,6 +285,5 @@ export const VcsError = Schema.Union([
   VcsProcessMissingExitCodeError,
   VcsRepositoryDetectionError,
   VcsUnsupportedOperationError,
-  VcsPrimaryCheckoutCheckpointError,
 ]);
 export type VcsError = typeof VcsError.Type;

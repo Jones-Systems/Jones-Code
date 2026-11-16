@@ -1,15 +1,3 @@
-import { buildQueuedThreadCreationStartTurnInput } from "../jones/threadConfiguration/queuedCreation";
-export { buildQueuedThreadCreationStartTurnInput } from "../jones/threadConfiguration/queuedCreation";
-import { legacyQueuedThreadMessageAccepted } from "../jones/threadConfiguration/legacyOutbox";
-import type { PreparedThreadTurn, StartThreadTurnInput } from "@t3tools/client-runtime/operations";
-import {
-  canRestoreQueuedThreadMessage,
-  deliverQueuedThreadTurn,
-  queuedThreadContentChanged,
-  queuedThreadProvenTarget,
-  queuedThreadRecoveryCreation,
-} from "../jones/threadConfiguration/outboxDelivery";
-import { buildQueuedFollowUpStartTurnInput } from "../jones/threadConfiguration/queuedFollowUp";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import * as Dialog from "../components/ui/Dialog";
 import {
@@ -22,6 +10,7 @@ import {
   runAtomCommand,
 } from "@t3tools/client-runtime/state/runtime";
 import { threadFamilyRead, type ThreadFamilyRead } from "@t3tools/client-runtime/state/threads";
+import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import {
   AuthOrchestrationOperateScope,
   CommandId,
@@ -32,17 +21,16 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type EnvironmentId,
 } from "@t3tools/contracts";
+import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { createDebugLogger } from "../lib/debugLog";
 import { scopedThreadKey } from "../lib/scopedEntities";
+import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
+import { serializeComposerMessageForServer, uploadedComposerContext } from "../lib/composerContext";
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
-import {
-  outboxSelectionRestoreSettings,
-  retainComposerModelSelectionSnapshot,
-  trackComposerModelSelectionInteractions,
-} from "../jones/threadConfiguration/outboxSelection";
+import { randomHex } from "../lib/uuid";
 import {
   describeUnavailableModelSelection,
   isModelSelectionUnavailable,
@@ -82,12 +70,7 @@ import {
   type ThreadOutboxCommandStage,
   type ThreadOutboxFailureAction,
 } from "./thread-outbox-model";
-import {
-  environmentThreadDetails,
-  environmentThreadShells,
-  threadEnvironment,
-  threadFamilies,
-} from "./threads";
+import { environmentThreadShells, threadEnvironment, threadFamilies } from "./threads";
 import {
   appendComposerDraftAttachments,
   composerDraftsAtom,
@@ -104,6 +87,7 @@ import {
 import {
   dispatchingQueuedMessageIdAtom,
   editingQueuedMessageIdsAtom,
+  retryingQueuedMessageIdsAtom,
   threadOutboxShellStatusesAtom,
 } from "./use-thread-outbox";
 import { clearThreadComposerError, setThreadComposerError } from "./thread-composer-error";
@@ -172,7 +156,20 @@ function logThreadOutboxUploadFailure(queuedMessage: QueuedThreadMessage, error:
   }
 }
 
+function setQueuedMessageRetrying(queuedMessageId: MessageId, retrying: boolean): void {
+  const { [queuedMessageId]: current, ...others } = appAtomRegistry.get(
+    retryingQueuedMessageIdsAtom,
+  );
+  if ((current === true) === retrying) return;
+  appAtomRegistry.set(
+    retryingQueuedMessageIdsAtom,
+    retrying ? { ...others, [queuedMessageId]: true } : others,
+  );
+}
+
 function beginDispatchingQueuedMessage(queuedMessageId: MessageId): void {
+  // An attempt in flight is sending, even while its retry count is kept.
+  setQueuedMessageRetrying(queuedMessageId, false);
   appAtomRegistry.set(dispatchingQueuedMessageIdAtom, queuedMessageId);
 }
 
@@ -268,27 +265,21 @@ function isQueuedMessagePayloadCurrent(
 export async function completeQueuedMessageDelivery(
   queuedMessage: QueuedThreadMessage,
   deliveryRevision: number,
-  sequence: number | undefined = undefined,
-  canComplete: () => boolean = () => true,
+  sequence: number | undefined,
 ): Promise<"removed" | "edited" | "failed"> {
   clearThreadComposerError(
     scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId),
     queuedMessage.messageId,
   );
   try {
-    if (!canComplete()) return "failed";
     await removeDeliveredCloudQueuedMessage(queuedMessage).catch((error) => {
       console.warn("[thread-outbox] could not update sign-out snapshot after delivery", {
         messageId: queuedMessage.messageId,
         error,
       });
     });
-    if (!canComplete()) return "failed";
     // Editors can acquire entries during startTurn without bumping revisions; CAS alone would lose unsaved edits.
-    if (
-      appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
-      queuedThreadContentChanged(queuedMessage)
-    ) {
+    if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
       return "edited";
     }
     retainAcknowledgedThreadMessage(
@@ -297,8 +288,7 @@ export async function completeQueuedMessageDelivery(
     const removed = await removeThreadOutboxMessage(
       queuedMessage,
       deliveryRevision,
-      () =>
-        canComplete() && !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId],
+      () => !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId],
     );
     if (!removed) {
       forgetAcknowledgedThreadMessage(queuedMessage);
@@ -363,10 +353,7 @@ export async function recoverEditedCreationAfterDelivery(
     return true;
   }
   const draftKey = scopedThreadKey(kept.environmentId, kept.threadId);
-  const releaseSelectionTracking = trackComposerModelSelectionInteractions(draftKey);
   try {
-    await waitForComposerDraftsLoaded();
-    const originalDraft = getComposerDraftSnapshot(draftKey);
     // Merge before removal to retain file ownership; allow overflow and let send guards require trimming.
     await mergeComposerDraftContent(draftKey, {
       text: kept.text,
@@ -385,26 +372,18 @@ export async function recoverEditedCreationAfterDelivery(
     appendComposerDraftAttachments(
       draftKey,
       kept.attachments.filter((attachment) => !existingAttachmentIds.has(attachment.id)),
-      { allowOverflow: true },
+      { restore: true },
     );
-    const currentDraft = getComposerDraftSnapshot(draftKey);
     updateComposerDraftSettings(draftKey, {
-      ...outboxSelectionRestoreSettings(kept, draftKey, originalDraft, currentDraft),
-      ...(kept.runtimeMode !== undefined && currentDraft.runtimeMode === originalDraft.runtimeMode
-        ? { runtimeMode: kept.runtimeMode }
-        : {}),
-      ...(kept.interactionMode !== undefined &&
-      currentDraft.interactionMode === originalDraft.interactionMode
-        ? { interactionMode: kept.interactionMode }
-        : {}),
+      ...(kept.modelSelection !== undefined ? { modelSelection: kept.modelSelection } : {}),
+      ...(kept.runtimeMode !== undefined ? { runtimeMode: kept.runtimeMode } : {}),
+      ...(kept.interactionMode !== undefined ? { interactionMode: kept.interactionMode } : {}),
     });
     // Flush before removal: append only schedules persistence, leaving the queue as the sole durable copy.
     await flushComposerDrafts();
   } catch (error) {
     console.warn("[thread-outbox] could not hand an edited pending task to the composer", error);
     return false;
-  } finally {
-    releaseSelectionTracking();
   }
   if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[kept.messageId]) {
     return true;
@@ -428,13 +407,8 @@ export async function restoreRejectedQueuedMessage(
   const draftKey = recoveryDraftKey(queuedMessage);
   const threadKey = scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
   let rollback: { readonly snapshot: ComposerDraft; readonly merged: ComposerDraft } | null = null;
-  const releaseSelectionTracking = trackComposerModelSelectionInteractions(draftKey);
-  const canRestore = () =>
-    canRestoreQueuedThreadMessage(queuedMessage) && recoveryDraftKey(queuedMessage) === draftKey;
-  const creation = queuedThreadRecoveryCreation(queuedMessage);
   try {
     if (
-      !canRestore() ||
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
       !(await confirmThreadOutboxMessageQueued(queuedMessage)) ||
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
@@ -444,10 +418,7 @@ export async function restoreRejectedQueuedMessage(
     const revision = threadOutboxRevision(queuedMessage.messageId);
 
     await waitForComposerDraftsLoaded();
-    if (
-      !canRestore() ||
-      appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
-    ) {
+    if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
       return "deferred";
     }
     const originalDraft = getComposerDraftSnapshot(draftKey);
@@ -467,104 +438,73 @@ export async function restoreRejectedQueuedMessage(
     }
 
     const withdrawError = () => clearThreadComposerError(threadKey, queuedMessage.messageId);
-    if (!creation) {
+    if (!queuedMessage.creation) {
       setThreadComposerError(threadKey, message, queuedMessage.messageId);
     }
-    let mergedDraft = originalDraft;
-    stampRecoveryDraftProject(queuedMessage, draftKey);
-    await mergeComposerDraftContent(
-      draftKey,
-      {
+    let mergedDraft: ComposerDraft;
+    try {
+      stampRecoveryDraftProject(queuedMessage, draftKey);
+      await mergeComposerDraftContent(draftKey, {
         text: queuedMessage.text,
         context: queuedMessage.context,
         attachments: queuedMessage.attachments,
-      },
-      {
-        onMerged: (draft) => {
-          // Capture the published merge before disk yields, rather than absorbing newer editor work into rollback.
-          mergedDraft = retainComposerModelSelectionSnapshot(draft, originalDraft);
-          rollback = { snapshot: originalDraft, merged: mergedDraft };
-        },
-      },
-    );
-    if (
-      !canRestore() ||
-      appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
-    ) {
+      });
+    } finally {
+      // Capture rollback in finally because merge publishes even on persistence failure; undo must preserve concurrent edits.
+      mergedDraft = getComposerDraftSnapshot(draftKey);
+      rollback = { snapshot: originalDraft, merged: mergedDraft };
+    }
+    if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
       withdrawError();
       await undoComposerDraftMerge(draftKey, originalDraft, mergedDraft);
       return "deferred";
     }
-    const selectionSettings = outboxSelectionRestoreSettings(
-      queuedMessage,
-      draftKey,
-      originalDraft,
-      getComposerDraftSnapshot(draftKey),
-    );
-    const currentDraft = getComposerDraftSnapshot(draftKey);
-    const settings = {
-      ...selectionSettings,
-      ...(queuedMessage.runtimeMode && currentDraft.runtimeMode === mergedDraft.runtimeMode
-        ? { runtimeMode: queuedMessage.runtimeMode }
-        : {}),
-      ...(queuedMessage.interactionMode &&
-      currentDraft.interactionMode === mergedDraft.interactionMode
-        ? { interactionMode: queuedMessage.interactionMode }
-        : {}),
-      ...(queuedMessage.freshContext && currentDraft.freshContext === mergedDraft.freshContext
-        ? { freshContext: true }
-        : {}),
-      ...(creation && currentDraft.workspaceSelection === mergedDraft.workspaceSelection
+    updateComposerDraftSettings(draftKey, {
+      ...(queuedMessage.modelSelection ? { modelSelection: queuedMessage.modelSelection } : {}),
+      ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
+      ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
+      ...(queuedMessage.freshContext ? { freshContext: true } : {}),
+      ...(queuedMessage.creation
         ? {
             workspaceSelection: {
-              mode: creation.workspaceMode,
-              branch: creation.branch,
-              worktreePath: creation.worktreePath,
-              pullRequestReference: creation.pullRequestReference,
-              ...(creation.startFromOrigin !== undefined
-                ? { startFromOrigin: creation.startFromOrigin }
+              mode: queuedMessage.creation.workspaceMode,
+              branch: queuedMessage.creation.branch,
+              worktreePath: queuedMessage.creation.worktreePath,
+              pullRequestReference: queuedMessage.creation.pullRequestReference,
+              ...(queuedMessage.creation.startFromOrigin !== undefined
+                ? { startFromOrigin: queuedMessage.creation.startFromOrigin }
                 : {}),
             },
           }
         : {}),
-    };
-    const restoredDraft = updateComposerDraftSettings(draftKey, settings);
-    if (selectionSettings.modelSelection === undefined) {
-      retainComposerModelSelectionSnapshot(restoredDraft, originalDraft);
-    }
-    const rollbackDraft = retainComposerModelSelectionSnapshot(
-      { ...mergedDraft, ...settings },
-      restoredDraft,
-    );
-    rollback = { snapshot: originalDraft, merged: rollbackDraft };
+    });
+    const restoredDraft = getComposerDraftSnapshot(draftKey);
+    rollback = { snapshot: originalDraft, merged: restoredDraft };
     await flushComposerDrafts();
     if (
-      !canRestore() ||
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
       !(await confirmThreadOutboxMessageQueued(queuedMessage)) ||
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]
     ) {
       withdrawError();
-      await undoComposerDraftMerge(draftKey, originalDraft, rollbackDraft);
+      await undoComposerDraftMerge(draftKey, originalDraft, restoredDraft);
       return "deferred";
     }
     if (
       !(await removeThreadOutboxMessage(
         queuedMessage,
         revision,
-        () =>
-          canRestore() &&
-          !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId],
+        () => !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId],
       ))
     ) {
       withdrawError();
-      await undoComposerDraftMerge(draftKey, originalDraft, rollbackDraft);
+      await undoComposerDraftMerge(draftKey, originalDraft, restoredDraft);
       return "deferred";
     }
     // After queue removal, the draft owns content and must never roll back.
     rollback = null;
     if (queuedMessage.creation) {
-      if (creation !== undefined) withdrawError();
+      withdrawError();
       recordPendingThreadCreationOutcome({
         kind: "failed",
         message: queuedMessage,
@@ -580,10 +520,6 @@ export async function restoreRejectedQueuedMessage(
         },
       );
     }
-    if (!canRestore()) {
-      clearThreadComposerError(threadKey, queuedMessage.messageId);
-      return "deferred";
-    }
     console.warn("[thread-outbox] failed to restore an undeliverable message", error);
     setThreadComposerError(
       threadKey,
@@ -591,30 +527,24 @@ export async function restoreRejectedQueuedMessage(
       queuedMessage.messageId,
     );
     return "retry";
-  } finally {
-    releaseSelectionTracking();
   }
 }
 
 /** Derive keys from message ids so failed recovery retries reuse the same draft. */
 function recoveryDraftKey(queuedMessage: QueuedThreadMessage): string {
-  return queuedThreadRecoveryCreation(queuedMessage)
+  return queuedMessage.creation
     ? restoredNewTaskDraftKey(queuedMessage.messageId)
-    : scopedThreadKey(
-        queuedMessage.environmentId,
-        queuedThreadProvenTarget(queuedMessage) ?? queuedMessage.threadId,
-      );
+    : scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
 }
 
 function stampRecoveryDraftProject(queuedMessage: QueuedThreadMessage, draftKey: string): void {
-  const creation = queuedThreadRecoveryCreation(queuedMessage);
-  if (!creation) {
+  if (!queuedMessage.creation) {
     return;
   }
   updateComposerDraftSettings(draftKey, {
     project: {
       environmentId: queuedMessage.environmentId,
-      projectId: creation.projectId,
+      projectId: queuedMessage.creation.projectId,
       createdAt: queuedMessage.createdAt,
     },
   });
@@ -672,37 +602,10 @@ const deliveryInputsAtom = Atom.make((get) => {
       operableEnvironments.add(environmentId);
     }
   }
-  const queuedMessagesByThreadKey = get(threadOutboxManager.queuedMessagesByThreadKeyAtom);
-  const legacyStates = new Map<MessageId, ReturnType<typeof getLegacyThreadState>>();
-  function getLegacyThreadState(message: QueuedThreadMessage) {
-    return get(
-      environmentThreadDetails.stateAtom({
-        environmentId: message.environmentId,
-        threadId: message.threadId,
-      }),
-    );
-  }
-  for (const messages of Object.values(queuedMessagesByThreadKey)) {
-    const message = messages[0];
-    if (
-      message !== undefined &&
-      message.issuance === undefined &&
-      message.creation === undefined &&
-      operableEnvironments.has(message.environmentId) &&
-      connectedEnvironments.some(
-        (environment) =>
-          environment.environmentId === message.environmentId &&
-          environment.connectionState === "connected",
-      )
-    ) {
-      legacyStates.set(message.messageId, getLegacyThreadState(message));
-    }
-  }
   return {
-    legacyStates,
     dispatchingQueuedMessageId: get(dispatchingQueuedMessageIdAtom),
     editingQueuedMessageIds: get(editingQueuedMessageIdsAtom),
-    queuedMessagesByThreadKey,
+    queuedMessagesByThreadKey: get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
     shellStatuses: get(threadOutboxShellStatusesAtom),
     threads: get(environmentThreadShells.threadShellsAtom),
     projects: get(environmentProjects.projectsAtom),
@@ -731,6 +634,12 @@ const settledCreationOutcomeKeysAtom = Atom.make((get): ReadonlyArray<string> =>
       : [],
   );
 }).pipe(Atom.withLabel("mobile:thread-outbox:settled-creation-outcomes"));
+
+function deliveredSequence(
+  result: AtomCommandResult<{ readonly sequence?: number }, unknown>,
+): number | undefined {
+  return AsyncResult.isSuccess(result) ? result.value.sequence : undefined;
+}
 
 const runDeliveryCommand = <W, A, E>(
   command: AtomCommand<W, A, E>,
@@ -785,6 +694,12 @@ export function createThreadOutboxDelivery(): {
   // Existing-thread turns the server accepted but whose outbox removal has
   // not landed; the next pass retries only the removal, never the send.
   const acknowledgedExistingThreadMessageIds = new Set<MessageId>();
+  // Revision and workspace each new task's launch carried. Launch replays by command id, so an
+  // unedited task whose reply was lost is resent in that workspace, not handed back.
+  const launchedCreations = new Map<
+    MessageId,
+    { readonly revision: number; readonly workspace: QueuedThreadCreation }
+  >();
   // Targets the shell may have left out hold their thread family until they leave the queue, so
   // the row stays readable through dispatch.
   const familyMounts = new Map<MessageId, () => void>();
@@ -806,6 +721,7 @@ export function createThreadOutboxDelivery(): {
       notBefore: Date.now() + delayMs,
       timer: setTimeout(drain, delayMs),
     });
+    setQueuedMessageRetrying(messageId, true);
   };
 
   const clearRetry = (messageId: MessageId): void => {
@@ -813,6 +729,7 @@ export function createThreadOutboxDelivery(): {
     if (retry === undefined) return;
     clearTimeout(retry.timer);
     retries.delete(messageId);
+    setQueuedMessageRetrying(messageId, false);
   };
 
   // A delivery that throws backs off like any failure. Releasing the slot
@@ -867,91 +784,6 @@ export function createThreadOutboxDelivery(): {
     });
     blockedRecoveries.set(queuedMessage.messageId, { message: queuedMessage, unsubscribe });
     return true;
-  };
-
-  const deliverPreparedMessage = async (
-    message: QueuedThreadMessage,
-    revision: number,
-    prepared?: PreparedThreadTurn,
-  ): Promise<boolean> => {
-    const canDispatch = () =>
-      readEnvironmentScope(message.environmentId, AuthOrchestrationOperateScope) &&
-      !appAtomRegistry.get(editingQueuedMessageIdsAtom)[message.messageId];
-    let sequence: number | undefined;
-    const delivery = {
-      message,
-      revision,
-      ...(prepared === undefined ? {} : { prepared }),
-      queue: {
-        current: () =>
-          Object.values(
-            appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
-          ).flat(),
-        revisionOf: threadOutboxRevision,
-        confirmQueued: confirmThreadOutboxMessageQueued,
-        update: updateThreadOutboxMessage,
-      },
-      canDispatch,
-      dispatch: async (input: PreparedThreadTurn) => {
-        const dispatched = await runDeliveryCommand(threadEnvironment.dispatchPreparedTurn, {
-          environmentId: message.environmentId,
-          input,
-        });
-        if (AsyncResult.isFailure(dispatched)) throw Cause.squash(dispatched.cause);
-        sequence = dispatched.value?.sequence;
-        return dispatched.value;
-      },
-    };
-    try {
-      const result = await deliverQueuedThreadTurn(delivery);
-      if (result === null) return true;
-      if (result.status === "unknown") return false;
-      if (result.status === "rejected") {
-        let errorMessage = "The message was rejected. Edit it and send again.";
-        if (result.error instanceof Error) errorMessage = result.error.message;
-        return restoreQueuedMessage(result.message, errorMessage);
-      }
-      if (result.message.creation !== undefined) {
-        recordPendingThreadCreationOutcome({ kind: "delivered", message: result.message });
-      } else {
-        acknowledgedExistingThreadMessageIds.add(result.message.messageId);
-      }
-      const outcome = await completeQueuedMessageDelivery(
-        result.message,
-        result.revision,
-        sequence,
-      );
-      if (outcome === "edited") {
-        if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[result.message.messageId]) return true;
-        return recoverEditedCreationAfterDelivery(result.message);
-      }
-      if (outcome === "removed")
-        acknowledgedExistingThreadMessageIds.delete(result.message.messageId);
-      return outcome === "removed";
-    } catch (error) {
-      console.warn("[thread-outbox] could not persist or reconcile an issued request", {
-        messageId: message.messageId,
-        error,
-      });
-      return false;
-    }
-  };
-
-  const prepareAndDeliverMessage = async (
-    message: QueuedThreadMessage,
-    revision: number,
-    input: StartThreadTurnInput,
-  ): Promise<boolean> => {
-    if (!readEnvironmentScope(message.environmentId, AuthOrchestrationOperateScope)) return true;
-    const result = await runDeliveryCommand(threadEnvironment.prepareTurn, {
-      environmentId: message.environmentId,
-      input,
-    });
-    if (AsyncResult.isFailure(result)) {
-      const failure = reportCommandFailure(message, result, "start-turn");
-      return failure?.action === "restore" ? restoreQueuedMessage(message, failure.message) : false;
-    }
-    return deliverPreparedMessage(message, revision, result.value);
   };
 
   const sendQueuedMessage = async (
@@ -1085,6 +917,7 @@ export function createThreadOutboxDelivery(): {
           interactionMode: sendSettings.interactionMode,
           createdAt: queuedMessage.createdAt,
           dispatchMode: "queue",
+          resendAfterSocketLoss: false,
         },
       });
       if (AsyncResult.isFailure(compactionResult) && !hasAccess()) return true;
@@ -1096,16 +929,57 @@ export function createThreadOutboxDelivery(): {
       if (!isQueuedMessagePayloadCurrent(persistedMessage, deliveryRevision)) return true;
     }
     if (!hasAccess()) return true;
-    return prepareAndDeliverMessage(
-      persistedMessage,
-      deliveryRevision,
-      buildQueuedFollowUpStartTurnInput({
-        message: persistedMessage,
-        settings: sendSettings,
-        attachments: prepared.attachments,
-        inlineMessageContext: currentConfig.environment.capabilities.inlineMessageContext === true,
-      }),
-    );
+    const deliveryResult = await runDeliveryCommand(threadEnvironment.startTurn, {
+      environmentId: queuedMessage.environmentId,
+      input: {
+        commandId: queuedMessage.commandId,
+        creationSource: "mobile",
+        threadId: queuedMessage.threadId,
+        message: {
+          messageId: queuedMessage.messageId,
+          role: "user",
+          ...serializeComposerMessageForServer(
+            queuedMessage.text,
+            uploadedComposerContext(
+              queuedMessage.context,
+              queuedMessage.attachments,
+              prepared.attachments,
+            ),
+          ),
+          attachments: prepared.attachments,
+        },
+        modelSelection: sendSettings.modelSelection,
+        titleSeed: deriveThreadTitleSeed({
+          text: queuedMessage.text,
+          attachments: queuedMessage.attachments,
+        }),
+        runtimeMode: sendSettings.runtimeMode,
+        interactionMode: sendSettings.interactionMode,
+        createdAt: queuedMessage.createdAt,
+        dispatchMode: queuedMessage.dispatchMode ?? "start",
+        ...(queuedMessage.freshContext ? { freshContext: true } : {}),
+        resendAfterSocketLoss: false,
+      },
+    });
+    if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return true;
+    const failure = reportCommandFailure(queuedMessage, deliveryResult, "start-turn");
+    if (failure?.action === "retry") {
+      return false;
+    }
+    if (failure?.action === "restore") {
+      return restoreQueuedMessage(persistedMessage, failure.message);
+    }
+    acknowledgedExistingThreadMessageIds.add(persistedMessage.messageId);
+    const delivered =
+      (await completeQueuedMessageDelivery(
+        persistedMessage,
+        deliveryRevision,
+        deliveredSequence(deliveryResult),
+      )) === "removed";
+    if (delivered) {
+      acknowledgedExistingThreadMessageIds.delete(persistedMessage.messageId);
+    }
+    return delivered;
   };
 
   const sendQueuedCreation = async (
@@ -1196,7 +1070,10 @@ export function createThreadOutboxDelivery(): {
     );
     if (!hasAccess()) return true;
     let workspace = creation;
-    if (creation.pullRequestReference) {
+    const launched = launchedCreations.get(persistedMessage.messageId);
+    if (launched?.revision === deliveryRevision) {
+      workspace = launched.workspace;
+    } else if (creation.pullRequestReference) {
       const checkout = await runDeliveryCommand(gitEnvironment.preparePullRequestThread, {
         environmentId: queuedMessage.environmentId,
         input: { cwd: projectCwd, reference: creation.pullRequestReference, mode: "worktree" },
@@ -1226,19 +1103,57 @@ export function createThreadOutboxDelivery(): {
         startFromOrigin: false,
       };
     }
-    return prepareAndDeliverMessage(
+    launchedCreations.set(persistedMessage.messageId, { revision: deliveryRevision, workspace });
+    const deliveryResult = await runDeliveryCommand(threadEnvironment.startTurn, {
+      environmentId: queuedMessage.environmentId,
+      input: buildProjectThreadStartTurnInput({
+        projectId: creation.projectId,
+        projectCwd,
+        threadId: queuedMessage.threadId,
+        commandId: queuedMessage.commandId,
+        messageId: queuedMessage.messageId,
+        createdAt: queuedMessage.createdAt,
+        titleText: queuedMessage.text,
+        ...serializeComposerMessageForServer(
+          queuedMessage.text.trim(),
+          uploadedComposerContext(
+            queuedMessage.context,
+            queuedMessage.attachments,
+            prepared.attachments,
+          ),
+        ),
+        uploadedAttachments: prepared.attachments,
+        modelSelection: sendSettings.modelSelection,
+        runtimeMode: sendSettings.runtimeMode,
+        interactionMode: sendSettings.interactionMode,
+        workspaceMode: workspace.workspaceMode,
+        branch: workspace.branch,
+        worktreePath: workspace.worktreePath,
+        startFromOrigin: workspace.startFromOrigin ?? false,
+        worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
+      }),
+    });
+    if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return true;
+    const failure = reportCommandFailure(queuedMessage, deliveryResult, "start-turn");
+    if (failure?.action === "retry") {
+      return false;
+    }
+    if (failure?.action === "restore") {
+      return restoreQueuedMessage(persistedMessage, failure.message);
+    }
+    recordPendingThreadCreationOutcome({ kind: "delivered", message: persistedMessage });
+    const outcome = await completeQueuedMessageDelivery(
       persistedMessage,
       deliveryRevision,
-      buildQueuedThreadCreationStartTurnInput({
-        message: persistedMessage,
-        creation: workspace,
-        projectCwd,
-        attachments: prepared.attachments,
-        settings: sendSettings,
-        serverResolvesWorktreeBase: true,
-        inlineMessageContext: currentConfig.environment.capabilities.inlineMessageContext === true,
-      }),
+      deliveredSequence(deliveryResult),
     );
+    if (outcome === "edited") {
+      if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
+        return true;
+      }
+      return recoverEditedCreationAfterDelivery(persistedMessage);
+    }
+    return outcome === "removed";
   };
 
   // A pass writes atoms the pass reads (family mounts, the dispatch slot), and the registry
@@ -1276,7 +1191,6 @@ export function createThreadOutboxDelivery(): {
       serverConfigs,
       connectedEnvironments,
       operableEnvironments,
-      legacyStates,
     } = appAtomRegistry.get(deliveryInputsAtom);
     if (dispatchingQueuedMessageId !== null) {
       return;
@@ -1290,6 +1204,11 @@ export function createThreadOutboxDelivery(): {
     for (const messageId of acknowledgedExistingThreadMessageIds) {
       if (!queuedMessageIds.has(messageId)) {
         acknowledgedExistingThreadMessageIds.delete(messageId);
+      }
+    }
+    for (const messageId of launchedCreations.keys()) {
+      if (!queuedMessageIds.has(messageId)) {
+        launchedCreations.delete(messageId);
       }
     }
     for (const [messageId, release] of familyMounts) {
@@ -1307,7 +1226,6 @@ export function createThreadOutboxDelivery(): {
       const messageId = nextQueuedMessage.messageId;
       if (
         nextQueuedMessage.creation === undefined &&
-        nextQueuedMessage.issuance?.state !== "issued" &&
         acknowledgedExistingThreadMessageIds.has(messageId)
       ) {
         if (retryNotBefore(messageId) > Date.now()) {
@@ -1336,67 +1254,6 @@ export function createThreadOutboxDelivery(): {
       }
       if (retryNotBefore(messageId) > Date.now()) {
         continue;
-      }
-
-      if (nextQueuedMessage.issuance === undefined) {
-        const legacyState = legacyStates.get(messageId);
-        const revision = threadOutboxRevision(messageId);
-        const canComplete = () =>
-          threadOutboxRevision(messageId) === revision &&
-          readEnvironmentScope(nextQueuedMessage.environmentId, AuthOrchestrationOperateScope) &&
-          !appAtomRegistry.get(editingQueuedMessageIdsAtom)[messageId] &&
-          legacyState !== undefined &&
-          legacyQueuedThreadMessageAccepted(
-            nextQueuedMessage,
-            nextQueuedMessage.environmentId,
-            appAtomRegistry.get(
-              environmentThreadDetails.stateAtom({
-                environmentId: nextQueuedMessage.environmentId,
-                threadId: nextQueuedMessage.threadId,
-              }),
-            ),
-          );
-        if (canComplete()) {
-          beginDispatchingQueuedMessage(messageId);
-          settle(
-            messageId,
-            confirmThreadOutboxMessageQueued(nextQueuedMessage).then(
-              async (queued) =>
-                queued &&
-                canComplete() &&
-                (await completeQueuedMessageDelivery(
-                  nextQueuedMessage,
-                  revision,
-                  undefined,
-                  canComplete,
-                )) === "removed",
-            ),
-          );
-          return;
-        }
-        setThreadComposerError(
-          threadKey,
-          "This saved message may already have been delivered. Its original request is unavailable, so automatic retry is paused.",
-          messageId,
-        );
-        continue;
-      }
-      if (nextQueuedMessage.issuance.state === "issued") {
-        if (
-          !operableEnvironments.has(nextQueuedMessage.environmentId) ||
-          !connectedEnvironments.some(
-            (environment) =>
-              environment.environmentId === nextQueuedMessage.environmentId &&
-              environment.connectionState === "connected",
-          )
-        )
-          continue;
-        beginDispatchingQueuedMessage(messageId);
-        settle(
-          messageId,
-          deliverPreparedMessage(nextQueuedMessage, threadOutboxRevision(messageId)),
-        );
-        return;
       }
 
       let thread = findThread(threads, nextQueuedMessage);
@@ -1448,9 +1305,13 @@ export function createThreadOutboxDelivery(): {
           );
         }
       }
+      const resendLaunch =
+        creation !== undefined &&
+        launchedCreations.get(messageId)?.revision === threadOutboxRevision(messageId);
       const deliveryAction = resolveThreadOutboxDeliveryAction({
         isCreation: creation !== undefined,
-        threadExists: thread !== undefined,
+        // A resend goes through the same gates as the first launch.
+        threadExists: thread !== undefined && !resendLaunch,
         shellStatus,
         environmentConnected: environment?.connectionState === "connected",
         ...(familyRead === undefined ? {} : { familyRead }),
@@ -1545,7 +1406,7 @@ export function createThreadOutboxDelivery(): {
           );
           const liveDeliveryAction = resolveThreadOutboxDeliveryAction({
             isCreation: creation !== undefined,
-            threadExists: liveThread !== undefined,
+            threadExists: liveThread !== undefined && !resendLaunch,
             shellStatus,
             environmentConnected: environment?.connectionState === "connected",
           });
@@ -1555,7 +1416,7 @@ export function createThreadOutboxDelivery(): {
         }
         return deliveryAction === "remove"
           ? creation !== undefined
-            ? // After restart, always recover delivered creations; lost in-memory state cannot distinguish edits from duplicate payloads.
+            ? // Edited since launch, or launched before a restart that lost the revision: hand it back.
               recoverEditedCreationAfterDelivery(nextQueuedMessage)
             : removeQueuedMessage("[thread-outbox] failed to remove message for a missing thread")
           : creation !== undefined
@@ -1588,6 +1449,7 @@ export function createThreadOutboxDelivery(): {
       stopCollectingOutcomes();
       for (const retry of retries.values()) clearTimeout(retry.timer);
       retries.clear();
+      appAtomRegistry.set(retryingQueuedMessageIdsAtom, {});
       for (const blocked of blockedRecoveries.values()) blocked.unsubscribe();
       blockedRecoveries.clear();
       for (const release of familyMounts.values()) release();

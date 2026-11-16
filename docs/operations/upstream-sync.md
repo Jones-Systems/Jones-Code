@@ -174,6 +174,8 @@ to deferred until its trigger, runner, permissions and secrets are reviewed.
 | `mobile-fingerprint-label.yml`      | workflow_run                                     | Deferred               | Privileged native fingerprint labeling requires separate review.     |
 | `windows-tests.yml`                 | Manual                                           | Retired                | Jones Code does not support Windows.                                 |
 | `mobile-dev-client.yml`             | Push, PR, manual                                 | Deferred               | Blacksmith runners and upstream native-client write credentials.     |
+| `issue-vouch.yml` | Issues, main push, manual | Deferred | Upstream contributor automation; no Jones activation. |
+| `pr-limits.yml` | Privileged PR event, schedule, manual | Deferred | Upstream contribution limits; requires separate review. |
 
 The removed `setup-apt-mirrors` action configured a Blacksmith-specific apt mirror. CI now uses the hosted Ubuntu image's apt sources. Core `ci.yml` checks do not publish desktop or CLI releases, deploy the relay, run Windows tests, or run the mobile fingerprint check. The three artifact workflows build downloadable trial files without publishing a Release. Restore a deferred workflow only in a separate reviewed PR, replace its runner and credentials with Jones-Code-owned capabilities, and verify its first run. Do not re-enable upstream schedules or privileged events as a side effect of merging upstream.
 

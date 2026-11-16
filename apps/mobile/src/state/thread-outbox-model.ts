@@ -22,15 +22,12 @@ import {
   type ProviderInteractionMode as ProviderInteractionModeType,
   type RuntimeMode as RuntimeModeType,
   type ServerProvider,
+  type ServerProviderModel,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-import { resolveQueuedModelSelection } from "../jones/threadConfiguration/modelSelection";
-import {
-  QueuedThreadIssuance,
-  queuedThreadTurnMatches,
-} from "../jones/threadConfiguration/outboxDeliveryContract";
 import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
+import { withImplicitFastModeSelection } from "../lib/providerOptions";
 import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
@@ -60,14 +57,12 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   context: Schema.optional(OrchestrationMessageContext),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   modelSelection: Schema.optional(ModelSelection),
-  modelSelectionExplicit: Schema.optional(Schema.Boolean),
   dispatchMode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
   compactBeforeSend: Schema.optional(Schema.Boolean),
   freshContext: Schema.optional(Schema.Boolean),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
   creation: Schema.optional(QueuedThreadCreationSchema),
-  issuance: Schema.optional(QueuedThreadIssuance),
   createdAt: IsoDateTime,
 });
 
@@ -94,7 +89,6 @@ export interface QueuedThreadMessage {
   readonly context?: OrchestrationMessageContext;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly modelSelection?: ModelSelectionType;
-  readonly modelSelectionExplicit?: boolean;
   readonly runtimeMode?: RuntimeModeType;
   readonly interactionMode?: ProviderInteractionModeType;
   /** Captured at enqueue because draining may occur long after the tap. */
@@ -104,7 +98,6 @@ export interface QueuedThreadMessage {
   /** Starts a new provider session (`/clear`). */
   readonly freshContext?: boolean;
   readonly creation?: QueuedThreadCreation;
-  readonly issuance?: QueuedThreadIssuance;
   readonly createdAt: string;
 }
 
@@ -127,9 +120,16 @@ function resolveProviderInteractionMode(
 export function resolveQueuedThreadSettings(
   message: QueuedThreadMessage,
   thread: ThreadSettingsSnapshot,
-  providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "showInteractionModeToggle">> = [],
+  providers: ReadonlyArray<
+    Pick<ServerProvider, "instanceId" | "showInteractionModeToggle"> & {
+      readonly models: ReadonlyArray<Pick<ServerProviderModel, "slug" | "capabilities">>;
+    }
+  > = [],
 ): ThreadSettingsSnapshot {
-  const modelSelection = resolveQueuedModelSelection(message, thread.modelSelection);
+  const modelSelection = withImplicitFastModeSelection(
+    message.modelSelection ?? thread.modelSelection,
+    providers,
+  );
   const provider = providers.find(
     (candidate) => candidate.instanceId === modelSelection.instanceId,
   );
@@ -160,12 +160,6 @@ export function encodeQueuedThreadMessage(message: QueuedThreadMessage): unknown
 
 export function decodeQueuedThreadMessage(value: unknown): QueuedThreadMessage {
   const { schemaVersion: _, ...message } = decodeStoredQueuedThreadMessage(value);
-  if (
-    message.issuance?.state === "issued" &&
-    !queuedThreadTurnMatches(message, message.issuance.prepared)
-  ) {
-    throw new Error("Queued message does not match its issued request.");
-  }
   return message;
 }
 
@@ -269,11 +263,7 @@ export function isQueuedThreadCreationSendable(message: QueuedThreadMessage): bo
   if (!hasContent || message.modelSelection === undefined) {
     return false;
   }
-  return (
-    message.creation.workspaceMode !== "worktree" ||
-    message.creation.branch === null ||
-    message.creation.branch.trim().length > 0
-  );
+  return message.creation.workspaceMode !== "worktree" || Boolean(message.creation.branch);
 }
 
 function errorMessage(error: unknown): string | null {
