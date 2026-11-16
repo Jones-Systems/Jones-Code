@@ -1,3 +1,5 @@
+import { threadRequestFulfillHandler, threadDependencyReleaseHandler, threadRequestObserveHandler } from "../../../jones/threadResultDependencies/tools.ts";
+import { threadLinksHandler, threadLinkHandler, threadHandoffHandler } from "../../../jones/linkedThreads/tools.ts";
 import {
   threadRequestFulfillHandler,
   threadDependencyReleaseHandler,
@@ -27,6 +29,12 @@ import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
 
 const handlers = {
+  t3_thread_request_fulfill: threadRequestFulfillHandler,
+  t3_thread_dependency_release: threadDependencyReleaseHandler,
+  t3_thread_request_observe: threadRequestObserveHandler,
+  t3_thread_links: threadLinksHandler,
+  t3_thread_link: threadLinkHandler,
+  t3_thread_handoff: threadHandoffHandler,
   t3_thread_continuity: goalContinuityHandler,
   t3_document_sections: documentSectionsHandler,
   t3_thread_request_fulfill: threadRequestFulfillHandler,

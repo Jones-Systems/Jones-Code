@@ -1,3 +1,4 @@
+import * as SelfSettlementCaller from "../../../jones/mcp/SelfSettlementCaller.ts";
 import {
   type CommandId,
   type RuntimeRequestId,
@@ -364,8 +365,11 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       const { threads, projection, caller } = yield* readThread(input.threadId);
       const common = { commandId: yield* newCommandId(), threadId: projection.thread.id };
       if (input.action === "settle") {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const selfSettlementCaller = SelfSettlementCaller.capture(scope, projection.thread.id);
         return yield* threads
-          .settleThread({ ...common, byOwnAgent: caller?.id === projection.thread.id })
+          .settleThread({ ...common, byOwnAgent: caller?.id === projection.thread.id,
+            ...(selfSettlementCaller === undefined ? {} : {selfSettlementCaller}) })
           .pipe(Effect.mapError(dispatchFailure));
       }
       let command: OrchestrationV2Command;

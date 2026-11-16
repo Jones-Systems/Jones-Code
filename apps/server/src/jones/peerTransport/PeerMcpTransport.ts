@@ -447,6 +447,10 @@ export const make = Effect.gen(function* () {
         yield* requireCurrent(input.environmentId, resolved.generation);
         const headers: Record<string, string> = {
           ...limitHeader,
+          ...(input.sender === undefined ? {} : {
+            [McpInvocationContext.SENDER_THREAD_HEADER]: [input.sender.environmentId, input.sender.threadId,
+              Array.from(input.sender.title).slice(0, 200).join("")].map(encodeURIComponent).join("/"),
+          }),
           ...(input.origin === undefined
             ? {}
             : { [LINKED_MESSAGE_ORIGIN_HEADER]: encodeLinkedMessageOrigin(input.origin) }),

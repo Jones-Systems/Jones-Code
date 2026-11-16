@@ -1,3 +1,9 @@
+import * as ThreadResultMcpDependencies from "../jones/threadResultDependencies/McpDependencies.ts";
+import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts";
+import { handlers as userResponseRequestHandlers } from "../jones/mcp/userResponseRequest/handlers.ts";
+import { UserResponseRequestToolkit } from "../jones/mcp/userResponseRequest/tools.ts";
+import { LINKED_MESSAGE_ORIGIN_HEADER, withLinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
+import { LINKED_REQUEST_CONTEXT_HEADER, IncomingLinkedRequestContext, bindLinkedRequestContext } from "../jones/peerTransport/LinkedRequestContext.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -276,7 +282,8 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     const linkedEnvironments = yield* linksEnabled;
     if (limited.client?.linked === true && !linkedEnvironments) return linkedEnvironmentsOff;
     const origin = Option.getOrUndefined(Option.map(requestUrl(request), (url) => url.origin));
-    return { ...limited, linkedEnvironments, origin };
+    const attributed = withLinkedMessageOrigin({ ...limited, linkedEnvironments, origin }, request.headers[LINKED_MESSAGE_ORIGIN_HEADER]);
+    return attributed ?? HttpServerResponse.jsonUnsafe({ error: "invalid_linked_message_origin" }, { status: 400 });
   });
   // Untraced: a span here would wrap the tool call; the HTTP server span already covers it.
   return Effect.fnUntraced(function* (httpEffect) {
@@ -287,6 +294,7 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
     return yield* httpEffect.pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, admitted),
+      Effect.provideService(IncomingLinkedRequestContext, bindLinkedRequestContext(admitted, request.headers[LINKED_REQUEST_CONTEXT_HEADER])),
       Effect.map(normalizeMcpHttpResponse),
     );
   }) satisfies McpAuthMiddleware;
@@ -1256,7 +1264,7 @@ export const layerPreviewToolkit = Layer.mergeAll(
 export const layerOrchestratorToolkit = toolkitRegistration(
   OrchestratorToolkit,
   OrchestratorHandlers.layer,
-).pipe(Layer.provide(OrchestratorMcpService.layer), Layer.provide(ThreadMetadataMcpService.layer));
+).pipe(Layer.provide(OrchestratorMcpService.layer), Layer.provide(ThreadMetadataMcpService.layer), Layer.provide(ThreadResultMcpDependencies.layer));
 
 export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
 
@@ -1340,6 +1348,7 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
 
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
+  toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(Layer.provide(UserResponseRequest.layer)),
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,

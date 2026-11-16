@@ -1,3 +1,10 @@
+import * as RemoteFollowUp from "../remoteDelegation/FollowUp.ts";
+import { canonicalJson } from "../remoteDelegation/shared.ts";
+import type { FollowUpIntent } from "../remoteDelegation/IntentStore.ts";
+import { OrchestratorMcpThreadSendResult } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import { RuntimeMode } from "@t3tools/contracts";
+import { runtimeModeRank } from "../../mcp/delegatedTaskModes.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import {
   makeDependencyStore,
@@ -55,6 +62,7 @@ export const make = Effect.gen(function* () {
           yield* dependencyChanges.value.publish({ threadIds: [threadId], sequence });
         }).pipe(Effect.orDie);
   const projects = yield* ProjectService.ProjectService;
+  const followUps = Option.isSome(dependencySql) ? yield* RemoteFollowUp.make : undefined;
 
   /**
    * Forward the caller's own limits because the peer sees only the link credential; refuse local authority first.
@@ -103,6 +111,14 @@ export const make = Effect.gen(function* () {
       params,
     ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
     const { environmentId: _target, ...args } = encoded;
+    if (Schema.is(RuntimeMode)(args.runtimeMode)) {
+      const link = yield* links.get(environmentId).pipe(Effect.mapError(unavailable));
+      if (Option.isSome(link) && DateTime.isGreaterThan(link.value.expiresAt, yield* DateTime.now) &&
+          link.value.access !== "read-only" && runtimeModeRank(args.runtimeMode) > runtimeModeRank(link.value.access)) {
+        return yield* new OrchestratorMcpFailure({ code: "runtime_mode_escalation_denied",
+          message: `Linked environment "${link.value.label}" allows ${link.value.access}, not ${args.runtimeMode}.` });
+      }
+    }
     // A pending upload lives here, so it cannot go with the call.
     if (Array.isArray(args.attachments) && args.attachments.length > 0) {
       return yield* new OrchestratorMcpFailure({
@@ -110,9 +126,11 @@ export const make = Effect.gen(function* () {
         message: "A launch in a linked environment cannot carry attachments yet.",
       });
     }
+    const hasStableClientRequestId = typeof args.clientRequestId === "string";
     if (typeof args.clientRequestId === "string") {
       args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
     }
+    let followUpTarget: {readonly createdAt: string; readonly runtimeMode: RuntimeMode; readonly interactionMode: import("@t3tools/contracts").ProviderInteractionMode} | undefined;
     let origin: LinkedMessageOrigin | undefined;
     let tracked: Dependency | undefined;
     if (toolName === "t3_thread_send") {
@@ -123,6 +141,8 @@ export const make = Effect.gen(function* () {
         limits,
         success: OrchestratorMcpThreadReadResult,
       });
+      followUpTarget = observed.thread;
+      if (typeof args.clientRequestId !== "string") args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, yield* random.uuidV4().pipe(Effect.mapError(unavailable)));
       const policy = observed.remoteMessagePolicy;
       if (
         policy?.schemaVersion !== "t3.linked-message-policy/v1" ||
@@ -170,11 +190,17 @@ export const make = Effect.gen(function* () {
         const records = yield* threads
           .getThreadRecords(caller.caller.id, ["runs", "subagents"])
           .pipe(Effect.mapError(unavailable));
+        if (args.mode !== "steer" && records.subagents.some((task) =>
+          task.origin === "app_owned" && task.result !== null &&
+          task.remoteChild?.environmentId === environmentId && task.remoteChild.threadId === args.threadId))
+          return yield* new OrchestratorMcpFailure({code: "invalid_request",
+            message: "Follow-ups to a finished delegated child return a new task handle. Use task_status instead of awaitResult."});
         if (
           records.subagents.some(
             (task) =>
               task.remoteChild?.environmentId === environmentId &&
-              task.remoteChild.threadId === args.threadId,
+              task.remoteChild.threadId === args.threadId &&
+              task.remoteChild.runId === observed.recentRuns.find((run) => run.status === "running" || run.status === "starting" || run.status === "queued")?.runId,
           )
         )
           return yield* new OrchestratorMcpFailure({
@@ -274,17 +300,33 @@ export const make = Effect.gen(function* () {
       args,
       readOnly,
     }).pipe(Effect.provideService(ProjectService.ProjectService, projects));
-    const result = yield* peers
-      .call({
-        environmentId,
-        tool: toolName,
-        arguments: args,
-        limits,
-        ...(origin === undefined ? {} : { origin }),
-        ...(context === undefined ? {} : { context }),
-        success: success as Schema.Decoder<A>,
-      })
-      .pipe(
+    let followUpIntent: FollowUpIntent | undefined;
+    if (toolName === "t3_thread_send" && scope.thread !== undefined &&
+        origin?.thread !== undefined && followUpTarget !== undefined) {
+      if (followUps === undefined) {
+        const {subagents} = yield* threads.getThreadRecords(scope.thread.threadId, ["subagents"])
+          .pipe(Effect.mapError(unavailable));
+        if (subagents.some((task) => task.origin === "app_owned" && task.result !== null &&
+            task.remoteChild?.environmentId === environmentId && task.remoteChild.threadId === args.threadId))
+          return yield* unavailable();
+      } else {
+        const requestDigest = Hex.encode(yield* digest.digest(Digest.sha256, new TextEncoder().encode(
+          canonicalJson({...args, expectedThreadCreatedAt: followUpTarget.createdAt}),
+        )).pipe(Effect.orDie));
+        followUpIntent = yield* followUps.prepare({scope, environmentId, hasStableClientRequestId,
+          targetModes: followUpTarget, targetCreatedAt: followUpTarget.createdAt, requestDigest,
+          capture: {arguments: args, limits, origin: {...origin, thread: origin.thread},
+            ...(context === undefined ? {} : {context})}});
+      }
+    }
+    const invoke = followUpIntent === undefined
+      ? peers.call({environmentId, tool: toolName, arguments: args, limits,
+          ...(origin === undefined ? {} : {origin}), ...(context === undefined ? {} : {context}), success: success as Schema.Decoder<A>})
+      : followUps!.send(followUpIntent, (capture, generation) => peers.call({environmentId,
+          expectedGeneration: generation, tool: "t3_thread_send", arguments: {...capture.arguments}, limits: capture.limits,
+          origin: capture.origin, ...(capture.context === undefined ? {} : {context: capture.context}), success: OrchestratorMcpThreadSendResult})).pipe(
+          Effect.flatMap((sent) => Schema.decodeUnknownEffect(success as Schema.Decoder<A>)(sent).pipe(Effect.mapError(unavailable))));
+    const result = yield* invoke.pipe(
         Effect.tap(() =>
           !tracked || !dependencies || Option.isNone(dependencySql)
             ? Effect.void

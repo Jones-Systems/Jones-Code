@@ -1,3 +1,4 @@
+import * as DurableFollowUp from "./FollowUp.ts";
 import {
   CommandId,
   type EnvironmentId,
@@ -66,9 +67,16 @@ export const make = Effect.gen(function* () {
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
   const monitor = yield* PeerMonitor.make;
+  const durableFollowUps = yield* DurableFollowUp.make;
   const lifecycle = yield* RemoteLifecycle.make((parentThreadId, taskId) =>
     followOne(parentThreadId, taskId).pipe(Effect.forkIn(followers), Effect.asVoid),
   );
+
+  const followUp: RemoteDelegation["Service"]["followUp"] = (scope, _environmentId, _request, sent) => {
+    // Reservation and exact binding already committed inside peer forwarding.
+    if (scope.thread === undefined || sent.taskId === undefined) return Effect.succeed(sent);
+    return followOne(scope.thread.threadId, sent.taskId).pipe(Effect.forkIn(followers), Effect.as(sent));
+  };
 
   /** The peer's project with this thread's repository, or the one the caller named. */
   const resolveRemoteProject = Effect.fn("RemoteDelegation.resolveRemoteProject")(function* (
@@ -677,7 +685,10 @@ export const make = Effect.gen(function* () {
   const cancel: RemoteDelegation["Service"]["cancel"] = Effect.fn("RemoteDelegation.cancel")(
     function* (scope, task, input) {
       const remote = task.remoteChild;
-      if (remote === undefined) return yield* lifecycle.cancelPending(task, input.reason);
+      if (remote === undefined) {
+        if (yield* durableFollowUps.cancel(task.id, input.reason)) return {taskId: task.id, status: "cancel_requested" as const};
+        return yield* lifecycle.cancelPending(task, input.reason);
+      }
       const { reason } = input;
       const there = followScope(scope.thread, remote);
       // A later cancel stops what started there since; a retry of this one, nothing new.
@@ -774,6 +785,7 @@ export const make = Effect.gen(function* () {
   const start: RemoteDelegation["Service"]["start"] = () =>
     forkParked(
       Effect.gen(function* () {
+        yield* durableFollowUps.start;
         yield* FollowerSupervision.retry(lifecycle.start, { operation: "startup" });
         if (threads.recoverRemoteTaskQuestions !== undefined)
           yield* threads.recoverRemoteTaskQuestions.pipe(
@@ -802,7 +814,21 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  return { observe, delegate, cancel, start } satisfies RemoteDelegation["Service"];
+  const runStatus: RemoteDelegation["Service"]["runStatus"] = (scope, task) => Effect.gen(function* () {
+    const refreshed = task.remoteChild === undefined
+      ? yield* durableFollowUps.refresh(task.id).pipe(Effect.orElseSucceed(() => undefined)) : undefined;
+    const remote = (refreshed ?? task).remoteChild;
+    if (remote?.runId === undefined) return refreshed?.result === null ? "starting" as const : null;
+    if (refreshed !== undefined) yield* followOne(task.threadId, task.id).pipe(Effect.forkIn(followers));
+    return yield* forwarding.readThread(scope, remote.environmentId, {
+      threadId: remote.threadId, runLimit: 50, limit: 1,
+    }).pipe(
+      Effect.map((read) => read.recentRuns.find((run) => run.runId === remote.runId)?.status ?? null),
+      Effect.orElseSucceed(() => null),
+    );
+  });
+
+  return { observe, delegate, followUp, runStatus, cancel, start } satisfies RemoteDelegation["Service"];
 });
 
 const isTerminal = (status: string) =>
