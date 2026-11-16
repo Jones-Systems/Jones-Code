@@ -3589,7 +3589,10 @@
     "scripts/jones/boundary/fragments/thread-activity-label.json": "jones-owned",
     "apps/web/src/components/chat/TimelineWorkGroupRows.tsx": "hook",
     "apps/web/src/components/chat/timelineRowContext.ts": "hook",
-    "apps/mobile/src/features/threads/thread-work-log.tsx": "accepted-shared"
+    "apps/mobile/src/features/threads/thread-work-log.tsx": "accepted-shared",
+    "apps/server/src/jones/provider/startFailureMessage.ts": "jones-owned",
+    "apps/server/src/jones/provider/startFailureMessage.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/start-failure-message.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

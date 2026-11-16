@@ -5357,6 +5357,15 @@
         "vp run --filter @t3tools/shared --filter @t3tools/client-runtime --filter @t3tools/web --filter @t3tools/mobile --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-start-failure-message",
+      "tests": ["apps/server/src/jones/provider/startFailureMessage.test.ts"],
+      "commands": [
+        "vp test run apps/server/src/jones/provider/startFailureMessage.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
