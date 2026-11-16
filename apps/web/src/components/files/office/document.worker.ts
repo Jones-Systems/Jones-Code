@@ -1,4 +1,5 @@
 // Adapted from opencode (MIT). Copyright (c) 2025 opencode. See LICENSE.opencode.
+import { createWordOpenTrace } from "../../../jones/filePreview/wordOpenTrace";
 import { openWordDocument, pageSize } from "./word-document";
 import type { WordMethods } from "./word-protocol";
 import { serveWorker, Transfer } from "./worker-rpc";
@@ -13,12 +14,14 @@ const opened: { value: Awaited<ReturnType<typeof openWordDocument>> | undefined 
 
 serveWorker<WordMethods>({
   open: async (input) => {
+    const trace = createWordOpenTrace(input.traceOpen === true);
+    trace?.("open-received");
     if (opened.value) throw new Error("The worker already holds a document");
 
     // SAFETY: a worker's global scope is a FontFaceSource, whose `fonts` is a FontFaceSet (CSS Font Loading, exposed to
     // workers). The window's types declare it on documents only. Without one, the canvas keeps the system's fonts.
     const fonts = "fonts" in self ? (self.fonts as FontFaceSet) : undefined;
-    const loaded = await openWordDocument(new Uint8Array(input.bytes), fonts);
+    const loaded = await openWordDocument(new Uint8Array(input.bytes), fonts, trace);
 
     opened.value = loaded;
 
