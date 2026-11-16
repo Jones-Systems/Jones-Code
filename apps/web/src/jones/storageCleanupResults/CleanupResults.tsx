@@ -31,12 +31,13 @@ function CleanupResultList({ reports }: { reports: readonly CleanupReport[] }) {
   const [visibleCount, setVisibleCount] = useState(5);
   const total = reports.reduce((count, { report }) => count + report.entries.length, 0);
   const shown = Math.min(visibleCount, total);
-  let remaining = shown;
   return (
     <>
-      {reports.map(({ environmentId, ...group }) => {
-        const entries = group.report.entries.slice(0, remaining);
-        remaining -= entries.length;
+      {reports.map(({ environmentId, ...group }, index) => {
+        const offset = reports
+          .slice(0, index)
+          .reduce((count, { report }) => count + report.entries.length, 0);
+        const entries = group.report.entries.slice(0, Math.max(0, shown - offset));
         return <CleanupReportRows key={environmentId} {...group} entries={entries} />;
       })}
       {total > 5 && (
