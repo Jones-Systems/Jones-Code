@@ -12,6 +12,7 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
 import { installDesktopIpcHandlers } from "../ipc/DesktopIpcHandlers.ts";
+import * as CompanionConfig from "../jones/previewCompanion/CompanionConfig.ts";
 import * as DesktopAppActivation from "./DesktopAppActivation.ts";
 import * as DesktopAppIdentity from "./DesktopAppIdentity.ts";
 import * as DesktopClerk from "./DesktopClerk.ts";
@@ -170,13 +171,16 @@ const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances")(
 );
 
 // Spawns the local backend as soon as the protocol, IPC, and legacy storage that every window needs exist.
-const startLocalBackend = Effect.gen(function* () {
+export const startLocalBackend = Effect.fn("desktop.startLocalBackend")(function* <E, R>(
+  registerIpc: Effect.Effect<void, E, R>,
+) {
   const state = yield* DesktopState.DesktopState;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
   yield* logBootstrapInfo("bootstrap start");
 
+  yield* CompanionConfig.prepareStartup;
   const settings = yield* desktopSettings.get;
   const electronProtocol = yield* ElectronProtocol.ElectronProtocol;
   yield* electronProtocol.registerDesktopProtocol({
@@ -186,7 +190,7 @@ const startLocalBackend = Effect.gen(function* () {
       : { assetDirectory: environment.clientAssetsDir }),
     clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
   });
-  yield* installDesktopIpcHandlers();
+  yield* registerIpc;
   yield* logBootstrapInfo("bootstrap ipc handlers registered");
   // Before any window: the preload merges these items before the app reads storage.
   yield* (yield* DesktopLegacyLocalStorage.DesktopLegacyLocalStorage).load(
@@ -272,9 +276,9 @@ const startLocalBackend = Effect.gen(function* () {
     ),
   );
   return true;
-}).pipe(Effect.withSpan("desktop.startLocalBackend"));
+});
 
-const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarted: boolean) {
+export const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarted: boolean) {
   const state = yield* DesktopState.DesktopState;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
@@ -397,7 +401,7 @@ const startup = Effect.gen(function* () {
   yield* updates.configure;
   yield* DesktopRemoteUpdates.listen;
   yield* DesktopStartupRecovery.listen;
-  const backendStarted = yield* startLocalBackend.pipe(
+  const backendStarted = yield* startLocalBackend(installDesktopIpcHandlers()).pipe(
     Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)),
   );
   yield* previewPasskeys.configure;
