@@ -385,7 +385,7 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
   readonly filename: string;
   readonly role: "reader" | "writer";
   readonly readOnly: boolean;
-  readonly onReply?: (inTransaction: boolean) => void;
+  readonly onReply?: (inTransaction: boolean | undefined) => void;
   readonly canClose?: () => boolean;
 }) {
   const label = options.role === "reader" ? "Database reader" : "Database writer";
@@ -456,7 +456,7 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
       }
       pending.delete(reply.id);
       if (pending.size === 0) worker.unref();
-      options.onReply?.("isTransaction" in reply && reply.isTransaction === true);
+      options.onReply?.(typeof reply.isTransaction === "boolean" ? reply.isTransaction : undefined);
       if ("rows" in reply && request.rows.length > 0) {
         for (const row of reply.rows) request.rows.push(row);
         request.resume({ id: reply.id, rows: request.rows });
@@ -1493,12 +1493,13 @@ const startJonesAsyncCheckpointWorker = Effect.fnUntraced(function* (
   writer: Connection,
   readers: CheckpointReaderAdmission,
   inTransaction: () => boolean,
+  transactionStateAvailable: () => boolean,
 ) {
   const query = (sql: string) => writer.executeUnprepared(sql, [], undefined);
   const [versionRow] = yield* query("SELECT sqlite_version() AS version");
   const [major = 0, minor = 0] = String(versionRow?.version).split(".").map(Number);
   // NOOP on older SQLite is PASSIVE: keep SQLite's own bounded fallback there.
-  if (major < 3 || (major === 3 && minor < 51)) {
+  if (!transactionStateAvailable() || major < 3 || (major === 3 && minor < 51)) {
     yield* query(`PRAGMA wal_autocheckpoint = ${CHECKPOINT_FRAMES}`);
     return undefined;
   }
@@ -1903,12 +1904,16 @@ const make = Effect.fn("makeWithDatabase")(function* (
   const semaphore = yield* Semaphore.make(1);
   const writerWorker = options.writerWorker === true && isFileDatabase;
   let writerInTransaction = false;
+  let writerTransactionStateAvailable = false;
   const writerConnection: Effect.Effect<Connection, SqlError> = writerWorker
     ? yield* makeWorkerConnection({
         filename: options.filename,
         role: "writer",
         readOnly: options.readonly ?? false,
-        onReply: (transaction) => { writerInTransaction = transaction; },
+        onReply: (transaction) => {
+          writerTransactionStateAvailable = transaction !== undefined;
+          writerInTransaction = transaction === true;
+        },
         canClose: () => !readerRetirementUncertain,
       })
     : Effect.succeed(yield* makeConnection);
@@ -1916,7 +1921,7 @@ const make = Effect.fn("makeWithDatabase")(function* (
   const opened = yield* writerConnection;
   // One checkpoint authority per writer. Wrap every operation through completion, including COMMIT.
   const asyncCheckpoint = writerWorker && options.readonly !== true
-    ? yield* startJonesAsyncCheckpointWorker(options.filename, opened, readerAdmission, () => writerInTransaction)
+    ? yield* startJonesAsyncCheckpointWorker(options.filename, opened, readerAdmission, () => writerInTransaction, () => writerTransactionStateAvailable)
     : undefined;
   const admittedWriter: Effect.Effect<Connection, SqlError> = asyncCheckpoint === undefined
     ? writerConnection

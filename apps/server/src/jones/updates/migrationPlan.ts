@@ -70,10 +70,13 @@ export function readMigrationPlan(input: {
     return {
       status: "ready",
       migrationPlan: {
-        pendingUpstream: pending(
-          input.upstream,
-          new Set((reconciledV2PreviewHistory(upstream.map((row) => ({ id: Number(row.migration_id), name: String(row.name) }))) ?? []).map(({ id }) => id)),
-        ),
+        pendingUpstream: [
+          ...upstream.flatMap((row) => row.name === "OrchestrationV2" && Number(row.migration_id) === 53
+            ? [53, 54] : row.name === "OrchestrationV2" && Number(row.migration_id) === 54 ? [54] : []),
+          ...pending(input.upstream, new Set((reconciledV2PreviewHistory(
+            upstream.map((row) => ({ id: Number(row.migration_id), name: String(row.name) })),
+          ) ?? []).map(({ id }) => id))),
+        ],
         pendingJones: pending(input.jones, new Set(jones.map((row) => Number(row.migration_id)))),
       },
     };

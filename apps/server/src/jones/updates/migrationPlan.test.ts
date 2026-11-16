@@ -762,3 +762,22 @@ it("rejects an upstream gap even when the highest recorded ID matches the candid
     expect(NodeFS.readFileSync(databasePath)).toEqual(before);
   });
 });
+
+it.each([53, 54])("predicts the exact preview-%i reconciliation effects without rewriting history", (preview) => {
+  withDatabase((databasePath) => {
+    const db = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      db.exec("DELETE FROM effect_sql_migrations");
+      const insert = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
+      for (const [id, name] of migrationManifest.filter(([id]) => id < 53)) insert.run(id, name);
+      if (preview === 54) insert.run(53, "PullRequestFilesViewed");
+      insert.run(preview, "OrchestrationV2");
+    } finally { db.close(); }
+    const before = NodeFS.readFileSync(databasePath);
+    expect(readMigrationPlan({ databasePath, upstream: migrationManifest, jones: manifest.jones })).toEqual({
+      status: "ready",
+      migrationPlan: { pendingUpstream: [...(preview === 53 ? [53, 54] : [54]), ...upstreamFrom(56)], pendingJones: [105] },
+    });
+    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+  });
+});
