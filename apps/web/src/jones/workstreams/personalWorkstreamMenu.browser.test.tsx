@@ -202,14 +202,14 @@ function order(container: HTMLElement) {
 }
 
 describe("Workstream options and header ordering", () => {
-  it("opens four menu sections without collapsing and preserves the rename and color forms", async () => {
+  it("segments menu actions and display choices and supports inline rename and color editing", async () => {
     using setup = fixture();
     await using screen = await render(setup.ui);
     await options();
     await expect
       .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .toBeVisible();
-    expect(document.querySelectorAll('[data-slot="menu-separator"]')).toHaveLength(3);
+    expect(document.querySelectorAll('[data-slot="menu-separator"]')).toHaveLength(4);
     await expect
       .element(page.getByRole("menuitem", { name: "Move up", exact: true }))
       .toHaveAttribute("aria-disabled", "true");
@@ -218,7 +218,7 @@ describe("Workstream options and header ordering", () => {
       .toBeVisible();
     await userEvent.click(page.getByRole("menuitem", { name: "Rename", exact: true }));
     await userEvent.fill(page.getByRole("textbox", { name: "Workstream name" }), "Renamed");
-    await userEvent.click(page.getByRole("button", { name: "Save", exact: true }));
+    await userEvent.keyboard("{Enter}");
     expect(setup.controller.rename).toHaveBeenCalledWith("menu-Alpha", "Renamed");
     await options();
     await userEvent.click(page.getByRole("menuitem", { name: "Change color", exact: true }));
@@ -231,7 +231,9 @@ describe("Workstream options and header ordering", () => {
       .toHaveAttribute("aria-disabled", "true");
     await userEvent.keyboard("{Escape}");
     await userEvent.click(page.getByRole("button", { name: "Collapse Alpha", exact: true }));
-    expect(section(screen.container, "Alpha").textContent).not.toContain("Members of menu-Alpha");
+    await expect
+      .poll(() => section(screen.container, "Alpha").textContent)
+      .not.toContain("Members of menu-Alpha");
   });
 
   it("moves a group down and back up through the menu", async () => {
@@ -253,6 +255,65 @@ describe("Workstream options and header ordering", () => {
     });
   });
 
+  it("retains an inline rename draft through controller rollback and saves a retry", async () => {
+    const request = deferredDelete();
+    using setup = fixture(request.put);
+    await using screen = await render(setup.ui);
+    await userEvent.dblClick(page.getByText("Alpha", { exact: true }));
+    const input = page.getByRole("textbox", { name: "Workstream name", exact: true });
+    await expect.element(input).toHaveFocus();
+    expect(screen.container.querySelector("input")?.closest("button")).toBeNull();
+    await userEvent.fill(input, "Retained draft");
+    await userEvent.keyboard("{Enter}");
+    expect(setup.registry.get(setup.controller.state).workstreams[0]!.name).toBe("Retained draft");
+    await userEvent.keyboard("{Enter}{Escape}");
+    expect(request.put).toHaveBeenCalledTimes(1);
+    await act(() => request.reject(new Error("Rename transport failed")));
+    await expect.element(input).toHaveValue("Retained draft");
+    await expect.element(input).toHaveFocus();
+    expect(setup.registry.get(setup.controller.state).workstreams[0]!.name).toBe("Alpha");
+    request.put.mockImplementationOnce(async (_connection, workstream) => ({
+      outcome: "applied",
+      workstream,
+      sequence: 1,
+    }));
+    await userEvent.fill(input, "Saved retry");
+    await userEvent.keyboard("{Enter}");
+    await expect.element(input).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Collapse Saved retry", exact: true }))
+      .toHaveFocus();
+    expect(setup.registry.get(setup.controller.state).workstreams[0]!.name).toBe("Saved retry");
+    expect(request.put).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["blur", "Enter"])(
+    "preserves destination focus after a pending %s rename succeeds",
+    async (trigger) => {
+      const request = deferredDelete();
+      using setup = fixture(request.put);
+      await using _screen = await render(
+        <>
+          {setup.ui}
+          <input aria-label="Search threads" />
+        </>,
+      );
+      await userEvent.dblClick(page.getByText("Alpha", { exact: true }));
+      const input = page.getByRole("textbox", { name: "Workstream name", exact: true });
+      await userEvent.fill(input, "Saved name");
+      if (trigger === "Enter") await userEvent.keyboard("{Enter}");
+      const search = page.getByRole("textbox", { name: "Search threads", exact: true });
+      await userEvent.click(search);
+      await userEvent.keyboard("keep typing");
+      await act(() => request.resolve());
+      await expect.element(input).not.toBeInTheDocument();
+      await expect.element(search).toHaveFocus();
+      await expect.element(search).toHaveValue("keep typing");
+      expect(setup.registry.get(setup.controller.state).workstreams[0]!.name).toBe("Saved name");
+      expect(request.put).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("shows lifecycle radios in model order and closes the current choice without writing", async () => {
     using setup = fixture();
     await using _screen = await render(setup.ui);
@@ -262,9 +323,9 @@ describe("Workstream options and header ordering", () => {
       .element(page.getByRole("menuitemradio", { name: "Active", exact: true }))
       .toHaveAttribute("aria-checked", "true");
     expect(
-      [...document.querySelectorAll('[role="menuitemradio"]')].map(
-        (element) => element.textContent,
-      ),
+      [
+        ...document.querySelectorAll('[aria-label="Workstream lifecycle"] [role="menuitemradio"]'),
+      ].map((element) => element.textContent),
     ).toEqual(["Planned", "Active", "Paused", "Completed", "Deferred", "Abandoned"]);
     await userEvent.click(page.getByRole("menuitemradio", { name: "Active", exact: true }));
     await expect.element(page.getByRole("menu")).not.toBeInTheDocument();

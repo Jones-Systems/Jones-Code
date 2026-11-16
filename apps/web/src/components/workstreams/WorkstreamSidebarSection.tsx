@@ -36,6 +36,8 @@ import {
   MenuRadioGroup,
   MenuRadioItem,
   MenuRadioItemIndicator,
+  MenuGroup,
+  MenuGroupLabel,
 } from "../ui/menu";
 import {
   AlertDialog,
@@ -55,8 +57,14 @@ import {
   type PersonalThreadSummary,
 } from "../../jones/workstreams/personalPresentation";
 import { personalWorkstreamRailColor } from "../../jones/workstreams/personalRail";
+import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalWorkstreamTitleEditor";
 
 import { personalGroupCollapsedKey } from "../../jones/workstreams/personalSidebarOrder";
+import {
+  PERSONAL_THREAD_LIMITS,
+  usePersonalThreadWindow,
+  type PersonalThreadLimit,
+} from "../../jones/workstreams/personalThreadWindow";
 
 const workstreamDragType = "application/x-jones-workstream";
 const lifecycles = ["planned", "active", "paused", "completed", "deferred", "abandoned"] as const;
@@ -136,10 +144,12 @@ function Group({
   onDragStart,
   confirmingDelete,
   onDeleteRequested,
+  memberCount,
 }: {
   item: PersonalWorkstreamView;
   controller: PersonalWorkstreamsController;
-  children: ReactNode;
+  children: (window: { limit: PersonalThreadLimit; expanded: boolean }) => ReactNode;
+  memberCount: number;
   summary: PersonalThreadSummary;
   dragging: boolean;
   onDragStart: (event: DragEvent<HTMLDivElement>) => void;
@@ -153,6 +163,7 @@ function Group({
     collapsedSchema,
   );
   const [editing, setEditing] = useState<"name" | "color" | null>(null);
+  const threadWindow = usePersonalThreadWindow(item.id);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
@@ -170,9 +181,45 @@ function Group({
         setPending(false);
       });
   };
+  const sectionRef = useRef<HTMLElement>(null);
+  const finishRename = (restoreFocus = true) => {
+    setEditing(null);
+    if (restoreFocus)
+      requestAnimationFrame(() =>
+        sectionRef.current
+          ?.querySelector<HTMLButtonElement>("[data-workstream-header] button")
+          ?.focus(),
+      );
+  };
+  const startRename = () => {
+    if (!state.canCreate || pendingRef.current || confirmingDelete) return;
+    setEditing("name");
+  };
+  const saveRename = (name: string) => {
+    if (!state.canCreate || pendingRef.current)
+      return Promise.reject(new Error("Rename is unavailable."));
+    pendingRef.current = true;
+    setPending(true);
+    return Promise.resolve()
+      .then(() => controller.rename(item.id, name))
+      .then((result) => {
+        if (!result.ok) {
+          showPersonalFailure(result.failure);
+          throw new Error("Rename could not be saved.");
+        }
+        // A blur save must preserve the field the user moved to, including
+        // when focus changed while an Enter save was still pending.
+        finishRename(sectionRef.current?.querySelector("input") === document.activeElement);
+      })
+      .finally(() => {
+        pendingRef.current = false;
+        setPending(false);
+      });
+  };
   const index = state.workstreams.findIndex((entry) => entry.id === item.id);
   return (
     <section
+      ref={sectionRef}
       data-native-workstream={JSON.stringify(item.id)}
       className={`min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""}`}
       style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
@@ -192,8 +239,28 @@ function Group({
           <PersonalSidebarGroupHeader
             name={item.name}
             collapsed={collapsed}
-            onToggle={() => setCollapsed((value) => !value)}
+            onToggle={() => {
+              threadWindow.setExpanded(false);
+              setCollapsed((value) => !value);
+              return () => {
+                setCollapsed(collapsed);
+                threadWindow.setExpanded(threadWindow.expanded);
+              };
+            }}
             summary={summary}
+            {...(state.canCreate && !pending && !confirmingDelete
+              ? { onRenameRequested: startRename }
+              : {})}
+            nameEditor={
+              editing === "name" ? (
+                <PersonalWorkstreamTitleEditor
+                  name={item.name}
+                  pending={pending}
+                  onSave={saveRename}
+                  onCancel={finishRename}
+                />
+              ) : null
+            }
           />
         </div>
         <div
@@ -213,13 +280,7 @@ function Group({
               <EllipsisIcon aria-hidden />
             </MenuTrigger>
             <MenuPopup align="end">
-              <MenuItem
-                disabled={!state.canCreate || pending}
-                onClick={() => {
-                  setDraft(item.name);
-                  setEditing("name");
-                }}
-              >
+              <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
                 <PencilIcon aria-hidden /> Rename
               </MenuItem>
               <MenuItem
@@ -237,7 +298,7 @@ function Group({
                   Lifecycle <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
                 </MenuSubTrigger>
                 <MenuSubPopup>
-                  <MenuRadioGroup value={item.lifecycle}>
+                  <MenuRadioGroup value={item.lifecycle} aria-label="Workstream lifecycle">
                     {lifecycles.map((lifecycle) => (
                       <MenuRadioItem
                         key={lifecycle}
@@ -261,6 +322,30 @@ function Group({
                   </MenuRadioGroup>
                 </MenuSubPopup>
               </MenuSub>
+              <MenuSeparator />
+              <MenuGroup className="flex items-center justify-between">
+                <MenuGroupLabel>Visible threads</MenuGroupLabel>
+                <MenuRadioGroup
+                  value={String(threadWindow.limit)}
+                  className="flex mr-2"
+                  aria-label="Default visible threads"
+                >
+                  {PERSONAL_THREAD_LIMITS.map((limit) => (
+                    <MenuRadioItem
+                      key={limit}
+                      value={String(limit)}
+                      closeOnClick={false}
+                      className="text-center"
+                      onClick={() => {
+                        threadWindow.setLimit(limit);
+                        threadWindow.setExpanded(false);
+                      }}
+                    >
+                      {limit}
+                    </MenuRadioItem>
+                  ))}
+                </MenuRadioGroup>
+              </MenuGroup>
               <MenuSeparator />
               <MenuItem
                 disabled={!state.canCreate || pending || index === 0}
@@ -302,8 +387,33 @@ function Group({
           </Menu>
         </div>
       </div>
-      {!collapsed ? children : null}
-      {editing ? (
+      {!collapsed ? (
+        <>
+          {children(threadWindow)}
+          {memberCount > threadWindow.limit ? (
+            <Button
+              type="button"
+              variant="ghost-muted"
+              size="sm"
+              className="w-full justify-start"
+              aria-expanded={threadWindow.expanded}
+              aria-label={
+                threadWindow.expanded
+                  ? `Show only ${threadWindow.limit} threads in ${item.name}`
+                  : `Show all ${memberCount} threads in ${item.name}`
+              }
+              onClick={() => threadWindow.setExpanded((value) => !value)}
+            >
+              <ChevronDownIcon
+                aria-hidden
+                className={`size-3.5 ${threadWindow.expanded ? "rotate-180" : ""}`}
+              />
+              {threadWindow.expanded ? "Show fewer" : `Show all ${memberCount} threads`}
+            </Button>
+          ) : null}
+        </>
+      ) : null}
+      {editing === "color" ? (
         <Dialog
           open
           onOpenChange={(open) => {
@@ -312,9 +422,7 @@ function Group({
         >
           <DialogPopup>
             <DialogHeader>
-              <DialogTitle>
-                {editing === "name" ? "Rename Workstream" : "Workstream color"}
-              </DialogTitle>
+              <DialogTitle>Workstream color</DialogTitle>
             </DialogHeader>
             <form
               onSubmit={async (event) => {
@@ -322,10 +430,10 @@ function Group({
                 if (pending) return;
                 setPending(true);
                 try {
-                  const result =
-                    editing === "name"
-                      ? await controller.rename(item.id, draft.trim())
-                      : await controller.setColor(item.id, draft ? draft.toUpperCase() : null);
+                  const result = await controller.setColor(
+                    item.id,
+                    draft ? draft.toUpperCase() : null,
+                  );
                   if (result.ok) setEditing(null);
                   else showPersonalFailure(result.failure);
                 } catch (error) {
@@ -336,8 +444,8 @@ function Group({
               }}
             >
               <Input
-                aria-label={editing === "name" ? "Workstream name" : "Hex color"}
-                maxLength={editing === "name" ? 160 : 7}
+                aria-label="Hex color"
+                maxLength={7}
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
               />
@@ -348,12 +456,7 @@ function Group({
               ) : null}
               <Button
                 type="submit"
-                disabled={
-                  pending ||
-                  (editing === "name"
-                    ? !draft.trim()
-                    : draft !== "" && !/^#[0-9a-fA-F]{6}$/.test(draft))
-                }
+                disabled={pending || (draft !== "" && !/^#[0-9a-fA-F]{6}$/.test(draft))}
               >
                 Save
               </Button>
@@ -369,9 +472,14 @@ export function WorkstreamSidebarSection({
   renderMembers,
   summaries,
   unassignedSummary = emptySummary,
+  memberCounts,
 }: {
   controller: PersonalWorkstreamsController;
-  renderMembers: (id: string | null) => ReactNode;
+  renderMembers: (
+    id: string | null,
+    window?: { limit: PersonalThreadLimit; expanded: boolean },
+  ) => ReactNode;
+  memberCounts?: ReadonlyMap<string, number>;
   summaries?: ReadonlyMap<string, PersonalThreadSummary>;
   unassignedSummary?: PersonalThreadSummary;
 }) {
@@ -571,6 +679,7 @@ export function WorkstreamSidebarSection({
             item={item}
             controller={controller}
             summary={summaries?.get(item.id) ?? emptySummary}
+            memberCount={memberCounts?.get(item.id) ?? 0}
             dragging={draggedId === item.id}
             confirmingDelete={deleteTarget?.id === item.id}
             onDeleteRequested={() => {
@@ -596,7 +705,7 @@ export function WorkstreamSidebarSection({
               setInsertion(null);
             }}
           >
-            {renderMembers(item.id)}
+            {(window) => renderMembers(item.id, window)}
           </Group>
         </div>
       ))}

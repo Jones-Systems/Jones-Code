@@ -3296,9 +3296,12 @@
         "apps/web/src/jones/workstreams/personalThreadDrag.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
-        "apps/web/src/jones/workstreams/personalRail.test.ts"
+        "apps/web/src/jones/workstreams/personalRail.test.ts",
+        "apps/web/src/jones/workstreams/personalInlineRename.browser.test.tsx",
+        "apps/web/src/jones/workstreams/personalThreadWindow.test.ts",
+        "apps/web/src/jones/workstreams/personalThreadWindow.browser.test.tsx"
       ],
-      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Sidebar navigation follows visible pinned, Workstream and Unassigned order, including collapsed-group route anchors. Thread drop placement plans prospective membership before assignment and preserves other groups. Shared Sidebar edits integrate ordering and placement; Jones presentation owns lifted drag feedback, exact insertion slots, segmented lifecycle options and confirmed deletion. Native compact headers retain status counts, failure summaries and persisted collapse controls; deterministic muted rails preserve workstream identity. Workstream drops resolve against header halves with a visible grip; Unassigned follows upstream active-reorder capability and Working-shelf restrictions."
+      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Sidebar navigation follows visible pinned, Workstream and Unassigned order, including collapsed-group route anchors. Thread drop placement plans prospective membership before assignment and preserves other groups. Shared Sidebar edits integrate ordering and placement; Jones presentation owns lifted drag feedback, exact insertion slots, segmented lifecycle options and confirmed deletion. Native compact headers retain status counts, failure summaries and persisted collapse controls; deterministic muted rails preserve workstream identity. Workstream drops resolve against header halves with a visible grip; Unassigned follows upstream active-reorder capability and Working-shelf restrictions. Each Workstream has a per-client default of 5, 10 or 15 visible active threads plus Show all/Show fewer; traversal and route anchors match visible rows. Menu and double-click rename share the inline title editor."
     },
     {
       "id": "active-workspace-handoff",

@@ -21,6 +21,7 @@ import { WorkstreamPicker } from "../../jones/workstreams/WorkstreamPicker";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
 import { summarizePersonalThreads } from "../../jones/workstreams/personalPresentation";
 import { liftPersonalThreadCard } from "../../jones/workstreams/personalThreadDrag";
+import { windowPersonalThreads } from "../../jones/workstreams/personalThreadWindow";
 export interface NativeThreadAssignmentMenu {
   readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
   readonly onAction: (action: ThreadActionMenuId) => void;
@@ -389,6 +390,9 @@ export function WorkstreamNativeSidebar({
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        memberCounts={
+          new Map(grouping.groups.map((group) => [group.workstream.id, group.threads.length]))
+        }
         summaries={
           new Map(
             summaryGrouping.groups.map((group) => [
@@ -398,11 +402,14 @@ export function WorkstreamNativeSidebar({
           )
         }
         unassignedSummary={summarizePersonalThreads(grouping.ungrouped)}
-        renderMembers={(id) => {
-          const members =
+        renderMembers={(id, window) => {
+          const allMembers =
             id === null
               ? grouping.ungrouped
               : (grouping.groups.find((group) => group.workstream.id === id)?.threads ?? []);
+          const members = window
+            ? windowPersonalThreads(allMembers, window.limit, window.expanded)
+            : allMembers;
           return (
             <ul
               data-personal-thread-list
