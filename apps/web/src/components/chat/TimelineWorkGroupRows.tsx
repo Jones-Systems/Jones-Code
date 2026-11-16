@@ -276,7 +276,7 @@ function ExpandedWorkGroupEntries({
 const workEntryKey = (entry: TimelineWorkEntry) => entry.id;
 
 export function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const { isCompacting, isPreparingWorktree, backgroundWorktreeSetup } =
+  const { isCompacting, isPreparingWorktree, backgroundWorktreeSetup, activityLabel } =
     use(TimelineRowActivityCtx);
   const compacting = row.compacting === true || isCompacting;
   const shimmer = isPreparingWorktree || compacting;
@@ -286,10 +286,13 @@ export function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: 
     <CompactingLabel createdAt={row.createdAt} />
   ) : row.createdAt ? (
     <>
-      Working for <WorkingTimer createdAt={row.createdAt} />
+      {activityLabel === "Thinking" ? "Working" : activityLabel} for{" "}
+      <WorkingTimer createdAt={row.createdAt} />
     </>
-  ) : (
+  ) : activityLabel === "Thinking" ? (
     "Working..."
+  ) : (
+    `${activityLabel}…`
   );
   return (
     <div className="border-b border-border/60 pb-2 pt-1">

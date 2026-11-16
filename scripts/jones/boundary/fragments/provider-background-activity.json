@@ -5,6 +5,7 @@
     "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.ts",
     "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.test.ts",
     "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts",
+    "apps/server/src/jones/provider/observations/ThreadManagementActivity.integration.test.ts",
     "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.test.ts"
   ],
   "hookPaths": [
