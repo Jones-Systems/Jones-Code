@@ -5364,6 +5364,15 @@
       ]
     },
     {
+      "id": "jones-start-failure-message",
+      "tests": ["apps/server/src/jones/provider/startFailureMessage.test.ts"],
+      "commands": [
+        "vp test run apps/server/src/jones/provider/startFailureMessage.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-storage-cleanup-results",
       "tests": [
         "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
