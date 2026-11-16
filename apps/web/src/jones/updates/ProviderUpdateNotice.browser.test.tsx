@@ -208,7 +208,21 @@ describe("current provider update notice rows", () => {
     const all = page.getByRole("button", { name: "Update All", exact: true });
     await expect.element(all).toBeVisible();
     const footer = all.element().parentElement!;
-    expect(footer.querySelector('[data-slot="toast-action"]')?.textContent).toBe("Settings");
+    const settings = page.getByRole("button", { name: "Settings", exact: true });
+    await expect.element(settings).toBeVisible();
+    const settingsBounds = settings.element().getBoundingClientRect();
+    const updateBounds = all.element().getBoundingClientRect();
+    const footerBounds = footer.getBoundingClientRect();
+    expect(settingsBounds.left).toBeCloseTo(footerBounds.left, 0);
+    expect(updateBounds.right).toBeCloseTo(footerBounds.right, 0);
+    expect(settingsBounds.top + settingsBounds.height / 2).toBeCloseTo(
+      updateBounds.top + updateBounds.height / 2,
+      0,
+    );
+    expect(document.querySelectorAll('button[data-slot="toast-action"]')).toHaveLength(1);
+    for (const row of document.querySelectorAll('section[aria-label^="Provider updates on "]')) {
+      expect(row.textContent).not.toContain("Settings");
+    }
     await all.click();
     const pending = page.getByRole("button", { name: "Updating…", exact: true });
     await expect.element(pending).toBeDisabled();
@@ -299,7 +313,7 @@ describe("current provider update notice rows", () => {
     },
   );
 
-  it("collapses devices independently and keeps update, retry and settings actions separate", async () => {
+  it("collapses devices independently and keeps update and retry actions available", async () => {
     state.updates = updates();
     state.updateEnvironment.mockClear();
     state.navigate.mockReset();
@@ -344,11 +358,9 @@ describe("current provider update notice rows", () => {
         row.getByText("Long diagnostic that should stay hidden when this device is collapsed."),
       )
       .toBeVisible();
-    await row.getByRole("button", { name: "Settings", exact: true }).click();
-    expect(state.navigate).toHaveBeenCalledWith({
-      to: "/settings/providers",
-      search: { machine: wsl },
-    });
+    await expect
+      .element(row.getByRole("button", { name: "Settings", exact: true }))
+      .not.toBeInTheDocument();
   });
 
   it("fully collapses the toast while retaining device choices through progress and refreshed targets", async () => {
@@ -529,7 +541,7 @@ describe("current provider update notice rows", () => {
     },
   );
 
-  it("groups every instance, exposes manual settings, and retains retry and diagnostic feedback", async () => {
+  it("groups every instance, exposes manual instructions, and retains retry and diagnostic feedback", async () => {
     state.navigate.mockReset();
     state.updateEnvironment.mockClear();
     state.updates = updates();
@@ -552,11 +564,9 @@ describe("current provider update notice rows", () => {
     const wslRow = page.getByRole("region", { name: "Provider updates on WSL" });
     await wslRow.getByRole("button", { name: "Update", exact: true }).click();
     expect(state.updateEnvironment).toHaveBeenCalledWith(wsl);
-    await wslRow.getByRole("button", { name: "Settings", exact: true }).click();
-    expect(state.navigate).toHaveBeenCalledWith({
-      to: "/settings/providers",
-      search: { machine: wsl },
-    });
+    await expect
+      .element(wslRow.getByRole("button", { name: "Settings", exact: true }))
+      .not.toBeInTheDocument();
     const group = state.updates.groups[0]!;
     group.attempt = {
       generation: 1,
