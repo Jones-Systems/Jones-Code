@@ -27,3 +27,13 @@ Agents can list and create Workstreams with `t3_workstreams_list` and `t3_workst
 The CLI provides `t3 workstream list`, `create`, `rename`, `recolor`, `reorder`, `delete`, `assign`, `unassign` and `read`. Use `--json` for machine-readable output. The CLI talks to the selected running server using ordinary authentication.
 
 Historical registry memberships, proofs, edges and exports are not displayed by this feature. Existing encrypted history and keys are preserved separately; this does not make that history readable in the new client.
+
+## Automatic assignment for queued prompts
+
+When a prompt arrives from a work queue, such as Jarvis, for a conversation that has never been in a Workstream, the server may assign that conversation to a Workstream. It does so only when one Workstream is clearly the right place, judged from Workstream names and the titles of the conversations already in them. When the match is unclear or two Workstreams are plausible, the conversation is left unassigned. Storage is never chosen.
+
+Conversations you start or message yourself are not assigned automatically, and neither are delegated tasks or subagents. A conversation that has ever been in a Workstream, including one you removed, is never assigned automatically again.
+
+To change an automatic assignment, move or remove the conversation as usual. The change is permanent for that conversation and helps later automatic choices. Agents can read why a conversation was or was not assigned from the `autoRoute` field of `t3_thread_workstream_read`.
+
+The decision uses the environment's text generation model, the same one that writes thread titles. It sends the prompt, the conversation's title and project name, Workstream names and the titles of conversations in those Workstreams. It sends no other conversation content. Turn it off with Settings → Jones Code → **Assign queued prompts to a Workstream automatically**.

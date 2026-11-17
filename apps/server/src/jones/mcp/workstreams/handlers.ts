@@ -57,7 +57,11 @@ export const handlers = McpToolAccess.toLayer(
         Effect.gen(function* () {
           const id = yield* thread(input.threadId);
           const r = yield* service.readThread(id);
-          return result(id, r.assignment, r.workstream);
+          return {
+            ...result(id, r.assignment, r.workstream),
+            // Why the thread was or was not routed automatically; omitted when never observed.
+            ...(r.autoRoute == null ? {} : { autoRoute: r.autoRoute }),
+          };
         }),
       ),
       t3_thread_workstream_set: McpToolAccess.writesThreads(

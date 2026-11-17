@@ -236,3 +236,29 @@ describe("personal Workstream wire validation", () => {
     ).toBe(false);
   });
 });
+
+describe("automatic assignment snapshot field", () => {
+  const base = {
+    environmentId: EnvironmentId.make("synthetic-env"),
+    sequence: 3,
+    workstreams: [original],
+    assignments: [
+      { threadId: ThreadId.make("t1"), workstreamId: original.id, revision: 1, updatedAt: now },
+    ],
+    importIssue: null,
+  };
+  const autoAssignments = [
+    { threadId: ThreadId.make("t1"), workstreamId: original.id, revision: 1, decidedAt: later },
+  ];
+  it("round-trips with and without autoAssignments", () => {
+    expect(decodeSnapshot({ ...base, autoAssignments }).autoAssignments).toEqual(autoAssignments);
+    expect(decodeSnapshot(base)).not.toHaveProperty("autoAssignments");
+  });
+  it("a decoder for the pre-change shape accepts a payload that carries it", () => {
+    const { autoAssignments: _omitted, ...fields } = PersonalWorkstreamsSnapshot.fields;
+    const previous = Schema.decodeUnknownSync(Schema.Struct(fields));
+    const decoded = previous({ ...base, autoAssignments });
+    expect(decoded.assignments).toEqual(base.assignments);
+    expect(decoded).not.toHaveProperty("autoAssignments");
+  });
+});

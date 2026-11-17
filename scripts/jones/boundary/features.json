@@ -3462,6 +3462,22 @@
         "apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs"
       ],
       "scope": "Immutable open claim handles, interruption-safe registration, independent release retries, permanent multiple-generation downgrade and exact validated runtime-use retirement links. Existing producer lifetime remains the sole drain authority; old/unlinked and unsupported producers retain uncertainty."
+    },
+    {
+      "id": "workstream-auto-route",
+      "tests": [
+        "apps/server/src/jones/workstreams/autoRoute/policy.test.ts",
+        "apps/server/src/jones/workstreams/autoRoute/AutoRouteStore.test.ts",
+        "apps/server/src/jones/workstreams/autoRoute/WorkstreamClassifierModel.test.ts",
+        "apps/server/src/jones/workstreams/autoRoute/WorkstreamAutoRoute.test.ts",
+        "apps/server/src/jones/persistence/Migrations/158_JonesWorkstreamAutoRoute.test.ts",
+        "apps/server/src/orchestration-v2/QueueCompatibility.test.ts",
+        "packages/contracts/src/jones/workstreamAutoRoute.test.ts",
+        "packages/contracts/src/jones/workstreamsPersonal.test.ts",
+        "packages/client-runtime/src/jones/workstreams/personal/controller.test.ts",
+        "apps/web/src/jones/settings/WorkstreamAutoRouteSettings.browser.test.tsx"
+      ],
+      "scope": "Queue-dispatched (HTTP) thread.turn.start prompts for never-assigned main conversations are classified once per command by the environment's text-generation model through a Jones adapter that reuses the transcription post-processing operation, and assigned only on a high-confidence, runner-up-free, grounded choice with expectedRevision 0. Storage and configured exclusions are removed from candidates deterministically. Decisions live in sparse Jones table jones_workstream_auto_route_decisions keyed by thread and command IDs without upstream references or stored text. Accepted shared edits: QueueCompatibility optional observe hook, server.ts layer provision, settings schema keys, an optional snapshot field and MCP read field. Old clients ignore the optional fields; a server setting turns it off."
     }
   ]
 }

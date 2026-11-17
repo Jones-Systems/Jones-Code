@@ -37,6 +37,7 @@ import * as Threads from "./ThreadManagementService.ts";
 import * as Launch from "./ThreadLaunchService.ts";
 import * as Intake from "./ThreadMessageIntake.ts";
 import * as Claims from "./AttachmentClaims.ts";
+import * as AutoRoute from "../jones/workstreams/autoRoute/WorkstreamAutoRoute.ts";
 
 export class QueueCompatibilityError extends Schema.TaggedError<QueueCompatibilityError>()(
   "QueueCompatibilityError",
@@ -73,6 +74,8 @@ const make = Effect.gen(function* () {
   const projects = yield* Projects.ProjectService;
   const events = yield* EventSink.EventSinkV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
+  // Jones: optional, so harnesses without the auto-router dispatch exactly as before.
+  const autoRoute = yield* Effect.serviceOption(AutoRoute.WorkstreamAutoRoute);
   const context = yield* Effect.context<
     | Effect.Services<ReturnType<typeof Intake.dispatchCommand>>
     | FileSystem.FileSystem
@@ -382,6 +385,17 @@ const make = Effect.gen(function* () {
           return { sequence: result.sequence };
         });
         return yield* send.pipe(
+          // Jones: an accepted HTTP queue dispatch is offered to Workstream auto-routing.
+          Effect.tap(() =>
+            transport === "http" && Option.isSome(autoRoute)
+              ? autoRoute.value.observe({
+                  threadId: input.threadId,
+                  commandId: input.commandId,
+                  messageId: input.message.messageId,
+                  text: input.message.text,
+                })
+              : Effect.void,
+          ),
           Effect.tapError((cause) => {
             // A generic dispatch error may follow a commit. Retain those files for reconciliation.
             const tag =

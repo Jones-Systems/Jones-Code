@@ -4,6 +4,7 @@ import { WorkButtonSettings } from "../jones/workMode/WorkButtonSettings";
 import { PromptsSettings } from "../jones/workQueue/PromptsSettings";
 
 import { WorkstreamsSetupStatus } from "../jones/workstreams/WorkstreamsSetupStatus";
+import { WorkstreamAutoRouteSettings } from "../jones/settings/WorkstreamAutoRouteSettings";
 
 function JonesCodeSettings() {
   return (
@@ -11,6 +12,7 @@ function JonesCodeSettings() {
       <WorkButtonSettings />
       <PromptsSettings />
       <WorkstreamsSetupStatus />
+      <WorkstreamAutoRouteSettings />
     </SettingsPageContainer>
   );
 }

@@ -36,6 +36,11 @@ export interface PersonalWorkstreamsState {
   readonly environments: readonly PersonalEnvironmentState[];
   readonly assignmentsByThreadKey: ReadonlyMap<string, PersonalWorkstreamAssignment>;
   readonly pendingThreadKeys: ReadonlySet<string>; // local actions in flight
+  /**
+   * Threads the server assigned automatically whose effective assignment (including a local
+   * optimistic move) is still that exact assignment. Optional so hand-built states stay valid.
+   */
+  readonly autoAssignedThreadKeys?: ReadonlySet<string>;
   readonly canCreate: boolean; // some environment is writable
 }
 

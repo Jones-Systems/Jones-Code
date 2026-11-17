@@ -15,6 +15,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../../../config.ts";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
+import * as AutoRouteStore from "../autoRoute/AutoRouteStore.ts";
 
 export class PersonalWorkstreams extends Context.Service<
   PersonalWorkstreams,
@@ -33,10 +34,13 @@ export class PersonalWorkstreams extends Context.Service<
     readonly assign: (
       input: P.AssignPersonalWorkstreamInput,
     ) => Effect.Effect<P.AssignResult, P.WorkstreamsPersonalError>;
-    readonly readThread: (
-      id: ThreadId,
-    ) => Effect.Effect<
-      { assignment: P.PersonalWorkstreamAssignment; workstream: P.PersonalWorkstream | null },
+    readonly readThread: (id: ThreadId) => Effect.Effect<
+      {
+        assignment: P.PersonalWorkstreamAssignment;
+        workstream: P.PersonalWorkstream | null;
+        /** The thread's latest automatic-routing decision; absent without the Jones table. */
+        autoRoute?: AutoRouteStore.AutoRouteDecisionView | null;
+      },
       P.WorkstreamsPersonalError
     >;
     readonly readDefinitions: (
@@ -76,6 +80,7 @@ const make = Effect.gen(function* () {
   const environmentId = yield* (yield* ServerEnvironment.ServerEnvironmentIdentity)
     .getEnvironmentId;
   const invalidations = yield* PubSub.sliding<void>(1);
+  const autoRoute = yield* AutoRouteStore.make;
   let importIssue: P.PersonalWorkstreamsImportIssue | null = null;
   const sequence = Effect.fn("PersonalWorkstreams.sequence")(function* () {
     const rows = yield* sql<{
@@ -150,6 +155,7 @@ const make = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
+          const autoAssignments = yield* autoRoute.currentAutoAssignments();
           return {
             environmentId,
             sequence: yield* sequence(),
@@ -158,6 +164,7 @@ const make = Effect.gen(function* () {
               `SELECT ${assignmentColumns} FROM jones_personal_workstream_assignments a JOIN orchestration_v2_projection_threads t ON t.thread_id=a.thread_id WHERE t.deleted_at IS NULL`,
             ),
             importIssue,
+            ...(autoAssignments === undefined ? {} : { autoAssignments }),
           };
         }),
       )
@@ -266,10 +273,12 @@ const make = Effect.gen(function* () {
           if (!(yield* exists(id)))
             return yield* new P.WorkstreamsPersonalError({ code: "thread_not_found" });
           const current = yield* assignment(id);
+          const decision = (yield* autoRoute.available) ? yield* autoRoute.latest(id) : undefined;
           return {
             assignment: current,
             workstream:
               current.workstreamId === null ? null : yield* definition(current.workstreamId),
+            ...(decision === undefined ? {} : { autoRoute: decision }),
           };
         }),
       )
