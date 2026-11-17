@@ -182,7 +182,8 @@ function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"])
 }
 
 export function codexDefaultReasoningEffortOverride(model: string): "medium" | undefined {
-  return codexModelFamily(model) === "gpt-6-astra" ? "medium" : undefined;
+  const family = codexModelFamily(model);
+  return family === "gpt-6.2-astra" || family === "gpt-6-astra" ? "medium" : undefined;
 }
 
 export function mapCodexModelCapabilities(
@@ -193,7 +194,8 @@ export function mapCodexModelCapabilities(
   );
   const preferredReasoning =
     supportsMedium &&
-    (codexModelFamily(model.model) === "gpt-6-astra" || model.defaultReasoningEffort === "low")
+    (codexDefaultReasoningEffortOverride(model.model) !== undefined ||
+      model.defaultReasoningEffort === "low")
       ? "medium"
       : model.defaultReasoningEffort;
   const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>

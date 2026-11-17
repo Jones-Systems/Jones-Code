@@ -110,6 +110,8 @@ import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrid
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as PeerForwarding from "./peer/PeerForwarding.ts";
+import * as ReceiverRegistration from "./jones/remoteAdmissionIntegration/registration.ts";
+import * as OriginRegistration from "./jones/remoteAdmissionOrigin/registration.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
@@ -862,7 +864,12 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(jonesUpdatesHttpApiLayer.pipe(Layer.provide(JonesSourceRelation.layer))),
       Layer.provide(fleetUpdatesHttpApiLayer),
       Layer.provide(importedHistoryHttpApiLayer),
-      Layer.provide(JonesHttp.remoteAdmissionHttpApiLayer),
+      Layer.provide(
+        Layer.merge(
+          JonesHttp.remoteAdmissionHttpApiLayer,
+          JonesHttp.remoteAdmissionReviewHttpApiLayer,
+        ),
+      ),
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(queueCompatibilityHttpApiLayer),
       JonesHttp.provideConversationAndVoiceReview,
@@ -901,7 +908,7 @@ const layerMakeRoutes = Layer.mergeAll(
 )
   .pipe(
     Layer.provide(
-      JonesHttp.remoteAdmissionServicesLayer.pipe(
+      ReceiverRegistration.runtimeLayer.pipe(
         Layer.provide(TextGeneration.layer.pipe(Layer.provide(layerSourceControlProviderRegistry))),
       ),
     ),
@@ -929,7 +936,8 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),
     // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
     Layer.provide(
-      PeerForwarding.layer.pipe(
+      Layer.merge(PeerForwarding.layer, OriginRegistration.workerLayer).pipe(
+        Layer.provideMerge(OriginRegistration.servicesLayer),
         Layer.provideMerge(PeerMcpClient.layer),
         Layer.provideMerge(PeerLinks.layer),
       ),

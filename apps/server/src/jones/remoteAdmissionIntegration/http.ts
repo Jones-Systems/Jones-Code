@@ -54,3 +54,95 @@ export const remoteAdmissionHttpApiLayer = HttpApiBuilder.group(
       );
   }),
 );
+
+// V2 errors are deliberately separate from the historic tagged V1 error channel.
+import type { RemoteAdmissionReviewForbidden } from "@t3tools/contracts/jones/remoteAdmissionReview";
+import { EnvironmentAuthenticatedPrincipal } from "@t3tools/contracts";
+import { RemoteAdmissionReviewService } from "./ReviewService.ts";
+const reviewPrincipal = Effect.gen(function* () {
+  yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+    Effect.succeed(HttpServerResponse.setHeader(response, "cache-control", "no-store")),
+  );
+  return yield* EnvironmentAuthenticatedPrincipal;
+});
+const reviewOwnerPrincipal = reviewPrincipal.pipe(
+  Effect.filterOrFail(
+    isRemoteAdmissionOwner,
+    () =>
+      ({
+        code: "owner_required",
+        message: "Receiving owner access is required.",
+      }) satisfies RemoteAdmissionReviewForbidden,
+  ),
+);
+export const remoteAdmissionReviewHttpApiLayer = HttpApiBuilder.group(
+  EnvironmentHttpApi,
+  "remoteAdmissionReview",
+  Effect.fnUntraced(function* (handlers) {
+    const review = yield* RemoteAdmissionReviewService;
+    const internal = (error: RemoteAdmissionIntake.RemoteAdmissionIntakeError) =>
+      failEnvironmentInternal("internal_error", error);
+    return handlers
+      .handle("capabilities", () => reviewPrincipal.pipe(Effect.flatMap(review.capabilities)))
+      .handle("review", ({ query }) =>
+        reviewOwnerPrincipal.pipe(
+          Effect.flatMap((p) => review.page(query, p)),
+          Effect.catchTags({ RemoteAdmissionIntakeError: internal }),
+        ),
+      )
+      .handle("item", ({ query }) =>
+        reviewOwnerPrincipal.pipe(
+          Effect.flatMap((p) => review.item(query.id, p)),
+          Effect.catchTags({ RemoteAdmissionIntakeError: internal }),
+        ),
+      )
+      .handle("decision", ({ payload }) =>
+        reviewOwnerPrincipal.pipe(
+          Effect.flatMap((p) => review.decide(payload, p)),
+          Effect.catchTags({ RemoteAdmissionIntakeError: internal }),
+        ),
+      )
+      .handle("grants", ({ query }) =>
+        reviewOwnerPrincipal.pipe(
+          Effect.flatMap((p) => review.grants(query, p)),
+          Effect.catchTags({ RemoteAdmissionIntakeError: internal }),
+        ),
+      )
+      .handle("updateGrant", ({ payload }) =>
+        reviewOwnerPrincipal.pipe(
+          Effect.flatMap((p) => review.mutateGrant(payload, "update", p)),
+          Effect.catchTags({ RemoteAdmissionIntakeError: internal }),
+        ),
+      )
+      .handle("revokeGrant", ({ payload }) =>
+        reviewOwnerPrincipal.pipe(
+          Effect.flatMap((p) => review.mutateGrant(payload, "revoke", p)),
+          Effect.catchTags({ RemoteAdmissionIntakeError: internal }),
+        ),
+      )
+      .handle("restoreGrant", ({ payload }) =>
+        reviewOwnerPrincipal.pipe(
+          Effect.flatMap((p) => review.restore(payload, p)),
+          Effect.catchTags({ RemoteAdmissionIntakeError: internal }),
+        ),
+      )
+      .handle("retry", ({ payload }) =>
+        reviewOwnerPrincipal.pipe(
+          Effect.flatMap((p) => review.retry(payload, p)),
+          Effect.catchTags({ RemoteAdmissionIntakeError: internal }),
+        ),
+      )
+      .handle("recheck", ({ payload }) =>
+        reviewOwnerPrincipal.pipe(
+          Effect.flatMap((p) => review.recheck(payload, p)),
+          Effect.catchTags({ RemoteAdmissionIntakeError: internal }),
+        ),
+      )
+      .handle("changes", ({ query }) =>
+        reviewOwnerPrincipal.pipe(
+          Effect.flatMap((p) => review.changes(query, p)),
+          Effect.catchTags({ RemoteAdmissionIntakeError: internal }),
+        ),
+      );
+  }),
+);

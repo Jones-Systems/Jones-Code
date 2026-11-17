@@ -1,4 +1,3 @@
-import { parseServiceState } from "../cloud/serviceProtocol.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   CLI_RELEASE_BASE_URL_ENV,
@@ -46,6 +45,7 @@ import * as CliService from "./service.ts";
 import { jonesBootServiceLayer } from "./service.ts";
 import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 import * as SystemBootService from "../jones/hostService/systemBootService.ts";
+import { classifyJonesManagedRuntime } from "../jones/cli/managedRuntime.ts";
 
 export class CliUpdateError extends Schema.TaggedError<CliUpdateError>()("CliUpdateError", {
   reason: Schema.String,
@@ -331,34 +331,13 @@ export const updateCommand = Command.make("update", {
 /** Release updates cannot replace a source-qualified Jones runtime through a version-only request. */
 export const assertReleaseUpdateAllowed = Effect.fn("cli.update.assert_release_update_allowed")(
   function* (baseDir: string, version: string) {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const managed = yield* fs.exists(path.join(baseDir, "runtime", "jones-active-install.json"));
-    const receipt = yield* fs.exists(
-      path.join(baseDir, "runtime", "versions", version, ".jones-runtime-receipt.json"),
-    );
-    const statePath = path.join(baseDir, "runtime", "service-state.json");
-    let serviceQualified = false;
-    if (yield* fs.exists(statePath)) {
-      const state = parseServiceState(yield* fs.readFileString(statePath));
-      if (state === undefined)
-        return yield* new CliUpdateError({
-          reason:
-            "The existing native service state requires reconciliation before a version-only update.",
-        });
-      serviceQualified =
-        cliReleaseChannelOf(state.activeVersion) === "preview" ||
-        (yield* fs.exists(
-          path.join(
-            baseDir,
-            "runtime",
-            "versions",
-            state.activeVersion,
-            ".jones-runtime-receipt.json",
-          ),
-        ));
-    }
-    if (managed || receipt || serviceQualified || cliReleaseChannelOf(version) === "preview") {
+    const management = yield* classifyJonesManagedRuntime(baseDir, version);
+    if (management === "unreadable-service-state")
+      return yield* new CliUpdateError({
+        reason:
+          "The existing native service state requires reconciliation before a version-only update.",
+      });
+    if (management === "managed") {
       return yield* new CliUpdateError({
         reason:
           "This Jones runtime requires source-qualified staging and an explicit Install through its host updater. A version-only release update is unavailable.",

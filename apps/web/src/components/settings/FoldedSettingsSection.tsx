@@ -14,6 +14,7 @@ export function FoldedSettingsSection({
   headerPlacement = "inside",
   wrapHeader = true,
   collapsedContent,
+  openKey,
   children,
 }: {
   readonly id: string;
@@ -24,6 +25,8 @@ export function FoldedSettingsSection({
   readonly wrapHeader?: boolean;
   /** Shown under the header only while folded. */
   readonly collapsedContent?: ReactNode;
+  /** Opens the fold each time this key changes to a new non-null value. The fold still starts closed. */
+  readonly openKey?: string | null;
   readonly children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -33,6 +36,12 @@ export function FoldedSettingsSection({
   const [openedForTarget, setOpenedForTarget] = useState<string | null>(null);
   if (searchTargetId === id && openedForTarget !== id) {
     setOpenedForTarget(id);
+    if (!open) setOpen(true);
+  }
+
+  const [openedForKey, setOpenedForKey] = useState<string | null>(null);
+  if (openKey != null && openedForKey !== openKey) {
+    setOpenedForKey(openKey);
     if (!open) setOpen(true);
   }
 

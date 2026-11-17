@@ -242,7 +242,7 @@
         },
         {
           "path": "apps/server/src/server.ts",
-          "sha256": "f2205d6af9d03faa2904da7732d5940c8e7adb59001a91ea858369b0516783b1"
+          "sha256": "16848f80e9f7903ad39be1853890ee3b464bd890366a1d5437fb2f5fb5f92b2b"
         },
         {
           "path": "scripts/prepare-server-compile-cache.cjs",

@@ -731,6 +731,12 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   features: Schema.Struct({
     threadContentEvidence: Schema.optional(ThreadContentEvidenceCapability),
     remoteTaskObservationVersion: Schema.optional(Schema.String),
+    remoteAdmissionObservationVersion: Schema.optional(Schema.String),
+    remoteAdmissionPeerStatusVersion: Schema.optional(Schema.String),
+    remoteAdmissionRetryObservationVersion: Schema.optional(Schema.String),
+    remoteAdmissionRecoveryStatusVersion: Schema.optional(Schema.String),
+    remoteAdmissionRecoveredResultObservationVersion: Schema.optional(Schema.String),
+    remoteAdmissionCapabilitiesRegisterVersion: Schema.optional(Schema.String),
     threadResultRequestVersion: Schema.optional(Schema.String),
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,
