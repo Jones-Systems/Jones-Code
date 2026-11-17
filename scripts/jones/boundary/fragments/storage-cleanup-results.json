@@ -4,6 +4,8 @@
   "jonesOwnedPaths": [
     "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
     "apps/server/src/jones/storageCleanup/ReportRead.ts",
+    "apps/server/src/jones/storageCleanup/RetirementReport.test.ts",
+    "apps/server/src/jones/storageCleanup/RetirementReport.ts",
     "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
     "apps/server/src/jones/mcp/storageCleanup/handlers.ts",
     "apps/server/src/jones/mcp/storageCleanup/tools.ts",
@@ -16,6 +18,10 @@
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/storageCleanup/RetirementReport.ts"
+    },
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",
       "to": "apps/server/src/jones/mcp/storageCleanup/tools.ts"
