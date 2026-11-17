@@ -254,6 +254,14 @@ Choose **Delete now** to run the enabled rules immediately. The latest results s
 worktrees were removed or kept and why, plus any failures.
 Results also list folders in the worktree folder that no thread uses, with their sizes; cleanup never removes them, so remove them manually if you want.
 
+On a server that supports it, **Propose retirements** reviews settled checkouts without deleting
+anything and opens **Last run**. Checkouts listed under **Ready to retire** have a **Retire**
+button; the confirmation lists the exact paths it authorizes, and the summary reports about how
+much space was recovered. A checkout with untracked files is held until **Keep worktrees with
+local changes** is set to **Edited tracked files**; propose again afterwards. **Retire** is not
+offered for a checkout that covers more than 200 paths, and the result says so. The status line
+under **Delete now** shows the last run even when no cleanup rule is on.
+
 Browser captures and rotated logs have separate retention periods. Expired capture links stop
 working. Current logs, message attachments, and browser profiles are kept.
 

@@ -1,4 +1,5 @@
 import type { StorageCleanupReport, TimestampFormat } from "@t3tools/contracts";
+import { formatBytes } from "../../lib/formatBytes.ts";
 import { formatDayAwareTimestamp, resolveHour12 } from "../../timestampFormat.ts";
 
 export type CleanupOperation = NonNullable<StorageCleanupReport["operation"]>;
@@ -55,7 +56,9 @@ export function cleanupReportSummary(report: StorageCleanupReport) {
       : `${report.counts.removed} removed, ${report.counts.kept} kept${report.counts.failed ? `, ${report.counts.failed} failed` : ""}`;
   const label =
     report.trigger === "automatic" ? "Automatic cleanup" : cleanupOperationLabel(operation);
-  return `${label}: ${outcome} · ${counts}`;
+  const recovered =
+    report.bytesFreed > 0 ? ` · about ${formatBytes(report.bytesFreed)} recovered` : "";
+  return `${label}: ${outcome} · ${counts}${recovered}`;
 }
 
 export function cleanupRequestSummary(request: CleanupRequest) {
