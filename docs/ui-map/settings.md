@@ -283,7 +283,7 @@ spacing, pill background, count presentation and sidebar device symbols, with
 an example VPS card for comparing the brain variants.
 Selected and Original presets keep the brightness value; Compare with Original
 is temporary. Reset all removes only the sidebar appearance record and restores
-the Selected look at zero brightness. Preferences are local to this client and
-origin. Focused coverage lives beside
+the Selected look with 50% thread title brightness and the outline VPS symbol.
+Preferences are local to this client and origin. Focused coverage lives beside
 [the implementation](../../apps/web/src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.tsx).
 Runtime qualification is recorded separately by the delivery owner.

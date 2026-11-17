@@ -8,7 +8,7 @@ import os, sys, json, stat, time, hashlib
 request = json.loads(sys.argv[1])
 def sensitive(name):
     n = name.lower()
-    return (n.startswith('.env') and not n.endswith(('.example','.sample','.template'))) or n.endswith(('.pem','.key','.p12')) or n.startswith('id_') or n in ('.netrc','.npmrc')
+    return (n.startswith('.env') and not n.endswith(('.example','.sample','.template'))) or n.endswith(('.pem','.key','.p12','.pfx')) or n.startswith('id_') or n in ('.netrc','.npmrc','.pypirc') or 'credentials' in n
 def snap(s):
     return ':'.join(str(x) for x in (s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns))
 def opened(root, relative, directory=False):

@@ -34,6 +34,7 @@ const rules: WorktreeCleanupRules = {
   worktreeKeepWhen: "uncommitted-changes",
   worktreeSettledScope: "branch-retained",
   worktreeCoveredDiscard: [],
+  worktreeRegenerableDiscard: true,
   worktreeAfterDays: null,
   worktreeSettledAfterDays: null,
   worktreeOnDelete: true,

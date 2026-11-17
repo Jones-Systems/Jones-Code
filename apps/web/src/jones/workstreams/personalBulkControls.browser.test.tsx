@@ -82,7 +82,7 @@ function fixture({ named = true }: { named?: boolean } = {}) {
   const previous = new Map(keys.map((key) => [key, localStorage.getItem(key)]));
   for (const key of keys) localStorage.removeItem(key);
   const registry = AtomRegistry.make();
-  // Alpha is long enough to need the Show all footer; Unassigned would change every total if it were counted.
+  // Alpha needs the Show more footer. Unassigned would change every total if it were counted.
   const alpha = [
     makeThread("alpha-working-1", "working"),
     makeThread("alpha-working-2", "working"),
@@ -302,6 +302,12 @@ describe("Workstreams bulk controls", () => {
     expect(counter(header(screen.container), "Working").getAttribute("aria-label")).toContain(
       "Working: 3, using global status filter",
     );
+    expect(alpha.querySelector("[data-workstream-window-footer]")).toBeNull();
+
+    await screen.rerender(<Sidebar setup={setup} />);
+    await expect
+      .element(page.getByRole("button", { name: "Show 1 more thread in Alpha", exact: true }))
+      .toHaveTextContent("Show 1 more");
   });
 
   it("uses the same pill as a group header", async () => {
@@ -379,7 +385,7 @@ describe("Workstreams bulk controls", () => {
     // The visible title owns click/drag/rename gestures above the background toggle.
     await userEvent.click(page.getByText("Beta", { exact: true }));
     await userEvent.click(
-      page.getByRole("button", { name: "Show all 6 threads in Alpha", exact: true }),
+      page.getByRole("button", { name: "Show 1 more thread in Alpha", exact: true }),
     );
     expect(rowsIn(alpha)).toHaveLength(6);
     expect(localStorage.getItem(personalThreadExpandedKey(alphaId))).toBe("true");
@@ -444,7 +450,7 @@ describe("Workstreams bulk controls", () => {
     await using screen = await render(<Sidebar setup={setup} />);
     await userEvent.click(page.getByRole("button", { name: "Collapse Beta", exact: true }));
     await userEvent.click(
-      page.getByRole("button", { name: "Show all 6 threads in Alpha", exact: true }),
+      page.getByRole("button", { name: "Show 1 more thread in Alpha", exact: true }),
     );
     const before = {
       collapsed: collapsedValues(),

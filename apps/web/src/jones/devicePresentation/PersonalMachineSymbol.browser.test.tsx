@@ -72,7 +72,7 @@ function halfInk(pixels: ImageData, side: "left" | "right") {
   return alpha;
 }
 
-it("keeps today's Lucide outlines outside the sidebar and when comparing Original", async () => {
+it("keeps the Lucide VPS outline outside the sidebar and in both presets", async () => {
   await using screen = await render(
     <>
       {symbol("Laptop")}
@@ -98,7 +98,7 @@ it("keeps today's Lucide outlines outside the sidebar and when comparing Origina
   expect(svgAt(screen.container, 4).outerHTML).toBe(house);
   expect(svgAt(screen.container, 5).outerHTML).toBe(brain);
   expect(svgAt(screen.container, 6).querySelector("mask")).not.toBeNull();
-  expect(svgAt(screen.container, 7).querySelectorAll("mask")).toHaveLength(2);
+  expect(svgAt(screen.container, 7).outerHTML).toBe(brain);
   expect(svgAt(screen.container, 8).outerHTML).toBe(brain);
 });
 
@@ -168,7 +168,9 @@ it("gives every house and brain its own mask references, including after a compa
       {symbol("VPS")}
     </SidebarAppearanceOverride>
   );
-  await using screen = await render(ui(DEFAULT_SIDEBAR_APPEARANCE), { router: false });
+  await using screen = await render(ui({ ...DEFAULT_SIDEBAR_APPEARANCE, vpsSymbol: "filled" }), {
+    router: false,
+  });
   const assertReferences = () => {
     const masks = Array.from(screen.container.querySelectorAll("mask"));
     expect(masks).toHaveLength(6);

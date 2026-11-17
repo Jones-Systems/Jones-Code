@@ -394,7 +394,7 @@ it("keeps the tiny failed/roster footer aligned and invariant through real secti
     verifyFooter();
     expect(screen.container.querySelectorAll("[data-member]")).toHaveLength(5);
     await act(() =>
-      query(screen.container, 'button[aria-label="Show all 10 threads in Appearance"]').click(),
+      query(screen.container, 'button[aria-label="Show 5 more threads in Appearance"]').click(),
     );
     expect(screen.container.querySelectorAll("[data-member]")).toHaveLength(10);
     verifyFooter();

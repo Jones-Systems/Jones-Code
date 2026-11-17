@@ -70,18 +70,18 @@ it("preserves boost in presets, removes the key on reset, and exposes denied wri
   using _storage = appearanceStorage();
   localStorage.setItem(
     SIDEBAR_APPEARANCE_STORAGE_KEY,
-    JSON.stringify({ threadTitleBrightnessBoost: 50 }),
+    JSON.stringify({ threadTitleBrightnessBoost: 65 }),
   );
   await using screen = await render(<Fixture />);
   await screen.getByRole("button", { name: "Sidebar appearance", exact: true }).click();
   await page.getByRole("radio", { name: "Original ○", exact: true }).click();
   expect(
     JSON.parse(localStorage.getItem(SIDEBAR_APPEARANCE_STORAGE_KEY)!).threadTitleBrightnessBoost,
-  ).toBe(50);
+  ).toBe(65);
   await page.getByRole("button", { name: "Reset all" }).click();
   expect(localStorage.getItem(SIDEBAR_APPEARANCE_STORAGE_KEY)).toBeNull();
   expect(screen.container.querySelector('[data-testid="presentation"]')!.textContent).toContain(
-    '"threadTitleBrightnessBoost":0',
+    '"threadTitleBrightnessBoost":50',
   );
   vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
     throw new DOMException("denied", "SecurityError");
@@ -103,12 +103,14 @@ it("shows the selected VPS symbol at the same size as a thread card", async () =
   const icon = () => sample.querySelector("svg")!;
   const filledHalves = () => icon().querySelectorAll('path[fill="currentColor"][mask]').length;
   expect(icon().getBoundingClientRect().width).toBeCloseTo(12 * 0.93, 1);
+  expect(icon().classList.contains("lucide-brain")).toBe(true);
+  await page.getByRole("radio", { name: "Filled", exact: true }).click();
   expect(filledHalves()).toBe(2);
   await page.getByRole("radio", { name: "Left", exact: true }).click();
   expect(filledHalves()).toBe(1);
   await page
     .getByRole("group", { name: "VPS symbol", exact: true })
-    .getByRole("radio", { name: "Outline (Original)", exact: true })
+    .getByRole("radio", { name: /Outline .*selected default/ })
     .click();
   expect(icon().classList.contains("lucide-brain")).toBe(true);
 });

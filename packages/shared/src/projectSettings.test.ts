@@ -408,6 +408,7 @@ describe("resolveWorktreeCleanup", () => {
       worktreeKeepWhen: "any-local-files",
       worktreeSettledScope: "branch-retained",
       worktreeCoveredDiscard: [],
+      worktreeRegenerableDiscard: true,
     });
     const off = applyServerSettingsPatch(machine, {
       projectSettingsOverrides: {
@@ -423,6 +424,7 @@ describe("resolveWorktreeCleanup", () => {
       worktreeKeepWhen: "any-local-files",
       worktreeSettledScope: "branch-retained",
       worktreeCoveredDiscard: [],
+      worktreeRegenerableDiscard: true,
     });
     expect(resolveWorktreeCleanup(off, otherProjectId)).toEqual(inherited);
     const custom = applyServerSettingsPatch(off, {
@@ -465,6 +467,7 @@ describe("resolveWorktreeCleanup", () => {
       worktreeKeepWhen: "uncommitted-changes",
       worktreeSettledScope: "branch-retained",
       worktreeCoveredDiscard: [],
+      worktreeRegenerableDiscard: true,
     });
     expect(
       resolveWorktreeCleanup(applyServerSettingsPatch(edited, { worktreeCleanup: null }), null)

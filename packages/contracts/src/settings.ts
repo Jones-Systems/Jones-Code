@@ -1171,6 +1171,12 @@ export const WorktreeSettledScope = Schema.Literals(["contained", "branch-retain
 export const WorktreeCoveredDiscard = Schema.Array(
   Schema.Literals(["declared_cache", "dependency_reproduction", "format_recognized"]),
 );
+/**
+ * Delete regenerable ignored output (`node_modules`, `.venv`, `dist`, `build`,
+ * a Go `pkg/mod` and similar) with a retired checkout. Default on; a separate
+ * field so older clients still decode `worktreeCoveredDiscard`.
+ */
+const WorktreeRegenerableDiscard = Schema.Boolean;
 
 export const WorktreeCleanupRules = Schema.Struct({
   worktreeSettledScope: WorktreeSettledScope.pipe(
@@ -1178,6 +1184,9 @@ export const WorktreeCleanupRules = Schema.Struct({
   ),
   worktreeCoveredDiscard: WorktreeCoveredDiscard.pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  worktreeRegenerableDiscard: WorktreeRegenerableDiscard.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
   ),
   worktreeKeepWhen: WorktreeKeepWhen.pipe(
     Schema.withDecodingDefault(Effect.succeed("uncommitted-changes")),
@@ -1373,6 +1382,9 @@ export const StorageCleanupSettings = Schema.Struct({
   ),
   worktreeCoveredDiscard: WorktreeCoveredDiscard.pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  worktreeRegenerableDiscard: WorktreeRegenerableDiscard.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
   ),
   installRetention: Schema.Literals(["propose", "retire"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("propose" as const)),
@@ -1880,6 +1892,7 @@ export const ServerSettingsPatch = Schema.Struct({
           rules: Schema.Struct({
             worktreeSettledScope: Schema.optionalKey(WorktreeSettledScope),
             worktreeCoveredDiscard: Schema.optionalKey(WorktreeCoveredDiscard),
+            worktreeRegenerableDiscard: Schema.optionalKey(WorktreeRegenerableDiscard),
             worktreeKeepWhen: Schema.optionalKey(WorktreeKeepWhen),
             worktreeAfterDays: Schema.optionalKey(StorageRetentionDays),
             worktreeSettledAfterDays: Schema.optionalKey(SettledWorktreeRetentionDays),
@@ -1895,6 +1908,7 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Struct({
       worktreeSettledScope: Schema.optionalKey(WorktreeSettledScope),
       worktreeCoveredDiscard: Schema.optionalKey(WorktreeCoveredDiscard),
+      worktreeRegenerableDiscard: Schema.optionalKey(WorktreeRegenerableDiscard),
       installRetention: Schema.optionalKey(Schema.Literals(["propose", "retire"])),
 
       worktreeKeepWhen: Schema.optionalKey(WorktreeKeepWhen),

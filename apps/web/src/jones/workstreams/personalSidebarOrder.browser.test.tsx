@@ -344,7 +344,7 @@ it("keeps next, previous and numeric jumps aligned with truncated and expanded r
     await userEvent.keyboard("{Meta>}6{/Meta}");
     await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
     await userEvent.click(
-      page.getByRole("button", { name: "Show all 7 threads in alpha", exact: true }),
+      page.getByRole("button", { name: "Show 2 more threads in alpha", exact: true }),
     );
     const expandedOrder = rows();
     expect(expandedOrder).toHaveLength(10);
@@ -377,7 +377,7 @@ it("shows assigned pinned members once inside Workstreams above the remaining pi
     expect(header.compareDocumentPosition(pinRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(document.querySelectorAll("[data-personal-thread]")).toHaveLength(8);
     await expect
-      .element(page.getByRole("button", { name: "Show all 7 threads in alpha", exact: true }))
+      .element(page.getByRole("button", { name: "Show 2 more threads in alpha", exact: true }))
       .toBeVisible();
     await visit(rows().at(-1)!);
     await step("next", "loose-pin");
