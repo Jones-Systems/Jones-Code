@@ -121,6 +121,8 @@ function fixture() {
       for (const id of ["Drag Alpha", "Drag Empty"])
         localStorage.removeItem(`jones:workstreams:collapsed:${id}`);
       localStorage.removeItem("jones:workstreams:unassigned-collapsed");
+      localStorage.removeItem("jones:workstreams:named-hidden");
+      localStorage.removeItem("jones:workstreams:shared-status-filter");
     },
   };
 }

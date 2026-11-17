@@ -14,7 +14,12 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
 import { WorkstreamNativeSidebar } from "../../components/workstreams/WorkstreamNativeSidebar";
 import { makeThreadFixture } from "../../test-fixtures";
-import { personalGroupCollapsedKey, usePersonalSidebarActiveThreads } from "./personalSidebarOrder";
+import {
+  personalGroupCollapsedKey,
+  personalNamedGroupsHiddenKey,
+  usePersonalSidebarActiveThreads,
+} from "./personalSidebarOrder";
+import { personalSharedStatusFilterKey } from "./personalStatusFilter";
 import { personalThreadExpandedKey, personalThreadLimitKey } from "./personalThreadWindow";
 
 const environmentId = EnvironmentId.make("thread-window-browser-env");
@@ -30,6 +35,8 @@ function fixture(betaCount = 5) {
       personalThreadExpandedKey(id),
     ]),
     personalGroupCollapsedKey(null),
+    personalNamedGroupsHiddenKey,
+    personalSharedStatusFilterKey,
   ];
   const previous = new Map(keys.map((key) => [key, localStorage.getItem(key)]));
   for (const key of keys) localStorage.removeItem(key);

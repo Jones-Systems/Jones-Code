@@ -13,8 +13,13 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { act, render } from "../../../test/render";
 import { WorkstreamSidebarSection } from "../../components/workstreams/WorkstreamSidebarSection";
 import { ToastProvider, toastManager } from "../../components/ui/toast";
-import { personalGroupCollapsedKey } from "./personalSidebarOrder";
-import { personalStatusFilterKey, readPersonalStatusFilter } from "./personalStatusFilter";
+import { personalGroupCollapsedKey, personalNamedGroupsHiddenKey } from "./personalSidebarOrder";
+import {
+  personalSharedStatusFilterKey,
+  personalStatusFilterKey,
+  readPersonalStatusFilter,
+  readSharedPersonalStatusChoice,
+} from "./personalStatusFilter";
 import { personalThreadExpandedKey, personalThreadLimitKey } from "./personalThreadWindow";
 
 const dragType = "application/x-jones-workstream";
@@ -32,6 +37,8 @@ const groups = [group("Alpha"), group("Beta"), group("Gamma")];
 function fixture(put?: PersonalWorkstreamsTransport["put"], memberCount = 0) {
   const keys = [
     personalGroupCollapsedKey(null),
+    personalNamedGroupsHiddenKey,
+    personalSharedStatusFilterKey,
     ...groups.flatMap((entry) => [
       personalGroupCollapsedKey(entry.id),
       personalStatusFilterKey(entry.id),
@@ -371,6 +378,34 @@ describe("Workstream options and header ordering", () => {
     expect(alpha.querySelector("input")).toBeNull();
     expect(setup.controller.rename).not.toHaveBeenCalled();
     expect(setup.controller.reorder).not.toHaveBeenCalled();
+  });
+
+  it("sends one group to the global filter from its menu while the Workstreams pill selects a status", async () => {
+    using setup = fixture(undefined, 12);
+    await using screen = await render(setup.ui);
+    const bulk = screen.container.querySelector<HTMLElement>("[data-personal-workstreams-header]")!;
+    const working = (root: ParentNode) =>
+      root.querySelector<HTMLButtonElement>('button[aria-label^="Working:"]')!;
+    const alpha = working(section(screen.container, "Alpha"));
+    const beta = working(section(screen.container, "Beta"));
+    await userEvent.click(working(bulk));
+    expect(readSharedPersonalStatusChoice()).toEqual({ filter: "working", rev: 1 });
+    expect(alpha.getAttribute("aria-label")).toContain("selected");
+    expect(beta.getAttribute("aria-label")).toContain("selected");
+    await options();
+    await userEvent.click(
+      page.getByRole("menuitem", { name: "Use global status filter", exact: true }),
+    );
+    expect(readPersonalStatusFilter("menu-Alpha")).toBeNull();
+    expect(alpha.getAttribute("aria-label")).toContain("using global status filter");
+    expect(alpha.getAttribute("aria-pressed")).toBe("false");
+    // The shared choice and the other group keep their status.
+    expect(beta.getAttribute("aria-pressed")).toBe("true");
+    expect(working(bulk).getAttribute("aria-pressed")).toBe("true");
+    expect(readSharedPersonalStatusChoice()).toEqual({ filter: "working", rev: 1 });
+    await expect
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
+      .toHaveAttribute("aria-expanded", "true");
   });
 
   it("moves a group down and back up through the menu", async () => {

@@ -16,9 +16,13 @@ import type { SidebarThreadSummary } from "../../types";
 import { useUiStateStore } from "../../uiStateStore";
 import { useThreadStatusSelection } from "../threadStatusFilter/useThreadStatusFilter";
 import {
+  personalSharedStatusFilterKey,
   personalStatusFilterKey,
+  readPersonalStatusChoice,
+  readSharedPersonalStatusChoice,
   usePersonalStatusFilter,
   usePersonalStatusSelection,
+  useSharedPersonalStatusFilter,
 } from "./personalStatusFilter";
 
 const alphaId = "personal-status-browser-alpha";
@@ -95,10 +99,11 @@ function fixture() {
     canCreate: false,
   };
   const previous = new Map(
-    [alphaId, betaId].map((id) => [
-      personalStatusFilterKey(id),
-      localStorage.getItem(personalStatusFilterKey(id)),
-    ]),
+    [
+      personalSharedStatusFilterKey,
+      personalStatusFilterKey(alphaId),
+      personalStatusFilterKey(betaId),
+    ].map((storageKey) => [storageKey, localStorage.getItem(storageKey)]),
   );
   const previousVisits = useUiStateStore.getState().threadLastVisitedAtById;
   for (const storageKey of previous.keys()) localStorage.removeItem(storageKey);
@@ -130,10 +135,17 @@ type Input = {
   activeThreadKey?: string;
 };
 type Preference = ReturnType<typeof usePersonalStatusFilter>;
+type SharedPreference = ReturnType<typeof useSharedPersonalStatusFilter>;
 const preferences = new Map<string, Preference>();
+const sharedPreferences = new Map<"shared", SharedPreference>();
 
 function PreferenceProbe({ id }: { id: string }) {
   preferences.set(id, usePersonalStatusFilter(id));
+  return null;
+}
+
+function SharedProbe({ ids: groupIds }: { ids: readonly string[] }) {
+  sharedPreferences.set("shared", useSharedPersonalStatusFilter(groupIds));
   return null;
 }
 
@@ -145,6 +157,7 @@ function Selection({ state, threads, activeThreadKey }: Input) {
       {state.workstreams.map(({ id }) => (
         <PreferenceProbe key={id} id={id} />
       ))}
+      <SharedProbe ids={state.workstreams.map(({ id }) => id)} />
       <output>{JSON.stringify(selected.map((thread) => thread.id))}</output>
     </>
   );
@@ -155,6 +168,8 @@ const visible = (container: HTMLElement) =>
 const ids = (...threads: SidebarThreadSummary[]) => threads.map((thread) => thread.id);
 const setFilter = (id: string, filter: Parameters<Preference["setFilter"]>[0]) =>
   act(() => preferences.get(id)!.setFilter(filter));
+const setShared = (filter: Parameters<SharedPreference["setFilter"]>[0]) =>
+  act(() => sharedPreferences.get("shared")!.setFilter(filter));
 
 describe("personal status selection subscriptions", () => {
   it("combines independent overrides, clears to inherit and persists through remount", async () => {
@@ -168,8 +183,9 @@ describe("personal status selection subscriptions", () => {
     await screen.rerender(<Selection {...f} />);
     expect(visible(screen.container)).toEqual(ids(f.alphaWorking, f.unassigned, f.betaInput));
     await setFilter(alphaId, (selected) => (selected === "working" ? null : "working"));
-    expect(localStorage.getItem(personalStatusFilterKey(alphaId))).toBeNull();
-    expect(localStorage.getItem(personalStatusFilterKey(betaId))).toBe('"input"');
+    // Clearing keeps a cleared record (not a removed key) so it can outrank an older shared choice.
+    expect(readPersonalStatusChoice(alphaId)).toEqual({ filter: null, rev: 0 });
+    expect(readPersonalStatusChoice(betaId)).toEqual({ filter: "input", rev: 0 });
     expect(visible(screen.container)).toEqual(ids(f.unassigned, f.betaInput, f.alphaDone));
   });
 
@@ -253,4 +269,107 @@ describe("personal status selection subscriptions", () => {
     await setFilter(alphaId, "hide-done");
     expect(visible(screen.container)).toEqual(ids(f.alphaWorking, f.alphaDone));
   });
+});
+
+describe("shared Workstreams status choice", () => {
+  it("follows the latest change across the shared choice and each group, and survives remount", async () => {
+    using f = fixture();
+    await using screen = await render(<Selection {...f} />, { router: false });
+    expect(visible(screen.container)).toEqual(ids(f.betaDone, f.unassigned, f.alphaDone));
+    await setShared("working");
+    expect(visible(screen.container)).toEqual(ids(f.alphaWorking, f.unassigned));
+    await setFilter(alphaId, "done");
+    expect(visible(screen.container)).toEqual(ids(f.unassigned, f.alphaDone));
+    await setShared("input");
+    expect(visible(screen.container)).toEqual(ids(f.unassigned, f.betaInput));
+    await screen.rerender(null);
+    await screen.rerender(<Selection {...f} />);
+    expect(visible(screen.container)).toEqual(ids(f.unassigned, f.betaInput));
+    expect(readSharedPersonalStatusChoice()).toEqual({ filter: "input", rev: 2 });
+  });
+
+  it("sends only the cleared group to the global filter and never revives older choices", async () => {
+    using f = fixture();
+    await using screen = await render(<Selection {...f} />, { router: false });
+    await setShared("working");
+    await setFilter(alphaId, null);
+    // Alpha follows the global Done filter; Beta still follows the shared Working choice.
+    expect(visible(screen.container)).toEqual(ids(f.unassigned, f.alphaDone));
+    await setFilter(alphaId, "input");
+    await setShared("input");
+    await setShared(null);
+    expect(readSharedPersonalStatusChoice()).toEqual({ filter: null, rev: 3 });
+    expect(visible(screen.container)).toEqual(ids(f.betaDone, f.unassigned, f.alphaDone));
+    await setFilter(alphaId, "working");
+    expect(visible(screen.container)).toEqual(ids(f.betaDone, f.alphaWorking, f.unassigned));
+  });
+
+  it("lets a pre-revision group value apply until a later shared choice replaces it", async () => {
+    using f = fixture();
+    localStorage.setItem(personalStatusFilterKey(alphaId), '"working"');
+    await using screen = await render(<Selection {...f} />, { router: false });
+    expect(visible(screen.container)).toEqual(ids(f.betaDone, f.alphaWorking, f.unassigned));
+    await setShared("input");
+    expect(visible(screen.container)).toEqual(ids(f.unassigned, f.betaInput));
+    expect(JSON.parse(localStorage.getItem(personalStatusFilterKey(alphaId))!)).toBe("working");
+  });
+
+  it("applies the shared choice to a group that appears later and to a deleted group's threads as Unassigned", async () => {
+    using f = fixture();
+    const onlyAlpha = { ...f.state, workstreams: f.state.workstreams.slice(0, 1) };
+    await using screen = await render(<Selection {...f} state={onlyAlpha} />, { router: false });
+    await setShared("working");
+    // Beta is absent, so its threads are Unassigned and follow the global Done filter.
+    expect(visible(screen.container)).toEqual(ids(f.betaDone, f.alphaWorking, f.unassigned));
+    await screen.rerender(<Selection {...f} />);
+    expect(visible(screen.container)).toEqual(ids(f.alphaWorking, f.unassigned));
+    await screen.rerender(<Selection {...f} state={onlyAlpha} />);
+    expect(visible(screen.container)).toEqual(ids(f.betaDone, f.alphaWorking, f.unassigned));
+  });
+
+  it("updates from a shared-key storage event, including from another tab", async () => {
+    using f = fixture();
+    await using screen = await render(<Selection {...f} />, { router: false });
+    await act(() => {
+      localStorage.setItem(
+        personalSharedStatusFilterKey,
+        JSON.stringify({ filter: "working", rev: 1 }),
+      );
+      window.dispatchEvent(new StorageEvent("storage", { key: personalSharedStatusFilterKey }));
+    });
+    expect(visible(screen.container)).toEqual(ids(f.alphaWorking, f.unassigned));
+    await act(() => {
+      localStorage.setItem(
+        personalSharedStatusFilterKey,
+        JSON.stringify({ filter: "input", rev: 2 }),
+      );
+      window.dispatchEvent(new StorageEvent("storage", { key: personalSharedStatusFilterKey }));
+    });
+    expect(visible(screen.container)).toEqual(ids(f.unassigned, f.betaInput));
+    await act(() => {
+      localStorage.setItem(personalSharedStatusFilterKey, "malformed");
+      window.dispatchEvent(new StorageEvent("storage", { key: personalSharedStatusFilterKey }));
+    });
+    expect(visible(screen.container)).toEqual(ids(f.betaDone, f.unassigned, f.alphaDone));
+  });
+
+  it.each(["done", "input"] as const)(
+    "retains the routed thread under a shared %s choice and resets when the choice changes",
+    async (filter) => {
+      using f = fixture();
+      const thread =
+        filter === "done" ? f.alphaDone : { ...f.alphaDone, hasPendingUserInput: true };
+      const input = { ...f, threads: [thread], activeThreadKey: key(thread) };
+      await using screen = await render(<Selection {...input} />, { router: false });
+      await setShared(filter);
+      expect(visible(screen.container)).toEqual(ids(thread));
+      const acknowledged = { ...thread, lastVisitedAt: completed, hasPendingUserInput: false };
+      await screen.rerender(<Selection {...input} threads={[acknowledged]} />);
+      expect(visible(screen.container)).toEqual(ids(thread));
+      await setShared(filter === "done" ? "hide-done" : "hide-input");
+      expect(visible(screen.container)).toEqual(ids(thread));
+      await setShared(filter);
+      expect(visible(screen.container)).toEqual([]);
+    },
+  );
 });

@@ -1,3 +1,4 @@
+import "~/index.css";
 import { createMemoryHistory } from "@tanstack/react-router";
 import { Atom } from "effect/reactivity";
 import type * as Context from "effect/Context";
@@ -12,7 +13,8 @@ import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
 import { usePersonalWorkstreams } from "~/state/workstreamsPersonal";
 import { writeLocalStorageValue } from "~/hooks/useLocalStorage";
-import { personalStatusFilterKey } from "./personalStatusFilter";
+import { personalNamedGroupsHiddenKey } from "./personalSidebarOrder";
+import { personalSharedStatusFilterKey, personalStatusFilterKey } from "./personalStatusFilter";
 import {
   ENVIRONMENT_ID,
   installFakeEnvironment,
@@ -151,6 +153,8 @@ async function withSidebar(
         "jones:workstreams:thread-expanded:beta",
         personalStatusFilterKey("alpha"),
         personalStatusFilterKey("beta"),
+        personalNamedGroupsHiddenKey,
+        personalSharedStatusFilterKey,
       ])
         localStorage.removeItem(key);
     },
@@ -225,6 +229,46 @@ it("traverses displayed Workstreams then Unassigned and skips collapsed groups",
     await vi.waitFor(() =>
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[0]}`),
     );
+  });
+});
+
+it("leaves hidden Workstream rows out of traversal and numeric jumps, keeping only the routed row as an anchor", async () => {
+  await withSidebar(async ({ router, rows, visit, step }) => {
+    const order = rows();
+    const pathname = () => router.history.location.pathname;
+    await userEvent.click(page.getByRole("button", { name: "Hide all Workstreams", exact: true }));
+    await vi.waitFor(() => expect([...rows()].sort()).toEqual(["u1", "u2"]));
+    const unassigned = rows();
+    // The route starts on a hidden Workstream row: it anchors the step but no other hidden row does.
+    await step("next", unassigned[0]!);
+    await step("next", unassigned[1]!);
+    await step("previous", unassigned[0]!);
+    await visit("b1");
+    await step("next", unassigned[0]!);
+    await userEvent.keyboard("{Meta>}1{/Meta}");
+    await vi.waitFor(() => expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${unassigned[0]}`));
+    await userEvent.keyboard("{Meta>}6{/Meta}");
+    expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${unassigned[0]}`);
+    await userEvent.click(page.getByRole("button", { name: "Show all Workstreams", exact: true }));
+    await vi.waitFor(() => expect(rows()).toEqual(order));
+    await userEvent.keyboard("{Meta>}1{/Meta}");
+    await vi.waitFor(() => expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${order[0]}`));
+  });
+});
+
+it("indents real Workstream thread rows by 8 px and leaves Unassigned rows flush", async () => {
+  await withSidebar(async () => {
+    const list = (label: string) =>
+      document.querySelector<HTMLElement>(`[data-personal-thread-list][aria-label="${label}"]`)!;
+    const offset = (label: string) =>
+      list(label).querySelector("[data-personal-thread]")!.getBoundingClientRect().left -
+      list(label).getBoundingClientRect().left;
+    for (const label of ["alpha threads", "beta threads"]) {
+      expect(getComputedStyle(list(label)).paddingLeft).toBe("8px");
+      expect(offset(label)).toBeCloseTo(8, 1);
+    }
+    expect(getComputedStyle(list("Unassigned threads")).paddingLeft).toBe("0px");
+    expect(offset("Unassigned threads")).toBeCloseTo(0, 1);
   });
 });
 
