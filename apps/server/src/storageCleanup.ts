@@ -1,3 +1,4 @@
+import { retainOwnerReport } from "./jones/storageCleanup/RetirementReport.ts";
 import * as RetirementOwnerAction from "./jones/workspaceRetirement/OwnerAction.ts";
 import type { WorkspaceRetirementAction, WorkspaceRetirementOutcome } from "@t3tools/contracts";
 import * as RetirementGate from "./jones/workspaceRetirement/RemovalGate.ts";
@@ -1541,7 +1542,9 @@ const make = Effect.gen(function* () {
   yield* start();
   return StorageCleanup.of({
     retirement: Effect.fn("StorageCleanup.retirement")((input) =>
-      retirementAction(input).pipe(Effect.tap((report) => SubscriptionRef.set(reportRef, report))),
+      retirementAction(input, { measure: measureWorktree }).pipe(
+        Effect.flatMap((report) => retainOwnerReport(reportRef, input, report)),
+      ),
     ),
     runNow,
     latestReport: SubscriptionRef.get(reportRef),

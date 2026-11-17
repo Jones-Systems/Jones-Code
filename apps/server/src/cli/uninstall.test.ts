@@ -3,10 +3,18 @@ import { assert, it } from "@effect/vitest";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import { findOwnedLauncher, findRecordedLaunchers, spawnWindowsRemoval } from "./uninstall.ts";
+import * as BootService from "../cloud/bootService.ts";
+import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
+import {
+  findOwnedLauncher,
+  findRecordedLaunchers,
+  runUninstall,
+  spawnWindowsRemoval,
+} from "./uninstall.ts";
 
 it.layer(NodeServices.layer)("t3 uninstall launcher", (it) => {
   it.effect("claims only a launcher that points into this home's runtime tree", () =>
@@ -112,3 +120,178 @@ it.live.runIf(HostProcess.Platform.defaultValue() === "win32")(
       assert.isFalse(yield* fs.exists(runtimeDir));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+const ORDINARY_VERSION = "0.0.44";
+const PREVIEW_VERSION = "0.0.44-preview.20261002.101.2";
+
+/** An installed home with a service, a recorded launcher and one downloaded version. */
+const seedInstalledHome = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* fs
+    .makeTempDirectoryScoped({ prefix: "t3-uninstall-home-" })
+    .pipe(Effect.flatMap(fs.realPath));
+  const runtimeDir = path.join(root, "runtime");
+  const exe = path.join(runtimeDir, "versions", ORDINARY_VERSION, "t3");
+  const launcher = path.join(root, "bin", "t3");
+  yield* fs.makeDirectory(path.dirname(exe), { recursive: true });
+  yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
+  yield* fs.writeFileString(exe, "");
+  yield* fs.symlink(exe, launcher);
+  yield* fs.writeFileString(path.join(runtimeDir, "launchers"), `${launcher}\n`);
+  return { root, runtimeDir, launcher, exe, path, fs };
+});
+
+/** Runs uninstall without a terminal's prompt and reports what the service was asked to do. */
+const uninstallHome = (
+  root: string,
+  input: { readonly version: string; readonly yes: boolean },
+) => {
+  const serviceUninstalls: Array<true> = [];
+  const service = Layer.mock(BootService.BootService, {
+    status: Effect.succeed<BootService.BootServiceStatus>({
+      supported: true,
+      installed: true,
+      current: true,
+      installedBaseDir: root,
+      unitPath: `${root}/t3code.service`,
+      logPath: `${root}/boot-service.log`,
+    }),
+    uninstall: Effect.sync(() => {
+      serviceUninstalls.push(true);
+      return true;
+    }),
+  });
+  return runUninstall({ baseDir: root, version: input.version, assumeYes: input.yes }).pipe(
+    Effect.provide(service),
+    Effect.provideService(HostProcess.IsExecutable, false),
+    Effect.provideService(HostProcess.Platform, "linux"),
+    Effect.provideService(HostProcess.Environment, {}),
+    Effect.exit,
+    Effect.map((exit) => ({ exit, serviceUninstalls })),
+  );
+};
+
+it.layer(NodeServices.layer)("t3 uninstall on a Jones-managed runtime", (it) => {
+  const assertRefusedUntouched = (
+    result: Effect.Success<ReturnType<typeof uninstallHome>>,
+    home: Effect.Success<typeof seedInstalledHome>,
+    expected: string,
+  ) =>
+    Effect.gen(function* () {
+      assert.isTrue(result.exit._tag === "Failure");
+      const text = String(result.exit._tag === "Failure" ? result.exit.cause : "");
+      assert.include(text, "CliUninstallError");
+      assert.include(text, expected);
+      assert.include(text, "nothing was removed");
+      assert.include(text, `${home.runtimeDir}`);
+      assert.deepStrictEqual(result.serviceUninstalls, []);
+      assert.isTrue(yield* home.fs.exists(home.exe));
+      assert.isTrue(yield* home.fs.exists(home.path.join(home.runtimeDir, "launchers")));
+      assert.equal(yield* home.fs.readLink(home.launcher), home.exe);
+    });
+
+  it.effect("refuses an admitted Jones install before any removal, even with --yes", () =>
+    Effect.gen(function* () {
+      const home = yield* seedInstalledHome;
+      const record = home.path.join(home.runtimeDir, "jones-active-install.json");
+      const evidence = home.path.join(home.runtimeDir, "jones-updates", "txn-1", "recovery.json");
+      yield* home.fs.makeDirectory(home.path.dirname(evidence), { recursive: true });
+      yield* home.fs.writeFileString(record, '{"generation":"g1"}');
+      yield* home.fs.writeFileString(evidence, "recovery");
+
+      for (const yes of [true, false]) {
+        const result = yield* uninstallHome(home.root, { version: ORDINARY_VERSION, yes });
+        yield* assertRefusedUntouched(
+          result,
+          home,
+          "This is a Jones Code runtime managed by its host updater",
+        );
+        assert.equal(yield* home.fs.readFileString(record), '{"generation":"g1"}');
+        assert.equal(yield* home.fs.readFileString(evidence), "recovery");
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses service state that names a receipted or preview active version", () =>
+    Effect.gen(function* () {
+      const home = yield* seedInstalledHome;
+      const stateFile = home.path.join(home.runtimeDir, "service-state.json");
+      const writeState = (activeVersion: string) =>
+        home.fs.writeFileString(
+          stateFile,
+          `{"protocol":${SERVICE_LAUNCHER_PROTOCOL},"activeVersion":"${activeVersion}"}`,
+        );
+
+      // A Jones runtime receipt on the version the service runs.
+      yield* writeState(ORDINARY_VERSION);
+      yield* home.fs.writeFileString(
+        home.path.join(
+          home.runtimeDir,
+          "versions",
+          ORDINARY_VERSION,
+          ".jones-runtime-receipt.json",
+        ),
+        "{}",
+      );
+      yield* assertRefusedUntouched(
+        yield* uninstallHome(home.root, { version: "0.0.1", yes: true }),
+        home,
+        "managed by its host updater",
+      );
+
+      // A preview active version, with no receipt anywhere.
+      yield* home.fs.remove(
+        home.path.join(
+          home.runtimeDir,
+          "versions",
+          ORDINARY_VERSION,
+          ".jones-runtime-receipt.json",
+        ),
+      );
+      yield* writeState(PREVIEW_VERSION);
+      yield* assertRefusedUntouched(
+        yield* uninstallHome(home.root, { version: "0.0.1", yes: true }),
+        home,
+        "managed by its host updater",
+      );
+      assert.isTrue(yield* home.fs.exists(stateFile));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses when the service state cannot be read, and for a preview t3", () =>
+    Effect.gen(function* () {
+      const home = yield* seedInstalledHome;
+      const stateFile = home.path.join(home.runtimeDir, "service-state.json");
+      yield* home.fs.writeFileString(stateFile, "{not json");
+      yield* assertRefusedUntouched(
+        yield* uninstallHome(home.root, { version: ORDINARY_VERSION, yes: true }),
+        home,
+        "could not be read",
+      );
+      assert.equal(yield* home.fs.readFileString(stateFile), "{not json");
+
+      yield* home.fs.remove(stateFile);
+      yield* assertRefusedUntouched(
+        yield* uninstallHome(home.root, { version: PREVIEW_VERSION, yes: true }),
+        home,
+        "managed by its host updater",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("still uninstalls an ordinary home, whose service state is stable", () =>
+    Effect.gen(function* () {
+      const home = yield* seedInstalledHome;
+      yield* home.fs.writeFileString(
+        home.path.join(home.runtimeDir, "service-state.json"),
+        `{"protocol":${SERVICE_LAUNCHER_PROTOCOL},"activeVersion":"${ORDINARY_VERSION}"}`,
+      );
+      const result = yield* uninstallHome(home.root, { version: ORDINARY_VERSION, yes: true });
+      assert.isTrue(result.exit._tag === "Success");
+      assert.deepStrictEqual(result.serviceUninstalls, [true]);
+      assert.isFalse(yield* home.fs.exists(home.runtimeDir));
+      assert.isFalse(yield* home.fs.exists(home.launcher));
+    }).pipe(Effect.scoped),
+  );
+});
