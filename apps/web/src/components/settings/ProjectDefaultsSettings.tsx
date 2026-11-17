@@ -9,8 +9,8 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useNavigate } from "@tanstack/react-router";
 
 import { useClientSettings } from "../../hooks/useSettings";
+import { defaultModelSelectionsAreMixed } from "../../jones/settings/modelSelectionCorrespondence";
 import {
-  defaultModelSelectionsAreMixed,
   getCustomModelOptionsByInstance,
   resolveEffectiveDefaultModelSelection,
 } from "../../modelSelection";
