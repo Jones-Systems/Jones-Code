@@ -1,5 +1,8 @@
 import * as Clock from "effect/Clock";
-import { awaitRetirementForAdmission, RETIREMENT_ADMISSION_BUDGET_MS } from "../jones/providerRetirement/admissionWait.ts";
+import {
+  awaitRetirementForAdmission,
+  RETIREMENT_ADMISSION_BUDGET_MS,
+} from "../jones/providerRetirement/admissionWait.ts";
 import { makeCodexThreadRetirements } from "../jones/provider/codex/CodexRetirement.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import {
@@ -7950,7 +7953,10 @@ it.effect(
           runId: siblingRun,
           runOrdinal: 1,
           providerTurnOrdinal: 1,
-          attemptId: fixture.idAllocator.derive.runAttempt({ runId: siblingRun, attemptOrdinal: 1 }),
+          attemptId: fixture.idAllocator.derive.runAttempt({
+            runId: siblingRun,
+            attemptOrdinal: 1,
+          }),
           rootNodeId: fixture.idAllocator.derive.rootNode({ runId: siblingRun }),
           providerThread: makeProviderThread({
             idAllocator: fixture.idAllocator,
@@ -7962,7 +7968,10 @@ it.effect(
           message: {
             createdBy: "user",
             creationSource: "web",
-            messageId: yield* fixture.idAllocator.allocate.message({ threadId: sibling, ordinal: 1 }),
+            messageId: yield* fixture.idAllocator.allocate.message({
+              threadId: sibling,
+              ordinal: 1,
+            }),
             text: "Keep working",
             attachments: [],
           },
@@ -8005,9 +8014,11 @@ it.effect(
             revalidations++;
           }),
         ).pipe(
-          Effect.andThen(Effect.sync(() => {
-            replacementStarts++;
-          })),
+          Effect.andThen(
+            Effect.sync(() => {
+              replacementStarts++;
+            }),
+          ),
           Effect.forkChild,
         );
         yield* retirements.observeClosed(producer, "wrong-native-thread");

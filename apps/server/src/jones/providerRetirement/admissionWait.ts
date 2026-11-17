@@ -10,8 +10,8 @@ export class WriterRetirementPendingError extends Schema.TaggedError<WriterRetir
   {
     providerSessionId: ProviderSessionId,
     // In-process continuation of the captured record; never another retirement dispatch.
-    awaitCompletion: Schema.declare(
-      (value): value is Effect.Effect<void, WriterRetirementError> => Effect.isEffect(value),
+    awaitCompletion: Schema.declare((value): value is Effect.Effect<void, WriterRetirementError> =>
+      Effect.isEffect(value),
     ),
   },
 ) {

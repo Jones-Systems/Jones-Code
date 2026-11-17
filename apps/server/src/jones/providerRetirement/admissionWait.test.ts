@@ -43,9 +43,11 @@ it.effect("pending proof waits beyond ordinary retries and resumes the same oper
         revalidations++;
       }),
     ).pipe(
-      Effect.tap(() => Effect.sync(() => {
-        starts++;
-      })),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          starts++;
+        }),
+      ),
       Effect.forkChild,
     );
     yield* TestClock.adjust("8 minutes");
@@ -78,41 +80,45 @@ it.effect("budget exhaustion names the pending session accurately without discar
   }),
 );
 
-it.effect.each([false, true])("real retirement failure remains immediate (after pending: %s)", (late) =>
-  Effect.gen(function* () {
-    const { record, deadline } = yield* fixture;
-    const failure = new WriterRetirementError({
-      providerSessionId: record.providerSessionId,
-      cause: "proof unavailable",
-    });
-    if (!late) yield* Deferred.fail(record.completion, failure);
-    const waiting = yield* awaitRetirementForAdmission(
-      awaitWriterRetirement(record, 10_000),
-      deadline,
-      Effect.void,
-    ).pipe(Effect.flip, Effect.forkChild);
-    if (late) {
-      yield* TestClock.adjust("1 minute");
-      yield* Deferred.fail(record.completion, failure);
-    }
-    assert.strictEqual(yield* Fiber.join(waiting), failure);
-  }),
+it.effect.each([false, true])(
+  "real retirement failure remains immediate (after pending: %s)",
+  (late) =>
+    Effect.gen(function* () {
+      const { record, deadline } = yield* fixture;
+      const failure = new WriterRetirementError({
+        providerSessionId: record.providerSessionId,
+        cause: "proof unavailable",
+      });
+      if (!late) yield* Deferred.fail(record.completion, failure);
+      const waiting = yield* awaitRetirementForAdmission(
+        awaitWriterRetirement(record, 10_000),
+        deadline,
+        Effect.void,
+      ).pipe(Effect.flip, Effect.forkChild);
+      if (late) {
+        yield* TestClock.adjust("1 minute");
+        yield* Deferred.fail(record.completion, failure);
+      }
+      assert.strictEqual(yield* Fiber.join(waiting), failure);
+    }),
 );
 
-it.effect("cancellation interrupts admission while preserving the retained retirement observer", () =>
-  Effect.gen(function* () {
-    const { record, deadline } = yield* fixture;
-    const waiting = yield* awaitRetirementForAdmission(
-      awaitWriterRetirement(record, 10_000),
-      deadline,
-      Effect.void,
-    ).pipe(Effect.forkChild);
-    yield* TestClock.adjust("1 minute");
-    yield* Fiber.interrupt(waiting);
-    assert.isDefined(waiting.pollUnsafe());
-    assert.isFalse(yield* Deferred.isDone(record.completion));
-    yield* Deferred.succeed(record.completion, undefined);
-  }),
+it.effect(
+  "cancellation interrupts admission while preserving the retained retirement observer",
+  () =>
+    Effect.gen(function* () {
+      const { record, deadline } = yield* fixture;
+      const waiting = yield* awaitRetirementForAdmission(
+        awaitWriterRetirement(record, 10_000),
+        deadline,
+        Effect.void,
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 minute");
+      yield* Fiber.interrupt(waiting);
+      assert.isDefined(waiting.pollUnsafe());
+      assert.isFalse(yield* Deferred.isDone(record.completion));
+      yield* Deferred.succeed(record.completion, undefined);
+    }),
 );
 
 it.effect("a cancelled or superseded run stops awaiting proof on its currentness fence", () =>
