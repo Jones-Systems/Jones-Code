@@ -559,7 +559,9 @@ it("keeps the last completion timestamp in the header when cleanup rules are off
   expect(document.activeElement).toBe(timestamp);
   await expect
     .element(page.getByRole("tooltip"))
-    .toHaveTextContent(timestamp!.getAttribute("aria-label")!.replace("Last completed run: ", ""));
+    .toHaveTextContent(timestamp!.getAttribute("aria-label")!.replace("Last completed run: ", ""), {
+      normalizeWhitespace: false,
+    });
   expect(timestamp!.getAttribute("aria-describedby")).toBe(page.getByRole("tooltip").element().id);
   await userEvent.keyboard("{Escape}");
   await expect.element(page.getByRole("tooltip")).not.toBeInTheDocument();
