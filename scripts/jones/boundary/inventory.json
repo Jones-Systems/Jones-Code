@@ -390,6 +390,7 @@
     "apps/server/src/cli/thread.ts": "accepted-shared",
     "apps/server/src/cli/triagePrompt.test.ts": "upstream-deleted",
     "apps/server/src/cli/triagePrompt.ts": "upstream-deleted",
+    "apps/server/src/cli/uninstall.test.ts": "jones-tests-in-upstream",
     "apps/server/src/cli/update.test.ts": "jones-tests-in-upstream",
     "apps/server/src/cli/update.ts": "accepted-shared",
     "apps/server/src/cli/workstream.ts": "jones-owned",

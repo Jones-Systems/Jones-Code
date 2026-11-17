@@ -1380,6 +1380,8 @@
     {
       "id": "qualified-updates",
       "tests": [
+        "apps/server/src/jones/cli/managedRuntime.test.ts",
+        "apps/server/src/cli/uninstall.test.ts",
         "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
         "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
         "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts",
