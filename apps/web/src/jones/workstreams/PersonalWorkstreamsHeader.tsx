@@ -7,9 +7,9 @@ import type { PersonalThreadSummary } from "./personalPresentation";
 import type { PersonalStatusFilter } from "./personalStatusFilter";
 
 /**
- * Inline header above the named Workstream groups: bulk expand/collapse, the
- * overall disclosure and one status filter shared by every named group. It
- * stays visible while the groups are hidden.
+ * Inline header above the named Workstream groups: bulk expand/collapse, one
+ * status filter shared by every named group and, rightmost, the overall
+ * disclosure. It stays visible while the groups are hidden.
  */
 export function PersonalWorkstreamsHeader({
   summary,
@@ -96,6 +96,12 @@ export function PersonalWorkstreamsHeader({
         <MinusIcon aria-hidden />
       </Button>
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        <PersonalStatusPill
+          ref={pillRef}
+          summary={summary}
+          statusFilter={statusFilter}
+          onStatusFilterChange={onStatusFilterChange}
+        />
         <Button
           variant="ghost-muted"
           size="icon-micro"
@@ -106,12 +112,6 @@ export function PersonalWorkstreamsHeader({
         >
           <ChevronDownIcon aria-hidden className={hidden ? "-rotate-90" : ""} />
         </Button>
-        <PersonalStatusPill
-          ref={pillRef}
-          summary={summary}
-          statusFilter={statusFilter}
-          onStatusFilterChange={onStatusFilterChange}
-        />
       </div>
     </div>
   );

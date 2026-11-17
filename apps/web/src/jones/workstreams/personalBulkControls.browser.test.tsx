@@ -223,7 +223,7 @@ async function clickAt(target: Element, timeStamp: number) {
 }
 
 describe("Workstreams bulk controls", () => {
-  it("lays out label, plus, minus, chevron and status pill in a transparent row above the groups", async () => {
+  it("lays out label, plus, minus, status pill and rightmost chevron in a transparent row above the groups", async () => {
     using setup = fixture();
     await using screen = await render(<Sidebar setup={setup} />);
     const row = header(screen.container);
@@ -237,10 +237,10 @@ describe("Workstreams bulk controls", () => {
     expect(rect(label).right).toBeLessThanOrEqual(rect(plus).left);
     expect(rect(minus).left - rect(plus).right).toBeLessThanOrEqual(4);
     expect(rect(plus).right).toBeLessThanOrEqual(rect(minus).left);
-    expect(rect(minus).right).toBeLessThanOrEqual(rect(chevron).left);
-    expect(rect(chevron).right).toBeLessThanOrEqual(rect(pill(row)).left);
+    expect(rect(minus).right).toBeLessThanOrEqual(rect(pill(row)).left);
+    expect(rect(pill(row)).right).toBeLessThanOrEqual(rect(chevron).left);
     const padding = parseFloat(getComputedStyle(row).paddingRight);
-    expect(Math.abs(rect(pill(row)).right - (rect(row).right - padding))).toBeLessThan(1);
+    expect(Math.abs(rect(chevron).right - (rect(row).right - padding))).toBeLessThan(1);
     expect(rect(row).bottom).toBeLessThanOrEqual(rect(sectionFor(screen.container, alphaId)!).top);
     expect(sectionFor(screen.container, alphaId)!.compareDocumentPosition(row)).toBe(
       Node.DOCUMENT_POSITION_PRECEDING,
@@ -500,10 +500,14 @@ describe("Workstreams bulk controls", () => {
     const spacing = Number(shared.style.getPropertyValue("--personal-status-spacing"));
     expect(spacing).toBeGreaterThanOrEqual(0.25);
     expect(spacing).toBeLessThan(1);
+    const chevron = control(row, "Hide all Workstreams");
     const padding = parseFloat(getComputedStyle(row).paddingRight);
+    expect(shared.getBoundingClientRect().right).toBeLessThanOrEqual(
+      chevron.getBoundingClientRect().left,
+    );
     expect(
       Math.abs(
-        shared.getBoundingClientRect().right - (row.getBoundingClientRect().right - padding),
+        chevron.getBoundingClientRect().right - (row.getBoundingClientRect().right - padding),
       ),
     ).toBeLessThan(1);
   });
