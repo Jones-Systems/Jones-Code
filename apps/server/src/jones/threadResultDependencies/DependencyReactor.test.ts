@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Check the server composition without starting a runtime.
+import * as NodeFS from "node:fs";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { EnvironmentId, OrchestratorMcpFailure } from "@t3tools/contracts";
@@ -137,6 +139,12 @@ const prepare = (f: Effect.Success<typeof Fixture.seed>) =>
       },
     }),
   );
+
+it("server composition retains the automatic result-dependency worker", () => {
+  const source = NodeFS.readFileSync(new URL("../../server.ts", import.meta.url), "utf8");
+  // Worker lifecycle tests cannot detect a sync that drops its production registration.
+  assert.match(source, /^\s+DependencyReactor\.layerWorker,\s*$/m);
+});
 
 it.effect(
   "server worker delivers saved replies and follows new answers without an explicit start call",
