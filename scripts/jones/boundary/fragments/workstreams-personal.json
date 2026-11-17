@@ -20,6 +20,8 @@
     "apps/server/src/jones/mcp/workstreams/personalForward.ts",
     "apps/server/src/jones/workstreams/nativeProvider/settlementProof.ts",
     "apps/server/src/jones/workstreams/personal/agentService.ts",
+    "apps/server/src/jones/workstreams/personal/bearerHttp.test.ts",
+    "apps/server/src/jones/workstreams/personal/bearerHttp.ts",
     "apps/server/src/jones/workstreams/personal/http.ts",
     "apps/server/src/jones/workstreams/personal/service.test.ts",
     "apps/server/src/jones/workstreams/personal/service.ts",

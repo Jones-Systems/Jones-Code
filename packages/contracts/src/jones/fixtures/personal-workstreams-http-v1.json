@@ -1,0 +1,130 @@
+{
+  "capability": {
+    "workstreamsPersonalHttp": {
+      "version": 1
+    }
+  },
+  "list": {
+    "schema": "jones.personal-workstreams-list/v1",
+    "environmentId": "env-synthetic-0001",
+    "sequence": 3,
+    "observedAt": "2026-11-17T12:00:00.000Z",
+    "workstreams": [
+      {
+        "id": "ws-alpha",
+        "name": "Alpha",
+        "lifecycle": "active",
+        "color": "#3366CC",
+        "orderKey": "n",
+        "rev": 1,
+        "updatedAt": "2026-11-16T09:00:00.000Z"
+      },
+      {
+        "id": "ws-beta",
+        "name": "Beta",
+        "lifecycle": "paused",
+        "color": null,
+        "orderKey": "t",
+        "rev": 2,
+        "updatedAt": "2026-11-16T10:30:00.000Z"
+      }
+    ]
+  },
+  "assignRequest": {
+    "schema": "jones.personal-workstream-assign/v1",
+    "operationId": "op-synthetic-000000000001",
+    "origin": {
+      "kind": "queue",
+      "requestId": "req-synthetic-0001"
+    },
+    "threadId": "thread-synthetic-0001",
+    "workstreamId": "ws-alpha",
+    "expected": {
+      "kind": "unassigned"
+    }
+  },
+  "assignResults": {
+    "applied": {
+      "schema": "jones.personal-workstream-assign-result/v1",
+      "operationId": "op-synthetic-000000000001",
+      "environmentId": "env-synthetic-0001",
+      "outcome": "applied",
+      "assignment": {
+        "threadId": "thread-synthetic-0001",
+        "workstreamId": "ws-alpha",
+        "revision": 1,
+        "updatedAt": "2026-11-17T12:00:05.000Z"
+      },
+      "workstream": {
+        "id": "ws-alpha",
+        "name": "Alpha",
+        "rev": 1
+      },
+      "sequence": 4,
+      "observedAt": "2026-11-17T12:00:05.000Z"
+    },
+    "already_satisfied": {
+      "schema": "jones.personal-workstream-assign-result/v1",
+      "operationId": "op-synthetic-000000000001",
+      "environmentId": "env-synthetic-0001",
+      "outcome": "already_satisfied",
+      "assignment": {
+        "threadId": "thread-synthetic-0001",
+        "workstreamId": "ws-alpha",
+        "revision": 1,
+        "updatedAt": "2026-11-17T12:00:05.000Z"
+      },
+      "workstream": {
+        "id": "ws-alpha",
+        "name": "Alpha",
+        "rev": 1
+      },
+      "sequence": 4,
+      "observedAt": "2026-11-17T12:00:05.000Z"
+    },
+    "precondition_failed": {
+      "schema": "jones.personal-workstream-assign-result/v1",
+      "operationId": "op-synthetic-000000000001",
+      "environmentId": "env-synthetic-0001",
+      "outcome": "precondition_failed",
+      "assignment": {
+        "threadId": "thread-synthetic-0001",
+        "workstreamId": "ws-beta",
+        "revision": 3,
+        "updatedAt": "2026-11-17T11:59:00.000Z"
+      },
+      "workstream": {
+        "id": "ws-beta",
+        "name": "Beta",
+        "rev": 2
+      },
+      "sequence": 7,
+      "observedAt": "2026-11-17T12:00:05.000Z"
+    },
+    "workstream_not_found": {
+      "schema": "jones.personal-workstream-assign-result/v1",
+      "operationId": "op-synthetic-000000000001",
+      "environmentId": "env-synthetic-0001",
+      "outcome": "workstream_not_found",
+      "assignment": {
+        "threadId": "thread-synthetic-0001",
+        "workstreamId": null,
+        "revision": 0,
+        "updatedAt": null
+      },
+      "workstream": null,
+      "sequence": 3,
+      "observedAt": "2026-11-17T12:00:05.000Z"
+    },
+    "thread_not_found": {
+      "schema": "jones.personal-workstream-assign-result/v1",
+      "operationId": "op-synthetic-000000000001",
+      "environmentId": "env-synthetic-0001",
+      "outcome": "thread_not_found",
+      "assignment": null,
+      "workstream": null,
+      "sequence": 3,
+      "observedAt": "2026-11-17T12:00:05.000Z"
+    }
+  }
+}

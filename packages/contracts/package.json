@@ -15,6 +15,10 @@
       "types": "./src/jones/workstreamsPersonalRpc.ts",
       "import": "./src/jones/workstreamsPersonalRpc.ts"
     },
+    "./jones/workstreamsPersonalHttp": {
+      "types": "./src/jones/workstreamsPersonalHttp.ts",
+      "import": "./src/jones/workstreamsPersonalHttp.ts"
+    },
     "./jones/deliveryEvidence": {
       "types": "./src/jones/deliveryEvidence.ts",
       "import": "./src/jones/deliveryEvidence.ts"
