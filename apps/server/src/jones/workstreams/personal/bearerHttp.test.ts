@@ -85,6 +85,42 @@ const setExpecting = (input: Parameters<Agent.AgentWorkstreams["Service"]["setEx
   Agent.AgentWorkstreams.pipe(Effect.flatMap((agent) => agent.setExpecting(input)));
 const unassigned = { kind: "unassigned" } as const;
 
+// Commits competing placements just before the agent's first write, after its reads, so the
+// agent's compare-and-swap deterministically observes a concurrent winner.
+const racing = (competitors: readonly (string | null)[]) => {
+  let writes = 0;
+  const layer = Layer.effect(
+    Personal.PersonalWorkstreams,
+    Effect.gen(function* () {
+      const real = yield* Personal.PersonalWorkstreams;
+      return Personal.PersonalWorkstreams.of({
+        ...real,
+        assign: (input) =>
+          Effect.gen(function* () {
+            if (writes++ === 0)
+              for (const id of competitors) {
+                const { assignment } = yield* real.readThread(input.threadId);
+                const workstream = id === null ? null : (yield* real.readDefinitions([id]))[0];
+                yield* real.assign({
+                  threadId: input.threadId,
+                  workstream: workstream ?? null,
+                  expectedRevision: assignment.revision,
+                });
+              }
+            return yield* real.assign(input);
+          }),
+      });
+    }),
+  );
+  return {
+    writes: () => writes,
+    services: Layer.merge(Agent.layer.pipe(Layer.provide(layer)), seeded).pipe(
+      Layer.provideMerge(Personal.layer),
+      Layer.provideMerge(dependencies),
+    ),
+  };
+};
+
 describe("personal Workstreams expecting assignment", () => {
   it.effect("evaluates outcomes in contract precedence and keeps retries side-effect free", () =>
     Effect.gen(function* () {
@@ -189,6 +225,47 @@ describe("personal Workstreams expecting assignment", () => {
       assert.equal(winner.assignment?.revision, 1);
     }).pipe(Effect.provide(services)),
   );
+
+  it.effect("reports a winner that commits to another target between read and write", () => {
+    const race = racing(["beta"]);
+    return Effect.gen(function* () {
+      const result = yield* setExpecting({ threadId, workstreamId: "alpha", expected: unassigned });
+      assert.equal(result.outcome, "precondition_failed");
+      assert.equal(result.assignment?.workstreamId, "beta");
+      assert.equal(result.assignment?.revision, 1);
+      assert.equal(result.workstream?.id, "beta");
+      // The lost write is not retried, because the thread is no longer unassigned.
+      assert.equal(race.writes(), 1);
+      const service = yield* Personal.PersonalWorkstreams;
+      assert.equal((yield* service.snapshot()).sequence, result.sequence);
+    }).pipe(Effect.provide(race.services));
+  });
+
+  it.effect("reports a concurrent winner on the same target as satisfied without a bump", () => {
+    const race = racing(["alpha"]);
+    return Effect.gen(function* () {
+      const service = yield* Personal.PersonalWorkstreams;
+      const before = (yield* service.snapshot()).sequence;
+      const result = yield* setExpecting({ threadId, workstreamId: "alpha", expected: unassigned });
+      assert.equal(result.outcome, "already_satisfied");
+      assert.equal(result.assignment?.workstreamId, "alpha");
+      assert.equal(result.assignment?.revision, 1);
+      // Only the competing placement advanced the sequence.
+      assert.equal(result.sequence, before + 1);
+      assert.equal((yield* service.snapshot()).sequence, before + 1);
+    }).pipe(Effect.provide(race.services));
+  });
+
+  it.effect("retries the write once when the thread is unassigned again after a lost race", () => {
+    const race = racing(["beta", null]);
+    return Effect.gen(function* () {
+      const result = yield* setExpecting({ threadId, workstreamId: "alpha", expected: unassigned });
+      assert.equal(result.outcome, "applied");
+      assert.equal(result.assignment?.workstreamId, "alpha");
+      assert.equal(result.assignment?.revision, 3);
+      assert.equal(race.writes(), 2);
+    }).pipe(Effect.provide(race.services));
+  });
 
   it.effect("publishes one subscription snapshot for an applied placement", () =>
     Effect.gen(function* () {

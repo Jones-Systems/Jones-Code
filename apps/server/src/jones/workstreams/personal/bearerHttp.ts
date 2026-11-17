@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as SqlClient from "effect/sql/SqlClient";
 import { failEnvironmentInternal, requireEnvironmentScope } from "../../../auth/http.ts";
 import * as AgentWorkstreams from "./agentService.ts";
 
@@ -23,6 +24,7 @@ export const layer = HttpApiBuilder.group(
   "workstreamsPersonal",
   Effect.fnUntraced(function* (handlers) {
     const agent = yield* AgentWorkstreams.AgentWorkstreams;
+    const sql = yield* SqlClient.SqlClient;
     return handlers
       .handle(
         "list",
@@ -67,7 +69,10 @@ export const layer = HttpApiBuilder.group(
               workstreamId: payload.workstreamId,
               expected: payload.expected,
             })
-            .pipe(Effect.catchTags({ WorkstreamsPersonalError: internal }));
+            .pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catchTags({ WorkstreamsPersonalError: internal }),
+            );
           return {
             schema: "jones.personal-workstream-assign-result/v1" as const,
             operationId: payload.operationId,

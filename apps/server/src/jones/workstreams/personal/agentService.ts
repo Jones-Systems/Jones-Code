@@ -3,6 +3,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as PersonalWorkstreams from "./service.ts";
 
@@ -62,7 +63,7 @@ export class AgentWorkstreams extends Context.Service<
       threadId: ThreadId;
       workstreamId: string | null;
       expected: AssignmentExpectation;
-    }) => Effect.Effect<ExpectingResult, P.WorkstreamsPersonalError>;
+    }) => Effect.Effect<ExpectingResult, P.WorkstreamsPersonalError, SqlClient.SqlClient>;
   }
 >()("t3/jones/workstreams/personal/agentService/AgentWorkstreams") {}
 const make = Effect.gen(function* () {
@@ -92,6 +93,7 @@ const make = Effect.gen(function* () {
     workstreamId: string | null;
     expected: AssignmentExpectation;
   }) {
+    const sql = yield* SqlClient.SqlClient;
     yield* Effect.annotateCurrentSpan({
       "workstreams.expected": input.expected.kind,
       "workstreams.unassign": input.workstreamId === null,
@@ -101,8 +103,15 @@ const make = Effect.gen(function* () {
     ) => Effect.Effect<ExpectingResult, P.WorkstreamsPersonalError> = Effect.fn(
       "AgentWorkstreams.evaluateExpecting",
     )(function* (writesLeft: number) {
-      const thread = yield* readThread(input.threadId);
-      const snapshot = yield* service.snapshot();
+      // One transaction, so the reported sequence matches the assignment and definitions read.
+      const [thread, snapshot] = yield* sql
+        .withTransaction(Effect.all([readThread(input.threadId), service.snapshot()]))
+        .pipe(
+          Effect.catchTags({
+            SqlError: () =>
+              Effect.fail(new P.WorkstreamsPersonalError({ code: "storage_unavailable" })),
+          }),
+        );
       const observe = (
         outcome: ExpectingResult["outcome"],
         read: typeof thread,
