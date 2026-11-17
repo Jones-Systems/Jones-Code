@@ -1,5 +1,6 @@
 import { makeRemoteAdmissionHttpGroup } from "./remoteAdmissionHttp.ts";
 import { makeRemoteAdmissionReviewHttpGroup } from "./remoteAdmissionReview.ts";
+import { makePersonalWorkstreamsHttpGroup } from "./workstreamsPersonalHttp.ts";
 import {
   ImportedHistoryStart,
   ImportedHistoryReview,
@@ -595,6 +596,14 @@ export const makeJonesHttpGroups = ({
       EnvironmentInternalError,
     }),
     EnvironmentRemoteAdmissionHttpApi: makeRemoteAdmissionHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+      EnvironmentHttpBadRequestError,
+      EnvironmentHttpConflictError,
+    }),
+    EnvironmentPersonalWorkstreamsHttpApi: makePersonalWorkstreamsHttpGroup({
       OptionalBearerHeaders,
       EnvironmentAuthenticatedAuth,
       EnvironmentScopeRequiredError,

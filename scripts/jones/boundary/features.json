@@ -406,10 +406,11 @@
     {
       "id": "cross-environment-model-selection",
       "tests": [
+        "apps/web/src/jones/settings/DefaultModelPicker.browser.test.tsx",
         "apps/web/src/jones/settings/modelSelectionCorrespondence.test.ts",
         "apps/web/src/jones/settings/modelSelectionCorrespondence.plan.test.ts"
       ],
-      "scope": "Scoped web model settings use one Jones resolver for full-catalog configured-label correspondence, destination readiness, all four selection keys and semantic Mixed display. New-thread defaults use the same provider correspondence for both saved and effective selections. Generic planner hooks resolve every environment or project member before dispatch. Same-environment and no-resolver behavior, null inheritance and existing RPC failure reporting are preserved. Narrow accepted-shared SettingsPanels hooks retain literal text-generation reset and restore defaults; settingsLayout routes row inheritance indicators through the same semantic comparator. No server fallback, registration, migration, mobile, MCP, composer or installed-runtime changes."
+      "scope": "Scoped web model settings use one Jones resolver for full-catalog configured-label correspondence, destination readiness, all four selection keys and semantic Mixed display. New-thread defaults use the same provider correspondence for both saved and effective selections. Generic planner hooks resolve every environment or project member before dispatch. The Settings default reuses the Composer picker, with an accepted shared footer action slot for Done and a Jones-owned draft. Same-environment and no-resolver behavior, null inheritance and existing RPC failure reporting are preserved. Narrow accepted-shared SettingsPanels hooks retain literal text-generation reset and restore defaults; settingsLayout routes row inheritance indicators through the same semantic comparator. No server fallback, registration, migration, native mobile, MCP or installed-runtime changes."
     },
     {
       "id": "vitest-scratch-cleanup",
@@ -3209,6 +3210,8 @@
     {
       "id": "conversation-workspace",
       "tests": [
+        "apps/web/src/components/ChatView.logic.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
         "apps/server/src/jones/conversationWorkspace/SourceBroker.test.ts",
         "apps/server/src/jones/conversationWorkspace/SourceBroker.node-test.mjs",
         "apps/server/src/jones/conversationWorkspace/ConversationPolicy.test.ts",
@@ -3364,6 +3367,8 @@
         "packages/client-runtime/src/jones/workstreams/personal/controller.test.ts",
         "packages/contracts/src/jones/workstreamsPersonal.test.ts",
         "packages/contracts/src/jones/workstreamsPersonalRpc.test.ts",
+        "packages/contracts/src/jones/workstreamsPersonalHttp.test.ts",
+        "apps/server/src/jones/workstreams/personal/bearerHttp.test.ts",
         "apps/mobile/src/features/workstreams/personalStorage.test.ts",
         "apps/web/src/jones/workstreams/personalThreadReorder.test.ts",
         "apps/web/src/jones/workstreams/personalSidebarOrder.browser.test.tsx",
@@ -3381,7 +3386,7 @@
         "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalBulkControls.browser.test.tsx"
       ],
-      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Sidebar navigation follows visible Workstream and Unassigned groups before the separate pinned shelf, including collapsed-group route anchors. Thread drop placement plans prospective membership before assignment and preserves other groups. Shared Sidebar edits integrate ordering and placement; Jones presentation owns lifted drag feedback, exact insertion slots, segmented lifecycle options and confirmed deletion. Native compact headers retain status counts, failure summaries and persisted collapse controls; deterministic muted rails preserve workstream identity. Workstream drops resolve against header halves; Unassigned follows upstream active-reorder capability and Working-shelf restrictions. Each Workstream has a per-client default of 5, 10 or 15 visible active threads plus Show all/Show fewer; traversal and route anchors match visible rows. Menu and double-click rename share the inline title editor. Member rows reuse the composer thread-reference drop bridge. Workstream status counters set per-client overrides of the global status filter, including status exclusion; navigation consumes the same filtered candidates. Header controls share a full-width grid without a left grip, and visible-thread expansion uses the Divider footer. Thread-drop feedback marks the whole named or Unassigned section, including collapsed groups, and clears through the existing drag cleanup paths. The centered 12×12px options target retains measured title and counter fitting. Clickable header and filter controls use pointer cursors; read-only counters and gaps use the default cursor, while draggable titles retain grab. Collapsed thread-drop targets use a faint 3.25% tint plus an inset ring; expanded targets use only the ring and a measured card-height insertion gap that moves siblings and preserves the chosen slot while hovered, including pinned arrivals. A transparent Workstreams row above the named groups expands or collapses every group, hides or shows all of them without writing any group's own collapsed state (so showing restores each group exactly, and hidden rows leave traversal), and carries the same status pill as a group header over the summed unfiltered counts of named groups. Status choices are revisioned records: a group's own choice and the shared Workstreams choice resolve by recency, a group's clear follows the global filter even while the shared choice is active, a shared clear sends every named group to the global filter without reviving older choices, and bare legacy values read as revision 0. Named member lists indent a literal 8 CSS px; Unassigned has no disclosure chevron. Shared web/desktop title context menus delegate to the mounted sidebar owner so assignment, project filters and action handlers match. Find remains title-only below auto-settle; assignment leads its action section. Small Sidebar registration and useThreadActionMenu routing hooks preserve the existing menu owner instead of duplicating workstream actions. Scoped sidebar appearance adds typography and spacing slots and an invariant numeric footer for the full non-settled roster, including snoozed, pinned and working members. Attention pills retain existing effective-snooze semantics. Visible shown/total wording belongs only to the options menu."
+      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation, bearer HTTP list and precondition assignment for external queue clients, and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Sidebar navigation follows visible Workstream and Unassigned groups before the separate pinned shelf, including collapsed-group route anchors. Thread drop placement plans prospective membership before assignment and preserves other groups. Shared Sidebar edits integrate ordering and placement; Jones presentation owns lifted drag feedback, exact insertion slots, segmented lifecycle options and confirmed deletion. Native compact headers retain status counts, failure summaries and persisted collapse controls; deterministic muted rails preserve workstream identity. Workstream drops resolve against header halves; Unassigned follows upstream active-reorder capability and Working-shelf restrictions. Each Workstream has a per-client default of 5, 10 or 15 visible active threads plus Show all/Show fewer; traversal and route anchors match visible rows. Menu and double-click rename share the inline title editor. Member rows reuse the composer thread-reference drop bridge. Workstream status counters set per-client overrides of the global status filter, including status exclusion; navigation consumes the same filtered candidates. Header controls share a full-width grid without a left grip, and visible-thread expansion uses the Divider footer. Thread-drop feedback marks the whole named or Unassigned section, including collapsed groups, and clears through the existing drag cleanup paths. The centered 12×12px options target retains measured title and counter fitting. Clickable header and filter controls use pointer cursors; read-only counters and gaps use the default cursor, while draggable titles retain grab. Collapsed thread-drop targets use a faint 3.25% tint plus an inset ring; expanded targets use only the ring and a measured card-height insertion gap that moves siblings and preserves the chosen slot while hovered, including pinned arrivals. A transparent Workstreams row above the named groups expands or collapses every group, hides or shows all of them without writing any group's own collapsed state (so showing restores each group exactly, and hidden rows leave traversal), and carries the same status pill as a group header over the summed unfiltered counts of named groups. Status choices are revisioned records: a group's own choice and the shared Workstreams choice resolve by recency, a group's clear follows the global filter even while the shared choice is active, a shared clear sends every named group to the global filter without reviving older choices, and bare legacy values read as revision 0. Named member lists indent a literal 8 CSS px; Unassigned has no disclosure chevron. Shared web/desktop title context menus delegate to the mounted sidebar owner so assignment, project filters and action handlers match. Find remains title-only below auto-settle; assignment leads its action section. Small Sidebar registration and useThreadActionMenu routing hooks preserve the existing menu owner instead of duplicating workstream actions. Scoped sidebar appearance adds typography and spacing slots and an invariant numeric footer for the full non-settled roster, including snoozed, pinned and working members. Attention pills retain existing effective-snooze semantics. Visible shown/total wording belongs only to the options menu."
     },
     {
       "id": "active-workspace-handoff",
@@ -3523,6 +3528,31 @@
         "apps/web/src/jones/sidebarAppearance/sidebarAppearanceWorkstreams.browser.test.tsx"
       ],
       "scope": "Device-local sidebar appearance preferences with Selected/Original presets, reversible live nonmodal trials, independent card-only scale and a permanent sidebar thread-title brightness slider in Jones Code settings. Existing chat/interface font, zoom, glass and semantic row cues are preserved. Nullable sidebar context scopes device symbols; known icon-only labels retain accessible names and focus/hover tooltips. Small accepted shared edits mount the host and launcher in Sidebar, expose existing semantic title/card/device slots in SidebarThreadRow, and mount the reusable brightness settings control in the Jones Code route. Lifted card scope copies only allowlisted attributes/variables. No server, wire, persisted event, mobile, installed runtime or existing appearance preference changes."
+    },
+    {
+      "id": "workstream-auto-route",
+      "tests": [
+        "apps/server/src/jones/workstreams/autoRoute/policy.test.ts",
+        "apps/server/src/jones/workstreams/autoRoute/AutoRouteStore.test.ts",
+        "apps/server/src/jones/workstreams/autoRoute/WorkstreamClassifierModel.test.ts",
+        "apps/server/src/jones/workstreams/autoRoute/WorkstreamAutoRoute.test.ts",
+        "apps/server/src/jones/persistence/Migrations/158_JonesWorkstreamAutoRoute.test.ts",
+        "apps/server/src/orchestration-v2/QueueCompatibility.test.ts",
+        "packages/contracts/src/jones/workstreamAutoRoute.test.ts",
+        "packages/contracts/src/jones/workstreamsPersonal.test.ts",
+        "packages/client-runtime/src/jones/workstreams/personal/controller.test.ts",
+        "apps/web/src/jones/settings/WorkstreamAutoRouteSettings.browser.test.tsx",
+        "apps/server/src/jones/mcp/workstreams/handlers.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts",
+        "apps/server/src/textGeneration/TextGenerators.test.ts",
+        "apps/server/src/provider/Drivers/CodexDriver.test.ts",
+        "apps/server/src/provider/AgentContextBudget.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/web/src/jones/workstreams/WorkstreamPickerProvenance.browser.test.tsx"
+      ],
+      "scope": "Accepted HTTP starts offer bounded classification for never-assigned main conversations. A clear choice advances the assignment from revision 0 and commits provenance in the same transaction. An interactive move can supersede that initial automatic write. Ordinary replays skip observation, and verified bootstrap release identities are deduplicated durably. Only the policy-applied configured selection receives evidence. Managed Codex uses the guarded, tool-free Responses transport. The picker and snapshot expose committed, current provenance."
     }
   ]
 }

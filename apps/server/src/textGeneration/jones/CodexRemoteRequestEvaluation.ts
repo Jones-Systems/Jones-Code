@@ -1,4 +1,8 @@
-import { TextGenerationError, type ProviderInstanceId } from "@t3tools/contracts";
+import {
+  TextGenerationError,
+  type ModelSelection,
+  type ProviderInstanceId,
+} from "@t3tools/contracts";
 import {
   RemoteRequestEvaluationResult,
   type ProviderTextGeneration,
@@ -9,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Sse from "effect/encoding/Sse";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 const MAX_STREAM_BYTES = 1024 * 1024;
 const OutputText = Schema.Struct({ type: Schema.Literal("output_text"), text: Schema.String });
@@ -86,9 +90,10 @@ const decodeAssessment = Schema.decodeUnknownEffect(
 
 const readStream = Effect.fn("CodexRemoteRequestEvaluation.readStream")(function* (
   response: HttpClientResponse.HttpClientResponse,
+  operation: string,
 ) {
   const invalidStream = {
-    operation: "evaluateRemoteRequest",
+    operation,
     detail: "The managed Codex evaluator returned an incomplete, refused, or unexpected response.",
   } as const;
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -100,7 +105,7 @@ const readStream = Effect.fn("CodexRemoteRequestEvaluation.readStream")(function
     Stream.mapError(
       (cause) =>
         new TextGenerationError({
-          operation: "evaluateRemoteRequest",
+          operation,
           detail: "The managed Codex evaluator stream failed.",
           cause,
         }),
@@ -152,19 +157,30 @@ const readStream = Effect.fn("CodexRemoteRequestEvaluation.readStream")(function
   return completed;
 });
 
-export const makeCodexRemoteRequestEvaluation = Effect.fn("makeCodexRemoteRequestEvaluation")(
+export const makeCodexToolFreeTextGeneration = Effect.fn("makeCodexToolFreeTextGeneration")(
   function* <E>(options: {
     readonly instanceId: ProviderInstanceId;
     readonly access: Effect.Effect<{ readonly accessToken: string }, E>;
   }) {
     const http = yield* HttpClient.HttpClient;
-    const evaluate: ProviderTextGeneration["evaluateRemoteRequest"] = Effect.fn(
-      "CodexRemoteRequestEvaluation.evaluate",
-    )(
-      function* (input) {
+    const generate = Effect.fn("CodexToolFreeTextGeneration.generate")(
+      function* (input: {
+        readonly modelSelection: ModelSelection;
+        readonly prompt: string;
+        readonly format:
+          | { readonly type: "json_object" }
+          | {
+              readonly type: "json_schema";
+              readonly name: string;
+              readonly strict: true;
+              readonly schema: unknown;
+            };
+        readonly operation: string;
+      }) {
+        const { operation } = input;
         if (input.modelSelection.instanceId !== options.instanceId)
           return yield* new TextGenerationError({
-            operation: "evaluateRemoteRequest",
+            operation,
             detail: "The evaluator account does not match the selected provider instance.",
           });
         const seen = new Set<string>();
@@ -179,18 +195,17 @@ export const makeCodexRemoteRequestEvaluation = Effect.fn("makeCodexRemoteReques
             )
           )
             return yield* new TextGenerationError({
-              operation: "evaluateRemoteRequest",
+              operation,
               detail: "Managed Codex evaluation does not support the selected options.",
             });
           seen.add(option.id);
           effort = option.value;
         }
-        const { prompt, outputSchema } = yield* buildRemoteRequestEvaluationPrompt(input);
         const credentials = yield* options.access.pipe(
           Effect.mapError(
             (cause) =>
               new TextGenerationError({
-                operation: "evaluateRemoteRequest",
+                operation,
                 detail: "The selected managed Codex account is unavailable.",
                 cause,
               }),
@@ -198,44 +213,43 @@ export const makeCodexRemoteRequestEvaluation = Effect.fn("makeCodexRemoteReques
         );
         // No agent/CLI, cwd, configuration discovery, hooks, MCP or tool executor
         // participates. Only the instance's existing token-sharing access is used.
-        const response = yield* HttpClient.withScope(http)
-          .execute(
-            HttpClientRequest.post("https://api.openai.com/v1/responses").pipe(
-              HttpClientRequest.bearerToken(credentials.accessToken),
-              HttpClientRequest.setHeader("accept", "text/event-stream"),
-              HttpClientRequest.bodyJsonUnsafe({
-                model: input.modelSelection.model,
-                input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
-                tools: [],
-                tool_choice: "none",
-                parallel_tool_calls: false,
-                store: false,
-                stream: true,
-                ...(effort ? { reasoning: { effort } } : {}),
-                text: {
-                  format: {
-                    type: "json_schema",
-                    name: "remote_request_evaluation",
-                    strict: true,
-                    schema: toJsonSchemaObject(outputSchema),
-                  },
-                },
+        const request = HttpClient.withScope(http).execute(
+          HttpClientRequest.post("https://api.openai.com/v1/responses").pipe(
+            HttpClientRequest.bearerToken(credentials.accessToken),
+            HttpClientRequest.setHeader("accept", "text/event-stream"),
+            HttpClientRequest.bodyJsonUnsafe({
+              model: input.modelSelection.model,
+              input: [{ role: "user", content: [{ type: "input_text", text: input.prompt }] }],
+              tools: [],
+              tool_choice: "none",
+              parallel_tool_calls: false,
+              store: false,
+              stream: true,
+              ...(effort ? { reasoning: { effort } } : {}),
+              text: { format: input.format },
+            }),
+          ),
+        );
+        const response = yield* (
+          operation === "generatePromptOnlyText"
+            ? request.pipe(
+                Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
+                Effect.provideService(HttpClient.TracerPropagationEnabled, false),
+              )
+            : request
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new TextGenerationError({
+                operation,
+                detail: "The managed Codex evaluator request failed.",
+                cause,
               }),
-            ),
-          )
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new TextGenerationError({
-                  operation: "evaluateRemoteRequest",
-                  detail: "The managed Codex evaluator request failed.",
-                  cause,
-                }),
-            ),
-          );
+          ),
+        );
         if (response.status !== 200)
           return yield* new TextGenerationError({
-            operation: "evaluateRemoteRequest",
+            operation,
             detail: `The managed Codex evaluator did not return a successful response (HTTP ${response.status}).`,
           });
         if (
@@ -243,40 +257,68 @@ export const makeCodexRemoteRequestEvaluation = Effect.fn("makeCodexRemoteReques
           "text/event-stream"
         )
           return yield* new TextGenerationError({
-            operation: "evaluateRemoteRequest",
+            operation,
             detail: "The managed Codex evaluator did not return an event stream.",
           });
-        const envelope = yield* readStream(response);
+        const envelope = yield* readStream(response, operation);
         const messages = envelope.output.filter((item) => item.type === "message");
         if (messages.length !== 1 || messages[0]!.content.length !== 1)
           return yield* new TextGenerationError({
-            operation: "evaluateRemoteRequest",
+            operation,
             detail: "The managed Codex evaluator did not return one assessment.",
           });
-        return yield* decodeAssessment(messages[0]!.content[0]!.text).pipe(
-          Effect.mapError(
-            (cause) =>
-              new TextGenerationError({
-                operation: "evaluateRemoteRequest",
-                detail: "The managed Codex evaluator returned an invalid assessment.",
-                cause,
-              }),
-          ),
-        );
+        return messages[0]!.content[0]!.text;
       },
       Effect.scoped,
       Effect.timeout("25 seconds"),
-      Effect.catchTags({
-        TimeoutError: (cause) =>
-          Effect.fail(
+      (effect, input) =>
+        effect.pipe(
+          Effect.catchTags({
+            TimeoutError: (cause) =>
+              Effect.fail(
+                new TextGenerationError({
+                  operation: input.operation,
+                  detail: "The managed Codex evaluator timed out.",
+                  cause,
+                }),
+              ),
+          }),
+        ),
+    );
+    const evaluate: ProviderTextGeneration["evaluateRemoteRequest"] = Effect.fn(
+      "CodexRemoteRequestEvaluation.evaluate",
+    )(function* (input) {
+      const { prompt, outputSchema } = yield* buildRemoteRequestEvaluationPrompt(input);
+      const result = yield* generate({
+        modelSelection: input.modelSelection,
+        prompt,
+        operation: "evaluateRemoteRequest",
+        format: {
+          type: "json_schema",
+          name: "remote_request_evaluation",
+          strict: true,
+          schema: toJsonSchemaObject(outputSchema),
+        },
+      });
+      return yield* decodeAssessment(result).pipe(
+        Effect.mapError(
+          (cause) =>
             new TextGenerationError({
               operation: "evaluateRemoteRequest",
-              detail: "The managed Codex evaluator timed out.",
+              detail: "The managed Codex evaluator returned an invalid assessment.",
               cause,
             }),
-          ),
-      }),
-    );
-    return evaluate;
+        ),
+      );
+    });
+    return {
+      evaluate,
+      generatePromptOnlyText: (input: { modelSelection: ModelSelection; prompt: string }) =>
+        generate({
+          ...input,
+          operation: "generatePromptOnlyText",
+          format: { type: "json_object" },
+        }),
+    };
   },
 );

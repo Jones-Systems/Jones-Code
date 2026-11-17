@@ -1,6 +1,7 @@
 import {
   type ListTextGeneratorModelsInput,
   type ListTextGeneratorModelsResult,
+  type ModelSelection,
   type ProviderInstanceId,
   TextGenerationError,
   type TextGeneratorConfig,
@@ -35,6 +36,11 @@ export class TextGenerators extends Context.Service<
     readonly runner: (
       id: ProviderInstanceId,
     ) => Effect.Effect<TextGenerationOperations.Runner | undefined>;
+    /** Direct text request on the named configuration, without model or provider fallback. */
+    readonly generatePromptOnlyText: (input: {
+      readonly modelSelection: ModelSelection;
+      readonly prompt: string;
+    }) => Effect.Effect<string, TextGenerationError>;
     readonly listModels: (
       input: ListTextGeneratorModelsInput,
     ) => Effect.Effect<ListTextGeneratorModelsResult, TextGeneratorError>;
@@ -84,27 +90,43 @@ export const make = Effect.gen(function* () {
     return { baseUrl: config.baseUrl, apiKey, label } satisfies TextGeneratorConnection;
   });
 
+  const generateText = (
+    config: TextGeneratorConfig,
+    request: {
+      readonly operation: string;
+      readonly modelSelection: ModelSelection;
+      readonly prompt: string;
+    },
+    requireTextOnly = false,
+  ) =>
+    connect(config).pipe(
+      Effect.flatMap((connection) =>
+        TEXT_GENERATOR_DRIVERS[config.kind].generate(
+          connection,
+          request.modelSelection.model,
+          request.prompt,
+          requireTextOnly,
+        ),
+      ),
+      Effect.provideService(HttpClient.HttpClient, http),
+      Effect.mapError(
+        (error) =>
+          new TextGenerationError({
+            operation: request.operation,
+            detail: error.detail,
+            cause: error,
+          }),
+      ),
+    );
+
   const runnerFor =
     (config: TextGeneratorConfig): TextGenerationOperations.Runner =>
-    (request) => {
-      const driver = TEXT_GENERATOR_DRIVERS[config.kind];
-      const label = generatorLabel(config);
-      return connect(config).pipe(
-        Effect.flatMap((connection) =>
-          driver.generate(connection, request.modelSelection.model, request.prompt),
+    (request) =>
+      generateText(config, request).pipe(
+        Effect.flatMap((text) =>
+          TextGenerationOperations.decodeJsonReply(request, generatorLabel(config), text),
         ),
-        Effect.provideService(HttpClient.HttpClient, http),
-        Effect.mapError(
-          (error) =>
-            new TextGenerationError({
-              operation: request.operation,
-              detail: error.detail,
-              cause: error,
-            }),
-        ),
-        Effect.flatMap((text) => TextGenerationOperations.decodeJsonReply(request, label, text)),
       );
-    };
 
   const runner = Effect.fn("TextGenerators.runner")(function* (id: ProviderInstanceId) {
     const config = yield* readConfig(id).pipe(Effect.orElseSucceed(() => undefined));
@@ -182,7 +204,20 @@ export const make = Effect.gen(function* () {
     Effect.mapError((error) => new TextGeneratorError({ detail: error.detail })),
   );
 
-  return TextGenerators.of({ runner, listModels });
+  const generatePromptOnlyText: TextGenerators["Service"]["generatePromptOnlyText"] = Effect.fn(
+    "TextGenerators.generatePromptOnlyText",
+  )(function* (input) {
+    const operation = "generatePromptOnlyText";
+    const config = yield* readConfig(input.modelSelection.instanceId).pipe(Effect.option);
+    if (config._tag === "None" || !config.value?.enabled || input.modelSelection.options?.length)
+      return yield* new TextGenerationError({
+        operation,
+        detail:
+          "The configured text generator is unavailable or does not support the selected options.",
+      });
+    return yield* generateText(config.value, { ...input, operation }, true);
+  });
+  return TextGenerators.of({ runner, listModels, generatePromptOnlyText });
 });
 
 export const layer = Layer.effect(TextGenerators, make).pipe(

@@ -72,7 +72,7 @@ it("shares the native slider's persisted value across settings and the live pane
     '[aria-label="Thread title previews"] [data-jones-thread-title]',
   );
   expect(previews).toHaveLength(2);
-  expect(getComputedStyle(previews[0]!).fontWeight).toBe("500");
-  expect(getComputedStyle(previews[1]!).fontWeight).toBe("400");
+  expect(previews[0]!.textContent).toBe(previews[1]!.textContent);
+  expect(getComputedStyle(previews[0]!).fontWeight).toBe(getComputedStyle(previews[1]!).fontWeight);
   expect(getComputedStyle(previews[0]!).color).not.toBe(getComputedStyle(previews[1]!).color);
 });

@@ -1096,6 +1096,24 @@ describe("planComposerTurn", () => {
     });
   });
 
+  it("starts On write on the first send from a draft or empty server thread", () => {
+    const onWrite = { ...base, sendEnvMode: "auto" as const };
+    expect(planComposerTurn(onWrite).shouldStartConversation).toBe(true);
+    expect(planComposerTurn({ ...onWrite, isServerThread: true }).shouldStartConversation).toBe(
+      true,
+    );
+    expect(
+      planComposerTurn({ ...onWrite, isServerThread: true, activeMessageCount: 1 })
+        .shouldStartConversation,
+    ).toBe(false);
+    expect(
+      planComposerTurn({ ...onWrite, sendQueuesBehindSetup: true }).shouldStartConversation,
+    ).toBe(false);
+    expect(
+      planComposerTurn({ ...onWrite, worktreePath: "/repo/worktree" }).shouldStartConversation,
+    ).toBe(false);
+  });
+
   it("queues behind a compaction of a stale session, except for /compact itself", () => {
     const stale = { ...base, resumeCompactionTokens: 120_000 };
     for (const messageText of ["hello", "/compactfoo"]) {

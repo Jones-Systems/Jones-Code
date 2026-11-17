@@ -531,3 +531,52 @@ describe("CORE-01 queued revision dependencies", () => {
     },
   );
 });
+
+describe("automatically assigned threads", () => {
+  const key = personalThreadKey(thread);
+  const assigned = (revision: number, workstreamId: string | null = "group", sequence = 1) => ({
+    ...snapshot("a", [definition(), definition({ id: "other", name: "Other" })], sequence),
+    assignments: [{ threadId: thread.id, workstreamId, revision, updatedAt: null }],
+  });
+  const auto = [
+    {
+      threadId: thread.id,
+      workstreamId: "group",
+      revision: 1,
+      decidedAt: "2026-01-01T00:00:00.000Z",
+    },
+  ];
+  it("exposes the key while the assignment matches and drops it on a remote move", () => {
+    const h = harness();
+    h.controller.setEnvironments([connection("a")]);
+    h.frames[0]!.emit(assigned(1));
+    expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(false);
+    h.frames[0]!.emit({ ...assigned(1, "group", 2), autoAssignments: auto });
+    expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(true);
+    // A stale entry beside a newer assignment revision is not shown.
+    h.frames[0]!.emit({ ...assigned(2, "other", 3), autoAssignments: auto });
+    expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(false);
+    h.close();
+  });
+  it("drops the key during and after a local move or remove", async () => {
+    for (const target of ["other", null]) {
+      const pending = deferred<PersonalAssignResult>();
+      const h = harness({ assign: () => pending.promise });
+      h.controller.setEnvironments([connection("a")]);
+      h.frames[0]!.emit({ ...assigned(1), autoAssignments: auto });
+      expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(true);
+      const moved = h.controller.assign(thread, target);
+      await flush();
+      expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(false);
+      pending.resolve({
+        outcome: "applied",
+        assignment: { threadId: thread.id, workstreamId: target, revision: 2, updatedAt: null },
+        workstream: target === null ? null : definition({ id: "other", name: "Other" }),
+        sequence: 2,
+      });
+      expect((await moved).ok).toBe(true);
+      expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(false);
+      h.close();
+    }
+  });
+});

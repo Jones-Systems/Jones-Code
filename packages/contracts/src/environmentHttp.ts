@@ -871,6 +871,7 @@ class EnvironmentPullRequestsHttpApi extends HttpApiGroup.make("pullRequests").a
 const {
   EnvironmentRemoteAdmissionHttpApi,
   EnvironmentRemoteAdmissionReviewHttpApi,
+  EnvironmentPersonalWorkstreamsHttpApi,
   EnvironmentPreviewCompanionHttpApi,
   EnvironmentImportedHistoryHttpApi,
   EnvironmentJonesUpdatesHttpApi,
@@ -1285,6 +1286,7 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentFleetUpdatesHttpApi)
   .add(EnvironmentRemoteAdmissionHttpApi)
   .add(EnvironmentRemoteAdmissionReviewHttpApi)
+  .add(EnvironmentPersonalWorkstreamsHttpApi)
   .add(EnvironmentImportedHistoryHttpApi)
   .add(EnvironmentPreviewCompanionHttpApi)
   .add(EnvironmentWebhooksHttpApi) {}
