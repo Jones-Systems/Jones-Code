@@ -1,3 +1,4 @@
+import { openOwnedThreadMenu } from "../jones/workstreams/threadMenuBridge";
 import {
   readEnvironmentSupportsSettlement,
   readEnvironmentSupportsSnooze,
@@ -130,6 +131,7 @@ export function useThreadActionMenu(input: {
 
   const openMenu = (position: { x: number; y: number }) => {
     if (threadRef === null) return;
+    if (openOwnedThreadMenu(threadRef, position, onFind)) return;
     void (async () => {
       const api = readLocalApi();
       if (!api) return;

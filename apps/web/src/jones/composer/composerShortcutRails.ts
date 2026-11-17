@@ -1,8 +1,6 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { observeResize } from "~/lib/observeResize";
 
-const COMPOSER_SHORTCUT_MAX_HEIGHT_PX = 144;
-
 export function resolveComposerShortcutRailsVisibility(input: {
   eligible: boolean;
   formWidth: number;
@@ -24,7 +22,7 @@ export function resolveComposerShortcutRailsVisibility(input: {
     return false;
   }
   // The external controls remain available in compact and short layouts. The
-  // band wraps whole groups and scrolls overflowing content instead of hiding it.
+  // band wraps whole groups and reserves their full height instead of hiding them.
   return true;
 }
 
@@ -74,12 +72,9 @@ export function useComposerShortcutRails(input: {
     });
     const content = band.querySelector<HTMLElement>("[data-chat-composer-shortcut-content]");
     const height = visible
-      ? Math.min(
-          content?.getBoundingClientRect().height ?? Math.max(0, ...groupHeights),
-          COMPOSER_SHORTCUT_MAX_HEIGHT_PX,
-          Math.max(48, Math.floor(workspace.clientHeight / 3)),
-        )
+      ? (content?.getBoundingClientRect().height ?? Math.max(0, ...groupHeights))
       : 0;
+    overlay.style.setProperty("--composer-rails-height", `${height}px`);
     setLayout((previous) =>
       previous.visible === visible && previous.height === height ? previous : { visible, height },
     );

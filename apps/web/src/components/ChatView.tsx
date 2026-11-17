@@ -7,6 +7,12 @@ import { usePendingSends } from "../jones/pendingSends/hooks";
 import { usePendingTurn } from "../jones/pendingSends/usePendingTurn";
 import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { ContinuationChoiceBanner } from "../jones/importedHistory/ContinuationChoiceBanner";
+import {
+  ComposerLayout,
+  ComposerLayoutLane,
+  ComposerLayoutHeadline,
+  ComposerLayoutFooter,
+} from "../jones/composer/ComposerLayout";
 import { useParentLink } from "../jones/remoteAgentLineage/useParentLink";
 import { listenForWorkspaceFileDragEnd } from "../jones/questionAnswer/workspaceFileDragLifecycle";
 import {
@@ -3534,22 +3540,16 @@ export default function ChatView(props: ChatViewProps) {
               )}
             </div>
 
-            <div
+            <ComposerLayout
               {...composerArea}
-              ref={(overlay: HTMLDivElement | null) => {
+              hero={isDraftHeroState}
+              onAttach={(overlay: HTMLDivElement | null) => {
                 attachComposerOverlay(overlay);
                 attachFollowComposerOverlay(overlay);
               }}
               inert={isRevertingCheckpoint}
-              data-chat-composer-overlay="true"
-              data-chat-composer-layout={isDraftHeroState ? "hero" : "docked"}
-              className={
-                isDraftHeroState
-                  ? "pointer-events-none absolute inset-0 z-20 flex items-center [@media(max-height:34rem)]:items-end"
-                  : "pointer-events-none absolute inset-x-0 bottom-0 z-20 pt-1.5 sm:pt-2"
-              }
             >
-              <div ref={draftHeroTransitionGroupRef} className="chat-composer-lane w-full">
+              <ComposerLayoutLane ref={draftHeroTransitionGroupRef}>
                 <div
                   data-chat-composer-stack="true"
                   className="group/composer-stack pointer-events-auto relative z-10 mx-auto w-full max-w-(--chat-content-max-width)"
@@ -3563,7 +3563,7 @@ export default function ChatView(props: ChatViewProps) {
                     />
                   ) : null}
                   {isDraftHeroState ? (
-                    <div className="absolute inset-x-0 bottom-full">
+                    <ComposerLayoutHeadline>
                       <div
                         className="pb-4 group-has-data-[composer-shoulder-tab]/composer-stack:pb-0"
                         style={
@@ -3578,7 +3578,7 @@ export default function ChatView(props: ChatViewProps) {
                           activeProjectTitle={activeProject?.title ?? null}
                         />
                       </div>
-                    </div>
+                    </ComposerLayoutHeadline>
                   ) : null}
                   <div
                     ref={draftHeroComposerAnchorRef}
@@ -3895,28 +3895,24 @@ export default function ChatView(props: ChatViewProps) {
                     {isDraftHeroState ? (
                       <div
                         aria-hidden
+                        data-composer-layout-hero-spacer
                         className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"
                       />
                     ) : null}
                   </div>
                 </div>
-              </div>
-              <div
-                className={cn(
-                  "w-full ps-(--workspace-gutter-start) pe-(--workspace-gutter-end)",
-                  isDraftHeroState && "absolute inset-x-0 bottom-0",
-                )}
-              >
+              </ComposerLayoutLane>
+              <ComposerLayoutFooter>
                 <div
                   ref={setShortcutControlsHost}
                   data-chat-composer-shortcut-host="true"
                   className="relative w-full"
                 />
                 <div aria-hidden className="pb-safe">
-                  <div className="h-4 sm:h-5" />
+                  <div data-composer-layout-bottom-space className="h-4 sm:h-5" />
                 </div>
-              </div>
-            </div>
+              </ComposerLayoutFooter>
+            </ComposerLayout>
 
             {canOperatePreview && activeThreadRef && activeEnvironmentServerBrowser && !embedded ? (
               <PreviewSessionSync threadRef={activeThreadRef} />

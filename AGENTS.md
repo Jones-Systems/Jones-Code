@@ -48,6 +48,13 @@ Jones-owned tables keyed by upstream IDs, without references to upstream tables.
 - For an affected behavior, check applicable clients, provider adapters, MCP
   and scheduled-task access, entry points, reverse states, and connection modes.
   Use the contribution checklist before calling the change complete.
+- Keep registered project checkouts and their Git common directories. A
+  project's `workspaceRoot` remains a dependency for creating task worktrees,
+  including when that root is itself a linked worktree under `.t3/worktrees`.
+  Before checkout retirement, check current project bindings and canonical
+  paths; a merged branch, settled thread, or idle process state does not make
+  a project root disposable. Follow [project checkout retention](docs/operations/development.md#project-checkouts-and-task-worktrees)
+  when establishing or repairing a project folder.
 - Never kill by name or path pattern: no `pkill -f`, `pgrep | kill`, or PID
   selection from a matching process name, path, or worktree string. Stop only
   a process this task owns, using its captured spawn PID or its confirmed

@@ -899,6 +899,7 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
   ),
+  DependencyReactor.layerWorker,
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
@@ -910,7 +911,6 @@ const layerMakeRoutes = Layer.mergeAll(
         Layer.provide(TextGeneration.layer.pipe(Layer.provide(layerSourceControlProviderRegistry))),
       ),
     ),
-    Layer.provide(DependencyReactor.layer),
     Layer.provide(ThreadResultMcpDependencies.layer),
     Layer.provide(ShellMaterialization.layer),
     Layer.provide(LinkedThreads.layer),

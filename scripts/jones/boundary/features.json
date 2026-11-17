@@ -109,6 +109,7 @@
     {
       "id": "workspace-recreation",
       "tests": [
+        "apps/server/src/jones/workspaceRecreation/PreSessionFailure.test.ts",
         "apps/server/src/jones/workspaceRecreation/Native.test.ts",
         "apps/server/src/jones/workspaceRecreation/Runtime.test.ts",
         "apps/server/src/jones/workspaceRecreation/BindingCommit.test.ts",
@@ -131,7 +132,7 @@
         "packages/contracts/src/settings.test.ts",
         "packages/shared/src/projectSettings.test.ts"
       ],
-      "scope": "C8 claim-held recreation from terminal receipts, exact stale registration removal with reflog refs, typed branch holds, explicit receipt-bound detached requests, new breadcrumbs and source-generation invalidation, and settlement restore deferring checkout work to the next turn. V3 branch-only registry wire schema remains unchanged; detached recreation has native duty exclusion and provenance without claiming branch-only registry registration."
+      "scope": "C8 claim-held recreation from terminal receipts, exact stale registration removal with reflog refs, typed branch holds, explicit receipt-bound detached requests, new breadcrumbs and source-generation invalidation, and settlement restore deferring checkout work to the next turn. Pre-session failure settlement uses a Jones-owned phase classifier and a narrow start-service hook: exhausted ordinary reads and positively typed source refusals fail only the captured starting attempt, preserve failed-effect receipts, and use fixed provider_error notices. Pending lifecycle transitions are checked before source refusal. The existing shared start-test harness registers Jones-owned cases instead of being copied; real terminal-event queue reaction preserves waiting text, order and holds. Native-creation custody, interruptions, claim loss and unknown recreation retain their existing owners. V3 branch-only registry wire schema remains unchanged; detached recreation has native duty exclusion and provenance without claiming branch-only registry registration."
     },
     {
       "id": "workspace-retirement-settlement",
@@ -189,6 +190,8 @@
     {
       "id": "workspace-retirement-qualification",
       "tests": [
+        "apps/server/src/jones/workspaceRetirement/ReftableObservation.test.ts",
+        "apps/server/src/jones/workspaceRetirement/Qualification.test.ts",
         "apps/server/src/jones/workspaceRetirement/Conformance.test.ts",
         "apps/server/src/jones/workspaceRetirement/Behavior.test.ts",
         "apps/server/src/jones/workspaceRetirement/CompletionObservation.test.ts",
@@ -197,9 +200,10 @@
         "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
         "apps/server/src/jones/platformCompatibility/project/ProjectSetupScriptRunner.test.ts",
         "scripts/jones/worktree-setup/setup.node-test.mjs",
-        "scripts/jones/worktree-setup/entrypoint.node-test.mjs"
+        "scripts/jones/worktree-setup/entrypoint.node-test.mjs",
+        "apps/server/src/jones/workspaceRetirement/LinuxInfrastructureEvidence.test.ts"
       ],
-      "scope": "C1 read-only qualification, protection-first ignored classification, explicit bounded C2 content proof and participant guard; pinned A1 WSQ/DV corpus executes real disposable Git recipes. Automatic project/setup completion is metadata-only, proof deferred, one 64 KiB/100 ms killed-and-reaped sink attempt, with no manufactured allocation obligation. Accepted shared ProjectSetupScriptRunner edit observes actual terminal outcomes without changing ordinary idle-close behavior; source implementation stays in Jones modules. Darwin descriptor proof uses optional system Python; Linux uses native Node descriptors. Native process adapters expose partial/unavailable coverage; no retirement execution, release, installation or runtime adoption."
+      "scope": "C1 candidate-scoped qualification observes files/reftable backends, all candidate-local reflogs, current root-ref tips and the three local ref namespaces; aggregate 1 MiB/1,000-tip discovery retains the 50-orphan guard. Bounded sequential reftable observation accounts for every active table, block and record before resolving exact-key tombstones and endpoints; no copied view, common or sibling reflog scan is used. Protection-first ignored classification, explicit bounded C2 content proof and participant guard; pinned A1 WSQ/DV corpus executes real disposable Git recipes. Automatic project/setup completion is metadata-only, proof deferred, one 64 KiB/100 ms killed-and-reaped sink attempt, with no manufactured allocation obligation. Accepted shared ProjectSetupScriptRunner edit observes actual terminal outcomes without changing ordinary idle-close behavior; source implementation stays in Jones modules. Darwin descriptor proof uses optional system Python; Linux uses native Node descriptors. Native process adapters expose partial/unavailable coverage; no retirement execution, release, installation or runtime adoption."
     },
     {
       "id": "pending-control-items",
@@ -1631,7 +1635,7 @@
         "packages/client-runtime/src/jones/settlementNotifications/threadEvidence.test.ts",
         "apps/server/src/jones/persistence/Migrations/146_JonesSettlementOriginRetention.test.ts"
       ],
-      "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Capability-gated server origin evidence suppresses manual app settlements across clients; only validated client origins are silent, with bounded conservative fallback and classification-gated baseline persistence. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. Subagent lineage suppresses new arrivals and tombstones saved child entries after a confirmed shell observation, including additive web storage, cross-tab and delayed classification merges; top-level threads, forks and unknown offline entries remain. No provider/focus exclusions, baseline GC or server history claims. Deferred self-settlement project items are stored atomically in sparse Jones rows keyed by the original acceptance; exact settlement identity resolves plain-text bullets without changing upstream payloads. Web settlement rows retain independently collapsed compact remaining-work bullets through toast updates; only expanded aggregate settlement panels opt into intrinsic width capped at twice the viewport toast width and available screen width."
+      "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Capability-gated server origin evidence suppresses manual app settlements across clients; only validated client origins are silent, with bounded conservative fallback and classification-gated baseline persistence. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. Subagent lineage suppresses new arrivals and tombstones saved child entries after a confirmed shell observation, including additive web storage, cross-tab and delayed classification merges; top-level threads, forks and unknown offline entries remain. No provider/focus exclusions, baseline GC or server history claims. Deferred self-settlement project items are stored atomically in sparse Jones rows keyed by the original acceptance; exact settlement identity resolves plain-text bullets without changing upstream payloads. Web settlement rows retain independently collapsed compact remaining-work bullets through toast updates; only expanded aggregate settlement panels opt into intrinsic width capped at twice the viewport toast width and available screen width. Single web/desktop remaining-work previews expand on row click or the keyboard-accessible chevron into wrapped full text within the existing scroll area; title navigation stays separate."
     },
     {
       "id": "delegated-task-workspace",
@@ -2822,7 +2826,7 @@
         "apps/mobile/src/jones/threadResultDependencies/presentation.test.ts",
         "packages/client-runtime/src/state/threads-sync.test.ts"
       ],
-      "scope": "Explicit correlated cross-thread result requests persist sender waiting and receiver answer duties independently of foreground completion. Jones-owned storage, transaction fences and event-driven local/remote observation preserve multiple dependencies and release semantics. Additive opt-in shell refreshes retain replay ordering, persistence and producer isolation for shared web, desktop and mobile consumers; no ordinary message or navigation link creates a wait. The existing shell-sync test harness is the upstream-test exception for actual subscription and persistence behavior. MCP registration and production reuse one memoized request watcher and dependency bus; existing core and peer fixtures add only their missing Orchestrator port. New Jones composition regressions cover standalone durable fences and EventSink/MCP bus identity and publication. Web/desktop banners include all same-thread shell work, with applied global detail sequence metadata protecting freshness-aware terminal precedence."
+      "scope": "Explicit correlated cross-thread result requests persist sender waiting and receiver answer duties independently of foreground completion. Jones-owned storage, transaction fences and event-driven local/remote observation preserve multiple dependencies and release semantics. Additive opt-in shell refreshes retain replay ordering, persistence and producer isolation for shared web, desktop and mobile consumers; no ordinary message or navigation link creates a wait. The existing shell-sync test harness is the upstream-test exception for actual subscription and persistence behavior. MCP registration and production reuse one memoized request watcher and dependency bus; existing core and peer fixtures add only their missing Orchestrator port. New Jones composition regressions cover standalone durable fences and EventSink/MCP bus identity and publication. Production acquires the scoped dependency worker, fences observation eagerly and parks reconciliation until recovery activation, then resumes saved replies and follows new local or remote answers. Startup regressions verify no wake admission or peer calls before activation, survival through real runtime recovery, monitor clearance, unanswered waits and no duplicate delivery after reacquisition. Web/desktop banners include all same-thread shell work, with applied global detail sequence metadata protecting freshness-aware terminal precedence."
     },
     {
       "id": "optimistic-send-feedback",
@@ -3353,6 +3357,7 @@
         "apps/web/src/jones/workstreams/personalThreadReorder.test.ts",
         "apps/web/src/jones/workstreams/personalSidebarOrder.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadDrag.browser.test.tsx",
+        "apps/web/src/jones/workstreams/sidebarDragAutoScroll.browser.test.ts",
         "apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
         "apps/web/src/jones/workstreams/personalRail.test.ts",
@@ -3364,7 +3369,7 @@
         "apps/web/src/jones/workstreams/personalStatusFilter.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx"
       ],
-      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Sidebar navigation follows visible pinned, Workstream and Unassigned order, including collapsed-group route anchors. Thread drop placement plans prospective membership before assignment and preserves other groups. Shared Sidebar edits integrate ordering and placement; Jones presentation owns lifted drag feedback, exact insertion slots, segmented lifecycle options and confirmed deletion. Native compact headers retain status counts, failure summaries and persisted collapse controls; deterministic muted rails preserve workstream identity. Workstream drops resolve against header halves; Unassigned follows upstream active-reorder capability and Working-shelf restrictions. Each Workstream has a per-client default of 5, 10 or 15 visible active threads plus Show all/Show fewer; traversal and route anchors match visible rows. Menu and double-click rename share the inline title editor. Member rows reuse the composer thread-reference drop bridge. Workstream status counters set per-client overrides of the global status filter, including status exclusion; navigation consumes the same filtered candidates. Header controls share a full-width grid without a left grip, and visible-thread expansion uses the Divider footer."
+      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Sidebar navigation follows visible pinned, Workstream and Unassigned order, including collapsed-group route anchors. Thread drop placement plans prospective membership before assignment and preserves other groups. Shared Sidebar edits integrate ordering and placement; Jones presentation owns lifted drag feedback, exact insertion slots, segmented lifecycle options and confirmed deletion. Native compact headers retain status counts, failure summaries and persisted collapse controls; deterministic muted rails preserve workstream identity. Workstream drops resolve against header halves; Unassigned follows upstream active-reorder capability and Working-shelf restrictions. Each Workstream has a per-client default of 5, 10 or 15 visible active threads plus Show all/Show fewer; traversal and route anchors match visible rows. Menu and double-click rename share the inline title editor. Member rows reuse the composer thread-reference drop bridge. Workstream status counters set per-client overrides of the global status filter, including status exclusion; navigation consumes the same filtered candidates. Header controls share a full-width grid without a left grip, and visible-thread expansion uses the Divider footer. Shared web/desktop title context menus delegate to the mounted sidebar owner so assignment, project filters and action handlers match. Find remains title-only below auto-settle; assignment leads its action section. Small Sidebar registration and useThreadActionMenu routing hooks preserve the existing menu owner instead of duplicating workstream actions."
     },
     {
       "id": "active-workspace-handoff",
@@ -3462,9 +3467,11 @@
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
         "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
-        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx",
+        "apps/web/src/jones/storageCleanupResults/runStatus.test.ts",
+        "packages/contracts/src/jones/storageCleanupReportStatus.test.ts"
       ],
-      "scope": "Storage cleanup results initially render five rows total across selected environments, expand by ten, and preserve retirement guards. A read-only MCP adapter pages the same session report with exact filters, snapshot consistency, explicit omissions and a serialized response budget; it cannot evaluate or execute cleanup."
+      "scope": "Storage cleanup results initially render five rows total across selected environments, expand by ten, and preserve retirement guards. A read-only MCP adapter pages the same session report with exact filters, snapshot consistency, explicit omissions and a serialized response budget; it cannot evaluate or execute cleanup. The Last run header preserves per-machine completion times, distinguishes proposal and cleanup reports, and separates active or unconfirmed requests from completed results. Optional operation metadata preserves legacy report decoding; report retention remains server-session-only. Accepted shared edits keep the cleanup timestamp in the folded header without duplicating the fold, and use an erased type import in the existing timestamp formatter so native focused checks need no runtime contracts package."
     },
     {
       "id": "panel-find",

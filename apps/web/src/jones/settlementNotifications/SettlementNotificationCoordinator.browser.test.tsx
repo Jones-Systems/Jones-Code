@@ -515,6 +515,43 @@ describe("persistent settlement notification", () => {
     );
   });
 
+  it.each([375, 1280])(
+    "expands a single remaining-work preview into readable text at %ipx",
+    async (width) => {
+      await using _fixture = await setupTest();
+      await page.viewport(width, 800);
+      storage.clear();
+      const note = "Read the complete remaining project work, including the final detail. ".repeat(
+        20,
+      );
+      await publish([{ ...entry("a"), projectRemaining: [note] }]);
+      await render();
+      const item = () =>
+        document.querySelector<HTMLElement>('[data-slot="settlement-remaining-item"]')!;
+      const lineHeight = Number.parseFloat(getComputedStyle(item()).lineHeight);
+      expect(item().scrollWidth).toBeGreaterThan(item().clientWidth);
+      await act(async () => item().click());
+      expect(item().getBoundingClientRect().height).toBeGreaterThan(lineHeight);
+      expect(item().scrollWidth).toBeLessThanOrEqual(item().clientWidth + 1);
+      expect(item().textContent).toBe(note);
+      expect(button("Collapse remaining work for Thread a").getAttribute("aria-expanded")).toBe(
+        "true",
+      );
+      button("Collapse remaining work for Thread a").focus();
+      await userEvent.keyboard("{Enter}");
+      expect(item().getBoundingClientRect().height).toBeCloseTo(lineHeight, 0);
+      await userEvent.keyboard(" ");
+      expect(item().getBoundingClientRect().height).toBeGreaterThan(lineHeight);
+      await act(async () => button("Thread a").click());
+      expect(state.navigate).toHaveBeenCalledWith({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: "env-a", threadId: "a" },
+      });
+      expect(item().getBoundingClientRect().height).toBeGreaterThan(lineHeight);
+      expect(notices()).toHaveLength(1);
+    },
+  );
+
   it("keeps row collapse through navigation, aggregate updates and panel reopening", async () => {
     await using _fixture = await setupTest();
     storage.clear();
@@ -532,9 +569,10 @@ describe("persistent settlement notification", () => {
     expect(row().textContent).toContain("First task");
     selection.removeAllRanges();
     await act(async () => row().click());
-    expect(row().textContent).not.toContain("First task");
+    expect(row().textContent).toContain("First task");
     await publish([{ ...entry("b"), projectRemaining: ["Second task"] }]);
     await act(async () => button("Show settled threads").click());
+    await act(async () => row().click());
     expect(row().textContent).not.toContain("First task");
     expect(document.body.textContent).toContain("Second task");
     await act(async () => button("Hide settled threads").click());

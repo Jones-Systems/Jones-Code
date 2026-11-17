@@ -1425,6 +1425,7 @@ const make = Effect.gen(function* () {
             ? 2
             : 3;
     const latestReport: StorageCleanupReport = {
+      operation: "cleanup",
       trigger,
       startedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
       finishedAt: DateTime.formatIso(yield* DateTime.now),

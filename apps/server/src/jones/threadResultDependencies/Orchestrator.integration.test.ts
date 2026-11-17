@@ -17,7 +17,11 @@ import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import * as Recovery from "../../orchestration-v2/ProviderRuntimeRecoveryService.ts";
+import { ServerActivation } from "../../serverActivation.ts";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
 import { readMonitorSettlementBlocker } from "../threadMonitor/guardedSettle.ts";
@@ -28,6 +32,54 @@ import * as Fixture from "./testkit.ts";
 import { notification } from "./Wake.ts";
 
 import { runtime } from "./runtimeTestkit.ts";
+
+it.effect("a saved result is admitted after startup recovery and its wake survives", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const request = yield* f.send("startup-recovery");
+    yield* f.sql.withTransaction(
+      f.store.answer(f.receiver.id, request.requestId, "fulfilled", "Recovered answer", null),
+    );
+    const activation = yield* Deferred.make<void>();
+    const updates = yield* (yield* Changes.DependencyChanges).subscribe;
+    yield* Effect.gen(function* () {
+      yield* TestClock.adjust("1 second");
+      assert.isEmpty((yield* orchestrator.getThreadProjection(f.waiter.id)).messages);
+      yield* (yield* Recovery.ProviderRuntimeRecoveryService).recover;
+      assert.equal((yield* f.store.get("dependency:startup-recovery"))?.state, "resolved");
+      yield* Deferred.succeed(activation, undefined);
+      yield* Stream.fromSubscription(updates).pipe(
+        Stream.mapEffect(() => f.store.get("dependency:startup-recovery")),
+        Stream.filter((dependency) => dependency?.state === "delivered"),
+        Stream.runHead,
+      );
+      const dependency = (yield* f.store.get("dependency:startup-recovery"))!;
+      const projection = yield* orchestrator.getThreadProjection(f.waiter.id);
+      assert.lengthOf(projection.messages, 1);
+      assert.equal(projection.messages[0]?.id, dependency.wakeMessageId);
+      assert.include(projection.messages[0]?.text ?? "", "Recovered answer");
+      const wakes = projection.runs.filter((run) => run.userMessageId === dependency.wakeMessageId);
+      assert.lengthOf(wakes, 1);
+      assert.equal(wakes[0]?.status, "starting");
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          Reactor.layerWorker.pipe(
+            Layer.provide(Watch.layer),
+            Layer.provide(Layer.succeed(ServerActivation, Deferred.await(activation))),
+            Layer.provide(
+              Layer.mock(Forwarding.PeerForwarding)({
+                call: () => Effect.die("Local recovery must not call a peer"),
+              }),
+            ),
+          ),
+          Recovery.layer.pipe(Layer.provide(IdAllocator.layer)),
+        ).pipe(Layer.provide(NodeCrypto.layer)),
+      ),
+    );
+  }).pipe(Effect.provide(runtime)),
+);
 
 const deliverQueuedWake = Effect.fnUntraced(function* (
   f: Effect.Success<typeof Fixture.seed>,

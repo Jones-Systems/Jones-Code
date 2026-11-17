@@ -3,6 +3,8 @@ import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
+import { nativeProcesses } from "./NativeObservations.ts";
+import { policyIO } from "./LinuxInfrastructureEvidence.testkit.ts";
 import { git } from "./Filesystem.ts";
 import { nativeServices, type ServiceIO } from "./NativeConsumers.ts";
 
@@ -16,6 +18,53 @@ async function fixture(run: (value: { base: string }) => Promise<void>) {
 }
 
 export const nativeObservationCases: Record<string, () => Promise<void>> = {
+  "native Linux process adapter carries the captured anchor through ordinary observations and verification":
+    async () => {
+      const events: string[] = [];
+      const result = await nativeProcesses(
+        "/fixture",
+        "linux",
+        policyIO(undefined, {
+          capture: async () => {
+            events.push("capture");
+            return {
+              base: "/fixture/anchor",
+              fd: 3,
+              snapshot: "fixture",
+              close: async () => {
+                events.push("close");
+              },
+            };
+          },
+          readlink: async (path) => {
+            NodeAssert.ok(path.startsWith("/fixture/anchor/"));
+            events.push("readlink");
+            throw Object.assign(Error(), { code: "EACCES" });
+          },
+          read: async (path) => {
+            NodeAssert.ok(path.startsWith("/fixture/anchor/"));
+            events.push("read");
+            return "";
+          },
+          verifyInfrastructure: async (anchor) => {
+            NodeAssert.equal(anchor.base, "/fixture/anchor");
+            events.push("verify");
+            return { kind: "verified", basisDigest: "a".repeat(64) };
+          },
+        }),
+      );
+      NodeAssert.equal(result.status, "partial");
+      NodeAssert.equal(result.processPolicy?.effectiveStatus, "complete");
+      NodeAssert.deepEqual(events, [
+        "capture",
+        "readlink",
+        "readlink",
+        "read",
+        "read",
+        "verify",
+        "close",
+      ]);
+    },
   "loaded native service observations use bounded manager projections and retain unknown coverage":
     async () => {
       const calls: string[][] = [];

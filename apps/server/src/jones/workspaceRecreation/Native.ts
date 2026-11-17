@@ -10,6 +10,7 @@ export type HoldReason =
   | "branch_changed"
   | "branch_in_use"
   | "stale_registration"
+  | "source_unavailable"
   | "unknown"
   | "native_recreation_unsupported";
 export class RecreationHold extends Error {
@@ -158,8 +159,15 @@ export async function missingSource(cwd: string, path: string): Promise<Recreati
         oid(retained.head)
       )
         return retained;
+      throw hold("retained recreation source identity is unavailable");
     }
-    throw hold("neither terminal receipt nor exact stale registration is available");
+    throw new RecreationHold(
+      "source_unavailable",
+      path,
+      "missing checkout",
+      "neither terminal receipt nor exact stale registration is available",
+      "Recover the exact deleted checkout HEAD and registration before recreating this target.",
+    );
   }
   for (const name of await NodeFSP.readdir(NodePath.join(common, "worktrees"))) {
     const admin = NodePath.join(common, "worktrees", name);

@@ -1,0 +1,129 @@
+.layout {
+  pointer-events: none;
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  padding-top: 0.375rem;
+}
+
+.layout[data-chat-composer-layout="hero"] {
+  top: 0;
+  padding-top: 0;
+}
+
+.layout[data-chat-composer-layout="hero"] > [data-composer-layout-lane] {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+}
+
+.layout > [data-composer-layout-footer] {
+  flex: none;
+}
+
+@media (min-width: 640px) {
+  .layout[data-chat-composer-layout="docked"] {
+    padding-top: 0.5rem;
+  }
+}
+
+.layout[data-short="true"] {
+  gap: 2px;
+  padding-top: 2px;
+}
+
+.layout[data-short="true"][data-chat-composer-layout="hero"] > [data-composer-layout-lane] {
+  flex: none;
+  margin-top: auto;
+}
+
+.layout[data-short="true"] [data-composer-layout-headline] {
+  position: static;
+}
+
+/* Once a project is chosen, the hero introduction yields its space to the editor.
+   Ineligible composers retain the project-selection heading. */
+.layout[data-short="true"]:has([data-chat-composer-shortcut-rails]:not([aria-hidden="true"]))
+  [data-composer-layout-headline],
+.layout[data-short="true"] [data-composer-layout-hero-spacer] {
+  display: none;
+}
+
+.layout[data-short="true"] [data-composer-layout-bottom-space] {
+  height: 2px;
+}
+
+/* Pack by the actual rail width (which may be narrower than the window).
+   Account glyphs retain their 36×26 bounds and 28px button height. */
+.layout[data-short="true"] [data-chat-composer-shortcut-content] {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px;
+}
+
+.layout[data-short="true"] [data-chat-composer-shortcut-content] > div,
+.layout[data-short="true"] [data-composer-shortcut-group] {
+  width: 100%;
+}
+
+.layout[data-short="true"] [data-composer-shortcut-group="accounts"] {
+  width: max-content;
+  grid-template-columns: repeat(3, 36px);
+  gap: 0;
+}
+
+.layout[data-short="true"] [data-composer-shortcut-group="effort"] {
+  gap: 0;
+}
+
+/* Put model names above their options so a narrow pane keeps the full button
+   width even when the window uses desktop breakpoints. */
+.layout[data-short="true"] [data-composer-shortcut-group="effort"] > [role="group"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  row-gap: 0;
+}
+
+.layout[data-short="true"] [data-composer-shortcut-group="effort"] > [role="group"] > span {
+  grid-column: 1 / -1;
+  line-height: 1rem;
+}
+
+.layout[data-short="true"]
+  [data-composer-shortcut-group="effort"]
+  > button:last-child:nth-child(3n + 1) {
+  grid-column: 1 / -1;
+}
+
+.layout[data-short="true"] [data-composer-shortcut-group="effort"] button {
+  min-height: 1.5rem;
+  padding-inline: 0.25rem;
+  font-size: 0.75rem;
+  line-height: 0.875rem;
+}
+
+.layout[data-short="true"] [data-chat-composer-body] {
+  padding-block: 2px;
+}
+
+.layout[data-short="true"] [data-chat-composer-footer] {
+  padding-bottom: 0;
+}
+
+/* Keep the existing editor's internal overflow for growing drafts. Its budget
+   subtracts the measured rail, not a guessed number of account/effort rows. */
+.layout[data-short="true"] .prompt {
+  min-height: calc(2lh + 8px);
+  max-height: max(
+    2lh + 8px,
+    calc(var(--composer-pane-height) - var(--composer-rails-height, 0px) - 48px)
+  );
+  line-height: 1.25rem;
+}
+
+.layout[data-short="true"] .placeholder {
+  line-height: 1.25rem;
+}
