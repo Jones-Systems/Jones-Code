@@ -36,6 +36,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   ProviderThreadId,
   type Project,
   type RepositoryIdentity,
@@ -67,6 +68,7 @@ import { McpSchema, McpServer } from "effect/ai";
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -133,6 +135,7 @@ interface BoxThread {
   /** A later run's reply, after the task's own, as a follow-up message would leave. */
   readonly laterReply: Ref.Ref<string | null>;
   readonly laterRun: Ref.Ref<OrchestrationV2Run | null>;
+  readonly queuedRun: Ref.Ref<OrchestrationV2Run | null>;
   readonly waitStarted: Deferred.Deferred<void>;
   /** The reply of a run queued there behind the later one; once set, the thread settles on it. */
   readonly queuedReply: Ref.Ref<string | null>;
@@ -189,6 +192,7 @@ const makeBoxThread = Effect.gen(function* () {
     laterError: yield* Ref.make<string | null>(null),
     laterReply: yield* Ref.make<string | null>(null),
     laterRun: yield* Ref.make<OrchestrationV2Run | null>(null),
+    queuedRun: yield* Ref.make<OrchestrationV2Run | null>(null),
     waitStarted: yield* Deferred.make<void>(),
     queuedReply: yield* Ref.make<string | null>(null),
     restart: yield* Ref.make<{ readonly of: RunId; readonly reply: string } | null>(null),
@@ -316,12 +320,15 @@ const boxToolkitLayer = (thread: BoxThread) => {
       const status = yield* Ref.get(thread.status);
       const runless = yield* Ref.get(thread.runless);
       const laterRun = yield* Ref.get(thread.laterRun);
+      const queuedRun = yield* Ref.get(thread.queuedRun);
       const model = yield* Ref.get(thread.executedModel);
       return shell === null
         ? (null as never)
         : {
             ...idleThreadProjection(shell),
-            runs: runless ? [] : [runOf(status), ...(laterRun === null ? [] : [laterRun])],
+            runs: runless
+              ? []
+              : [runOf(status), ...[laterRun, queuedRun].filter((run) => run !== null)],
             providerTurns: (model === null
               ? []
               : [{ runAttemptId: "attempt:box", ordinal: 1, model }]) as never,
@@ -572,6 +579,14 @@ const boxToolkitLayer = (thread: BoxThread) => {
             shell.createdAt,
             accepted,
             Ref.update(thread.sent, (seen) => [...seen, input.text]).pipe(
+              Effect.andThen(
+                Ref.set(input.mode === "queue" ? thread.queuedRun : thread.laterRun, {
+                  ...runOf(accepted.status),
+                  id: accepted.runId,
+                  threadId: input.threadId,
+                  ordinal: input.mode === "queue" ? 3 : 2,
+                }),
+              ),
               Effect.as({
                 run: { id: accepted.runId, status: accepted.status },
                 delivery: accepted.delivery,
@@ -780,7 +795,23 @@ const makeLaptop = (
       ProviderReplayHarness.layerWithRegistry(
         { name: "remote-delegation-laptop" },
         ProviderAdapterRegistry.layerFromAdapters([adapter]),
-        { databaseLayer: layerDatabase, runEffectWorker: false },
+        {
+          databaseLayer: layerDatabase,
+          runEffectWorker: false,
+          mcpSessionRegistryLayer: Layer.mock(McpSessionRegistry.McpSessionRegistry)({
+            lookupByCredentialId: (credentialId) =>
+              Effect.succeed(
+                credentialId === parentScope.requestNamespace ? parentScope : undefined,
+              ),
+          }),
+          isMcpCallerAttached: (input) =>
+            Effect.succeed(
+              input.threadId === parentThreadId &&
+                input.providerSessionId === parentSessionId &&
+                input.providerInstanceId === parentScope.thread.providerInstanceId &&
+                input.mcpCredentialId === parentScope.requestNamespace,
+            ),
+        },
       ),
     ).pipe(
       Layer.provide(
@@ -948,7 +979,8 @@ const makeLaptop = (
 const parentThreadId = ThreadId.make("thread:laptop-parent");
 const parentRunId = RunId.make("run:laptop-parent");
 const parentRootNode = NodeId.make("node:laptop-parent:root");
-const parentScope: McpInvocationContext.McpInvocationScope = {
+const parentSessionId = ProviderSessionId.make("native-session:laptop-parent");
+const parentScope: McpInvocationContext.McpThreadInvocationScope = {
   environmentId: laptop.environmentId,
   requestNamespace: "provider-session:laptop-parent",
   thread: {
@@ -997,7 +1029,7 @@ const seedParent = (
             id: providerThreadId,
             driver,
             providerInstanceId: instanceId,
-            providerSessionId: null,
+            providerSessionId: parentSessionId,
             appThreadId: parentThreadId,
             ownerNodeId: parentRootNode,
             nativeThreadRef: { driver, nativeId: "native:laptop-parent", strength: "strong" },
@@ -1272,9 +1304,10 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       });
       // Three thin Shell lookups revalidate the caller; one payload lookup validates this delivery.
       // Reviewed raw-SQL hashes are independent of the builder and every observed query.
-      const shellDigest = "159b65345b7062b6802b11fa27cb76319b00e19aef2772d833f3cee748be71bc";
-      const payloadDigest = "35a52bf9e8af7ef0a4435df85ea59d95d851e6eeabf322c3b107425f2d1d9a7e";
+      const shellDigest = "59179f40abda7c8890e183b8ab2a0eea82991a748c7acbf7e1c35aed783dab2d";
+      const payloadDigest = "87a9f01968cf6314bcd54f88459d29a671b6d50bde5bff50748bf01ded2408b2";
       const shellParameters = [
+        "/compact",
         "/compact",
         "/compact",
         "/compact",
@@ -1333,9 +1366,12 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
           ancestry: [
             "ProjectionStore.readCanonicalProjection",
             "sql.transaction",
+            "LegacyDecision.readThreadRecords",
+            "LegacyDecision.getThreadRecords",
             "Orchestrator.dispatchDelegatedTaskCompletionDeliveryResolution",
             "orchestrationV2.dispatch.once",
             "orchestrationV2.dispatch.withReceipt",
+            "OrchestratorV2.dispatch",
             "OrchestratorMcpService.readRemoteTask",
             "OrchestratorMcpService.readTask",
             "OrchestratorMcpService.taskStatus",
@@ -2183,9 +2219,7 @@ it.effect("a Stop refused by lowered parent modes retains the original remote de
 
       const refusal = yield* Deferred.await(stopRefused);
       expect(refusal.code).toBe("runtime_mode_escalation_denied");
-      expect(refusal.message).toContain(
-        "full-access is broader than parent mode approval-required",
-      );
+      expect(refusal.message).toMatch(/\bfull-access\b.*approval-required/);
       const pending = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
         (task) => task.id === delegated.taskId,
       );
@@ -2274,6 +2308,7 @@ it.effect("a follower that keeps hitting defects fails the task and wakes the pa
         undefined,
         { beforeFollow },
       ).pipe(Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule));
+      yield* a.remote.start();
       yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
       yield* Queue.take(retries.failed).pipe(
@@ -3578,6 +3613,7 @@ it.effect("delegates worktree isolation to the destination launch defaults", () 
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
       expect((yield* Ref.get(thread.launchedWith))?.workspaceStrategy).toEqual({
         type: "worktree",
+        startFromOrigin: true,
       });
       expect(yield* Ref.get(thread.launched)).not.toBeNull();
     }),
@@ -3939,9 +3975,7 @@ it.effect(
           }),
         );
         expect(refusal.code).toBe("runtime_mode_escalation_denied");
-        expect(refusal.message).toContain(
-          "full-access is broader than parent mode approval-required",
-        );
+        expect(refusal.message).toMatch(/\bfull-access\b.*approval-required/);
         const pending = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
           (task) => task.id === delegated.taskId,
         )!;

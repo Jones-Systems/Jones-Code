@@ -14,6 +14,7 @@ import {
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 
 import * as Cause from "effect/Cause";
@@ -48,6 +49,7 @@ import { refuseUnsolicitedSupervision } from "../mcp/delegatedTaskSupervision/De
 
 import type { RemoteDelegation } from "../../peer/RemoteDelegation.ts";
 import * as FollowerSupervision from "./FollowerSupervision.ts";
+import { FollowRetrySchedule } from "./retrySchedule.ts";
 const FOLLOW_WAIT_MS = 50_000;
 /** A follower that hits this many defects in a row ends instead of retrying. */
 const FOLLOW_MAX_DEFECTS = 3;
@@ -77,11 +79,13 @@ export const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const random = yield* SecureRandom.SecureRandom;
+  const digest = yield* Digest.Digest;
   const hereId = yield* ServerEnvironment.ServerEnvironment.pipe(
     Effect.flatMap((environment) => environment.getEnvironmentId),
   );
   // Followers live as long as this service, so shutting down stops them.
   const followers = yield* Scope.Scope;
+  const followRetrySchedule = yield* FollowRetrySchedule;
   const monitor = yield* PeerMonitor.make;
   const durableFollowUps = yield* DurableFollowUp.make;
   const lifecycle = yield* RemoteLifecycle.make((parentThreadId, taskId) =>
@@ -562,6 +566,7 @@ export const make = Effect.gen(function* () {
             : followGaveUp(parentThreadId, taskId);
         }),
         (operation) => FollowerSupervision.retry(operation, { operation: "follow", taskId }),
+        Effect.provideService(FollowRetrySchedule, followRetrySchedule),
       );
     });
 
@@ -643,6 +648,7 @@ export const make = Effect.gen(function* () {
     const task = records.subagents.find((candidate) => candidate.id === taskId);
     if (task?.remoteChild === undefined) return true;
     const remote = task.remoteChild;
+    const isFollowUp = yield* durableFollowUps.isRecordedTask(task.id);
     const scope = followScope(
       { threadId: parentThreadId, providerInstanceId: records.thread.providerInstanceId },
       remote,
@@ -657,7 +663,16 @@ export const make = Effect.gen(function* () {
           remote.stoppedThere !== true)
       ) {
         const key = remote.stopCount === undefined ? "stop" : `stop-${remote.stopCount}`;
-        yield* stopThere(scope, remote, key);
+        // Multiple follow-ups in one thread own separate stop debts.
+        const requestKey = isFollowUp
+          ? yield* digest
+              .digestHex(Digest.sha256, new TextEncoder().encode(task.id + "\n" + key))
+              .pipe(
+                Effect.map((digest) => `follow-up-stop:${digest}`),
+                Effect.orDie,
+              )
+          : key;
+        yield* stopThere(scope, remote, requestKey);
         yield* complete(
           parentThreadId,
           taskId,
@@ -711,11 +726,9 @@ export const make = Effect.gen(function* () {
         threadId: remote.threadId,
         ...(remote.runId === undefined ? {} : { runId: remote.runId }),
         timeoutMs: FOLLOW_WAIT_MS,
-        // A thread there whose run ended may still be waiting on its own
-        // tasks to wake it for the answer, which a task here waits for too.
-        // Observation support is required for new launches. Existing tasks on
-        // older peers still get one bounded chance to return their final result.
-        untilDelegatedWorkSettled: true,
+        // Follow-ups own one run and its restarts. A new delegation also waits for
+        // its child's delegated work to settle.
+        ...(isFollowUp ? {} : { untilDelegatedWorkSettled: true }),
         observeBlockingQuestions: true,
         ...(previousObservation === undefined
           ? {}
@@ -772,8 +785,8 @@ export const make = Effect.gen(function* () {
         message:
           "The remote wait selected an unfinished result run; reconciliation remains pending.",
       });
-    const resultRun = waited.resultRun ?? {
-      runId: remote.runId ?? waited.runId,
+    const resultRun = (!isFollowUp ? waited.resultRun : undefined) ?? {
+      runId: waited.runId,
       status: waited.status,
     };
     const result = yield* lastReplyWithExecutedModel(
@@ -976,7 +989,7 @@ export const make = Effect.gen(function* () {
             ),
           ),
         ).pipe(Effect.forkIn(followers, { startImmediately: true }));
-      }),
+      }).pipe(Effect.provideService(FollowRetrySchedule, followRetrySchedule)),
     );
 
   const runStatus: RemoteDelegation["Service"]["runStatus"] = Effect.fn(

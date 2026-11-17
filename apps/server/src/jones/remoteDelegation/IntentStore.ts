@@ -364,6 +364,12 @@ export const makeFollowUps = Effect.gen(function* () {
   return {
     get,
     find,
+    isRecordedTask: (taskId: NodeId) =>
+      sql`SELECT 1 FROM jones_remote_delegation_intents WHERE task_id = ${taskId}
+        AND status = 'recorded' AND json_extract(envelope_json, '$.kind') = 'remote-followup/v1' LIMIT 1`.pipe(
+        Effect.map((rows) => rows.length > 0),
+        Effect.mapError(storageFailure),
+      ),
     pendingForTarget: (parentThreadId: ThreadId, environmentId: EnvironmentId, threadId: string) =>
       sql<Row>`SELECT * FROM jones_remote_delegation_intents WHERE status = 'pending'
         AND json_extract(envelope_json, '$.kind') = 'remote-followup/v1'

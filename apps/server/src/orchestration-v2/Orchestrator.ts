@@ -10819,13 +10819,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     // A follow-up to a finished task there binds as one to a child here does.
     const remoteChild = command.remoteChild;
-    const followsUp = parentProjection.subagents.some(
-      (task) =>
-        remoteChild !== undefined &&
-        task.result !== null &&
-        task.remoteChild?.environmentId === remoteChild.environmentId &&
-        task.remoteChild.threadId === remoteChild.threadId,
-    );
+    const followsUp =
+      (yield* CoreFollowUpCommandOwner.isAuthorizedReservation(command)) ||
+      parentProjection.subagents.some(
+        (task) =>
+          remoteChild !== undefined &&
+          task.result !== null &&
+          task.remoteChild?.environmentId === remoteChild.environmentId &&
+          task.remoteChild.threadId === remoteChild.threadId,
+      );
     if (
       parentRun === undefined ||
       (followsUp
@@ -11108,8 +11110,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const task = parentProjection.subagents.find(
       (candidate) =>
         candidate.id === command.taskId &&
+        candidate.threadId === command.parentThreadId &&
         candidate.origin === "app_owned" &&
-        candidate.remoteChild !== undefined,
+        (candidate.remoteChild !== undefined || candidate.driver === "remote"),
     );
     if (task === undefined) {
       return yield* new OrchestratorDispatchError({
@@ -11119,21 +11122,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (
+      task.remoteChild === undefined &&
+      (command.stoppedThere !== undefined || command.stopCount !== undefined)
+    )
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "A remote Stop acknowledgment requires the exact bound child.",
+      });
+    if (
       command.stoppedThere === "stopped" &&
       (command.stopCount ?? 0) !== (task.remoteChild?.stopCount ?? 0)
     )
       return;
     const remoteChild =
-      command.stoppedThere === undefined
+      command.stoppedThere === undefined || task.remoteChild === undefined
         ? task.remoteChild
-        : { ...task.remoteChild!, stoppedThere: true };
+        : { ...task.remoteChild, stoppedThere: true };
     // The first result stands; a repeated follower report records nothing, which
     // the dispatcher refuses. A stop there after the result is still recorded, but
     // a run that ended by itself does not settle a stop the task here still owes.
     if (task.result !== null) {
       // A Stop or cancel here that lost the race to the result still owes its stop.
       if (command.stoppedThere === undefined) {
-        return yield* emitRemoteStopOwed(events, command, task, task.remoteChild!);
+        if (task.remoteChild === undefined) return;
+        return yield* emitRemoteStopOwed(events, command, task, task.remoteChild);
       }
       const owesStop =
         task.status === "cancelled" ||

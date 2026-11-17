@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import type { McpThreadInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { resolveRuntimeMode } from "../../mcp/delegatedTaskModes.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
@@ -177,6 +178,14 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
           if (launched !== null && launched.runId === null && task.result === null)
             return yield* park(id);
           if (launched === null) {
+            if (
+              !intent.launchStarted &&
+              link.value.access !== "read-only" &&
+              envelope.launch.runtimeMode !== undefined &&
+              envelope.launch.runtimeMode !== "inherit"
+            ) {
+              yield* resolveRuntimeMode(link.value.access, envelope.launch.runtimeMode);
+            }
             if (
               !(yield* ObservationSupport.supported(forwarding, caller, envelope.environmentId))
             ) {

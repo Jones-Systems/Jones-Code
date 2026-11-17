@@ -37,6 +37,7 @@ import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 import * as ThreadManagementService from "../ThreadManagementService.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
+import type * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as VcsDriverRegistry from "../../vcs/VcsDriverRegistry.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
@@ -352,6 +353,8 @@ export function layerWithRegistryAndServices<Error>(
     readonly serverConfigLayer?: Layer.Layer<ServerConfig.ServerConfig>;
     readonly databaseLayer?: Layer.Layer<SqlClient.SqlClient, ReplayDatabaseError>;
     readonly runEffectWorker?: boolean;
+    readonly mcpSessionRegistryLayer?: Layer.Layer<McpSessionRegistry.McpSessionRegistry>;
+    readonly isMcpCallerAttached?: ProviderSessionManager.ProviderSessionManagerV2["Service"]["isMcpCallerAttached"];
     readonly continuationRequestsLayer?: Layer.Layer<never>;
     readonly startAdmissionLayer?: Layer.Layer<ControlAdmission.ControlAdmission>;
     readonly configureMcp?: boolean;
@@ -517,7 +520,7 @@ export function layerWithRegistryAndServices<Error>(
         layerEventSinkProvided,
         IdAllocator.layer,
         McpProviderSessions.layer,
-        McpSessionRegistryTestkit.layer,
+        options.mcpSessionRegistryLayer ?? McpSessionRegistryTestkit.layer,
         layerServerSettings,
         layerProviderEventIngestorProvided,
         layerStores,
@@ -525,9 +528,9 @@ export function layerWithRegistryAndServices<Error>(
       ),
     ),
   );
-  const onSessionDetached = options.onSessionDetached;
+  const { onSessionDetached, isMcpCallerAttached } = options;
   const layerProviderSessionManagerProvided =
-    onSessionDetached === undefined
+    onSessionDetached === undefined && isMcpCallerAttached === undefined
       ? layerProviderSessionManagerBase
       : Layer.effect(
           ProviderSessionManager.ProviderSessionManagerV2,
@@ -535,8 +538,13 @@ export function layerWithRegistryAndServices<Error>(
             const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
             return ProviderSessionManager.ProviderSessionManagerV2.of({
               ...sessions,
-              detach: (input) =>
-                sessions.detach(input).pipe(Effect.tap(() => onSessionDetached(input))),
+              ...(onSessionDetached === undefined
+                ? {}
+                : {
+                    detach: (input) =>
+                      sessions.detach(input).pipe(Effect.tap(() => onSessionDetached(input))),
+                  }),
+              ...(isMcpCallerAttached === undefined ? {} : { isMcpCallerAttached }),
             });
           }),
         ).pipe(Layer.provide(layerProviderSessionManagerBase));
@@ -665,6 +673,7 @@ export function layerWithRegistryAndServices<Error>(
         layerProvidedRegistry,
         layerContinuationRequests,
         layerRuntime,
+        options.mcpSessionRegistryLayer ?? Layer.empty,
         layerProviderSessionManagerProvided,
         layerProviderSwitchServiceProvided,
         layerRunExecutionServiceProvided,

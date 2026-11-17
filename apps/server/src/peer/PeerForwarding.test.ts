@@ -5,6 +5,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  MessageId,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadShell,
   type SourceControlCloneRepositoryInput,
@@ -106,19 +107,40 @@ const boxThreadsWith = (
     Effect.map((sessionId) => ({ ...base, linkOrigin: { sessionId, label: "T3 Code · Laptop" } })),
   );
   const users = { ...liveThreadShell(usersThread, { runtimeMode: "auto" }), projectId: boxProject };
-  const run = (status: OrchestrationV2Run["status"]) =>
-    ({ id: boxRun, status }) as unknown as OrchestrationV2Run;
+  const run = (status: OrchestrationV2Run["status"]): OrchestrationV2Run => ({
+    id: boxRun,
+    threadId: boxThread,
+    ordinal: 1,
+    providerInstanceId: base.providerInstanceId,
+    modelSelection: base.modelSelection,
+    providerThreadId: null,
+    userMessageId: MessageId.make("message:box-auto"),
+    rootNodeId: null,
+    activeAttemptId: null,
+    status,
+    requestedAt: base.createdAt,
+    startedAt: base.createdAt,
+    completedAt: status === "completed" ? base.updatedAt : null,
+    checkpointId: null,
+    contextHandoffId: null,
+  });
   const shellOf = (threadId: ThreadId): Effect.Effect<OrchestrationV2ThreadShell | null> =>
     threadId === boxThread ? linked : Effect.succeed(threadId === usersThread ? users : null);
   const projectionOf = (threadId: ThreadId) =>
     shellOf(threadId).pipe(
-      Effect.map((thread) => ({ thread, runs: [run("running")], runtimeRequests: [] }) as never),
+      Effect.flatMap((shell) =>
+        shell === null
+          ? Effect.die(`Unexpected fixture thread ${threadId}`)
+          : Effect.succeed({ ...idleThreadProjection(shell), runs: [run("running")] }),
+      ),
     );
   return Layer.mock(ThreadManagement.ThreadManagementService)({
     remoteSendReceipts: receipts.remoteSendReceipts,
     getThreadShell: shellOf,
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
+    getTimelinePage: () =>
+      Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
     getShellSnapshot: () => linked.pipe(Effect.map((shell) => ({ threads: [shell] }) as never)),
     sendToThread: (input) =>
@@ -390,9 +412,9 @@ const makeLaptop = Effect.gen(function* () {
                 ),
           ),
         getProjectThreadRecords: ({ threadId }) =>
-          Effect.succeed({
-            thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
-          } as never),
+          Effect.succeed(
+            idleThreadProjection(liveThreadShell(threadId, { runtimeMode: "full-access" })),
+          ),
         // Before a send there, forwarding reads the caller's tasks: a finished one there
         // would make the send a follow-up. No thread here delegated to the box.
         getThreadRecords: (threadId) =>
@@ -502,7 +524,7 @@ it.effect("an agent here works on a linked environment's threads within its own 
         message: "Carry on there.",
         clientRequestId: "send-1",
       });
-      expect(sent.isError).toBe(false);
+      expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
       expect(sent.structuredContent).toMatchObject({ threadId: boxThread, delivery: "started" });
       // The box records which thread here sent it.
       expect((yield* Ref.get(seen)).sends[0]?.linkedSender).toEqual({

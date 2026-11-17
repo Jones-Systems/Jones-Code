@@ -13,6 +13,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
@@ -40,7 +41,10 @@ export class FollowUpCommandOwner extends Context.Service<
       scope: Store.FollowUpEnvelope["scope"],
       runId: RunId,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
-    readonly dispatch: (command: OrchestrationV2ServerCommand) => Effect.Effect<
+    readonly dispatch: (
+      command: OrchestrationV2ServerCommand,
+      reservationCaller?: Store.FollowUpEnvelope["scope"],
+    ) => Effect.Effect<
       {
         readonly storedEvents: ReadonlyArray<{
           readonly event: { readonly type: string; readonly payload: unknown };
@@ -129,6 +133,19 @@ export const make = Effect.gen(function* () {
         if (sent.runId === current.envelope.previousRemoteRunId) return yield* pending();
         if (current.status !== "recorded") {
           if (current.status !== "pending") return yield* pending();
+          const { subagents } = yield* threads
+            .getThreadRecords(current.envelope.request.parentThreadId, ["subagents"])
+            .pipe(Effect.mapError(pending));
+          if (
+            subagents.some(
+              (task) =>
+                task.id !== current.taskId &&
+                task.remoteChild?.environmentId === current.envelope.environmentId &&
+                task.remoteChild.threadId === sent.threadId &&
+                task.remoteChild.runId === sent.runId,
+            )
+          )
+            return yield* pending();
           yield* port.dispatch({
             type: "delegated_task.remote.bind",
             commandId: CommandId.make(`${intent.commandId}:bind`),
@@ -284,20 +301,17 @@ export const make = Effect.gen(function* () {
           .getThreadRecords(scope.thread!.threadId, ["runs", "subagents"])
           .pipe(Effect.mapError(pending));
         const run = followUpOwnerRun(parent.runs);
-        if (parent.subagents.some((task) => isThere(task) && task.result === null))
-          return yield* pending();
-        const previous = parent.subagents
-          .filter(isThere)
-          .toSorted(
-            (a, b) => DateTime.toEpochMillis(b.updatedAt) - DateTime.toEpochMillis(a.updatedAt),
-          )[0];
+        const siblings = parent.subagents.filter(isThere);
+        if (!siblings.some((task) => task.result !== null)) return yield* pending();
+        const previous = siblings.toSorted(
+          (a, b) => DateTime.toEpochMillis(b.updatedAt) - DateTime.toEpochMillis(a.updatedAt),
+        )[0];
         if (
           parent.thread.archivedAt !== null ||
           parent.thread.deletedAt !== null ||
           run?.rootNodeId == null ||
           run.providerInstanceId !== scope.thread!.providerInstanceId ||
-          !Threads.isActiveRun(run) ||
-          previous?.result == null ||
+          previous === undefined ||
           previous.model === null ||
           previous.driver !== "remote" ||
           previous.remoteChild?.runId === undefined
@@ -305,14 +319,14 @@ export const make = Effect.gen(function* () {
           return yield* denied(
             "Follow-up requires the current owning parent run and its finished child; nothing was sent.",
           );
-        yield* port.assertParentCaller(
-          {
-            environmentId: scope.environmentId,
-            requestNamespace: scope.requestNamespace,
-            thread: scope.thread!,
-          },
-          run.id,
-        );
+        if (previous.result === null && !(yield* store.isRecordedTask(previous.id)))
+          return yield* pending();
+        const caller = {
+          environmentId: scope.environmentId,
+          requestNamespace: scope.requestNamespace,
+          thread: scope.thread!,
+        };
+        yield* port.assertParentCaller(caller, run.id);
         yield* refuseUnsolicitedSupervision(parent.thread, input.targetModes);
         const link = yield* links.get(environmentId).pipe(Effect.mapError(pending));
         const generation = yield* links
@@ -326,11 +340,7 @@ export const make = Effect.gen(function* () {
           return yield* denied("The original child link is unavailable; nothing was sent.");
         const envelope: Store.FollowUpEnvelope = {
           kind: "remote-followup/v1",
-          scope: {
-            environmentId: scope.environmentId,
-            requestNamespace: scope.requestNamespace,
-            thread: scope.thread!,
-          },
+          scope: caller,
           environmentId,
           linkedAt: DateTime.formatIso(link.value.linkedAt),
           label: link.value.label,
@@ -360,7 +370,7 @@ export const make = Effect.gen(function* () {
           },
         };
         yield* store.prepare(commandId, request, envelope);
-        const recorded = yield* port.dispatch(envelope.request);
+        const recorded = yield* port.dispatch(envelope.request, envelope.scope);
         const event = recorded.storedEvents.find(
           ({ event }) => event.type === "subagent.updated",
         )?.event;
@@ -413,12 +423,11 @@ export const make = Effect.gen(function* () {
         const parent = yield* threads
           .getThreadRecords(intent.envelope.request.parentThreadId, ["runs"])
           .pipe(Effect.mapError(pending));
-        const run = parent.runs.find((run) => run.id === intent.envelope.request.parentRunId);
+        const run = followUpOwnerRun(parent.runs);
         if (
           task === undefined ||
           task.result !== null ||
-          run === undefined ||
-          !Threads.isActiveRun(run) ||
+          run?.id !== intent.envelope.request.parentRunId ||
           parent.thread.archivedAt !== null ||
           parent.thread.deletedAt !== null ||
           runtimeModeRank(intent.envelope.send.limits.runtimeMode) >
@@ -430,7 +439,15 @@ export const make = Effect.gen(function* () {
             yield* finishReservation(intent, "Follow-up cancelled before SEND.");
           return false;
         }
-        yield* port.assertParentCaller(intent.envelope.scope, intent.envelope.request.parentRunId);
+        const authority = yield* port
+          .assertParentCaller(intent.envelope.scope, intent.envelope.request.parentRunId)
+          .pipe(Effect.result);
+        if (Result.isFailure(authority)) {
+          if (Threads.isActiveRun(run) || authority.failure.code !== "capability_denied")
+            return yield* authority.failure;
+          yield* finishReservation(intent, "The parent no longer owns this unstarted follow-up.");
+          return false;
+        }
         return yield* store.beginSend(intent.commandId, intent.taskId!);
       }),
     );
@@ -505,6 +522,7 @@ export const make = Effect.gen(function* () {
     prepare,
     send,
     reconcile,
+    isRecordedTask: store.isRecordedTask,
     // Foreground status can reconcile an uncertain receipt without replaying SEND
     // or treating a live, unstarted reservation as a startup orphan.
     refresh: Effect.fn("RemoteFollowUp.refresh")(function* (taskId: NodeId) {

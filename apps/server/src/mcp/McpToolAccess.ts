@@ -532,10 +532,11 @@ const checkedHandlers = <Handlers>(declarations: Declarations<Handlers>): Handle
  */
 const takesLinkedEnvironment = (tool: Tool.Any) => {
   const parameters: unknown = tool.parametersSchema;
+  const wire = Predicate.hasProperty(parameters, "from") ? parameters.from : parameters;
   return (
-    Predicate.hasProperty(parameters, "fields") &&
-    Predicate.hasProperty(parameters.fields, "environmentId") &&
-    parameters.fields.environmentId === OrchestratorMcpEnvironmentTarget
+    Predicate.hasProperty(wire, "fields") &&
+    Predicate.hasProperty(wire.fields, "environmentId") &&
+    wire.fields.environmentId === OrchestratorMcpEnvironmentTarget
   );
 };
 
