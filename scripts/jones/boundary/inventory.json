@@ -1913,6 +1913,8 @@
     "apps/web/src/lib/threadContextAttachment.test.ts": "upstream-deleted",
     "apps/web/src/lib/threadContextAttachment.ts": "upstream-deleted",
     "apps/web/src/lib/utils.ts": "accepted-shared",
+    "apps/web/src/modelSelection.test.ts": "accepted-shared",
+    "apps/web/src/modelSelection.ts": "accepted-shared",
     "apps/web/src/observability/clientTracing.ts": "accepted-shared",
     "apps/web/src/pendingUserInput.test.ts": "jones-tests-in-upstream",
     "apps/web/src/pendingUserInput.ts": "hook",
