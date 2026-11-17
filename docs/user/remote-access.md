@@ -397,6 +397,61 @@ ends, as for any delegated task. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 
+### Jones Code: files on a linked machine
+
+An agent can read a text file, list a folder, or write a text file on a linked
+machine by its full path there, without starting a thread on it. Ask for the
+file and name the machine, for example "read `~/notes/plan.md` on the VPS".
+
+- Both sides need full access: the agent's thread here, and the link. A plan-mode
+  agent can read but not write. A link paired below full access cannot use
+  files at all.
+- Paths belong to the other machine. The same repository can sit in a different
+  folder there, so give the path as it is on that machine.
+- It handles text: long files come back in parts, and binary files, files over
+  8 MiB, and writes over 1 MiB are refused. Replacing an existing file is an
+  explicit choice the agent makes; it is not the default.
+- Both machines need a Jones Code version with this feature.
+
+File links in a conversation still open on the machine that conversation runs
+on. To look at a file from another machine yourself, ask the agent to read it
+or copy it here.
+
+### Jones Code: evaluate and review incoming requests
+
+On the receiving machine, open **Settings → Connections → Background remote
+evaluation**. Choose the provider account, model and options, then enable
+evaluation. Each environment has its own selection; it runs independently of
+the model used by a conversation.
+
+Passing requests run as ordinary Jones Code tasks with the receiving
+workspace's normal tools, permissions and provider settings. A request that
+needs review waits for your decision. Open **Requests** from the sidebar or a
+request notification, expand the request, then **Approve** or
+**Deny**. An approval releases that exact request. Linked agents and MCP
+question-response tools cannot approve these holds. New remote instructions
+are evaluated separately; cancellation remains available while a request waits.
+
+The evaluator runs without task tools. Qualified Claude instances and managed
+Codex instances with ChatGPT authorization support evaluation. CLI-backed Codex
+instances are excluded because their public integration cannot disable all task
+tools. An existing CLI login does not automatically authorize managed Codex.
+Settings lists configured instances that cannot be selected, with the reason each one reports.
+
+If evaluation fails or is interrupted, the request remains held as an evaluator
+service failure. New failures include a reason such as a timeout, account-access
+problem or invalid response. Older holds may contain only a generic reason;
+changing the evaluator does not retry or release them.
+
+Review requires an owner session on the receiving environment. A working linked
+connection does not grant that permission. If a linked environment says owner
+access is required, use that machine's own Jones Code app or signed-in browser.
+This warning does not establish that the machine has no evaluator providers.
+
+Screening is a heuristic, and does not change normal
+execution after a pass or the link's underlying access grant. Revoke the link
+in Connections to remove its access.
+
 ## Manage or revoke access
 
 On the host, **Settings → Sharing & access** lets authorized administrators create

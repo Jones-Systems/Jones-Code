@@ -1,5 +1,6 @@
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as LinkedThreads from "../jones/linkedThreads/LinkedThreads.ts";
+import { remoteAdmissionFeatures } from "../jones/mcp/remoteAdmissionFeatures.ts";
 import * as DelegatedTaskWorkspace from "../jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts";
 import { refuseUnsolicitedSupervision } from "../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 import {
@@ -2769,6 +2770,7 @@ const make = Effect.gen(function* () {
           };
         }),
         features: {
+          ...(yield* remoteAdmissionFeatures),
           appOwnedSubagents: true,
           asyncPolling: true,
           cancellation: true,

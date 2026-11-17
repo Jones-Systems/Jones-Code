@@ -20,6 +20,8 @@
     "apps/server/src/jones/mcp/workstreams/personalForward.ts",
     "apps/server/src/jones/workstreams/nativeProvider/settlementProof.ts",
     "apps/server/src/jones/workstreams/personal/agentService.ts",
+    "apps/server/src/jones/workstreams/personal/bearerHttp.test.ts",
+    "apps/server/src/jones/workstreams/personal/bearerHttp.ts",
     "apps/server/src/jones/workstreams/personal/http.ts",
     "apps/server/src/jones/workstreams/personal/service.test.ts",
     "apps/server/src/jones/workstreams/personal/service.ts",
@@ -123,7 +125,8 @@
     "packages/contracts/src/desktopBootstrap.ts",
     "packages/shared/src/atomicWrite.test.ts",
     "packages/shared/src/atomicWrite.ts",
-    "vite.config.ts"
+    "vite.config.ts",
+    "apps/web/test/fakeEnvironment.ts"
   ],
   "tombstones": [
     "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
@@ -933,6 +936,10 @@
     {
       "from": "apps/server/src/cli/thread.test.ts",
       "to": "apps/server/src/cli/workstream.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalPresentation.ts"
     }
   ]
 }

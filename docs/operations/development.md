@@ -389,9 +389,11 @@ for the security model.
 `vp run check:changed` runs CI's fast checks for your branch's changes: format and lint of the
 changed files, `knip:check` when code or a manifest changes, the generated GraphQL checks, typecheck
 of the affected packages and their dependents, and the test files beside the changed files. It maps
-files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), as CI does. It
-compares against the merge base with `origin/main`, or with a ref you pass. CI still runs the full
-test suites and the jobs the summary lists, so a local pass does not promise a green CI run.
+files to packages using the Linux CI classifier. It compares against the merge base with
+`origin/main`, or with a ref you pass. For standalone Node suites, it runs the tests assigned
+directly to required CI or its workspace package test scripts. Suites with a fixture-owning
+runner follow the [test runner inventory](./test-runners.md). CI also runs the full test suites
+and the jobs listed in the summary.
 
 For provider lifecycle, thread admission, or selection hooks, also run the affected Jones
 integration commands from [the maintained check recipes](../../scripts/jones/boundary/checks.json)
@@ -408,6 +410,9 @@ vp test run <files>
 vp lint <files>
 vp run --filter <package> typecheck
 ```
+
+`vp test run` finds only Vitest files. See [test runners](./test-runners.md) for the filename,
+command and CI step of each other kind of test.
 
 In `apps/web`, a test that renders React or touches the DOM is named `*.browser.test.{ts,tsx}`
 and runs in headless Chromium with the React Compiler on, like the app. There is no jsdom; other

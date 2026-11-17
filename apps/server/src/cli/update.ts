@@ -47,6 +47,7 @@ import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntim
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { createUpdateProgress } from "./updateProgress.ts";
 import * as CliService from "./service.ts";
+import { classifyJonesManagedRuntime } from "../jones/cli/managedRuntime.ts";
 
 export class CliUpdateError extends Schema.TaggedError<CliUpdateError>()("CliUpdateError", {
   reason: Schema.String,
@@ -75,7 +76,8 @@ export const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(funct
   const environment = yield* HostProcess.Environment;
   const githubToken = environment.GH_TOKEN?.trim() || environment.GITHUB_TOKEN?.trim() || undefined;
   for (let page = 1; page <= RELEASE_INDEX_MAX_PAGES; page += 1) {
-    const request = HttpClientRequest.get(cliReleaseIndexPageUrl(page)).pipe(
+    const releaseIndexUrl = cliReleaseIndexPageUrl(page);
+    const request = HttpClientRequest.get(releaseIndexUrl).pipe(
       HttpClientRequest.setHeader("Accept", "application/vnd.github+json"),
     );
     const authenticatedRequest =
@@ -85,22 +87,34 @@ export const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(funct
     const body = yield* httpClient.execute(authenticatedRequest).pipe(
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.flatMap((response) => response.text),
-      Effect.mapError(() => new CliUpdateError({ reason: "Could not list t3 releases." })),
+      Effect.mapError(
+        () => new CliUpdateError({ reason: `Could not list t3 releases from ${releaseIndexUrl}.` }),
+      ),
       Effect.timeoutOrElse({
         duration: RELEASE_INDEX_TIMEOUT,
-        orElse: () => Effect.fail(new CliUpdateError({ reason: "Timed out listing t3 releases." })),
+        orElse: () =>
+          Effect.fail(
+            new CliUpdateError({
+              reason: `Timed out listing t3 releases from ${releaseIndexUrl}.`,
+            }),
+          ),
       }),
     );
     const releases = yield* decodeReleaseIndex(body).pipe(
       Effect.mapError(
-        () => new CliUpdateError({ reason: "The t3 release index had an unexpected shape." }),
+        () =>
+          new CliUpdateError({
+            reason: `The t3 release index from ${releaseIndexUrl} had an unexpected shape.`,
+          }),
       ),
     );
     const version = newestCliReleaseVersion(releases, channel);
     if (version !== undefined) return version;
     if (releases.length === 0) break;
   }
-  return yield* new CliUpdateError({ reason: `No published ${channel} release was found.` });
+  return yield* new CliUpdateError({
+    reason: `No published ${channel} release was found in ${cliReleaseIndexPageUrl(1)}.`,
+  });
 });
 
 /** The version an update mirror's feed file for this platform offers on `channel`. */
@@ -287,6 +301,24 @@ export const updateCommand = Command.make("update", {
   ),
 );
 
+/** Release updates cannot replace a source-qualified Jones runtime through a version-only request. */
+export const assertReleaseUpdateAllowed = Effect.fn("cli.update.assert_release_update_allowed")(
+  function* (baseDir: string, version: string) {
+    const management = yield* classifyJonesManagedRuntime(baseDir, version);
+    if (management === "unreadable-service-state")
+      return yield* new CliUpdateError({
+        reason:
+          "The existing native service state requires reconciliation before a version-only update.",
+      });
+    if (management === "managed") {
+      return yield* new CliUpdateError({
+        reason:
+          "This Jones runtime requires source-qualified staging and an explicit Install through its host updater. A version-only release update is unavailable.",
+      });
+    }
+  },
+);
+
 const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(function* (input: {
   readonly baseDir: string;
   readonly serverRuntimeStatePath: string;
@@ -370,6 +402,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   const mirror = managedUpdateMirror(policy.document);
 
   const currentVersion = packageJson.version;
+  yield* assertReleaseUpdateAllowed(input.baseDir, currentVersion);
   const channel = input.channel ?? cliReleaseChannelOf(currentVersion);
   const refusal = managedUpdateRefusal(
     policy.document,

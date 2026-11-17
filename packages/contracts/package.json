@@ -19,6 +19,10 @@
       "types": "./src/relay.ts",
       "import": "./src/relay.ts"
     },
+    "./jones/remoteAdmissionReview": {
+      "types": "./src/jones/remoteAdmissionReview.ts",
+      "import": "./src/jones/remoteAdmissionReview.ts"
+    },
     "./jones/workstreamsPersonal": {
       "types": "./src/jones/workstreamsPersonal.ts",
       "import": "./src/jones/workstreamsPersonal.ts"
@@ -26,6 +30,10 @@
     "./jones/workstreamsPersonalRpc": {
       "types": "./src/jones/workstreamsPersonalRpc.ts",
       "import": "./src/jones/workstreamsPersonalRpc.ts"
+    },
+    "./jones/workstreamsPersonalHttp": {
+      "types": "./src/jones/workstreamsPersonalHttp.ts",
+      "import": "./src/jones/workstreamsPersonalHttp.ts"
     },
     "./jones/deliveryEvidence": {
       "types": "./src/jones/deliveryEvidence.ts",

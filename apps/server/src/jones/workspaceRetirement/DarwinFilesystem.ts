@@ -74,17 +74,32 @@ root = None
 try:
     path = request['path']
     if request['operation'] == 'read':
-        root = absolute(path)
-        before = os.fstat(root)
-        if not stat.S_ISREG(before.st_mode) or before.st_size > request['limit']: raise ValueError('bound_exceeded')
-        chunks, count = [], 0
-        while count <= before.st_size:
-            chunk = os.read(root,min(1048576,before.st_size-count+1))
-            if not chunk: break
-            chunks.append(chunk); count += len(chunk)
-        if count != before.st_size or snap(before) != snap(os.fstat(root)): raise ValueError('observation_failed')
+        link = None
+        if request.get('allowLink'):
+            parent = absolute(os.path.dirname(path), True)
+            try:
+                leaf = os.fsencode(os.path.basename(path))
+                before = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+                if stat.S_ISLNK(before.st_mode):
+                    link = os.readlink(leaf, dir_fd=parent)
+                    after = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+                    if len(link) > request['limit'] or snap(before) != snap(after): raise ValueError('observation_failed')
+            finally: os.close(parent)
+        if link is None:
+            root = absolute(path)
+            before = os.fstat(root)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > request['limit']: raise ValueError('bound_exceeded')
+            chunks, count = [], 0
+            while count <= before.st_size:
+                chunk = os.read(root,min(1048576,before.st_size-count+1))
+                if not chunk: break
+                chunks.append(chunk); count += len(chunk)
+            if count != before.st_size or snap(before) != snap(os.fstat(root)): raise ValueError('observation_failed')
+            contents = b''.join(chunks)
+        else:
+            contents = link
         import base64
-        print(json.dumps(dict(bytes=base64.b64encode(b''.join(chunks)).decode())))
+        print(json.dumps(dict(bytes=base64.b64encode(contents).decode())))
     else:
         limits = request['limits']; deadline = time.monotonic()+limits['seconds']
         root = absolute(path,True)
@@ -125,6 +140,7 @@ export function darwinFilesystem(request: {
   path: string;
   limits?: { entries: number; bytes: number; seconds: number };
   limit?: number;
+  allowLink?: boolean;
 }): Promise<unknown> {
   return new Promise((resolve, reject) => {
     NodeChildProcess.execFile(

@@ -11,6 +11,7 @@
     "apps/server/src/jones/workspaceRetirement/DutyIdentity.ts",
     "apps/server/src/jones/workspaceRetirement/EffectSeam.node-test-support.mjs",
     "apps/server/src/jones/workspaceRetirement/EventIntegration.ts",
+    "apps/server/src/jones/workspaceRetirement/InterruptedRetirement.ts",
     "apps/server/src/jones/workspaceRetirement/NativeConsumers.ts",
     "apps/server/src/jones/workspaceRetirement/NativeDutyOwner.ts",
     "apps/server/src/jones/workspaceRetirement/NativeObservation.node-test.mjs",

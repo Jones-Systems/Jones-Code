@@ -916,3 +916,115 @@ it("does not resurrect a completed request warning after its report is replaced 
   expect(screen.container.textContent).not.toContain("Previous completed report shown below.");
   expect(state.run).toHaveBeenCalledTimes(1);
 });
+
+const retirableEntry = (patch: { reasonCodes?: string[]; paths?: string[] } = {}) => {
+  const base = cleanupReport("retire", 1).entries[0]!;
+  return {
+    ...base,
+    path: "/cleanup-test/retire/ready",
+    threadId: "synthetic-thread" as NonNullable<typeof base.threadId>,
+    retirement: {
+      ...base.retirement!,
+      state: "proposed" as const,
+      fingerprint: "synthetic",
+      reasonCodes: patch.reasonCodes ?? [],
+      paths: patch.paths ?? [],
+      details: [],
+    },
+  } as StorageCleanupReport["entries"][number];
+};
+
+it("a retirement proposal opens Last run and shows Ready to retire", async () => {
+  setup();
+  state.retirementSupported = true;
+  state.targets = state.targets.slice(0, 1);
+  const proposal: StorageCleanupReport = {
+    ...cleanupReport("env-a", 0),
+    operation: "propose",
+    entries: [retirableEntry()],
+  };
+  state.report = proposal;
+  state.run.mockResolvedValue({ _tag: "Success", value: proposal });
+  await using screen = await render(panel());
+  const lastRun = () => screen.container.querySelector("#storage-cleanup-last-run button")!;
+  expect(lastRun().getAttribute("aria-expanded")).toBe("false");
+  await screen.getByRole("button", { name: "Propose retirements", exact: true }).click();
+  await expect.element(screen.getByRole("button", { name: /Ready to retire 1/ })).toBeVisible();
+  expect(lastRun().getAttribute("aria-expanded")).toBe("true");
+  await expect
+    .element(screen.getByRole("button", { name: "Retire", exact: true }))
+    .toBeInTheDocument();
+});
+
+it("untracked entries show the keep-setting hold and no Retire", async () => {
+  await using screen = await render(
+    <CleanupResults
+      selectedEnvironmentIds={["held"]}
+      reports={[
+        {
+          environmentId: "held",
+          environmentLabel: "Mini",
+          report: {
+            ...cleanupReport("held", 0),
+            operation: "propose",
+            entries: [
+              {
+                ...retirableEntry({ reasonCodes: ["untracked"] }),
+                retirement: {
+                  ...retirableEntry().retirement!,
+                  state: "held",
+                  reasonCodes: ["untracked"],
+                },
+              },
+            ],
+          },
+          onRetire: vi.fn(),
+        },
+      ]}
+    />,
+  );
+  expect(screen.container.textContent).toContain(
+    'set "Keep worktrees with local changes" (Settings → Worktrees) to "Edited tracked files"',
+  );
+  await expect
+    .element(screen.getByRole("button", { name: "Retire", exact: true }))
+    .not.toBeInTheDocument();
+});
+
+it("explains why Retire is hidden above 200 covered paths", async () => {
+  const paths = Array.from({ length: 201 }, (_, index) => `/cleanup-test/retire/ready/f${index}`);
+  await using screen = await render(
+    <CleanupResults
+      selectedEnvironmentIds={["wide"]}
+      reports={[
+        {
+          environmentId: "wide",
+          environmentLabel: "Mini",
+          report: {
+            ...cleanupReport("wide", 0),
+            operation: "propose",
+            entries: [retirableEntry({ paths })],
+          },
+          onRetire: vi.fn(),
+        },
+      ]}
+    />,
+  );
+  expect(screen.container.textContent).toContain(
+    "Retire is unavailable: this checkout covers 201 paths, more than the 200 one retirement can authorize.",
+  );
+  await expect
+    .element(screen.getByRole("button", { name: "Retire", exact: true }))
+    .not.toBeInTheDocument();
+});
+
+it("status shows without cleanup rules", async () => {
+  setup();
+  state.targets = state.targets.slice(0, 1);
+  state.report = { ...cleanupReport("env-a", 2), operation: "propose" };
+  await using screen = await render(panel());
+  expect(deleteButton(screen.container).disabled).toBe(true);
+  const row = deleteButton(screen.container).parentElement!.parentElement!;
+  expect(row.textContent).toContain("Retirement proposal: Completed · 2 reviewed, 0 failed");
+  expect(row.textContent).toContain("Turn on a cleanup rule to use Delete now.");
+});

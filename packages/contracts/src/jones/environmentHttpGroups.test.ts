@@ -53,6 +53,8 @@ describe("Jones environment HTTP registration", () => {
       "jonesUpdates",
       "jonesFleetUpdates",
       "remoteAdmission",
+      "remoteAdmissionReview",
+      "workstreamsPersonal",
       "jonesImportedHistory",
       "previewCompanion",
       "webhooks",
@@ -69,6 +71,7 @@ describe("Jones environment HTTP registration", () => {
       ...Object.values(groups.settlementRestore.endpoints),
       ...Object.values(groups.conversationLibrary.endpoints),
       ...Object.values(groups.workstreams.endpoints),
+      ...Object.values(groups.workstreamsPersonal.endpoints),
       ...Object.values(groups.jonesUpdates.endpoints),
     ];
     expect(routes.map(({ identifier, method, path }) => [identifier, method, path])).toEqual([
@@ -113,6 +116,8 @@ describe("Jones environment HTTP registration", () => {
       ["history", "GET", "/api/workstreams/:workstreamId/history"],
       ["command", "GET", "/api/workstreams/commands/:commandId"],
       ["submit", "POST", "/api/workstreams/commands"],
+      ["list", "GET", "/api/jones/personal-workstreams"],
+      ["assign", "POST", "/api/jones/personal-workstreams/assign"],
       ["reconcile", "POST", "/api/jones-updates/reconcile"],
       ["recordRetired", "POST", "/api/jones-updates/record-retired"],
       ["prepareNative", "POST", "/api/jones-updates/prepare-native"],

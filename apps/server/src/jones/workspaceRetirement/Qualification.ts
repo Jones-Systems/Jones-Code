@@ -488,13 +488,18 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
         }
         const object = (await g(["ls-files", "-s", "--", path]))
           .toString()
-          .match(/^\d+ ([a-f0-9]+) 0\t/);
+          .match(/^(\d+) ([a-f0-9]+) 0\t/);
         if (!object) {
           reasons.add("index_flags");
           continue;
         }
-        const content = await readBounded(NodePath.join(current.path, path), 16 * 1024 * 1024);
-        if (!content.equals(await g(["cat-file", "blob", object[1]!]))) reasons.add("index_flags");
+        // A tracked symlink's blob records its link text, never the referent.
+        const content = await readBounded(
+          NodePath.join(current.path, path),
+          16 * 1024 * 1024,
+          object[1] === "120000",
+        );
+        if (!content.equals(await g(["cat-file", "blob", object[2]!]))) reasons.add("index_flags");
       }
     stage = "operation_state";
     for (const file of [
@@ -648,6 +653,12 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     if ((await outputObligations(current.path)).length) reasons.add("obligation");
     result.consumers = consumerDecision(current.path, input.consumers);
     result.consumers.holds.forEach((reason) => reasons.add(reason));
+    // Consumers are observed under the requested spelling, which may traverse a symlink
+    // (macOS /var, /tmp, or a linked T3 home) to the canonical binding path.
+    if (input.worktree !== current.path)
+      consumerDecision(input.worktree, input.consumers).holds.forEach((reason) =>
+        reasons.add(reason),
+      );
     result.consumers.unknown.forEach((reason) => unknown.add(reason));
     stage = "identity_recheck";
     if (canonical(await binding(current.path)) !== canonical(current))

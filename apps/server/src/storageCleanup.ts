@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFSP from "node:fs/promises";
+import { retainOwnerReport } from "./jones/storageCleanup/RetirementReport.ts";
 import * as RetirementOwnerAction from "./jones/workspaceRetirement/OwnerAction.ts";
 import type { WorkspaceRetirementAction, WorkspaceRetirementOutcome } from "@t3tools/contracts";
 import * as RetirementGate from "./jones/workspaceRetirement/RemovalGate.ts";
@@ -748,14 +749,46 @@ const make = Effect.gen(function* () {
     if (head === null) return true;
     const ref = head.exitCode === 0 ? head.stdout.trim() : "";
     const name = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length).trim() : null;
-    return name !== branch;
+    return (name?.startsWith("(") ? null : name) !== branch;
   });
 
   // Nothing watches an idle worktree, so its threads still record the branch it left.
   // Record the checked-out one so the next sweep can apply the rules to it.
   const followBranch = Effect.fn("StorageCleanup.followBranch")(
-    function* (worktreePath: string) {
+    function* (worktreePath: string, projectRoot: string) {
       const cwd = yield* fs.realPath(worktreePath);
+      const checkout = yield* git.execute({
+        operation: "StorageCleanup.followBranch",
+        cwd,
+        args: ["rev-parse", "--path-format=absolute", "--git-common-dir", "--absolute-git-dir"],
+        maxOutputBytes: 16_384,
+      });
+      const paths = checkout.stdout.trimEnd().split(/\r?\n/);
+      const [common, admin] = paths;
+      if (checkout.stdoutTruncated || paths.length !== 2 || !common || !admin) return;
+      const project = yield* git.execute({
+        operation: "StorageCleanup.followBranch",
+        cwd: projectRoot,
+        args: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        maxOutputBytes: 16_384,
+      });
+      const canonicalCommon = yield* fs.realPath(common);
+      const canonicalAdmin = yield* fs.realPath(admin);
+      if (
+        project.stdoutTruncated ||
+        canonicalCommon !== (yield* fs.realPath(project.stdout.trim()))
+      )
+        return;
+      const worktreeAdminRoot = path.join(canonicalCommon, "worktrees");
+      if (path.dirname(canonicalAdmin) !== worktreeAdminRoot) return;
+      // A Git file can be redirected to another checkout's administrator.
+      const registered = yield* fs.readFileString(path.join(canonicalAdmin, "gitdir"));
+      const registeredPath = path.resolve(canonicalAdmin, registered.trim());
+      if (
+        path.basename(registeredPath) !== ".git" ||
+        (yield* fs.realPath(path.dirname(registeredPath))) !== cwd
+      )
+        return;
       yield* reconcileBranch({ cwd, refName: yield* gitWorkflow.currentBranch(cwd) });
     },
     (effect, worktreePath) =>
@@ -1373,7 +1406,7 @@ const make = Effect.gen(function* () {
           return keep("contains a project checkout");
         if (yield* branchChanged(worktreePath, thread.branch)) {
           // A deleted owner cannot follow, so its remaining subagents stay on its branch.
-          if (!deleted) yield* followBranch(worktreePath);
+          if (!deleted) yield* followBranch(worktreePath, project.workspaceRoot);
           return keep("repository or branch changed");
         }
         const changes = yield* localChangesReason(worktreePath, settings);
@@ -2041,7 +2074,10 @@ const make = Effect.gen(function* () {
   yield* start();
   return StorageCleanup.of({
     retirement: Effect.fn("StorageCleanup.retirement")((input) =>
-      retirementAction(input).pipe(Effect.tap((report) => SubscriptionRef.set(reportRef, report))),
+      retirementAction(input, {
+        measure: (worktreePath) =>
+          measureWorktree(worktreePath).pipe(Effect.map(({ bytes }) => bytes)),
+      }).pipe(Effect.flatMap((report) => retainOwnerReport(reportRef, input, report))),
     ),
     runNow,
     latestReport: SubscriptionRef.get(reportRef),

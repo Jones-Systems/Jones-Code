@@ -22,7 +22,6 @@ import {
   gitLines,
   ignoredCheckInputs,
   runSteps,
-  splitTests,
   type Step,
 } from "./check-changed.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
@@ -143,24 +142,6 @@ describe("check:changed", () => {
       );
     }),
   );
-
-  it("runs the .github/scripts node:test files with node --test, not vitest", () => {
-    assert.deepStrictEqual(
-      splitTests([
-        "apps/server/src/ws.test.ts",
-        ".github/scripts/ci-changes.test.cjs",
-        ".github\\scripts\\thread-transfer-report.test.cjs",
-        "scripts/check-changed.test.ts",
-      ]),
-      {
-        vitestTests: ["apps/server/src/ws.test.ts", "scripts/check-changed.test.ts"],
-        nodeTests: [
-          ".github/scripts/ci-changes.test.cjs",
-          ".github\\scripts\\thread-transfer-report.test.cjs",
-        ],
-      },
-    );
-  });
 
   it.effect("fails instead of returning an empty file list when git exits nonzero", () => {
     const spawner = (exitCode: number) =>
@@ -378,11 +359,15 @@ function launcherFixture() {
     "scripts/check-changed.ts",
     "scripts/check-changed-command.ts",
     ".github/scripts/ci-changes.cjs",
+    "scripts/jones/ci/linux-changes.cjs",
+    "scripts/jones/ci/local-selection.cjs",
+    "scripts/jones/ci/standalone-tests.json",
+    "scripts/jones/ci/test-inventory.cjs",
   ]) {
     write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));
   }
   write(".gitignore", "node_modules/\nrecords/\n");
-  write("pnpm-workspace.yaml", "packages:\n  - packages/*\n");
+  write("pnpm-workspace.yaml", "packages:\n  - packages/*\n  - scripts\n");
   write(
     "package.json",
     JSON.stringify({
@@ -394,6 +379,8 @@ function launcherFixture() {
     }),
   );
   write("packages/example/package.json", JSON.stringify({ name: "example" }));
+  write("packages/other/package.json", JSON.stringify({ name: "other" }));
+  write("scripts/package.json", JSON.stringify({ name: "@t3tools/scripts" }));
   const source = "packages/example/space & (draft) %PATH% ! 研究.ts";
   write(source, "export const value = 1;\n");
   write(
@@ -484,6 +471,23 @@ it("checks changed source paths through the Windows launcher", () => {
   expect(calls.some(({ args }) => args[0] === "install")).toBe(false);
   expect(result.stdout).toContain("fixture stdout: lint");
   expect(result.stdout).toContain("fixture stderr: lint");
+});
+
+it("uses full CI qualification and runs only directly runnable Node suites serially", () => {
+  using project = launcherFixture();
+  const ciTest = "scripts/jones/ci/selection.node-test.cjs";
+  project.write(ciTest, "");
+  project.write("scripts/jones/native-enrollment/sea-fixture.node-test.mjs", "");
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  const commands = project.calls().map(({ args }) => args);
+  expect(
+    commands.filter(([command, executable]) => command === "exec" && executable === "node"),
+  ).toEqual([["exec", "node", "--test", "--test-concurrency=1", ciTest]]);
+  expect(commands.some(([command]) => command === "test")).toBe(false);
+  const typecheck = commands.find((args) => args[0] === "run" && args.at(-1) === "typecheck");
+  expect(typecheck).toEqual(expect.arrayContaining(["example", "other", "@t3tools/scripts"]));
+  expect(result.stdout).toContain("CI runs every job: this change");
 });
 
 it("lints an Astro component and runs knip when only it changed", () => {

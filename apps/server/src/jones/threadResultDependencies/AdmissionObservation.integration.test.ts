@@ -1,19 +1,21 @@
 import { assert, it } from "@effect/vitest";
 import {
-  AuthSessionId,
   EnvironmentId,
   OrchestratorMcpFailure,
   OrchestrationV2ProviderThread,
-  type AuthClientSession,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Auth from "../../auth/EnvironmentAuth.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import * as Settings from "../../serverSettings.ts";
+import { ReceiverRecoveryEvidence } from "../remoteAdmissionIntegration/RecoveryStore.ts";
+import { makeCurrentAuthority } from "../remoteAdmissionIntegration/RuntimeAdapters.ts";
 import * as Providers from "../../provider/ProviderInstanceRegistry.ts";
 import { IncomingLinkedMessage } from "../peerTransport/LinkedMessageOrigin.ts";
 import * as Admissions from "../remoteAdmission/RemoteAdmission.ts";
@@ -52,10 +54,23 @@ const admissions = Intake.layer.pipe(
     ),
   ),
   Layer.provide(
-    Layer.mock(Auth.EnvironmentAuth)({
-      listSessions: () =>
-        Effect.succeed([{ sessionId: AuthSessionId.make("linked-session") } as AuthClientSession]),
-    }),
+    Layer.effect(
+      ReceiverRecoveryEvidence,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        return ReceiverRecoveryEvidence.of({
+          authorize: makeCurrentAuthority(
+            sql,
+            projections,
+            { get: () => Effect.die("This send fixture has no project selector") },
+            { document: undefined },
+          ),
+          read: () => Effect.die("Send receipt reconciliation must not inspect launch evidence"),
+          root: () => Effect.die("Send receipt reconciliation must not derive a launch root"),
+        });
+      }),
+    ),
   ),
   // Policy is installed as synthetic fixture data; this regression never resolves a model or starts a provider.
   Layer.provide(
@@ -75,6 +90,14 @@ it.effect.each([
   (scenario) =>
     Effect.gen(function* () {
       const f = yield* Fixture.seed;
+      // Claim reads CURRENT durable session authority under the settings writer.
+      // A listSessions stub is not a persisted, unexpired orchestration session.
+      const settings = yield* Settings.ServerSettingsService;
+      yield* settings.updateSettings({ linkedEnvironmentsEnabled: true });
+      yield* f.sql`INSERT INTO auth_sessions
+        (session_id,subject,scopes,method,issued_at,expires_at)
+        VALUES ('linked-session','mcp-client','["orchestration:operate"]',
+          'bearer-access-token','2026-01-01T00:00:00.000Z','2099-01-01T00:00:00.000Z')`;
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const intake = yield* Intake.RemoteAdmissionIntake;
       const watch = yield* Watch.RequestWatch;

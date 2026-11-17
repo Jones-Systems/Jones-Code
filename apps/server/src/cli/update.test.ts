@@ -1,7 +1,10 @@
+import { cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
+import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import type { ManagedUpdatesPolicy } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Fiber from "effect/Fiber";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -31,6 +34,8 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ServerRuntimeState from "../serverRuntimeState.ts";
 import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 import {
+  assertReleaseUpdateAllowed,
+  isJonesBootServiceCgroup,
   repointLauncher,
   resolveMirrorVersion,
   resolveNewestVersion,
@@ -202,6 +207,33 @@ it.layer(NodeServices.layer)("t3 update under a managed policy", (it) => {
 });
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
+  it.effect("refuses version-only updates of a preview or desktop-owned home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-qualified-update-" });
+      assert.equal(
+        (yield* assertReleaseUpdateAllowed(root, "0.0.44-preview.20261002.101.2").pipe(Effect.flip))
+          ._tag,
+        "CliUpdateError",
+      );
+      yield* assertReleaseUpdateAllowed(root, "0.0.44");
+      yield* fs.makeDirectory(path.join(root, "runtime"));
+      yield* fs.writeFileString(
+        path.join(root, "runtime", "service-state.json"),
+        `{"protocol":${SERVICE_LAUNCHER_PROTOCOL},"activeVersion":"0.0.44-preview.20261002.101.2"}`,
+      );
+      assert.equal(
+        (yield* assertReleaseUpdateAllowed(root, "0.0.44").pipe(Effect.flip))._tag,
+        "CliUpdateError",
+      );
+      yield* fs.writeFileString(path.join(root, "runtime", "jones-active-install.json"), "{}");
+      assert.equal(
+        (yield* assertReleaseUpdateAllowed(root, "0.0.44").pipe(Effect.flip))._tag,
+        "CliUpdateError",
+      );
+    }).pipe(Effect.scoped),
+  );
   it.effect("replaces a legacy symlink with a script that execs the new version", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -844,6 +876,195 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
     }).pipe(
       Effect.provideService(HostProcess.Platform, "linux"),
       Effect.provideService(HostProcess.Environment, { PATH: "" }),
+    ),
+  );
+});
+
+describe("t3 update release source", () => {
+  it.effect("walks only the configured source pages to find a stable release", () =>
+    Effect.gen(function* () {
+      const requests: string[] = [];
+      const client = HttpClient.make((request) => {
+        requests.push(request.url);
+        const releases =
+          requests.length === 1
+            ? [{ tag_name: "v2.0.0-nightly.20261001.1" }, { tag_name: "v2.0.0-preview.20261001.1" }]
+            : [{ tag_name: "v1.9.0", draft: true }, { tag_name: "v1.8.0" }];
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(request, new Response(JSON.stringify(releases))),
+        );
+      });
+      const version = yield* resolveNewestVersion("stable").pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
+      assert.equal(version, "1.8.0");
+      assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1), cliReleaseIndexPageUrl(2)]);
+    }),
+  );
+
+  it.effect.each(["nightly", "preview"] as const)(
+    "selects the %s channel from the configured source",
+    (channel) =>
+      Effect.gen(function* () {
+        const requests: string[] = [];
+        const client = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(
+                JSON.stringify([
+                  { tag_name: "v2.0.0" },
+                  { tag_name: "v2.0.0-nightly.20261001.1" },
+                  { tag_name: "v2.0.0-preview.20261001.1" },
+                ]),
+              ),
+            ),
+          );
+        });
+        const version = yield* resolveNewestVersion(channel).pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+        );
+        assert.equal(version, `2.0.0-${channel}.20261001.1`);
+        assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
+      }),
+  );
+
+  it.effect.each([404, 503])(
+    "names the configured source when unavailable (%s), without fallback",
+    (status) =>
+      Effect.gen(function* () {
+        const requests: string[] = [];
+        const client = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("", { status })));
+        });
+        const error = yield* resolveNewestVersion("stable").pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.flip,
+        );
+        assert.equal(error.reason, `Could not list t3 releases from ${cliReleaseIndexPageUrl(1)}.`);
+        assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
+      }),
+  );
+
+  it.effect("names the configured source on timeout, without fallback", () =>
+    Effect.gen(function* () {
+      const requests: string[] = [];
+      const client = HttpClient.make((request) => {
+        requests.push(request.url);
+        return Effect.never;
+      });
+      const lookup = yield* resolveNewestVersion("stable").pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.flip,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust(Duration.seconds(30));
+      const error = yield* Fiber.join(lookup);
+      assert.equal(
+        error.reason,
+        `Timed out listing t3 releases from ${cliReleaseIndexPageUrl(1)}.`,
+      );
+      assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
+    }),
+  );
+
+  it.effect.each(["not json", "{}", '[{"draft":false}]'])(
+    "names the configured source for malformed index %s, without fallback",
+    (body) =>
+      Effect.gen(function* () {
+        const requests: string[] = [];
+        const client = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(HttpClientResponse.fromWeb(request, new Response(body)));
+        });
+        const error = yield* resolveNewestVersion("stable").pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.flip,
+        );
+        assert.equal(
+          error.reason,
+          `The t3 release index from ${cliReleaseIndexPageUrl(1)} had an unexpected shape.`,
+        );
+        assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
+      }),
+  );
+
+  it.effect("names the configured source when the channel is unpublished, without fallback", () =>
+    Effect.gen(function* () {
+      const requests: string[] = [];
+      const client = HttpClient.make((request) => {
+        requests.push(request.url);
+        return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("[]")));
+      });
+      const error = yield* resolveNewestVersion("preview").pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.flip,
+      );
+      assert.equal(
+        error.reason,
+        `No published preview release was found in ${cliReleaseIndexPageUrl(1)}.`,
+      );
+      assert.deepStrictEqual(requests, [cliReleaseIndexPageUrl(1)]);
+    }),
+  );
+
+  it.effect(
+    "bounds pagination to ten configured source pages when the channel is unpublished",
+    () =>
+      Effect.gen(function* () {
+        const requests: string[] = [];
+        const client = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(JSON.stringify([{ tag_name: "v2.0.0-nightly.20261001.1" }])),
+            ),
+          );
+        });
+        const error = yield* resolveNewestVersion("stable").pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.flip,
+        );
+        assert.equal(
+          error.reason,
+          `No published stable release was found in ${cliReleaseIndexPageUrl(1)}.`,
+        );
+        assert.deepStrictEqual(
+          requests,
+          Array.from({ length: 10 }, (_, index) => cliReleaseIndexPageUrl(index + 1)),
+        );
+      }),
+  );
+});
+
+it("recognizes only the Jones service cgroup for legacy server lineage", () => {
+  assert.isTrue(
+    isJonesBootServiceCgroup("0::/user.slice/user-501.slice/app.slice/jones-code.service"),
+  );
+  assert.isTrue(isJonesBootServiceCgroup("1:name=systemd:/user.slice/jones-code.service/worker"));
+  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/t3code.service"));
+  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/not-jones-code.service"));
+  assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/jones-code.service-extra"));
+});
+
+it("recognizes only the exact adopted system unit outside the user hierarchy", () => {
+  assert.isTrue(
+    isJonesBootServiceCgroup("0::/system.slice/t3code.service/child", "t3code.service"),
+  );
+  assert.isTrue(
+    isJonesBootServiceCgroup(
+      "0::/hostdev.slice/host-tooling-t3.service",
+      "host-tooling-t3.service",
+    ),
+  );
+  assert.isFalse(isJonesBootServiceCgroup("0::/system.slice/not-t3code.service", "t3code.service"));
+  assert.isFalse(
+    isJonesBootServiceCgroup(
+      "0::/user.slice/user-1000.slice/user@1000.service/app.slice/t3code.service",
+      "t3code.service",
     ),
   );
 });

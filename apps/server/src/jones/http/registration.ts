@@ -16,11 +16,15 @@ import {
   voiceReviewHttpApiLayer,
   voiceReviewResponseHeadersLayer,
 } from "../../voiceReview/http.ts";
+import * as AgentWorkstreams from "../workstreams/personal/agentService.ts";
+import * as PersonalWorkstreamsBearerHttp from "../workstreams/personal/bearerHttp.ts";
 import * as TokenAccountingService from "../../tokenAccounting/TokenAccountingService.ts";
 import { makeRuntimeReader } from "../../tokenAccounting/RuntimeReader.ts";
 
+// Also registers the personal Workstreams bearer routes, keeping the server.ts pipe within its limit.
 export const provideConversationAndVoiceReview = <A, E, R>(api: Layer.Layer<A, E, R>) =>
   api.pipe(
+    Layer.provide(PersonalWorkstreamsBearerHttp.layer.pipe(Layer.provide(AgentWorkstreams.layer))),
     Layer.provide(voiceReviewResponseHeadersLayer),
     Layer.provide(settlementOriginsHttpApiLayer.pipe(Layer.provide(SettlementOrigins.layer))),
     Layer.provide(SettlementOrigins.retentionLayer),
@@ -66,8 +70,8 @@ export {
 } from "../previewCompanion/registration.ts";
 export { previewCompanionHttpApiLayer } from "../previewCompanion/http.ts";
 
-export { remoteAdmissionHttpApiLayer } from "../remoteAdmissionIntegration/http.ts";
 export {
-  servicesLayer as remoteAdmissionServicesLayer,
-  resumeLayer as remoteAdmissionResumeLayer,
-} from "../remoteAdmissionIntegration/registration.ts";
+  remoteAdmissionHttpApiLayer,
+  remoteAdmissionReviewHttpApiLayer,
+} from "../remoteAdmissionIntegration/http.ts";
+export { resumeLayer as remoteAdmissionResumeLayer } from "../remoteAdmissionIntegration/registration.ts";

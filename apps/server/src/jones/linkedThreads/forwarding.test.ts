@@ -5,6 +5,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as Schema from "effect/Schema";
+import { legacyCapabilities } from "../remoteAdmissionOrigin/capabilities.testkit.ts";
+import { REMOTE_ADMISSION_OBSERVATION_VERSION } from "@t3tools/contracts/jones/remoteAdmissionReview";
 import * as Invocation from "../../mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
@@ -42,6 +44,7 @@ it.effect(
     ).linkId;
     const calls: Parameters<Peers.PeerMcpClient["Service"]["call"]>[0][] = [];
     const copies: Parameters<Links.LinkedThreads["Service"]["recordRemoteLaunch"]>[0][] = [];
+    let supportsObservation = false;
     const services = Layer.mergeAll(
       NodeCrypto.layer,
       Layer.mock(Threads.ThreadManagementService)({
@@ -57,6 +60,16 @@ it.effect(
           calls.push(input);
           // Each generic peer call supplies its own result schema.
           const decode = Schema.decodeEffect(input.success);
+          if (input.tool === "orchestrator_capabilities")
+            return decode({
+              ...legacyCapabilities,
+              features: {
+                ...legacyCapabilities.features,
+                ...(supportsObservation
+                  ? { remoteAdmissionObservationVersion: REMOTE_ADMISSION_OBSERVATION_VERSION }
+                  : {}),
+              },
+            }).pipe(Effect.orDie);
           return decode({
             threadId: destination,
             projectId: liveThreadShell(destination).projectId,
@@ -88,7 +101,7 @@ it.effect(
       });
       expect(result.originLink?.reverse).toBe("recorded");
       expect(copies.length).toBe(1);
-      expect(calls[0]?.origin).toEqual({
+      expect(calls.find((call) => call.tool === "t3_thread_launch")?.origin).toEqual({
         schemaVersion: "t3.linked-message-origin/v1",
         environmentId: here,
         thread: { threadId: origin, title: origin },
@@ -103,6 +116,18 @@ it.effect(
         title: "Delegated",
         delegatedFrom: { environmentId: here, threadId: origin, title: "Origin" },
       });
+      expect(copies.length).toBe(2);
+      expect(calls.filter((call) => call.tool === "orchestrator_capabilities")).toHaveLength(2);
+      expect(calls.filter((call) => call.tool === "t3_thread_launch")).toHaveLength(3);
+      // Negotiated support cannot silently fall back when origin persistence is missing.
+      supportsObservation = true;
+      const unsupported = yield* forwarding
+        .call(scope, ProjectToolkit.tools.t3_thread_launch, away, {
+          title: "Requires durable origin",
+        })
+        .pipe(Effect.flip);
+      expect(unsupported.code).toBe("capability_denied");
+      expect(calls.filter((call) => call.tool === "t3_thread_launch")).toHaveLength(3);
       expect(copies.length).toBe(2);
     }).pipe(Effect.provide(Forwarding.layer.pipe(Layer.provide(services))));
   },

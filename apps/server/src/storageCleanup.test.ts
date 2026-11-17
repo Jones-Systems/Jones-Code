@@ -3485,14 +3485,20 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.live("removes a worktree whose .git file git-annex replaced with a symlink", () =>
+  it.live("preserves an annexed worktree when native retirement refuses its Git link", () =>
     runCleanupTest(
       Effect.gen(function* () {
         const fixture = yield* cleanupFixture();
         const { service, worktree, fs } = fixture;
         yield* annexWorktree(fixture, worktree);
-        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
-        expect(yield* fs.exists(worktree)).toBe(false);
+        const gitLink = yield* fs.readLink(`${worktree}/.git`);
+        const entry = (yield* service.runNow).entries[0];
+        expect(entry, entry?.reason).toMatchObject({
+          outcome: "failed",
+          retirement: { reasonCodes: expect.arrayContaining(["git_removal_refused"]) },
+        });
+        expect(yield* fs.readLink(`${worktree}/.git`)).toBe(gitLink);
+        expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("original\n");
       }),
     ),
   );
@@ -3518,7 +3524,7 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.effect("removes a worktree owned by a repository other than the project root", () =>
+  it.effect("refuses to retire a worktree registered to another repository", () =>
     runCleanupTest(
       Effect.gen(function* () {
         yield* TestClock.setTime(NOW_MS);
@@ -3538,11 +3544,13 @@ describe("storage cleanup reports and local file policies", () => {
         yield* command(oldRepo, ["worktree", "add", "-b", "feature", oldWorktree]);
         fixture.setThreads([shell({ branch: "feature", worktreePath: oldWorktree })]);
         const report = yield* fixture.service.runNow;
-        expect(report.entries.find((entry) => entry.path === oldWorktree)).toMatchObject({
-          outcome: "removed",
+        const entry = report.entries.find((entry) => entry.path === oldWorktree);
+        expect(entry, entry?.reason).toMatchObject({
+          outcome: "failed",
+          reason: expect.stringContaining("repository_identity_changed"),
         });
-        expect(yield* fs.exists(oldWorktree)).toBe(false);
-        expect((yield* command(oldRepo, ["worktree", "list", "--porcelain"])).stdout).not.toContain(
+        expect(yield* fs.readFileString(`${oldWorktree}/tracked.txt`)).toBe("original\n");
+        expect((yield* command(oldRepo, ["worktree", "list", "--porcelain"])).stdout).toContain(
           oldWorktree,
         );
       }),
@@ -3701,9 +3709,11 @@ describe("storage cleanup reports and local file policies", () => {
         // Point to the real main checkout; malformed gitfiles vary across Git versions.
         yield* fs.writeFileString(`${worktree}/.git`, `gitdir: ${repo}/.git\n`);
         expect((yield* service.runNow).entries[0]).toMatchObject(changed);
+        expect(threadBranches()).toEqual(["feature"]);
         expect(yield* fs.readFileString(`${worktree}/tracked.txt`)).toBe("original\n");
         yield* fs.writeFileString(`${worktree}/.git`, gitFile);
-        expect((yield* service.runNow).entries[0]).toMatchObject({ outcome: "removed" });
+        const entry = (yield* service.runNow).entries[0];
+        expect(entry, entry?.reason).toMatchObject({ outcome: "removed" });
         expect(fullStatusCalls()).toBe(0);
       }),
     ),
@@ -4048,7 +4058,8 @@ describe("storage cleanup reports and local file policies", () => {
           yield* command(worktree, ["config", "core.symlinks", "false"]);
           yield* fs.writeFileString(`${worktree}/link`, target);
         } else yield* fs.symlink(target, `${worktree}/link`);
-        expect((yield* service.runNow).entries[0]).toMatchObject(
+        const entry = (yield* service.runNow).entries[0];
+        expect(entry, entry?.reason).toMatchObject(
           target === "missing"
             ? { outcome: "kept", reason: expect.stringContaining("(link)") }
             : { outcome: "removed" },

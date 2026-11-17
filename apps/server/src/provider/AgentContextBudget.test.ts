@@ -2,6 +2,8 @@ import * as ConversationPolicy from "../jones/conversationWorkspace/Conversation
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as PersonalWorkstreams from "../jones/workstreams/personal/service.ts";
 import * as RemoteAdmissionIntake from "../jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts";
+import * as ReceiverInspection from "../jones/remoteAdmissionIntegration/Inspection.ts";
+import * as ReceiverProtocol from "../jones/remoteAdmissionIntegration/protocolTools.ts";
 import * as ProviderSessions from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -62,13 +64,18 @@ import budget from "./agentContextBudget.json" with { type: "json" };
 
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
+  Layer.mock(ReceiverInspection.ReceiverInspection)({}),
+  Layer.mock(ReceiverProtocol.ReceiverPeerProtocol)({}),
   Layer.mock(AssetSigner)({}),
   Sqlite.layerMemory,
   Layer.mock(Receipts.CommandReceiptStoreV2)({}),
   Layer.mock(EventSink.EventSinkV2)({ supersededTerminalTrace: SupersededTerminalTrace.make() }),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(ProviderSessions.ProviderSessionManagerV2)({}),
-  Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
+  Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({
+    isLiveClaim: () => false,
+    register: () => {},
+  }),
   Layer.mock(PersonalWorkstreams.PersonalWorkstreams)({}),
   Layer.mock(DeviceService)({}),
   Layer.mock(DocumentText)({}),

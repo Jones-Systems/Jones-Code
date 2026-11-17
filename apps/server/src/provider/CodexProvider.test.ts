@@ -20,6 +20,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import {
   applyPreferredCodexDefaultModel,
+  codexDefaultReasoningEffortOverride,
   checkCodexProviderStatus,
   codexCustomEndpoint,
   codexRoutesSpendNativeQuota,
@@ -158,6 +159,33 @@ it.effect("reuses one Codex skills helper per launch until it idles out", () =>
     yield* Scope.close(providerScope, Exit.void);
     assert.strictEqual(helpers[3]!.closed, true);
   }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+);
+
+it.each(["openai.gpt-6.2-astra", "gpt-6-astra"])(
+  "uses medium as the Jones default effort for %s",
+  (model) => {
+    const capabilities = mapCodexModelCapabilities({
+      additionalSpeedTiers: [],
+      defaultReasoningEffort: "high",
+      description: "Astra",
+      displayName: "Astra",
+      hidden: false,
+      id: model,
+      isDefault: false,
+      model,
+      supportedReasoningEfforts: ["medium", "high", "xhigh", "max"].map((reasoningEffort) => ({
+        reasoningEffort,
+        description: reasoningEffort,
+      })),
+    });
+    const reasoning = capabilities.optionDescriptors?.find(({ id }) => id === "reasoningEffort");
+    assert.strictEqual(reasoning?.currentValue, "medium");
+    assert.deepStrictEqual(
+      reasoning?.type === "select" ? reasoning.options.map(({ id }) => id) : [],
+      ["medium", "high", "xhigh", "max"],
+    );
+    assert.strictEqual(codexDefaultReasoningEffortOverride(model), "medium");
+  },
 );
 
 it("uses medium instead of low for newly discovered Codex models when supported", () => {
@@ -332,6 +360,26 @@ it("marks the most preferred available model as default", () => {
       { slug: "gpt-5.6-terra", isDefault: true },
       { slug: "gpt-5.4", isDefault: undefined },
     ],
+  );
+});
+
+it("prefers GPT-6.2 Astra and keeps GPT-6 Astra as the next catalog fallback", () => {
+  const legacy = { slug: "gpt-6-astra", name: "GPT-6 Astra", isCustom: false, capabilities: null };
+  const current = { ...legacy, slug: "openai.gpt-6.2-astra", name: "GPT-6.2 Astra" };
+  const earlier = { ...legacy, slug: "gpt-5.6-sol", name: "GPT-5.6 Sol", isDefault: true };
+
+  const models = applyPreferredCodexDefaultModel([earlier, legacy, current]);
+  assert.deepStrictEqual(
+    models.filter((model) => model.isDefault).map(({ slug }) => slug),
+    [current.slug],
+  );
+  assert.deepStrictEqual(
+    models.find(({ slug }) => slug === legacy.slug),
+    legacy,
+  );
+  assert.strictEqual(
+    applyPreferredCodexDefaultModel([earlier, legacy]).find((model) => model.isDefault)?.slug,
+    legacy.slug,
   );
 });
 

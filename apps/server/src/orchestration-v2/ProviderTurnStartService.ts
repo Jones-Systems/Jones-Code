@@ -1,4 +1,5 @@
 import { withStartFailureDiagnostic } from "../jones/provider/startFailureDiagnostics.ts";
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -341,6 +342,7 @@ export const layer: Layer.Layer<
     const controlService = yield* Effect.serviceOption(ControlAdmission.ControlAdmission);
     const restartPreparation = yield* Effect.serviceOption(RestartPreparation.RestartPreparation);
     const startRefusals = yield* Effect.serviceOption(StartRefusals.StartRefusals);
+    const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
     const currentSettings = yield* ServerSettings.ServerSettingsService;
 
     // Build draining callbacks outside startup scope so they cannot retain full thread history.
@@ -1252,6 +1254,7 @@ export const layer: Layer.Layer<
         });
       // Jones exact checkout recreation owns retired and missing managed checkouts;
       // it rebinds the thread only through EventSink's checkout compare-and-bind.
+      let recreatedWorkspace = false;
       const { worktreePath } = projection.thread;
       if (worktreePath !== null) {
         if (input.nativeCreationGuard !== undefined && !(yield* fileSystem.exists(worktreePath)))
@@ -1320,6 +1323,7 @@ export const layer: Layer.Layer<
                   }),
                 ),
               );
+            recreatedWorkspace = true;
           }
         }
       }
@@ -1348,6 +1352,12 @@ export const layer: Layer.Layer<
         boundary: "start",
         fallback: { id: `turn-start:${runId}`, request: { runId, threadId: input.threadId } },
       }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+      yield* captureProvenance({
+        threadId: input.threadId,
+        reason: recreatedWorkspace ? "recreate" : "reference",
+        createdBy: "system",
+        runId,
+      });
       const selectInheritedBackgroundItems = (
         current: ProjectionStore.ProjectionRuntimeRecoveryState,
       ): ReturnType<typeof RunExecutionService.selectInheritedBackgroundTurnItems> =>

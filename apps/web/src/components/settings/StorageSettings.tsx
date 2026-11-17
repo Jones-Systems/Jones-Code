@@ -309,6 +309,9 @@ function CleanupSection() {
   const { scope, connectedEnvironments } = useSettingsScope();
   const [pending, setPending] = useState(false);
   const [requests, setRequests] = useState<Record<string, CleanupRequest & { label: string }>>({});
+  // Set when a proposal or retirement report arrives in this view; it opens Last run so the owner sees the results.
+  // Kept apart from `requests`, which are dropped once the retained report catches up.
+  const [arrivedReportKey, setArrivedReportKey] = useState<string | null>(null);
   const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   const run = useAtomCommand(serverEnvironment.runStorageCleanup);
   const supported = connectedEnvironments.filter(
@@ -414,6 +417,10 @@ function CleanupSection() {
       const result = await run({ environmentId, input });
       if (result._tag === "Success") {
         update({ operation, status: "completed", report: result.value });
+        if (operation === "propose" || operation === "retire")
+          setArrivedReportKey(
+            JSON.stringify([environmentId, result.value.startedAt, result.value.finishedAt]),
+          );
       } else {
         update({
           operation,
@@ -510,14 +517,15 @@ Live consumers, tracked edits, nested repositories and other protections still h
           {...searchableSetting("storage-delete-now")}
           description={
             <span>
-              {!hasRules
-                ? "Turn on a cleanup rule to use this."
-                : summaries.map(({ environmentId, label, description }) => (
-                    <span key={environmentId} className="block">
-                      {displayTargets.length > 1 ? `${label}: ` : ""}
-                      {description}
-                    </span>
-                  ))}
+              {summaries.map(({ environmentId, label, description }) => (
+                <span key={environmentId} className="block">
+                  {displayTargets.length > 1 ? `${label}: ` : ""}
+                  {description}
+                </span>
+              ))}
+              {!hasRules && (
+                <span className="block">Turn on a cleanup rule to use Delete now.</span>
+              )}
             </span>
           }
           control={
@@ -562,6 +570,7 @@ Live consumers, tracked edits, nested repositories and other protections still h
         title="Last run"
         headerPlacement="inside"
         wrapHeader={false}
+        openKey={arrivedReportKey}
         summary={lastRunSummary(summaries, scope.environmentIds.length)}
         control={
           <Tooltip>

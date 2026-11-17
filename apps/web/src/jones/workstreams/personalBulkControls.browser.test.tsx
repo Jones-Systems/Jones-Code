@@ -342,7 +342,8 @@ describe("Workstreams bulk controls", () => {
     await using screen = await render(<Sidebar setup={setup} />);
     const alpha = sectionFor(screen.container, alphaId)!;
     // Beta starts collapsed, Alpha expanded with its whole list shown.
-    await userEvent.click(page.getByRole("button", { name: "Collapse Beta", exact: true }));
+    // The visible title owns click/drag/rename gestures above the background toggle.
+    await userEvent.click(page.getByText("Beta", { exact: true }));
     await userEvent.click(
       page.getByRole("button", { name: "Show all 6 threads in Alpha", exact: true }),
     );
@@ -383,6 +384,7 @@ describe("Workstreams bulk controls", () => {
       "Unassigned threads",
     ]);
     expect(rowsIn(sectionFor(screen.container, alphaId))).toHaveLength(5);
+    await expect.element(page.getByText("6 threads", { exact: true })).toBeVisible();
     expect(rowsIn(sectionFor(screen.container, betaId))).toHaveLength(3);
     await expect
       .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))

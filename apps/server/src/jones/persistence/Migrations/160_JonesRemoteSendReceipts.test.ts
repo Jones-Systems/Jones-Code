@@ -10,7 +10,7 @@ import { SqlError, UnknownError } from "effect/sql/SqlError";
 import { migrationManifest, runMigrations } from "../../../persistence/Migrations.ts";
 import { runJonesMigrations } from "../JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../JonesMigrations.ts";
-import migration from "./157_JonesRemoteSendReceipts.ts";
+import migration from "./160_JonesRemoteSendReceipts.ts";
 
 const decodeSendResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadSendResult, {
   onExcessProperty: "error",
@@ -23,8 +23,8 @@ const decodeSendResultJson = Schema.decodeUnknownEffect(
 );
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
-const prior = jonesMigrationEntries.filter(([id]) => id < 157);
-const through157 = jonesMigrationEntries.filter(([id]) => id <= 157);
+const prior = jonesMigrationEntries.filter(([id]) => id < 160);
+const through160 = jonesMigrationEntries.filter(([id]) => id <= 160);
 const result = {
   threadId: "receipt-thread",
   messageId: "receipt-message",
@@ -54,14 +54,14 @@ const objects = Effect.gen(function* () {
     WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`;
 });
 
-it.effect("157 adds only an empty sparse receipt table, its indexes and immutable guards", () =>
+it.effect("160 adds only an empty sparse receipt table, its indexes and immutable guards", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* prepare;
     const before = yield* objects;
     const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     const released = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
-    assert.deepStrictEqual(yield* runJonesMigrations(through157), [[157, "RemoteSendReceipts"]]);
+    assert.deepStrictEqual(yield* runJonesMigrations(through160), [[160, "RemoteSendReceipts"]]);
     const after = yield* objects;
     assert.deepStrictEqual(
       after.filter(({ name }) => !name.startsWith("jones_remote_send_receipts")),
@@ -87,7 +87,7 @@ it.effect("157 adds only an empty sparse receipt table, its indexes and immutabl
       upstream,
     );
     assert.deepStrictEqual(
-      yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id < 157 ORDER BY migration_id`,
+      yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id < 160 ORDER BY migration_id`,
       released,
     );
     assert.deepStrictEqual(yield* sql`PRAGMA index_info(jones_remote_send_receipts_lookup)`, [
@@ -98,18 +98,18 @@ it.effect("157 adds only an empty sparse receipt table, its indexes and immutabl
     assert.deepStrictEqual(yield* sql`PRAGMA index_info(jones_remote_send_receipts_recorded_at)`, [
       { seqno: 0, cid: 7, name: "recorded_at" },
     ]);
-    assert.deepStrictEqual(yield* runJonesMigrations(through157), []);
+    assert.deepStrictEqual(yield* runJonesMigrations(through160), []);
     assert.deepStrictEqual(yield* objects, after);
   }).pipe(Effect.provide(memory)),
 );
 
 it.effect(
-  "157 retains the original bytes against UPDATE, REPLACE, duplicates and conflict clauses",
+  "160 retains the original bytes against UPDATE, REPLACE, duplicates and conflict clauses",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* prepare;
-      yield* runJonesMigrations(through157);
+      yield* runJonesMigrations(through160);
       // This is a real accepted-result fixture. The production strict codec belongs to core.
       const original = yield* decodeSendResult(result);
       yield* sql`INSERT INTO jones_remote_send_receipts ${sql.insert(receipt)}`;
@@ -169,12 +169,12 @@ it.effect(
 );
 
 it.effect(
-  "157 rejects empty bindings, malformed JSON and every non-lowercase SHA256 representation",
+  "160 rejects empty bindings, malformed JSON and every non-lowercase SHA256 representation",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* prepare;
-      yield* runJonesMigrations(through157);
+      yield* runJonesMigrations(through160);
       const invalid: Array<Record<string, unknown>> = [
         ...[
           "command_id",
@@ -214,7 +214,7 @@ it.effect(
 );
 
 it.effect(
-  "157 DDL, indexes, triggers and its ledger roll back together on a late pending failure",
+  "160 DDL, indexes, triggers and its ledger roll back together on a late pending failure",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -226,14 +226,14 @@ it.effect(
         Effect.andThen(
           Effect.fail(
             new SqlError({
-              reason: new UnknownError({ cause: "synthetic failure after all 157 DDL" }),
+              reason: new UnknownError({ cause: "synthetic failure after all 160 DDL" }),
             }),
           ),
         ),
       );
       assert.isTrue(
         Exit.isFailure(
-          yield* Effect.exit(runJonesMigrations([...prior, [157, "RemoteSendReceipts", failed]])),
+          yield* Effect.exit(runJonesMigrations([...prior, [160, "RemoteSendReceipts", failed]])),
         ),
       );
       assert.deepStrictEqual(yield* objects, before);
@@ -247,13 +247,13 @@ it.effect(
       );
       yield* sql`CREATE TRIGGER jones_remote_send_receipts_no_replace AFTER INSERT ON jones_sql_migrations BEGIN SELECT 1; END`;
       const collision = yield* objects;
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(runJonesMigrations(through157))));
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(runJonesMigrations(through160))));
       assert.deepStrictEqual(yield* objects, collision);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`,
         ledger,
       );
       yield* sql`DROP TRIGGER jones_remote_send_receipts_no_replace`;
-      assert.deepStrictEqual(yield* runJonesMigrations(through157), [[157, "RemoteSendReceipts"]]);
+      assert.deepStrictEqual(yield* runJonesMigrations(through160), [[160, "RemoteSendReceipts"]]);
     }).pipe(Effect.provide(memory)),
 );

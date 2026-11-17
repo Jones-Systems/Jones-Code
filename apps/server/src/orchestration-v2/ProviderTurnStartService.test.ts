@@ -1866,8 +1866,8 @@ function makeLocalCommandHarness(
   };
 }
 
-registerPreSessionFailureTests(makeLocalCommandHarness);
 registerReaderAdmissionStartTests(makeLocalCommandHarness);
+registerPreSessionFailureTests(makeLocalCommandHarness);
 
 effectIt.effect.each(["retire-then-start", "changed-attempt", "changed-selection"] as const)(
   "restart-required session composition retains retirement before open: %s",
