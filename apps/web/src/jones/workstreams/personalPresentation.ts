@@ -1,6 +1,10 @@
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import { personalThreadKey } from "@t3tools/client-runtime/jones/workstreams/personal";
+import {
+  groupPersonalThreads,
+  type PersonalWorkstreamsState,
+  personalThreadKey,
+} from "@t3tools/client-runtime/jones/workstreams/personal";
 import { resolveSidebarThreadStatus } from "../../components/Sidebar.logic";
 import { classifyThreadStatus } from "../threadStatusFilter/model";
 
@@ -33,4 +37,40 @@ export type PersonalThreadSummary = ReturnType<typeof summarizePersonalThreads>;
 
 export function formatPersonalThreadCount(total: number) {
   return `${total} ${total === 1 ? "thread" : "threads"}`;
+}
+
+/** Named Workstreams own their pinned and working members; the other shelves keep unassigned rows. */
+export function personalSidebarRoster(
+  state: PersonalWorkstreamsState,
+  partition: {
+    pinnedThreads: readonly EnvironmentThreadShell[];
+    activeThreads: readonly EnvironmentThreadShell[];
+    workingThreads: readonly EnvironmentThreadShell[];
+  },
+) {
+  const candidates = [
+    ...partition.activeThreads,
+    ...partition.pinnedThreads,
+    ...partition.workingThreads,
+  ];
+  const { workstreamIdByThreadKey } = groupPersonalThreads(state, candidates);
+  const assigned = (thread: EnvironmentThreadShell) =>
+    workstreamIdByThreadKey.has(personalThreadKey(thread));
+  const activeKeys = new Set(partition.activeThreads.map(personalThreadKey));
+  return {
+    pinnedThreads: partition.pinnedThreads.filter((thread) => !assigned(thread)),
+    activeThreads: candidates.filter(
+      (thread) => assigned(thread) || activeKeys.has(personalThreadKey(thread)),
+    ),
+    workingThreads: partition.workingThreads.filter((thread) => !assigned(thread)),
+  };
+}
+
+export function personalSidebarSummaryThreads(
+  threads: readonly EnvironmentThreadShell[],
+  now: string,
+) {
+  return threads.filter(
+    (thread) => thread.settledOverride !== "settled" && !effectiveSnoozed(thread, { now }),
+  );
 }

@@ -1,3 +1,4 @@
+import * as DateTime from "effect/DateTime";
 import "~/index.css";
 import { createMemoryHistory } from "@tanstack/react-router";
 import { Atom } from "effect/reactivity";
@@ -18,6 +19,7 @@ import { personalSharedStatusFilterKey, personalStatusFilterKey } from "./person
 import {
   ENVIRONMENT_ID,
   installFakeEnvironment,
+  refreshFakeShell,
   threadWithHistory,
   type FakeDriver,
 } from "../../../test/fakeEnvironment";
@@ -69,6 +71,7 @@ async function withSidebar(
     step: (direction: "next" | "previous", expected: string) => Promise<void>;
     threadIds: readonly string[];
   }) => Promise<void>,
+  pinnedFixture = false,
 ) {
   const threadIds = [
     "a1",
@@ -80,6 +83,9 @@ async function withSidebar(
   ];
   const threads = threadIds.map((id) => ({
     ...threadWithHistory(id, 1),
+    ...(pinnedFixture && !id.startsWith("u")
+      ? { pinnedAt: DateTime.makeUnsafe("2026-11-17T12:00:00Z") }
+      : {}),
     runs: threadWithHistory(id, 1).runs.map((run) => ({
       ...run,
       status: "running" as const,
@@ -88,6 +94,14 @@ async function withSidebar(
   }));
   using _environment = installFakeEnvironment([
     ...threads,
+    ...(pinnedFixture
+      ? [
+          {
+            ...threadWithHistory("loose-pin", 1),
+            pinnedAt: DateTime.makeUnsafe("2026-11-17T12:00:00Z"),
+          },
+        ]
+      : []),
     { ...threadWithHistory("child", 1), sideChatOf: threads[2]!.id },
   ]);
   using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
@@ -168,6 +182,7 @@ async function withSidebar(
   const router = getRouter(createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/a1`] }));
   await router.load();
   await using screen = await render(<AppRoot router={router} />, { router: false });
+  await refreshFakeShell();
   await expect
     .element(page.getByRole("button", { name: "Collapse alpha", exact: true }))
     .toBeVisible();
@@ -337,4 +352,28 @@ it("keeps next, previous and numeric jumps aligned with truncated and expanded r
     await userEvent.keyboard("{Meta>}6{/Meta}");
     await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
   });
+});
+
+it("shows assigned pinned members once inside Workstreams above the remaining pinned shelf", async () => {
+  await withSidebar(async ({ rows, visit, step, router }) => {
+    expect(rows()).toHaveLength(8);
+    const header = document.querySelector("[data-personal-workstreams-header]")!;
+    const findPin = () =>
+      [...document.querySelectorAll<HTMLElement>("li[data-thread-item]")].find((row) =>
+        row.dataset.threadItem?.includes("loose-pin"),
+      );
+    await vi.waitFor(() => expect(findPin()).toBeDefined());
+    const pinRow = findPin()!;
+    expect(header.compareDocumentPosition(pinRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.querySelectorAll("[data-personal-thread]")).toHaveLength(8);
+    await expect
+      .element(page.getByRole("button", { name: "Show all 7 threads in alpha", exact: true }))
+      .toBeVisible();
+    await visit(rows().at(-1)!);
+    await step("next", "loose-pin");
+    await userEvent.keyboard("{Meta>}1{/Meta}");
+    await vi.waitFor(() =>
+      expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${rows()[0]}`),
+    );
+  }, true);
 });

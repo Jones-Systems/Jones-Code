@@ -383,6 +383,7 @@ describe("Workstreams bulk controls", () => {
       "Unassigned threads",
     ]);
     expect(rowsIn(sectionFor(screen.container, alphaId))).toHaveLength(5);
+    await expect.element(page.getByText("5 of 6 threads shown", { exact: true })).toBeVisible();
     expect(rowsIn(sectionFor(screen.container, betaId))).toHaveLength(3);
     await expect
       .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
