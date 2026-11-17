@@ -73,7 +73,7 @@ it("describes automatic assignment only while the thread has that provenance", a
     await expect.element(provenance).not.toBeInTheDocument();
     await act(() => registry.set(state, { ...initial, autoAssignedThreadKeys: new Set([key]) }));
     await expect.element(provenance).toBeVisible();
-    await act(() => registry.set(state, { ...initial, autoAssignedThreadKeys: new Set() }));
+    await act(() => registry.set(state, { ...initial, autoAssignedThreadKeys: new Set<string>() }));
     await expect.element(provenance).not.toBeInTheDocument();
   } finally {
     registry.dispose();
