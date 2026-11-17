@@ -48,6 +48,8 @@ import * as Option from "effect/Option";
 import * as ControlAdmission from "../orchestration/ControlAdmission.ts";
 import * as ProcessAttribution from "../resourceTelemetry/ProcessAttribution.ts";
 
+const isWriterRetirementPending = Schema.is(WriterRetirementPendingError);
+
 type DetachInput = Parameters<Sessions.ProviderSessionManagerV2Shape["detach"]>[0];
 
 const accounts = ["A", "B"] as const;
@@ -590,7 +592,7 @@ const scenario = (
           const pending = yield* Effect.flip(
             sessions.awaitThreadRetirement!({ threadId, instanceId: instanceId("B") }),
           );
-          assert.isTrue(Schema.is(WriterRetirementPendingError)(pending));
+          assert.isTrue(isWriterRetirementPending(pending));
           const current = Option.getOrThrow(yield* outbox.get(attempt.id));
           assert.equal(current.status, "running");
           assert.equal(current.attemptCount, 1);

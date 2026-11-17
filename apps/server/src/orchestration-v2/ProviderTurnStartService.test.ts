@@ -109,6 +109,7 @@ import {
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 const isAppThread = Schema.is(OrchestrationV2AppThread);
 const isThreadInUseError = Schema.is(ProviderAdapter.ProviderAdapterThreadInUseError);
+const isWriterRetirementPending = Schema.is(WriterRetirementPendingError);
 
 const managedWorktreesDir = "/tmp/provider-turn-start-worktrees";
 // fs.realpath applies `..` and `.` before following symlinks.
@@ -1404,7 +1405,7 @@ function makeLocalCommandHarness(
         writerRetired = true;
         return Effect.void;
       }
-      if (Schema.is(WriterRetirementPendingError)(input.retirementFailure))
+      if (isWriterRetirementPending(input.retirementFailure))
         return Effect.fail(input.retirementFailure);
       return Effect.fail(
         new ProviderSessionManager.ProviderSessionReleaseError({
