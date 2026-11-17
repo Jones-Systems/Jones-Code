@@ -1354,10 +1354,9 @@ export const layerStorageCleanupReportToolkit = toolkitRegistration(
 );
 
 // Jones hook: host-files; agents read and write files here or on a linked machine.
-const layerHostFilesToolkit = toolkitRegistration(
-  HostFilesToolkit,
-  HostFilesHandlersLive,
-).pipe(Layer.provide(HostFiles.layer));
+const layerHostFilesToolkit = toolkitRegistration(HostFilesToolkit, HostFilesHandlersLive).pipe(
+  Layer.provide(HostFiles.layer),
+);
 
 const SettlementRestoreRegistrationLive = toolkitRegistration(
   SettlementRestoreToolkit,
