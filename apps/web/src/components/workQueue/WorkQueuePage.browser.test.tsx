@@ -675,39 +675,41 @@ describe("submitted work page integration", () => {
         container.querySelector(`#queue-${initialStage}-tab`)?.getAttribute("aria-selected"),
       ).toBe("true");
       await act(() => pending.click());
-      expect(
-        container.querySelector('[aria-label="Recent voice prompts"]')?.closest("[hidden]"),
-      ).not.toBeNull();
+      expect(pending.getAttribute("aria-selected")).toBe("true");
+      // Counts appear once each source has reported: one pending draft, one released prompt.
+      expect(pending.getAttribute("aria-label")).toBe("Pending, 1 prompt");
+      expect(queued.getAttribute("aria-label")).toBe("Queued, 1 prompt");
+      expect(sent.getAttribute("aria-label")).toBeNull();
       if (supported)
         expect(
           container.querySelector('[aria-label="Queue metadata"]')?.closest("[hidden]"),
         ).not.toBeNull();
-      expect(pending.getAttribute("aria-selected")).toBe("true");
-      const reviewTabs = container.querySelector('[aria-label="Voice review views"]')!;
-      const reviewTab = [...reviewTabs.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
-        (tab) => tab.textContent === "Review",
+      expect(container.querySelector('[aria-label="Queued prompts"]')).toBeNull();
+      const row = [
+        ...container.querySelectorAll<HTMLButtonElement>(
+          '[aria-label="Pending prompts"] button[aria-current]',
+        ),
+      ][0]!;
+      expect(row.textContent).toContain("fixture-thread");
+      expect(row.textContent).toContain("Paused");
+      await act(() => row.click());
+      expect(row.getAttribute("aria-current")).toBe("true");
+      const routing = [...container.querySelectorAll<HTMLDetailsElement>("details")].find(
+        (details) => details.querySelector("summary")?.textContent === "Routing details",
       )!;
-      const routingTab = [...reviewTabs.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
-        (tab) => tab.textContent === "Routing",
-      )!;
-      await act(() => routingTab.click());
+      await act(() => {
+        routing.open = true;
+        routing.dispatchEvent(new Event("toggle"));
+      });
       expect(container.querySelector('[aria-label="Routing diagnostics"]')).not.toBeNull();
       expect(container.textContent).toContain("No routing jobs observed.");
       expect(voiceReview.review.diagnostics).toHaveBeenCalledWith(draft.id);
-      expect(
-        container.querySelector('[aria-label="Pending voice prompts"]')!.closest("[hidden]"),
-      ).not.toBeNull();
-      await act(() =>
-        routingTab.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })),
-      );
-      expect(reviewTab.getAttribute("aria-selected")).toBe("true");
-      expect(document.activeElement).toBe(reviewTab);
-      const edit = [...container.querySelectorAll("button")].find(
-        (button) => button.textContent === "Edit",
+      const edit = container.querySelector<HTMLButtonElement>(
+        '[aria-label="Edit prompt to fixture-thread"]',
       )!;
       await act(() => edit.click());
       const editor = container.querySelector<HTMLTextAreaElement>(
-        '[aria-label="Edit voice prompt"]',
+        '[aria-label="Prompt text to fixture-thread"]',
       )!;
       expect(editor.value).toBe(draft.text);
       expect(mutate.mock.calls[0]).toEqual([
@@ -720,25 +722,21 @@ describe("submitted work page integration", () => {
       });
       expect(queued.getAttribute("aria-selected")).toBe("true");
       expect(document.activeElement).toBe(queued);
+      expect(container.querySelector('[aria-label="Queued prompts"]')).not.toBeNull();
       expect(
-        container.querySelector('[aria-label="Recent voice prompts"]')?.closest("[hidden]"),
-      ).toBeNull();
-      expect(
-        container.querySelector('[aria-label="Pending voice prompts"]')?.closest("[hidden]"),
+        container.querySelector('[aria-label="Pending prompts"]')?.closest("[hidden]"),
       ).not.toBeNull();
-      expect(container.querySelector('[aria-label="Edit voice prompt"]')).toBe(editor);
+      expect(container.querySelector('[aria-label="Prompt text to fixture-thread"]')).toBe(editor);
       await act(() =>
         queued.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
       );
       expect(sent.getAttribute("aria-selected")).toBe("true");
       expect(document.activeElement).toBe(sent);
       expect(
-        container.querySelector('[aria-label="Pending voice prompts"]')?.closest("[hidden]"),
+        container.querySelector('[aria-label="Pending prompts"]')?.closest("[hidden]"),
       ).not.toBeNull();
-      expect(
-        container.querySelector('[aria-label="Recent voice prompts"]')?.closest("[hidden]"),
-      ).not.toBeNull();
-      expect(container.querySelector('[aria-label="Edit voice prompt"]')).toBe(editor);
+      expect(container.querySelector('[aria-label="Queued prompts"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Prompt text to fixture-thread"]')).toBe(editor);
       expect(container.textContent).toContain("Sent history is unavailable from this connection");
       await act(() =>
         sent.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })),
@@ -758,7 +756,7 @@ describe("submitted work page integration", () => {
       );
       expect(sent.getAttribute("aria-selected")).toBe("true");
       await act(() => pending.click());
-      expect(container.querySelector('[aria-label="Edit voice prompt"]')).toBe(editor);
+      expect(container.querySelector('[aria-label="Prompt text to fixture-thread"]')).toBe(editor);
       expect(mutate).toHaveBeenCalledTimes(1);
       expect(load).toHaveBeenCalledTimes(supported ? 1 : 0);
       expect(container.querySelector('[aria-label="Queue metadata"]')).toBeNull();
@@ -777,18 +775,14 @@ describe("submitted work page integration", () => {
         };
         for (const listener of environmentListeners) listener();
       });
-      const viewGroups = container.querySelectorAll('[aria-label="Voice review views"]');
-      expect(viewGroups).toHaveLength(2);
-      const reviewIds = [...viewGroups].flatMap((group) =>
-        [...group.querySelectorAll('[role="tab"]')].map((tab) => tab.id),
-      );
-      expect(new Set(reviewIds).size).toBe(4);
-      for (const group of viewGroups) {
-        const review = group.querySelector('[role="tab"]')!;
-        const panel = document.getElementById(review.getAttribute("aria-controls")!);
-        expect(panel?.getAttribute("aria-labelledby")).toBe(review.id);
-      }
-      expect(container.querySelector('[aria-label="Edit voice prompt"]')).toBe(editor);
+      const sections = container.querySelectorAll('section[aria-label$=" prompts"]');
+      expect([...sections].map((section) => section.getAttribute("aria-label"))).toEqual([
+        "Fixture environment prompts",
+        "Second environment prompts",
+      ]);
+      expect(pending.getAttribute("aria-label")).toBe("Pending, 2 prompts");
+      expect(container.querySelector('[aria-label="Prompts environment"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="Prompt text to fixture-thread"]')).toBe(editor);
       expect(mutate).toHaveBeenCalledTimes(1);
     },
   );

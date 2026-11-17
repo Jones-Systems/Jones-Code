@@ -1,23 +1,10 @@
 import { act, render as renderScreen, type Screen } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { SentPrompts, type ConfirmedSentPrompt, type SentPromptsState } from "./SentPrompts";
+import { SentPrompts, type SentPromptsState } from "./SentPrompts";
 
-const prompt: ConfirmedSentPrompt = {
-  id: "sample-sent-1",
-  text: "Keep the prompt readable.\nPreserve its full text after handoff.",
-  target: { threadId: "sample-thread-1", label: "Prompt review" },
-  sentAt: Date.parse("2026-10-11T00:30:00Z"),
-  confirmation: {
-    status: "confirmed",
-    kind: "handoff-receipt",
-    receiptId: "sample-receipt-1",
-    source: "sample-handoff-source",
-  },
-  sourceLabel: "Voice prompt",
-  workstreams: ["Prompt history"],
-};
-
-describe("confirmed sent prompts", () => {
+// Row content, receipts and invalid-confirmation filtering moved to the Prompts item model
+// (promptItems.test.ts) and the shared row and detail (PromptList and PromptDetail tests).
+describe("confirmed sent prompts frame", () => {
   let root: Screen;
   let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
@@ -41,110 +28,63 @@ describe("confirmed sent prompts", () => {
     }
   }
 
-  async function render(state: SentPromptsState) {
-    await act(() => root.rerender(<SentPrompts state={state} />));
+  async function render(state: SentPromptsState, rows: string | null = null) {
+    await act(() =>
+      root.rerender(
+        <SentPrompts state={state}>{rows === null ? null : <p>{rows}</p>}</SentPrompts>,
+      ),
+    );
   }
-  it("labels sample history and reveals the handoff receipt without mutation controls", async () => {
+  const sampledAt = Date.parse("2026-10-11T00:30:00Z");
+
+  it("states what Sent proves and renders supplied rows without mutation controls", async () => {
     await using _fixture = await setupFixture1();
-    await render({ status: "ready", provenance: "sample", entries: [prompt] });
-    expect(container.textContent).toContain("SAMPLE DATA");
-    expect(container.textContent).toContain("Example sent prompts · not live history");
-    expect(container.textContent).toContain("Sent confirms handoff, not completed work.");
-    const article = container.querySelector("article")!;
-    expect(article.textContent).toContain(prompt.text);
-    expect(article.textContent).toContain("Prompt review");
-    expect(article.textContent).toContain("Voice prompt");
-    expect(article.textContent).toContain("Prompt history");
-    expect(article.querySelector("time")!.textContent).toContain("Handoff observed");
-    expect(article.querySelector("time")!.textContent).toContain("EDT");
-    expect(article.querySelector("time")!.dateTime).toBe(new Date(prompt.sentAt).toISOString());
-    const details = article.querySelector("details")!;
-    expect(details.open).toBe(false);
-    await act(() => details.querySelector("summary")!.click());
-    expect(details.open).toBe(true);
-    expect(details.textContent).toContain("sample-receipt-1");
-    expect(details.textContent).toContain("sample-handoff-source");
-    expect(details.textContent).toContain("sample-thread-1");
-    await act(() => details.querySelector("summary")!.click());
-    expect(details.open).toBe(false);
+    await render({ status: "ready", count: 1, omitted: false }, "Confirmed row");
+    const section = container.querySelector('section[aria-label="Sent prompts"]')!;
+    expect(section.textContent).toContain("Sent confirms handoff, not completed work.");
+    expect(section.textContent).toContain("Confirmed row");
+    expect(section.textContent).not.toContain("No sent prompts observed.");
     expect(container.querySelector("button, input, textarea, select")).toBeNull();
   });
   it("qualifies stale partial handoffs and never claims complete empty history", async () => {
     await using _fixture = await setupFixture1();
-    const observation = { sampledAt: prompt.sentAt, coverage: "partial" as const, stale: true };
-    await render({
-      status: "ready",
-      provenance: "live",
-      entries: [{ ...prompt, providerState: "pending" }],
-      observation,
-    });
+    const observation = { sampledAt, coverage: "partial" as const, stale: true };
+    await render({ status: "ready", count: 1, omitted: false, observation }, "Row");
     expect(container.textContent).toContain("Previously observed confirmed handoffs");
     expect(container.textContent).toContain("Coverage: partial");
     expect(container.textContent).toContain("Sampled");
-    expect(container.textContent).toContain("Provider turn: pending");
-    expect(container.textContent).not.toContain("SAMPLE DATA");
-    await render({ status: "ready", provenance: "live", entries: [], observation });
+    expect(container.textContent).toContain("This sample is not a complete sent history.");
+    await render({
+      status: "ready",
+      count: 1,
+      omitted: false,
+      observation: { ...observation, stale: false },
+    });
+    expect(container.textContent).toContain("Confirmed handoffs in this sample");
+    expect(container.textContent).not.toContain("Previously observed");
+    await render({ status: "ready", count: 0, omitted: false, observation });
     expect(container.textContent).toContain(
       "No confirmed handoffs in this sample; other sent prompts may be unavailable.",
     );
     expect(container.textContent).not.toContain("No sent prompts observed.");
   });
-  it("keeps live observed-empty history distinct from unavailable and loading", async () => {
+  it("keeps observed-empty history distinct from unavailable and loading", async () => {
     await using _fixture = await setupFixture1();
     await render({ status: "unavailable" });
     expect(container.textContent).toBe(
       "Sent history is unavailable from this connection. Unconfirmed handoffs remain under Queued.",
     );
-    expect(container.textContent).not.toContain("No sent prompts observed");
     await render({ status: "loading" });
     expect(container.querySelector('[role="status"]')!.textContent).toBe("Loading sent prompts…");
     expect(container.textContent).not.toContain("No sent prompts observed");
-    await render({ status: "ready", provenance: "live", entries: [] });
+    await render({ status: "ready", count: 0, omitted: false });
     expect(container.textContent).toContain("No sent prompts observed.");
-    expect(container.textContent).not.toContain("SAMPLE DATA");
     expect(container.textContent).not.toContain("unavailable");
-    expect(container.querySelector("article")).toBeNull();
   });
-  it("preserves full literal long text and reports unknown text without substituting content", async () => {
+  it("reports omitted invalid confirmations instead of an empty history", async () => {
     await using _fixture = await setupFixture1();
-    const text = `<script>literal</script>\n${"long-unbroken-prompt".repeat(100)}`;
-    await render({
-      status: "ready",
-      provenance: "live",
-      entries: [
-        { ...prompt, text },
-        {
-          ...prompt,
-          id: "unknown-text",
-          text: null,
-          target: { threadId: "known-thread", label: null },
-          sourceLabel: null,
-          workstreams: [],
-        },
-      ],
-    });
-    const articles = container.querySelectorAll("article");
-    expect(articles).toHaveLength(2);
-    expect(articles[0]!.textContent).toContain(text);
-    expect(container.querySelector("script")).toBeNull();
-    expect(articles[1]!.textContent).toContain("Prompt text is unavailable.");
-    expect(articles[1]!.textContent).toContain("known-thread");
-    expect(container.textContent).not.toContain("SAMPLE DATA");
-    expect(container.querySelector("button, input, textarea, select")).toBeNull();
-  });
-  it.each([
-    { status: "released", kind: "handoff-receipt", receiptId: "receipt", source: "source" },
-    { status: "confirmed", kind: "command-accepted", receiptId: "receipt", source: "source" },
-    { status: "confirmed", kind: "handoff-receipt", receiptId: "", source: "source" },
-    { status: "confirmed", kind: "handoff-receipt", receiptId: "receipt", source: "" },
-    null,
-  ])("does not present invalid confirmation %j as a sent prompt", async (confirmation) => {
-    await using _fixture = await setupFixture1();
-    const invalid = { ...prompt, confirmation } as unknown as ConfirmedSentPrompt;
-    await render({ status: "ready", provenance: "live", entries: [invalid] });
-    expect(container.querySelector("article")).toBeNull();
+    await render({ status: "ready", count: 0, omitted: true });
     expect(container.textContent).toContain("delivery confirmation is missing or invalid");
     expect(container.textContent).not.toContain("No sent prompts observed.");
-    expect(container.textContent).not.toContain(prompt.text);
   });
 });

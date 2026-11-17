@@ -324,17 +324,26 @@ composer when it is empty, and is discarded otherwise.
 
 ## Review external voice prompts
 
-On web and desktop, open **Voice review** from the sidebar and choose the
-environment connected to your voice source. Voice review requires that environment
-to be configured; it does not record audio. Held prompts release after their
-countdown. Pause a prompt when you need more time to review it. Double-click its
-text, or choose **Edit**, to edit it before release.
+On web and desktop, open **Prompts** from the sidebar. Prompts collects work from
+your voice source and from work queues on the servers you are connected to. It
+does not record audio. Choose a source from the header when more than one server
+has prompts. Each tab shows a count once its sources report; `+` means the
+sample may hold more, and `?` means a source could not be read.
 
-Editing holds release until you save or cancel, and both leave the prompt paused.
-Resume the countdown when you are ready, or use **Save and send** to release the
-saved text immediately. Closing the page does not resume an edit hold. If a result
-is uncertain, check the current state before acting again. Released means handed
-off for processing; it does not mean an agent has started.
+- **Pending** holds voice prompts before release. Select a prompt to see where it
+  is going and what you can do. Held prompts release after their countdown.
+  Pause a prompt when you need more time, and double-click its text or choose
+  **Edit** to change it. Editing holds release until you save or cancel; both
+  leave the prompt paused. Resume when you are ready, or use **Save and send**.
+- **Queued** lists released prompts and queue requests that have not been handed
+  to a thread yet. It is read-only. The queue sample says when it was read; use
+  **Refresh queue** for a newer one.
+- **Sent** lists prompts whose handoff to a thread is confirmed. Sent does not
+  mean the work is finished.
+
+The progress list in each prompt shows only what was observed. Closing the page
+does not resume an edit hold. If a result is uncertain, check the current state
+before acting again; Prompts never retries it for you.
 
 ## Commands and skills
 

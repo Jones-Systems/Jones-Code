@@ -59,7 +59,21 @@ vi.mock("./useWorkQueueMetadata", async (importOriginal) => ({
 }));
 vi.mock("../../components/voiceReview/useVoiceReview", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../components/voiceReview/useVoiceReview")>()),
-  useVoiceReview: () => ({ fetchList: fixture.voiceList, fetchSelfIdentity: fixture.selfIdentity }),
+  useVoiceReview: () => ({
+    fetchList: fixture.voiceList,
+    fetchSelfIdentity: fixture.selfIdentity,
+    transport: { get: vi.fn(), mutate: vi.fn() },
+    review: {
+      recent: async () => {
+        if (fixture.recent === null) throw new Error("Recent prompts unavailable");
+        return fixture.recent;
+      },
+      registry: async () => ({ threads: [], partial: false, unavailable: [] }),
+      workstreams: async () => ({ workstreams: [] }),
+      diagnostics: vi.fn(),
+      correctAssociation: vi.fn(),
+    },
+  }),
 }));
 vi.mock("../../components/voiceReview/VoiceReviewPage", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../components/voiceReview/VoiceReviewPage")>()),
@@ -68,19 +82,12 @@ vi.mock("../../components/voiceReview/VoiceReviewPage", async (importOriginal) =
     pane,
     unavailable,
     onDirtyChange,
-    onRecentChange,
-    queuedEntriesOverride,
   }: {
     environmentId: string;
     pane: string;
     unavailable: boolean;
     onDirtyChange: (dirty: boolean) => void;
-    onRecentChange?: (recent: VoiceReviewRecentList | null) => void;
-    queuedEntriesOverride?: readonly VoiceReviewRecentList["entries"][number][];
   }) => {
-    useEffect(() => {
-      onRecentChange?.(fixture.recent);
-    }, [onRecentChange]);
     const [text, setText] = useState("");
     const [uncertain, setUncertain] = useState(false);
     useEffect(() => {
@@ -91,12 +98,7 @@ vi.mock("../../components/voiceReview/VoiceReviewPage", async (importOriginal) =
       return () => onDirtyChange(false);
     }, [onDirtyChange, text, uncertain]);
     return (
-      <div hidden={pane === "sent"}>
-        {pane === "queued"
-          ? queuedEntriesOverride?.map((entry) => (
-              <p key={entry.draft.id}>Queued voice: {entry.text}</p>
-            ))
-          : null}
+      <div hidden={pane !== "pending"}>
         <textarea
           aria-label={`Edit ${environmentId}`}
           value={text}
@@ -184,8 +186,9 @@ describe("Prompts environment composition", () => {
     });
   }
   async function click(text: string) {
+    // Stage tabs gain a count suffix ("Queued · 1") once their sources report.
     const button = [...container.querySelectorAll("button")].find(
-      (item) => item.textContent === text,
+      (item) => item.textContent === text || item.textContent?.startsWith(`${text} · `),
     );
     if (!button) throw new Error(`Missing button: ${text}`);
     await act(async () => button.click());
@@ -416,12 +419,23 @@ describe("Prompts environment composition", () => {
     });
     await render();
     await click("Queued");
-    expect(container.textContent).not.toContain("Queued voice: Linked prompt text");
+    expect(container.querySelector('[aria-label="Queued prompts"] li')).toBeNull();
+    expect(container.textContent).not.toContain("Linked prompt text");
+    expect(container.querySelector("#queue-queued-tab")!.getAttribute("aria-label")).toBe(
+      "Queued, at least 0 prompts",
+    );
     await click("Sent");
-    expect(container.querySelectorAll('[aria-label="Sent prompts"] article')).toHaveLength(1);
-    expect(container.textContent).toContain("Linked prompt text");
-    expect(container.textContent).toContain("Provider turn: pending");
+    const rows = container.querySelectorAll('section[aria-label="Sent prompts"] li');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("Linked prompt text");
+    expect(rows[0]!.textContent).toContain("Handed off · Turn not started");
     expect(container.textContent).toContain("Coverage: partial");
+    expect(container.textContent).toContain("Sent confirms handoff, not completed work.");
+    await act(async () => rows[0]!.querySelector<HTMLButtonElement>("button")!.click());
+    const detail = container.querySelector('section[aria-label="Sent prompts"] section')!;
+    expect(detail.textContent).toContain("Handed to thread");
+    expect(detail.textContent).toContain("Not tracked");
+    expect(detail.textContent).toContain("Queue workstream: workstream");
   });
 
   it("supports arrow, Home and End tab navigation with panel labelling and retained children", async () => {

@@ -7,7 +7,42 @@ import {
   threadRegistryWorkstreamsFixture,
 } from "@t3tools/client-runtime/voice-review/fixtures";
 import type { VoiceReviewRecentEntry } from "@t3tools/contracts";
-import { RecentVoicePrompts, recentThread } from "./RecentVoicePrompts";
+import type { ThreadRegistryComposedSnapshot, ThreadRegistryWorkstreams } from "@t3tools/contracts";
+import {
+  recentThread,
+  recentThreadPurpose,
+  VoiceWorkstreamCorrections,
+} from "./RecentVoicePrompts";
+
+// Prompt text, provenance and delivery identities moved to the Prompts detail evidence
+// (PromptDetail.browser.test.tsx). This file covers the Workstream corrections block.
+function Corrections({
+  entry,
+  registry = threadRegistrySnapshotFixture,
+  workstreams = threadRegistryWorkstreamsFixture,
+  correctAssociation,
+  onRefresh = async () => undefined,
+  unavailable = false,
+}: {
+  entry: VoiceReviewRecentEntry;
+  registry?: ThreadRegistryComposedSnapshot;
+  workstreams?: ThreadRegistryWorkstreams;
+  correctAssociation: (...args: never[]) => unknown;
+  onRefresh?: () => Promise<void>;
+  unavailable?: boolean;
+}) {
+  return (
+    <VoiceWorkstreamCorrections
+      entry={entry}
+      thread={recentThread(entry, registry.threads)}
+      registry={registry}
+      workstreams={workstreams}
+      transport={{ correctAssociation } as never}
+      onRefresh={onRefresh}
+      unavailable={unavailable}
+    />
+  );
+}
 
 describe("recent voice prompt interactions", () => {
   let root: Screen;
@@ -42,21 +77,12 @@ describe("recent voice prompt interactions", () => {
   }
 
   async function render(
-    entries: readonly VoiceReviewRecentEntry[] = voiceReviewRecentFixture.entries,
+    entry: VoiceReviewRecentEntry = voiceReviewRecentFixture.entries[0]!,
     correctAssociation = vi.fn(),
   ) {
     await act(
       async () =>
-        await root.rerender(
-          <RecentVoicePrompts
-            entries={entries}
-            registry={threadRegistrySnapshotFixture}
-            workstreams={threadRegistryWorkstreamsFixture}
-            transport={{ correctAssociation }}
-            onRefresh={async () => undefined}
-            unavailable={false}
-          />,
-        ),
+        await root.rerender(<Corrections entry={entry} correctAssociation={correctAssociation} />),
     );
     return correctAssociation;
   }
@@ -65,36 +91,6 @@ describe("recent voice prompt interactions", () => {
     if (!found) throw new Error(`Missing button: ${text}`);
     return found;
   }
-  it("shows opaque remaining delivery identities without claiming native handoff", async () => {
-    await using _fixture = await setupTest();
-    await render([
-      {
-        ...voiceReviewRecentFixture.entries[0]!,
-        queue_delivery_links: {
-          status: "ready",
-          reason: null,
-          deliveries: [
-            {
-              delivery_id: "unconfirmed-sibling",
-              queue_request_id: "queue-request",
-              payload_sha256: "b".repeat(64),
-              destination: {
-                backend: "t3",
-                instance: "opaque-instance",
-                thread_id: "thread",
-                project_id: null,
-              },
-            },
-          ],
-        },
-      },
-    ]);
-    const details = container.querySelector("article details")!;
-    await act(() => details.querySelector("summary")!.click());
-    expect(details.textContent).toContain("unconfirmed-sibling");
-    expect(details.textContent).toContain("Instance: opaque-instance");
-    expect(details.textContent).toContain("do not prove native handoff");
-  });
   it("joins only the verified composite key and never a bare routing target", async () => {
     await using _fixture = await setupTest();
     const entry = voiceReviewRecentFixture.entries[0]!;
@@ -111,57 +107,8 @@ describe("recent voice prompt interactions", () => {
     ).toBeNull();
     expect(recentThread({ ...entry, thread_key: thread.thread_key }, [thread])).toBe(thread);
     expect(recentThread({ ...entry, thread_key: "unmapped" }, [thread])).toBeNull();
-  });
-  it("explains retained unlinked siblings even after all explicit links were matched", async () => {
-    await using _fixture = await setupTest();
-    await render([
-      {
-        ...voiceReviewRecentFixture.entries[0]!,
-        queue_delivery_links: {
-          status: "ready",
-          reason: null,
-          deliveries: [],
-          unlinked_delivery_count: 2,
-        },
-      },
-    ]);
-    const details = container.querySelector<HTMLDetailsElement>("article details")!;
-    await act(() => details.querySelector("summary")!.click());
-    expect(details.open).toBe(true);
-    expect(details.textContent).toContain("Deliveries without queue links: 2.");
-    expect(details.textContent).toContain(
-      "Native handoff remains unconfirmed for these deliveries.",
-    );
-    expect(details.textContent).not.toContain("Queue request:");
-  });
-  it("shows literal prompt text immediately and discloses provenance without fabricating missing text", async () => {
-    await using _fixture = await setupTest();
-    const retained = voiceReviewRecentFixture.entries[0]!;
-    const deleted = voiceReviewRecentFixture.entries[2]!;
-    await render([
-      { ...retained, text: "<script>literal retained text</script>" },
-      deleted,
-      {
-        ...deleted,
-        draft: { ...deleted.draft, id: "expired-1", state: "expired" },
-        text_state: "expired",
-      },
-    ]);
-    const articles = container.querySelectorAll("article");
-    expect(articles[0]!.textContent).toContain("<script>literal retained text</script>");
-    expect(container.querySelector("script")).toBeNull();
-    expect(articles[1]!.textContent).toContain("Prompt text was deleted.");
-    expect(articles[2]!.textContent).toContain("Prompt text has expired.");
-    const details = articles[0]!.querySelector("details")!;
-    expect(details.open).toBe(false);
-    await act(() => details.querySelector("summary")!.click());
-    expect(details.open).toBe(true);
-    expect(details.textContent).toContain("Retained command text");
-    expect(details.textContent).toContain("command-1");
-    expect(details.textContent).toContain("Original transcript");
-    await act(() => details.querySelector("summary")!.click());
-    expect(details.open).toBe(false);
-    expect(articles[0]!.textContent).toContain("literal retained text");
+    expect(recentThreadPurpose(thread)).toBe("Voice review bridge");
+    expect(recentThreadPurpose(null)).toBeNull();
   });
   it("removes only acknowledged metadata and re-adds the same workstream at the suppression revision", async () => {
     await using _fixture = await setupTest();
@@ -177,7 +124,7 @@ describe("recent voice prompt interactions", () => {
       event_sequence: 10,
       record: { ...record, ...payload, revision: payload.expected_revision + 1, origin: "owner" },
     }));
-    await render([entry], correctAssociation);
+    await render(entry, correctAssociation);
     const remove = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Remove Voice review workstream"]',
     )!;
@@ -217,7 +164,7 @@ describe("recent voice prompt interactions", () => {
   it("keeps native membership read-only and accepts updated workstream lists", async () => {
     await using _fixture = await setupTest();
     const entry = { ...voiceReviewRecentFixture.entries[0]!, workstream_refs: ["native:board"] };
-    const correctAssociation = await render([entry]);
+    const correctAssociation = await render(entry);
     expect(container.textContent).toContain("native:board");
     expect(
       container.querySelector('button[aria-label="Remove native:board workstream"]'),
@@ -225,9 +172,8 @@ describe("recent voice prompt interactions", () => {
     await act(
       async () =>
         await root.rerender(
-          <RecentVoicePrompts
-            entries={[entry]}
-            registry={threadRegistrySnapshotFixture}
+          <Corrections
+            entry={entry}
             workstreams={{
               ...threadRegistryWorkstreamsFixture,
               workstreams: [
@@ -239,9 +185,7 @@ describe("recent voice prompt interactions", () => {
                 },
               ],
             }}
-            transport={{ correctAssociation }}
-            onRefresh={async () => undefined}
-            unavailable={false}
+            correctAssociation={correctAssociation}
           />,
         ),
     );
@@ -252,9 +196,10 @@ describe("recent voice prompt interactions", () => {
   });
   it("does not make a missing revision actionable", async () => {
     await using _fixture = await setupTest();
-    const correctAssociation = await render([
-      { ...voiceReviewRecentFixture.entries[0]!, associations: undefined },
-    ]);
+    const correctAssociation = await render({
+      ...voiceReviewRecentFixture.entries[0]!,
+      associations: undefined,
+    });
     const remove = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Remove Voice review workstream"]',
     )!;
@@ -262,20 +207,14 @@ describe("recent voice prompt interactions", () => {
     expect(correctAssociation).not.toHaveBeenCalled();
     expect(container.textContent).toContain("association revisions are observed");
   });
-  it("shows an empty observation without offering metadata corrections", async () => {
-    await using _fixture = await setupTest();
-    await render([]);
-    expect(container.textContent).toContain("No recent prompts observed.");
-    expect(container.querySelector("article, select")).toBeNull();
-  });
-  it("keeps stale prompt text readable but disables corrections when context is unavailable", async () => {
+  it("disables corrections when context is unavailable and says the thread is stale", async () => {
     await using _fixture = await setupTest();
     const correctAssociation = vi.fn();
     await act(
       async () =>
         await root.rerender(
-          <RecentVoicePrompts
-            entries={[voiceReviewRecentFixture.entries[0]!]}
+          <Corrections
+            entry={voiceReviewRecentFixture.entries[0]!}
             registry={{
               ...threadRegistrySnapshotFixture,
               threads: threadRegistrySnapshotFixture.threads.map((thread) => ({
@@ -283,15 +222,13 @@ describe("recent voice prompt interactions", () => {
                 freshness: { ...thread.freshness, stale: true },
               })),
             }}
-            workstreams={threadRegistryWorkstreamsFixture}
-            transport={{ correctAssociation }}
-            onRefresh={async () => undefined}
+            correctAssociation={correctAssociation}
             unavailable
           />,
         ),
     );
-    expect(container.textContent).toContain("Keep the recent prompts readable.");
     expect(container.textContent).toContain("Thread context is stale.");
+    expect(container.textContent).toContain("Workstream corrections never resend prompts.");
     const remove = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Remove Voice review workstream"]',
     )!;
@@ -314,13 +251,10 @@ describe("recent voice prompt interactions", () => {
     await act(
       async () =>
         await root.rerender(
-          <RecentVoicePrompts
-            entries={[voiceReviewRecentFixture.entries[0]!]}
-            registry={threadRegistrySnapshotFixture}
-            workstreams={threadRegistryWorkstreamsFixture}
-            transport={{ correctAssociation }}
+          <Corrections
+            entry={voiceReviewRecentFixture.entries[0]!}
+            correctAssociation={correctAssociation}
             onRefresh={onRefresh}
-            unavailable={false}
           />,
         ),
     );
