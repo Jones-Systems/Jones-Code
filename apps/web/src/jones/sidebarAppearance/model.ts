@@ -25,9 +25,9 @@ export const SidebarAppearance = Schema.Struct({
   workstreamTitleWeight: Schema.Literals(SIDEBAR_APPEARANCE_OPTIONS.workstreamTitleWeight).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed("medium" as const)),
   ),
-  workstreamTitleBrightness: Schema.Literals(SIDEBAR_APPEARANCE_OPTIONS.workstreamTitleBrightness).pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed("muted" as const)),
-  ),
+  workstreamTitleBrightness: Schema.Literals(
+    SIDEBAR_APPEARANCE_OPTIONS.workstreamTitleBrightness,
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed("muted" as const))),
   pillBackgroundOpacity: Schema.Literals(SIDEBAR_APPEARANCE_OPTIONS.pillBackgroundOpacity).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(4 as const)),
   ),
@@ -51,6 +51,7 @@ export const SidebarAppearance = Schema.Struct({
   ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(THREAD_TITLE_BRIGHTNESS_BOOST.default))),
 });
 export type SidebarAppearance = typeof SidebarAppearance.Type;
+const decodeSidebarAppearance = Schema.decodeSync(SidebarAppearance);
 export const StoredSidebarAppearance = Schema.NullOr(SidebarAppearance);
 export type SidebarAppearancePresetName = "selected" | "original";
 export const SIDEBAR_APPEARANCE_PRESETS: Readonly<
@@ -97,7 +98,7 @@ export function patchSidebarAppearance(
   patch: Partial<SidebarAppearance>,
 ): SidebarAppearance | null {
   // Decode again to strip excess keys and reject invalid runtime patches atomically.
-  const next = Schema.decodeSync(SidebarAppearance)({ ...resolveSidebarAppearance(stored), ...patch });
+  const next = decodeSidebarAppearance({ ...resolveSidebarAppearance(stored), ...patch });
   const isDefault = Object.keys(DEFAULT_SIDEBAR_APPEARANCE).every(
     (key) =>
       next[key as keyof SidebarAppearance] ===
@@ -109,7 +110,9 @@ export function patchSidebarAppearance(
 export function sidebarAppearancePresetName(
   value: SidebarAppearance,
 ): SidebarAppearancePresetName | null {
-  const keys = Object.keys(SIDEBAR_APPEARANCE_OPTIONS) as (keyof typeof SIDEBAR_APPEARANCE_OPTIONS)[];
+  const keys = Object.keys(
+    SIDEBAR_APPEARANCE_OPTIONS,
+  ) as (keyof typeof SIDEBAR_APPEARANCE_OPTIONS)[];
   for (const name of ["selected", "original"] as const) {
     if (keys.every((key) => value[key] === SIDEBAR_APPEARANCE_PRESETS[name][key])) return name;
   }
@@ -125,7 +128,9 @@ export const SIDEBAR_APPEARANCE_SCOPE_ATTRIBUTE_NAMES: readonly string[] = [
   "data-jones-pill-bg",
   "data-jones-thread-title-boost",
 ];
-export const SIDEBAR_APPEARANCE_SCOPE_VARIABLE_NAMES: readonly string[] = ["--jones-thread-title-boost"];
+export const SIDEBAR_APPEARANCE_SCOPE_VARIABLE_NAMES: readonly string[] = [
+  "--jones-thread-title-boost",
+];
 
 export function sidebarAppearanceScope(value: SidebarAppearance): {
   readonly attributes: Readonly<Record<string, string>>;
@@ -155,7 +160,8 @@ export function deviceLabelHidden(input: {
   shortLabel: string;
   iconOverridden: boolean;
 }): boolean {
-  const knownLabel = input.identity === "laptop" ? "Laptop" : input.identity === "vps" ? "VPS" : null;
+  const knownLabel =
+    input.identity === "laptop" ? "Laptop" : input.identity === "vps" ? "VPS" : null;
   return (
     input.mode === "icon" &&
     !input.iconOverridden &&

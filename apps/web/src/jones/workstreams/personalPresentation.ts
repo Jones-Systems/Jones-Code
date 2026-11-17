@@ -35,6 +35,23 @@ export function summarizePersonalThreads(
 
 export type PersonalThreadSummary = ReturnType<typeof summarizePersonalThreads>;
 
+/** Roster totals include snoozed members and are independent of attention filters and row windows. */
+export function personalSidebarRosterTotals(
+  state: PersonalWorkstreamsState,
+  threads: readonly EnvironmentThreadShell[],
+): ReadonlyMap<string, number> {
+  const roster = groupPersonalThreads(
+    state,
+    threads.filter((thread) => thread.settledOverride !== "settled"),
+  );
+  return new Map(
+    roster.groups.map((group) => [
+      group.workstream.id,
+      new Set(group.threads.map(personalThreadKey)).size,
+    ]),
+  );
+}
+
 export function formatPersonalThreadCount(total: number) {
   return `${total} ${total === 1 ? "thread" : "threads"}`;
 }

@@ -23,7 +23,8 @@
         "apps/web/src/jones/devicePresentation/SidebarDevice.browser.test.tsx",
         "apps/web/src/jones/devicePresentation/DeviceDisplayNameEditor.browser.test.tsx",
         "apps/server/src/jones/devicePresentation/settings.test.ts",
-        "packages/contracts/src/jones/devicePresentation.test.ts"
+        "packages/contracts/src/jones/devicePresentation.test.ts",
+        "apps/web/src/jones/devicePresentation/PersonalMachineSymbol.browser.test.tsx"
       ],
       "commands": [
         "vp test run packages/contracts/src/jones/devicePresentation.test.ts apps/server/src/jones/devicePresentation/settings.test.ts apps/web/src/jones/devicePresentation/identityProtection.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -32,7 +33,8 @@
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/mobile typecheck",
         "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "cd apps/web && vp test run --project browser src/jones/devicePresentation/PersonalMachineSymbol.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -5611,6 +5613,22 @@
         "vp run knip:check",
         "node scripts/jones/check-boundary.ts --strict",
         "git diff --check"
+      ]
+    },
+    {
+      "id": "jones-sidebar-appearance",
+      "tests": [
+        "apps/web/src/jones/sidebarAppearance/model.test.ts",
+        "apps/web/src/jones/sidebarAppearance/SidebarAppearanceLauncher.browser.test.tsx",
+        "apps/web/src/jones/sidebarAppearance/sidebarAppearanceCards.browser.test.tsx",
+        "apps/web/src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.browser.test.tsx",
+        "apps/web/src/jones/sidebarAppearance/sidebarAppearanceWorkstreams.browser.test.tsx"
+      ],
+      "commands": [
+        "cd apps/web && vp test run --project unit src/jones/sidebarAppearance/model.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project browser src/jones/sidebarAppearance/SidebarAppearanceLauncher.browser.test.tsx src/jones/sidebarAppearance/sidebarAppearanceCards.browser.test.tsx src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.browser.test.tsx src/jones/sidebarAppearance/sidebarAppearanceWorkstreams.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     }
   ]

@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { readLocalStorageValue, writeLocalStorageValue } from "../../hooks/useLocalStorage";
 import {
   DEFAULT_SIDEBAR_APPEARANCE,
@@ -47,16 +47,29 @@ describe("sidebar appearance schema", () => {
   });
 
   it.each([
-    false, 4, "appearance", [],
-    { cardScale: "0.93" }, { cardScale: 0.94 }, { cardScale: null },
-    { workstreamSpacing: "wide" }, { workstreamTitleWeight: 500 },
-    { workstreamTitleBrightness: 0.88 }, { pillBackgroundOpacity: 8 },
-    { countStyle: "fraction" }, { deviceLabel: "none" },
-    { laptopSymbol: "left" }, { vpsSymbol: "half" },
-    { threadTitleBrightnessBoost: -1 }, { threadTitleBrightnessBoost: 101 },
-    { threadTitleBrightnessBoost: 0.5 }, { threadTitleBrightnessBoost: NaN },
-    { threadTitleBrightnessBoost: Infinity }, { threadTitleBrightnessBoost: "50" },
-    { threadTitleBrightnessBoost: null }, { threadTitleBrightnessBoost: undefined },
+    false,
+    4,
+    "appearance",
+    [],
+    { cardScale: "0.93" },
+    { cardScale: 0.94 },
+    { cardScale: null },
+    { workstreamSpacing: "wide" },
+    { workstreamTitleWeight: 500 },
+    { workstreamTitleBrightness: 0.88 },
+    { pillBackgroundOpacity: 8 },
+    { countStyle: "fraction" },
+    { deviceLabel: "none" },
+    { laptopSymbol: "left" },
+    { vpsSymbol: "half" },
+    { threadTitleBrightnessBoost: -1 },
+    { threadTitleBrightnessBoost: 101 },
+    { threadTitleBrightnessBoost: 0.5 },
+    { threadTitleBrightnessBoost: NaN },
+    { threadTitleBrightnessBoost: Infinity },
+    { threadTitleBrightnessBoost: "50" },
+    { threadTitleBrightnessBoost: null },
+    { threadTitleBrightnessBoost: undefined },
   ])("rejects an invalid record atomically: %j", (value) => {
     expect(() => decode(value)).toThrow();
   });
@@ -72,13 +85,15 @@ describe("sidebar appearance schema", () => {
 describe("storage policy with the shared reader and notifying writer", () => {
   const values = new Map<string, string>();
   const notify = vi.fn();
-  const read = () => readLocalStorageValue(SIDEBAR_APPEARANCE_STORAGE_KEY, null, StoredSidebarAppearance);
-  const update = (patch: Partial<SidebarAppearance>) => writeLocalStorageValue(
-    SIDEBAR_APPEARANCE_STORAGE_KEY,
-    (current: SidebarAppearance | null) => patchSidebarAppearance(current, patch),
-    null,
-    StoredSidebarAppearance,
-  );
+  const read = () =>
+    readLocalStorageValue(SIDEBAR_APPEARANCE_STORAGE_KEY, null, StoredSidebarAppearance);
+  const update = (patch: Partial<SidebarAppearance>) =>
+    writeLocalStorageValue(
+      SIDEBAR_APPEARANCE_STORAGE_KEY,
+      (current: SidebarAppearance | null) => patchSidebarAppearance(current, patch),
+      null,
+      StoredSidebarAppearance,
+    );
 
   beforeEach(() => {
     values.clear();
@@ -93,10 +108,14 @@ describe("storage policy with the shared reader and notifying writer", () => {
     });
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
-  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
-  it.each([undefined, "null", "{", "[]", '{"cardScale":0.87,"pillBackgroundOpacity":8}']) (
-    "falls back atomically without rewriting absent or invalid bytes: %s", (raw) => {
+  it.each([undefined, "null", "{", "[]", '{"cardScale":0.87,"pillBackgroundOpacity":8}'])(
+    "falls back atomically without rewriting absent or invalid bytes: %s",
+    (raw) => {
       if (raw !== undefined) values.set(SIDEBAR_APPEARANCE_STORAGE_KEY, raw);
       expect(resolveSidebarAppearance(read())).toEqual(DEFAULT_SIDEBAR_APPEARANCE);
       expect(values.get(SIDEBAR_APPEARANCE_STORAGE_KEY)).toBe(raw);
@@ -108,7 +127,12 @@ describe("storage policy with the shared reader and notifying writer", () => {
     values.set(SIDEBAR_APPEARANCE_STORAGE_KEY, '{"cardScale":0.87,"extra":true}');
     update({ workstreamSpacing: "tight" });
     update({ threadTitleBrightnessBoost: 63 });
-    expect(read()).toEqual({ ...DEFAULT_SIDEBAR_APPEARANCE, cardScale: 0.87, workstreamSpacing: "tight", threadTitleBrightnessBoost: 63 });
+    expect(read()).toEqual({
+      ...DEFAULT_SIDEBAR_APPEARANCE,
+      cardScale: 0.87,
+      workstreamSpacing: "tight",
+      threadTitleBrightnessBoost: 63,
+    });
     expect(values.get(SIDEBAR_APPEARANCE_STORAGE_KEY)).not.toContain("extra");
     expect(notify).toHaveBeenCalledTimes(2);
     expect(notify.mock.calls[0]?.[0].detail).toEqual({ key: SIDEBAR_APPEARANCE_STORAGE_KEY });
@@ -140,7 +164,11 @@ describe("storage policy with the shared reader and notifying writer", () => {
   });
 
   it("safely falls back when access to localStorage is denied", () => {
-    vi.stubGlobal("window", { get localStorage() { throw new Error("denied"); } });
+    vi.stubGlobal("window", {
+      get localStorage() {
+        throw new Error("denied");
+      },
+    });
     expect(resolveSidebarAppearance(read())).toEqual(DEFAULT_SIDEBAR_APPEARANCE);
     expect(() => update({ cardScale: 1 })).not.toThrow();
     expect(values.size).toBe(0);
@@ -149,11 +177,25 @@ describe("storage policy with the shared reader and notifying writer", () => {
 
 describe("presets and scoped presentation", () => {
   it("recognizes presets independently of brightness and identifies custom looks", () => {
-    expect(sidebarAppearancePresetName({ ...DEFAULT_SIDEBAR_APPEARANCE, threadTitleBrightnessBoost: 100 })).toBe("selected");
-    expect(sidebarAppearancePresetName({ ...ORIGINAL_SIDEBAR_APPEARANCE, threadTitleBrightnessBoost: 50 })).toBe("original");
-    expect(sidebarAppearancePresetName({ ...DEFAULT_SIDEBAR_APPEARANCE, cardScale: 0.87 })).toBeNull();
+    expect(
+      sidebarAppearancePresetName({
+        ...DEFAULT_SIDEBAR_APPEARANCE,
+        threadTitleBrightnessBoost: 100,
+      }),
+    ).toBe("selected");
+    expect(
+      sidebarAppearancePresetName({
+        ...ORIGINAL_SIDEBAR_APPEARANCE,
+        threadTitleBrightnessBoost: 50,
+      }),
+    ).toBe("original");
+    expect(
+      sidebarAppearancePresetName({ ...DEFAULT_SIDEBAR_APPEARANCE, cardScale: 0.87 }),
+    ).toBeNull();
     expect(patchSidebarAppearance(null, {})).toBeNull();
-    expect(patchSidebarAppearance(ORIGINAL_SIDEBAR_APPEARANCE, DEFAULT_SIDEBAR_APPEARANCE)).toBeNull();
+    expect(
+      patchSidebarAppearance(ORIGINAL_SIDEBAR_APPEARANCE, DEFAULT_SIDEBAR_APPEARANCE),
+    ).toBeNull();
   });
 
   it("emits neutral Original scope without a title brightness override", () => {
@@ -168,17 +210,29 @@ describe("presets and scoped presentation", () => {
       },
       variables: {},
     });
-    expect(sidebarAppearanceScope(DEFAULT_SIDEBAR_APPEARANCE).attributes["data-jones-card-scale"]).toBe("0.93");
+    expect(
+      sidebarAppearanceScope(DEFAULT_SIDEBAR_APPEARANCE).attributes["data-jones-card-scale"],
+    ).toBe("0.93");
   });
 
   it("emits only allowlisted scope values and bounds the inline boost", () => {
-    const scope = sidebarAppearanceScope({ ...DEFAULT_SIDEBAR_APPEARANCE, threadTitleBrightnessBoost: 50 });
+    const scope = sidebarAppearanceScope({
+      ...DEFAULT_SIDEBAR_APPEARANCE,
+      threadTitleBrightnessBoost: 50,
+    });
     expect(scope.attributes["data-jones-thread-title-boost"]).toBe("");
     expect(scope.variables).toEqual({ "--jones-thread-title-boost": "50%" });
-    expect(Object.keys(scope.attributes).every((name) => SIDEBAR_APPEARANCE_SCOPE_ATTRIBUTE_NAMES.includes(name))).toBe(true);
+    expect(
+      Object.keys(scope.attributes).every((name) =>
+        SIDEBAR_APPEARANCE_SCOPE_ATTRIBUTE_NAMES.includes(name),
+      ),
+    ).toBe(true);
     expect(Object.keys(scope.variables)).toEqual(SIDEBAR_APPEARANCE_SCOPE_VARIABLE_NAMES);
     for (const boost of [0, -1, 101, NaN, Infinity, 0.5]) {
-      const invalidScope = sidebarAppearanceScope({ ...DEFAULT_SIDEBAR_APPEARANCE, threadTitleBrightnessBoost: boost });
+      const invalidScope = sidebarAppearanceScope({
+        ...DEFAULT_SIDEBAR_APPEARANCE,
+        threadTitleBrightnessBoost: boost,
+      });
       expect(invalidScope.attributes).not.toHaveProperty("data-jones-thread-title-boost");
       expect(invalidScope.variables).toEqual({});
     }
@@ -186,17 +240,28 @@ describe("presets and scoped presentation", () => {
 });
 
 describe("device label boundaries", () => {
-  const laptop = { mode: "icon", identity: "laptop", visibleLabel: "Laptop", shortLabel: "Laptop", iconOverridden: false } as const;
+  const laptop = {
+    mode: "icon",
+    identity: "laptop",
+    visibleLabel: "Laptop",
+    shortLabel: "Laptop",
+    iconOverridden: false,
+  } as const;
   it("hides only the known Laptop or VPS short label in icon mode", () => {
     expect(deviceLabelHidden(laptop)).toBe(true);
-    expect(deviceLabelHidden({ ...laptop, identity: "vps", visibleLabel: "VPS", shortLabel: "VPS" })).toBe(true);
+    expect(
+      deviceLabelHidden({ ...laptop, identity: "vps", visibleLabel: "VPS", shortLabel: "VPS" }),
+    ).toBe(true);
     expect(deviceLabelHidden({ ...laptop, mode: "label" })).toBe(false);
     expect(deviceLabelHidden({ ...laptop, iconOverridden: true })).toBe(false);
-    for (const identity of ["mini", "test", "unknown"] as const) expect(deviceLabelHidden({ ...laptop, identity })).toBe(false);
+    for (const identity of ["mini", "test", "unknown"] as const)
+      expect(deviceLabelHidden({ ...laptop, identity })).toBe(false);
     for (const label of ["", "My Laptop", "laptop", "Laptop ", "VPS"]) {
       expect(deviceLabelHidden({ ...laptop, visibleLabel: label })).toBe(false);
     }
-    expect(deviceLabelHidden({ ...laptop, visibleLabel: "Custom", shortLabel: "Custom" })).toBe(false);
+    expect(deviceLabelHidden({ ...laptop, visibleLabel: "Custom", shortLabel: "Custom" })).toBe(
+      false,
+    );
     expect(deviceLabelHidden({ ...laptop, shortLabel: "" })).toBe(false);
   });
 });

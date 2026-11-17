@@ -52,8 +52,12 @@ export function PersonalStatusPill({
       ref={ref}
       data-workstream-header-control
       data-personal-status-pill
-      style={{ gap: "calc(2px * var(--personal-status-spacing, 1))" }}
-      className="pointer-events-auto relative inline-flex h-6 cursor-default shrink-0 items-center rounded-full bg-muted/30 px-1 text-xs font-medium tabular-nums [-webkit-app-region:no-drag]"
+      style={{
+        gap: "calc(2px * var(--personal-status-spacing, 1))",
+        backgroundColor:
+          "color-mix(in oklab, var(--color-muted) var(--jones-pill-bg, 30%), transparent)",
+      }}
+      className="pointer-events-auto relative inline-flex h-6 cursor-default shrink-0 items-center rounded-full px-1 text-xs font-medium tabular-nums [-webkit-app-region:no-drag]"
       draggable={false}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}

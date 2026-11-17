@@ -1,3 +1,4 @@
+import { useSidebarDevicePresentation } from "../../jones/sidebarAppearance/useSidebarDevicePresentation";
 import { useEnvironment } from "../../state/environments";
 import { deviceDisplayLabel } from "@t3tools/contracts/jones/devicePresentation";
 import { usePendingSidebarThread } from "../../jones/pendingSends/sidebar";
@@ -829,12 +830,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     device?.displayLabel ??
     deviceDisplayLabel(props.environmentLabel ?? "Unknown environment", props.environmentMachine);
 
+  const devicePresentation = useSidebarDevicePresentation({
+    label: device?.label ?? props.environmentLabel,
+    kind: props.environmentMachine,
+    visibleLabel: deviceLabel,
+    iconOverridden: device?.serverConfig?.settings.environmentIcon != null,
+  });
+
   const detailsTooltip = (
     <SidebarThreadTooltip
       thread={thread}
       project={props.project}
       projectDisplayName={props.projectDisplayName}
-      environmentLabel={props.environmentLabel}
+      environmentLabel={devicePresentation.hidden ? deviceLabel : props.environmentLabel}
       environmentMachine={props.environmentMachine}
       providerEntry={providerEntry}
       providerEntryByInstanceId={props.providerEntryByInstanceId}
@@ -1031,6 +1039,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isActive: props.isActive,
   });
 
+  const titleTone = shouldRecede
+    ? "receded"
+    : variant !== "slim"
+      ? status === "failed" && !isUnread && !isWoke
+        ? "failed-read"
+        : "primary"
+      : props.isActive || isWoke || status === "input" || status === "request"
+        ? "primary"
+        : isUnread
+          ? "unread"
+          : "idle";
   const title = isRenaming ? (
     <ThreadRenameInput
       title={renamingTitle}
@@ -1041,25 +1060,27 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   ) : (
     <span
       aria-hidden
+      data-jones-thread-title={titleTone}
+      data-jones-thread-title-branch={variant === "slim" ? "slim" : "card"}
       className={cn(
         "min-w-0 flex-1 text-start text-sm transition-opacity motion-reduce:transition-none",
-        shouldRecede ? "font-normal" : "font-medium",
+        titleTone === "receded" ? "font-normal" : "font-medium",
         variant !== "slim"
           ? cn(
               "truncate",
-              shouldRecede
+              titleTone === "receded"
                 ? "text-foreground/75 group-hover/sidebar-row:text-foreground group-focus-visible/sidebar-row:text-foreground"
-                : status === "failed" && !isUnread && !isWoke
+                : titleTone === "failed-read"
                   ? "text-foreground/95"
                   : "text-foreground",
             )
           : cn(
               "truncate group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
-              shouldRecede
+              titleTone === "receded"
                 ? "text-secondary-label"
-                : props.isActive || isWoke || status === "input" || status === "request"
+                : titleTone === "primary"
                   ? "text-foreground"
-                  : isUnread
+                  : titleTone === "unread"
                     ? "text-muted-foreground"
                     : "text-secondary-label/70",
             ),
@@ -1161,7 +1182,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         kind={props.environmentMachine}
         className="size-3 shrink-0"
       />
-      <span className="min-w-0 flex-1 truncate">{deviceLabel}</span>
+      <span data-jones-device-label className="min-w-0 flex-1 truncate">
+        {devicePresentation.hidden ? null : deviceLabel}
+      </span>
       {terminalStatusIcon}
       <ThreadWorktreeIndicator thread={thread} />
       {prBadge}
@@ -1206,7 +1229,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 tabIndex={0}
                 data-sidebar-row={threadKey}
                 data-sidebar-parent={props.navigationParent}
-                aria-label={accessibility.label}
+                aria-label={accessibility.label + devicePresentation.accessibleSuffix}
                 aria-current={accessibility.current}
                 data-testid={inFolder ? "sidebar-row-folder" : "sidebar-row-slim"}
                 aria-busy={isRegeneratingTitle || undefined}
@@ -1383,6 +1406,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   return (
     <li
+      data-jones-sidebar-card=""
       data-thread-item={threadKey}
       {...sortableRootProps}
       {...(fileDropHandlers ?? {})}
@@ -1400,7 +1424,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               tabIndex={0}
               data-sidebar-row={threadKey}
               data-sidebar-parent={props.navigationParent}
-              aria-label={accessibility.label}
+              aria-label={accessibility.label + devicePresentation.accessibleSuffix}
               aria-current={accessibility.current}
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
@@ -1414,6 +1438,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         >
           {accessibleTitle}
           <div
+            data-jones-sidebar-card-content=""
             className={cn(
               "relative z-10 h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
             )}

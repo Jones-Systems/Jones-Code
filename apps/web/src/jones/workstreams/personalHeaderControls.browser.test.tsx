@@ -424,7 +424,7 @@ describe("personal Workstream header controls", () => {
   );
 });
 
-it("explains members hidden by a status filter instead of presenting the total as visible", async () => {
+it("keeps the roster total visible when a status filter hides every member", async () => {
   await using _screen = await render(
     <PersonalSidebarGroupHeader
       name="JC Sync"
@@ -434,5 +434,6 @@ it("explains members hidden by a status filter instead of presenting the total a
       visibleCount={0}
     />,
   );
-  await expect.element(page.getByText("0 of 3 threads shown", { exact: true })).toBeVisible();
+  await expect.element(page.getByText("3 threads", { exact: true })).toBeVisible();
+  expect(document.body.textContent).not.toContain("0 of 3");
 });

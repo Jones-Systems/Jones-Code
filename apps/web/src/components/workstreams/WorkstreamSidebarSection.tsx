@@ -152,6 +152,7 @@ function Group({
   controller,
   children,
   summary,
+  rosterTotal,
   dragging,
   dropTarget,
   onDragStart,
@@ -164,6 +165,7 @@ function Group({
   children: (window: { limit: PersonalThreadLimit; expanded: boolean }) => ReactNode;
   memberCount: number;
   summary: PersonalThreadSummary;
+  rosterTotal: number;
   dragging: boolean;
   dropTarget: boolean;
   onDragStart: (event: DragEvent<HTMLDivElement>) => void;
@@ -267,6 +269,7 @@ function Group({
             };
           }}
           summary={summary}
+          rosterTotal={rosterTotal}
           visibleCount={shownCount}
           statusFilter={statusFilter}
           onStatusFilterChange={setStatusFilter}
@@ -501,6 +504,7 @@ export function WorkstreamSidebarSection({
   controller,
   renderMembers,
   summaries,
+  rosterTotals,
   unassignedSummary = emptySummary,
   memberCounts,
   dropTargetId,
@@ -513,6 +517,7 @@ export function WorkstreamSidebarSection({
   ) => ReactNode;
   memberCounts?: ReadonlyMap<string, number>;
   summaries?: ReadonlyMap<string, PersonalThreadSummary>;
+  rosterTotals?: ReadonlyMap<string, number>;
   unassignedSummary?: PersonalThreadSummary;
 }) {
   const state = useAtomValue(controller.state);
@@ -737,6 +742,7 @@ export function WorkstreamSidebarSection({
           ? state.workstreams.map((item) => (
               <div
                 key={item.id}
+                data-workstream-group-slot
                 className="relative py-1"
                 onDragOver={(event) => dragOver(event, item.id)}
                 onDrop={(event) => drop(event, item.id)}
@@ -746,6 +752,7 @@ export function WorkstreamSidebarSection({
                   item={item}
                   controller={controller}
                   summary={summaries?.get(item.id) ?? emptySummary}
+                  rosterTotal={rosterTotals?.get(item.id) ?? summaries?.get(item.id)?.total ?? 0}
                   memberCount={memberCounts?.get(item.id) ?? 0}
                   dragging={draggedId === item.id}
                   dropTarget={dropTargetId === item.id}
@@ -780,6 +787,7 @@ export function WorkstreamSidebarSection({
           : null}
       </div>
       <div
+        data-workstream-group-slot
         className="relative py-1"
         onDragOver={(event) => dragOver(event, null)}
         onDrop={(event) => drop(event, null)}

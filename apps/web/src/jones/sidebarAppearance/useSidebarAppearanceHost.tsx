@@ -8,7 +8,10 @@ import {
   type SidebarAppearance,
   type SidebarAppearancePresetName,
 } from "./model";
-import { useSidebarAppearanceStore, type SidebarAppearanceStore } from "./useSidebarAppearanceStore";
+import {
+  useSidebarAppearanceStore,
+  type SidebarAppearanceStore,
+} from "./useSidebarAppearanceStore";
 import "./sidebarAppearance.cards.css";
 import "./sidebarAppearance.workstreams.css";
 
@@ -24,7 +27,19 @@ export interface SidebarAppearanceHost extends SidebarAppearanceStore {
 export function useSidebarAppearanceHost(): SidebarAppearanceHost {
   const store = useSidebarAppearanceStore();
   // Comparing Original (or Selected) changes presentation only, preserving the stored boost.
-  const [comparingPreset, setComparingPreset] = useState<SidebarAppearancePresetName | null>(null);
+  const storedSignature = JSON.stringify(store.stored);
+  const [comparison, setComparison] = useState<{
+    storedSignature: string;
+    preset: SidebarAppearancePresetName | null;
+  }>({ storedSignature, preset: null });
+  const comparingPreset = comparison.storedSignature === storedSignature ? comparison.preset : null;
+  // Discard the old comparison on an observed storage change, even if storage later returns to it.
+  if (comparison.storedSignature !== storedSignature) {
+    setComparison({ storedSignature, preset: null });
+  }
+  const setComparingPreset = (preset: SidebarAppearancePresetName | null) => {
+    setComparison({ storedSignature, preset });
+  };
   const presented =
     comparingPreset === null
       ? store.stored
@@ -53,10 +68,15 @@ export function useSidebarAppearanceHost(): SidebarAppearanceHost {
 
 const SidebarAppearanceHostContext = createContext<SidebarAppearanceHost | null>(null);
 
-export function SidebarAppearanceProvider(props: { host: SidebarAppearanceHost; children: ReactNode }) {
+export function SidebarAppearanceProvider(props: {
+  host: SidebarAppearanceHost;
+  children: ReactNode;
+}) {
   return (
     <SidebarAppearanceHostContext value={props.host}>
-      <SidebarAppearanceOverride value={props.host.presented}>{props.children}</SidebarAppearanceOverride>
+      <SidebarAppearanceOverride value={props.host.presented}>
+        {props.children}
+      </SidebarAppearanceOverride>
     </SidebarAppearanceHostContext>
   );
 }
