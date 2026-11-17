@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "test-runner-inventory",
+  "jonesOwnedPaths": ["docs/operations/test-runners.md"],
+  "hookPaths": ["docs/internals/testing.md"],
+  "tombstones": [],
+  "allowedImports": []
+}

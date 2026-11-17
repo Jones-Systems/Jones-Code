@@ -391,6 +391,9 @@ vp lint <files>
 vp run --filter <package> typecheck
 ```
 
+`vp test run` finds only Vitest files. See [test runners](./test-runners.md) for the filename,
+command and CI step of each other kind of test.
+
 In `apps/web`, a test that renders React or touches the DOM is named `*.browser.test.{ts,tsx}`
 and runs in headless Chromium with the React Compiler on, like the app. There is no jsdom; other
 `*.test.ts` files run in Node.
