@@ -205,8 +205,18 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
     }
   }).pipe(mapError);
   let ownerPaths: readonly string[] = [];
+  // Duties, threads and registry outputs may record either the requested spelling or the
+  // canonical binding path; both name this checkout.
+  const spellings = [...new Set([request.worktree, bound.path])];
+  const within = (path: string) => spellings.some((spelling) => inside(path, spelling));
   const observe = Effect.gen(function* () {
-    const claims = yield* store.claims(request.worktree);
+    const claims = [
+      ...new Map(
+        (yield* Effect.forEach(spellings, (spelling) => store.claims(spelling)))
+          .flat()
+          .map((claim) => [claim.claim_id, claim]),
+      ).values(),
+    ];
     const dutyDetails = claims.map((claim) => {
       let missingFact: string | null = null;
       try {
@@ -254,7 +264,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
     }>`SELECT workspace_root FROM projection_projects WHERE deleted_at IS NULL`;
     const native = yield* sql<{
       payload_json: string;
-    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE json_extract(payload_json,'$.worktreePath')=${request.worktree} AND deleted_at IS NULL`;
+    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE json_extract(payload_json,'$.worktreePath') IN (${request.worktree},${bound.path}) AND deleted_at IS NULL`;
     const active = native.some((r) => {
       const t = JSON.parse(r.payload_json);
       return (
@@ -310,11 +320,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           });
         registryProbe = observed(
           own
-            .filter(
-              (r) =>
-                inside(r.path, request.worktree) &&
-                (r.state !== "active" || r.class === "evidence"),
-            )
+            .filter((r) => within(r.path) && (r.state !== "active" || r.class === "evidence"))
             .map((r) => r.path),
         );
       }
@@ -513,7 +519,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
         : {}),
       finalizeOutputs: (receipt) => {
         const internal = outputs.filter(
-          (r) => inside(r.path, request.worktree) && r.state === "active" && r.class !== "evidence",
+          (r) => within(r.path) && r.state === "active" && r.class !== "evidence",
         );
         return registry?.forgetOutputs
           ? registry.forgetOutputs(internal).pipe(mapError)
