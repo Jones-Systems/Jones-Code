@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { type ReactNode } from "react";
 import { expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 const state = vi.hoisted(() => ({
   settings: {} as typeof DEFAULT_SERVER_SETTINGS,
@@ -543,11 +543,14 @@ it("keeps the last completion timestamp in the header when cleanup rules are off
   expect(timestamp?.textContent).not.toBe("");
   expect(timestamp?.getAttribute("aria-label")).toContain("2026");
   expect(toggle.parentElement?.lastElementChild?.contains(timestamp!)).toBe(true);
-  await act(() => (timestamp as HTMLElement).focus());
+  await act(() => (toggle as HTMLElement).focus());
+  await userEvent.tab();
+  expect(document.activeElement).toBe(timestamp);
   await expect
     .element(page.getByRole("tooltip"))
     .toHaveTextContent(timestamp!.getAttribute("aria-label")!.replace("Last completed run: ", ""));
-  await act(() => (timestamp as HTMLElement).blur());
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("tooltip")).not.toBeInTheDocument();
   expect(deleteButton(screen.container).disabled).toBe(true);
   await screen.getByRole("button", { name: /Last run/ }).click();
   expect(screen.container.textContent).toContain(
