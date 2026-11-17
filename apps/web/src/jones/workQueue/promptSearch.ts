@@ -1,3 +1,4 @@
+import { isHostedStaticApp } from "../../hostedPairing";
 import type { PromptStage } from "./promptItems";
 import {
   promptFilterOptions,
@@ -46,8 +47,10 @@ export function workstreamFilterKey(environmentId: string, id: string) {
   return `${encodeURIComponent(environmentId)}:${encodeURIComponent(id)}`;
 }
 
-export function promptLink(search: PromptSearch) {
-  const url = new URL(window.location.href);
+export function promptLink(search: PromptSearch, href = window.location.href) {
+  const url = new URL(href);
+  // A fresh hosted /work-queue load opens the standalone sample. Open live Prompts instead.
+  if (url.pathname === "/work-queue" && isHostedStaticApp(url)) url.pathname = "/voice-review";
   url.search = "";
   for (const [key, value] of Object.entries(search)) {
     if (value !== undefined) url.searchParams.set(key, value);

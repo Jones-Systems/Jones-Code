@@ -1,4 +1,4 @@
-import type { PromptAttention, PromptBand } from "./promptAttention";
+import { promptIsWaiting, type PromptAttention, type PromptBand } from "./promptAttention";
 import type { PromptItem, PromptStage } from "./promptItems";
 
 /**
@@ -154,7 +154,7 @@ export function filterPromptItems(
     const attention = context.attention(item);
     if (filter === "needs-you") return attention.needsYou;
     if (filter === "paused") return attention.band === "paused";
-    return attention.band === "waiting";
+    return promptIsWaiting(item);
   });
 }
 

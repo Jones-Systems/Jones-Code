@@ -111,11 +111,17 @@ describe("organizing prompts", () => {
     bands.set("a", { needsYou: true, band: "needs-you" });
     bands.set("b", { needsYou: false, band: "waiting" });
     bands.set("c", { needsYou: false, band: "paused" });
-    const items = [item("a"), item("b"), item("c")];
+    const waiting = (key: string) =>
+      item(key, {
+        destinations: [
+          { queueItem: { queue_state: "waiting_remote" } } as PromptItem["destinations"][number],
+        ],
+      });
+    const items = [waiting("a"), waiting("b"), item("c")];
     const keys = (list: readonly PromptItem[]) => list.map((prompt) => prompt.key);
     expect(keys(filterPromptItems(items, "all", context))).toEqual(["a", "b", "c"]);
     expect(keys(filterPromptItems(items, "needs-you", context))).toEqual(["a"]);
-    expect(keys(filterPromptItems(items, "waiting", context))).toEqual(["b"]);
+    expect(keys(filterPromptItems(items, "waiting", context))).toEqual(["a", "b"]);
     expect(keys(filterPromptItems(items, "paused", context))).toEqual(["c"]);
     expect(
       keys(

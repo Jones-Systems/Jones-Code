@@ -36,13 +36,12 @@ const row = (key: string, overrides: Partial<PromptRowView> = {}): PromptRowView
   ...overrides,
 });
 
-function Harness({ groups, headings = false }: { groups: PromptListGroup[]; headings?: boolean }) {
+function Harness({ groups }: { groups: PromptListGroup[] }) {
   const [selected, setSelected] = useState<string | null>(null);
   return (
     <PromptMasterDetail
       label="Queued prompts"
       groups={groups}
-      showGroupHeadings={headings}
       selectedKey={selected}
       onSelect={setSelected}
       empty={<p>Nothing in the queue.</p>}
@@ -141,7 +140,6 @@ describe("prompt master-detail list", () => {
     await act(() =>
       root.rerender(
         <Harness
-          headings
           groups={[
             { key: "a", label: "Alpha", rows: [row("a", { dirty: true })] },
             {
@@ -166,6 +164,21 @@ describe("prompt master-detail list", () => {
     await act(() => gone!.click());
     expect(gone!.getAttribute("aria-current")).toBeNull();
     expect(multi!.textContent).toContain("2 destinations");
+  });
+
+  it("retains group headings while focus pins the last row from a disappearing group", async () => {
+    await using _fixture = await setupFixture();
+    const first = { key: "a", label: "Alpha", rows: [row("a")] };
+    const second = { key: "b", label: "Beta", rows: [row("b")] };
+    await act(() => root.rerender(<Harness groups={[first, second]} />));
+    await act(() => buttons()[0]!.focus());
+    await act(() => root.rerender(<Harness groups={[first]} />));
+    expect([...container.querySelectorAll("h3")].map((heading) => heading.textContent)).toEqual([
+      "Alpha · 1",
+      "Beta · 1",
+    ]);
+    await act(() => buttons()[0]!.blur());
+    expect(container.querySelectorAll("h3")).toHaveLength(0);
   });
 
   it("shows the supplied empty state when no group has rows", async () => {

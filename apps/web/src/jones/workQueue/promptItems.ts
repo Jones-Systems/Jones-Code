@@ -198,22 +198,26 @@ function linkQueuedDeliveries(
   return linked;
 }
 
+export function pendingPromptItem(draft: VoiceReviewDraft): PromptItem {
+  return {
+    key: voiceItemKey(draft.id),
+    stage: "pending",
+    origin: "voice",
+    draft,
+    entry: null,
+    text: draftText(draft),
+    destinations: [],
+    unlinkedDeliveries: null,
+    time: parseTime(draft.created_at),
+    timeKind: "captured",
+  };
+}
+
 export function buildPromptItems(input: PromptItemsInput): PromptItemsResult {
   const { drafts, recent, snapshot, nativeEnvironmentId } = input;
-  const pending: PromptItem[] = drafts
+  const pending = drafts
     .filter((draft) => !terminalDraftStates.has(draft.state))
-    .map((draft) => ({
-      key: voiceItemKey(draft.id),
-      stage: "pending",
-      origin: "voice",
-      draft,
-      entry: null,
-      text: draftText(draft),
-      destinations: [],
-      unlinkedDeliveries: null,
-      time: parseTime(draft.created_at),
-      timeKind: "captured",
-    }));
+    .map(pendingPromptItem);
 
   const classified = classifySentPrompts(snapshot, recent, nativeEnvironmentId);
   const requests = new Map((snapshot?.items ?? []).map((item) => [item.request_id, item]));
@@ -325,6 +329,10 @@ export function buildPromptItems(input: PromptItemsInput): PromptItemsResult {
       if (queueItem) absorbed.add(queueItem.request_id);
       return deliveryDestination(delivery, queueItem, null);
     });
+    const submitted = destinations.reduce<number | null>((latest, destination) => {
+      const timestamp = destination.queueItem?.submitted_at_ms;
+      return timestamp == null ? latest : latest === null ? timestamp : Math.max(latest, timestamp);
+    }, null);
     queued.push({
       key: voiceItemKey(entry.draft.id),
       stage: "queued",
@@ -334,8 +342,8 @@ export function buildPromptItems(input: PromptItemsInput): PromptItemsResult {
       text: entryText(entry),
       destinations,
       unlinkedDeliveries: unlinkedCount(entry),
-      time: parseTime(entry.draft.created_at),
-      timeKind: "captured",
+      time: submitted ?? parseTime(entry.draft.created_at),
+      timeKind: submitted === null ? "captured" : "submitted",
     });
   }
   for (const item of snapshot?.items ?? []) {

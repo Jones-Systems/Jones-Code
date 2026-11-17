@@ -205,26 +205,28 @@ describe("submitted work metadata", () => {
     expect(container.textContent).toContain("not configured");
     expect(container.textContent).not.toContain("requests in this sample");
   });
-  it("keeps the earlier sample on a failed refresh and marks it as not current", async () => {
-    await using _fixture = await setupFixture1();
-    const onFailedChange = vi.fn();
-    const load = vi
-      .fn<WorkQueueMetadataLoader>()
-      .mockResolvedValueOnce(ready())
-      .mockRejectedValueOnce(new Error("offline"));
-    await act(() =>
-      root.rerender(<WorkQueueMetadataPanel load={load} onFailedChange={onFailedChange} />),
-    );
-    expect(container.textContent).toContain("Ready sample");
-    expect(onFailedChange).toHaveBeenLastCalledWith(false);
-    await act(() => container.querySelector<HTMLButtonElement>("button")!.click());
-    expect(container.textContent).toContain(
-      "Refresh failed. The queue sample below is from an earlier read.",
-    );
-    expect(container.textContent).toContain("Stale sample");
-    expect(container.textContent).not.toContain("Ready sample");
-    expect(onFailedChange).toHaveBeenLastCalledWith(true);
-  });
+  it.each(["rejection", "source_unavailable"] as const)(
+    "keeps the earlier sample and marks it stale after a %s refresh",
+    async (failure) => {
+      await using _fixture = await setupFixture1();
+      const onFailedChange = vi.fn();
+      const load = vi.fn<WorkQueueMetadataLoader>().mockResolvedValueOnce(ready());
+      if (failure === "rejection") load.mockRejectedValueOnce(new Error("offline"));
+      else load.mockResolvedValueOnce({ status: "unavailable", reason: failure });
+      await act(() =>
+        root.rerender(<WorkQueueMetadataPanel load={load} onFailedChange={onFailedChange} />),
+      );
+      expect(container.textContent).toContain("Ready sample");
+      expect(onFailedChange).toHaveBeenLastCalledWith(false);
+      await act(() => container.querySelector<HTMLButtonElement>("button")!.click());
+      expect(container.textContent).toContain(
+        "Refresh failed. The queue sample below is from an earlier read.",
+      );
+      expect(container.textContent).toContain("Stale sample");
+      expect(container.textContent).not.toContain("Ready sample");
+      expect(onFailedChange).toHaveBeenLastCalledWith(true);
+    },
+  );
   it("reports a failed first read without inventing a sample", async () => {
     await using _fixture = await setupFixture1();
     await render(async () => {

@@ -99,6 +99,9 @@ export class VoiceReviewActions {
     };
   };
   snapshot = () => this.version;
+  get hasLocalWork() {
+    return this.editHandle !== null || this.busy || this.uncertain;
+  }
   private notify() {
     this.version++;
     this.listeners.forEach((listener) => listener());
@@ -112,6 +115,17 @@ export class VoiceReviewActions {
   }
   setText(text: string) {
     this.text = text;
+    this.notify();
+  }
+  discardTerminalEdit() {
+    if (
+      this.busy ||
+      this.uncertain ||
+      !["released", "deleted", "expired"].includes(this.draft.state)
+    )
+      return;
+    this.editHandle = null;
+    this.text = this.draft.text ?? "";
     this.notify();
   }
   async act(action: VoiceReviewAction, sendAfterSave = false) {
@@ -162,14 +176,19 @@ export class VoiceReviewActions {
     }
   }
   async reconcile() {
+    if (this.busy) return;
+    this.busy = true;
+    this.notify();
     try {
       this.receive(await this.transport.get(this.draft.id));
       this.uncertain = false;
       this.error = null;
     } catch (error) {
       this.error = voiceReviewError(error);
+    } finally {
+      this.busy = false;
+      this.notify();
     }
-    this.notify();
   }
 }
 

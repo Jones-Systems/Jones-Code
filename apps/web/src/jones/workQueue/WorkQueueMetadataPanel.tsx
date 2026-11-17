@@ -36,9 +36,12 @@ export function WorkQueueMetadataPanel({
       try {
         const next = await read(controller.signal);
         if (!controller.signal.aborted) {
+          const transient = next.status === "unavailable" && next.reason === "source_unavailable";
           setObservedAt(Date.now());
-          setResult(next);
-          setFailed(false);
+          setResult((previous) =>
+            transient && previous && "snapshot" in previous ? previous : next,
+          );
+          setFailed(transient);
         }
       } catch {
         if (!controller.signal.aborted) setFailed(true);
@@ -95,7 +98,9 @@ export function WorkQueueMetadataPanel({
         <div role="status" className="min-w-0 flex-1 space-y-1 text-sm text-muted-foreground">
           {loading && !result ? <p>Loading queue metadata…</p> : null}
           {loading && result ? <p>Refreshing the queue sample…</p> : null}
-          {failed && !snapshot ? <p>Queue metadata unavailable. Refresh to try again.</p> : null}
+          {failed && !snapshot && result?.status !== "unavailable" ? (
+            <p>Queue metadata unavailable. Refresh to try again.</p>
+          ) : null}
           {failed && snapshot ? (
             <p>Refresh failed. The queue sample below is from an earlier read.</p>
           ) : null}

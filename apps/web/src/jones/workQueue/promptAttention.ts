@@ -20,6 +20,13 @@ export interface PromptLocalAttention {
 const noLocalState: PromptLocalAttention = { uncertain: false, ownsEdit: false };
 const waitingQueueStates: ReadonlySet<string> = new Set(["queued", "reserved", "waiting_remote"]);
 
+export const promptIsWaiting = (item: PromptItem): boolean =>
+  item.stage === "queued" &&
+  item.destinations.some(
+    (destination) =>
+      destination.queueItem !== null && waitingQueueStates.has(destination.queueItem.queue_state),
+  );
+
 export function promptAttention(
   item: PromptItem,
   local: PromptLocalAttention = noLocalState,
@@ -40,14 +47,7 @@ export function promptAttention(
   if (item.stage === "queued") {
     if (item.destinations.some(destinationNeedsAttention))
       return { needsYou: true, band: "needs-you" };
-    if (
-      item.destinations.some(
-        (destination) =>
-          destination.queueItem !== null &&
-          waitingQueueStates.has(destination.queueItem.queue_state),
-      )
-    )
-      return { needsYou: false, band: "waiting" };
+    if (promptIsWaiting(item)) return { needsYou: false, band: "waiting" };
     return { needsYou: false, band: "other" };
   }
   return item.destinations.some((destination) =>

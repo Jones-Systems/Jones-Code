@@ -14,7 +14,11 @@ import { Skeleton } from "../ui/skeleton";
 import { Textarea } from "../ui/textarea";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { promptAttention } from "../../jones/workQueue/promptAttention";
-import { buildPromptItems, voiceItemKey, type PromptItem } from "../../jones/workQueue/promptItems";
+import {
+  pendingPromptItem,
+  voiceItemKey,
+  type PromptItem,
+} from "../../jones/workQueue/promptItems";
 import { type PromptCount } from "../../jones/workQueue/promptOrganize";
 import {
   draftStatus,
@@ -63,12 +67,12 @@ interface PendingDraftView {
   readonly error: string | null;
   readonly observedAt: number;
   readonly dirty: boolean;
+  readonly retained: boolean;
 }
 
 /**
  * Owns one `VoiceReviewActions` controller per pending draft so edits, in-flight actions and
- * uncertain outcomes survive selection changes. A draft that leaves the pending list drops its
- * controller, as the per-row controllers did before.
+ * uncertain outcomes survive selection changes and incomplete Pending samples.
  */
 class PendingDraftStore {
   private readonly controllers = new Map<
@@ -76,6 +80,7 @@ class PendingDraftStore {
     { readonly actions: VoiceReviewActions; readonly unsubscribe: () => void }
   >();
   private readonly listeners = new Set<() => void>();
+  private listed: ReadonlySet<string> = new Set();
   private views: ReadonlyMap<string, PendingDraftView> = new Map();
   constructor(private readonly transport: VoiceReviewTransport) {}
   subscribe = (listener: () => void) => {
@@ -86,6 +91,11 @@ class PendingDraftStore {
   };
   getSnapshot = () => this.views;
   private publish = () => {
+    for (const [id, controller] of this.controllers) {
+      if (this.listed.has(id) || controller.actions.hasLocalWork) continue;
+      controller.unsubscribe();
+      this.controllers.delete(id);
+    }
     this.views = new Map(
       [...this.controllers].map(([id, { actions }]) => [
         id,
@@ -97,25 +107,24 @@ class PendingDraftStore {
           uncertain: actions.uncertain,
           error: actions.error,
           observedAt: actions.observedAt,
-          dirty: actions.editHandle !== null || actions.busy || actions.uncertain,
+          dirty: actions.hasLocalWork,
+          retained: !this.listed.has(id),
         },
       ]),
     );
     for (const listener of this.listeners) listener();
   };
   sync(drafts: readonly VoiceReviewDraft[]) {
-    const present = new Set(drafts.map((draft) => draft.id));
-    for (const [id, controller] of this.controllers) {
-      if (present.has(id)) continue;
-      controller.unsubscribe();
-      this.controllers.delete(id);
-    }
+    this.listed = new Set(
+      drafts.filter((draft) => !terminalStates.has(draft.state)).map(({ id }) => id),
+    );
     for (const draft of drafts) {
       const existing = this.controllers.get(draft.id);
       if (existing) {
         existing.actions.receive(draft);
         continue;
       }
+      if (!this.listed.has(draft.id)) continue;
       const actions = new VoiceReviewActions(draft, this.transport);
       this.controllers.set(draft.id, { actions, unsubscribe: actions.subscribe(this.publish) });
     }
@@ -129,6 +138,9 @@ class PendingDraftStore {
   }
   reconcile(id: string) {
     void this.controllers.get(id)?.actions.reconcile();
+  }
+  discardTerminalEdit(id: string) {
+    this.controllers.get(id)?.actions.discardTerminalEdit();
   }
 }
 
@@ -206,7 +218,7 @@ export function EnvironmentVoiceReview({
   const pending = drafts.filter((draft) => !terminalStates.has(draft.state));
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Apply committed server draft observations to the external action controllers.
   useEffect(() => {
-    store.sync(drafts.filter((draft) => !terminalStates.has(draft.state)));
+    store.sync(drafts);
   }, [store, drafts]);
   const dirty = [...views.values()].some((view) => view.dirty);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Report retained local work to the page leave guard.
@@ -223,12 +235,11 @@ export function EnvironmentVoiceReview({
     onPendingCountChange?.(pendingCount === null ? null : { count: pendingCount, qualifier });
   }, [pendingCount, qualifier, onPendingCountChange]);
 
-  const items = buildPromptItems({
-    drafts: pending,
-    recent: [],
-    snapshot: null,
-    nativeEnvironmentId: null,
-  }).pending;
+  const pendingIds = new Set(pending.map(({ id }) => id));
+  const items = pending.map(pendingPromptItem);
+  for (const view of views.values()) {
+    if (view.dirty && !pendingIds.has(view.draft.id)) items.push(pendingPromptItem(view.draft));
+  }
   const blocked = unavailable || error !== null;
   const localAttention = (item: PromptItem) => {
     const view = item.draft ? views.get(item.draft.id) : undefined;
@@ -347,7 +358,6 @@ export function EnvironmentVoiceReview({
             label: group.label,
             rows: group.items.map(rows),
           }))}
-          showGroupHeadings={groups.length > 1}
           selectedKey={selected}
           onSelect={choose}
           viewKey={listView?.key}
@@ -560,9 +570,12 @@ function PendingPromptDetail({
       actionStatus={
         <>
           {saveReason ? <p id={reasonId}>{saveReason}</p> : null}
-          {view?.error ? (
+          {view?.retained || view?.error ? (
             <div className="space-y-1">
-              <p role="alert">{view.error}</p>
+              {view.retained ? (
+                <p>Outside the latest Pending sample. Your local work is preserved.</p>
+              ) : null}
+              {view.error ? <p role="alert">{view.error}</p> : null}
               <Button
                 size="sm"
                 variant="outline"
@@ -576,7 +589,24 @@ function PendingPromptDetail({
             </div>
           ) : null}
           {ownsEdit && !editing ? (
-            <p>Unsaved text is preserved. Begin a new edit before saving it.</p>
+            terminal ? (
+              <>
+                <p>
+                  This prompt has ended. You can copy your unsaved text before discarding the local
+                  edit.
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={view?.busy || view?.uncertain}
+                  onClick={() => store.discardTerminalEdit(draft.id)}
+                >
+                  Discard local edit
+                </Button>
+              </>
+            ) : (
+              <p>Unsaved text is preserved. Begin a new edit before saving it.</p>
+            )
           ) : null}
         </>
       }
@@ -621,7 +651,7 @@ function PendingPromptDetail({
         <Textarea
           aria-label={`Prompt text to ${destination}`}
           value={text}
-          disabled={reason !== null || !editing}
+          readOnly={reason !== null || !editing}
           maxLength={100000}
           onChange={(event) => store.setText(draft.id, event.target.value)}
         />

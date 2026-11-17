@@ -38,7 +38,6 @@ function usePromptFrozenRows(groups: readonly PromptListGroup[], viewKey: string
 export function PromptMasterDetail({
   label,
   groups,
-  showGroupHeadings,
   selectedKey,
   onSelect,
   detail,
@@ -48,7 +47,6 @@ export function PromptMasterDetail({
 }: {
   readonly label: string;
   readonly groups: readonly PromptListGroup[];
-  readonly showGroupHeadings: boolean;
   readonly selectedKey: string | null;
   readonly onSelect: (key: string) => void;
   readonly detail: ReactNode;
@@ -79,7 +77,7 @@ export function PromptMasterDetail({
           ? empty
           : visibleGroups.map((group) => (
               <div key={group.key} className="min-w-0 space-y-1.5">
-                {showGroupHeadings ? (
+                {visibleGroups.length > 1 ? (
                   <h3 className="text-xs font-medium text-muted-foreground">
                     {group.label} · {group.rows.length}
                   </h3>

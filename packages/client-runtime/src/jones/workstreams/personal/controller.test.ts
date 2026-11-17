@@ -110,6 +110,23 @@ function harness(overrides: Partial<PersonalWorkstreamsTransport> = {}) {
   };
 }
 describe("personal Workstreams controller", () => {
+  it("keeps source definitions separate from the merged Workstream winner", () => {
+    const h = harness();
+    h.controller.setEnvironments([
+      connection("a", { writable: false }),
+      connection("b", { writable: false }),
+    ]);
+    h.frames[0]!.emit(snapshot("a"));
+    h.frames[1]!.emit(snapshot("b", [definition({ name: "Only on B" })]));
+    expect(h.read().workstreams[0]?.name).toBe("Only on B");
+    expect(h.read().environments[0]?.workstreams).toEqual([]);
+    h.frames[0]!.emit(snapshot("a", [definition({ name: "Reported by A" })], 1));
+    expect(h.read().environments.map((entry) => entry.workstreams?.[0]?.name)).toEqual([
+      "Reported by A",
+      "Only on B",
+    ]);
+    h.close();
+  });
   it("converges across deterministic random interleavings, including equal-tuple payload ties", async () => {
     const records = Array.from({ length: 12 }, (_, i) =>
       definition({ name: `Name ${i}`, rev: 1 + (i % 3), origin: `writer${i % 2}` }),

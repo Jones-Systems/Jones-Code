@@ -233,17 +233,33 @@ export function UnifiedQueuePage({
     stage === "sent"
       ? null
       : combinePromptCounts(
-          selected.map((environment) => counts.get(environment.environmentId)?.[stage] ?? null),
+          environments.flatMap(({ environmentId }) => {
+            if (requestedId !== null && environmentId !== requestedId) return [];
+            const source = sources.get(environmentId);
+            if (
+              source?.voice === "absent" &&
+              !source.voiceChecking &&
+              (stage === "pending" || (source.queue === "absent" && !source.queueChecking))
+            )
+              return [];
+            return [counts.get(environmentId)?.[stage] ?? null];
+          }),
         );
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden">
-      <WorkspacePageHeader electron={isElectron}>
-        <WorkspaceBreadcrumb ariaLabel="Prompts breadcrumb" className="min-w-0 flex-1">
+      <WorkspacePageHeader
+        electron={isElectron}
+        className="max-sm:grid max-sm:h-auto! max-sm:min-h-0! max-sm:max-h-none! max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:gap-y-1.5 max-sm:py-2 max-sm:[&>[data-generic-monitor-control]]:col-start-2 max-sm:[&>[data-generic-monitor-control]]:row-start-1"
+      >
+        <WorkspaceBreadcrumb
+          ariaLabel="Prompts breadcrumb"
+          className="min-w-0 flex-1 max-sm:col-start-1 max-sm:row-start-1"
+        >
           <WorkspaceBreadcrumbItem>
             <h1>Prompts</h1>
           </WorkspaceBreadcrumbItem>
           {configured.length > 0 ? <WorkspaceBreadcrumbSeparator /> : null}
-          <WorkspaceBreadcrumbItem current className="min-w-10">
+          <WorkspaceBreadcrumbItem current>
             {configured.length === 1 && requestedId === null ? (
               <span className="truncate">{configured[0]!.label}</span>
             ) : configured.length > 1 || requestedId !== null ? (
@@ -290,6 +306,7 @@ export function UnifiedQueuePage({
         <ToggleGroup
           role="tablist"
           aria-label="Prompt views"
+          className="max-sm:col-span-2 max-sm:row-start-2 max-sm:justify-self-start"
           variant="segmented"
           value={[pane]}
           onValueChange={(next) => {
@@ -548,6 +565,8 @@ function EnvironmentPrompts({
       voice.recent.unavailable.length > 0 ||
       voice.recent.entries.length >= RECENT_LIMIT);
   const queuedParts = [
+    ...(sources.voice === "unknown" || sources.voiceChecking ? ["unknown" as const] : []),
+    ...(sources.queue === "unknown" || sources.queueChecking ? ["unknown" as const] : []),
     ...(voiceConfigured
       ? [
           voice.recent === null || voice.recentFailed
@@ -779,10 +798,18 @@ function PromptStageList({
     readWorkQueueLocalNames,
   );
   const formatTime = usePromptTime();
+  const { state: personal } = usePersonalWorkstreams();
+  const personalNames = new Map(
+    personal.environments
+      .find((entry) => entry.environmentId === environmentId)
+      ?.workstreams?.map((workstream) => [workstream.id, workstream]),
+  );
+  const queueBound = queueEnvironmentRef === environmentId && nativeEnvironmentId === environmentId;
   const workstreamName = (id: string) =>
     queueEnvironmentRef === null
       ? id
-      : workQueueDestinationLabel(id, queueEnvironmentRef, localNames);
+      : ((queueBound ? personalNames.get(id)?.name : undefined) ??
+        workQueueDestinationLabel(id, queueEnvironmentRef, localNames));
   const threads = voice?.registry?.threads ?? [];
   const title = (item: PromptItem) => {
     const destination = item.destinations[0] ?? null;
@@ -806,11 +833,6 @@ function PromptStageList({
         : "Voice";
     return requestKindLabel(destination?.queueItem?.request_kind);
   };
-  const { state: personal } = usePersonalWorkstreams();
-  const personalNames = new Map(
-    personal.workstreams.map((workstream) => [workstream.id, workstream]),
-  );
-  const queueBound = queueEnvironmentRef === environmentId && nativeEnvironmentId === environmentId;
   const linesByItem = new Map(
     items.map((item) => [
       item.key,
@@ -911,7 +933,6 @@ function PromptStageList({
           label: group.label,
           rows: group.items.map(row),
         }))}
-        showGroupHeadings={groups.length > 1}
         selectedKey={selected}
         onSelect={choose}
         onFilterWorkstream={listView.filterWorkstream}

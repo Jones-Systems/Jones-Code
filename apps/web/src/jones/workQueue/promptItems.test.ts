@@ -127,6 +127,18 @@ describe("Prompts item model", () => {
     expect(findPromptItem(result, "voice:missing")).toBeNull();
   });
 
+  it("uses the correlated submission time for a queued voice prompt", () => {
+    const result = buildPromptItems({
+      drafts: [],
+      recent: [voice([delivery("delivery", "request")])],
+      snapshot: snapshot([queueItem({ submitted_at_ms: 1800 })]),
+      nativeEnvironmentId: "native-env",
+    });
+    expect(result.queued).toMatchObject([
+      { key: "voice:released-1", time: 1800, timeKind: "submitted" },
+    ]);
+  });
+
   it("keeps an unproved request in Queued, linked to its one matching delivery", () => {
     const result = buildPromptItems({
       drafts: [],

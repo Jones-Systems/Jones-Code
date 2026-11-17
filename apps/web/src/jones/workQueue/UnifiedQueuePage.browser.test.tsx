@@ -1,7 +1,12 @@
-import { act, render as renderScreen, type Screen } from "../../../test/render";
+import { act, fakeTimers, render as renderScreen, type Screen } from "../../../test/render";
 import { useEffect, useState, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { WorkQueueMetadataResult, VoiceReviewRecentList } from "@t3tools/contracts";
+import { page } from "vite-plus/test/browser";
+import {
+  EnvironmentId,
+  type WorkQueueMetadataResult,
+  type VoiceReviewRecentList,
+} from "@t3tools/contracts";
 
 const fixture = vi.hoisted(() => ({
   environments: [
@@ -21,6 +26,8 @@ const fixture = vi.hoisted(() => ({
     },
   ],
   voiceList: vi.fn(),
+  voiceGet: vi.fn(),
+  voiceMutation: vi.fn(),
   selfIdentity: vi.fn(),
   recent: null as VoiceReviewRecentList | null,
   mounts: new Map<string, number>(),
@@ -62,7 +69,7 @@ vi.mock("../../components/voiceReview/useVoiceReview", async (importOriginal) =>
   useVoiceReview: () => ({
     fetchList: fixture.voiceList,
     fetchSelfIdentity: fixture.selfIdentity,
-    transport: { get: vi.fn(), mutate: vi.fn() },
+    transport: { get: fixture.voiceGet, mutate: fixture.voiceMutation },
     review: {
       recent: async () => {
         if (fixture.recent === null) throw new Error("Recent prompts unavailable");
@@ -141,6 +148,8 @@ describe("Prompts environment composition", () => {
       fixture.recent = null;
       fixture.selfIdentity.mockReset();
       fixture.voiceList.mockReset().mockResolvedValue({ drafts: [] });
+      fixture.voiceGet.mockReset();
+      fixture.voiceMutation.mockReset();
       fixture.blockerStatus = "idle";
       fixture.blockerOptions = null;
       fixture.load
@@ -486,6 +495,65 @@ describe("Prompts environment composition", () => {
     expect(container.textContent).not.toContain("No prompts match.");
   });
 
+  it("keeps an active edit and its guard when the draft drops out of a capped poll", async () => {
+    await using _fixture = await setupFixture1();
+    const { EnvironmentVoiceReview } = await vi.importActual<
+      typeof import("../../components/voiceReview/VoiceReviewPage")
+    >("../../components/voiceReview/VoiceReviewPage");
+    const draft = {
+      ...voiceReviewRecentFixture.entries[1]!.draft,
+      routing_target: "Review fixture",
+    };
+    const editing = { ...draft, state: "editing", revision: draft.revision + 1 } as const;
+    const onDirtyChange = vi.fn<(dirty: boolean) => void>();
+    fixture.voiceList.mockResolvedValue({ drafts: [draft] });
+    fixture.voiceMutation
+      .mockResolvedValueOnce({ draft: editing, edit_handle: "synthetic-edit" })
+      .mockResolvedValueOnce({
+        draft: { ...editing, state: "paused", revision: editing.revision + 1, text: "Local copy" },
+        edit_handle: null,
+      });
+    using _timers = fakeTimers();
+    await act(() =>
+      root.rerender(
+        <EnvironmentVoiceReview
+          environmentId={EnvironmentId.make("alpha")}
+          onDirtyChange={onDirtyChange}
+          linkedKey={`voice:${draft.id}`}
+        />,
+      ),
+    );
+    const action = (label: string) =>
+      container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+    await act(() => action("Edit prompt to Review fixture").click());
+    const textarea = () =>
+      container.querySelector<HTMLTextAreaElement>('[aria-label="Prompt text to Review fixture"]')!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        textarea(),
+        "Local copy",
+      );
+      textarea().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const others = Array.from({ length: 50 }, (_, i) => ({ ...draft, id: `new-${i}` }));
+    fixture.voiceList.mockResolvedValue({ drafts: others });
+    await act(() => vi.advanceTimersByTimeAsync(3_000));
+    expect(textarea().value).toBe("Local copy");
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expect(container.textContent).toContain("Outside the latest Pending sample");
+
+    fixture.voiceList.mockResolvedValue({ drafts: [editing, ...others.slice(1)] });
+    await act(() => vi.advanceTimersByTimeAsync(3_000));
+    expect(textarea().value).toBe("Local copy");
+    await act(() => action("Save prompt to Review fixture and stay paused").click());
+    expect(fixture.voiceMutation).toHaveBeenLastCalledWith(draft.id, "edit-save", {
+      expected_revision: editing.revision,
+      edit_handle: "synthetic-edit",
+      text: "Local copy",
+    });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
   it("supports arrow, Home and End tab navigation with panel labelling and retained children", async () => {
     await using _fixture = await setupFixture1();
     await render();
@@ -524,6 +592,59 @@ describe("Prompts environment composition", () => {
       "This environment is disconnected",
     );
   });
+
+  it("keeps the breadcrumb and stage tabs separate at 320 pixels", async () => {
+    await using _fixture = await setupFixture1();
+    const { innerWidth, innerHeight } = window;
+    try {
+      await page.viewport(320, 740);
+      await render();
+      const breadcrumb = container.querySelector('[aria-label="Prompts breadcrumb"]')!;
+      const tabs = container.querySelector('[role="tablist"][aria-label="Prompt views"]')!;
+      expect(breadcrumb.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        tabs.getBoundingClientRect().top,
+      );
+      expect(tabs.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
+    } finally {
+      await page.viewport(innerWidth, innerHeight);
+    }
+  });
+
+  it.each(["VoiceReviewForbiddenError", "VoiceReviewNotConfiguredError"])(
+    "qualifies the all-sources zero when an environment is offline and voice discovery reports %s",
+    async (_tag) => {
+      await using _fixture = await setupFixture1();
+      setConnection("beta", "disconnected");
+      fixture.voiceList.mockRejectedValue({ _tag });
+      fixture.load.mockResolvedValue({
+        status: "ready",
+        expires_at_ms: Date.now() + 60_000,
+        snapshot: {
+          schema: "codex.t3-work-queue-metadata/v2",
+          source: {
+            queue_id: "queue",
+            host_id: "host",
+            environment_ref: "alpha",
+            exporter_instance_id: "exporter",
+          },
+          observed_at_ms: Date.now(),
+          snapshot_token: "a".repeat(64),
+          coverage: "complete",
+          authority_effect: "none",
+          items: [],
+        },
+      });
+      await render();
+      await click("Queued");
+      expect(
+        container.querySelector('[aria-label="Queued, 0 prompts, some sources unknown"]'),
+      ).not.toBeNull();
+      if (_tag === "VoiceReviewForbiddenError") {
+        expect(container.textContent).toContain("No items in this sample.");
+        expect(container.textContent).not.toContain("Nothing in the queue.");
+      }
+    },
+  );
 
   it("retains read failures as unknown and allows retry to discover a configured source", async () => {
     await using _fixture = await setupFixture1();

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { PromptItem } from "./promptItems";
 import { promptWorkstreams } from "./promptWorkstreams";
-import { validatePromptSearch } from "./promptSearch";
+import { configuredHostedAppUrl } from "../../hostedPairing";
+import { promptLink, validatePromptSearch } from "./promptSearch";
 
 const threadKey = JSON.stringify(["mini", "thread-1"]);
 const prompt: PromptItem = {
@@ -61,6 +62,17 @@ describe("Prompt Workstream provenance", () => {
 });
 
 describe("Prompt deep links", () => {
+  it("routes hosted links to live Prompts and preserves the locally served route", () => {
+    const search = { source: "mini", stage: "queued", prompt: "queue:request" } as const;
+    const hosted = new URL(
+      promptLink(search, new URL("/work-queue", configuredHostedAppUrl()).href),
+    );
+    const local = new URL(promptLink(search, "http://127.0.0.1:7375/work-queue"));
+    expect(hosted.pathname).toBe("/voice-review");
+    expect(local.pathname).toBe("/work-queue");
+    expect(Object.fromEntries(hosted.searchParams)).toEqual(search);
+    expect(Object.fromEntries(local.searchParams)).toEqual(search);
+  });
   it("binds a valid stage, prompt and compatible controls and discards invalid values", () => {
     expect(
       validatePromptSearch({
