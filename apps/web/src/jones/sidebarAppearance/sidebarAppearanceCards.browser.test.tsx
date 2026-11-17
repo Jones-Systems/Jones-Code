@@ -257,6 +257,11 @@ it.each(["card", "slim", "folder", "folder-multiline"] as const)(
       expect(title().dataset.jonesThreadTitle).toBe(state.tone);
       const baseline = getComputedStyle(title()).color;
       const weight = getComputedStyle(title()).fontWeight;
+      // State changes can start the existing working-row opacity transition.
+      // Capture its settled baseline before comparing brightness-only updates.
+      await expect
+        .poll(() => screen.container.querySelector("[data-sidebar-row]")!.getAnimations().length)
+        .toBe(0);
       const rowOpacity = getComputedStyle(
         screen.container.querySelector("[data-sidebar-row]")!,
       ).opacity;

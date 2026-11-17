@@ -11,7 +11,7 @@ export function PersonalSidebarGroupHeader({
   collapsed,
   onToggle,
   summary,
-  rosterTotal = summary.total,
+  rosterTotal,
   onRenameRequested,
   nameEditor,
   actions,
@@ -32,13 +32,14 @@ export function PersonalSidebarGroupHeader({
   onStatusFilterChange?: (filter: PersonalStatusFilter | null) => void;
 }) {
   const appearance = useSidebarAppearancePresentation();
+  const total = rosterTotal ?? summary.total;
   const numericCount = appearance?.countStyle === "numeric-right";
   const descriptionId = useId();
   const titleLaneRef = useRef<HTMLDivElement>(null);
   const titleProbeRef = useRef<HTMLSpanElement>(null);
   const countersRef = useRef<HTMLSpanElement>(null);
   const undoTitleClickRef = useRef<(() => void) | null>(null);
-  const description = `${formatPersonalThreadCount(rosterTotal)}, ${summary.running} working, ${summary.attention} need attention, ${summary.done} done, ${summary.failed} failed.`;
+  const description = `${formatPersonalThreadCount(total)}, ${summary.running} working, ${summary.attention} need attention, ${summary.done} done, ${summary.failed} failed.`;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fit the DOM counter pill to measured title lines and keep resize/font subscriptions mounted.
   useLayoutEffect(() => {
     const lane = titleLaneRef.current;
@@ -204,11 +205,11 @@ export function PersonalSidebarGroupHeader({
               <span className="mx-[0.4em] text-muted-foreground/60">·</span>
             </>
           ) : null}
-          <span className="text-muted-foreground">{rosterTotal}</span>
+          <span className="text-muted-foreground">{total}</span>
         </span>
       ) : (
         <span className="pointer-events-none col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 text-xs leading-4 text-sidebar-muted-foreground">
-          <span className="tabular-nums">{formatPersonalThreadCount(rosterTotal)}</span>
+          <span className="tabular-nums">{formatPersonalThreadCount(total)}</span>
           {summary.failed > 0 ? (
             <span className="ml-auto text-right text-thread-failed tabular-nums">
               {summary.failed} failed

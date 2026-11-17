@@ -224,7 +224,8 @@ it("traverses displayed Workstreams then Unassigned and skips collapsed groups",
     await visit(order[4]!);
     for (const id of order.slice(5)) await step("next", id);
     for (const id of order.slice(4, -1).reverse()) await step("previous", id);
-    await userEvent.click(page.getByRole("button", { name: "Collapse beta", exact: true }));
+    // Click the title's gesture layer rather than the background toggle beneath it.
+    await userEvent.click(page.getByText("beta", { exact: true }));
     await visit(order[4]!);
     await step("next", order[6]!);
     await step("previous", order[4]!);
@@ -236,7 +237,7 @@ it("traverses displayed Workstreams then Unassigned and skips collapsed groups",
     await step("next", order[6]!);
     await visit("b1");
     await step("previous", order[4]!);
-    await userEvent.click(page.getByRole("button", { name: "Expand beta", exact: true }));
+    await userEvent.click(page.getByText("beta", { exact: true }));
     await step("next", "b1");
     await userEvent.click(page.getByRole("button", { name: "Collapse Unassigned", exact: true }));
     await step("next", "b1");
