@@ -11,6 +11,8 @@ import * as NodeURL from "node:url";
 export const DEFAULT_MIN_AGE_MINUTES = 30_240;
 export const REGISTRY = "https://registry.npmjs.org";
 const RETRIES = 3;
+/** Waits before each retry; a longer registry outage still fails closed. */
+const BACKOFF_MS = [2_000, 5_000, 15_000];
 const CONCURRENCY = 16;
 const REQUEST_TIMEOUT_MS = 60_000;
 const EXCLUDE_KEY = "minimumReleaseAgeExclude";
@@ -27,12 +29,12 @@ function unquote(value) {
 }
 
 /**
- * Registry packages from the lockfile's final YAML document. A first document
- * holds pnpm's own tool lock; it is not installed under the project policy.
- * File, directory, git and tarball resolutions are skipped: the registry has
- * no publish time for them.
+ * Registry packages from the lockfile's final YAML document. File, directory,
+ * git and tarball resolutions are skipped: the registry has no publish time for them.
  */
 export function parseLockPackages(lockText) {
+  // The first document locks packageManagerDependencies (pnpm, @pnpm/exe): pnpm resolves
+  // and installs them without minimumReleaseAge, and verifies only the final document.
   const documents = lockText.split(/^---[ \t]*$/m);
   const lines = documents.at(-1).split("\n");
   const packages = new Map();
@@ -83,7 +85,8 @@ export function parseExcludeBlock(workspaceText) {
       pendingComment = true;
       continue;
     }
-    const item = /^\s+-\s+("[^"]*"|'[^']*'|\S+)\s*(?:#.*)?$/.exec(line);
+    // YAML also allows a mapping's list items at column 0.
+    const item = /^\s*-\s+("[^"]*"|'[^']*'|\S+)\s*(?:#.*)?$/.exec(line);
     if (!item) break;
     // A comment only belongs to the block when more list items follow it.
     comments ||= pendingComment;
@@ -155,7 +158,7 @@ async function fetchTimes(name, wanted, { fetch, sleep, retries }) {
   const url = `${REGISTRY}/${encodeURIComponent(name).replace(/^%40/, "@")}`;
   let failure = "";
   for (let attempt = 0; attempt <= retries; attempt++) {
-    if (attempt > 0) await sleep(500 * 2 ** (attempt - 1));
+    if (attempt > 0) await sleep(BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length) - 1]);
     try {
       const response = await fetch(url, {
         headers: { accept: "application/json" },
@@ -216,16 +219,27 @@ const USAGE = [
   "         --all --write  rewrite the exclusion block to match",
 ].join("\n");
 
+const sha256 = (text) => NodeCrypto.createHash("sha256").update(text).digest("hex");
+
 /**
  * Boundary dispositions in resolutions.json bind pnpm-workspace.yaml by hash, so
- * any exclusion edit stales them. Refresh those anchors with the rewrite.
+ * any exclusion edit stales them. An anchor is rebound only when it approved the
+ * file exactly as it was before the rewrite, so the exclusion block is the only
+ * change. Any other anchor stays stale for boundary review and is counted.
  */
-export function refreshBoundaryAnchors(resolutionsText, workspaceText) {
-  const hash = NodeCrypto.createHash("sha256").update(workspaceText).digest("hex");
-  return resolutionsText.replace(
-    /("path": "pnpm-workspace\.yaml",\s*"sha256": ")[0-9a-f]{64}(")/g,
-    `$1${hash}$2`,
+export function refreshBoundaryAnchors(resolutionsText, previousText, nextText) {
+  const previous = sha256(previousText);
+  const next = sha256(nextText);
+  let stale = 0;
+  const text = resolutionsText.replace(
+    /("path": "pnpm-workspace\.yaml",\s*"sha256": ")([0-9a-f]{64})(")/g,
+    (match, head, hash, tail) => {
+      if (hash === previous) return `${head}${next}${tail}`;
+      if (hash !== next) stale += 1;
+      return match;
+    },
   );
+  return { text, stale };
 }
 
 class UsageError extends Error {}
@@ -252,12 +266,12 @@ function readOptions(argv) {
   return options;
 }
 
-function defaultReadBaseLock(root, sha) {
+function defaultReadBaseFile(root, sha, path) {
   // A leading dash would read as a git option; the rest is a plain ref or SHA.
   if (!/^[A-Za-z0-9][A-Za-z0-9._/^~-]*$/.test(sha)) {
     throw new UsageError(`--base needs a commit or ref, got "${sha}"`);
   }
-  return NodeChildProcess.execFileSync("git", ["show", `${sha}:pnpm-lock.yaml`], {
+  return NodeChildProcess.execFileSync("git", ["show", `${sha}:${path}`], {
     cwd: root,
     encoding: "utf8",
     maxBuffer: 256 * 1024 * 1024,
@@ -280,7 +294,7 @@ export async function run(argv, deps = {}) {
     sleep = defaultSleep,
     readFile = (path) => NodeFSP.readFile(path, "utf8"),
     writeFile = (path, text) => NodeFSP.writeFile(path, text),
-    readBaseLock = defaultReadBaseLock,
+    readBaseFile = defaultReadBaseFile,
     out = (text) => process.stdout.write(`${text}\n`),
     err = (text) => process.stderr.write(`${text}\n`),
     retries,
@@ -315,10 +329,24 @@ export async function run(argv, deps = {}) {
     let candidates;
     if (options.all) candidates = [...lock.values()];
     else {
-      const base = parseLockPackages(readBaseLock(root, options.base));
+      const base = parseLockPackages(readBaseFile(root, options.base, "pnpm-lock.yaml"));
       candidates = [...lock.values()].filter((entry) => !base.has(idOf(entry.name, entry.version)));
+      // An exclusion dropped since base can expose a version that is still young.
+      const baseExcludes = parseExcludeBlock(
+        readBaseFile(root, options.base, "pnpm-workspace.yaml"),
+      ).entries;
+      const unexcluded = new Map();
+      for (const { raw } of baseExcludes) {
+        const exact = splitExact(raw);
+        if (exact.problem) continue;
+        const id = idOf(exact.name, exact.version);
+        if (!valid.has(id) && lock.has(id) && base.has(id)) unexcluded.set(id, lock.get(id));
+      }
+      candidates.push(...unexcluded.values());
       if (!candidates.length) {
-        out(`No new registry packages since ${options.base}; nothing to check.`);
+        out(
+          `No new registry packages or dropped exclusions since ${options.base}; nothing to check.`,
+        );
         return 0;
       }
     }
@@ -355,10 +383,21 @@ export async function run(argv, deps = {}) {
         if (error?.code === "ENOENT") return undefined;
         throw error;
       });
-      const refreshed = resolutions && refreshBoundaryAnchors(resolutions, next);
-      if (refreshed !== undefined && refreshed !== resolutions) {
-        await writeFile(resolutionsPath, refreshed);
+      const refreshed =
+        resolutions === undefined
+          ? undefined
+          : refreshBoundaryAnchors(resolutions, workspaceText, next);
+      if (refreshed && refreshed.text !== resolutions) {
+        await writeFile(resolutionsPath, refreshed.text);
         out("Refreshed the pnpm-workspace.yaml hashes in scripts/jones/boundary/resolutions.json.");
+      }
+      if (refreshed?.stale) {
+        err(
+          `Boundary review needed: ${refreshed.stale} pnpm-workspace.yaml anchor(s) in ` +
+            "scripts/jones/boundary/resolutions.json did not approve the file as it was before " +
+            "this write, so they were left stale. Review those dispositions with " +
+            "`node scripts/jones/check-boundary.ts --strict`.",
+        );
       }
       const added = young.filter(({ id }) => !valid.has(id)).length;
       out(

@@ -183,6 +183,19 @@ NodeTest.describe("exclusion block parsing", () => {
     NodeAssert.deepEqual([block.start, block.end], [1, 5]);
   });
 
+  NodeTest.it("reads list items at column 0", () => {
+    const text = 'minimumReleaseAgeExclude:\n- "a@1.0.0"\n- b@2.0.0\nother: true\n';
+    const block = parseExcludeBlock(text);
+    NodeAssert.deepEqual(
+      block.entries.map((entry) => entry.raw),
+      ["a@1.0.0", "b@2.0.0"],
+    );
+    NodeAssert.equal(
+      rewriteExcludeBlock(text, ["b@2.0.0"]),
+      'minimumReleaseAgeExclude:\n  - "b@2.0.0"\nother: true\n',
+    );
+  });
+
   NodeTest.it("flags a comment between items and accepts an absent or empty block", () => {
     const withComment = 'minimumReleaseAgeExclude:\n  - "a@1.0.0"\n  # note\n  - "b@1.0.0"\n';
     NodeAssert.equal(parseExcludeBlock(withComment).comments, true);
@@ -273,17 +286,18 @@ NodeTest.describe("exclusion block rewriting", () => {
     );
   });
 
-  NodeTest.it("rebinds every workspace anchor in the boundary resolutions and nothing else", () => {
+  NodeTest.it("rebinds only workspace anchors that approved the previous file", () => {
     const entry = (path, sha256) =>
       `    {\n      "path": "${path}",\n      "sha256": "${sha256}"\n    }`;
-    const other = "a".repeat(64);
-    const stale = "b".repeat(64);
-    const text = `[\n${entry("apps/web/package.json", other)},\n${entry("pnpm-workspace.yaml", stale)},\n${entry("pnpm-workspace.yaml", stale)}\n]`;
-    const hash = NodeCrypto.createHash("sha256").update("workspace text").digest("hex");
-    NodeAssert.equal(
-      refreshBoundaryAnchors(text, "workspace text"),
-      `[\n${entry("apps/web/package.json", other)},\n${entry("pnpm-workspace.yaml", hash)},\n${entry("pnpm-workspace.yaml", hash)}\n]`,
-    );
+    const sha = (text) => NodeCrypto.createHash("sha256").update(text).digest("hex");
+    const before = sha("before");
+    const after = sha("after");
+    const other = "b".repeat(64);
+    const text = `[\n${entry("apps/web/package.json", before)},\n${entry("pnpm-workspace.yaml", before)},\n${entry("pnpm-workspace.yaml", other)},\n${entry("pnpm-workspace.yaml", after)}\n]`;
+    NodeAssert.deepEqual(refreshBoundaryAnchors(text, "before", "after"), {
+      text: `[\n${entry("apps/web/package.json", before)},\n${entry("pnpm-workspace.yaml", after)},\n${entry("pnpm-workspace.yaml", other)},\n${entry("pnpm-workspace.yaml", after)}\n]`,
+      stale: 1,
+    });
   });
 
   NodeTest.it("refuses to drop comments inside the block", () => {
@@ -314,7 +328,7 @@ NodeTest.describe("registry lookup", () => {
       sleep: async (ms) => delays.push(ms),
     });
     NodeAssert.deepEqual(urls, Array(4).fill("https://registry.npmjs.org/@scope%2Fpkg"));
-    NodeAssert.deepEqual(delays, [500, 1000, 2000]);
+    NodeAssert.deepEqual(delays, [2000, 5000, 15000]);
     NodeAssert.equal(
       results.get("@scope/pkg@1.0.0").published.toISOString(),
       "2026-10-01T00:00:00.000Z",
@@ -323,15 +337,19 @@ NodeTest.describe("registry lookup", () => {
 
   NodeTest.it("reports an error after three retries", async () => {
     let calls = 0;
+    const delays = [];
     const results = await lookupPublishTimes([{ name: "a", version: "1.0.0" }], {
       fetch: async () => {
         calls += 1;
         return response(500);
       },
-      sleep: instant,
+      sleep: async (ms) => delays.push(ms),
+      retries: 4,
     });
-    NodeAssert.equal(calls, 4);
-    NodeAssert.match(results.get("a@1.0.0").error, /HTTP 500 \(after 3 retries\)/);
+    NodeAssert.equal(calls, 5);
+    // Retries beyond the schedule keep the longest wait.
+    NodeAssert.deepEqual(delays, [2000, 5000, 15000, 15000]);
+    NodeAssert.match(results.get("a@1.0.0").error, /HTTP 500 \(after 4 retries\)/);
   });
 
   NodeTest.it("does not retry a missing package or a client error", async () => {
@@ -397,6 +415,7 @@ NodeTest.describe("run", () => {
     {
       lockText = lock,
       excludes = [],
+      baseExcludes = excludes,
       docs = documents,
       resolutions,
       fetch = registry(docs),
@@ -409,7 +428,8 @@ NodeTest.describe("run", () => {
       fetch,
       now: () => NOW,
       sleep: instant,
-      readBaseLock: () => baseLock,
+      readBaseFile: (_root, _sha, path) =>
+        path === "pnpm-lock.yaml" ? baseLock : workspace(baseExcludes),
       ...io,
       out: output.out,
       err: output.err,
@@ -452,7 +472,30 @@ NodeTest.describe("run", () => {
       fetch: noNetwork,
     });
     NodeAssert.equal(result.code, 0);
-    NodeAssert.match(result.output.text(), /No new registry packages since abc1234/);
+    NodeAssert.match(
+      result.output.text(),
+      /No new registry packages or dropped exclusions since abc1234/,
+    );
+  });
+
+  NodeTest.it("with --base checks an exclusion dropped since base", async () => {
+    const dropped = await invoke(["--base", "abc1234"], {
+      lockText: baseLock,
+      baseExcludes: ["left-pad@1.0.0"],
+      excludes: [],
+    });
+    NodeAssert.equal(dropped.code, 1);
+    NodeAssert.deepEqual(dropped.fetch.stats.urls, ["https://registry.npmjs.org/left-pad"]);
+    NodeAssert.match(dropped.output.text(), /left-pad@1\.0\.0 \(published 2026-11-10/);
+
+    const agedOut = await invoke(["--base", "abc1234"], {
+      lockText: baseLock,
+      baseExcludes: ["left-pad@1.0.0"],
+      excludes: [],
+      docs: { "left-pad": { "1.0.0": OLD } },
+    });
+    NodeAssert.equal(agedOut.code, 0);
+    NodeAssert.match(agedOut.output.text(), /Checked 1 locked package/);
   });
 
   NodeTest.it("fails closed when the registry cannot be read", async () => {
@@ -514,24 +557,43 @@ NodeTest.describe("run", () => {
     NodeAssert.equal(result.io.written["pnpm-lock.yaml"], undefined);
   });
 
-  NodeTest.it("--all --write refreshes the workspace hashes the boundary check binds", async () => {
+  NodeTest.it("--all --write rebinds workspace hashes that approved the prior file", async () => {
     const anchor = (path, sha256) => `{ "path": "${path}", "sha256": "${sha256}" }`;
-    const stale = "0".repeat(64);
-    const resolutions = `[${anchor("apps/web/package.json", stale)}, ${anchor("pnpm-workspace.yaml", stale)}]`;
+    const sha = (text) => NodeCrypto.createHash("sha256").update(text).digest("hex");
+    const approved = sha(workspace([]));
+    const resolutions = `[${anchor("apps/web/package.json", approved)}, ${anchor("pnpm-workspace.yaml", approved)}]`;
     const result = await invoke(["--all", "--write"], { resolutions });
     const next = workspace(["fresh@2.0.0", "left-pad@1.0.0"]);
-    const hash = NodeCrypto.createHash("sha256").update(next).digest("hex");
     NodeAssert.equal(
       result.io.written["resolutions.json"],
-      `[${anchor("apps/web/package.json", stale)}, ${anchor("pnpm-workspace.yaml", hash)}]`,
+      `[${anchor("apps/web/package.json", approved)}, ${anchor("pnpm-workspace.yaml", sha(next))}]`,
     );
     NodeAssert.match(result.output.text(), /Refreshed the pnpm-workspace\.yaml hashes/);
+    NodeAssert.doesNotMatch(result.output.text(), /Boundary review needed/);
 
     const current = await invoke(["--all", "--write"], {
       excludes: ["fresh@2.0.0", "left-pad@1.0.0"],
       resolutions: result.io.written["resolutions.json"],
     });
     NodeAssert.deepEqual(current.io.written, {});
+  });
+
+  NodeTest.it("--all --write leaves unapproved workspace hashes stale for review", async () => {
+    // The anchor approved an earlier file, as when a catalog version also changed.
+    const unapproved = "0".repeat(64);
+    const resolutions = `[{ "path": "pnpm-workspace.yaml", "sha256": "${unapproved}" }]`;
+    const result = await invoke(["--all", "--write"], { resolutions });
+    NodeAssert.equal(result.code, 0);
+    NodeAssert.equal(
+      result.io.written["pnpm-workspace.yaml"],
+      workspace(["fresh@2.0.0", "left-pad@1.0.0"]),
+    );
+    NodeAssert.equal(result.io.written["resolutions.json"], undefined);
+    NodeAssert.match(
+      result.output.lines.err.join("\n"),
+      /Boundary review needed: 1 pnpm-workspace\.yaml anchor\(s\)[^]*check-boundary\.ts --strict/,
+    );
+    NodeAssert.doesNotMatch(result.output.text(), /Refreshed/);
   });
 
   NodeTest.it("--all --write leaves a current block untouched", async () => {
@@ -568,7 +630,7 @@ NodeTest.describe("run", () => {
       [["--min-age-minutes", "soon"], /whole number/],
       [["--nope"], /Unknown option: --nope/],
     ]) {
-      const result = await invoke(argv, { fetch: noNetwork, readBaseLock: undefined });
+      const result = await invoke(argv, { fetch: noNetwork, readBaseFile: undefined });
       NodeAssert.equal(result.code, 2, argv.join(" "));
       NodeAssert.match(result.output.text(), message);
       NodeAssert.match(result.output.text(), /usage: release-age\.mjs/);
@@ -577,7 +639,7 @@ NodeTest.describe("run", () => {
 
   NodeTest.it("does not show the usage for a failure that is not about options", async () => {
     const result = await invoke(["--base", "abc1234"], {
-      readBaseLock: () => {
+      readBaseFile: () => {
         throw new Error("fatal: bad object abc1234");
       },
     });

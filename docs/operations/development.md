@@ -111,12 +111,14 @@ unless `pnpm-workspace.yaml` lists that exact `name@version` under
 `minimumReleaseAgeExclude`. CI has no such policy, so its Lint job runs
 `scripts/jones/ci/release-age.mjs`. It fails a pull request that locks an
 unexcluded young version or leaves a stale, wildcard or versionless exclusion,
-and reads the npm registry only when the lock gained entries. After an upgrade,
-or when an install fails this way, run
+and reads the npm registry only when the lock gained entries or an exclusion
+was dropped. After an upgrade, or when an install fails this way, run
 `node scripts/jones/ci/release-age.mjs --all --write` and commit the
-regenerated block; it adds young versions, drops aged-out and stale ones, and
-refreshes the `pnpm-workspace.yaml` hashes in
-`scripts/jones/boundary/resolutions.json` that the boundary check binds.
+regenerated block; it adds young versions and drops aged-out and stale ones.
+It rebinds a `pnpm-workspace.yaml` hash in
+`scripts/jones/boundary/resolutions.json` only when that hash approved the file
+as it was before the write. Other hashes stay stale for boundary review, and
+the command says so.
 Exclusions expire on their own once a version is old enough. Do not lower the
 host policy, even for one command.
 
