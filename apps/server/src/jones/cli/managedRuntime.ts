@@ -6,14 +6,8 @@ import * as Path from "effect/Path";
 import { parseServiceState } from "../../cloud/serviceProtocol.ts";
 
 /**
- * Whether a T3 home is a Jones-managed runtime. The CLI's `update` and `uninstall` commands share
- * this one reading so they cannot disagree about which homes belong to the Jones host updater.
- *
- * - `unmanaged`: no Jones evidence; ordinary CLI maintenance may proceed.
- * - `managed`: the home holds the admitted-install record, a Jones runtime receipt for the active
- *   or requested version, preview service state, or the caller names a preview version.
- * - `unreadable-service-state`: `service-state.json` exists but cannot be understood. This fails
- *   closed rather than guessing, and takes precedence over `managed`.
+ * Whether a T3 home belongs to the Jones host updater; `update` and `uninstall` share this reading.
+ * An unparseable `service-state.json` fails closed and outranks `managed`.
  */
 export type JonesRuntimeManagement = "unmanaged" | "managed" | "unreadable-service-state";
 
