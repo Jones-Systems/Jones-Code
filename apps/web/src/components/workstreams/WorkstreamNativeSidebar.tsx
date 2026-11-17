@@ -475,7 +475,7 @@ export function WorkstreamNativeSidebar({
             >
               {members.length === 0 ? (
                 <li className="relative px-3 pb-3 text-xs text-sidebar-muted-foreground">
-                  No active threads
+                  No threads match the current filters
                 </li>
               ) : null}
               {members.map((thread) => (

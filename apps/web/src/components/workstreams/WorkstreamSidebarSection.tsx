@@ -258,6 +258,7 @@ function Group({
             };
           }}
           summary={summary}
+          visibleCount={shownCount}
           statusFilter={statusFilter}
           onStatusFilterChange={setStatusFilter}
           {...(state.canCreate && !pending && !confirmingDelete

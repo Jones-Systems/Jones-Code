@@ -10,6 +10,7 @@ export function PersonalSidebarGroupHeader({
   collapsed,
   onToggle,
   summary,
+  visibleCount,
   onRenameRequested,
   nameEditor,
   actions,
@@ -21,6 +22,7 @@ export function PersonalSidebarGroupHeader({
   // Return a reversal when title double-click rename is enabled.
   onToggle: () => void | (() => void);
   summary: PersonalThreadSummary;
+  visibleCount?: number;
   onRenameRequested?: () => void;
   nameEditor?: ReactNode;
   actions?: ReactNode;
@@ -185,7 +187,11 @@ export function PersonalSidebarGroupHeader({
         </div>
       ) : null}
       <span className="pointer-events-none col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 text-xs leading-4 text-sidebar-muted-foreground">
-        <span className="tabular-nums">{formatPersonalThreadCount(summary.total)}</span>
+        <span className="tabular-nums">
+          {visibleCount !== undefined && visibleCount < summary.total
+            ? `${visibleCount} of ${formatPersonalThreadCount(summary.total)} shown`
+            : formatPersonalThreadCount(summary.total)}
+        </span>
         {summary.failed > 0 ? (
           <span className="ml-auto text-right text-thread-failed tabular-nums">
             {summary.failed} failed

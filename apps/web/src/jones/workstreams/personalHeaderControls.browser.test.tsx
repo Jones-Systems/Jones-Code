@@ -367,3 +367,16 @@ describe("personal Workstream header controls", () => {
     },
   );
 });
+
+it("explains members hidden by a status filter instead of presenting the total as visible", async () => {
+  await using _screen = await render(
+    <PersonalSidebarGroupHeader
+      name="JC Sync"
+      collapsed={false}
+      onToggle={() => {}}
+      summary={{ total: 3, running: 0, attention: 0, done: 1, failed: 0 }}
+      visibleCount={0}
+    />,
+  );
+  await expect.element(page.getByText("0 of 3 threads shown", { exact: true })).toBeVisible();
+});
