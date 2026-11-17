@@ -154,7 +154,7 @@ export function PersonalSidebarGroupHeader({
                     }
                   : undefined
               }
-              className="pointer-events-auto line-clamp-2 cursor-pointer min-w-0 break-words text-sm font-semibold leading-5"
+              className="pointer-events-auto line-clamp-2 cursor-pointer [[data-workstream-header][draggable=true]_&]:cursor-grab [[data-workstream-header][draggable=true]_&]:active:cursor-grabbing min-w-0 break-words text-sm font-semibold leading-5"
             >
               {name}
             </span>

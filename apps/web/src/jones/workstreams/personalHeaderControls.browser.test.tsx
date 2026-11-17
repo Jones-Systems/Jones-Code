@@ -46,7 +46,7 @@ function Header({
         onRenameRequested={onRename}
         actions={
           <PersonalWorkstreamOptionsButton aria-label={`Options for ${name}`}>
-            <EllipsisVerticalIcon aria-hidden className="size-4" />
+            <EllipsisVerticalIcon aria-hidden className="size-[12px]" />
           </PersonalWorkstreamOptionsButton>
         }
       />
@@ -126,6 +126,29 @@ describe("personal Workstream header controls", () => {
     for (const element of screen.container.querySelectorAll("[data-read-only] span"))
       expect(getComputedStyle(element).cursor).toBe("default");
   });
+
+  it.each([true, false])(
+    "shows grab only on a draggable title (draggable=%s)",
+    async (draggable) => {
+      await using screen = await render(
+        <div data-workstream-header draggable={draggable}>
+          <Header />
+        </div>,
+      );
+      const title = screen.container.querySelector<HTMLElement>(".line-clamp-2")!;
+      const rect = title.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + 2, rect.top + rect.height / 2)!;
+      expect(hit).toBe(title);
+      expect(getComputedStyle(hit).cursor).toBe(draggable ? "grab" : "pointer");
+      for (const button of screen.container.querySelectorAll("button"))
+        expect(getComputedStyle(button).cursor).toBe("pointer");
+      const options = screen.container.querySelector<HTMLElement>(
+        '[aria-label="Options for Alpha"]',
+      )!;
+      expect(options.getBoundingClientRect().width).toBe(12);
+      expect(options.getBoundingClientRect().height).toBe(12);
+    },
+  );
 
   it.each([
     ["Working", "working", 3],

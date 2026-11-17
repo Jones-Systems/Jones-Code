@@ -7,7 +7,7 @@ export function PersonalWorkstreamOptionsButton({ className, ...props }: Compone
   return (
     <button
       type="button"
-      className={`inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${className ?? ""}`}
+      className={`inline-flex h-[12px] w-[12px] my-[6px] p-0 shrink-0 [&_svg]:size-[12px] cursor-pointer items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${className ?? ""}`}
       {...props}
     />
   );

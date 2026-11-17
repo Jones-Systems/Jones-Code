@@ -240,12 +240,18 @@ function Group({
       ref={sectionRef}
       data-native-workstream={JSON.stringify(item.id)}
       data-thread-drop-target={dropTarget ? "" : undefined}
-      className={`min-w-0 rounded-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-2 ring-inset ring-primary/70 bg-primary/13 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
-      style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
+      className={`min-w-0 rounded-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
+      style={{
+        borderLeftColor: personalWorkstreamRailColor(item),
+        backgroundColor:
+          dropTarget && collapsed
+            ? "color-mix(in oklab, var(--primary) 3.25%, transparent)"
+            : undefined,
+      }}
     >
       <div
         data-workstream-header
-        className={`flex min-w-0 ${state.canCreate && !pending && !confirmingDelete && !editing ? "cursor-grab active:cursor-grabbing" : "cursor-default"}`}
+        className="flex min-w-0 cursor-pointer"
         draggable={state.canCreate && !pending && !confirmingDelete && !editing}
         onDragStart={onDragStart}
       >
@@ -296,7 +302,7 @@ function Group({
                   aria-label={`Options for ${item.name}`}
                   render={<PersonalWorkstreamOptionsButton />}
                 >
-                  <EllipsisVerticalIcon aria-hidden className="size-4" />
+                  <EllipsisVerticalIcon aria-hidden className="size-[12px]" />
                 </MenuTrigger>
                 <MenuPopup align="end">
                   <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
@@ -781,8 +787,14 @@ export function WorkstreamSidebarSection({
         {insertion?.afterId === null ? insertionLine : null}
         <section
           data-native-workstream="null"
+          style={{
+            backgroundColor:
+              dropTargetId === null && unassignedCollapsed
+                ? "color-mix(in oklab, var(--primary) 3.25%, transparent)"
+                : undefined,
+          }}
           data-thread-drop-target={dropTargetId === null ? "" : undefined}
-          className={`min-w-0 rounded-md ${dropTargetId === null ? "ring-2 ring-inset ring-primary/70 bg-primary/13 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
+          className={`min-w-0 rounded-md ${dropTargetId === null ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
         >
           <button
             type="button"
