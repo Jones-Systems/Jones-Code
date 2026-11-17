@@ -28,8 +28,8 @@
     },
     {
       "glob": ".github/scripts/vercel-deployment-output.test.cjs",
-      "kind": "ci",
-      "runner": ".github/workflows/ci.yml"
+      "kind": "manual",
+      "reason": "It checks .github/workflows/release.yml and web-preview.yml, which Jones defers. The ci.yml step runs it only when both workflows exist."
     },
     {
       "glob": "apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs",

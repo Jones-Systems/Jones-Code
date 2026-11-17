@@ -139,6 +139,20 @@ test("a ci or advisory runner must name the glob or every test, in either path s
   );
 });
 
+test("a glob named only in a workflow comment is not a runner", () => {
+  const workflow = "      # node --test tools/*.node-test.mjs\n      - run: echo nothing\n";
+  const texts = { ...base, ".github/workflows/ci.yml": workflow };
+  assert.match(
+    problemsFor(texts, [entry("tools/*.node-test.mjs")]).join(),
+    /ci\.yml neither contains this glob nor names every test/,
+  );
+});
+
+test("a tracked package.json deleted in the working tree names nothing", () => {
+  const texts = { ...base, "tools/package.json": "" };
+  assert.deepEqual(problemsFor(texts, [entry("tools/*.node-test.mjs")]), []);
+});
+
 test("references find literal tests, test globs and directories, and skip patterns and prose", () => {
   const text = [
     "run: node --test apps/a/b.test.ts apps/c/ scripts/*.node-test.mjs './x/y.spec.tsx'",

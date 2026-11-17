@@ -19,6 +19,8 @@ const NODE_TEST_IMPORT = /(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\()\s*["'
 const TEST_NAME = /\.(?:test|spec|node-test|source-test)\.[A-Za-z0-9]+$/;
 const TEST_GLOB = /\.(?:test|spec|node-test|source-test)\./;
 const REPOSITORY_DIRECTORY = /^(?:apps|packages|scripts|native|infra|docs|\.github)\//;
+// Tokens containing `{`, `$` or `[` fail TOKEN_CHARACTERS and are deliberately not
+// path-checked: brace lists, shell variables and expressions resolve only at run time.
 const TOKEN_SEPARATOR = /[\s'"`()<>;|&,=:\\]+/;
 const TOKEN_CHARACTERS = /^[A-Za-z0-9_.\-/+*]+$/;
 
@@ -125,6 +127,13 @@ function classify(tests, entries) {
   return { problems, matched };
 }
 
+// Whole-line comments are prose and may name a path relative to some other directory.
+const withoutComments = (text) =>
+  text
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+
 // A ci or advisory runner must name its tests: the glob itself, or every matched file.
 // Paths may be relative to the runner's directory, as in a package script.
 function runnerProblems(matched, files, readText) {
@@ -136,7 +145,9 @@ function runnerProblems(matched, files, readText) {
       problems.push(`${entry.glob}: runner ${entry.runner} is not a tracked file`);
       continue;
     }
-    const text = readText(entry.runner);
+    const source = readText(entry.runner);
+    // A glob named only in a YAML comment runs nothing.
+    const text = /\.ya?ml$/.test(entry.runner) ? withoutComments(source) : source;
     const directory = path.posix.dirname(entry.runner);
     const spellings = (name) => [
       name,
@@ -195,13 +206,6 @@ function referenceProblems(sources, files) {
   return problems;
 }
 
-// Whole-line comments are prose and may name a path relative to some other directory.
-const withoutComments = (text) =>
-  text
-    .split("\n")
-    .filter((line) => !/^\s*#/.test(line))
-    .join("\n");
-
 function referenceSources(files, readText) {
   const workflows = files
     .filter((file) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(file))
@@ -214,7 +218,9 @@ function referenceSources(files, readText) {
   const packages = files
     .filter((file) => path.posix.basename(file) === "package.json")
     .map((file) => {
-      const scripts = JSON.parse(readText(file)).scripts ?? {};
+      const text = readText(file);
+      // A tracked package.json deleted in the working tree reads as empty and names nothing.
+      const scripts = text ? (JSON.parse(text).scripts ?? {}) : {};
       return {
         name: `${file} scripts`,
         text: Object.values(scripts).join("\n"),
