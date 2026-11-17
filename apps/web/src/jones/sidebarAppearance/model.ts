@@ -13,7 +13,7 @@ export const SIDEBAR_APPEARANCE_OPTIONS = {
   laptopSymbol: ["outline", "filled"],
   vpsSymbol: ["outline", "left", "right", "filled"],
 } as const;
-export const THREAD_TITLE_BRIGHTNESS_BOOST = { min: 0, max: 100, default: 0 } as const;
+export const THREAD_TITLE_BRIGHTNESS_BOOST = { min: 0, max: 100, default: 50 } as const;
 
 export const SidebarAppearance = Schema.Struct({
   cardScale: Schema.Literals(SIDEBAR_APPEARANCE_OPTIONS.cardScale).pipe(
@@ -41,7 +41,7 @@ export const SidebarAppearance = Schema.Struct({
     Schema.withDecodingDefaultKey(Effect.succeed("filled" as const)),
   ),
   vpsSymbol: Schema.Literals(SIDEBAR_APPEARANCE_OPTIONS.vpsSymbol).pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed("filled" as const)),
+    Schema.withDecodingDefaultKey(Effect.succeed("outline" as const)),
   ),
   threadTitleBrightnessBoost: Schema.Int.check(
     Schema.isBetween({
@@ -66,7 +66,7 @@ export const SIDEBAR_APPEARANCE_PRESETS: Readonly<
     countStyle: "numeric-right",
     deviceLabel: "icon",
     laptopSymbol: "filled",
-    vpsSymbol: "filled",
+    vpsSymbol: "outline",
   },
   original: {
     cardScale: 1,
@@ -82,7 +82,7 @@ export const SIDEBAR_APPEARANCE_PRESETS: Readonly<
 };
 export const DEFAULT_SIDEBAR_APPEARANCE: SidebarAppearance = {
   ...SIDEBAR_APPEARANCE_PRESETS.selected,
-  threadTitleBrightnessBoost: 0,
+  threadTitleBrightnessBoost: THREAD_TITLE_BRIGHTNESS_BOOST.default,
 };
 export const ORIGINAL_SIDEBAR_APPEARANCE: SidebarAppearance = {
   ...SIDEBAR_APPEARANCE_PRESETS.original,
