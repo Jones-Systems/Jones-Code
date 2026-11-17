@@ -6,6 +6,7 @@ import { GoalContinuityError } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import { HistoryNotApplied } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import { registerPreSessionFailureTests } from "../jones/workspaceRecreation/PreSessionFailure.testkit.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import {
   registerReaderAdmissionStartTests,
@@ -1634,6 +1635,7 @@ function makeLocalCommandHarness(
 }
 
 registerReaderAdmissionStartTests(makeLocalCommandHarness);
+registerPreSessionFailureTests(makeLocalCommandHarness);
 
 effectIt.effect.each(["delivery_pending", "delivery_unknown", "recovery_required"] as const)(
   "keeps a historical continuity fence before provider loading (%s)",
@@ -1802,7 +1804,7 @@ effectIt.effect.each([
       const originalConfig = yield* configSnapshot;
       const refsBefore = yield* git(workspaceRoot, ["show-ref"]);
       if (scenario !== "retained" && !detached) {
-        const result = yield* Effect.result(harness.start);
+        const result = yield* Effect.result(harness.startWithRetry);
         expect(result).toMatchObject({
           _tag: "Failure",
           failure: {
@@ -1810,7 +1812,7 @@ effectIt.effect.each([
             runId,
             cause: {
               _tag: "RecreationHold",
-              reason: "unknown",
+              reason: "source_unavailable",
               owner: "missing checkout",
               target: worktreePath,
               missingFact: "neither terminal receipt nor exact stale registration is available",

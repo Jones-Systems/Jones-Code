@@ -8,6 +8,10 @@
     "apps/server/src/jones/workspaceRecreation/Native.test.ts",
     "apps/server/src/jones/workspaceRecreation/Native.testkit.ts",
     "apps/server/src/jones/workspaceRecreation/Native.ts",
+    "apps/server/src/jones/workspaceRecreation/PreSessionFailure.test.ts",
+    "apps/server/src/jones/workspaceRecreation/PreSessionFailure.testkit.ts",
+    "apps/server/src/jones/workspaceRecreation/PreSessionFailure.ts",
+    "apps/server/src/jones/workspaceRecreation/PreSessionQueue.testkit.ts",
     "apps/server/src/jones/workspaceRecreation/Runtime.test.ts",
     "apps/server/src/jones/workspaceRecreation/Runtime.ts"
   ],
@@ -45,6 +49,14 @@
     {
       "from": "packages/contracts/src/composerContext.ts",
       "to": "packages/contracts/src/jones/workspaceRecreation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/workspaceRecreation/PreSessionFailure.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/workspaceRecreation/PreSessionFailure.testkit.ts"
     }
   ]
 }
