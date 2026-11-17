@@ -406,10 +406,11 @@
     {
       "id": "cross-environment-model-selection",
       "tests": [
+        "apps/web/src/jones/settings/DefaultModelPicker.browser.test.tsx",
         "apps/web/src/jones/settings/modelSelectionCorrespondence.test.ts",
         "apps/web/src/jones/settings/modelSelectionCorrespondence.plan.test.ts"
       ],
-      "scope": "Scoped web model settings use one Jones resolver for full-catalog configured-label correspondence, destination readiness, all four selection keys and semantic Mixed display. New-thread defaults use the same provider correspondence for both saved and effective selections. Generic planner hooks resolve every environment or project member before dispatch. Same-environment and no-resolver behavior, null inheritance and existing RPC failure reporting are preserved. Narrow accepted-shared SettingsPanels hooks retain literal text-generation reset and restore defaults; settingsLayout routes row inheritance indicators through the same semantic comparator. No server fallback, registration, migration, mobile, MCP, composer or installed-runtime changes."
+      "scope": "Scoped web model settings use one Jones resolver for full-catalog configured-label correspondence, destination readiness, all four selection keys and semantic Mixed display. New-thread defaults use the same provider correspondence for both saved and effective selections. Generic planner hooks resolve every environment or project member before dispatch. The Settings default reuses the Composer picker, with an accepted shared footer action slot for Done and a Jones-owned draft. Same-environment and no-resolver behavior, null inheritance and existing RPC failure reporting are preserved. Narrow accepted-shared SettingsPanels hooks retain literal text-generation reset and restore defaults; settingsLayout routes row inheritance indicators through the same semantic comparator. No server fallback, registration, migration, native mobile, MCP or installed-runtime changes."
     },
     {
       "id": "vitest-scratch-cleanup",
