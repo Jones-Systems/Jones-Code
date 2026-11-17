@@ -38,6 +38,71 @@ export interface RetirementRequest {
   // The owning server's native Git adapter may supply the exact unforced command.
   remove?: Effect.Effect<void, RetirementError>;
 }
+// A worktree with dependencies installed can take far longer than the Git driver's 30 s default to remove.
+export const REMOVAL_TIMEOUT_MS = 30 * 60 * 1000;
+// A removal that did not return a clean exit may have deleted part of the checkout.
+const REMOVAL_REFUSED = "git_removal_refused";
+const REMOVAL_INTERRUPTED = "removal_interrupted";
+export interface NativeRemovalDriver {
+  readonly execute: (input: {
+    readonly operation: string;
+    readonly cwd: string;
+    readonly args: readonly string[];
+    readonly allowNonZeroExit: boolean;
+    readonly timeoutMs: number;
+  }) => Effect.Effect<
+    { readonly exitCode: number; readonly stderr: string },
+    { readonly message: string }
+  >;
+}
+// Only a completed, non-zero git exit is a refusal. A timeout, kill, signal or spawn error is not.
+export const nativeWorktreeRemoval = (
+  driver: NativeRemovalDriver,
+  input: { readonly projectRoot: string; readonly worktree: string },
+): Effect.Effect<void, RetirementError> =>
+  driver
+    .execute({
+      operation: "WorkspaceRetirement.remove",
+      cwd: input.projectRoot,
+      args: ["worktree", "remove", "--", input.worktree],
+      allowNonZeroExit: true,
+      timeoutMs: REMOVAL_TIMEOUT_MS,
+    })
+    .pipe(
+      Effect.mapError(
+        (cause) =>
+          new RetirementError({
+            target: input.worktree,
+            reason: REMOVAL_INTERRUPTED,
+            cause: cause.message,
+          }),
+      ),
+      Effect.flatMap((result) =>
+        result.exitCode === 0
+          ? Effect.void
+          : Effect.fail(
+              new RetirementError({
+                target: input.worktree,
+                reason: REMOVAL_REFUSED,
+                cause: `git worktree remove: ${result.stderr.trim().split(/\r?\n/)[0] || "native removal refused"}`,
+              }),
+            ),
+      ),
+    );
+const defaultWorktreeRemoval = (projectRoot: string, worktree: string) =>
+  Effect.tryPromise({
+    try: () => git(projectRoot, ["worktree", "remove", "--", worktree], REMOVAL_TIMEOUT_MS),
+    catch: (cause) => {
+      const failure = cause as { code?: unknown; killed?: unknown; signal?: unknown } | null;
+      const refused =
+        typeof failure?.code === "number" && failure.killed !== true && !failure.signal;
+      return new RetirementError({
+        target: worktree,
+        reason: refused ? REMOVAL_REFUSED : REMOVAL_INTERRUPTED,
+        cause,
+      });
+    },
+  });
 const io = <A>(target: string, action: () => Promise<A>) =>
   Effect.tryPromise({
     try: action,
@@ -229,10 +294,7 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
           // The common-store row and Jones retiring state still exclude every participant here.
           effected = true;
           const removed = yield* restore(
-            request.remove ??
-              io(request.worktree, () =>
-                git(request.projectRoot, ["worktree", "remove", "--", bound.path]),
-              ),
+            request.remove ?? defaultWorktreeRemoval(request.projectRoot, bound.path),
           ).pipe(Effect.result);
           if (removed._tag === "Failure") {
             const native = removed.failure.cause;
@@ -250,15 +312,24 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
             removalReadback(request.projectRoot, receipt),
           );
           if (readback !== "retired") {
+            // Only a clean git refusal proves the checkout was left alone; anything else may be half removed.
+            const interrupted =
+              removed._tag === "Failure" && removed.failure.reason !== REMOVAL_REFUSED;
             receipt.state =
               readback === "present" &&
               removed._tag === "Failure" &&
+              !interrupted &&
               !receipt.disposed.length &&
               !receipt.preservationRefs.length
                 ? "not_retired"
                 : "partial";
             receipt.reasons = [
-              readback === "present" ? "git_removal_refused" : "removal_readback_unavailable",
+              ...(interrupted ? [REMOVAL_INTERRUPTED] : []),
+              ...(readback === "present"
+                ? interrupted
+                  ? []
+                  : [REMOVAL_REFUSED]
+                : ["removal_readback_unavailable"]),
             ];
           } else {
             receipt.state = "retired";

@@ -1380,6 +1380,8 @@
     {
       "id": "qualified-updates",
       "tests": [
+        "apps/server/src/jones/cli/managedRuntime.test.ts",
+        "apps/server/src/cli/uninstall.test.ts",
         "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
         "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
         "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts",
@@ -3438,12 +3440,13 @@
         "apps/server/src/provider/AgentContextBudget.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
+        "apps/server/src/jones/storageCleanup/RetirementReport.test.ts",
         "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
         "apps/web/src/components/settings/StorageSettings.browser.test.tsx",
         "apps/web/src/jones/storageCleanupResults/runStatus.test.ts",
         "packages/contracts/src/jones/storageCleanupReportStatus.test.ts"
       ],
-      "scope": "Storage cleanup results initially render five rows total across selected environments, expand by ten, and preserve retirement guards. A read-only MCP adapter pages the same session report with exact filters, snapshot consistency, explicit omissions and a serialized response budget; it cannot evaluate or execute cleanup. The Last run header preserves per-machine completion times, distinguishes proposal and cleanup reports, and separates active or unconfirmed requests from completed results. Optional operation metadata preserves legacy report decoding; report retention remains server-session-only. Accepted shared edits keep the cleanup timestamp in the folded header without duplicating the fold, and use an erased type import in the existing timestamp formatter so native focused checks need no runtime contracts package."
+      "scope": "Storage cleanup results initially render five rows total across selected environments, expand by ten, and preserve retirement guards. A read-only MCP adapter pages the same session report with exact filters, snapshot consistency, explicit omissions and a serialized response budget; it cannot evaluate or execute cleanup. The Last run header preserves per-machine completion times, distinguishes proposal and cleanup reports, and separates active or unconfirmed requests from completed results. Optional operation metadata preserves legacy report decoding; report retention remains server-session-only. An owner retire is folded into the retained manual proposal report by one small storageCleanup.ts hook, keeping every other reviewed entry, reporting measured bytes only as freed when the entry was removed, and naming stale-binding refusals as held entries. Accepted shared edits keep the cleanup timestamp in the folded header without duplicating the fold, and use an erased type import in the existing timestamp formatter so native focused checks need no runtime contracts package."
     },
     {
       "id": "panel-find",

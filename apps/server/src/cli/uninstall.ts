@@ -17,6 +17,8 @@ import {
   isVersionExecutable,
   pinnedRuntimeVersionsDir,
 } from "../cloud/pinnedRuntime.ts";
+import packageJson from "../../package.json" with { type: "json" };
+import { classifyJonesManagedRuntime, jonesUninstallRefusal } from "../jones/cli/managedRuntime.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import * as CliService from "./service.ts";
 import { findWindowsShim, resolveLauncherPath } from "./update.ts";
@@ -187,21 +189,39 @@ export const uninstallCommand = Command.make("uninstall", {
     Effect.gen(function* () {
       const logLevel = yield* GlobalFlag.LogLevel;
       const config = yield* resolveCliAuthConfig(flags, logLevel);
-      return yield* runUninstall({ baseDir: config.baseDir, assumeYes: flags.yes }).pipe(
-        Effect.provide(CliService.layer(config)),
-      );
+      return yield* runUninstall({
+        baseDir: config.baseDir,
+        version: packageJson.version,
+        assumeYes: flags.yes,
+      }).pipe(Effect.provide(CliService.layer(config)));
     }),
   ),
 );
 
-const runUninstall = Effect.fn("cli.uninstall.run")(function* (input: {
+export const runUninstall = Effect.fn("cli.uninstall.run")(function* (input: {
   readonly baseDir: string;
+  readonly version: string;
   readonly assumeYes: boolean;
 }) {
   const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   const environment = yield* HostProcess.Environment;
   const service = yield* BootService.BootService;
+  // Jones hook: refuse before planning, prompting or removing anything, even with --yes.
+  const management = yield* classifyJonesManagedRuntime(input.baseDir, input.version).pipe(
+    Effect.mapError(
+      () =>
+        new CliUninstallError({
+          reason: `Could not check whether ${input.baseDir} is a Jones Code runtime, so nothing was removed.`,
+        }),
+    ),
+  );
+  if (management !== "unmanaged") {
+    return yield* new CliUninstallError({
+      reason: jonesUninstallRefusal(path, input.baseDir, management),
+    });
+  }
   const plan = yield* planUninstall({ baseDir: input.baseDir });
 
   if (!plan.service && plan.launchers.length === 0 && plan.runtimeDir === undefined) {
