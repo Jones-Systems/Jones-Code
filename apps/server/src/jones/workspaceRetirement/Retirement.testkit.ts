@@ -1771,7 +1771,20 @@ export const absentCheckoutCases = (
             await enumerateDisposal(input.expected, "uncommitted-changes"),
           );
           if (!(await deregisterWithResidue(repo, worktree))) return;
+          // Git deletes entries in directory order before it stops on the read-only tree, so which tracked
+          // files survive depends on the filesystem. Leave one that matches HEAD, as macOS does.
+          const tracked = NodePath.join(worktree, "tracked");
+          if (
+            !(await NodeFSP.lstat(tracked).then(
+              () => true,
+              () => false,
+            ))
+          )
+            await NodeFSP.writeFile(tracked, "original\n");
           NodeAssert.equal(await modeOf(build), 0o555);
+          const leftover = async () => (await NodeFSP.readdir(worktree)).sort();
+          const leftoverBefore = await leftover();
+          NodeAssert.ok(leftoverBefore.includes("build") && leftoverBefore.includes("tracked"));
           const before = await durableState(f, input);
           const proposal = await evaluate(f.sql, {
             worktree,
@@ -1807,10 +1820,8 @@ export const absentCheckoutCases = (
           // Propose, an automatic run and a stale fingerprint delete and chmod nothing.
           NodeAssert.equal(await durableState(f, input), before);
           NodeAssert.equal(await modeOf(build), 0o555);
-          NodeAssert.equal(
-            await NodeFSP.readFile(NodePath.join(worktree, "tracked"), "utf8"),
-            "original\n",
-          );
+          NodeAssert.deepEqual(await leftover(), leftoverBefore);
+          NodeAssert.equal(await NodeFSP.readFile(tracked, "utf8"), "original\n");
           const result = await evaluate(f.sql, {
             worktree,
             projectRoot: repo,
@@ -1857,6 +1868,8 @@ export const absentCheckoutCases = (
             await enumerateDisposal(input.expected, "uncommitted-changes"),
           );
           if (!(await deregisterWithResidue(repo, worktree))) return;
+          // On Linux Git removes `tracked` before it stops on the read-only tree; finish from that shape too.
+          await NodeFSP.rm(NodePath.join(worktree, "tracked"), { force: true });
           const alias = NodePath.join(base, "alias");
           await NodeFSP.symlink(base, alias);
           const spelled = NodePath.join(alias, "checkout");
