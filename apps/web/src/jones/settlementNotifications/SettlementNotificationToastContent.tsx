@@ -15,8 +15,15 @@ export function SettlementNotificationToastContent({
   onCollapsedChange: (ids: Set<string>) => void;
   onOpen: (entry: SettlementEntry) => void;
 }) {
+  const [expandedSingleId, setExpandedSingleId] = useState<string | null>(null);
+  const singleExpanded = entries.length === 1 && expandedSingleId === entries[0]?.id;
+  const single = entries.length === 1;
   const [collapsed, setCollapsed] = useState(() => new Set(collapsedIds));
   const toggle = (id: string) => {
+    if (single) {
+      setExpandedSingleId((expanded) => (expanded === id ? null : id));
+      return;
+    }
     const next = new Set(collapsed);
     if (next.has(id)) next.delete(id);
     else next.add(id);
@@ -63,14 +70,18 @@ export function SettlementNotificationToastContent({
               <button
                 type="button"
                 className="ml-auto shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                aria-expanded={!collapsed.has(entry.id)}
-                aria-label={`${collapsed.has(entry.id) ? "Show" : "Hide"} remaining work for ${entry.title || "Untitled thread"}`}
+                aria-expanded={single ? singleExpanded : !collapsed.has(entry.id)}
+                aria-label={
+                  single
+                    ? `${singleExpanded ? "Collapse" : "Expand"} remaining work for ${entry.title || "Untitled thread"}`
+                    : `${collapsed.has(entry.id) ? "Show" : "Hide"} remaining work for ${entry.title || "Untitled thread"}`
+                }
                 onClick={(event) => {
                   event.stopPropagation();
                   toggle(entry.id);
                 }}
               >
-                {collapsed.has(entry.id) ? (
+                {(single ? !singleExpanded : collapsed.has(entry.id)) ? (
                   <ChevronDownIcon aria-hidden className="size-3.5" />
                 ) : (
                   <ChevronUpIcon aria-hidden className="size-3.5" />
@@ -78,7 +89,7 @@ export function SettlementNotificationToastContent({
               </button>
             ) : null}
           </div>
-          {entry.projectRemaining?.length && !collapsed.has(entry.id) ? (
+          {entry.projectRemaining?.length && (single || !collapsed.has(entry.id)) ? (
             <ul
               data-slot="settlement-remaining"
               className="mt-0.5 list-disc space-y-0.5 pl-4 text-xs text-muted-foreground"
@@ -90,7 +101,11 @@ export function SettlementNotificationToastContent({
                       render={
                         <span
                           data-slot="settlement-remaining-item"
-                          className="block truncate outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                          className={
+                            single && singleExpanded
+                              ? "block whitespace-pre-wrap wrap-anywhere outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                              : "block truncate outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                          }
                           tabIndex={0}
                         />
                       }

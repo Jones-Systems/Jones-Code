@@ -1,3 +1,4 @@
+import { registerThreadMenuOwner } from "../jones/workstreams/threadMenuBridge";
 import {
   AuthOrchestrationOperateScope,
   EnvironmentId,
@@ -225,6 +226,21 @@ beforeEach(() => {
 });
 
 describe("thread menu permissions", () => {
+  it("uses the sidebar owner for title actions, including assignment and project filtering", () => {
+    const owner = vi.fn();
+    const unregister = registerThreadMenuOwner(owner);
+    const onFind = vi.fn();
+    try {
+      createMenu({ onFind }).openMenu(position);
+      expect(owner).toHaveBeenCalledExactlyOnceWith(target, position, onFind);
+      expect(state.show).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+    createMenu().openMenu(position);
+    expect(state.show).toHaveBeenCalledOnce();
+  });
+
   it("opens immediately without waiting for a thread projection", () => {
     const projection = deferred<unknown>();
     state.projection.mockReturnValue(projection.promise);
@@ -373,8 +389,10 @@ describe("Jones settlement restore menu item", () => {
     createMenu({ onFind }).openMenu(position);
     await state.completed.promise;
     const items = state.show.mock.calls[1]![0];
-    expect(items[0]).toMatchObject({ id: "find", label: "Find in thread" });
-    expect(items[0]?.disabled).not.toBe(true);
+    const findIndex = items.findIndex((item) => item.id === "find");
+    expect(items[findIndex]).toMatchObject({ id: "find", label: "Find in thread" });
+    expect(items[findIndex - 1]?.id).toBe("auto-settle");
+    expect(items[findIndex]?.disabled).not.toBe(true);
     expect(state.effects).toEqual(["find"]);
     expect(onFind).toHaveBeenCalledExactlyOnceWith(target);
   });

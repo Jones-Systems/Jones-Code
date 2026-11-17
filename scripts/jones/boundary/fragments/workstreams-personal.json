@@ -78,7 +78,8 @@
     "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx",
     "apps/web/src/jones/workstreams/PersonalWorkstreamDisplayControls.tsx",
     "apps/web/src/jones/workstreams/sidebarDragAutoScroll.ts",
-    "apps/web/src/jones/workstreams/sidebarDragAutoScroll.browser.test.ts"
+    "apps/web/src/jones/workstreams/sidebarDragAutoScroll.browser.test.ts",
+    "apps/web/src/jones/workstreams/threadMenuBridge.ts"
   ],
   "hookPaths": [
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
@@ -913,6 +914,18 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/jones/workstreams/personalStatusFilter.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/threadMenuBridge.ts"
+    },
+    {
+      "from": "apps/web/src/hooks/useThreadActionMenu.ts",
+      "to": "apps/web/src/jones/workstreams/threadMenuBridge.ts"
+    },
+    {
+      "from": "apps/web/src/hooks/useThreadActionMenu.test.ts",
+      "to": "apps/web/src/jones/workstreams/threadMenuBridge.ts"
     }
   ]
 }
