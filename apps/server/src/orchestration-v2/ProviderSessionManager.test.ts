@@ -1,3 +1,6 @@
+import * as Clock from "effect/Clock";
+import { awaitRetirementForAdmission, RETIREMENT_ADMISSION_BUDGET_MS } from "../jones/providerRetirement/admissionWait.ts";
+import { makeCodexThreadRetirements } from "../jones/provider/codex/CodexRetirement.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import {
   ProviderAdapterEventStreamError,
@@ -7900,22 +7903,31 @@ it.effect(
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
       const reached = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
+      const retirements = makeCodexThreadRetirements<object>();
+      const producer = {};
+      let unsubscribes = 0;
       const proof: NonNullable<ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]> = ({
         providerThread,
         allowProducerRetirement,
       }) =>
         Effect.gen(function* () {
           assert.isFalse(allowProducerRetirement);
-          yield* Deferred.succeed(reached, undefined);
-          yield* Deferred.await(release);
-          return {
+          const request = yield* retirements.begin({
+            producer,
             binding: runtimeBinding(
               providerThread,
               providerThread.runtimeIdentity!.runtimeGeneration!,
             )!,
-            evidence: "thread_closed" as const,
-          };
+            processExit: undefined,
+            dispatch: Effect.sync(() => {
+              unsubscribes++;
+            }).pipe(
+              Effect.andThen(Deferred.succeed(reached, undefined)),
+              Effect.as("thread" as const),
+            ),
+          });
+          if (request === undefined) return yield* Effect.die("Missing exact retirement");
+          return yield* request.wait;
         });
       yield* Effect.gen(function* () {
         const fixture = yield* openTransferFixture("shared-transfer");
@@ -7930,13 +7942,41 @@ it.effect(
           ],
         });
         yield* fixture.manager.open({ ...fixture.input, threadId: sibling });
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const siblingRun = fixture.idAllocator.derive.run({ threadId: sibling, ordinal: 1 });
+        yield* fixture.runtime.startTurn({
+          appThread: (yield* projections.getThreadProjection(sibling)).thread,
+          threadId: sibling,
+          runId: siblingRun,
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: fixture.idAllocator.derive.runAttempt({ runId: siblingRun, attemptOrdinal: 1 }),
+          rootNodeId: fixture.idAllocator.derive.rootNode({ runId: siblingRun }),
+          providerThread: makeProviderThread({
+            idAllocator: fixture.idAllocator,
+            threadId: sibling,
+            providerSessionId: fixture.providerSessionId,
+            now: fixture.now,
+            nativeThreadId: "busy-sibling-native",
+          }),
+          message: {
+            createdBy: "user",
+            creationSource: "web",
+            messageId: yield* fixture.idAllocator.allocate.message({ threadId: sibling, ordinal: 1 }),
+            text: "Keep working",
+            attachments: [],
+          },
+          modelSelection,
+          runtimePolicy,
+        });
+        const deadline = (yield* Clock.currentTimeMillis) + RETIREMENT_ADMISSION_BUDGET_MS;
         const detach = yield* fixture.manager
           .detach({
             providerSessionId: fixture.providerSessionId,
             threadId: fixture.threadId,
             requireWriterRetirement: true,
           })
-          .pipe(Effect.forkChild);
+          .pipe(Effect.flip, Effect.forkChild);
         yield* Deferred.await(reached);
         const binding = runtimeBinding(
           fixture.providerThread,
@@ -7954,20 +7994,46 @@ it.effect(
         );
         const receipt = yield* observer.awaitRetired.pipe(Effect.forkChild);
         yield* TestClock.adjust("11 seconds");
-        assert.isTrue(Exit.isFailure(yield* Fiber.await(detach)));
+        const pending = yield* Fiber.join(detach);
+        assert.propertyVal(pending, "_tag", "WriterRetirementPendingError");
+        let replacementStarts = 0;
+        let revalidations = 0;
+        const admission = yield* awaitRetirementForAdmission(
+          Effect.fail(pending),
+          deadline,
+          Effect.sync(() => {
+            revalidations++;
+          }),
+        ).pipe(
+          Effect.andThen(Effect.sync(() => {
+            replacementStarts++;
+          })),
+          Effect.forkChild,
+        );
+        yield* retirements.observeClosed(producer, "wrong-native-thread");
+        yield* retirements.observeClosed({}, binding.nativeThreadId);
+        yield* TestClock.adjust("1 minute");
+        assert.isUndefined(admission.pollUnsafe());
+        assert.equal(replacementStarts, 0);
+        assert.equal(unsubscribes, 1);
+        assert.isAbove(revalidations, 0);
         assert.isUndefined(receipt.pollUnsafe());
         const sameRuntime = yield* fixture.manager.open({ ...fixture.input, threadId: sibling });
         assert.strictEqual(sameRuntime, fixture.runtime);
         assert.equal((yield* Ref.get(state)).closeCount, 0);
         assert.isTrue(Exit.isFailure(yield* Effect.exit(fixture.manager.open(fixture.input))));
-        yield* Deferred.succeed(release, undefined);
+        yield* retirements.observeClosed(producer, binding.nativeThreadId);
+        yield* Fiber.join(admission);
+        assert.equal(replacementStarts, 1);
+        assert.equal(unsubscribes, 1);
+        assert.equal((yield* Ref.get(state)).interruptCount, 0);
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
         const retired = yield* Fiber.join(receipt);
         assert.deepEqual(retired, { binding, evidence: "thread_closed" });
         assert.strictEqual(yield* fixture.manager.captureThreadRetirement!(binding), observer);
         yield* fixture.manager.open(fixture.input);
         assert.equal((yield* Ref.get(state)).openCount, 1);
       }).pipe(
-        Effect.ensuring(Deferred.succeed(release, undefined)),
         Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, retireThreadForTransfer: proof })),
       );
     }),

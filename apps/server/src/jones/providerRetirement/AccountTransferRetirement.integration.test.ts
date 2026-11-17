@@ -1,3 +1,4 @@
+import { WriterRetirementPendingError } from "./admissionWait.ts";
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -196,7 +197,7 @@ const scenario = (
     | "cancel-return"
     | "exclusive"
     | "foreign"
-    | "retry",
+    | "pending",
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -286,7 +287,8 @@ const scenario = (
       ),
       Layer.provide(Layer.succeed(HostProcess.HomeDirectory, homePath)),
     );
-    const secondAttempt = yield* Deferred.make<Outbox.OrchestrationEffectV2>();
+    const firstAttempt = yield* Deferred.make<Outbox.OrchestrationEffectV2>();
+    let sourceRunId: string | undefined;
     const queuedDetach = yield* Deferred.make<DetachInput>();
     const runtime = Harness.layerWithRegistryAndServices(
       { name: `account-transfer-${mode}`, runtimePolicyOverride: { cwd } },
@@ -304,11 +306,14 @@ const scenario = (
                   : Effect.void,
             }
           : {}),
-        ...(mode === "retry"
+        ...(mode === "pending"
           ? {
               beforeEffectExecution: (effect: Outbox.OrchestrationEffectV2) =>
-                effect.request.type === "provider-turn.start" && effect.attemptCount >= 2
-                  ? Deferred.succeed(secondAttempt, effect).pipe(Effect.asVoid)
+                effect.request.type === "provider-turn.start" &&
+                sourceRunId !== undefined &&
+                effect.request.runId !== sourceRunId &&
+                effect.attemptCount === 1
+                  ? Deferred.succeed(firstAttempt, effect).pipe(Effect.asVoid)
                   : Effect.void,
             }
           : {}),
@@ -443,6 +448,7 @@ const scenario = (
             )
           : projection.runs.length === 1 && isIdle(projection),
       );
+      sourceRunId = source.runs[0]!.id;
       const sourceThread = source.providerThreads.find(
         (row) => row.id === source.thread.activeProviderThreadId,
       )!;
@@ -579,12 +585,19 @@ const scenario = (
                 effect.request.detail === "Provider account changed; continuing the native thread.",
             ),
           );
-        if (mode === "retry") {
-          const attempt = yield* Deferred.await(secondAttempt).pipe(Effect.timeout("45 seconds"));
-          assert.isAtLeast(attempt.attemptCount, 2);
+        if (mode === "pending") {
+          const attempt = yield* Deferred.await(firstAttempt).pipe(Effect.timeout("45 seconds"));
+          const pending = yield* Effect.flip(
+            sessions.awaitThreadRetirement!({ threadId, instanceId: instanceId("B") }),
+          );
+          assert.isTrue(Schema.is(WriterRetirementPendingError)(pending));
           const current = Option.getOrThrow(yield* outbox.get(attempt.id));
           assert.equal(current.status, "running");
-          assert.isAtLeast(current.attemptCount, 2);
+          assert.equal(current.attemptCount, 1);
+          assert.isNull(current.lastError);
+          const admission = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(admission.runs.at(-1)!.status, "starting");
+          assert.isFalse(admission.turnItems.some((item) => item.type === "error"));
           assert.isFalse(
             (yield* readTraces()).some(
               (trace) => trace.instance === "B" && trace.method === "thread/resume",
@@ -740,6 +753,6 @@ describe("Codex account transfer with synthetic producers and a shared writer re
     "cancel-return",
     "exclusive",
     "foreign",
-    "retry",
+    "pending",
   ] as const)("%s preserves native identity behind exact writer release", (mode) => scenario(mode));
 });

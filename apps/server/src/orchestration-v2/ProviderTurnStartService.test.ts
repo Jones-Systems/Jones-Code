@@ -1,3 +1,6 @@
+import { TestClock } from "effect/testing";
+import { WriterRetirementPendingError } from "../jones/providerRetirement/admissionWait.ts";
+import { WriterRetirementError } from "../jones/providerRetirement/RetirementLedger.ts";
 import { RuntimeUseError } from "../jones/cleanup/RuntimeUseProtocol.ts";
 import * as StartRefusal from "../jones/startRefusal/Store.ts";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
@@ -1401,6 +1404,8 @@ function makeLocalCommandHarness(
         writerRetired = true;
         return Effect.void;
       }
+      if (Schema.is(WriterRetirementPendingError)(input.retirementFailure))
+        return Effect.fail(input.retirementFailure);
       return Effect.fail(
         new ProviderSessionManager.ProviderSessionReleaseError({
           providerSessionId,
@@ -3749,5 +3754,71 @@ effectIt.effect.each(["Continue", "/logout"])(
       expect(harness.startRootRun).not.toHaveBeenCalled();
       expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
       expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+    }),
+);
+
+// This harness exercises admission settlement/currentness; native closure and shared-session
+// ownership are exercised by the manager's shared detach integration case.
+effectIt.effect.each(["complete", "expired", "cancelled", "selection-changed"] as const)(
+  "keeps a queued Claude admission pending beyond startup retries: %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const completion = yield* Deferred.make<void, WriterRetirementError>();
+      const harness = makeLocalCommandHarness({
+        text: "Continue on Claude",
+        driver: "claudeAgent",
+        nativeResume: "missing",
+        retirementFailure: new WriterRetirementPendingError({
+          providerSessionId: ProviderSessionId.make("shared-codex-session"),
+          awaitCompletion: Deferred.await(completion),
+        }),
+      });
+      const starting = yield* harness.startWithRetry.pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 minute");
+      expect(starting.pollUnsafe()).toBeUndefined();
+      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+      expect(harness.projection().turnItems).toEqual([]);
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.detach).toHaveBeenCalledTimes(1);
+      if (outcome === "cancelled") {
+        yield* Fiber.interrupt(starting);
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(yield* Deferred.isDone(completion)).toBe(false);
+        return;
+      }
+      if (outcome === "expired") {
+        yield* TestClock.adjust("9 minutes");
+        yield* Fiber.join(starting);
+        expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+        expect(harness.projection().turnItems[0]).toMatchObject({
+          title: "Previous provider is still releasing this conversation",
+          failure: { message: expect.stringContaining("shared-codex-session") },
+        });
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(harness.detach).toHaveBeenCalledTimes(1);
+        return;
+      }
+      if (outcome === "selection-changed") {
+        const projection = harness.projection();
+        harness.setProjection({
+          ...projection,
+          runs: projection.runs.map((run) => ({
+            ...run,
+            modelSelection: { ...run.modelSelection, model: "changed" },
+          })),
+        });
+      }
+      yield* Deferred.succeed(completion, undefined);
+      if (outcome === "selection-changed") {
+        yield* Effect.exit(Fiber.join(starting));
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+      } else {
+        yield* Fiber.join(starting);
+        expect(harness.open).toHaveBeenCalledTimes(1);
+        expect(harness.startRootRun).toHaveBeenCalledTimes(1);
+        expect(harness.projection().runs.at(-1)?.status).toBe("running");
+      }
+      expect(harness.detach).toHaveBeenCalledTimes(1);
     }),
 );
