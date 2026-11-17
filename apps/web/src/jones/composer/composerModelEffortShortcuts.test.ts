@@ -40,10 +40,12 @@ describe("model effort shortcuts", () => {
   it("resolves exact Codex families without rewriting provider-owned aliases", () => {
     const result = rows("codex", [
       model("gpt-6"),
-      model("openai.gpt-6.1-sol"),
+      model("gpt-6.1-sol"),
       model("gpt-6-astra"),
+      model("openai.gpt-6.2-sol"),
+      model("gpt-6.2-astra"),
     ]);
-    expect(result?.map((row) => row.model)).toEqual(["openai.gpt-6.1-sol", "gpt-6-astra"]);
+    expect(result?.map((row) => row.model)).toEqual(["openai.gpt-6.2-sol", "gpt-6.2-astra"]);
     expect(result?.flatMap((row) => row.cells).every((cell) => cell.disabledReason === null)).toBe(
       true,
     );
@@ -60,7 +62,7 @@ describe("model effort shortcuts", () => {
     expect(result?.map((row) => row.model)).toEqual(["claude-opus-5-5", "claude-sonnet-5-5"]);
   });
   it("disables absent families and unsupported efforts rather than replacing them", () => {
-    const result = rows("codex", [model("gpt-6.1-sol", ["medium", "high"])]);
+    const result = rows("codex", [model("gpt-6.2-sol", ["medium", "high"]), model("gpt-6-astra")]);
     expect(result?.[0]?.cells.map((cell) => !!cell.disabledReason)).toEqual([false, false, true]);
     expect(result?.[1]?.model).toBeUndefined();
     expect(
@@ -69,12 +71,12 @@ describe("model effort shortcuts", () => {
     expect(rows("cursor", [])).toBeNull();
   });
   it("fails closed on absent target metadata and missing account identity", () => {
-    const target = { ...model("gpt-6.1-sol"), capabilities: null };
+    const target = { ...model("gpt-6.2-sol"), capabilities: null };
     expect(rows("codex", [target])?.[0]?.cells.every((cell) => cell.disabledReason)).toBe(true);
     expect(
       resolveModelEffortShortcutRows({
         driverKind: ProviderDriverKind.make("codex"),
-        models: [model("gpt-6.1-sol")],
+        models: [model("gpt-6.2-sol")],
       })?.[0]?.cells.every((cell) => cell.disabledReason),
     ).toBe(true);
   });
