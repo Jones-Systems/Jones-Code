@@ -544,9 +544,9 @@ it("keeps the last completion timestamp in the header when cleanup rules are off
   expect(timestamp?.getAttribute("aria-label")).toContain("2026");
   expect(toggle.parentElement?.lastElementChild?.contains(timestamp!)).toBe(true);
   await act(() => (timestamp as HTMLElement).focus());
-  await expect.element(page.getByRole("tooltip")).toHaveTextContent(
-    timestamp!.getAttribute("aria-label")!.replace("Last completed run: ", ""),
-  );
+  await expect
+    .element(page.getByRole("tooltip"))
+    .toHaveTextContent(timestamp!.getAttribute("aria-label")!.replace("Last completed run: ", ""));
   await act(() => (timestamp as HTMLElement).blur());
   expect(deleteButton(screen.container).disabled).toBe(true);
   await screen.getByRole("button", { name: /Last run/ }).click();
@@ -610,7 +610,9 @@ it("keeps proposal progress and an unconfirmed request visible beside the previo
     "Could not confirm completion. Synthetic connection failure",
   );
   expect(
-    screen.container.querySelector('[aria-label^="Last completed run:"]')?.getAttribute("aria-label"),
+    screen.container
+      .querySelector('[aria-label^="Last completed run:"]')
+      ?.getAttribute("aria-label"),
   ).toBe(previousTime);
   expect(state.run).toHaveBeenCalledTimes(1);
   expect(state.run).toHaveBeenCalledWith({
@@ -630,7 +632,9 @@ it("keeps a disconnected pending target unconfirmed when the other machine compl
     entries: [
       {
         ...base.entries[0]!,
-        threadId: "synthetic-thread" as NonNullable<StorageCleanupReport["entries"][number]["threadId"]>,
+        threadId: "synthetic-thread" as NonNullable<
+          StorageCleanupReport["entries"][number]["threadId"]
+        >,
         retirement: {
           ...base.entries[0]!.retirement!,
           state: "proposed",
@@ -664,7 +668,10 @@ it("keeps a disconnected pending target unconfirmed when the other machine compl
   await act(() => {
     state.reports["env-a"] = completed;
     registry.refresh(
-      serverEnvironment.storageCleanupReport({ environmentId: "env-a" as EnvironmentId, input: {} }),
+      serverEnvironment.storageCleanupReport({
+        environmentId: "env-a" as EnvironmentId,
+        input: {},
+      }),
     );
     finishA({ _tag: "Success", value: completed });
   });
@@ -744,7 +751,10 @@ it("does not resurrect a completed request warning after its report is replaced 
     act(() => {
       state.reports["env-a"] = report;
       registry.refresh(
-        serverEnvironment.storageCleanupReport({ environmentId: "env-a" as EnvironmentId, input: {} }),
+        serverEnvironment.storageCleanupReport({
+          environmentId: "env-a" as EnvironmentId,
+          input: {},
+        }),
       );
     });
   await screen.getByRole("button", { name: /Last run/ }).click();

@@ -60,7 +60,10 @@ export const runStatusCases = {
     NodeAssert.equal(cleanupRequestIsOutstanding(request, completed), false);
     NodeAssert.equal(cleanupRequestIsOutstanding(request, later), false);
     NodeAssert.equal(cleanupRequestIsOutstanding(request, report({ finishedAt: "invalid" })), true);
-    NodeAssert.equal(cleanupRequestIsOutstanding({ ...request, status: "unconfirmed" }, later), true);
+    NodeAssert.equal(
+      cleanupRequestIsOutstanding({ ...request, status: "unconfirmed" }, later),
+      true,
+    );
   },
   "zero counts complete without implying a failed or destructive proposal": () => {
     const summary = cleanupReportSummary(report({ operation: "propose" }));

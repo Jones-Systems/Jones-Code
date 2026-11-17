@@ -367,7 +367,9 @@ function CleanupSection() {
     await targets
       .reduce(
         (previous, environment) =>
-          previous.then(() => execute(environment, "propose", { retirement: { action: "propose" } })),
+          previous.then(() =>
+            execute(environment, "propose", { retirement: { action: "propose" } }),
+          ),
         Promise.resolve(),
       )
       .finally(() => setPending(false));
@@ -495,11 +497,7 @@ Live consumers, tracked edits, nested repositories and other protections still h
           const query = state.find((entry) => entry.environmentId === environmentId);
           if (request && cleanupRequestIsOutstanding(request, report))
             return (
-              <p
-                key={environmentId}
-                role="status"
-                className="px-3 py-2.5 text-xs sm:px-4"
-              >
+              <p key={environmentId} role="status" className="px-3 py-2.5 text-xs sm:px-4">
                 {label}: {cleanupRequestSummary(request)}{" "}
                 {request.status === "completed"
                   ? query?.failed
@@ -543,8 +541,8 @@ Live consumers, tracked edits, nested repositories and other protections still h
                     timestampFormat,
                     nowMs,
                     ...(!pending &&
-                    environment?.serverConfig?.environment.capabilities.settledWorktreeRetirement ===
-                      true &&
+                    environment?.serverConfig?.environment.capabilities
+                      .settledWorktreeRetirement === true &&
                     state.some((e) => e.environmentId === environment.environmentId && e.allowed)
                       ? {
                           onRetire: (entry: StorageCleanupReport["entries"][number]) =>
