@@ -2185,7 +2185,8 @@ export const layerWsRpc = (
       const handlers = ServerWsRpcGroup.of({
         "workstreamsPersonal.subscribe": () => personalWorkstreams.changes,
         "workstreamsPersonal.put": ({ workstream }) => personalWorkstreams.put(workstream),
-        "workstreamsPersonal.assign": (input) => personalWorkstreams.assign(input),
+        "workstreamsPersonal.assign": (input) =>
+          personalWorkstreams.assign(input, { supersedeInitialAutoAssignment: true }),
         [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: (input) =>
           linkedThreads.pipe(Effect.flatMap((owner) => owner.list({ type: "user" }, input))),
         [ORCHESTRATION_V2_WS_METHODS.linkThreads]: (input) =>

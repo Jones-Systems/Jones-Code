@@ -319,7 +319,34 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(launch.environment.CODEX_HOME).toBe(launch.settings.homePath);
         const before = yield* instance.auth!.subscribe("test-owner").pipe(Stream.runHead);
         expect(Option.getOrThrow(before).phase).toBe("idle");
-        yield* instance.auth!.logout(Effect.void);
+        const classify = instance.generatePromptOnlyText!({
+          modelSelection: { instanceId, model: "gpt-6.1-sol" },
+          prompt: "Synthetic Workstream classifier evidence",
+        });
+        const changingAccount = yield* Deferred.make<void>();
+        const signIn = yield* instance.auth!.start(
+          "test-owner",
+          Deferred.succeed(changingAccount, undefined).pipe(Effect.andThen(Effect.never)),
+        );
+        yield* Deferred.await(changingAccount);
+        expect((yield* classify.pipe(Effect.flip)).detail).toContain("sign-in is changing");
+        yield* instance.auth!.cancel("test-owner", signIn.flowId!);
+
+        const signingOut = yield* Deferred.make<void>();
+        const finishSignOut = yield* Deferred.make<void>();
+        const signOut = yield* instance
+          .auth!.logout(
+            Deferred.succeed(signingOut, undefined).pipe(
+              Effect.andThen(Deferred.await(finishSignOut)),
+            ),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(signingOut);
+        yield* classify.pipe(
+          Effect.flip,
+          Effect.ensuring(Deferred.succeed(finishSignOut, undefined)),
+        );
+        yield* Fiber.join(signOut);
         const after = Option.getOrThrow(yield* Fiber.join(disconnected));
         expect(after.auth.status).toBe("unauthenticated");
         expect(after.auth.email).toBeUndefined();

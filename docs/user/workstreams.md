@@ -27,3 +27,13 @@ Agents can list and create Workstreams with `t3_workstreams_list` and `t3_workst
 The CLI provides `t3 workstream list`, `create`, `rename`, `recolor`, `reorder`, `delete`, `assign`, `unassign` and `read`. Use `--json` for machine-readable output. The CLI talks to the selected running server using ordinary authentication.
 
 Historical registry memberships, proofs, edges and exports are not displayed by this feature. Existing encrypted history and keys are preserved separately; this does not make that history readable in the new client.
+
+## Automatic assignment for queued prompts
+
+When a prompt arrives from a work queue, such as Jarvis, for a conversation that has never been in a Workstream, the server may assign that conversation to a Workstream. It does so only when one Workstream is clearly the right place, judged from Workstream names and the titles of the conversations already in them. When the match is unclear or two Workstreams are plausible, the conversation is left unassigned. Storage is never chosen.
+
+Conversations you start or message yourself are not assigned automatically, and neither are delegated tasks or subagents. A conversation that has ever been in a Workstream, including one you removed, is never assigned automatically again.
+
+The Workstream picker identifies automatic assignments. To change one, move or remove the conversation as usual. That prevents future automatic assignment for the same conversation and helps later choices. Agents can read the latest decision in the `autoRoute` field of `t3_thread_workstream_read`.
+
+The server uses the configured text-generation model through a text-only request. Supported routes are configured text generators and managed Codex with existing tool-free access. If the selected model has no supported route, the conversation stays unassigned. The request includes limited excerpts of the prompt and titles, the project and Workstream names, and recent Workstream corrections. The decision record stores IDs and outcome codes. Turn routing off in Settings → Jones Code → **Assign queued prompts to a Workstream automatically**.

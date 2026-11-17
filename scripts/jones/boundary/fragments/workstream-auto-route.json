@@ -1,0 +1,33 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workstream-auto-route",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/workstreams/autoRoute/AutoRouteStore.ts",
+    "apps/server/src/jones/workstreams/autoRoute/AutoRouteStore.test.ts",
+    "apps/server/src/jones/workstreams/autoRoute/policy.ts",
+    "apps/server/src/jones/workstreams/autoRoute/policy.test.ts",
+    "apps/server/src/jones/workstreams/autoRoute/WorkstreamAutoRoute.ts",
+    "apps/server/src/jones/workstreams/autoRoute/WorkstreamAutoRoute.test.ts",
+    "apps/server/src/jones/workstreams/autoRoute/WorkstreamClassifierModel.ts",
+    "apps/server/src/jones/workstreams/autoRoute/WorkstreamClassifierModel.test.ts",
+    "apps/web/src/jones/settings/WorkstreamAutoRouteSettings.tsx",
+    "apps/web/src/jones/settings/WorkstreamAutoRouteSettings.browser.test.tsx",
+    "apps/web/src/jones/workstreams/WorkstreamPickerProvenance.browser.test.tsx"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/settings.ts",
+      "to": "packages/contracts/src/jones/workstreamAutoRoute.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/autoRoute/WorkstreamAutoRoute.ts"
+    },
+    {
+      "from": "apps/web/src/routes/_chat.settings.jones-code.tsx",
+      "to": "apps/web/src/jones/settings/WorkstreamAutoRouteSettings.tsx"
+    }
+  ]
+}

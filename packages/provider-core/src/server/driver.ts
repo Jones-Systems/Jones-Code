@@ -51,6 +51,11 @@ export interface ProviderInstance {
   >;
   readonly orchestrationAdapter: ProviderAdapter.ProviderAdapterV2["Service"];
   readonly textGeneration: ProviderTextGeneration;
+  /** Optional exact-selector text transport with no agent or tool execution. */
+  readonly generatePromptOnlyText?: (input: {
+    readonly modelSelection: import("@t3tools/contracts").ModelSelection;
+    readonly prompt: string;
+  }) => Effect.Effect<string, import("@t3tools/contracts").TextGenerationError>;
   readonly auth?: ProviderAuthController;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {

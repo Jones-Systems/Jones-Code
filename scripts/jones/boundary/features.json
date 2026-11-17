@@ -3520,6 +3520,31 @@
         "apps/web/src/jones/sidebarAppearance/sidebarAppearanceWorkstreams.browser.test.tsx"
       ],
       "scope": "Device-local sidebar appearance preferences with Selected/Original presets, reversible live nonmodal trials, independent card-only scale and a permanent sidebar thread-title brightness slider in Jones Code settings. Existing chat/interface font, zoom, glass and semantic row cues are preserved. Nullable sidebar context scopes device symbols; known icon-only labels retain accessible names and focus/hover tooltips. Small accepted shared edits mount the host and launcher in Sidebar, expose existing semantic title/card/device slots in SidebarThreadRow, and mount the reusable brightness settings control in the Jones Code route. Lifted card scope copies only allowlisted attributes/variables. No server, wire, persisted event, mobile, installed runtime or existing appearance preference changes."
+    },
+    {
+      "id": "workstream-auto-route",
+      "tests": [
+        "apps/server/src/jones/workstreams/autoRoute/policy.test.ts",
+        "apps/server/src/jones/workstreams/autoRoute/AutoRouteStore.test.ts",
+        "apps/server/src/jones/workstreams/autoRoute/WorkstreamClassifierModel.test.ts",
+        "apps/server/src/jones/workstreams/autoRoute/WorkstreamAutoRoute.test.ts",
+        "apps/server/src/jones/persistence/Migrations/158_JonesWorkstreamAutoRoute.test.ts",
+        "apps/server/src/orchestration-v2/QueueCompatibility.test.ts",
+        "packages/contracts/src/jones/workstreamAutoRoute.test.ts",
+        "packages/contracts/src/jones/workstreamsPersonal.test.ts",
+        "packages/client-runtime/src/jones/workstreams/personal/controller.test.ts",
+        "apps/web/src/jones/settings/WorkstreamAutoRouteSettings.browser.test.tsx",
+        "apps/server/src/jones/mcp/workstreams/handlers.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts",
+        "apps/server/src/textGeneration/TextGenerators.test.ts",
+        "apps/server/src/provider/Drivers/CodexDriver.test.ts",
+        "apps/server/src/provider/AgentContextBudget.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/web/src/jones/workstreams/WorkstreamPickerProvenance.browser.test.tsx"
+      ],
+      "scope": "Accepted HTTP starts offer bounded classification for never-assigned main conversations. A clear choice advances the assignment from revision 0 and commits provenance in the same transaction. An interactive move can supersede that initial automatic write. Ordinary replays skip observation, and verified bootstrap release identities are deduplicated durably. Only the policy-applied configured selection receives evidence. Managed Codex uses the guarded, tool-free Responses transport. The picker and snapshot expose committed, current provenance."
     }
   ]
 }
