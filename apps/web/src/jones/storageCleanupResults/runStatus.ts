@@ -9,7 +9,7 @@ export type CleanupRequest = {
   report?: StorageCleanupReport;
 };
 
-export function cleanupOperationLabel(operation: CleanupOperation | undefined) {
+function cleanupOperationLabel(operation: CleanupOperation | undefined) {
   switch (operation) {
     case "propose":
       return "Retirement proposal";
