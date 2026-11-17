@@ -4,6 +4,11 @@
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "features": [
     {
+      "id": "thread-title-drag",
+      "tests": ["apps/web/src/jones/threadTitleDrag/threadTitleDrag.browser.test.tsx"],
+      "scope": "The shared web and desktop chat header starts a single-thread pointer drag. It uses the existing composer drop event and sidebar placement operations, with a card preview and insertion indicator in the sidebar. The shared header, sidebar, context preview and CSS changes connect the existing renderer entry points without duplicating menu, composer or order logic."
+    },
+    {
       "id": "device-presentation",
       "tests": [
         "apps/web/src/jones/devicePresentation/identityProtection.test.ts",
