@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
+import { SidebarContent, SidebarGroup } from "../../components/ui/sidebar";
 import { SidebarAppearanceLauncher } from "./SidebarAppearanceLauncher";
 import { SidebarAppearanceProvider, useSidebarAppearanceHost } from "./useSidebarAppearanceHost";
 import { SIDEBAR_APPEARANCE_STORAGE_KEY } from "./model";
@@ -102,6 +103,57 @@ it("falls back in flow when there is no room for a 280px panel", async () => {
   expect(panel).not.toBeNull();
   expect(getComputedStyle(panel).position).toBe("relative");
   expect(panel.getBoundingClientRect().width).toBeLessThanOrEqual(240);
+});
+
+it("reserves the real SidebarContent thread viewport in a short narrow window", async () => {
+  using _storage = appearanceStorage();
+  function SidebarFixture() {
+    const host = useSidebarAppearanceHost();
+    return (
+      <SidebarAppearanceProvider host={host}>
+        <aside
+          data-slot="sidebar"
+          data-sidebar="sidebar"
+          style={{
+            position: "fixed",
+            right: 0,
+            top: 0,
+            width: 240,
+            height: 400,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <div style={{ height: 52, flexShrink: 0 }}>Chrome</div>
+          <SidebarContent
+            fixedHeader={
+              <SidebarGroup>
+                <div style={{ height: 32 }}>Search</div>
+                <SidebarAppearanceLauncher />
+              </SidebarGroup>
+            }
+          >
+            <button type="button">Thread remains clickable</button>
+            <div style={{ height: 900 }}>More thread cards</div>
+          </SidebarContent>
+          <div style={{ height: 84, flexShrink: 0 }}>Footer</div>
+        </aside>
+      </SidebarAppearanceProvider>
+    );
+  }
+  await using screen = await render(<SidebarFixture />);
+  const viewport = screen.container.querySelector<HTMLElement>(
+    '[data-slot="scroll-area-viewport"]',
+  )!;
+  const before = viewport.getBoundingClientRect().height;
+  await screen.getByRole("button", { name: "Sidebar appearance", exact: true }).click();
+  const panel = screen.container.querySelector<HTMLElement>('[role="dialog"]')!;
+  expect(getComputedStyle(panel).position).toBe("relative");
+  expect(panel.getBoundingClientRect().height).toBeLessThanOrEqual(before * 0.4 + 1);
+  expect(viewport.getBoundingClientRect().height).toBeGreaterThanOrEqual(before * 0.6 - 1);
+  expect(viewport.getBoundingClientRect().height).toBeGreaterThan(100);
+  await screen.getByRole("button", { name: "Thread remains clickable" }).click();
+  await expect.element(page.getByRole("dialog", { name: "Sidebar appearance" })).toBeVisible();
 });
 
 it("invalidates Compare on cross-tab changes without reviving an earlier comparison", async () => {

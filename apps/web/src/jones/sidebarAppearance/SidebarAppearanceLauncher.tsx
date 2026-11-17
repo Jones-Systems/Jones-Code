@@ -16,6 +16,7 @@ export function SidebarAppearanceLauncher() {
   const [position, setPosition] = useState<{ left: number; top: number; width: number } | null>(
     null,
   );
+  const [fallbackMaxHeight, setFallbackMaxHeight] = useState(0);
   const trigger = useRef<HTMLButtonElement>(null);
   const id = useId();
   const close = () => {
@@ -33,6 +34,18 @@ export function SidebarAppearanceLauncher() {
         anchor.closest('[data-slot="sidebar"]') ?? anchor.closest('[data-sidebar="sidebar"]');
       const rect = (sidebar ?? anchor).getBoundingClientRect();
       const available = window.innerWidth - rect.right - 12;
+      const inner = anchor.closest('[data-sidebar="sidebar"]') ?? sidebar;
+      const viewport = inner
+        ?.querySelector('[data-sidebar="content"]')
+        ?.closest('[data-slot="scroll-area-viewport"]');
+      const panel = document.getElementById(id);
+      const inFlowHeight =
+        panel && panel.parentElement !== document.body ? panel.getBoundingClientRect().height : 0;
+      // Recover the list's space before this panel: keep 60% available for live cards.
+      const listBudget = viewport
+        ? viewport.getBoundingClientRect().height + inFlowHeight
+        : Math.max(0, window.innerHeight - anchor.getBoundingClientRect().bottom);
+      setFallbackMaxHeight(Math.min(256, listBudget * 0.4));
       setPosition(
         available < 280
           ? null
@@ -47,13 +60,18 @@ export function SidebarAppearanceLauncher() {
     const anchor = trigger.current;
     const sidebar =
       anchor?.closest('[data-slot="sidebar"]') ?? anchor?.closest('[data-sidebar="sidebar"]');
-    const stopObserving = anchor ? observeResize(sidebar ?? anchor, measure) : () => {};
+    const viewport = (anchor?.closest('[data-sidebar="sidebar"]') ?? sidebar)
+      ?.querySelector('[data-sidebar="content"]')
+      ?.closest('[data-slot="scroll-area-viewport"]');
+    const stopObserving = anchor
+      ? observeResize([sidebar ?? anchor, ...(viewport ? [viewport] : [])], measure)
+      : () => {};
     window.addEventListener("resize", measure);
     return () => {
       stopObserving();
       window.removeEventListener("resize", measure);
     };
-  }, [open]);
+  }, [open, id]);
   const content = open ? (
     <div
       ref={focusPanel}
@@ -62,9 +80,11 @@ export function SidebarAppearanceLauncher() {
       aria-modal={false}
       aria-label="Sidebar appearance"
       tabIndex={-1}
-      className="z-20 max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg"
+      className="z-20 overflow-y-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg"
       style={
-        position ? { position: "fixed", ...position } : { position: "relative", width: "100%" }
+        position
+          ? { position: "fixed", ...position, maxHeight: "calc(100dvh - 1rem)" }
+          : { position: "relative", width: "100%", maxHeight: fallbackMaxHeight }
       }
       onKeyDown={(event) => {
         if (event.key === "Escape") {
