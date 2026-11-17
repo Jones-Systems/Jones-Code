@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/remoteAdmissionReview": {
+      "types": "./src/jones/remoteAdmissionReview.ts",
+      "import": "./src/jones/remoteAdmissionReview.ts"
+    },
     "./jones/workstreamsPersonal": {
       "types": "./src/jones/workstreamsPersonal.ts",
       "import": "./src/jones/workstreamsPersonal.ts"

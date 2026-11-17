@@ -28,9 +28,9 @@ const decodeParent = Schema.decodeUnknownOption(LinkedRequestParent);
 const decodeProject = Schema.decodeUnknownOption(LinkedRequestProject);
 const decodeIcon = Schema.decodeUnknownOption(LinkedRequestProjectIcon);
 const operationLabels = new Map([
-  ["t3_thread_launch", "Start a task"],
-  ["t3_thread_send", "Continue a task"],
-  ["schedule_task", "Schedule a task"],
+  ["t3_thread_launch", "Start task"],
+  ["t3_thread_send", "Send message"],
+  ["schedule_task", "Scheduled task"],
   ["update_scheduled_task", "Update a scheduled task"],
   ["run_scheduled_task_now", "Run a scheduled task now"],
   ["t3_thread_link", "Link threads"],

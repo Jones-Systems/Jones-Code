@@ -1,3 +1,4 @@
+import { ThreadTitleBrightnessSettings } from "../jones/sidebarAppearance/ThreadTitleBrightnessSettings";
 import { createFileRoute } from "@tanstack/react-router";
 import { SettingsPageContainer } from "../components/settings/settingsLayout";
 import { WorkButtonSettings } from "../jones/workMode/WorkButtonSettings";
@@ -9,6 +10,7 @@ function JonesCodeSettings() {
   return (
     <SettingsPageContainer>
       <WorkButtonSettings />
+      <ThreadTitleBrightnessSettings />
       <PromptsSettings />
       <WorkstreamsSetupStatus />
     </SettingsPageContainer>

@@ -23,10 +23,10 @@ import migrate from "../persistence/Migrations/116_JonesRemoteAdmission.ts";
 import * as Admission from "./RemoteAdmission.ts";
 import { REMOTE_ADMISSION_EVALUATION_TIMEOUT_MS } from "./evaluationDiagnostic.ts";
 
-class SyntheticEvaluationError extends Schema.TaggedError<SyntheticEvaluationError>()(
-  "SyntheticEvaluationError",
-  {},
-) {}
+class SyntheticEvaluationError extends Schema.TaggedError<
+  SyntheticEvaluationError,
+  { readonly brand: unique symbol }
+>()("SyntheticEvaluationError", {}) {}
 
 const memory = Layer.effectDiscard(migrate).pipe(
   Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),

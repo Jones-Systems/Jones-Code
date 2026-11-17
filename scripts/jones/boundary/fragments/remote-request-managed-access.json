@@ -1,0 +1,52 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "remote-request-managed-access",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/remoteAdmissionOrigin/",
+    "apps/server/src/jones/mcp/remoteAdmissionFeatures.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/Inspection.ts"
+    },
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/protocolTools.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerForwarding.test.ts",
+      "to": "apps/server/src/jones/remoteAdmissionOrigin/capabilities.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/peer/RemoteDelegation.test.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/receiver.testkit.ts"
+    },
+    {
+      "from": "apps/web/src/routes/__root.tsx",
+      "to": "apps/web/src/jones/remoteAdmission/ReviewClientsCoordinator.tsx"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/remoteAdmissionReview.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/remoteAdmissionOrigin/registration.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/mcp/remoteAdmissionFeatures.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/protocolTools.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/registration.ts"
+    }
+  ]
+}

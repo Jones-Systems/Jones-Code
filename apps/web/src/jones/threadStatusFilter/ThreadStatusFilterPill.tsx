@@ -74,7 +74,7 @@ export function ThreadStatusFilterPill({
             }}
             style={{ gap: "var(--sidebar-status-gap, 2px)" }}
             className={cn(
-              "relative z-10 inline-flex h-6 shrink-0 items-center rounded-full px-1 text-xs font-medium outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]",
+              "relative z-10 inline-flex h-6 shrink-0 cursor-pointer items-center rounded-full px-1 text-xs font-medium outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]",
               backgrounds[filter],
             )}
           >

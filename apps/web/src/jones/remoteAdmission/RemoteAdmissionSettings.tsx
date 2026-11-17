@@ -1,3 +1,4 @@
+import { useOptionalReviewState } from "./reviewHooks";
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon } from "lucide-react";
@@ -77,8 +78,24 @@ function RefreshButton({ reason, onRefresh }: { reason: string | null; onRefresh
 }
 
 function EvaluatorConfiguration({ environmentId }: { readonly environmentId: EnvironmentId }) {
-  const { snapshot, loadFailed, loadFailure, loading, error, busy, store } =
-    useAdmission(environmentId);
+  const {
+    snapshot,
+    loadFailed,
+    loadFailure,
+    loading,
+    error,
+    busy: legacyBusy,
+    store,
+  } = useAdmission(environmentId);
+  const { controller, state: review } = useOptionalReviewState(environmentId);
+  const reviewBlocked = review?.uncertain.size
+    ? "Resolve unconfirmed request or access actions in Requests before changing evaluation settings."
+    : review?.pending.size
+      ? "A request or access decision is being recorded."
+      : review?.policyBarrier
+        ? "Saving evaluator settings…"
+        : null;
+  const busy = legacyBusy || reviewBlocked !== null;
   const [draft, setDraft] = useState<ModelSelection | null>(null);
   const environment = useEnvironment(environmentId);
   const settings = useEnvironmentSettings(environmentId);
@@ -152,42 +169,49 @@ function EvaluatorConfiguration({ environmentId }: { readonly environmentId: Env
     return [{ entry, reason }];
   });
   // Full explanation for disabled-control tooltips.
-  const blocked = busy
-    ? "Saving evaluator settings…"
-    : loadFailed
-      ? ownerLoadMessage(loadFailure ?? "other", receiver)
-      : !snapshot || loading
-        ? "Loading evaluator settings…"
-        : !providersKnown
-          ? "Provider availability is unknown. Waiting for current provider data from the receiving environment."
-          : !available
-            ? "Choose an available evaluator model first."
-            : null;
-  // Compact inline status; empty when the controls already say everything.
-  const statusText = busy
-    ? "Saving…"
-    : loadFailed
-      ? `Owner review is unavailable on ${receiver}. Retrying automatically.`
-      : !snapshot
-        ? "Loading…"
-        : loading
-          ? `Checking… Last known: ${snapshot.policy.enabled ? "enabled" : "disabled"}.`
+  const blocked =
+    reviewBlocked ??
+    (busy
+      ? "Saving evaluator settings…"
+      : loadFailed
+        ? ownerLoadMessage(loadFailure ?? "other", receiver)
+        : !snapshot || loading
+          ? "Loading evaluator settings…"
           : !providersKnown
-            ? "Provider availability is unknown."
-            : selected && !available
-              ? `Saved model ${selected.instanceId} / ${selected.model} is unavailable. No fallback will be saved.`
-              : null;
+            ? "Provider availability is unknown. Waiting for current provider data from the receiving environment."
+            : !available
+              ? "Choose an available evaluator model first."
+              : null);
+  // Compact inline status; empty when the controls already say everything.
+  const statusText =
+    reviewBlocked ??
+    (busy
+      ? "Saving…"
+      : loadFailed
+        ? `Owner review is unavailable on ${receiver}. Retrying automatically.`
+        : !snapshot
+          ? "Loading…"
+          : loading
+            ? `Checking… Last known: ${snapshot.policy.enabled ? "enabled" : "disabled"}.`
+            : !providersKnown
+              ? "Provider availability is unknown."
+              : selected && !available
+                ? `Saved model ${selected.instanceId} / ${selected.model} is unavailable. No fallback will be saved.`
+                : null);
   const statusId = `evaluator-status-${environmentId}`;
   const refresh = () => {
     void store.refresh();
   };
   const save = async (enabled: boolean) => {
     if (!snapshot || !policyKnown || busy || (enabled && !available)) return;
-    await store.savePolicy({
-      enabled,
-      expectedRevision: snapshot.policy.revision,
-      modelSelection: selected,
-    });
+    const write = () =>
+      store.savePolicy({
+        enabled,
+        expectedRevision: snapshot.policy.revision,
+        modelSelection: selected,
+      });
+    if (controller) await controller.withPolicyBarrier(write);
+    else await write();
   };
 
   if (loadFailure === "unauthorized" || loadFailure === "unsupported") {

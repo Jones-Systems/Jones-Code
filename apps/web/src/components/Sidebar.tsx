@@ -1,4 +1,13 @@
+import { SidebarAppearanceLauncher } from "../jones/sidebarAppearance/SidebarAppearanceLauncher";
+import {
+  personalSidebarRoster,
+  personalSidebarSummaryThreads,
+} from "../jones/workstreams/personalPresentation";
 import { registerThreadMenuOwner } from "../jones/workstreams/threadMenuBridge";
+import {
+  SidebarAppearanceProvider,
+  useSidebarAppearanceHost,
+} from "../jones/sidebarAppearance/useSidebarAppearanceHost";
 import { publishWorkQueueLocalNames } from "@t3tools/client-runtime/work-queue-metadata";
 import { ensureEnvironmentScope } from "../state/session";
 import { SIDEBAR_DRAG_DISTANCE } from "./Sidebar.pointer";
@@ -564,8 +573,10 @@ function useSidebarThreads(input: {
     clockKey: `${nowMinute}:${snoozeWakeClock}:${statusWakeAt}:${inboxReturnsVersion}`,
   });
 
-  const { pinnedThreads, activeThreads, workingThreads, snoozedThreads, settledThreads } =
-    partition;
+  const { snoozedThreads, settledThreads } = partition;
+  const { pinnedThreads, activeThreads, workingThreads } = input.workstreamsEnabled
+    ? personalSidebarRoster(input.personalWorkstreams, partition)
+    : partition;
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const olderSettledShelf = useOlderSettledShelf({
     scopes: olderSettledScopes(
@@ -642,10 +653,14 @@ function useSidebarThreads(input: {
   }
   return {
     ...partition,
+    pinnedThreads,
+    activeThreads,
+    workingThreads,
     delegatedUnderParent,
     threads,
     environmentThreads,
-    workstreamSummaryThreads: scopedThreads,
+    workstreamSummaryThreads: personalSidebarSummaryThreads(scopedThreads, partition.snoozeNow),
+    workstreamRosterThreads: scopedThreads,
     statusFilter,
     cycleStatusFilter,
     hideWorkingThreads,
@@ -1008,6 +1023,7 @@ function readRouteThreadKey(router: AnyRouter): string | null {
 }
 
 export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReveal }) {
+  const sidebarAppearance = useSidebarAppearanceHost();
   const {
     projects,
     serverConfigs,
@@ -1404,6 +1420,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     snoozeNow,
     searchableThreads,
     workstreamSummaryThreads,
+    workstreamRosterThreads,
     settledVisibleCount,
     settledCount,
     olderSettledShelf,
@@ -1505,8 +1522,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   );
   const orderedThreads = workstreamsEnabled
     ? [
-        ...pinnedThreads,
         ...workstreamActiveThreads.visible,
+        ...pinnedThreads,
         ...visibleWorkingThreads,
         ...visibleSnoozedThreads,
         ...renderedSettledThreads,
@@ -1515,8 +1532,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const orderedThreadKeys = orderedThreads?.map(threadShellKey) ?? fallbackOrderedThreadKeys;
   const traversalThreadKeys = workstreamsEnabled
     ? [
-        ...pinnedThreads,
         ...workstreamActiveThreads.traversal,
+        ...pinnedThreads,
         ...visibleWorkingThreads,
         ...visibleSnoozedThreads,
         ...renderedSettledThreads,
@@ -3333,7 +3350,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       : undefined);
   const newThreadInProjectShortcutLabel = shortcutLabelForCommand(keybindings, "chat.newLocal");
   return (
-    <>
+    <SidebarAppearanceProvider host={sidebarAppearance}>
       <ThreadContextDragGhost />
       <SidebarChromeHeader
         isElectron={isElectron}
@@ -3586,10 +3603,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               onClose={closeWorkstreamCreate}
               onPendingChange={setWorkstreamCreatePending}
             />
+            <SidebarAppearanceLauncher />
           </SidebarGroup>
         }
       >
-        <SidebarGroup className="flex-1" role="presentation">
+        <SidebarGroup {...sidebarAppearance.scopeProps} className="flex-1" role="presentation">
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (
               <TooltipProvider
@@ -3837,6 +3855,35 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
                       const items: ReactNode[] = [
+                        workstreamsEnabled ? (
+                          <li key="native-workstream-groups" className="list-none">
+                            <WorkstreamNativeSidebar
+                              controller={workstreamController.controller}
+                              assignmentMenuRef={workstreamAssignmentMenuRef}
+                              externalDropRef={workstreamExternalDropRef}
+                              canOperate={(thread) =>
+                                readEnvironmentScope(
+                                  thread.environmentId,
+                                  AuthOrchestrationOperateScope,
+                                )
+                              }
+                              threads={activeThreads}
+                              summaryThreads={workstreamSummaryThreads}
+                              rosterThreads={workstreamRosterThreads}
+                              renderThread={(thread, assignment) =>
+                                renderThreadRow(thread, "active", undefined, assignment)
+                              }
+                              canReorder={(thread) =>
+                                !workingShelfEnabled &&
+                                activeReorderableThreadKeys.has(
+                                  scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+                                )
+                              }
+                              reorder={reorderWorkstreamThread}
+                              placeThread={placeWorkstreamThread}
+                            />
+                          </li>
+                        ) : null,
                         statusFilter === "all" ? (
                           <SidebarDraftBlock
                             key="draft-sessions"
@@ -3859,39 +3906,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
                           continue;
                         }
-                        if (item.marker === "active-placeholder" && workstreamsEnabled) {
-                          items.push(
-                            <li key="native-workstream-groups" className="list-none">
-                              <WorkstreamNativeSidebar
-                                controller={workstreamController.controller}
-                                assignmentMenuRef={workstreamAssignmentMenuRef}
-                                externalDropRef={workstreamExternalDropRef}
-                                canOperate={(thread) =>
-                                  readEnvironmentScope(
-                                    thread.environmentId,
-                                    AuthOrchestrationOperateScope,
-                                  )
-                                }
-                                threads={activeThreads}
-                                summaryThreads={workstreamSummaryThreads}
-                                renderThread={(thread, assignment) =>
-                                  renderThreadRow(thread, "active", undefined, assignment)
-                                }
-                                canReorder={(thread) =>
-                                  !workingShelfEnabled &&
-                                  activeReorderableThreadKeys.has(
-                                    scopedThreadKey(
-                                      scopeThreadRef(thread.environmentId, thread.id),
-                                    ),
-                                  )
-                                }
-                                reorder={reorderWorkstreamThread}
-                                placeThread={placeWorkstreamThread}
-                              />
-                            </li>,
-                          );
-                          continue;
-                        }
+                        if (item.marker === "active-placeholder" && workstreamsEnabled) continue;
                         if (projectFolders !== null && item.marker === "active-placeholder") {
                           for (const folder of projectFolders) {
                             items.push(
@@ -4098,7 +4113,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         </SidebarGroup>
       </SidebarContent>
       <SidebarChromeFooter />
-    </>
+    </SidebarAppearanceProvider>
   );
 }
 

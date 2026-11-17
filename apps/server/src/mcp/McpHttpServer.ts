@@ -6,6 +6,7 @@ import { handlers as workstreamHandlers } from "../jones/mcp/workstreams/handler
 import * as ThreadSelfConfigurationService from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as ThreadSelfConfigurationTools from "../jones/threadConfiguration/tools.ts";
 import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
+import * as RemoteAdmissionProtocol from "../jones/remoteAdmissionIntegration/protocolTools.ts";
 import {
   LINKED_MESSAGE_ORIGIN_HEADER,
   withLinkedMessageOrigin,
@@ -58,6 +59,9 @@ import { OrganizationMetadataHandlersLive } from "../jones/mcp/organizationMetad
 import { OrganizationMetadataToolkit } from "../jones/mcp/organizationMetadata/tools.ts";
 import { StorageCleanupReportHandlersLive } from "../jones/mcp/storageCleanup/handlers.ts";
 import { StorageCleanupReportToolkit } from "../jones/mcp/storageCleanup/tools.ts";
+import { HostFilesHandlersLive } from "../jones/mcp/hostFiles/handlers.ts";
+import { HostFilesToolkit } from "../jones/mcp/hostFiles/tools.ts";
+import * as HostFiles from "../jones/hostFiles/HostFiles.ts";
 import { FleetCheckpointHandlersLive } from "../jones/mcp/fleetCheckpoint/handlers.ts";
 import { FleetCheckpointToolkit } from "../jones/mcp/fleetCheckpoint/tools.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -1350,6 +1354,11 @@ export const layerStorageCleanupReportToolkit = toolkitRegistration(
   StorageCleanupReportHandlersLive,
 );
 
+// Jones hook: host-files; agents read and write files here or on a linked machine.
+const layerHostFilesToolkit = toolkitRegistration(HostFilesToolkit, HostFilesHandlersLive).pipe(
+  Layer.provide(HostFiles.layer),
+);
+
 const SettlementRestoreRegistrationLive = toolkitRegistration(
   SettlementRestoreToolkit,
   SettlementRestoreHandlersLive,
@@ -1390,8 +1399,18 @@ export const layerTools = Layer.mergeAll(
   ),
   OrganizationMetadataRegistrationLive,
   layerStorageCleanupReportToolkit,
+  layerHostFilesToolkit,
   SettlementRestoreRegistrationLive,
   toolkitRegistration(RemoteAdmissionCancel.toolkit, RemoteAdmissionCancel.handlers),
+  Layer.unwrap(
+    Effect.serviceOption(RemoteAdmissionProtocol.ReceiverPeerProtocol).pipe(
+      Effect.map((service) =>
+        Option.isNone(service)
+          ? Layer.empty
+          : toolkitRegistration(RemoteAdmissionProtocol.toolkit, RemoteAdmissionProtocol.handlers),
+      ),
+    ),
+  ),
   DecisionSnapshotToolkitRegistrationLive,
   layerPreviewToolkit,
   layerOrchestratorToolkit,

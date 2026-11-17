@@ -34,8 +34,8 @@ export function resolveModelEffortShortcutRows(input: {
   const id = codex ? "reasoningEffort" : "effort";
   const families = codex
     ? [
-        { slug: "gpt-6.1-sol", label: "Sol", name: "GPT-6.1 Sol" },
-        { slug: "gpt-6-astra", label: "Astra", name: "GPT-6 Astra" },
+        { slug: "gpt-6.2-sol", label: "Sol", name: "GPT-6.2 Sol" },
+        { slug: "gpt-6.2-astra", label: "Astra", name: "GPT-6.2 Astra" },
       ]
     : [
         { slug: "opus", label: "Opus", name: "Claude Opus" },

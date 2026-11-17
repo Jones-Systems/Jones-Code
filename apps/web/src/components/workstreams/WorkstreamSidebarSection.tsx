@@ -152,7 +152,9 @@ function Group({
   controller,
   children,
   summary,
+  rosterTotal,
   dragging,
+  dropTarget,
   onDragStart,
   confirmingDelete,
   onDeleteRequested,
@@ -163,7 +165,9 @@ function Group({
   children: (window: { limit: PersonalThreadLimit; expanded: boolean }) => ReactNode;
   memberCount: number;
   summary: PersonalThreadSummary;
+  rosterTotal: number;
   dragging: boolean;
+  dropTarget: boolean;
   onDragStart: (event: DragEvent<HTMLDivElement>) => void;
   confirmingDelete: boolean;
   onDeleteRequested: () => void;
@@ -237,12 +241,19 @@ function Group({
     <section
       ref={sectionRef}
       data-native-workstream={JSON.stringify(item.id)}
-      className={`min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""}`}
-      style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
+      data-thread-drop-target={dropTarget ? "" : undefined}
+      className={`min-w-0 rounded-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
+      style={{
+        borderLeftColor: personalWorkstreamRailColor(item),
+        backgroundColor:
+          dropTarget && collapsed
+            ? "color-mix(in oklab, var(--primary) 3.25%, transparent)"
+            : undefined,
+      }}
     >
       <div
         data-workstream-header
-        className="flex min-w-0 cursor-grab active:cursor-grabbing"
+        className="flex min-w-0 cursor-pointer"
         draggable={state.canCreate && !pending && !confirmingDelete && !editing}
         onDragStart={onDragStart}
       >
@@ -258,6 +269,8 @@ function Group({
             };
           }}
           summary={summary}
+          rosterTotal={rosterTotal}
+          visibleCount={shownCount}
           statusFilter={statusFilter}
           onStatusFilterChange={setStatusFilter}
           {...(state.canCreate && !pending && !confirmingDelete
@@ -292,12 +305,7 @@ function Group({
                   aria-label={`Options for ${item.name}`}
                   render={<PersonalWorkstreamOptionsButton />}
                 >
-                  <EllipsisVerticalIcon
-                    aria-hidden
-                    viewBox="10 0 4 24"
-                    preserveAspectRatio="xMaxYMid meet"
-                    className="size-4 h-4 w-1"
-                  />
+                  <EllipsisVerticalIcon aria-hidden className="size-[12px]" />
                 </MenuTrigger>
                 <MenuPopup align="end">
                   <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
@@ -496,16 +504,20 @@ export function WorkstreamSidebarSection({
   controller,
   renderMembers,
   summaries,
+  rosterTotals,
   unassignedSummary = emptySummary,
   memberCounts,
+  dropTargetId,
 }: {
   controller: PersonalWorkstreamsController;
+  dropTargetId?: string | null | undefined;
   renderMembers: (
     id: string | null,
     window?: { limit: PersonalThreadLimit; expanded: boolean },
   ) => ReactNode;
   memberCounts?: ReadonlyMap<string, number>;
   summaries?: ReadonlyMap<string, PersonalThreadSummary>;
+  rosterTotals?: ReadonlyMap<string, number>;
   unassignedSummary?: PersonalThreadSummary;
 }) {
   const state = useAtomValue(controller.state);
@@ -730,6 +742,7 @@ export function WorkstreamSidebarSection({
           ? state.workstreams.map((item) => (
               <div
                 key={item.id}
+                data-workstream-group-slot
                 className="relative py-1"
                 onDragOver={(event) => dragOver(event, item.id)}
                 onDrop={(event) => drop(event, item.id)}
@@ -739,8 +752,10 @@ export function WorkstreamSidebarSection({
                   item={item}
                   controller={controller}
                   summary={summaries?.get(item.id) ?? emptySummary}
+                  rosterTotal={rosterTotals?.get(item.id) ?? summaries?.get(item.id)?.total ?? 0}
                   memberCount={memberCounts?.get(item.id) ?? 0}
                   dragging={draggedId === item.id}
+                  dropTarget={dropTargetId === item.id}
                   confirmingDelete={deleteTarget?.id === item.id}
                   onDeleteRequested={() => {
                     removedRef.current = false;
@@ -772,19 +787,30 @@ export function WorkstreamSidebarSection({
           : null}
       </div>
       <div
+        data-workstream-group-slot
         className="relative py-1"
         onDragOver={(event) => dragOver(event, null)}
         onDrop={(event) => drop(event, null)}
       >
         {insertion?.afterId === null ? insertionLine : null}
-        <section data-native-workstream="null" className="min-w-0">
+        <section
+          data-native-workstream="null"
+          style={{
+            backgroundColor:
+              dropTargetId === null && unassignedCollapsed
+                ? "color-mix(in oklab, var(--primary) 3.25%, transparent)"
+                : undefined,
+          }}
+          data-thread-drop-target={dropTargetId === null ? "" : undefined}
+          className={`min-w-0 rounded-md ${dropTargetId === null ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
+        >
           <button
             type="button"
             aria-label={`${unassignedCollapsed ? "Expand" : "Collapse"} Unassigned`}
             aria-description={formatPersonalThreadCount(unassignedSummary.total)}
             aria-expanded={!unassignedCollapsed}
             onClick={() => setUnassignedCollapsed((value) => !value)}
-            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
             <span className="truncate">Unassigned</span>
             <span className="ml-auto shrink-0 text-xs tabular-nums">

@@ -15,6 +15,8 @@ export interface AdmissionState {
   readonly loadFailure: RemoteAdmissionFailureKind | null;
   readonly loading: boolean;
   readonly busy: boolean;
+  readonly deciding: ReadonlySet<string>;
+  readonly policyBusy: boolean;
   readonly error: string | null;
   readonly unconfirmed: ReadonlySet<string>;
   readonly atLimit: boolean;
@@ -30,15 +32,17 @@ export const admissionBindingKey = (record: Pick<RemoteAdmissionRecord, "id" | "
   JSON.stringify([record.id, record.bindingDigest]);
 
 export function requestBlockedReason(state: AdmissionState, bindingKey: string) {
-  return state.busy
+  return state.policyBusy
     ? "A decision or settings change is in progress."
-    : state.loadFailed
-      ? "Owner review is unavailable. Refresh server state before deciding."
-      : state.loading
-        ? "Refreshing owner review. Wait for current server state before deciding."
-        : state.unconfirmed.has(bindingKey)
-          ? "This decision outcome is unconfirmed. Await server confirmation; do not resend."
-          : null;
+    : state.deciding.has(bindingKey)
+      ? "Recording this decision…"
+      : state.loadFailed
+        ? "Owner review is unavailable. Refresh server state before deciding."
+        : state.loading
+          ? "Refreshing owner review. Wait for current server state before deciding."
+          : state.unconfirmed.has(bindingKey)
+            ? "This decision outcome is unconfirmed. Await server confirmation; do not resend."
+            : null;
 }
 
 export function actionableAdmissions(state: AdmissionState) {
@@ -67,6 +71,8 @@ export function createAdmissionStore(request: (input: Request) => Promise<Respon
     loadFailure: null,
     loading: false,
     busy: false,
+    deciding: new Set(),
+    policyBusy: false,
     error: null,
     unconfirmed: new Set(),
     atLimit: false,
@@ -128,7 +134,9 @@ export function createAdmissionStore(request: (input: Request) => Promise<Respon
     return reading;
   };
   const mutate = async (input: Exclude<Request, { action: "snapshot" }>) => {
-    if (state.busy || state.loadFailed || !state.snapshot) return;
+    if (state.policyBusy || state.loadFailed || !state.snapshot) return;
+    if (input.action === "policy" && state.busy) return;
+    if (input.action === "decide" && state.deciding.has(admissionBindingKey(input.input))) return;
     if (input.action === "policy" && state.loading) return;
     if (input.action === "decide") {
       const record = state.snapshot.pending.find(
@@ -145,7 +153,10 @@ export function createAdmissionStore(request: (input: Request) => Promise<Respon
         return;
     }
     ++epoch;
-    publish({ busy: true, error: null });
+    const key = input.action === "decide" ? admissionBindingKey(input.input) : null;
+    const deciding = new Set(state.deciding);
+    if (key !== null) deciding.add(key);
+    publish({ busy: true, deciding, policyBusy: input.action === "policy", error: null });
     try {
       const result = await request(input);
       if (input.action === "policy") {
@@ -180,7 +191,9 @@ export function createAdmissionStore(request: (input: Request) => Promise<Respon
             : "Evaluator settings could not be saved. Refresh and try again.",
       });
     } finally {
-      publish({ busy: false });
+      const deciding = new Set(state.deciding);
+      if (key !== null) deciding.delete(key);
+      publish({ busy: deciding.size > 0, deciding, policyBusy: false });
       await reading;
       if (state.loadFailure !== "unauthorized" && state.loadFailure !== "unsupported")
         await refresh();

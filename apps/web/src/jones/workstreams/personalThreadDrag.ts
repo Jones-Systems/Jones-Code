@@ -1,3 +1,4 @@
+import { copySidebarAppearanceScope } from "../sidebarAppearance/useSidebarAppearanceHost";
 import {
   parseScopedThreadKey,
   scopeThreadRef,
@@ -21,6 +22,7 @@ export function liftPersonalThreadCard(source: HTMLElement, origin: { x: number;
   const rect = source.getBoundingClientRect();
   const view = document.createElement("div");
   view.dataset.personalThreadDrag = "";
+  copySidebarAppearanceScope(source, view);
   view.setAttribute("aria-hidden", "true");
   view.inert = true;
   // Match the pinned row's lifted surface while retaining the rendered title card.

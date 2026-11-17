@@ -19,6 +19,7 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as RemoteAdmission from "../jones/remoteAdmission/RemoteAdmission.ts";
 import * as AdmissionIntake from "../jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts";
 import * as AdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
+import { syntheticReceiverLayers } from "../jones/remoteAdmissionIntegration/receiver.testkit.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -3497,7 +3498,8 @@ it.effect.each(["pass", "hold"] as const)(
                   : receivingAuth.listSessions(),
             }),
           ),
-          Layer.provide(SqlitePersistence.layerMemory),
+          Layer.provide(syntheticReceiverLayers),
+          Layer.provideMerge(SqlitePersistence.layerMemory),
           Layer.fresh,
           Layer.build,
         );
@@ -3513,6 +3515,7 @@ it.effect.each(["pass", "hold"] as const)(
             boxToolkitLayer(thread),
             McpHttpServer.toolkitRegistration(AdmissionCancel.toolkit, AdmissionCancel.handlers),
           ).pipe(Layer.provide(Layer.succeedContext(admissionContext))),
+          Layer.succeedContext(admissionContext),
         );
         receivingAuth = b.auth;
         const offers = yield* SubscriptionRef.make<
@@ -3549,23 +3552,23 @@ it.effect.each(["pass", "hold"] as const)(
               scopes: new Set(AuthAdministrativeScopes),
             },
           );
-          yield* a.threads
-            .streamStoredEventsFrom({
-              threadId: parentThreadId,
-              afterSequence: 0,
-              eventType: "subagent.updated",
-            })
-            .pipe(
-              Stream.filter(
-                (stored) =>
-                  stored.event.type === "subagent.updated" &&
-                  stored.event.payload.id === delegated.taskId &&
-                  stored.event.payload.remoteChild !== undefined,
-              ),
-              Stream.runHead,
-              Effect.timeout(Duration.seconds(10)),
-            );
         }
+        yield* a.threads
+          .streamStoredEventsFrom({
+            threadId: parentThreadId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === delegated.taskId &&
+                stored.event.payload.remoteChild !== undefined,
+            ),
+            Stream.runHead,
+            Effect.timeout(Duration.seconds(10)),
+          );
         expect(yield* Ref.get(thread.launched)).not.toBeNull();
         const replayed = yield* delegateToBox(a);
         expect(replayed.taskId).toBe(delegated.taskId);
