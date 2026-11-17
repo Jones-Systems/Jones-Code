@@ -40,6 +40,12 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
+import {
+  NODE_TEST_FILE,
+  TEST_FILE,
+  ciNotes,
+  requiresFullQualification,
+} from "./jones/ci/local-selection.cjs";
 
 const GiB = 1024 ** 3;
 
@@ -181,9 +187,9 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 
 // CI's lint and knip also read Astro components' frontmatter.
 const CODE = /\.(?:[cm]?[jt]sx?|astro)$/;
-const TEST = /\.test\.[cm]?[jt]sx?$/;
+const TEST = TEST_FILE;
 // CI runs the .github/scripts tests with `node --test`; vitest passes a failing node:test file.
-const NODE_TEST = /^\.github[/\\]scripts[/\\]/;
+const NODE_TEST = NODE_TEST_FILE;
 export const splitTests = (tests: Iterable<string>) => {
   const all = [...tests];
   return {
@@ -319,7 +325,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const present = yield* Effect.filter(files, (file) => fs.exists(inRoot(file)));
   const code = present.filter((file) => CODE.test(file));
   const packages = readWorkspace();
-  const { affected, outputs } = decide(files, packages, false);
+  const { affected, outputs } = decide(files, packages, requiresFullQualification(files));
 
   // Changed test files, and the test files beside a changed source file
   // (foo.ts -> foo.test.ts, foo.browser.test.tsx). Vitest's import-graph
@@ -566,6 +572,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     "release smoke": outputs.release_smoke,
   }).flatMap(([job, runs]) => (runs ? [job] : []));
   if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
+  summary.push(...ciNotes(files, packages));
   if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
   if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
   yield* Console.log(`\n${summary.join("\n")}`);
