@@ -15,7 +15,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { fixture, command } from "./Conformance.testkit.ts";
 import { Receipts, layer, RetirementError, RetirementReservationOwner } from "./Receipts.ts";
-import { retire } from "./RetirementExecutor.ts";
+import { REMOVAL_TIMEOUT_MS, nativeWorktreeRemoval, retire } from "./RetirementExecutor.ts";
 import {
   acquireReservation,
   holderIdentity,
@@ -31,7 +31,7 @@ import { nativePid } from "./Reservation.ts";
 import { events } from "./EventIntegration.ts";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { settlementAdmission } from "./SettlementAdmission.ts";
+import { finalCheckpointSettled, settlementAdmission } from "./SettlementAdmission.ts";
 
 async function fixtureSql(
   path: string,
@@ -882,6 +882,114 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         f.close();
       }
     }),
+  "removal timeout with the checkout still present is partial, never not_retired": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "removal-timeout.sqlite3"));
+      // The driver's timeout, kill and spawn failures arrive as errors, not as a git exit code.
+      const remove = Effect.fail(
+        new RetirementError({
+          target: worktree,
+          reason: "removal_interrupted",
+          cause: "Git command timed out.",
+        }),
+      );
+      try {
+        const result = await Effect.runPromise(
+          retire({
+            cause: "owner_action",
+            projectRoot: repo,
+            worktree,
+            maxLevel: "branch-retained",
+            admit: Effect.void,
+            observe: Effect.succeed(input),
+            revalidate: Effect.void,
+            finalizeOutputs: () => Effect.void,
+            remove,
+          }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+        );
+        NodeAssert.equal(result.state, "partial");
+        NodeAssert.deepEqual(result.reasons, ["removal_interrupted"]);
+        const receipt = JSON.parse(
+          String(
+            f.db.prepare("SELECT receipt_json FROM jones_workspace_retirement_receipts").get()!
+              .receipt_json,
+          ),
+        );
+        NodeAssert.equal(receipt.state, "partial");
+        NodeAssert.match(receipt.removalDiagnostic, /timed out/);
+        NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true);
+      } finally {
+        f.close();
+      }
+    }),
+  "owner retirement passes an explicit removal timeout": async () => {
+    const seen: { operation: string; args: readonly string[]; timeoutMs: number }[] = [];
+    const driver = (exitCode: number, fail?: unknown) => ({
+      execute: (request: {
+        operation: string;
+        args: readonly string[];
+        allowNonZeroExit: boolean;
+        timeoutMs: number;
+      }) => {
+        NodeAssert.equal(request.allowNonZeroExit, true);
+        seen.push(request);
+        return fail === undefined
+          ? Effect.succeed({ exitCode, stderr: "fatal: refused\nsecond line" })
+          : Effect.fail(fail);
+      },
+    });
+    const call = async (d: ReturnType<typeof driver>) => {
+      const outcome = await Effect.runPromise(
+        nativeWorktreeRemoval(d as never, { projectRoot: "/project", worktree: "/project/w" }).pipe(
+          Effect.result,
+        ),
+      );
+      if (outcome._tag !== "Failure") throw new Error("expected the removal to fail");
+      return outcome.failure;
+    };
+    NodeAssert.equal(REMOVAL_TIMEOUT_MS, 30 * 60 * 1000);
+    await Effect.runPromise(
+      nativeWorktreeRemoval(driver(0) as never, {
+        projectRoot: "/project",
+        worktree: "/project/w",
+      }),
+    );
+    NodeAssert.equal(seen[0]?.operation, "WorkspaceRetirement.remove");
+    NodeAssert.deepEqual(seen[0]?.args, ["worktree", "remove", "--", "/project/w"]);
+    NodeAssert.equal(seen[0]?.timeoutMs, REMOVAL_TIMEOUT_MS);
+    const refused = await call(driver(128));
+    NodeAssert.equal(refused.reason, "git_removal_refused");
+    NodeAssert.equal(refused.cause, "git worktree remove: fatal: refused");
+    const timedOut = await call(driver(0, new Error("Git command timed out.")));
+    NodeAssert.equal(timedOut.reason, "removal_interrupted");
+    NodeAssert.equal(
+      seen.every((r) => r.timeoutMs === REMOVAL_TIMEOUT_MS),
+      true,
+    );
+  },
+  "final checkpoint gate is unchanged: only runs with a ready checkpoint settle, failed and rolled_back still hold":
+    async () => {
+      // Checkpoint statuses are ready | missing | error | stale; none means "in progress", and capture
+      // never runs for failed or rolled_back runs. Admitting those runs needs an owner decision.
+      const ready = (runId: string) => [{ runId, status: "ready" }];
+      for (const status of ["failed", "rolled_back"]) {
+        NodeAssert.equal(finalCheckpointSettled({ id: "run", status }, []), false);
+        NodeAssert.equal(finalCheckpointSettled({ id: "run", status }, ready("run")), false);
+      }
+      for (const status of ["completed", "cancelled", "interrupted"]) {
+        NodeAssert.equal(finalCheckpointSettled({ id: "run", status }, ready("run")), true);
+        NodeAssert.equal(finalCheckpointSettled({ id: "run", status }, ready("other")), false);
+        NodeAssert.equal(
+          finalCheckpointSettled({ id: "run", status }, [{ runId: "run", status: "stale" }]),
+          false,
+        );
+      }
+      NodeAssert.equal(
+        finalCheckpointSettled({ id: "run", status: "running" }, ready("run")),
+        false,
+      );
+      NodeAssert.equal(finalCheckpointSettled(undefined, []), true);
+    },
   "tracked changes journal precedes no-follow symlink disposal and keeps the external target": () =>
     fixture(async ({ base, repo, worktree, input }) => {
       const external = NodePath.join(base, "outside");
