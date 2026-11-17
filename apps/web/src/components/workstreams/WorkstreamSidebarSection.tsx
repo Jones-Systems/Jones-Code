@@ -240,7 +240,7 @@ function Group({
       ref={sectionRef}
       data-native-workstream={JSON.stringify(item.id)}
       data-thread-drop-target={dropTarget ? "" : undefined}
-      className={`min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-1 ring-inset ring-ring/40 bg-accent/10" : ""}`}
+      className={`min-w-0 rounded-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-2 ring-inset ring-primary/70 bg-primary/13 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
       style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
     >
       <div
@@ -782,7 +782,7 @@ export function WorkstreamSidebarSection({
         <section
           data-native-workstream="null"
           data-thread-drop-target={dropTargetId === null ? "" : undefined}
-          className={`min-w-0 rounded-md ${dropTargetId === null ? "ring-1 ring-inset ring-ring/40 bg-accent/10" : ""}`}
+          className={`min-w-0 rounded-md ${dropTargetId === null ? "ring-2 ring-inset ring-primary/70 bg-primary/13 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
         >
           <button
             type="button"
