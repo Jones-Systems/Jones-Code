@@ -81,6 +81,12 @@ export interface JournalEntry {
   identity: string;
   state: "planned" | "invoking" | "completed" | "removed_with_checkout";
 }
+export interface InterruptedRetirement {
+  // The receipts row state; only "intent" was left by an executor that never reached a terminal write.
+  state: RetirementReceipt["state"];
+  receipt: RetirementReceipt;
+  journal: readonly Pick<JournalEntry, "path" | "kind" | "state">[];
+}
 const compiledMain3acaCodec1 = Schema.is(RetirementError);
 
 const mapError = (target: string) =>
@@ -167,6 +173,10 @@ export class Receipts extends Context.Service<
       state: JournalEntry["state"],
     ) => Effect.Effect<void, RetirementError>;
     readonly read: (receipt: string) => Effect.Effect<RetirementReceipt | null, RetirementError>;
+    // The durable exclusion a crashed or restarted executor left behind, read for reconciliation.
+    readonly interrupted: (
+      worktree: string,
+    ) => Effect.Effect<InterruptedRetirement | null, RetirementError>;
   }
 >()("t3/jones/workspaceRetirement/Receipts") {}
 
@@ -465,6 +475,18 @@ const make = Effect.gen(function* () {
         receipt_json: string;
       }>`SELECT receipt_json FROM jones_workspace_retirement_receipts WHERE receipt_id=${id}`;
       return rows[0] ? yield* compiledMain3acaCodec8(rows[0].receipt_json) : null;
+    }, mapError("workspace")),
+    interrupted: Effect.fn("WorkspaceRetirement.interrupted")(function* (worktree) {
+      const rows = yield* sql<{
+        state: RetirementReceipt["state"];
+        receipt_json: string;
+      }>`SELECT r.state,r.receipt_json FROM jones_workspace_retirement_state s JOIN jones_workspace_retirement_receipts r ON r.receipt_id=s.receipt_id AND r.incarnation_id=s.incarnation_id WHERE s.worktree=${worktree} AND s.state='retiring'`;
+      if (!rows[0]) return null;
+      const receipt = yield* compiledMain3acaCodec8(rows[0].receipt_json);
+      const journal = yield* sql<
+        Pick<JournalEntry, "path" | "kind" | "state">
+      >`SELECT path,kind,state FROM jones_workspace_disposal_journal WHERE receipt_id=${receipt.id} ORDER BY ordinal`;
+      return { state: rows[0].state, receipt, journal };
     }, mapError("workspace")),
   });
 });

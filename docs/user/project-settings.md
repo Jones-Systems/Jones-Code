@@ -257,7 +257,9 @@ Results also list folders in the worktree folder that no thread uses, with their
 On a server that supports it, **Propose retirements** reviews settled checkouts without deleting
 anything and opens **Last run**. Checkouts listed under **Ready to retire** have a **Retire**
 button; the confirmation lists the exact paths it authorizes, and the summary reports about how
-much space was recovered. A checkout with untracked files is held until **Keep worktrees with
+much space was recovered. If the server stops part-way through a retirement, the next **Retire**
+of that checkout first confirms the earlier server process has ended, then retries a checkout that
+was left untouched; a partly removed checkout stays held. A checkout with untracked files is held until **Keep worktrees with
 local changes** is set to **Edited tracked files**; propose again afterwards. **Retire** is not
 offered for a checkout that covers more than 200 paths, and the result says so. The status line
 under **Delete now** shows the last run even when no cleanup rule is on.

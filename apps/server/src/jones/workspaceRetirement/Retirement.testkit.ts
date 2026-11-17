@@ -32,6 +32,9 @@ import { events } from "./EventIntegration.ts";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { finalCheckpointSettled, settlementAdmission } from "./SettlementAdmission.ts";
+import { qualify, type QualificationInput } from "./Qualification.ts";
+import { readReservation } from "./Reservation.ts";
+import * as NodeChildProcess from "node:child_process";
 
 async function fixtureSql(
   path: string,
@@ -95,6 +98,87 @@ const compiledMain3acaCodec11 = Schema.decodeEffect(RetirementReceiptJson);
 const compiledMain3acaCodec10 = Schema.decodeEffect(RetirementReceiptJson);
 
 const compiledMain3acaCodec9 = Schema.encodeEffect(RetirementReceiptJson);
+
+type Holder = Pick<ReservationRecord, "host" | "boot_id" | "pid" | "process_start">;
+const processStart = (pid: number) =>
+  new Promise<string>((resolve, reject) =>
+    NodeChildProcess.execFile(
+      "/bin/ps",
+      ["-p", String(pid), "-o", "lstart="],
+      { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } },
+      (error, out) => (error ? reject(error) : resolve(out.trim())),
+    ),
+  );
+// A PID whose process has exited, recorded with a start time it never had.
+const exitedHolder = async (): Promise<Holder> => {
+  const child = NodeChildProcess.spawn("/usr/bin/true");
+  await new Promise((resolve) => child.once("exit", resolve));
+  return {
+    ...(await holderIdentity()),
+    pid: child.pid!,
+    process_start: "Mon Jan  1 00:00:00 2024",
+  };
+};
+// The durable state an executor leaves when the server stops after begin and before any terminal write.
+async function interruptedRetirement(
+  f: Awaited<ReturnType<typeof fixtureSql>>,
+  input: QualificationInput,
+  holder: Holder,
+) {
+  const bound = input.expected,
+    id = "interrupted-receipt";
+  const record: ReservationRecord = {
+    schema: "workspace-reservation/v1",
+    admin_id: bound.admin_id,
+    incarnation: incarnation(bound),
+    executor: "jones",
+    receipt: id,
+    ...holder,
+  };
+  await acquireReservation(bound, record);
+  const receipt: RetirementReceipt = {
+    schema: "worktree-retirement/v1",
+    id,
+    cause: "owner_action",
+    state: "intent",
+    binding: bound,
+    incarnation: record.incarnation,
+    qualification: await qualify(input),
+    coverage: {},
+    preservationRefs: [],
+    journal: id,
+    disposed: [],
+    reasons: [],
+    limits: CONSUMER_LIMITS,
+    bytes: { logical: null, allocated: null, statvfs_delta: null },
+  };
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* Receipts;
+      yield* store.begin(receipt);
+      yield* store.finish(receipt);
+    }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+  );
+  return record;
+}
+const retireRequest = (repo: string, worktree: string, input: QualificationInput) => ({
+  cause: "owner_action" as const,
+  projectRoot: repo,
+  worktree,
+  maxLevel: "branch-retained" as const,
+  admit: Effect.void,
+  observe: Effect.succeed(input),
+  revalidate: Effect.void,
+  finalizeOutputs: () => Effect.void,
+});
+const receiptRow = (f: Awaited<ReturnType<typeof fixtureSql>>, id: string) => {
+  const row = f.db
+    .prepare(
+      "SELECT state,receipt_json FROM jones_workspace_retirement_receipts WHERE receipt_id=?",
+    )
+    .get(id);
+  return { state: row?.state, receipt: compiledMain3acaCodec14(String(row?.receipt_json)) };
+};
 
 export const retirementCases: Record<string, () => Promise<void>> = {
   "both final stages reject changed valid process basis; fresh timestamps alone permit retirement":
@@ -1173,4 +1257,140 @@ export const retirementCases: Record<string, () => Promise<void>> = {
       await NodeAssert.rejects(disposePath(input.expected, journal[0]!));
       NodeAssert.equal(await NodeFSP.readFile(NodePath.join(outside, "a"), "utf8"), "protected");
     }),
+  "absent holder with intact checkout reconciles to not_retired and a retry succeeds": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "interrupted-intact.sqlite3"));
+      try {
+        await interruptedRetirement(f, input, await exitedHolder());
+        const result = await Effect.runPromise(
+          retire(retireRequest(repo, worktree, input)).pipe(
+            Effect.provide(layer),
+            Effect.provideService(SqlClient.SqlClient, f.sql),
+          ),
+        );
+        const stale = receiptRow(f, "interrupted-receipt");
+        NodeAssert.equal(stale.state, "not_retired");
+        NodeAssert.deepEqual(stale.receipt.reasons, ["interrupted_before_effect"]);
+        NodeAssert.equal(result.state, "retired");
+        NodeAssert.notEqual("id" in result ? result.id : null, "interrupted-receipt");
+        NodeAssert.equal(
+          await NodeFSP.lstat(worktree).then(
+            () => true,
+            () => false,
+          ),
+          false,
+        );
+        NodeAssert.equal(
+          (await command(repo, ["show-ref", "--verify", "refs/heads/task"])).length > 0,
+          true,
+        );
+        NodeAssert.equal(await readReservation(input.expected), null);
+      } finally {
+        f.close();
+      }
+    }),
+  "absent holder with removed checkout reconciles to retired": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "interrupted-removed.sqlite3"));
+      let observed = 0;
+      try {
+        await interruptedRetirement(f, input, {
+          ...(await holderIdentity()),
+          boot_id: "a boot before the restart",
+        });
+        await command(repo, ["worktree", "remove", "--", worktree]);
+        const result = await Effect.runPromise(
+          retire({
+            ...retireRequest(repo, worktree, input),
+            observe: Effect.sync(() => {
+              observed++;
+              return input;
+            }),
+          }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+        );
+        NodeAssert.equal(result.state, "retired");
+        NodeAssert.equal("id" in result ? result.id : null, "interrupted-receipt");
+        NodeAssert.deepEqual(result.reasons, ["interrupted_after_removal"]);
+        NodeAssert.equal(observed, 0);
+        NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "retired");
+        NodeAssert.equal(
+          f.db.prepare("SELECT state FROM jones_workspace_retirement_state").get()?.state,
+          "retired",
+        );
+        NodeAssert.equal(
+          (await command(repo, ["show-ref", "--verify", "refs/heads/task"])).length > 0,
+          true,
+        );
+        NodeAssert.equal(await readReservation(input.expected), null);
+      } finally {
+        f.close();
+      }
+    }),
+  "half-removed checkout stays partial and holds": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "interrupted-half.sqlite3"));
+      const run = () =>
+        Effect.runPromise(
+          retire(retireRequest(repo, worktree, input)).pipe(
+            Effect.provide(layer),
+            Effect.provideService(SqlClient.SqlClient, f.sql),
+          ),
+        );
+      try {
+        await interruptedRetirement(f, input, {
+          ...(await holderIdentity()),
+          boot_id: "a boot before the restart",
+        });
+        // An unforced removal deletes tracked files before Git drops the registration.
+        await NodeFSP.unlink(NodePath.join(worktree, "tracked"));
+        const result = await run();
+        NodeAssert.equal(result.state, "partial");
+        NodeAssert.deepEqual(result.reasons, ["interrupted_tracked_deletions"]);
+        const stale = receiptRow(f, "interrupted-receipt");
+        NodeAssert.equal(stale.state, "partial");
+        NodeAssert.match(
+          stale.receipt.qualification.details?.at(-1)?.nextAction ?? "",
+          /do not force/,
+        );
+        NodeAssert.equal(
+          f.db.prepare("SELECT state FROM jones_workspace_retirement_state").get()?.state,
+          "retiring",
+        );
+        NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true);
+        await NodeAssert.rejects(run(), /retiring/);
+        NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "partial");
+        NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true);
+      } finally {
+        f.close();
+      }
+    }),
+  "live holder is never recovered": async () => {
+    const live = { ...(await holderIdentity()), pid: process.ppid };
+    live.process_start = await processStart(process.ppid);
+    for (const holder of [live, { ...live, host: "another-host.invalid" }])
+      await fixture(async ({ base, repo, worktree, input }) => {
+        const f = await fixtureSql(NodePath.join(base, "interrupted-live.sqlite3"));
+        let removals = 0;
+        try {
+          const record = await interruptedRetirement(f, input, holder);
+          await NodeAssert.rejects(
+            Effect.runPromise(
+              retire({
+                ...retireRequest(repo, worktree, input),
+                remove: Effect.sync(() => {
+                  removals++;
+                }),
+              }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+            ),
+            /retiring/,
+          );
+          NodeAssert.equal(removals, 0);
+          NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "intent");
+          NodeAssert.equal(canonical(await readReservation(input.expected)), canonical(record));
+          NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true);
+        } finally {
+          f.close();
+        }
+      });
+  },
 };
