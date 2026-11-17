@@ -3463,6 +3463,7 @@
     "scripts/jones/boundary/fragments/workstream-auto-route.json": "jones-owned",
     "apps/server/src/textGeneration/TextGenerators.ts": "accepted-shared",
     "apps/server/src/textGeneration/TextGenerators.test.ts": "accepted-shared",
+    "apps/server/src/textGeneration/textGeneratorDrivers.ts": "accepted-shared",
     "packages/provider-core/src/server/driver.ts": "accepted-shared",
     "apps/server/src/jones/workstreamsLegacyHttp.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/historicalSettlementEvidence.testkit.ts": "jones-owned",
