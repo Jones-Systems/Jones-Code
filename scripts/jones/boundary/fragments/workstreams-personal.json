@@ -913,10 +913,6 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/jones/workstreams/personalStatusFilter.ts"
-    },
-    {
-      "from": "apps/web/src/components/workstreams/WorkstreamNativeSidebar.tsx",
-      "to": "apps/web/src/jones/workstreams/sidebarDragAutoScroll.ts"
     }
   ]
 }
