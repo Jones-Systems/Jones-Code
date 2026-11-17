@@ -12,7 +12,7 @@ Click a Workstream’s Working, Needs input or Done count to show that status. C
 
 The **Workstreams** row above the groups totals the Working, Needs input and Done counts of all Workstreams, without Unassigned. Its counts work the same way but apply to every Workstream at once. The most recent choice wins: pick a status on one group after using the Workstreams row and that group keeps its own; use the Workstreams row again and it replaces every group’s choice. Clearing a group, or choosing **Use global status filter** in its menu, returns that group to the global status filter even while the Workstreams row has a status selected. Clearing the Workstreams row returns every group to the global status filter, and earlier group choices do not come back.
 
-Use **+** and **−** beside the Workstreams label to expand or collapse every group’s thread list; each group’s title, counts and failures stay visible, and Unassigned is unchanged. The chevron at the far right of that row, after the status counts, hides or shows all Workstreams at once. Unassigned stays visible, and showing the Workstreams again restores each group as you left it.
+Use **+** and **−** beside the Workstreams label to expand or collapse every group’s thread list. Each group’s title, counts and failures stay visible. Click **Workstreams**, the space between controls or the chevron at the far right to hide or show the named groups. Unassigned stays visible, and showing the Workstreams again restores each group as you left it.
 
 Drag a thread from a Workstream or Unassigned into a chat composer to reference it, just as with a pinned thread. Referencing a thread leaves its assignment and order unchanged.
 

@@ -72,14 +72,15 @@ export function PersonalWorkstreamsHeader({
     <div
       ref={rowRef}
       data-personal-workstreams-header
-      className="flex h-8 min-w-0 items-center gap-0.5 px-2 text-xs font-medium text-sidebar-muted-foreground"
+      className="relative isolate flex h-8 min-w-0 items-center gap-0.5 px-2 text-xs font-medium text-sidebar-muted-foreground"
     >
-      <span ref={labelRef} className="min-w-0 truncate">
+      <span ref={labelRef} className="pointer-events-none min-w-0 truncate">
         Workstreams
       </span>
       <Button
         variant="ghost-muted"
         size="icon-micro"
+        className="z-10 disabled:pointer-events-auto disabled:cursor-default"
         aria-label="Expand all Workstreams"
         disabled={hidden}
         onClick={onExpandAll}
@@ -89,30 +90,32 @@ export function PersonalWorkstreamsHeader({
       <Button
         variant="ghost-muted"
         size="icon-micro"
+        className="z-10 disabled:pointer-events-auto disabled:cursor-default"
         aria-label="Collapse all Workstreams"
         disabled={hidden}
         onClick={onCollapseAll}
       >
         <MinusIcon aria-hidden />
       </Button>
-      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+      <div className="pointer-events-none relative z-10 ml-auto flex shrink-0 items-center gap-0.5 [&_[data-personal-status-pill]]:pointer-events-none [&_button]:pointer-events-auto">
         <PersonalStatusPill
           ref={pillRef}
           summary={summary}
           statusFilter={statusFilter}
           onStatusFilterChange={onStatusFilterChange}
         />
-        <Button
-          variant="ghost-muted"
-          size="icon-micro"
-          aria-label={hidden ? "Show all Workstreams" : "Hide all Workstreams"}
-          aria-expanded={!hidden}
-          aria-controls={controlsId}
-          onClick={() => onHiddenChange(!hidden)}
-        >
-          <ChevronDownIcon aria-hidden className={hidden ? "-rotate-90" : ""} />
-        </Button>
+        <span aria-hidden className="size-5" />
       </div>
+      <button
+        type="button"
+        className="absolute inset-0 flex cursor-pointer items-center justify-end rounded-md px-3 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        aria-label={hidden ? "Show all Workstreams" : "Hide all Workstreams"}
+        aria-expanded={!hidden}
+        aria-controls={controlsId}
+        onClick={() => onHiddenChange(!hidden)}
+      >
+        <ChevronDownIcon aria-hidden className={hidden ? "size-3 -rotate-90" : "size-3"} />
+      </button>
     </div>
   );
 }
