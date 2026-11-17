@@ -21,11 +21,9 @@ const toFailure = (error: HostFiles.HostFileError) =>
   });
 
 /**
- * These tools reach any path this environment's user can, with no workspace
- * boundary, so only a caller that could already do that here may use them: a
- * full-access thread, or a client approved for full access. A forwarded call
- * arrives as the link's client narrowed to the calling agent's modes, so the
- * same check holds on the machine that owns the file.
+ * These tools have no workspace boundary, so only a caller that could already
+ * reach any path here may use them. A forwarded call arrives as the link's
+ * client narrowed to the calling agent's modes, so the check holds there too.
  */
 export const HostFilesHandlersLive = McpToolAccess.toLayer(HostFilesToolkit, {
   t3_file_read: McpToolAccess.reads((input) =>
