@@ -171,7 +171,7 @@
         },
         {
           "path": "pnpm-workspace.yaml",
-          "sha256": "f38c3601ebdf430bedbbbbb48608e0e41f946289fde92d5a8b7b9506f3a0c802"
+          "sha256": "9c9a2ede9bfda15f9a51e4148848f46c9e2d86974ed7f1c1bbe06e3852b03c56"
         }
       ],
       "targets": []
@@ -188,7 +188,7 @@
         },
         {
           "path": "pnpm-workspace.yaml",
-          "sha256": "f38c3601ebdf430bedbbbbb48608e0e41f946289fde92d5a8b7b9506f3a0c802"
+          "sha256": "9c9a2ede9bfda15f9a51e4148848f46c9e2d86974ed7f1c1bbe06e3852b03c56"
         }
       ],
       "targets": []
@@ -242,7 +242,7 @@
         },
         {
           "path": "apps/server/src/server.ts",
-          "sha256": "bdfcfa41a591907f0f0f30e28277e5e6be765869462c7a9380651b8182c4d6d5"
+          "sha256": "1613fcf9bad1ff61e985aefe34b86820bf1daa317f532904a34c775ca2932700"
         },
         {
           "path": "scripts/prepare-server-compile-cache.cjs",

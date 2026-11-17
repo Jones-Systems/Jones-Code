@@ -439,6 +439,54 @@ NodeTest.test("spawn errors wait for close and setup exceptions leave a failed m
   }),
 );
 
+NodeTest.test("a release-age install refusal records its cause and fix in the failed marker", () =>
+  fixture(async ({ project, worktree, onCleanup }) => {
+    const harness = lifecycleHarness(worktree, onCleanup);
+    const pending = harness.run(["--install"], project);
+    await harness.started();
+    const { child } = harness.children[0];
+    const feed = async (stream, text) => {
+      stream.write(text);
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    // The code arrives split across two chunks, then 40 lines push it out of the 30-line tail.
+    await feed(child.stderr, " ERR_PNPM_MINIMUM_RELEASE");
+    await feed(child.stderr, "_AGE_VIOLATION  Version 1.2.3 of left-pad was published recently\n");
+    await feed(
+      child.stdout,
+      `${Array.from({ length: 40 }, (_, index) => `filler line ${index + 1}`).join("\n")}\n`,
+    );
+    child.emit("close", 1, null);
+    NodeAssert.equal(await pending, 1);
+    const failed = NodeFS.readFileSync(harness.marker("failed"), "utf8");
+    NodeAssert.match(failed, /^Setup exited with code 1\.\nCause: .*minimumReleaseAge/);
+    NodeAssert.match(failed, /node scripts\/jones\/ci\/release-age\.mjs --all`/);
+    NodeAssert.match(failed, /minimumReleaseAgeExclude through a pull request/);
+    NodeAssert.match(failed, /Leave the host pnpm policy alone/);
+    // The bounded tail still follows the advice, without the scrolled-out pnpm header.
+    NodeAssert.match(failed, /filler line 40\n$/);
+    NodeAssert.doesNotMatch(failed, /left-pad/);
+    NodeAssert.ok(harness.forwarded.join("").includes("left-pad was published recently"));
+  }),
+);
+
+NodeTest.test("other install failures record only the output tail", () =>
+  fixture(async ({ project, worktree, onCleanup }) => {
+    const harness = lifecycleHarness(worktree, onCleanup);
+    const pending = harness.run(["--install"], project);
+    await harness.started();
+    const { child } = harness.children[0];
+    child.stderr.write(" ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with a stale lockfile\n");
+    await new Promise((resolve) => setImmediate(resolve));
+    child.emit("close", 1, null);
+    NodeAssert.equal(await pending, 1);
+    NodeAssert.equal(
+      NodeFS.readFileSync(harness.marker("failed"), "utf8"),
+      "Setup exited with code 1.\n ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with a stale lockfile\n",
+    );
+  }),
+);
+
 NodeTest.test(
   "producer finalization records cheap success, failure and drained cancellation in real Git admin state",
   () =>

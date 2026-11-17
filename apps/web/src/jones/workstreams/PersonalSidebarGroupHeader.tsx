@@ -1,34 +1,9 @@
 import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
-import { ChevronDownIcon } from "lucide-react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
-import { cn } from "../../lib/utils";
 import { observeResize } from "../../lib/observeResize";
+import { PersonalStatusPill } from "./PersonalStatusPill";
 import { formatPersonalThreadCount, type PersonalThreadSummary } from "./personalPresentation";
 import type { PersonalStatusFilter } from "./personalStatusFilter";
-
-const statuses = [
-  {
-    status: "working",
-    name: "Working",
-    count: "running",
-    color: "text-info-foreground",
-    selected: "bg-info-foreground/15",
-  },
-  {
-    status: "input",
-    name: "Needs input",
-    count: "attention",
-    color: "text-waiting",
-    selected: "bg-waiting/15",
-  },
-  {
-    status: "done",
-    name: "Done",
-    count: "done",
-    color: "text-success-foreground",
-    selected: "bg-success-foreground/15",
-  },
-] as const;
 
 export function PersonalSidebarGroupHeader({
   name,
@@ -57,7 +32,6 @@ export function PersonalSidebarGroupHeader({
   const titleProbeRef = useRef<HTMLSpanElement>(null);
   const countersRef = useRef<HTMLSpanElement>(null);
   const undoTitleClickRef = useRef<(() => void) | null>(null);
-  const pointerSequence = useRef<{ status: string; at: number; consumed: boolean } | null>(null);
   const description = `${formatPersonalThreadCount(summary.total)}, ${summary.running} working, ${summary.attention} need attention, ${summary.done} done, ${summary.failed} failed.`;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fit the DOM counter pill to measured title lines and keep resize/font subscriptions mounted.
   useLayoutEffect(() => {
@@ -116,7 +90,7 @@ export function PersonalSidebarGroupHeader({
   return (
     <div
       data-personal-group-header
-      className="relative grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-0.75 rounded-md px-2 py-1 text-left hover:bg-sidebar-row-hover"
+      className="relative grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-0.75 rounded-md px-2 py-1 text-left hover:bg-sidebar-row-hover"
     >
       <Tooltip>
         <TooltipTrigger
@@ -139,13 +113,9 @@ export function PersonalSidebarGroupHeader({
           <span className="block">{description}</span>
         </TooltipPopup>
       </Tooltip>
-      <ChevronDownIcon
-        aria-hidden
-        className={`pointer-events-none col-start-1 row-start-1 mt-0.5 size-4 shrink-0 text-sidebar-muted-foreground ${collapsed ? "-rotate-90" : ""}`}
-      />
       <div
         ref={titleLaneRef}
-        className="pointer-events-none relative col-start-2 row-start-1 flex min-w-0 items-start gap-x-0.75"
+        className="pointer-events-none relative col-start-1 row-start-1 flex min-w-0 items-start gap-x-0.75"
       >
         <span
           aria-hidden="true"
@@ -188,87 +158,20 @@ export function PersonalSidebarGroupHeader({
             </span>
           )}
         </div>
-        <span
+        <PersonalStatusPill
           ref={countersRef}
-          data-workstream-header-control
-          data-personal-status-pill
-          style={{ gap: "calc(2px * var(--personal-status-spacing, 1))" }}
-          className="pointer-events-auto relative inline-flex h-6 shrink-0 items-center rounded-full bg-muted/30 px-1 text-xs font-medium tabular-nums [-webkit-app-region:no-drag]"
-          draggable={false}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-          onDragStart={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
+          summary={summary}
+          statusFilter={statusFilter}
+          {...(onStatusFilterChange ? { onStatusFilterChange } : {})}
+          onInteract={() => {
+            undoTitleClickRef.current = null;
           }}
-        >
-          {statuses.map(({ status, name: statusName, count, color, selected }, index) => {
-            const excluded = statusFilter === `hide-${status}`;
-            const active = statusFilter === status;
-            const state = active
-              ? "selected"
-              : excluded
-                ? "excluded"
-                : statusFilter === null
-                  ? "using global status filter"
-                  : "not selected";
-            return (
-              <span key={status} className="contents">
-                {index > 0 ? (
-                  <span aria-hidden className="text-sidebar-muted-foreground/60">
-                    ·
-                  </span>
-                ) : null}
-                {onStatusFilterChange ? (
-                  <button
-                    type="button"
-                    aria-label={`${statusName}: ${summary[count]}, ${state}. Click to ${active ? "use global status filter" : "show only " + statusName.toLowerCase()}; double-click within 250 ms to exclude ${statusName.toLowerCase()}.`}
-                    aria-pressed={active || excluded}
-                    className={cn(
-                      "shrink-0 rounded-sm outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                      color,
-                      active && selected,
-                      excluded && "line-through decoration-2",
-                    )}
-                    style={{ paddingInline: "calc(6px * var(--personal-status-spacing, 1))" }}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      undoTitleClickRef.current = null;
-                      if (event.detail === 0) {
-                        pointerSequence.current = null;
-                        onStatusFilterChange(active ? null : status);
-                        return;
-                      }
-                      const previous = pointerSequence.current;
-                      const rapid =
-                        previous !== null &&
-                        previous.status === status &&
-                        event.timeStamp - previous.at <= 250;
-                      pointerSequence.current = { status, at: event.timeStamp, consumed: rapid };
-                      if (!rapid) onStatusFilterChange(active ? null : status);
-                      else if (!previous.consumed) onStatusFilterChange(`hide-${status}`);
-                    }}
-                  >
-                    {summary[count]}
-                  </button>
-                ) : (
-                  <span
-                    className={cn("shrink-0 rounded-sm", color)}
-                    style={{ paddingInline: "calc(6px * var(--personal-status-spacing, 1))" }}
-                  >
-                    {summary[count]}
-                  </span>
-                )}
-              </span>
-            );
-          })}
-        </span>
+        />
       </div>
       {actions ? (
         <div
           data-workstream-header-control
-          className="relative col-start-3 row-start-1 [-webkit-app-region:no-drag]"
+          className="relative col-start-2 row-start-1 [-webkit-app-region:no-drag]"
           draggable={false}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => event.stopPropagation()}
@@ -281,7 +184,7 @@ export function PersonalSidebarGroupHeader({
           {actions}
         </div>
       ) : null}
-      <span className="pointer-events-none col-span-2 col-start-2 row-start-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 text-xs leading-4 text-sidebar-muted-foreground">
+      <span className="pointer-events-none col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 text-xs leading-4 text-sidebar-muted-foreground">
         <span className="tabular-nums">{formatPersonalThreadCount(summary.total)}</span>
         {summary.failed > 0 ? (
           <span className="ml-auto text-right text-thread-failed tabular-nums">
