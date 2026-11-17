@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Check the server composition without starting a runtime.
+import * as NodeFS from "node:fs";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { EnvironmentId, OrchestratorMcpFailure } from "@t3tools/contracts";
@@ -8,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { ServerActivation } from "../../serverActivation.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
 import { DependencyWakeCommit } from "./DependencyCommit.ts";
@@ -22,8 +25,9 @@ import * as Fixture from "./testkit.ts";
 const ports = (
   f: Effect.Success<typeof Fixture.seed>,
   acquisition?: Orchestrator.OrchestratorV2Shape["acquireDomainEvents"],
-) =>
-  Layer.mock(Orchestrator.OrchestratorV2)({
+) => {
+  let wakeOrdinal = 1;
+  return Layer.mock(Orchestrator.OrchestratorV2)({
     getThreadRecords: (threadId, fields, filter) =>
       f.projection
         .getThreadRecords(threadId, fields, filter)
@@ -73,7 +77,12 @@ const ports = (
         if (command.type !== "message.dispatch" || command.notification === undefined)
           return yield* Effect.die("Unexpected reactor dispatch");
         const wake = yield* DependencyWakeCommit;
-        const run = f.run(`processing:${command.messageId}`, command.threadId, "queued", 2);
+        const run = f.run(
+          `processing:${command.messageId}`,
+          command.threadId,
+          "queued",
+          ++wakeOrdinal,
+        );
         const message = {
           ...f.message(command.messageId, run),
           text: command.text,
@@ -113,6 +122,7 @@ const ports = (
         ),
       ),
   });
+};
 const prepare = (f: Effect.Success<typeof Fixture.seed>) =>
   f.sql.withTransaction(
     f.store.prepare({
@@ -137,6 +147,152 @@ const prepare = (f: Effect.Success<typeof Fixture.seed>) =>
       },
     }),
   );
+
+it("server composition retains the automatic result-dependency worker", () => {
+  const source = NodeFS.readFileSync(new URL("../../server.ts", import.meta.url), "utf8");
+  // Worker lifecycle tests cannot detect a sync that drops its production registration.
+  assert.match(source, /^\s+DependencyReactor\.layerWorker,\s*$/m);
+});
+
+it.effect(
+  "server worker waits for recovery activation, delivers saved replies and follows new answers",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* Fixture.seed;
+      const changes = yield* Changes.DependencyChanges;
+      const commit = makeCommit(f.sql, f.store, changes);
+      const saved = yield* Effect.forEach(["first", "second", "third"], (key) => f.send(key));
+      const pending = yield* f.send("pending");
+      yield* prepare(f);
+      for (const request of saved.slice(0, 2))
+        yield* commit(
+          f.store.answer(
+            f.receiver.id,
+            request.requestId,
+            "fulfilled",
+            `Saved answer: ${request.requestId}`,
+            f.receiverRun.id,
+          ),
+        );
+      const subscription = yield* changes.subscribe;
+      const activation = yield* Deferred.make<void>();
+      let peerObservations = 0;
+      const worker = Reactor.layerWorker.pipe(
+        Layer.provide(Layer.succeed(ServerActivation, Deferred.await(activation))),
+        Layer.provide(Watch.layer),
+        Layer.provide(ports(f)),
+        Layer.provide(
+          Layer.mock(Forwarding.PeerForwarding)({
+            call: (_scope, tool) =>
+              Effect.sync(() => {
+                assert.equal(tool.name, "t3_thread_request_observe");
+                peerObservations++;
+                return answered;
+              }),
+          }),
+        ),
+        Layer.provide(NodeCrypto.layer),
+      );
+      const awaitDelivered = (count: number) =>
+        Stream.fromSubscription(subscription).pipe(
+          Stream.mapEffect(() => f.store.dependencies(f.waiter.id)),
+          Stream.filter(
+            (dependencies) =>
+              dependencies.filter((dependency) => dependency.state === "delivered").length ===
+              count,
+          ),
+          Stream.runHead,
+        );
+      const finishWakeRuns = Effect.gen(function* () {
+        const records = yield* f.projection.getThreadRecords(f.waiter.id, ["runs"]);
+        yield* f.sink.write({
+          events: records.runs
+            .filter((run) => run.status === "queued")
+            .map((run) =>
+              f.event({
+                type: "run.updated",
+                threadId: run.threadId,
+                runId: run.id,
+                payload: { ...run, status: "completed", completedAt: Fixture.time },
+              }),
+            ),
+        });
+      });
+      yield* Effect.gen(function* () {
+        // Route acquisition must finish while recovery still holds activation.
+        // No wake may be admitted for recovery to cancel in this interval.
+        yield* commit(
+          f.store.answer(
+            f.receiver.id,
+            saved[2]!.requestId,
+            "fulfilled",
+            "Answer saved during recovery",
+            f.receiverRun.id,
+          ),
+        );
+        yield* f.sink.write({
+          events: [
+            f.event({
+              type: "run.updated",
+              threadId: f.waiter.id,
+              runId: f.waiterRun.id,
+              payload: f.waiterRun,
+            }),
+          ],
+        });
+        yield* TestClock.adjust("1 second");
+        assert.deepEqual(
+          (yield* f.store.dependencies(f.waiter.id)).map((dependency) => dependency.state).sort(),
+          ["awaiting", "resolved", "resolved", "resolved", "sending"],
+        );
+        assert.equal(peerObservations, 0);
+        assert.isEmpty((yield* f.projection.getThreadRecords(f.waiter.id, ["messages"])).messages);
+        assert.lengthOf(
+          (yield* f.projection.getThreadShell(f.waiter.id))?.pendingBackgroundTasks ?? [],
+          5,
+        );
+        yield* Deferred.succeed(activation, undefined);
+        yield* awaitDelivered(4);
+        assert.equal(peerObservations, 1);
+        assert.equal((yield* f.store.get("recovered-remote"))?.result, "Done");
+        assert.equal((yield* f.store.get("dependency:pending"))?.state, "awaiting");
+        // Shells show background waits after the reply-processing runs finish.
+        yield* finishWakeRuns;
+        const waiting = yield* f.projection.getThreadShell(f.waiter.id);
+        assert.lengthOf(waiting?.pendingBackgroundTasks ?? [], 1);
+        assert.equal(
+          waiting?.pendingBackgroundTasks?.[0]?.taskId,
+          "jones-dependency:dependency:pending",
+        );
+        yield* commit(
+          f.store.answer(
+            f.receiver.id,
+            pending.requestId,
+            "fulfilled",
+            "Answer received after startup",
+            f.receiverRun.id,
+          ),
+        );
+        yield* awaitDelivered(5);
+        yield* finishWakeRuns;
+        assert.deepEqual(
+          (yield* f.projection.getThreadShell(f.waiter.id))?.pendingBackgroundTasks,
+          [],
+        );
+      }).pipe(Effect.provide(worker));
+      // A new worker acquisition recovers the same durable store after shutdown.
+      yield* TestClock.adjust("1 second").pipe(Effect.provide(worker));
+      const dependencies = yield* f.store.dependencies(f.waiter.id);
+      const messages = (yield* f.projection.getThreadRecords(f.waiter.id, ["messages"])).messages;
+      assert.lengthOf(messages, 5);
+      assert.equal(new Set(dependencies.map((dependency) => dependency.wakeMessageId)).size, 5);
+      for (const dependency of dependencies) {
+        assert.equal(dependency.state, "delivered");
+        const message = messages.find((message) => message.id === dependency.wakeMessageId);
+        assert.include(message?.text ?? "", dependency.result!);
+      }
+    }).pipe(Effect.provide(Fixture.layer)),
+);
 
 it.effect(
   "restart reconciles only by observation; revoked authority yields one unknown wake and no remote cancellation",
@@ -340,15 +496,10 @@ it.effect("failed baseline acquisition refuses startup before admitting subscrib
         ),
       ),
     });
-    yield* Effect.gen(function* () {
-      const reactor = yield* Reactor.DependencyReactor;
-      const result = yield* reactor.start().pipe(Effect.result);
-      assert.equal(result._tag, "Failure");
-      if (result._tag === "Failure") assert.strictEqual(result.failure, failure);
-      assert.equal(subscriptions, 0);
-    }).pipe(
+    const result = yield* Effect.void.pipe(
       Effect.provide(
-        Reactor.layer.pipe(
+        Reactor.layerWorker.pipe(
+          Layer.provide(Layer.succeed(ServerActivation, Effect.never)),
           Layer.provide(Watch.layer),
           Layer.provide(ports(f, Effect.fail(failure))),
           Layer.provide(observedChanges),
@@ -360,7 +511,11 @@ it.effect("failed baseline acquisition refuses startup before admitting subscrib
           ),
         ),
       ),
+      Effect.result,
     );
+    assert.equal(result._tag, "Failure");
+    if (result._tag === "Failure") assert.strictEqual(result.failure, failure);
+    assert.equal(subscriptions, 0);
   }).pipe(Effect.provide(Fixture.layer)),
 );
 
