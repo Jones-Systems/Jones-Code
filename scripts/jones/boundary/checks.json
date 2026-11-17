@@ -5318,6 +5318,7 @@
         "apps/web/src/jones/workstreams/personalStatusFilter.test.ts",
         "apps/web/src/jones/workstreams/personalStatusFilter.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx",
+        "apps/web/src/jones/workstreams/personalBulkControls.browser.test.tsx",
         "apps/web/src/hooks/useThreadActionMenu.test.ts",
         "apps/web/src/components/threadActionMenu.logic.test.ts"
       ],
@@ -5326,9 +5327,9 @@
         "vp test run --project browser apps/web/src/jones/workstreams/personalNative.browser.test.tsx apps/web/src/jones/workstreams/personalSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "cd apps/mobile && vp test run --project unit src/features/workstreams/personalStorage.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/web/src/jones/workstreams/personalThreadReorder.test.ts src/jones/workstreams/personalThreadWindow.test.ts --maxWorkers=1 --no-file-parallelism",
-        "cd apps/web && vp test run --project browser src/jones/workstreams/personalSidebarOrder.browser.test.tsx src/jones/workstreams/personalThreadDrag.browser.test.tsx src/jones/workstreams/sidebarDragAutoScroll.browser.test.ts src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx src/jones/workstreams/personalThreadWindow.browser.test.tsx src/jones/workstreams/personalInlineRename.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project browser src/jones/workstreams/personalSidebarOrder.browser.test.tsx src/jones/workstreams/personalThreadDrag.browser.test.tsx src/jones/workstreams/sidebarDragAutoScroll.browser.test.ts src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx src/jones/workstreams/personalThreadWindow.browser.test.tsx src/jones/workstreams/personalInlineRename.browser.test.tsx src/jones/workstreams/personalBulkControls.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run --project unit src/jones/workstreams/personalThreadPlacement.test.ts src/jones/workstreams/personalThreadReorder.test.ts src/jones/workstreams/personalThreadWindow.test.ts --maxWorkers=1 --no-file-parallelism",
-        "cd apps/web && vp test run --project unit src/reactCompilerCoverage.test.ts -t 'Workstream(NativeSidebar|SidebarSection)|PersonalWorkstreamTitleEditor|PersonalSidebarGroupHeader' --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project unit src/reactCompilerCoverage.test.ts -t 'Workstream(NativeSidebar|SidebarSection)|PersonalWorkstreamTitleEditor|PersonalSidebarGroupHeader|PersonalStatusPill|PersonalWorkstreamsHeader' --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/web/src/jones/workstreams/personalRail.test.ts"
       ]
     },

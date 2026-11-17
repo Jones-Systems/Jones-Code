@@ -469,6 +469,8 @@ export function WorkstreamNativeSidebar({
                   ? "Unassigned threads"
                   : `${state.workstreams.find((item) => item.id === id)?.name ?? "Workstream"} threads`
               }
+              // Named members sit a fixed 8 CSS px in, independent of the root font size; Unassigned stays flush.
+              {...(id === null ? {} : { style: { paddingLeft: "8px" } })}
               className={drop === id ? "rounded ring-1 ring-primary" : ""}
             >
               {members.length === 0 ? (
