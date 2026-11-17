@@ -188,7 +188,7 @@ export function PersonalSidebarGroupHeader({
       ) : null}
       <span className="pointer-events-none col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 text-xs leading-4 text-sidebar-muted-foreground">
         <span className="tabular-nums">
-          {visibleCount !== undefined && visibleCount < summary.total
+          {!collapsed && visibleCount !== undefined && visibleCount < summary.total
             ? `${visibleCount} of ${formatPersonalThreadCount(summary.total)} shown`
             : formatPersonalThreadCount(summary.total)}
         </span>
