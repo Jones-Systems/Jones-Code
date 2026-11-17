@@ -850,6 +850,14 @@
         "apps/web/src/jones/workQueue/UnifiedQueuePage.browser.test.tsx",
         "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.browser.test.tsx",
         "apps/web/src/jones/workQueue/classifySentPrompts.test.ts",
+        "apps/web/src/jones/workQueue/PromptDetail.browser.test.tsx",
+        "apps/web/src/jones/workQueue/PromptList.browser.test.tsx",
+        "apps/web/src/jones/workQueue/promptAttention.test.ts",
+        "apps/web/src/jones/workQueue/promptItems.test.ts",
+        "apps/web/src/jones/workQueue/promptOrganize.test.ts",
+        "apps/web/src/jones/workQueue/promptPresentation.test.ts",
+        "apps/web/src/jones/workQueue/PromptWorkstreamDetails.browser.test.tsx",
+        "apps/web/src/jones/workQueue/promptWorkstreams.test.ts",
         "packages/contracts/src/jones/promptViewSettings.test.ts"
       ],
       "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."

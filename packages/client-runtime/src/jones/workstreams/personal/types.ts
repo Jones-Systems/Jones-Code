@@ -29,6 +29,8 @@ export interface PersonalEnvironmentState {
   readonly status: PersonalEnvironmentStatus;
   readonly confirmed: boolean; // false while showing a cached snapshot
   readonly workstreamCount: number; // live definitions on that environment
+  /** Live definitions reported by this environment, including its cached snapshot when offline. */
+  readonly workstreams?: readonly PersonalWorkstreamView[];
 }
 
 export interface PersonalWorkstreamsState {

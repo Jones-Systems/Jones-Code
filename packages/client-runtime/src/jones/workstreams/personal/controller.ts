@@ -211,22 +211,26 @@ export function createPersonalWorkstreamsController(options: {
       pendingThreadKeys: pending,
       autoAssignedThreadKeys: autoAssigned,
       canCreate: [...entries.values()].some(writable),
-      environments: [...entries.values()].map((e): PersonalEnvironmentState => ({
-        environmentId: e.connection.environmentId,
-        status: !e.connection.capable
-          ? "update_required"
-          : !e.connection.connected
-            ? "offline"
-            : !e.connection.writable
-              ? "read_only"
-              : e.failed || e.snapshot?.importIssue
-                ? "sync_failed"
-                : "ready",
-        confirmed: e.confirmed,
-        workstreamCount: e.connection.capable
-          ? (e.snapshot?.workstreams.filter((w) => w.deletedAt === null).length ?? 0)
-          : 0,
-      })),
+      environments: [...entries.values()].map((e): PersonalEnvironmentState => {
+        const workstreams = e.connection.capable
+          ? (e.snapshot?.workstreams.filter((w) => w.deletedAt === null) ?? [])
+          : [];
+        return {
+          environmentId: e.connection.environmentId,
+          status: !e.connection.capable
+            ? "update_required"
+            : !e.connection.connected
+              ? "offline"
+              : !e.connection.writable
+                ? "read_only"
+                : e.failed || e.snapshot?.importIssue
+                  ? "sync_failed"
+                  : "ready",
+          confirmed: e.confirmed,
+          workstreamCount: workstreams.length,
+          workstreams,
+        };
+      }),
     });
   };
   // Mutation replies are partial observations, so do not advance the full-snapshot
