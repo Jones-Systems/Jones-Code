@@ -22,14 +22,18 @@ function packageBatch(packages) {
     .map((pkg) => pkg.name);
 }
 
-function select(files, packages) {
-  // These scripts control selection, execution and sharding across packages.
-  const full =
+// These scripts control selection, execution and sharding across packages.
+function requiresFullQualification(files) {
+  return (
     files === null ||
     files.some((file) =>
       /^scripts\/jones\/(ci\/|server-shard-weights\/|ci-test-progress-reporter\.ts$)/.test(file),
-    );
-  const { affected, outputs } = decide(files, packages, full);
+    )
+  );
+}
+
+function select(files, packages) {
+  const { affected, outputs } = decide(files, packages, requiresFullQualification(files));
   const selected = new Set(affected);
   return {
     ...Object.fromEntries(
@@ -130,5 +134,11 @@ function main() {
   }
 }
 
-module.exports = { changedPaths, packageBatch, select };
+module.exports = {
+  SPLIT_PACKAGES,
+  changedPaths,
+  packageBatch,
+  requiresFullQualification,
+  select,
+};
 if (require.main === module) main();
