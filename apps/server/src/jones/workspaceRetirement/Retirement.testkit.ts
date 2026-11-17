@@ -15,7 +15,12 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { fixture, command } from "./Conformance.testkit.ts";
 import { Receipts, layer, RetirementError, RetirementReservationOwner } from "./Receipts.ts";
-import { REMOVAL_TIMEOUT_MS, nativeWorktreeRemoval, retire } from "./RetirementExecutor.ts";
+import {
+  REMOVAL_TIMEOUT_MS,
+  interruptedCheckoutAbsent,
+  nativeWorktreeRemoval,
+  retire,
+} from "./RetirementExecutor.ts";
 import {
   acquireReservation,
   holderIdentity,
@@ -1393,4 +1398,200 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         }
       });
   },
+  "the absent-checkout probe reports only an intent receipt whose checkout is gone": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "interrupted-probe.sqlite3"));
+      const probe = () =>
+        Effect.runPromise(
+          interruptedCheckoutAbsent(worktree).pipe(
+            Effect.provide(layer),
+            Effect.provideService(SqlClient.SqlClient, f.sql),
+          ),
+        );
+      try {
+        NodeAssert.equal(await probe(), null);
+        await interruptedRetirement(f, input, await exitedHolder());
+        NodeAssert.equal(await probe(), null);
+        await command(repo, ["worktree", "remove", "--", worktree]);
+        NodeAssert.equal((await probe())?.receipt.id, "interrupted-receipt");
+        f.db.exec("UPDATE jones_workspace_retirement_receipts SET state='partial'");
+        NodeAssert.equal(await probe(), null);
+      } finally {
+        f.close();
+      }
+    }),
+};
+
+interface EvaluatedRetirement {
+  readonly state: string;
+  readonly reasons: readonly string[];
+  readonly outcome: {
+    readonly state: string;
+    readonly reasonCodes: readonly string[];
+    readonly receiptId: string | null;
+    readonly fingerprint: string | null;
+    readonly details: readonly { readonly nextAction: string }[];
+  };
+}
+/** Settings evaluation for this fixture's checkout; the runner supplies the configured services. */
+export type EvaluateRetirement = (
+  sql: SqlClient.SqlClient,
+  request: {
+    readonly worktree: string;
+    readonly projectRoot: string;
+    readonly execute: boolean;
+    readonly cause: RetirementReceipt["cause"];
+    readonly ownerCoverage?: { readonly fingerprint: string; readonly paths: readonly string[] };
+  },
+) => Effect.Effect<EvaluatedRetirement, Error>;
+// Durable retirement state that must not move unless the owner's Retire settles the receipt.
+const durableState = async (f: Awaited<ReturnType<typeof fixtureSql>>, input: QualificationInput) =>
+  canonical({
+    receipt: receiptRow(f, "interrupted-receipt"),
+    target: f.db.prepare("SELECT state,receipt_id FROM jones_workspace_retirement_state").all(),
+    reservation: await readReservation(input.expected),
+  });
+// A checkout fully removed before the restart cannot be bound; these run through Settings evaluation.
+export const absentCheckoutCases = (
+  settingsEvaluation: EvaluateRetirement,
+): Record<string, () => Promise<void>> => {
+  const evaluate = (...args: Parameters<EvaluateRetirement>) =>
+    Effect.runPromise(settingsEvaluation(...args));
+  return {
+    "owner Retire finishes an interrupted retirement whose checkout is gone": () =>
+      fixture(async ({ base, repo, worktree, input }) => {
+        const f = await fixtureSql(NodePath.join(base, "absent-retire.sqlite3"));
+        try {
+          await interruptedRetirement(f, input, {
+            ...(await holderIdentity()),
+            boot_id: "a boot before the restart",
+          });
+          await command(repo, ["worktree", "remove", "--", worktree]);
+          const proposal = await evaluate(f.sql, {
+            worktree,
+            projectRoot: repo,
+            execute: false,
+            cause: "owner_action",
+          });
+          const result = await evaluate(f.sql, {
+            worktree,
+            projectRoot: repo,
+            execute: true,
+            cause: "owner_action",
+            ownerCoverage: { fingerprint: proposal.outcome.fingerprint!, paths: [] },
+          });
+          NodeAssert.equal(result.state, "retired");
+          NodeAssert.deepEqual(result.reasons, ["interrupted_after_removal"]);
+          NodeAssert.equal(result.outcome.state, "retired");
+          NodeAssert.equal(result.outcome.receiptId, "interrupted-receipt");
+          NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "retired");
+          NodeAssert.equal(
+            f.db.prepare("SELECT state FROM jones_workspace_retirement_state").get()?.state,
+            "retired",
+          );
+          NodeAssert.equal(await readReservation(input.expected), null);
+          NodeAssert.equal(
+            (await command(repo, ["show-ref", "--verify", "refs/heads/task"])).length > 0,
+            true,
+          );
+        } finally {
+          f.close();
+        }
+      }),
+    "Propose, an automatic run or a stale fingerprint leaves an interrupted absent checkout held":
+      () =>
+        fixture(async ({ base, repo, worktree, input }) => {
+          const f = await fixtureSql(NodePath.join(base, "absent-propose.sqlite3"));
+          try {
+            await interruptedRetirement(f, input, {
+              ...(await holderIdentity()),
+              boot_id: "a boot before the restart",
+            });
+            await command(repo, ["worktree", "remove", "--", worktree]);
+            const before = await durableState(f, input);
+            const proposal = await evaluate(f.sql, {
+              worktree,
+              projectRoot: repo,
+              execute: false,
+              cause: "owner_action",
+            });
+            NodeAssert.equal(proposal.state, "held");
+            NodeAssert.equal(proposal.outcome.state, "held");
+            NodeAssert.deepEqual(proposal.outcome.reasonCodes, [
+              "interrupted_retirement_checkout_absent",
+            ]);
+            NodeAssert.equal(proposal.outcome.fingerprint, "interrupted-receipt");
+            NodeAssert.match(proposal.outcome.details[0]?.nextAction ?? "", /Run Retire to finish/);
+            const automatic = await evaluate(f.sql, {
+              worktree,
+              projectRoot: repo,
+              execute: true,
+              cause: "settlement",
+              ownerCoverage: { fingerprint: "interrupted-receipt", paths: [] },
+            });
+            NodeAssert.deepEqual(automatic.reasons, ["interrupted_retirement_checkout_absent"]);
+            const stale = await evaluate(f.sql, {
+              worktree,
+              projectRoot: repo,
+              execute: true,
+              cause: "owner_action",
+              ownerCoverage: { fingerprint: "another-proposal", paths: [] },
+            });
+            NodeAssert.deepEqual(stale.reasons, ["proposal_changed"]);
+            NodeAssert.equal(await durableState(f, input), before);
+            NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "intent");
+          } finally {
+            f.close();
+          }
+        }),
+    "owner Retire never recovers an absent checkout from a live holder": () =>
+      fixture(async ({ base, repo, worktree, input }) => {
+        const f = await fixtureSql(NodePath.join(base, "absent-live.sqlite3"));
+        try {
+          const live = { ...(await holderIdentity()), pid: process.ppid };
+          live.process_start = await processStart(process.ppid);
+          await interruptedRetirement(f, input, live);
+          await command(repo, ["worktree", "remove", "--", worktree]);
+          const before = await durableState(f, input);
+          await NodeAssert.rejects(
+            evaluate(f.sql, {
+              worktree,
+              projectRoot: repo,
+              execute: true,
+              cause: "owner_action",
+              ownerCoverage: { fingerprint: "interrupted-receipt", paths: [] },
+            }),
+            /retiring/,
+          );
+          NodeAssert.equal(await durableState(f, input), before);
+          NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "intent");
+        } finally {
+          f.close();
+        }
+      }),
+    "an absent checkout without an interrupted receipt keeps the binding failure": () =>
+      fixture(async ({ base, repo, worktree }) => {
+        const f = await fixtureSql(NodePath.join(base, "absent-plain.sqlite3"));
+        try {
+          await command(repo, ["worktree", "remove", "--", worktree]);
+          for (const execute of [false, true])
+            await NodeAssert.rejects(
+              evaluate(f.sql, {
+                worktree,
+                projectRoot: repo,
+                execute,
+                cause: "owner_action",
+                ownerCoverage: { fingerprint: "any", paths: [] },
+              }),
+              /observation_failed/,
+            );
+          NodeAssert.equal(
+            f.db.prepare("SELECT COUNT(*) AS n FROM jones_workspace_retirement_receipts").get()?.n,
+            0,
+          );
+        } finally {
+          f.close();
+        }
+      }),
+  };
 };

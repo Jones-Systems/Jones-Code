@@ -115,12 +115,7 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
   request: RetirementRequest,
 ) {
   const store = yield* Receipts;
-  yield* request.admit;
-  // A restart after begin leaves an intent receipt and both exclusions; settle it before observing.
-  const reconciled = yield* withWorkspaceLease(
-    request.worktree,
-    Effect.uninterruptibleMask(() => reconcileInterrupted(request)),
-  );
+  const reconciled = yield* finishInterrupted(request);
   if (reconciled) return reconciled;
   const input = yield* request.observe;
   const previous = yield* io(request.worktree, () => qualify(input));
@@ -402,6 +397,29 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
     ),
   );
 });
+type InterruptedRequest = Pick<
+  RetirementRequest,
+  "projectRoot" | "worktree" | "admit" | "finalizeOutputs"
+>;
+// A restart after begin leaves an intent receipt and both exclusions; settle it before observing.
+// Returns null when no interrupted receipt holds the target or its checkout was left untouched.
+export const finishInterrupted = Effect.fn("WorkspaceRetirement.finishInterrupted")(function* (
+  request: InterruptedRequest,
+) {
+  yield* request.admit;
+  return yield* withWorkspaceLease(
+    request.worktree,
+    Effect.uninterruptibleMask(() => reconcileInterrupted(request)),
+  );
+});
+// Read-only: the interrupted intent receipt for a target whose checkout path is already gone.
+export const interruptedCheckoutAbsent = Effect.fn("WorkspaceRetirement.interruptedCheckoutAbsent")(
+  function* (worktree: string) {
+    const stale = yield* (yield* Receipts).interrupted(worktree);
+    if (stale?.state !== "intent" || (yield* io(worktree, () => exists(worktree)))) return null;
+    return stale;
+  },
+);
 const INTERRUPTED_NEXT_ACTION: Record<string, string> = {
   interrupted_removal_unregistered_checkout_present:
     "Git no longer registers this checkout but its directory remains. Inspect it by hand; do not force or prune.",
@@ -424,7 +442,7 @@ const INTERRUPTED_NEXT_ACTION: Record<string, string> = {
 };
 // Proves the interrupted executor is gone, then settles its receipt from what is actually on disk.
 const reconcileInterrupted = Effect.fn("WorkspaceRetirement.reconcileInterrupted")(function* (
-  request: RetirementRequest,
+  request: InterruptedRequest,
 ) {
   const store = yield* Receipts;
   const stale = yield* store.interrupted(request.worktree);

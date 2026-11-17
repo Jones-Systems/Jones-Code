@@ -33,6 +33,7 @@ import {
   settlementAdmission,
 } from "./SettlementAdmission.ts";
 import { nativeWorktreeRemoval, retire } from "./RetirementExecutor.ts";
+import { interruptedRetirement } from "./InterruptedRetirement.ts";
 
 const unavailable = (limit: string): Probe => ({
   observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()),
@@ -100,6 +101,9 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           Effect.provideService(ProcessRunner.ProcessRunner, runner.value),
           Effect.provideService(EffectPath.Path, effectPath.value),
         );
+  // A checkout removed before a restart cannot be bound; only its own interrupted receipt is settled.
+  const interrupted = yield* interruptedRetirement(request, store, registry, projections);
+  if (interrupted) return interrupted;
   const bound = yield* io(request.worktree, () => binding(request.worktree));
   const projectCommon = yield* io(request.worktree, async () =>
     NodeFSP.realpath(

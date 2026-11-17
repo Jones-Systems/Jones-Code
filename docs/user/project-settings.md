@@ -259,7 +259,9 @@ anything and opens **Last run**. Checkouts listed under **Ready to retire** have
 button; the confirmation lists the exact paths it authorizes, and the summary reports about how
 much space was recovered. If the server stops part-way through a retirement, the next **Retire**
 of that checkout first confirms the earlier server process has ended, then retries a checkout that
-was left untouched; a partly removed checkout stays held. A checkout with untracked files is held until **Keep worktrees with
+was left untouched; a partly removed checkout stays held. If that checkout was already fully
+removed, **Propose retirements** lists it under **Ready to retire**, and **Retire** records it as
+retired once its branch reads back, without deleting anything. A checkout with untracked files is held until **Keep worktrees with
 local changes** is set to **Edited tracked files**; propose again afterwards. **Retire** is not
 offered for a checkout that covers more than 200 paths, and the result says so. The status line
 under **Delete now** shows the last run even when no cleanup rule is on.
