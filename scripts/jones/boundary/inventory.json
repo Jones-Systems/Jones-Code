@@ -3637,7 +3637,14 @@
     "apps/server/src/jones/workspaceRetirement/SessionDuty.test.ts": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/156_JonesWorkspaceDutyLifetimes.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/workspace-session-duty.json": "jones-owned"
+    "scripts/jones/boundary/fragments/workspace-session-duty.json": "jones-owned",
+    "apps/web/src/components/settings/FoldedSettingsSection.tsx": "accepted-shared",
+    "apps/web/src/timestampFormat.ts": "accepted-shared",
+    "apps/web/src/jones/storageCleanupResults/runStatus.ts": "jones-owned",
+    "apps/web/src/jones/storageCleanupResults/runStatus.testkit.ts": "jones-owned",
+    "apps/web/src/jones/storageCleanupResults/runStatus.test.ts": "jones-owned",
+    "apps/web/src/jones/storageCleanupResults/runStatus.node-test.mjs": "jones-owned",
+    "packages/contracts/src/jones/storageCleanupReportStatus.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

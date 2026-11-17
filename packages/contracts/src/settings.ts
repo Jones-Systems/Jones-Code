@@ -1,5 +1,8 @@
 import { DeviceDisplayName } from "./jones/devicePresentation.ts";
-import { WorkspaceRetirementOutcome } from "./jones/workspaceRetirement.ts";
+import {
+  storageCleanupReportFields,
+  WorkspaceRetirementOutcome,
+} from "./jones/workspaceRetirement.ts";
 import {
   threadActivitySettingsFields,
   threadActivitySettingsPatchFields,
@@ -1323,6 +1326,7 @@ export const StorageCleanupReportEntry = Schema.Struct({
 });
 export type StorageCleanupReportEntry = typeof StorageCleanupReportEntry.Type;
 export const StorageCleanupReport = Schema.Struct({
+  ...storageCleanupReportFields,
   trigger: Schema.Literals(["automatic", "manual"]),
   startedAt: Schema.String,
   finishedAt: Schema.String,

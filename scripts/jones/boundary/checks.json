@@ -5464,15 +5464,19 @@
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
         "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
-        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx",
+        "apps/web/src/jones/storageCleanupResults/runStatus.test.ts",
+        "packages/contracts/src/jones/storageCleanupReportStatus.test.ts"
       ],
       "commands": [
+        "vp test run apps/web/src/jones/storageCleanupResults/runStatus.test.ts packages/contracts/src/jones/storageCleanupReportStatus.test.ts apps/server/src/jones/workspaceRetirement/OwnerAction.test.ts --maxWorkers=1 --no-file-parallelism",
+        "TZ=America/New_York node --test --test-concurrency=1 apps/web/src/jones/storageCleanupResults/runStatus.node-test.mjs",
         "vp test run apps/server/src/jones/storageCleanup/ReportRead.test.ts apps/server/src/jones/mcp/storageCleanup/handlers.test.ts apps/server/src/provider/AgentContextBudget.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run --project browser src/components/settings/StorageSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/web typecheck",
-        "vp lint apps/server/src/jones/storageCleanup apps/server/src/jones/mcp/storageCleanup apps/web/src/jones/storageCleanupResults apps/web/src/components/settings/StorageSettings.tsx apps/web/src/components/settings/StorageSettings.browser.test.tsx packages/contracts/src/jones/storageCleanupReport.ts apps/server/src/mcp/McpHttpServer.ts packages/contracts/src/index.ts",
+        "vp lint apps/server/src/jones/storageCleanup apps/server/src/jones/mcp/storageCleanup apps/web/src/jones/storageCleanupResults apps/web/src/components/settings/FoldedSettingsSection.tsx apps/web/src/timestampFormat.ts apps/web/src/components/settings/StorageSettings.tsx apps/web/src/components/settings/StorageSettings.browser.test.tsx packages/contracts/src/jones/storageCleanupReport.ts apps/server/src/mcp/McpHttpServer.ts packages/contracts/src/index.ts",
         "node scripts/jones/check-boundary.ts --strict",
         "git diff --check"
       ]

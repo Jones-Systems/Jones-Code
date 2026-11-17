@@ -265,6 +265,7 @@ export const make = Effect.gen(function* () {
         if (entry !== null) entries.push(entry);
       }
       return {
+        operation: input.action,
         trigger: "manual",
         startedAt: DateTime.formatIso(now),
         finishedAt: DateTime.formatIso(yield* DateTime.now),
