@@ -6,7 +6,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as Threads from "../../../orchestration-v2/ThreadManagementService.ts";
-import * as Agent from "../personal/agentService.ts";
 import * as Personal from "../personal/service.ts";
 import * as Store from "./AutoRouteStore.ts";
 import * as Model from "./WorkstreamClassifierModel.ts";
@@ -53,13 +52,13 @@ const make = Effect.gen(function* () {
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const threads = yield* Threads.ThreadManagementService;
   const personal = yield* Personal.PersonalWorkstreams;
-  const agent = yield* Agent.AgentWorkstreams;
   const model = yield* Model.WorkstreamClassifierModel;
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
   const classify = Effect.fn("WorkstreamAutoRoute.classify")(function* (
     observation: Observation,
     key: Store.DecisionKey,
+    excludedIds: readonly string[],
   ): Effect.fn.Return<RecordedOutcome, unknown> {
     const shell = yield* threads.getThreadShell(observation.threadId);
     if (shell === null || shell.archivedAt !== null || shell.deletedAt != null)
@@ -79,16 +78,11 @@ const make = Effect.gen(function* () {
     });
     if (blocked !== null) return blocked;
 
-    const settings = yield* settingsService.getSettings;
     const stats = yield* store.candidateStats({
       threadId: observation.threadId,
       projectId: shell.projectId,
     });
-    const candidates = selectCandidates(
-      (yield* personal.snapshot()).workstreams,
-      settings.workstreamAutoRouteExcludedIds,
-      stats,
-    );
+    const candidates = selectCandidates(yield* personal.readDefinitions(), excludedIds, stats);
     if (candidates.length === 0) return { state: "abstained", code: "no_candidates" } as const;
 
     const prompt = buildClassifierPrompt({
@@ -114,41 +108,39 @@ const make = Effect.gen(function* () {
         code: reply.failure.category === "timeout" ? "model_timeout" : "model_unavailable",
         candidateCount: candidates.length,
       } as const;
-    const decision: Decision = decide(reply.success.text, candidates);
+    const decision: Decision = decide(reply.success, candidates);
     if (decision.state !== "assigned") return { ...decision, candidateCount: candidates.length };
 
-    // Write-ahead intent, then a compare-and-swap that a concurrent human or agent move wins.
-    yield* store.markAssigning(key, {
-      workstreamId: decision.workstreamId,
-      revision: 1,
-      confidence: decision.confidence,
-      basis: decision.basis,
-    });
-    const assigned = yield* agent
-      .set({
-        threadId: observation.threadId,
+    const chosen = candidates.find((candidate) => candidate.id === decision.workstreamId);
+    if (chosen === undefined) return { state: "failed", code: "invalid_choice" };
+
+    const assigned = yield* personal
+      .assignAutomatically({
+        ...key,
         workstreamId: decision.workstreamId,
-        expectedRevision: 0,
+        workstreamName: chosen.name,
+        confidence: decision.confidence,
+        basis: decision.basis,
       })
       .pipe(Effect.result);
-    if (assigned._tag === "Success")
-      return assigned.success.outcome === "applied"
-        ? decision
-        : ({ state: "skipped", code: "already_assigned" } as const);
+    if (assigned._tag === "Success") return decision;
     switch (assigned.failure.code) {
       case "precondition_failed":
-        return { state: "skipped", code: "assignment_changed" } as const;
+        return {
+          state: "skipped",
+          code:
+            assigned.failure.currentAssignment?.workstreamId === chosen.id
+              ? "already_assigned"
+              : "assignment_changed",
+        } as const;
       case "workstream_not_found":
       case "workstream_deleted":
         return { state: "failed", code: "workstream_unavailable" } as const;
       case "thread_not_found":
         return { state: "skipped", code: "thread_unavailable" } as const;
       default: {
-        // Unknown effect: the assignment's exact post-condition settles it.
-        const current = yield* personal.readThread(observation.threadId).pipe(Effect.option);
-        return current._tag === "Some" &&
-          current.value.assignment.workstreamId === decision.workstreamId &&
-          current.value.assignment.revision === 1
+        // A human move can match the same revision and group. Read our exact decision instead.
+        return (yield* store.wasAssigned(key))
           ? decision
           : ({ state: "failed", code: "storage_unavailable" } as const);
       }
@@ -174,27 +166,32 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.orElseSucceed(() => "storage_unavailable" as const));
     if (begun === "duplicate") return { type: "duplicate" };
     if (begun !== "inserted") return { type: "unrecorded", reason: begun };
-    const outcome: RecordedOutcome = yield* classify(observation, key).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("Workstream auto-route classification failed", cause).pipe(
+    const outcome: RecordedOutcome = yield* classify(
+      observation,
+      key,
+      settings.value.workstreamAutoRouteExcludedIds,
+    ).pipe(
+      Effect.catchCause(() =>
+        Effect.logWarning("Workstream auto-route classification failed").pipe(
           Effect.as<RecordedOutcome>({ state: "failed", code: "storage_unavailable" }),
         ),
       ),
     );
-    yield* store
-      .finalize(key, outcome, yield* now)
-      .pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Workstream auto-route decision was not recorded", cause),
-        ),
-      );
+    if (outcome.state !== "assigned")
+      yield* store
+        .finalize(key, outcome, yield* now)
+        .pipe(
+          Effect.catchCause(() =>
+            Effect.logWarning("Workstream auto-route decision was not recorded"),
+          ),
+        );
     return { type: "decided", outcome };
   });
 
   const recovered = yield* now.pipe(
     Effect.flatMap(store.recoverInterrupted),
-    Effect.catchCause((cause) =>
-      Effect.logWarning("Workstream auto-route recovery failed", cause).pipe(
+    Effect.catchCause(() =>
+      Effect.logWarning("Workstream auto-route recovery failed").pipe(
         Effect.as({ interrupted: 0, reconciled: 0 }),
       ),
     ),
@@ -207,14 +204,20 @@ const make = Effect.gen(function* () {
     Effect.asVoid(process(observation)),
   );
   return WorkstreamAutoRoute.of({
-    observe: (observation) => Effect.asVoid(worker.enqueue(observation)),
+    observe: (observation) =>
+      Effect.asVoid(
+        worker.enqueue({
+          ...observation,
+          text: observation.text.slice(0, AUTO_ROUTE_BOUNDS.promptTextChars),
+        }),
+      ),
     process,
     drain: worker.drain,
   });
 });
 
 /** Needs the SQL client, settings, threads, Workstreams and a classifier model. */
-export const layerWorker = Layer.effect(WorkstreamAutoRoute, make).pipe(Layer.provide(Agent.layer));
+export const layerWorker = Layer.effect(WorkstreamAutoRoute, make);
 
 /** Production composition with the text-generation classifier. */
 export const layer = layerWorker.pipe(Layer.provide(Model.layer));

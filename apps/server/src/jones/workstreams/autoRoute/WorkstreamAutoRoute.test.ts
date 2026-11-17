@@ -10,12 +10,22 @@ import {
 import * as P from "@t3tools/contracts/jones/workstreamsPersonal";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Config from "../../../config.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as Threads from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as Queue from "../../../orchestration-v2/QueueCompatibility.ts";
+import * as Launch from "../../../orchestration-v2/ThreadLaunchService.ts";
+import * as Sink from "../../../orchestration-v2/EventSink.ts";
+import * as Outbox from "../../../orchestration-v2/EffectOutbox.ts";
+import * as Clones from "../../../project/ProjectCloneTracker.ts";
+import * as Projects from "../../../project/ProjectService.ts";
+import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import personalMigration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
 import autoRouteMigration from "../../persistence/Migrations/158_JonesWorkstreamAutoRoute.ts";
@@ -46,7 +56,7 @@ const makeFixture = () => {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL, title TEXT NOT NULL, updated_at TEXT NOT NULL,
-        deleted_at TEXT, payload_json TEXT NOT NULL)`;
+        archived_at TEXT, deleted_at TEXT, payload_json TEXT NOT NULL)`;
       yield* sql`CREATE TABLE projection_projects(project_id TEXT PRIMARY KEY, title TEXT NOT NULL, deleted_at TEXT)`;
       yield* sql`INSERT INTO projection_projects VALUES(${projectId}, 'Synthetic project', NULL)`;
       yield* personalMigration;
@@ -68,6 +78,7 @@ const makeFixture = () => {
       Layer.mock(Threads.ThreadManagementService)({
         getThreadShell: (id) =>
           Effect.succeed((shells.get(id) ?? null) as OrchestrationV2ThreadShell | null),
+        dispatch: () => Effect.succeed({ sequence: 42, storedEvents: [] }),
       }),
     ),
     Layer.provideMerge(
@@ -79,8 +90,8 @@ const makeFixture = () => {
               model.calls += 1;
               model.prompts.push(input.prompt);
               const requested = { instanceId: "fake", model: "fake-model" };
-              if (input.onRequested) yield* input.onRequested(requested);
-              return { text: yield* model.next(), requested };
+              yield* input.onRequested(requested);
+              return yield* model.next();
             }),
         }),
       ),
@@ -106,7 +117,7 @@ const makeFixture = () => {
           : {}),
       };
       yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES(${threadId}, ${projectId},
-        ${title}, ${options.updatedAt ?? now}, NULL, ${JSON.stringify(payload)})`;
+        ${title}, ${options.updatedAt ?? now}, NULL, NULL, ${JSON.stringify(payload)})`;
       shells.set(threadId, {
         id: threadId,
         projectId,
@@ -169,6 +180,14 @@ it.effect("assigns a clear match, marks it automatic, and stores no prompt text"
       const s = yield* seed(f);
       const target = yield* f.thread("target", "Tighten voice cleanup wording");
       const router = yield* route;
+      const subscribed = yield* Deferred.make<void>();
+      const updates = yield* s.changes.pipe(
+        Stream.tap(() => Deferred.succeed(subscribed, undefined)),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Deferred.await(subscribed);
       f.model.next = () => Effect.succeed(reply(1));
       const result = yield* router.process(observation(target));
       assert.deepStrictEqual(result.type === "decided" && result.outcome.state, "assigned");
@@ -181,6 +200,9 @@ it.effect("assigns a clear match, marks it automatic, and stores no prompt text"
         snapshot.autoAssignments?.map((a) => [a.threadId, a.workstreamId, a.revision]),
         [[target, "voice", 1]],
       );
+      const [before, after] = yield* Fiber.join(updates);
+      assert.strictEqual(after?.sequence, before!.sequence + 1);
+      assert.deepStrictEqual(after?.autoAssignments, snapshot.autoAssignments);
       const stored = yield* rows;
       assert.strictEqual(stored.length, 1);
       assert.include(f.model.prompts[0]!, SECRET_PROMPT);
@@ -281,6 +303,76 @@ it.effect("a concurrent human assignment wins the compare-and-swap", () =>
   ),
 );
 
+it.effect("a human choosing the same group keeps manual provenance", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      const s = yield* seed(f);
+      const target = yield* f.thread("target", "Voice changes");
+      const router = yield* route;
+      f.model.next = () =>
+        s
+          .assign({ threadId: target, workstream: w("voice", "Voice"), expectedRevision: 0 })
+          .pipe(Effect.orDie, Effect.as(reply(1)));
+      const result = yield* router.process(observation(target));
+      assert.deepStrictEqual(result.type === "decided" && result.outcome, {
+        state: "skipped",
+        code: "already_assigned",
+      });
+      assert.deepStrictEqual((yield* s.snapshot()).autoAssignments, []);
+      assert.strictEqual((yield* s.readThread(target)).autoRoute?.workstreamId, null);
+    }),
+  ),
+);
+
+it.effect("an accepted HTTP compatibility dispatch reaches the durable routing worker", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      const s = yield* seed(f);
+      const target = yield* f.thread("target", "Voice changes");
+      const router = yield* route;
+      f.model.next = () => Effect.succeed(reply(1));
+      const bridge = yield* Queue.QueueCompatibility.pipe(
+        Effect.provide(
+          Queue.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(AutoRoute.WorkstreamAutoRoute, router),
+                Layer.mock(Launch.ThreadLaunchService)({}),
+                Layer.mock(Sink.EventSinkV2)({}),
+                Layer.mock(Outbox.EffectOutboxV2)({}),
+                Layer.mock(Clones.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
+                Layer.mock(Projects.ProjectService)({}),
+                Layer.mock(DocumentText.DocumentText)({}),
+              ),
+            ),
+          ),
+        ),
+      );
+      const accepted = yield* bridge.dispatch(
+        {
+          type: "thread.turn.start",
+          threadId: target,
+          commandId: "queue-http-cmd",
+          createdAt: now,
+          runtimeMode: "auto",
+          interactionMode: "default",
+          message: {
+            messageId: "queue-http-message",
+            role: "user",
+            text: SECRET_PROMPT,
+            attachments: [],
+          },
+        },
+        "http",
+      );
+      assert.deepStrictEqual(accepted, { sequence: 42 });
+      yield* router.drain;
+      assert.strictEqual(f.model.calls, 1);
+      assert.strictEqual((yield* s.readThread(target)).autoRoute?.state, "assigned");
+    }),
+  ),
+);
+
 it.effect("model failures and bad replies leave the thread unassigned", () =>
   run((f) =>
     Effect.gen(function* () {
@@ -293,8 +385,6 @@ it.effect("model failures and bad replies leave the thread unassigned", () =>
             Effect.fail(
               new Model.WorkstreamClassifierModelError({
                 category: "unavailable",
-                requested: null,
-                cause: "provider",
               }),
             ),
         ],
@@ -304,8 +394,6 @@ it.effect("model failures and bad replies leave the thread unassigned", () =>
             Effect.fail(
               new Model.WorkstreamClassifierModelError({
                 category: "timeout",
-                requested: null,
-                cause: "timeout",
               }),
             ),
         ],

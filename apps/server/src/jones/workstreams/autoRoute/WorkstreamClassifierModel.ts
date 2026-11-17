@@ -1,88 +1,73 @@
-import type { ProjectId } from "@t3tools/contracts";
+import {
+  type ProjectId,
+  resolveTextGenerationSelectionEnabled,
+  textGeneratorForSelection,
+} from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as ProviderInstances from "../../../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
-import * as TextGeneration from "../../../textGeneration/TextGeneration.ts";
+import * as TextGenerators from "../../../textGeneration/TextGenerators.ts";
+import { resolveRemoteEvaluationModel } from "../../../textGeneration/jones/remoteEvaluationModel.ts";
 import { AUTO_ROUTE_BOUNDS } from "./policy.ts";
 
 export class WorkstreamClassifierModelError extends Schema.TaggedError<WorkstreamClassifierModelError>()(
   "WorkstreamClassifierModelError",
   {
     category: Schema.Literals(["unavailable", "timeout"]),
-    /** Requested selection when it was resolved; not the provider's observed identity. */
-    requested: Schema.NullOr(Schema.Struct({ instanceId: Schema.String, model: Schema.String })),
-    cause: Schema.Defect(),
   },
 ) {}
 
-export interface ClassifierModelResult {
-  readonly text: string;
-  readonly requested: { readonly instanceId: string; readonly model: string };
+interface RequestedModel {
+  readonly instanceId: string;
+  readonly model: string;
 }
 
-/**
- * Runs one classification prompt on the environment's text-generation model. It reuses
- * `generateTranscriptionPostProcessing`, the only provider-agnostic prompt-in/string-out operation;
- * spans and provider errors are therefore labeled as transcription post-processing.
- */
 export class WorkstreamClassifierModel extends Context.Service<
   WorkstreamClassifierModel,
   {
     readonly run: (input: {
       readonly prompt: string;
       readonly projectId: ProjectId;
-      /** Called with the resolved selection before the provider is invoked. */
-      readonly onRequested?: (requested: ClassifierModelResult["requested"]) => Effect.Effect<void>;
-    }) => Effect.Effect<ClassifierModelResult, WorkstreamClassifierModelError>;
+      readonly onRequested: (requested: RequestedModel) => Effect.Effect<void>;
+    }) => Effect.Effect<string, WorkstreamClassifierModelError>;
   }
 >()("t3/jones/workstreams/autoRoute/WorkstreamClassifierModel") {}
 
+const unavailable = () => new WorkstreamClassifierModelError({ category: "unavailable" });
+
 const make = Effect.gen(function* () {
   const settingsService = yield* ServerSettings.ServerSettingsService;
-  const fileSystem = yield* FileSystem.FileSystem;
-  const textGeneration = yield* TextGeneration.TextGeneration;
+  const generators = yield* TextGenerators.TextGenerators;
+  const registry = yield* ProviderInstances.ProviderInstanceRegistry;
   return WorkstreamClassifierModel.of({
     run: Effect.fn("WorkstreamClassifierModel.run")(function* (input) {
-      const settings = yield* settingsService.getSettings.pipe(
-        Effect.mapError(
-          (cause) =>
-            new WorkstreamClassifierModelError({ category: "unavailable", requested: null, cause }),
-        ),
-      );
-      // Same selection and trust boundary as automatic thread titles.
+      const settings = yield* settingsService.getSettings.pipe(Effect.mapError(unavailable));
       const selection = resolveProjectSettings(settings, input.projectId).settings
         .textGenerationModelSelection;
-      const requested = { instanceId: String(selection.instanceId), model: selection.model };
-      if (input.onRequested) yield* input.onRequested(requested);
-      return yield* Effect.gen(function* () {
-        // Providers run in a working directory; classification must not read a checkout.
-        const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-workstream-route-" });
-        const generated = yield* textGeneration.generateTranscriptionPostProcessing({
-          cwd,
-          prompt: input.prompt,
-          modelSelection: selection,
-        });
-        return { text: generated.transcription, requested };
-      }).pipe(
-        Effect.scoped,
-        Effect.mapError(
-          (cause) =>
-            new WorkstreamClassifierModelError({ category: "unavailable", requested, cause }),
-        ),
+      if (!resolveTextGenerationSelectionEnabled(settings, input.projectId, selection.instanceId))
+        return yield* unavailable();
+
+      const request = { prompt: input.prompt, modelSelection: selection };
+      const generator = textGeneratorForSelection(settings, selection.instanceId);
+      const transport = generator
+        ? generators.generatePromptOnlyText
+        : (yield* resolveRemoteEvaluationModel(selection).pipe(
+            Effect.provideService(ProviderInstances.ProviderInstanceRegistry, registry),
+            Effect.mapError(unavailable),
+          )).generatePromptOnlyText;
+      if (transport === undefined || (generator && selection.options?.length))
+        return yield* unavailable();
+
+      yield* input.onRequested({ instanceId: selection.instanceId, model: selection.model });
+      return yield* transport(request).pipe(
+        Effect.mapError(unavailable),
         Effect.timeoutOrElse({
           duration: AUTO_ROUTE_BOUNDS.modelTimeoutMs,
-          orElse: () =>
-            Effect.fail(
-              new WorkstreamClassifierModelError({
-                category: "timeout",
-                requested,
-                cause: "timeout",
-              }),
-            ),
+          orElse: () => Effect.fail(new WorkstreamClassifierModelError({ category: "timeout" })),
         }),
       );
     }),

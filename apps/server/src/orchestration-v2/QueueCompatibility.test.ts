@@ -45,7 +45,7 @@ const configLayer = Config.layerTest(process.cwd(), { prefix: "queue-compatibili
   Layer.provideMerge(NodeServices.layer),
 );
 const fixture = (
-  failure?: "rejected" | "unknown",
+  failure?: "rejected" | "unknown" | "replayed",
   cloning = false,
   launch?: Launch.ThreadLaunchService["Service"]["launch"],
   observed?: AutoRoute.Observation[],
@@ -76,7 +76,11 @@ const fixture = (
                 cause: "unknown commit outcome",
               }),
             );
-          return Effect.succeed({ sequence: 42, storedEvents: [] });
+          return Effect.succeed({
+            sequence: 42,
+            storedEvents: [],
+            ...(failure === "replayed" ? { replayed: true } : {}),
+          });
         },
       }),
       Layer.mock(Launch.ThreadLaunchService)(launch === undefined ? {} : { launch }),
@@ -458,6 +462,16 @@ it.layer(configLayer)("V2 compatibility command intake", (it) => {
       const rejected = yield* fixture("rejected", false, undefined, rejectedObserved);
       yield* rejected.bridge.dispatch(command).pipe(Effect.flip);
       assert.lengthOf(rejectedObserved, 0);
+
+      const replay = yield* fixture("replayed", false, undefined, observed);
+      assert.deepEqual(
+        yield* replay.bridge.dispatch({
+          ...command,
+          message: { ...command.message, text: "changed retry" },
+        }),
+        { sequence: 42 },
+      );
+      assert.lengthOf(observed, 1);
     }),
   );
 });

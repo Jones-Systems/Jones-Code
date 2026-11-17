@@ -64,6 +64,7 @@ it.effect.each([
       const body = JSON.parse(String(init?.body));
       expect(body.model).toBe("some/model");
       expect(body.messages).toEqual([{ role: "user", content: "Name this thread." }]);
+      expect(body).not.toHaveProperty("tools");
       return Response.json(api.reply);
     });
     const generators = yield* TextGenerators.TextGenerators.pipe(
@@ -75,6 +76,21 @@ it.effect.each([
       Effect.provideService(FetchHttpClient.Fetch, upstream),
     );
     expect(result).toEqual({ title: "Fix login" });
+    const promptOnly = yield* generators
+      .generatePromptOnlyText(request)
+      .pipe(Effect.provideService(FetchHttpClient.Fetch, upstream));
+    expect(promptOnly).toBe('{"title":"Fix login"}');
+    const beforeInvalid = upstream.mock.calls.length;
+    yield* generators
+      .generatePromptOnlyText({
+        ...request,
+        modelSelection: {
+          ...request.modelSelection,
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+      })
+      .pipe(Effect.provideService(FetchHttpClient.Fetch, upstream), Effect.flip);
+    expect(upstream.mock.calls).toHaveLength(beforeInvalid);
     expect(yield* generators.runner(ProviderInstanceId.make("codex"))).toBeUndefined();
 
     upstream.mockResolvedValueOnce(

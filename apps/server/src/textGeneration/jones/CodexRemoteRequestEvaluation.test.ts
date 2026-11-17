@@ -7,7 +7,7 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
-import { makeCodexRemoteRequestEvaluation } from "./CodexRemoteRequestEvaluation.ts";
+import { makeCodexToolFreeTextGeneration } from "./CodexRemoteRequestEvaluation.ts";
 import { buildRemoteRequestEvaluationPrompt } from "@t3tools/provider-core/server/textGenerationOperations";
 import { toJsonSchemaObject } from "@t3tools/provider-core/server/textGenerationUtils";
 
@@ -70,6 +70,40 @@ const input = {
   modelSelection: { instanceId, model: "gpt-6.1-sol" },
 };
 
+it.effect(
+  "sends automatic classification as a single tool-free request to the selected model",
+  () =>
+    Effect.gen(function* () {
+      const reply = { choice: 1, confidence: "high", runnerUp: null, basis: "name" };
+      const prompt = "Untrusted synthetic evidence";
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          expect(request.url).toBe("https://api.openai.com/v1/responses");
+          expect(request.body._tag).toBe("Uint8Array");
+          if (request.body._tag !== "Uint8Array") throw new Error("Expected JSON");
+          expect(JSON.parse(new TextDecoder().decode(request.body.body))).toEqual({
+            model: input.modelSelection.model,
+            input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
+            tools: [],
+            tool_choice: "none",
+            parallel_tool_calls: false,
+            store: false,
+            stream: true,
+            text: { format: { type: "json_object" } },
+          });
+          return HttpClientResponse.fromWeb(request, streamingResponse(completed(reply)));
+        }),
+      );
+      const { generatePromptOnlyText } = yield* makeCodexToolFreeTextGeneration({
+        instanceId,
+        access: Effect.succeed({ accessToken: "synthetic-account-token" }),
+      }).pipe(Effect.provideService(HttpClient.HttpClient, http));
+      expect(yield* generatePromptOnlyText({ modelSelection: input.modelSelection, prompt })).toBe(
+        JSON.stringify(reply),
+      );
+    }),
+);
+
 it.effect.each(["medium", "high"])(
   "sends exact Sol model/account and %s effort without any agent, tools, cwd, or environment",
   (effort) =>
@@ -110,7 +144,7 @@ it.effect.each(["medium", "high"])(
           return HttpClientResponse.fromWeb(request, streamingResponse(realisticStream()));
         }),
       );
-      const evaluate = yield* makeCodexRemoteRequestEvaluation({
+      const { evaluate } = yield* makeCodexToolFreeTextGeneration({
         instanceId,
         access: Effect.succeed({ accessToken: "synthetic-account-token" }),
       }).pipe(Effect.provideService(HttpClient.HttpClient, http));
@@ -154,7 +188,7 @@ it.effect.each([1, 7])("decodes multiline SSE, CRLF and UTF-8 across %s-byte chu
         ),
       ),
     );
-    const evaluate = yield* makeCodexRemoteRequestEvaluation({
+    const { evaluate } = yield* makeCodexToolFreeTextGeneration({
       instanceId,
       access: Effect.succeed({ accessToken: "synthetic" }),
     }).pipe(Effect.provideService(HttpClient.HttpClient, http));
@@ -229,7 +263,7 @@ it.effect.each(invalidStreams.map(([name, body]) => ({ name, body })))(
           return HttpClientResponse.fromWeb(request, streamingResponse(body));
         }),
       );
-      const evaluate = yield* makeCodexRemoteRequestEvaluation({
+      const { evaluate } = yield* makeCodexToolFreeTextGeneration({
         instanceId,
         access: Effect.succeed({ accessToken: "synthetic" }),
       }).pipe(Effect.provideService(HttpClient.HttpClient, http));
@@ -250,7 +284,7 @@ it.effect.each([0, 1])("enforces the stream byte bound with %s excess bytes", (e
         ),
       ),
     );
-    const evaluate = yield* makeCodexRemoteRequestEvaluation({
+    const { evaluate } = yield* makeCodexToolFreeTextGeneration({
       instanceId,
       access: Effect.succeed({ accessToken: "synthetic" }),
     }).pipe(Effect.provideService(HttpClient.HttpClient, http));
@@ -264,7 +298,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const http = HttpClient.make(() => Effect.die("must not send"));
-      const evaluate = yield* makeCodexRemoteRequestEvaluation({
+      const { evaluate } = yield* makeCodexToolFreeTextGeneration({
         instanceId,
         access: Effect.fail("synthetic auth failure"),
       }).pipe(Effect.provideService(HttpClient.HttpClient, http));
@@ -321,7 +355,7 @@ it.effect.each([
         );
       }),
     );
-    const evaluate = yield* makeCodexRemoteRequestEvaluation({
+    const { evaluate } = yield* makeCodexToolFreeTextGeneration({
       instanceId,
       access: Effect.succeed({ accessToken: "synthetic" }),
     }).pipe(Effect.provideService(HttpClient.HttpClient, http));
@@ -365,7 +399,7 @@ it.effect.each(["JSON body", "invalid UTF-8", "truncated UTF-8", "interrupted tr
           );
         }),
       );
-      const evaluate = yield* makeCodexRemoteRequestEvaluation({
+      const { evaluate } = yield* makeCodexToolFreeTextGeneration({
         instanceId,
         access: Effect.succeed({ accessToken: "synthetic" }),
       }).pipe(Effect.provideService(HttpClient.HttpClient, http));
@@ -417,7 +451,7 @@ it.effect.each([
           return response;
         }),
       );
-      const evaluate = yield* makeCodexRemoteRequestEvaluation({
+      const { evaluate } = yield* makeCodexToolFreeTextGeneration({
         instanceId,
         access: Effect.succeed({ accessToken: "synthetic" }),
       }).pipe(Effect.provideService(HttpClient.HttpClient, http));
@@ -449,7 +483,7 @@ it.effect.each([302, 401, 429, 503])(
           );
         }),
       );
-      const evaluate = yield* makeCodexRemoteRequestEvaluation({
+      const { evaluate } = yield* makeCodexToolFreeTextGeneration({
         instanceId,
         access: Effect.succeed({ accessToken: "synthetic" }),
       }).pipe(Effect.provideService(HttpClient.HttpClient, http));
@@ -480,7 +514,7 @@ it.effect.each(["cancel", "timeout"])(
           ),
         );
       });
-      const evaluate = yield* makeCodexRemoteRequestEvaluation({
+      const { evaluate } = yield* makeCodexToolFreeTextGeneration({
         instanceId,
         access: Effect.succeed({ accessToken: "synthetic" }),
       }).pipe(Effect.provideService(HttpClient.HttpClient, http));

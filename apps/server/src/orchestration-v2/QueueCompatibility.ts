@@ -379,23 +379,30 @@ const make = Effect.gen(function* () {
                 "Bootstrap has no exact accepted release receipt",
                 "orchestration_dispatch_failed",
               );
-            return { sequence: launched.legacyReleaseSequence };
+            return { sequence: launched.legacyReleaseSequence, replayed: launched.resumed };
           }
           const result = yield* Intake.dispatchCommand(command).pipe(Effect.provide(context));
-          return { sequence: result.sequence };
+          return { sequence: result.sequence, replayed: result.replayed };
         });
         return yield* send.pipe(
-          // Jones: an accepted HTTP queue dispatch is offered to Workstream auto-routing.
-          Effect.tap(() =>
-            transport === "http" && Option.isSome(autoRoute)
-              ? autoRoute.value.observe({
-                  threadId: input.threadId,
-                  commandId: input.commandId,
-                  messageId: input.message.messageId,
-                  text: input.message.text,
-                })
+          // A replay can carry a different payload than the accepted command.
+          Effect.tap(({ replayed }) =>
+            transport === "http" && replayed !== true && Option.isSome(autoRoute)
+              ? autoRoute.value
+                  .observe({
+                    threadId: input.threadId,
+                    commandId: input.commandId,
+                    messageId: input.message.messageId,
+                    text: input.message.text,
+                  })
+                  .pipe(
+                    Effect.catchCause(() =>
+                      Effect.logWarning("Workstream auto-route observation could not be queued"),
+                    ),
+                  )
               : Effect.void,
           ),
+          Effect.map(({ sequence }) => ({ sequence })),
           Effect.tapError((cause) => {
             // A generic dispatch error may follow a commit. Retain those files for reconciliation.
             const tag =

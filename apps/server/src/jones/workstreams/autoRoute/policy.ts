@@ -135,7 +135,9 @@ export interface ClassifierEvidence {
 
 const clip = (text: string, max: number) => {
   const trimmed = text.trim();
-  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
+  const clipped = trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
+  // Normalize invisible controls and split surrogate pairs before JSON encoding.
+  return clipped.toWellFormed().replace(/[\u0000-\u001f]/g, " ");
 };
 
 const INSTRUCTIONS = [
@@ -159,7 +161,7 @@ const render = (evidence: ClassifierEvidence, memberTitles: number) => {
           : clip(evidence.projectName, AUTO_ROUTE_BOUNDS.projectNameChars),
       newPrompt: clip(evidence.promptText, AUTO_ROUTE_BOUNDS.promptTextChars),
     },
-    candidates: evidence.candidates.map((c, index) => ({
+    candidates: evidence.candidates.slice(0, AUTO_ROUTE_BOUNDS.maxCandidates).map((c, index) => ({
       index: index + 1,
       name: clip(c.name, AUTO_ROUTE_BOUNDS.workstreamNameChars),
       memberCount: c.memberCount,
@@ -176,7 +178,7 @@ const render = (evidence: ClassifierEvidence, memberTitles: number) => {
     })),
   };
   // JSON encoding keeps untrusted titles inside string values.
-  return `${INSTRUCTIONS}\n\nData:\n${JSON.stringify(data, null, 1)}`;
+  return `${INSTRUCTIONS}\n\nData:\n${JSON.stringify(data)}`;
 };
 
 /** The classification prompt, within `maxPromptChars` by dropping member titles in steps. */
@@ -185,6 +187,10 @@ export const buildClassifierPrompt = (evidence: ClassifierEvidence): string => {
   for (const titles of AUTO_ROUTE_BOUNDS.reducedMemberTitles) {
     if (prompt.length <= AUTO_ROUTE_BOUNDS.maxPromptChars) break;
     prompt = render(evidence, titles);
+  }
+  if (prompt.length > AUTO_ROUTE_BOUNDS.maxPromptChars) {
+    // Keep the candidate index stable if JSON escaping consumes the remaining budget.
+    prompt = render({ ...evidence, promptText: "" }, 0);
   }
   return prompt;
 };
@@ -201,13 +207,19 @@ const decodeReply = Schema.decodeUnknownExit(Schema.fromJsonString(ClassifierRep
   onExcessProperty: "error",
 });
 
-export type Decision = AutoRouteOutcome & {
-  readonly confidence?: ClassifierReply["confidence"];
-  readonly basis?: ClassifierReply["basis"];
-};
+export type Decision =
+  | (Extract<AutoRouteOutcome, { state: "assigned" }> & {
+      readonly confidence: "high";
+      readonly basis: Exclude<ClassifierReply["basis"], "none">;
+    })
+  | (Exclude<AutoRouteOutcome, { state: "assigned" }> & {
+      readonly confidence?: ClassifierReply["confidence"];
+      readonly basis?: ClassifierReply["basis"];
+    });
 
 /** Applies the decision rule to the model's raw reply; only an unambiguous, high, grounded choice assigns. */
 export const decide = (raw: string, candidates: readonly Candidate[]): Decision => {
+  if (raw.length > 4_096) return { state: "failed", code: "invalid_output" };
   const exit = decodeReply(extractJsonObject(raw));
   if (Exit.isFailure(exit)) return { state: "failed", code: "invalid_output" };
   const reply = exit.value;
@@ -227,5 +239,10 @@ export const decide = (raw: string, candidates: readonly Candidate[]): Decision 
   if (reply.runnerUp !== null) return { state: "abstained", code: "ambiguous", ...graded };
   if (reply.confidence !== "high") return { state: "abstained", code: "low_confidence", ...graded };
   if (reply.basis === "none") return { state: "abstained", code: "no_basis", ...graded };
-  return { state: "assigned", workstreamId: chosen.id, ...graded };
+  return {
+    state: "assigned",
+    workstreamId: chosen.id,
+    confidence: reply.confidence,
+    basis: reply.basis,
+  };
 };

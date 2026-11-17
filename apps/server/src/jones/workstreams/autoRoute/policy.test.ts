@@ -226,4 +226,30 @@ describe("prompt", () => {
     const small = buildClassifierPrompt(evidence({ candidates: full(8).slice(0, 3) }));
     expect(titlesIn(small)).toBe(8);
   });
+
+  it("bounds escaped text and preserves candidate indexes", () => {
+    const escaped = '"\\\n'.repeat(2_000);
+    const prompt = buildClassifierPrompt(
+      evidence({
+        threadTitle: escaped,
+        projectName: escaped,
+        promptText: escaped,
+        candidates: Array.from({ length: 40 }, (_, i) => ({
+          ...candidate(String(i)),
+          name: escaped,
+          memberTitles: Array(8).fill(escaped),
+        })),
+        corrections: Array.from({ length: 8 }, () => ({
+          threadTitle: escaped,
+          automaticName: escaped,
+          ownerName: escaped,
+        })),
+      }),
+    );
+    expect(prompt.length).toBeLessThanOrEqual(AUTO_ROUTE_BOUNDS.maxPromptChars);
+    const data = JSON.parse(prompt.slice(prompt.indexOf("Data:\n") + 6));
+    expect(data.candidates.map((candidate: { index: number }) => candidate.index)).toEqual(
+      Array.from({ length: 40 }, (_, i) => i + 1),
+    );
+  });
 });

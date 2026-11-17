@@ -50,17 +50,17 @@ export const make = Effect.gen(function* () {
     readonly now: string;
   }) {
     const { threadId, commandId } = input.key;
-    const existing =
-      yield* sql`SELECT 1 FROM jones_workstream_auto_route_decisions WHERE thread_id=${threadId} AND command_id=${commandId}`;
-    if (existing.length > 0) return "duplicate" as BeginResult;
     // No foreign key: the upstream thread row is verified in the same statement.
-    yield* sql`INSERT OR IGNORE INTO jones_workstream_auto_route_decisions
+    const inserted = yield* sql`INSERT INTO jones_workstream_auto_route_decisions
       (thread_id, command_id, message_id, origin, state, created_at)
       SELECT ${threadId}, ${commandId}, ${input.messageId}, ${input.origin}, 'pending', ${input.now}
-      WHERE EXISTS (SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=${threadId})`;
-    const written =
+      WHERE EXISTS (SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=${threadId})
+      ON CONFLICT(thread_id, command_id) DO NOTHING
+      RETURNING thread_id`;
+    if (inserted.length > 0) return "inserted" as BeginResult;
+    const existing =
       yield* sql`SELECT 1 FROM jones_workstream_auto_route_decisions WHERE thread_id=${threadId} AND command_id=${commandId}`;
-    return (written.length > 0 ? "inserted" : "thread_missing") as BeginResult;
+    return (existing.length > 0 ? "duplicate" : "thread_missing") as BeginResult;
   });
 
   const markModelRequested = Effect.fn("AutoRouteStore.markModelRequested")(function* (
@@ -77,20 +77,24 @@ export const make = Effect.gen(function* () {
       WHERE thread_id=${key.threadId} AND command_id=${key.commandId}`;
   });
 
-  const markAssigning = Effect.fn("AutoRouteStore.markAssigning")(function* (
+  // The caller commits this record in the same transaction as the assignment.
+  const recordAssignment = Effect.fn("AutoRouteStore.recordAssignment")(function* (
     key: DecisionKey,
     input: {
       readonly workstreamId: string;
       readonly revision: number;
+      readonly decidedAt: string;
       readonly confidence?: ClassifierReply["confidence"] | undefined;
       readonly basis?: ClassifierReply["basis"] | undefined;
     },
   ) {
-    yield* sql`UPDATE jones_workstream_auto_route_decisions
-      SET state='assigning', code=NULL, workstream_id=${input.workstreamId},
+    const rows = yield* sql`UPDATE jones_workstream_auto_route_decisions
+      SET state='assigned', code=NULL, workstream_id=${input.workstreamId}, decided_at=${input.decidedAt},
         assignment_revision=${input.revision}, confidence=${input.confidence ?? null},
         basis=${input.basis ?? null}
-      WHERE thread_id=${key.threadId} AND command_id=${key.commandId}`;
+      WHERE thread_id=${key.threadId} AND command_id=${key.commandId} AND state='pending'
+      RETURNING thread_id`;
+    return rows.length === 1;
   });
 
   const finalize = Effect.fn("AutoRouteStore.finalize")(function* (
@@ -108,7 +112,7 @@ export const make = Effect.gen(function* () {
         confidence=COALESCE(${outcome.confidence ?? null}, confidence),
         basis=COALESCE(${outcome.basis ?? null}, basis),
         candidate_count=COALESCE(${outcome.candidateCount ?? null}, candidate_count)
-      WHERE thread_id=${key.threadId} AND command_id=${key.commandId}`;
+      WHERE thread_id=${key.threadId} AND command_id=${key.commandId} AND state='pending'`;
   });
 
   const modelAttempts = Effect.fn("AutoRouteStore.modelAttempts")(function* (key: DecisionKey) {
@@ -126,6 +130,21 @@ export const make = Effect.gen(function* () {
       FROM jones_workstream_auto_route_decisions WHERE thread_id=${threadId}
       ORDER BY created_at DESC, rowid DESC LIMIT 1`;
     return rows[0] ?? null;
+  });
+
+  const wasAssigned = Effect.fn("AutoRouteStore.wasAssigned")(function* (key: DecisionKey) {
+    const rows = yield* sql`SELECT 1 FROM jones_workstream_auto_route_decisions
+      WHERE thread_id=${key.threadId} AND command_id=${key.commandId} AND state='assigned'`;
+    return rows.length > 0;
+  });
+
+  const isAssignableThread = Effect.fn("AutoRouteStore.isAssignableThread")(function* (
+    threadId: ThreadId,
+  ) {
+    const rows = yield* sql`SELECT 1 FROM orchestration_v2_projection_threads t
+      WHERE t.thread_id=${threadId} AND t.deleted_at IS NULL AND t.archived_at IS NULL
+        AND ${sql.literal(MAIN_CONVERSATION)}`;
+    return rows.length > 0;
   });
 
   /** Automatic assignments still in force: the thread holds the exact workstream and revision written. */
@@ -161,6 +180,7 @@ export const make = Effect.gen(function* () {
         AND a.revision>d.assignment_revision
         AND (a.workstream_id IS NULL OR a.workstream_id<>d.workstream_id)
         AND NOT (a.workstream_id IS NULL AND auto.deleted_at IS NOT NULL)
+        AND ${sql.literal(MAIN_CONVERSATION)}
       ORDER BY a.updated_at DESC LIMIT ${limit}`;
     return rows as readonly Correction[];
   });
@@ -173,15 +193,28 @@ export const make = Effect.gen(function* () {
     const rows = yield* sql.unsafe<{
       workstreamId: string;
       title: string;
-      projectId: string;
+      memberCount: number;
+      projectMemberCount: number;
     }>(
-      `SELECT a.workstream_id AS workstreamId, t.title AS title, t.project_id AS projectId
-      FROM jones_personal_workstream_assignments a
-      JOIN orchestration_v2_projection_threads t ON t.thread_id=a.thread_id
-      WHERE a.workstream_id IS NOT NULL AND t.deleted_at IS NULL AND a.thread_id<>?
-        AND ${MAIN_CONVERSATION}
-      ORDER BY t.updated_at DESC, t.thread_id`,
-      [input.threadId],
+      `WITH members AS (
+        SELECT a.workstream_id AS workstreamId, substr(t.title, 1, ?) AS title,
+          COUNT(*) OVER (PARTITION BY a.workstream_id) AS memberCount,
+          COUNT(CASE WHEN t.project_id=? THEN 1 END) OVER (PARTITION BY a.workstream_id) AS projectMemberCount,
+          ROW_NUMBER() OVER (PARTITION BY a.workstream_id ORDER BY t.updated_at DESC, t.thread_id) AS position
+        FROM jones_personal_workstream_assignments a
+        JOIN orchestration_v2_projection_threads t ON t.thread_id=a.thread_id
+        JOIN jones_personal_workstreams w ON w.id=a.workstream_id
+        WHERE w.deleted_at IS NULL AND w.lifecycle='active'
+          AND t.deleted_at IS NULL AND a.thread_id<>? AND ${MAIN_CONVERSATION}
+      )
+      SELECT workstreamId, title, memberCount, projectMemberCount FROM members
+      WHERE position<=? ORDER BY workstreamId, position`,
+      [
+        AUTO_ROUTE_BOUNDS.memberTitleChars,
+        input.projectId,
+        input.threadId,
+        AUTO_ROUTE_BOUNDS.memberTitles,
+      ],
     );
     const stats = new Map<
       string,
@@ -189,14 +222,11 @@ export const make = Effect.gen(function* () {
     >();
     for (const row of rows) {
       const entry = stats.get(row.workstreamId) ?? {
-        memberCount: 0,
-        projectMemberCount: 0,
+        memberCount: Number(row.memberCount),
+        projectMemberCount: Number(row.projectMemberCount),
         memberTitles: [],
       };
-      entry.memberCount += 1;
-      if (row.projectId === input.projectId) entry.projectMemberCount += 1;
-      if (entry.memberTitles.length < AUTO_ROUTE_BOUNDS.memberTitles)
-        entry.memberTitles.push(row.title);
+      entry.memberTitles.push(row.title);
       stats.set(row.workstreamId, entry);
     }
     return stats as ReadonlyMap<string, CandidateStats>;
@@ -240,10 +270,12 @@ export const make = Effect.gen(function* () {
     available,
     begin,
     markModelRequested,
-    markAssigning,
+    recordAssignment,
     finalize,
     modelAttempts,
     latest,
+    wasAssigned,
+    isAssignableThread,
     currentAutoAssignments,
     corrections,
     candidateStats,

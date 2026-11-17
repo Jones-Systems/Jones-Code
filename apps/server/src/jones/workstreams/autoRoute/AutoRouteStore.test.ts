@@ -3,7 +3,7 @@ import { ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
-import migration from "../../persistence/Migrations/157_JonesWorkstreamAutoRoute.ts";
+import migration from "../../persistence/Migrations/158_JonesWorkstreamAutoRoute.ts";
 import * as Store from "./AutoRouteStore.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });

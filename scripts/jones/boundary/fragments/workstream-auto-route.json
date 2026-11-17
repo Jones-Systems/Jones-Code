@@ -11,7 +11,8 @@
     "apps/server/src/jones/workstreams/autoRoute/WorkstreamClassifierModel.ts",
     "apps/server/src/jones/workstreams/autoRoute/WorkstreamClassifierModel.test.ts",
     "apps/web/src/jones/settings/WorkstreamAutoRouteSettings.tsx",
-    "apps/web/src/jones/settings/WorkstreamAutoRouteSettings.browser.test.tsx"
+    "apps/web/src/jones/settings/WorkstreamAutoRouteSettings.browser.test.tsx",
+    "apps/web/src/jones/workstreams/WorkstreamPickerProvenance.browser.test.tsx"
   ],
   "hookPaths": [],
   "tombstones": [],

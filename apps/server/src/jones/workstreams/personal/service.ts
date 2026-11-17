@@ -34,6 +34,14 @@ export class PersonalWorkstreams extends Context.Service<
     readonly assign: (
       input: P.AssignPersonalWorkstreamInput,
     ) => Effect.Effect<P.AssignResult, P.WorkstreamsPersonalError>;
+    readonly assignAutomatically: (
+      input: AutoRouteStore.DecisionKey & {
+        readonly workstreamId: string;
+        readonly workstreamName: string;
+        readonly confidence: "high";
+        readonly basis: "name" | "similar_threads" | "both";
+      },
+    ) => Effect.Effect<void, P.WorkstreamsPersonalError>;
     readonly readThread: (id: ThreadId) => Effect.Effect<
       {
         assignment: P.PersonalWorkstreamAssignment;
@@ -110,6 +118,16 @@ const make = Effect.gen(function* () {
       [id],
     );
     return rows[0] ?? { threadId: id, workstreamId: null, revision: 0, updatedAt: null };
+  });
+  const persistAssignment = Effect.fn("PersonalWorkstreams.persistAssignment")(function* (
+    threadId: ThreadId,
+    workstreamId: string | null,
+    revision: number,
+  ) {
+    const next = { threadId, workstreamId, revision, updatedAt: yield* now };
+    yield* sql`INSERT INTO jones_personal_workstream_assignments ${sql.insert({ thread_id: threadId, workstream_id: workstreamId, revision, updated_at: next.updatedAt })} ON CONFLICT(thread_id) DO UPDATE SET workstream_id=excluded.workstream_id,revision=excluded.revision,updated_at=excluded.updated_at`;
+    yield* bump();
+    return next;
   });
   const store = Effect.fn("PersonalWorkstreams.store")(function* (w: P.PersonalWorkstream) {
     yield* sql`INSERT INTO jones_personal_workstreams ${sql.insert({ id: w.id, name: w.name, lifecycle: w.lifecycle, color: w.color, order_key: w.orderKey, created_at: w.createdAt, updated_at: w.updatedAt, deleted_at: w.deletedAt, rev: w.rev, origin: w.origin })} ON CONFLICT(id) DO UPDATE SET name=excluded.name,lifecycle=excluded.lifecycle,color=excluded.color,order_key=excluded.order_key,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,rev=excluded.rev,origin=excluded.origin`;
@@ -247,23 +265,48 @@ const make = Effect.gen(function* () {
                 code: "precondition_failed",
                 currentAssignment: current,
               });
-            const next = {
-              threadId: valid.threadId,
-              workstreamId: target,
-              revision: current.revision + 1,
-              updatedAt: yield* now,
-            };
-            yield* sql`INSERT INTO jones_personal_workstream_assignments ${sql.insert({ thread_id: next.threadId, workstream_id: target, revision: next.revision, updated_at: next.updatedAt })} ON CONFLICT(thread_id) DO UPDATE SET workstream_id=excluded.workstream_id,revision=excluded.revision,updated_at=excluded.updated_at`;
-            yield* bump();
             return {
               outcome: "applied",
-              assignment: next,
+              assignment: yield* persistAssignment(valid.threadId, target, current.revision + 1),
               workstream,
               sequence: yield* sequence(),
             };
           }),
         ),
       ),
+    ),
+  );
+  const assignAutomatically: PersonalWorkstreams["Service"]["assignAutomatically"] = Effect.fn(
+    "PersonalWorkstreams.assignAutomatically",
+  )((input) =>
+    write(
+      Effect.gen(function* () {
+        if (!(yield* autoRoute.isAssignableThread(input.threadId)))
+          return yield* new P.WorkstreamsPersonalError({ code: "thread_not_found" });
+        const current = yield* assignment(input.threadId);
+        if (current.revision !== 0 || current.workstreamId !== null)
+          return yield* new P.WorkstreamsPersonalError({
+            code: "precondition_failed",
+            currentAssignment: current,
+          });
+        const group = yield* definition(input.workstreamId);
+        if (group === null || group.lifecycle !== "active" || group.name !== input.workstreamName)
+          return yield* new P.WorkstreamsPersonalError({ code: "workstream_not_found" });
+        if (group.deletedAt !== null)
+          return yield* new P.WorkstreamsPersonalError({ code: "workstream_deleted" });
+
+        // Only our write can create provenance, and both records commit before publication.
+        const next = yield* persistAssignment(input.threadId, group.id, 1);
+        const recorded = yield* autoRoute.recordAssignment(input, {
+          workstreamId: group.id,
+          revision: next.revision,
+          decidedAt: next.updatedAt,
+          confidence: input.confidence,
+          basis: input.basis,
+        });
+        if (!recorded)
+          return yield* new P.WorkstreamsPersonalError({ code: "storage_unavailable" });
+      }),
     ),
   );
   const readThread = Effect.fn("PersonalWorkstreams.readThread")((id: ThreadId) =>
@@ -350,6 +393,7 @@ const make = Effect.gen(function* () {
     create,
     put,
     assign,
+    assignAutomatically,
     readThread,
     // Subscription acquisition precedes even the first consistent snapshot read.
     changes: Stream.unwrap(
