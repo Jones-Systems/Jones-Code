@@ -632,8 +632,13 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
                 ? "Durable settle-script completion has not been recorded."
                 : reason === "final_checkpoint_unfinished"
                   ? "The latest run has no ready final checkpoint."
-                  : reason,
-          missingFact: reason,
+                  : reason === "observation_failed" && qualification?.observationFailure
+                    ? `Qualification observation failed at ${qualification.observationFailure.stage} (${qualification.observationFailure.errorClass}).`
+                    : reason,
+          missingFact:
+            reason === "observation_failed" && qualification?.observationFailure
+              ? `fresh_complete_${qualification.observationFailure.stage}_observation`
+              : reason,
           lineage: request.threadId ? [{ threadId: request.threadId }] : [],
           nextAction:
             reason === "settle_script_unfinished"
