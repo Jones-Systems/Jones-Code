@@ -1,4 +1,5 @@
 import { composeAgentMessage } from "../jones/mcp/agentMessageHeader.ts";
+import { remoteAdmissionFeatures } from "../jones/mcp/remoteAdmissionFeatures.ts";
 import * as DelegatedTaskWorkspace from "../jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts";
 import { refuseUnsolicitedSupervision } from "../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
@@ -2535,6 +2536,7 @@ const make = Effect.gen(function* () {
           };
         }),
         features: {
+          ...(yield* remoteAdmissionFeatures),
           threadContentEvidence: THREAD_CONTENT_EVIDENCE_CAPABILITY,
           remoteTaskObservationVersion: ObservationSupport.version,
           ...(resultDependencies === undefined ||

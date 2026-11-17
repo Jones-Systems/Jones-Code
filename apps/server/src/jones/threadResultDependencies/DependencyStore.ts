@@ -16,6 +16,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import type { JonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import type { McpThreadInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import type { OpenRequest, WakeCommit } from "./DependencyCommit.ts";
+import { admitOriginWake } from "../remoteAdmissionOrigin/OriginStore.ts";
 import { makeWakeObligations, wakeEligible, type WakeHoldState } from "./WakeObligations.ts";
 import type { StartRefusals } from "../startRefusal/Store.ts";
 import { forThread } from "./DependencyDuties.ts";
@@ -437,6 +438,11 @@ export function makeDependencyStore(
     for (const message of messages) yield* disposeRequests(threadId, outcome, message.message_id);
   });
   const admitWake = Effect.fn("DependencyStore.admitWake")(function* (input: WakeCommit) {
+    if ("kind" in input && input.kind === "remote_admission_origin") {
+      const waiter = yield* admitOriginWake(sql, input);
+      yield* changed(waiter);
+      return;
+    }
     const live =
       yield* sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${input.waiterThreadId} AND archived_at IS NULL AND deleted_at IS NULL`;
     if (live.length === 0) return yield* conflict();

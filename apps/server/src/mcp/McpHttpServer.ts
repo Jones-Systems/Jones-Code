@@ -6,6 +6,7 @@ import { handlers as workstreamHandlers } from "../jones/mcp/workstreams/handler
 import * as ThreadSelfConfigurationService from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as ThreadSelfConfigurationTools from "../jones/threadConfiguration/tools.ts";
 import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
+import * as RemoteAdmissionProtocol from "../jones/remoteAdmissionIntegration/protocolTools.ts";
 import {
   LINKED_MESSAGE_ORIGIN_HEADER,
   withLinkedMessageOrigin,
@@ -1401,6 +1402,15 @@ export const layerTools = Layer.mergeAll(
   layerHostFilesToolkit,
   SettlementRestoreRegistrationLive,
   toolkitRegistration(RemoteAdmissionCancel.toolkit, RemoteAdmissionCancel.handlers),
+  Layer.unwrap(
+    Effect.serviceOption(RemoteAdmissionProtocol.ReceiverPeerProtocol).pipe(
+      Effect.map((service) =>
+        Option.isNone(service)
+          ? Layer.empty
+          : toolkitRegistration(RemoteAdmissionProtocol.toolkit, RemoteAdmissionProtocol.handlers),
+      ),
+    ),
+  ),
   DecisionSnapshotToolkitRegistrationLive,
   layerPreviewToolkit,
   layerOrchestratorToolkit,

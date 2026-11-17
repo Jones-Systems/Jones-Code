@@ -1,5 +1,6 @@
 import { PersonalWorkstreamsCoordinator } from "../jones/workstreams/personalEnvironmentBinding";
 import { RemoteAdmissionNotifications } from "../jones/remoteAdmission/RemoteAdmissionNotifications";
+import { ReviewClientsCoordinator } from "../jones/remoteAdmission/ReviewClientsCoordinator";
 import { SettlementNotificationCoordinator } from "../jones/settlementNotifications/SettlementNotificationCoordinator";
 import { ProviderUpdateNotice } from "../jones/updates/ProviderUpdateNotice";
 import { PendingSendsCoordinator } from "../jones/pendingSends/PendingSendsCoordinator";
@@ -196,6 +197,7 @@ function RootRouteBranch() {
       <PendingSendsCoordinator />
       <ProviderUpdateNotice />
       <SettlementNotificationCoordinator />
+      <ReviewClientsCoordinator />
       <RemoteAdmissionNotifications />
       <PersonalWorkstreamsCoordinator />
       <ReopenClosedViewShortcut />

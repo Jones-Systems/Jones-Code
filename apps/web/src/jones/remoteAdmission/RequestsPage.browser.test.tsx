@@ -9,18 +9,32 @@ import { RemoteAdmissionCount } from "./RemoteAdmissionAttention";
 const request = vi.hoisted(() => vi.fn());
 let overviewIds: EnvironmentId[] = [];
 vi.mock("./runtime", () => ({ remoteAdmissionRequest: request }));
-vi.mock("../../state/entities", () => ({ useProject: () => null, useThreadShell: () => null }));
-vi.mock("../../hooks/useSettings", () => ({
+vi.mock("../../state/entities", async (original) => ({
+  ...(await original<typeof import("../../state/entities")>()),
+  useProject: () => null,
+  useThreadShell: () => null,
+}));
+vi.mock("../../hooks/useSettings", async (original) => ({
+  ...(await original<typeof import("../../hooks/useSettings")>()),
   useClientSettings: (select: (settings: { timestampFormat: string }) => unknown) =>
     select({ timestampFormat: "12-hour" }),
 }));
-vi.mock("../../state/environments", () => ({
+vi.mock("../../state/environments", async (original) => ({
+  ...(await original<typeof import("../../state/environments")>()),
   useEnvironmentIds: () => overviewIds,
   useEnvironments: () => ({
     isReady: true,
     environments: [
-      { environmentId: EnvironmentId.make("requests-linked"), label: "Linked receiver" },
-      { environmentId: EnvironmentId.make("requests-primary"), label: "Primary receiver" },
+      {
+        environmentId: EnvironmentId.make("requests-linked"),
+        label: "Linked receiver",
+        displayLabel: "Linked receiver",
+      },
+      {
+        environmentId: EnvironmentId.make("requests-primary"),
+        label: "Primary receiver",
+        displayLabel: "Primary receiver",
+      },
     ],
   }),
 }));

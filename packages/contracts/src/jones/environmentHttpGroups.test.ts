@@ -53,6 +53,7 @@ describe("Jones environment HTTP registration", () => {
       "jonesUpdates",
       "jonesFleetUpdates",
       "remoteAdmission",
+      "remoteAdmissionReview",
       "jonesImportedHistory",
       "previewCompanion",
       "webhooks",
