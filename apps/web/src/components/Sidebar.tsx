@@ -1988,7 +1988,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   const dropPinnedWorkstreamThread = (
     point: { x: number; y: number },
-    activeKey = contextDragKeyRef.current,
+    activeKey: string | null,
   ) => {
     if (activeKey === null) return false;
     const activeThread = threadByKeyRef.current.get(activeKey);
@@ -2017,7 +2017,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     );
   };
   const dropThreadContextDrag = (point: { x: number; y: number }) => {
-    if (!pointerOutsideThreadList(point)) return dropPinnedWorkstreamThread(point);
+    if (!pointerOutsideThreadList(point)) {
+      return dropPinnedWorkstreamThread(point, contextDragKeyRef.current);
+    }
     restoreDragScroll();
     dropThreadContext(point, contextDragThreads());
     return true;
