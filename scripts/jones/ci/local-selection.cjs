@@ -3,11 +3,31 @@
 // selects, and names the jobs it cannot run itself.
 const { SPLIT_PACKAGES, requiresFullQualification, select } = require("./linux-changes.cjs");
 
-// vitest runs test files; node:test files must run under `node --test`, since
-// vitest passes a failing node:test file. CI runs `*.node-test.*` and the
-// .github/scripts tests that way.
+const { globToRegExp } = require("./test-inventory.cjs");
+const { entries } = require("./standalone-tests.json");
+
 const TEST_FILE = /\.(?:node-)?test\.[cm]?[jt]sx?$/;
-const NODE_TEST_FILE = /\.node-test\.[cm]?[jt]sx?$|^\.github[/\\]scripts[/\\]/;
+const standaloneRunners = entries.map(({ glob, kind, runner }) => ({
+  pattern: globToRegExp(glob),
+  // A Vitest wrapper can supply fixtures and call the standalone suite itself.
+  directNodeRunner:
+    kind === "ci" && (runner === ".github/workflows/ci.yml" || runner.endsWith("/package.json")),
+}));
+
+function splitTests(tests) {
+  const vitestTests = [];
+  const nodeTests = [];
+  for (const file of tests) {
+    const normalized = file.replaceAll("\\", "/");
+    const entry = standaloneRunners.find(({ pattern }) => pattern.test(normalized));
+    if (entry) {
+      if (entry.directNodeRunner) nodeTests.push(file);
+    } else if (!normalized.includes(".node-test.") && !normalized.startsWith(".github/scripts/")) {
+      vitestTests.push(file);
+    }
+  }
+  return { vitestTests, nodeTests };
+}
 
 const SPLIT_JOB_NAMES = {
   test_desktop: "Test Desktop",
@@ -29,12 +49,9 @@ function ciNotes(files, packages) {
         "or the test progress reporter",
     );
   } else if (split.length > 0) {
-    notes.push(`  CI also runs: ${split.join(", ")}`);
+    notes.push(`  Split CI jobs: ${split.join(", ")}`);
   }
-  notes.push(
-    "  CI runs every job for pushes to main and for stacked or non-main-based pull requests",
-  );
   return notes;
 }
 
-module.exports = { NODE_TEST_FILE, TEST_FILE, ciNotes, requiresFullQualification };
+module.exports = { TEST_FILE, ciNotes, requiresFullQualification, splitTests };

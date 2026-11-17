@@ -41,10 +41,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
 import {
-  NODE_TEST_FILE,
   TEST_FILE,
   ciNotes,
   requiresFullQualification,
+  splitTests,
 } from "./jones/ci/local-selection.cjs";
 
 const GiB = 1024 ** 3;
@@ -188,15 +188,6 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 // CI's lint and knip also read Astro components' frontmatter.
 const CODE = /\.(?:[cm]?[jt]sx?|astro)$/;
 const TEST = TEST_FILE;
-// CI runs the .github/scripts tests with `node --test`; vitest passes a failing node:test file.
-const NODE_TEST = NODE_TEST_FILE;
-export const splitTests = (tests: Iterable<string>) => {
-  const all = [...tests];
-  return {
-    vitestTests: all.filter((file) => !NODE_TEST.test(file)),
-    nodeTests: all.filter((file) => NODE_TEST.test(file)),
-  };
-};
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // A flag wins over its environment variable; either must be a positive integer.
@@ -532,6 +523,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             "exec",
             "node",
             "--test",
+            "--test-concurrency=1",
             ...nodeTests,
           ]),
         ]

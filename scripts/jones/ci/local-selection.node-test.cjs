@@ -3,10 +3,10 @@ const { test } = require("node:test");
 const { decide, readWorkspace } = require("../../../.github/scripts/ci-changes.cjs");
 const { SPLIT_PACKAGES, select } = require("./linux-changes.cjs");
 const {
-  NODE_TEST_FILE,
   TEST_FILE,
   ciNotes,
   requiresFullQualification,
+  splitTests,
 } = require("./local-selection.cjs");
 
 const packages = readWorkspace();
@@ -89,8 +89,8 @@ test("only Jones CI selection scripts add full qualification beyond the upstream
 
 test("ciNotes names the split jobs CI runs and when CI runs everything", () => {
   const joined = (files) => ciNotes(files, packages).join("\n");
-  assert.match(joined(["apps/desktop/src/main.ts"]), /CI also runs: .*Test Desktop/);
-  assert.match(joined(["apps/mobile/src/app.tsx"]), /CI also runs: .*Test Mobile/);
+  assert.match(joined(["apps/desktop/src/main.ts"]), /Split CI jobs: .*Test Desktop/);
+  assert.match(joined(["apps/mobile/src/app.tsx"]), /Split CI jobs: .*Test Mobile/);
   assert.match(joined(["packages/client-runtime/src/jones/example.ts"]), /Test Client Runtime/);
   const shared = joined(["packages/shared/src/example.ts"]);
   for (const name of ["Test Desktop", "Test Mobile", "Test Client Runtime"]) {
@@ -98,31 +98,29 @@ test("ciNotes names the split jobs CI runs and when CI runs everything", () => {
   }
   assert.doesNotMatch(joined(["apps/web/src/main.tsx"]), /Test Desktop|Test Mobile/);
   assert.match(joined(["scripts/jones/ci/check-results.cjs"]), /CI runs every job: this change/);
-  assert.doesNotMatch(joined(["docs/operations/development.md"]), /CI also runs|every job: this/);
-  assert.match(joined(["docs/operations/development.md"]), /stacked or non-main-based/);
+  assert.doesNotMatch(joined(["docs/operations/development.md"]), /Split CI jobs|every job: this/);
 });
 
-test("node-test detection covers *.node-test.* files and the .github/scripts tests", () => {
-  for (const file of [
+test("routes directly runnable CI tests and leaves fixture suites with their declared runners", () => {
+  const nodeTests = [
     "scripts/jones/ci/selection.node-test.cjs",
-    "apps/server/src/jones/workspaceRetirement/Example.node-test.mjs",
-    "scripts/jones/updates/install-retention.node-test.mjs",
-    "scripts/example.node-test.ts",
-    ".github/scripts/ci-changes.test.cjs",
+    "scripts/jones/worktree-setup/setup.node-test.mjs",
+    "native/process-placement/build.test.mjs",
     ".github\\scripts\\thread-transfer-report.test.cjs",
-  ]) {
-    assert.equal(NODE_TEST_FILE.test(file), true, file);
-  }
-  for (const file of [
-    "apps/server/src/ws.test.ts",
-    "apps/web/src/Example.browser.test.tsx",
-    "scripts/check-changed.test.ts",
-    "scripts/jones/ci/linux-changes.cjs",
-    "scripts/node-test-helper.ts",
-    "scripts/example.node-test.json",
-  ]) {
-    assert.equal(NODE_TEST_FILE.test(file), false, file);
-  }
+  ];
+  const vitestTests = ["apps/desktop/src/jones/updates/installRetention.test.ts"];
+  assert.deepEqual(
+    splitTests([
+      ...nodeTests,
+      ...vitestTests,
+      "scripts/jones/native-enrollment/sea-fixture.node-test.mjs",
+      "scripts/jones/updates/install-retention.node-test.mjs",
+      "apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs",
+      ".github/scripts/relay-state-output.test.cjs",
+      "scripts/jones/new/example.node-test.mjs",
+    ]),
+    { nodeTests, vitestTests },
+  );
 });
 
 test("test-file detection selects node-tests and vitest tests, not their sources", () => {

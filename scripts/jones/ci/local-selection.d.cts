@@ -6,7 +6,10 @@ interface WorkspacePackage {
 }
 
 export const TEST_FILE: RegExp;
-export const NODE_TEST_FILE: RegExp;
+export function splitTests(tests: Iterable<string>): {
+  vitestTests: Array<string>;
+  nodeTests: Array<string>;
+};
 
 export function requiresFullQualification(files: ReadonlyArray<string> | null): boolean;
 
