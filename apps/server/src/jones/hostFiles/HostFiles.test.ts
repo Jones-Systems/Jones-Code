@@ -105,7 +105,10 @@ it.layer(layer)("HostFiles", (it) => {
         at("minified.js"),
         "y".repeat(HOST_FILE_READ_MAX_RESULT_BYTES + 1),
       );
-      yield* fileSystem.writeFile(at("huge.log"), new Uint8Array(HOST_FILE_READ_MAX_FILE_BYTES + 1));
+      yield* fileSystem.writeFile(
+        at("huge.log"),
+        new Uint8Array(HOST_FILE_READ_MAX_FILE_BYTES + 1),
+      );
 
       assert.strictEqual(yield* reasonOf(files.read({ path: at("image.bin") })), "binary_file");
       assert.strictEqual(yield* reasonOf(files.read({ path: at("minified.js") })), "line_too_long");

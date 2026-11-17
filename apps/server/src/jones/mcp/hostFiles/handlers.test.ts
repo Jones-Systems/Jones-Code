@@ -91,8 +91,9 @@ const handle = (
     return results.at(-1)?.result;
   }).pipe(
     Effect.provideService(Invocation.McpInvocationContext, scope),
-    Effect.provide(files),
-    Effect.provide(Layer.mock(ThreadManagementService.ThreadManagementService)({})),
+    Effect.provide(
+      Layer.mergeAll(files, Layer.mock(ThreadManagementService.ThreadManagementService)({})),
+    ),
   );
 
 it("declares both tools as forwardable, with only the read marked read-only", () => {

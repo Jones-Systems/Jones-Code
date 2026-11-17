@@ -7,7 +7,7 @@ export const HOST_FILE_READ_MAX_FILE_BYTES = 8 * 1024 * 1024;
 /** Text returned by one read, so a result stays well inside an MCP response. */
 export const HOST_FILE_READ_MAX_RESULT_BYTES = 192 * 1024;
 export const HOST_FILE_READ_DEFAULT_LINES = 2000;
-export const HOST_FILE_READ_MAX_LINES = 5000;
+const HOST_FILE_READ_MAX_LINES = 5000;
 export const HOST_FILE_LIST_MAX_ENTRIES = 1000;
 export const HOST_FILE_WRITE_MAX_BYTES = 1024 * 1024;
 

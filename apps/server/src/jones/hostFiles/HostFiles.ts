@@ -101,7 +101,7 @@ export class HostFiles extends Context.Service<
       HostFileError
     >;
   }
->()("jones/hostFiles/HostFiles") {}
+>()("t3/jones/hostFiles/HostFiles") {}
 
 const entryKind = (type: FileSystem.File.Type): HostFileEntry["kind"] =>
   type === "File"
@@ -140,7 +140,9 @@ const make = Effect.gen(function* () {
   });
 
   const list = Effect.fn("HostFiles.list")(function* (target: string) {
-    const all = yield* fileSystem.readDirectoryEntries(target).pipe(Effect.mapError(failed(target)));
+    const all = yield* fileSystem
+      .readDirectoryEntries(target)
+      .pipe(Effect.mapError(failed(target)));
     const entries = all
       .map((entry) => ({ name: entry.name, kind: entryKind(entry.type) }))
       .toSorted((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
@@ -209,7 +211,7 @@ const make = Effect.gen(function* () {
     if (sizeBytes > HOST_FILE_WRITE_MAX_BYTES)
       return yield* new HostFileError({ reason: "content_too_large", path: target, sizeBytes });
     const existing = yield* fileSystem.stat(target).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catchIf(
         (cause) => cause.reason._tag === "NotFound",
         () => Effect.succeed(Option.none<FileSystem.File.Info>()),
