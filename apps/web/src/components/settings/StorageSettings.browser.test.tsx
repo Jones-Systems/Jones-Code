@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   report: null as StorageCleanupReport | null,
   reports: {} as Record<string, StorageCleanupReport>,
   installRetentionSupported: true,
+  retirementSupported: false,
 }));
 
 vi.mock(import("../../state/server"), async (original) => {
@@ -68,6 +69,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => {
               installRetention: state.installRetentionSupported,
               storageCleanupRun: true,
               settledWorktreeCleanup: true,
+              settledWorktreeRetirement: state.retirementSupported,
             },
           },
         },
@@ -120,6 +122,7 @@ import { serverEnvironment } from "../../state/server";
 
 function setup() {
   state.installRetentionSupported = true;
+  state.retirementSupported = false;
   state.settings = {
     ...DEFAULT_SERVER_SETTINGS,
     storageCleanup: {
@@ -337,8 +340,8 @@ it("pages each device independently, adds ten and shows all", async () => {
   await using screen = await render(panel());
   await screen.getByRole("button", { name: /Last run/ }).click();
   expect(cleanupRows(screen.container)).toHaveLength(8);
-  expect(screen.container.textContent).toContain("env-a: 0 removed, 10 kept");
-  expect(screen.container.textContent).toContain("env-b: 0 removed, 20 kept");
+  expect(screen.container.textContent).toContain("env-a: Run (action unavailable): Completed · 0 removed, 10 kept");
+  expect(screen.container.textContent).toContain("env-b: Run (action unavailable): Completed · 0 removed, 20 kept");
   expect(screen.container.textContent).toContain(
     "env-a: 7 additional results omitted from this report. These were not classified here.",
   );
@@ -501,4 +504,65 @@ it("prioritizes actionable entries, preserves guarded actions and collapses cate
   await expect
     .element(screen.getByRole("button", { name: "Retire", exact: true }))
     .not.toBeInTheDocument();
+});
+
+
+it("keeps the last completion timestamp in the header when cleanup rules are off", async () => {
+  setup();
+  state.report = { ...cleanupReport("env-a", 0), operation: "propose" };
+  await using screen = await render(panel());
+  const toggle = screen.container.querySelector("#storage-cleanup-last-run button")!;
+  const timestamp = toggle.parentElement!.querySelector('[aria-label^="Last completed run:"]');
+  expect(timestamp?.textContent).not.toBe("");
+  expect(timestamp?.getAttribute("title")).toContain("2026");
+  expect(toggle.parentElement?.lastElementChild?.contains(timestamp!)).toBe(true);
+  expect(deleteButton(screen.container).disabled).toBe(true);
+  await screen.getByRole("button", { name: /Last run/ }).click();
+  expect(screen.container.textContent).toContain("No retirement candidates reported. No deletion requested.");
+  expect(screen.container.textContent).not.toContain("Nothing needed cleanup");
+});
+
+it("shows per-machine times and a range instead of assigning the newest time to every machine", async () => {
+  setup();
+  state.reports = {
+    "env-a": cleanupReport("env-a", 0),
+    "env-b": { ...cleanupReport("env-b", 0), finishedAt: "2026-11-15T10:00:00.000Z" },
+  };
+  await using screen = await render(panel());
+  const timestamp = screen.container.querySelector('[aria-label^="Last completed run:"]')!;
+  expect(timestamp.textContent).toContain(" – ");
+  expect(timestamp.getAttribute("title")).toContain("env-a:");
+  expect(timestamp.getAttribute("title")).toContain("env-b:");
+  await screen.getByRole("button", { name: /Last run/ }).click();
+  expect(screen.container.querySelectorAll('[aria-label^="Completed:"]')).toHaveLength(2);
+});
+
+it("distinguishes no retained report from a completed zero-count run", async () => {
+  setup();
+  await using screen = await render(panel());
+  expect(screen.container.querySelector('[aria-label^="Last completed run:"]')?.textContent).toBe("No report");
+  await screen.getByRole("button", { name: /Last run/ }).click();
+  expect(screen.container.textContent).toContain("No completed report available for this server session.");
+  expect(screen.container.textContent).not.toContain("Completed · 0 removed");
+});
+
+it("keeps proposal progress and an unconfirmed request visible beside the previous report", async () => {
+  setup();
+  state.retirementSupported = true;
+  state.targets = state.targets.slice(0, 1);
+  state.report = { ...cleanupReport("env-a", 0), operation: "cleanup" };
+  let fail!: (error: Error) => void;
+  state.run.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+  await using screen = await render(panel());
+  await screen.getByRole("button", { name: /Last run/ }).click();
+  await screen.getByRole("button", { name: "Propose retirements", exact: true }).click();
+  expect(screen.container.textContent).toContain("Retirement proposal: Running…");
+  expect(deleteButton(screen.container).textContent).toBe("Delete now");
+  expect(screen.container.textContent).toContain("Previous completed report shown below.");
+  const previousTime = screen.container.querySelector('[aria-label^="Last completed run:"]')?.getAttribute("title");
+  await act(() => fail(new Error("Synthetic connection failure")));
+  expect(screen.container.textContent).toContain("Could not confirm completion. Synthetic connection failure");
+  expect(screen.container.querySelector('[aria-label^="Last completed run:"]')?.getAttribute("title")).toBe(previousTime);
+  expect(state.run).toHaveBeenCalledTimes(1);
+  expect(state.run).toHaveBeenCalledWith({ environmentId: "env-a", input: { retirement: { action: "propose" } } });
 });

@@ -1,13 +1,16 @@
-import type { StorageCleanupReport } from "@t3tools/contracts";
+import type { StorageCleanupReport, TimestampFormat } from "@t3tools/contracts";
 import { useState } from "react";
 import { SettingsRow } from "../../components/settings/settingsLayout";
 import { Button, InlineButton } from "../../components/ui/button";
 import { formatBytes } from "../../lib/formatBytes";
+import { cleanupReportSummary, cleanupTimestamp } from "./runStatus";
 
 type CleanupReport = {
   environmentId: string;
   environmentLabel: string;
   report: StorageCleanupReport;
+  timestampFormat?: TimestampFormat;
+  nowMs?: number;
   onRetire?: (entry: StorageCleanupReport["entries"][number]) => void;
 };
 
@@ -62,6 +65,11 @@ function CleanupResultList({ reports }: { reports: readonly CleanupReport[] }) {
 
 function DeviceResults(props: CleanupReport) {
   const [expanded, setExpanded] = useState(true);
+  const timestamp = cleanupTimestamp(
+    props.report.finishedAt,
+    props.timestampFormat ?? "locale",
+    props.nowMs ?? Date.now(),
+  );
   const groups = categories
     .map((category) => ({
       category,
@@ -80,12 +88,22 @@ function DeviceResults(props: CleanupReport) {
       >
         <span aria-hidden="true">{expanded ? "▾" : "▸"}</span>
         <span className="min-w-0 wrap-anywhere">{props.environmentLabel}</span>
-        <span className="text-xs text-muted-foreground">
+        <span className="shrink-0 text-xs text-muted-foreground">
           {props.report.entries.length.toLocaleString()} results
+        </span>
+        <span
+          className="ms-auto text-right text-xs text-muted-foreground"
+          title={timestamp?.exact}
+          aria-label={`Completed: ${timestamp?.exact ?? "Time unavailable"}`}
+        >
+          {timestamp?.label ?? "Time unavailable"}
         </span>
       </button>
       {expanded && (
         <div className="ml-3 border-l border-border/60 sm:ml-4">
+          <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
+            {cleanupReportSummary(props.report)}
+          </p>
           {groups.map(({ category, entries }, index) => (
             <ResultCategory
               key={category}
@@ -103,7 +121,10 @@ function DeviceResults(props: CleanupReport) {
           )}
           {props.report.entries.length === 0 && props.report.omittedCount === 0 && (
             <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-              {props.environmentLabel}: Nothing needed cleanup.
+              {props.environmentLabel}:{" "}
+              {props.report.operation === "propose"
+                ? "No retirement candidates reported. No deletion requested."
+                : "No items reported."}
             </p>
           )}
         </div>

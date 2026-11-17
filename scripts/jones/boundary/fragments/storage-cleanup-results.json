@@ -7,7 +7,12 @@
     "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
     "apps/server/src/jones/mcp/storageCleanup/handlers.ts",
     "apps/server/src/jones/mcp/storageCleanup/tools.ts",
-    "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx"
+    "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx",
+    "apps/web/src/jones/storageCleanupResults/runStatus.ts",
+    "apps/web/src/jones/storageCleanupResults/runStatus.testkit.ts",
+    "apps/web/src/jones/storageCleanupResults/runStatus.test.ts",
+    "apps/web/src/jones/storageCleanupResults/runStatus.node-test.mjs",
+    "packages/contracts/src/jones/storageCleanupReportStatus.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -31,6 +36,10 @@
     {
       "from": "apps/web/src/components/settings/StorageSettings.browser.test.tsx",
       "to": "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/StorageSettings.tsx",
+      "to": "apps/web/src/jones/storageCleanupResults/runStatus.ts"
     }
   ]
 }
