@@ -5,6 +5,7 @@ import {
   RunId,
   NodeId,
   ProviderInstanceId,
+  type OrchestrationV2RunStatus,
   RuntimeRequestId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -41,6 +42,7 @@ const projection = {
       id: command.runId,
       ordinal: 1,
       status: "running" as const,
+      startedAt: now as DateTime.Utc | null,
       rootNodeId: command.rootNodeId,
       providerInstanceId: command.providerInstanceId,
       providerThreadId: null,
@@ -83,6 +85,42 @@ describe("durable user input record", () => {
     ])
       expect(
         buildUserInputRequestRecord({ ...input, command: { ...command, questions: invalid } }),
+      ).toHaveProperty("error");
+  });
+  it("later queued runs cancelled by steering do not revoke the active run", () => {
+    const run = projection.runs[0]!;
+    const later = (ordinal: number, status: OrchestrationV2RunStatus) => ({
+      ...run,
+      id: RunId.make(`later-${ordinal}`),
+      ordinal,
+      status,
+      startedAt: null as DateTime.Utc | null,
+    });
+    for (const runs of [
+      [run, later(2, "cancelled"), later(3, "cancelled")],
+      [run, later(2, "queued"), later(3, "preparing"), later(4, "cancelled")],
+      [run, later(2, "failed"), later(3, "interrupted")],
+    ])
+      expect(
+        buildUserInputRequestRecord({ ...input, projection: { ...projection, runs } }),
+      ).toHaveProperty("node");
+  });
+  it("a later run that started still revokes", () => {
+    const run = projection.runs[0]!;
+    const later = { ...run, id: RunId.make("later"), ordinal: 2 };
+    for (const next of [
+      { ...later, status: "completed" as const, startedAt: now },
+      { ...later, status: "interrupted" as const, startedAt: now },
+      { ...later, status: "cancelled" as const, startedAt: now },
+      { ...later, status: "starting" as const, startedAt: null },
+      { ...later, status: "running" as const, startedAt: now },
+      { ...later, status: "waiting" as const, startedAt: now },
+    ])
+      expect(
+        buildUserInputRequestRecord({
+          ...input,
+          projection: { ...projection, runs: [run, next] },
+        }),
       ).toHaveProperty("error");
   });
   it("refuses terminal, newer-run, root, provider, archive, deletion and identifier collisions", () => {

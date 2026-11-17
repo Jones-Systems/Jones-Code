@@ -173,6 +173,27 @@ describe("personal Workstream header controls", () => {
     expect(counter(screen.container, "Done").getAttribute("aria-label")).toContain("selected");
   });
 
+  it("has no disclosure chevron, keeps the title flush left and toggles through the labelled overlay", async () => {
+    await using screen = await render(<Header />);
+    const header = screen.container.querySelector<HTMLElement>("[data-personal-group-header]")!;
+    expect(header.querySelector("svg")).toBeNull();
+    const headerRect = header.getBoundingClientRect();
+    const title = header.querySelector<HTMLElement>(".line-clamp-2")!;
+    const paddingLeft = parseFloat(getComputedStyle(header).paddingLeft);
+    expect(title.getBoundingClientRect().left - headerRect.left).toBeCloseTo(paddingLeft, 1);
+    const count = [...header.querySelectorAll("span")].find(
+      (element) => element.textContent === "14 threads",
+    )!;
+    expect(count.getBoundingClientRect().left).toBeCloseTo(title.getBoundingClientRect().left, 1);
+    const toggle = page.getByRole("button", { name: "Collapse Alpha", exact: true });
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(page.getByText("Alpha", { exact: true }));
+    await expect
+      .element(page.getByRole("button", { name: "Expand Alpha", exact: true }))
+      .toHaveAttribute("aria-expanded", "false");
+    await expect.element(page.getByText("Member threads", { exact: true })).not.toBeInTheDocument();
+  });
+
   it("matches the real top-bar pill's standard geometry when the title has room", async () => {
     await using screen = await render(
       <>
@@ -254,9 +275,13 @@ describe("personal Workstream header controls", () => {
     const minimum = minimumLayout(screen.container);
     const width = 260 + wordWidth * 1.6 - minimum.titleWidth;
     await screen.rerender(<Header width={width} name={"Workstream ".repeat(12)} />);
+    // The title is flush left, so at 260 px two words share a line and the counters stay
+    // compressed. A width-only rerender refits through ResizeObserver before the next paint.
+    await expect
+      .poll(() => pill(screen.container).getBoundingClientRect().width)
+      .toBeCloseTo(standardWidth, 1);
     expect(visibleTitleLines(screen.container)).toEqual(minimumLayout(screen.container).lines);
     expect(visibleTitleLines(screen.container)).toEqual(["Workstream", "Workstream"]);
-    expect(pill(screen.container).getBoundingClientRect().width).toBeCloseTo(standardWidth, 1);
   });
 
   it("refits live resize, count and font changes without hiding large counts or the name editor", async () => {

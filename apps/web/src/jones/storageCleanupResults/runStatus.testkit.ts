@@ -71,6 +71,18 @@ export const runStatusCases = {
     NodeAssert.match(summary, /no deletion requested/);
     NodeAssert.doesNotMatch(summary, /removed|recovered|Failed/);
   },
+  "retire summary shows recovered size": () => {
+    const summary = cleanupReportSummary(
+      report({
+        operation: "retire",
+        counts: { removed: 1, kept: 0, failed: 0 },
+        bytesFreed: 3 * 1024 ** 3,
+      }),
+    );
+    NodeAssert.match(summary, /Checkout retirement: Completed · 1 removed, 0 kept/);
+    NodeAssert.match(summary, /about 3\.00 GB recovered/);
+    NodeAssert.doesNotMatch(cleanupReportSummary(report({ operation: "retire" })), /recovered/);
+  },
   "legacy manual reports preserve unknown action instead of inferring delete": () => {
     NodeAssert.match(cleanupReportSummary(report()), /Run \(action unavailable\): Completed/);
     NodeAssert.match(

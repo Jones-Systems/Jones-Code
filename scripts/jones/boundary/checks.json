@@ -1412,6 +1412,8 @@
         "apps/server/src/serverRuntimeStartup.test.ts",
         "apps/server/src/cli/service.test.ts",
         "apps/server/src/cli/update.test.ts",
+        "apps/server/src/cli/uninstall.test.ts",
+        "apps/server/src/jones/cli/managedRuntime.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/cloud/qualifiedBackup.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts",
@@ -5316,6 +5318,7 @@
         "apps/web/src/jones/workstreams/personalStatusFilter.test.ts",
         "apps/web/src/jones/workstreams/personalStatusFilter.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx",
+        "apps/web/src/jones/workstreams/personalBulkControls.browser.test.tsx",
         "apps/web/src/hooks/useThreadActionMenu.test.ts",
         "apps/web/src/components/threadActionMenu.logic.test.ts"
       ],
@@ -5324,9 +5327,9 @@
         "vp test run --project browser apps/web/src/jones/workstreams/personalNative.browser.test.tsx apps/web/src/jones/workstreams/personalSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "cd apps/mobile && vp test run --project unit src/features/workstreams/personalStorage.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/web/src/jones/workstreams/personalThreadReorder.test.ts src/jones/workstreams/personalThreadWindow.test.ts --maxWorkers=1 --no-file-parallelism",
-        "cd apps/web && vp test run --project browser src/jones/workstreams/personalSidebarOrder.browser.test.tsx src/jones/workstreams/personalThreadDrag.browser.test.tsx src/jones/workstreams/sidebarDragAutoScroll.browser.test.ts src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx src/jones/workstreams/personalThreadWindow.browser.test.tsx src/jones/workstreams/personalInlineRename.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project browser src/jones/workstreams/personalSidebarOrder.browser.test.tsx src/jones/workstreams/personalThreadDrag.browser.test.tsx src/jones/workstreams/sidebarDragAutoScroll.browser.test.ts src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx src/jones/workstreams/personalThreadWindow.browser.test.tsx src/jones/workstreams/personalInlineRename.browser.test.tsx src/jones/workstreams/personalBulkControls.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run --project unit src/jones/workstreams/personalThreadPlacement.test.ts src/jones/workstreams/personalThreadReorder.test.ts src/jones/workstreams/personalThreadWindow.test.ts --maxWorkers=1 --no-file-parallelism",
-        "cd apps/web && vp test run --project unit src/reactCompilerCoverage.test.ts -t 'Workstream(NativeSidebar|SidebarSection)|PersonalWorkstreamTitleEditor|PersonalSidebarGroupHeader' --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project unit src/reactCompilerCoverage.test.ts -t 'Workstream(NativeSidebar|SidebarSection)|PersonalWorkstreamTitleEditor|PersonalSidebarGroupHeader|PersonalStatusPill|PersonalWorkstreamsHeader' --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/web/src/jones/workstreams/personalRail.test.ts"
       ]
     },
@@ -5481,13 +5484,14 @@
         "apps/server/src/provider/AgentContextBudget.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
+        "apps/server/src/jones/storageCleanup/RetirementReport.test.ts",
         "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
         "apps/web/src/components/settings/StorageSettings.browser.test.tsx",
         "apps/web/src/jones/storageCleanupResults/runStatus.test.ts",
         "packages/contracts/src/jones/storageCleanupReportStatus.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/storageCleanupResults/runStatus.test.ts packages/contracts/src/jones/storageCleanupReportStatus.test.ts apps/server/src/jones/workspaceRetirement/OwnerAction.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/storageCleanupResults/runStatus.test.ts packages/contracts/src/jones/storageCleanupReportStatus.test.ts apps/server/src/jones/workspaceRetirement/OwnerAction.test.ts apps/server/src/jones/storageCleanup/RetirementReport.test.ts --maxWorkers=1 --no-file-parallelism",
         "TZ=America/New_York node --test --test-concurrency=1 apps/web/src/jones/storageCleanupResults/runStatus.node-test.mjs",
         "vp test run apps/server/src/jones/storageCleanup/ReportRead.test.ts apps/server/src/jones/mcp/storageCleanup/handlers.test.ts apps/server/src/provider/AgentContextBudget.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run --project browser src/components/settings/StorageSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
@@ -5590,6 +5594,23 @@
         "node --test --test-concurrency=1 apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-host-files",
+      "tests": [
+        "apps/server/src/jones/hostFiles/HostFiles.test.ts",
+        "apps/server/src/jones/mcp/hostFiles/handlers.test.ts",
+        "apps/server/src/provider/AgentContextBudget.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/hostFiles/HostFiles.test.ts apps/server/src/jones/mcp/hostFiles/handlers.test.ts apps/server/src/provider/AgentContextBudget.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "vp lint apps/server/src/jones/hostFiles apps/server/src/jones/mcp/hostFiles packages/contracts/src/jones/hostFiles.ts apps/server/src/mcp/McpHttpServer.ts packages/contracts/src/index.ts",
+        "vp run knip:check",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
       ]
     }
   ]

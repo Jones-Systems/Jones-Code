@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -61,9 +62,17 @@ import {
 } from "../../jones/workstreams/personalPresentation";
 import { personalWorkstreamRailColor } from "../../jones/workstreams/personalRail";
 import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalWorkstreamTitleEditor";
+import { PersonalWorkstreamsHeader } from "../../jones/workstreams/PersonalWorkstreamsHeader";
 
-import { usePersonalStatusFilter } from "../../jones/workstreams/personalStatusFilter";
-import { personalGroupCollapsedKey } from "../../jones/workstreams/personalSidebarOrder";
+import {
+  usePersonalStatusFilter,
+  useSharedPersonalStatusFilter,
+} from "../../jones/workstreams/personalStatusFilter";
+import {
+  personalGroupCollapsedKey,
+  personalNamedGroupsHiddenKey,
+  setPersonalGroupsCollapsed,
+} from "../../jones/workstreams/personalSidebarOrder";
 import {
   usePersonalThreadWindow,
   type PersonalThreadLimit,
@@ -505,6 +514,26 @@ export function WorkstreamSidebarSection({
     false,
     collapsedSchema,
   );
+  // Hiding is separate from each group's own collapsed state so showing again restores it exactly.
+  const [namedHidden, setNamedHidden] = useLocalStorage(
+    personalNamedGroupsHiddenKey,
+    false,
+    collapsedSchema,
+  );
+  const namedGroupsId = useId();
+  const namedIds = state.workstreams.map((entry) => entry.id);
+  const sharedStatus = useSharedPersonalStatusFilter(namedIds);
+  const namedSummary = state.workstreams.reduce(
+    (total, entry) => {
+      const summary = summaries?.get(entry.id) ?? emptySummary;
+      return {
+        running: total.running + summary.running,
+        attention: total.attention + summary.attention,
+        done: total.done + summary.done,
+      };
+    },
+    { running: 0, attention: 0, done: 0 },
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [deletePending, setDeletePending] = useState(false);
@@ -683,48 +712,65 @@ export function WorkstreamSidebarSection({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInsertion(null);
       }}
     >
-      {state.workstreams.map((item) => (
-        <div
-          key={item.id}
-          className="relative py-1"
-          onDragOver={(event) => dragOver(event, item.id)}
-          onDrop={(event) => drop(event, item.id)}
-        >
-          {insertion?.afterId === item.id ? insertionLine : null}
-          <Group
-            item={item}
-            controller={controller}
-            summary={summaries?.get(item.id) ?? emptySummary}
-            memberCount={memberCounts?.get(item.id) ?? 0}
-            dragging={draggedId === item.id}
-            confirmingDelete={deleteTarget?.id === item.id}
-            onDeleteRequested={() => {
-              removedRef.current = false;
-              setDeleteTarget({ id: item.id, name: item.name });
-            }}
-            onDragStart={(event) => {
-              if (
-                event.target instanceof Element &&
-                event.target.closest("[data-workstream-header-control]")
-              ) {
-                event.preventDefault();
-                return;
-              }
-              if (!state.canCreate || reorderPending.current) {
-                event.preventDefault();
-                return;
-              }
-              event.dataTransfer.setData(workstreamDragType, item.id);
-              event.dataTransfer.effectAllowed = "move";
-              draggedRef.current = item.id;
-              setDraggedId(item.id);
-              setInsertion(null);
-            }}
-          >
-            {(window) => renderMembers(item.id, window)}
-          </Group>
-        </div>
-      ))}
+      {state.workstreams.length > 0 ? (
+        <PersonalWorkstreamsHeader
+          summary={namedSummary}
+          hidden={namedHidden}
+          onHiddenChange={setNamedHidden}
+          onExpandAll={() => setPersonalGroupsCollapsed(namedIds, false)}
+          onCollapseAll={() => setPersonalGroupsCollapsed(namedIds, true)}
+          statusFilter={sharedStatus.filter}
+          onStatusFilterChange={sharedStatus.setFilter}
+          controlsId={namedGroupsId}
+        />
+      ) : null}
+      {/* The container stays mounted so the disclosure's aria-controls always resolves. */}
+      <div id={namedGroupsId} hidden={namedHidden}>
+        {!namedHidden
+          ? state.workstreams.map((item) => (
+              <div
+                key={item.id}
+                className="relative py-1"
+                onDragOver={(event) => dragOver(event, item.id)}
+                onDrop={(event) => drop(event, item.id)}
+              >
+                {insertion?.afterId === item.id ? insertionLine : null}
+                <Group
+                  item={item}
+                  controller={controller}
+                  summary={summaries?.get(item.id) ?? emptySummary}
+                  memberCount={memberCounts?.get(item.id) ?? 0}
+                  dragging={draggedId === item.id}
+                  confirmingDelete={deleteTarget?.id === item.id}
+                  onDeleteRequested={() => {
+                    removedRef.current = false;
+                    setDeleteTarget({ id: item.id, name: item.name });
+                  }}
+                  onDragStart={(event) => {
+                    if (
+                      event.target instanceof Element &&
+                      event.target.closest("[data-workstream-header-control]")
+                    ) {
+                      event.preventDefault();
+                      return;
+                    }
+                    if (!state.canCreate || reorderPending.current) {
+                      event.preventDefault();
+                      return;
+                    }
+                    event.dataTransfer.setData(workstreamDragType, item.id);
+                    event.dataTransfer.effectAllowed = "move";
+                    draggedRef.current = item.id;
+                    setDraggedId(item.id);
+                    setInsertion(null);
+                  }}
+                >
+                  {(window) => renderMembers(item.id, window)}
+                </Group>
+              </div>
+            ))
+          : null}
+      </div>
       <div
         className="relative py-1"
         onDragOver={(event) => dragOver(event, null)}
@@ -740,10 +786,6 @@ export function WorkstreamSidebarSection({
             onClick={() => setUnassignedCollapsed((value) => !value)}
             className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
-            <ChevronDownIcon
-              aria-hidden
-              className={`size-4 shrink-0 ${unassignedCollapsed ? "-rotate-90" : ""}`}
-            />
             <span className="truncate">Unassigned</span>
             <span className="ml-auto shrink-0 text-xs tabular-nums">
               {formatPersonalThreadCount(unassignedSummary.total)}

@@ -211,6 +211,17 @@ jobs:
           cache: true
           run-install: true
 
+      # The development host refuses a locked version younger than its pnpm
+      # minimumReleaseAge unless pnpm-workspace.yaml excludes that exact version.
+      # CI has no such policy, so this is where the lockfile meets it. The npm
+      # registry is read only when a pull request adds lock entries.
+      - name: Check dependency release-age exclusions
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          node scripts/jones/ci/release-age.mjs ${BASE_SHA:+--base "$BASE_SHA"}
+          git diff --exit-code -- pnpm-lock.yaml
+
       - name: Check Jones migration order
         run: node scripts/jones/ci/jones-migration-order.cjs
 

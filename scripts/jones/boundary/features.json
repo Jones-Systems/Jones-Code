@@ -1380,6 +1380,8 @@
     {
       "id": "qualified-updates",
       "tests": [
+        "apps/server/src/jones/cli/managedRuntime.test.ts",
+        "apps/server/src/cli/uninstall.test.ts",
         "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
         "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
         "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts",
@@ -3367,9 +3369,10 @@
         "apps/web/src/jones/workstreams/personalPresentation.test.ts",
         "apps/web/src/jones/workstreams/personalStatusFilter.test.ts",
         "apps/web/src/jones/workstreams/personalStatusFilter.browser.test.tsx",
-        "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx"
+        "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx",
+        "apps/web/src/jones/workstreams/personalBulkControls.browser.test.tsx"
       ],
-      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Sidebar navigation follows visible pinned, Workstream and Unassigned order, including collapsed-group route anchors. Thread drop placement plans prospective membership before assignment and preserves other groups. Shared Sidebar edits integrate ordering and placement; Jones presentation owns lifted drag feedback, exact insertion slots, segmented lifecycle options and confirmed deletion. Native compact headers retain status counts, failure summaries and persisted collapse controls; deterministic muted rails preserve workstream identity. Workstream drops resolve against header halves; Unassigned follows upstream active-reorder capability and Working-shelf restrictions. Each Workstream has a per-client default of 5, 10 or 15 visible active threads plus Show all/Show fewer; traversal and route anchors match visible rows. Menu and double-click rename share the inline title editor. Member rows reuse the composer thread-reference drop bridge. Workstream status counters set per-client overrides of the global status filter, including status exclusion; navigation consumes the same filtered candidates. Header controls share a full-width grid without a left grip, and visible-thread expansion uses the Divider footer. Shared web/desktop title context menus delegate to the mounted sidebar owner so assignment, project filters and action handlers match. Find remains title-only below auto-settle; assignment leads its action section. Small Sidebar registration and useThreadActionMenu routing hooks preserve the existing menu owner instead of duplicating workstream actions."
+      "scope": "Environment-local personal assignments, whole-record replicated definitions, terminal tombstones, staged import, ordinary permissions, native presentation and explicit unavailable legacy HTTP routes; retained migrations and historical pruning remain independently covered. Sidebar navigation follows visible pinned, Workstream and Unassigned order, including collapsed-group route anchors. Thread drop placement plans prospective membership before assignment and preserves other groups. Shared Sidebar edits integrate ordering and placement; Jones presentation owns lifted drag feedback, exact insertion slots, segmented lifecycle options and confirmed deletion. Native compact headers retain status counts, failure summaries and persisted collapse controls; deterministic muted rails preserve workstream identity. Workstream drops resolve against header halves; Unassigned follows upstream active-reorder capability and Working-shelf restrictions. Each Workstream has a per-client default of 5, 10 or 15 visible active threads plus Show all/Show fewer; traversal and route anchors match visible rows. Menu and double-click rename share the inline title editor. Member rows reuse the composer thread-reference drop bridge. Workstream status counters set per-client overrides of the global status filter, including status exclusion; navigation consumes the same filtered candidates. Header controls share a full-width grid without a left grip, and visible-thread expansion uses the Divider footer. A transparent Workstreams row above the named groups expands or collapses every group, hides or shows all of them without writing any group's own collapsed state (so showing restores each group exactly, and hidden rows leave traversal), and carries the same status pill as a group header over the summed unfiltered counts of named groups. Status choices are revisioned records: a group's own choice and the shared Workstreams choice resolve by recency, a group's clear follows the global filter even while the shared choice is active, a shared clear sends every named group to the global filter without reviving older choices, and bare legacy values read as revision 0. Named member lists indent a literal 8 CSS px; Unassigned has no disclosure chevron. Shared web/desktop title context menus delegate to the mounted sidebar owner so assignment, project filters and action handlers match. Find remains title-only below auto-settle; assignment leads its action section. Small Sidebar registration and useThreadActionMenu routing hooks preserve the existing menu owner instead of duplicating workstream actions."
     },
     {
       "id": "active-workspace-handoff",
@@ -3466,12 +3469,13 @@
         "apps/server/src/provider/AgentContextBudget.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/jones/storageCleanup/ReportRead.test.ts",
+        "apps/server/src/jones/storageCleanup/RetirementReport.test.ts",
         "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
         "apps/web/src/components/settings/StorageSettings.browser.test.tsx",
         "apps/web/src/jones/storageCleanupResults/runStatus.test.ts",
         "packages/contracts/src/jones/storageCleanupReportStatus.test.ts"
       ],
-      "scope": "Storage cleanup results initially render five rows total across selected environments, expand by ten, and preserve retirement guards. A read-only MCP adapter pages the same session report with exact filters, snapshot consistency, explicit omissions and a serialized response budget; it cannot evaluate or execute cleanup. The Last run header preserves per-machine completion times, distinguishes proposal and cleanup reports, and separates active or unconfirmed requests from completed results. Optional operation metadata preserves legacy report decoding; report retention remains server-session-only. Accepted shared edits keep the cleanup timestamp in the folded header without duplicating the fold, and use an erased type import in the existing timestamp formatter so native focused checks need no runtime contracts package."
+      "scope": "Storage cleanup results initially render five rows total across selected environments, expand by ten, and preserve retirement guards. A read-only MCP adapter pages the same session report with exact filters, snapshot consistency, explicit omissions and a serialized response budget; it cannot evaluate or execute cleanup. The Last run header preserves per-machine completion times, distinguishes proposal and cleanup reports, and separates active or unconfirmed requests from completed results. Optional operation metadata preserves legacy report decoding; report retention remains server-session-only. An owner retire is folded into the retained manual proposal report by one small storageCleanup.ts hook, keeping every other reviewed entry, reporting measured bytes only as freed when the entry was removed, and naming stale-binding refusals as held entries. Accepted shared edits keep the cleanup timestamp in the folded header without duplicating the fold, and use an erased type import in the existing timestamp formatter so native focused checks need no runtime contracts package."
     },
     {
       "id": "panel-find",
@@ -3490,6 +3494,15 @@
         "apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs"
       ],
       "scope": "Immutable open claim handles, interruption-safe registration, independent release retries, permanent multiple-generation downgrade and exact validated runtime-use retirement links. Existing producer lifetime remains the sole drain authority; old/unlinked and unsupported producers retain uncertainty."
+    },
+    {
+      "id": "host-files",
+      "tests": [
+        "apps/server/src/jones/hostFiles/HostFiles.test.ts",
+        "apps/server/src/jones/mcp/hostFiles/handlers.test.ts",
+        "apps/server/src/provider/AgentContextBudget.test.ts"
+      ],
+      "scope": "Agents read text files, list directories and write text files by absolute path in their own environment or a linked one, through two MCP tools that take the native linked-environment target and ride existing peer forwarding. Reads need a full-access runtime mode and writes a full-access/default caller, checked in the environment that owns the file against the link's access narrowed to the calling agent's modes; read-only and lower-access clients are refused before the disk is touched. Reads are bounded line windows of text files up to 8 MiB with a 192 KiB result budget, listings stop at 1000 entries, and writes stop at 1 MiB and replace an existing file only on request. The small McpHttpServer hook registers the toolkit and the contracts index exports its schemas. No client UI, persisted state, provider or transport behavior changes; an older linked environment answers the call as an unknown tool."
     }
   ]
 }
