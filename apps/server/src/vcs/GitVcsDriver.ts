@@ -17,6 +17,7 @@ import {
   VcsCheckpointStorageError,
   VcsProcessExitError,
   VcsUnsupportedOperationError,
+  type VcsError,
   type VcsSwitchRefInput,
   type VcsSwitchRefResult,
   type VcsCreateRefInput,
@@ -50,6 +51,17 @@ import * as CheckoutCloner from "./CheckoutCloner.ts";
 import * as CheckpointUntrackedBlobs from "./checkpointUntrackedBlobs.ts";
 import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
+import * as CaptureRepository from "../jones/checkpointCapture/CaptureRepository.ts";
+import type {
+  LegacyBranchRenameHooks,
+  LegacyWorktreePreparationHooks,
+} from "../jones/nativeCreation/worktreeObservation/WorktreeObservation.ts";
+import {
+  recreate,
+  RecreationHold,
+  type RecreationInput,
+  type RecreationResult,
+} from "../jones/workspaceRecreation/Native.ts";
 
 export interface ExecuteGitInput {
   readonly operation: string;
@@ -147,7 +159,18 @@ export interface CreateWorktreeProgress {
   }) => Effect.Effect<void, never>;
 }
 
+export type {
+  LegacyWorktreeBeforeObservation,
+  LegacyWorktreeMaterialClaim,
+  LegacyWorktreePreparationStep,
+  LegacyWorktreePreparationHooks,
+  LegacyBranchRenameStep,
+  LegacyBranchRenameHooks,
+} from "../jones/nativeCreation/worktreeObservation/WorktreeObservation.ts";
+
 export interface CreateWorktreeOptions {
+  /** Original-owner observation; guarded calls bypass unobserved cache and recovery effects. */
+  readonly legacyPreparation?: LegacyWorktreePreparationHooks;
   readonly progress?: CreateWorktreeProgress;
   /** Null or omitted defers to the checkout's t3.json. */
   readonly submodules?: WorktreeSubmodules | null;
@@ -204,6 +227,7 @@ export interface GitRangeContext {
 }
 
 export interface GitRenameBranchInput {
+  readonly legacyPreparation?: LegacyBranchRenameHooks;
   exactName?: boolean;
   cwd: string;
   oldBranch: string;
@@ -280,6 +304,12 @@ export interface GitResolveRemoteTrackingCommitInput {
   cwd: string;
   refName: string;
   fallbackRemoteName: string;
+}
+
+export interface GitResolveRemoteTrackingCommitIfExistsInput {
+  cwd: string;
+  remoteName: string;
+  branchName: string;
 }
 
 export interface GitResolveRemoteTrackingCommitResult {
@@ -399,6 +429,10 @@ export class GitVcsDriver extends Context.Service<
       input: VcsCreateWorktreeInput,
       options?: CreateWorktreeOptions,
     ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
+    /** Jones exact native checkout recreation; absent from drivers that cannot observe it. */
+    readonly recreateCheckout?: (
+      input: RecreationInput,
+    ) => Effect.Effect<RecreationResult, RecreationHold>;
     /** Deletes the macOS worktree checkout cache in the background. */
     readonly clearWorktreeCheckoutCache: Effect.Effect<void>;
     /** Force-updates local `branch` to the primary remote's `ref`. */
@@ -428,6 +462,9 @@ export class GitVcsDriver extends Context.Service<
     readonly resolveRemoteTrackingCommit: (
       input: GitResolveRemoteTrackingCommitInput,
     ) => Effect.Effect<GitResolveRemoteTrackingCommitResult, GitCommandError>;
+    readonly resolveRemoteTrackingCommitIfExists: (
+      input: GitResolveRemoteTrackingCommitIfExistsInput,
+    ) => Effect.Effect<GitResolveRemoteTrackingCommitResult | null, GitCommandError>;
     readonly resolveWorktreeBaseRemote: (
       input: GitFetchWorktreeBaseCommitInput,
     ) => Effect.Effect<GitWorktreeBaseRemote | null, GitCommandError>;
@@ -911,73 +948,8 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       }),
     );
 
-  // Git reports relative paths from the physical cwd, which can differ from a symlink.
-  const resolveGitCommonDir = Effect.fn("GitVcsDriver.resolveGitCommonDir")(function* (
-    cwd: string,
-  ) {
-    const result = yield* execute({
-      operation: "GitVcsDriver.checkpoints.resolveGitCommonDir",
-      cwd,
-      args: ["rev-parse", "--git-common-dir"],
-    });
-    const gitCommonDir = result.stdout.trim();
-    if (path.isAbsolute(gitCommonDir)) return gitCommonDir;
-    const physicalCwd = yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
-    return path.resolve(physicalCwd, gitCommonDir);
-  });
-
-  // --verify prints HEAD after the paths; --quiet leaves only paths for an unborn HEAD.
-  const resolveCaptureRepository = Effect.fn("GitVcsDriver.resolveCaptureRepository")(function* (
-    cwd: string,
-  ) {
-    const result = yield* execute({
-      operation: VcsProcess.CHECKPOINT_CAPTURE_OPERATION,
-      cwd,
-      args: [
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-common-dir",
-        "--git-path",
-        "index",
-        "--show-toplevel",
-        "--show-prefix",
-        "--verify",
-        "--quiet",
-        "HEAD",
-      ],
-      allowNonZeroExit: true,
-    });
-    const headExists = result.exitCode === 0;
-    const headChecked = headExists || result.exitCode === 1;
-    const lines = result.stdout.split("\n");
-    const [gitCommonDir = "", indexPath = "", topLevel = "", prefix = "", head = ""] = lines;
-    if (headChecked && lines.length === (headExists ? 6 : 5) && lines.at(-1) === "") {
-      return {
-        gitCommonDir: gitCommonDir.trim(),
-        indexPath: indexPath.trim(),
-        topLevel: topLevel.trim(),
-        prefix,
-        headExists,
-        head: headExists ? head : undefined,
-      };
-    }
-    // Git before 2.31 echoes --path-format, and a path containing a newline spans lines.
-    // Separate commands read the paths as before and report a failure the same way.
-    const fallbackCommonDir = yield* resolveGitCommonDir(cwd);
-    const prefixResult = yield* execute({
-      operation: VcsProcess.CHECKPOINT_CAPTURE_OPERATION,
-      cwd,
-      args: ["rev-parse", "--show-prefix"],
-    });
-    return {
-      gitCommonDir: fallbackCommonDir,
-      indexPath: undefined,
-      topLevel: undefined,
-      prefix: prefixResult.stdout.replace(/\n$/, ""),
-      headExists: headChecked ? headExists : yield* hasHeadCommit(cwd),
-      head: undefined,
-    };
-  });
+  const { resolveRepository: resolveCaptureRepository, resolvePath: resolveCapturePath } =
+    yield* CaptureRepository.make(execute);
 
   // $displaypath is relative to cwd, so "../" marks submodules outside a nested workspace.
   const listSubmodules = Effect.fn("GitVcsDriver.listSubmodules")(function* (cwd: string) {
@@ -992,18 +964,16 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       .map((entry) => path.join(cwd, entry));
   });
 
-  // Git defaults and macOS writeout-only can leave empty refs after crashes; flush before publication.
-  // Set fsync first: Git 2.36 ignores unknown batch without resetting the method.
-  // Batch fully flushes refs and equals fsync on macOS HFS+/APFS and Windows NTFS/ReFS.
-  // Keep per-object fsync elsewhere; VcsProcess retries unsupported macOS full flushes with plain fsync.
+  // Flush objects and refs before publication. Apple Git 157 batch staging fails
+  // in the private object store; full fsync retains bulk packs but flushes each
+  // loose object. Windows keeps batch after fsync for Git 2.36 compatibility.
+  // VcsProcess retains its unsupported macOS full-flush fallback.
   const durableWrite = [
     "-c",
     "core.fsync=objects,reference",
     "-c",
     "core.fsyncMethod=fsync",
-    ...(hostPlatform === "darwin" || hostPlatform === "win32"
-      ? ["-c", "core.fsyncMethod=batch"]
-      : []),
+    ...(hostPlatform === "win32" ? ["-c", "core.fsyncMethod=batch"] : []),
   ] as const;
 
   // Checkpoints must handle existing paths beyond Windows MAX_PATH, even when
@@ -1070,8 +1040,14 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
 
   const untrackedBlobs = CheckpointUntrackedBlobs.make(execute, fileSystem);
 
-  const checkpoints: VcsDriver.VcsCheckpointOps = {
-    captureCheckpoint: Effect.fn("GitVcsDriver.checkpoints.captureCheckpoint")(function* (input) {
+  const captureCheckpoint: (
+    input: VcsDriver.VcsCaptureCheckpointInput,
+    resolveRepository?: typeof resolveCaptureRepository,
+  ) => Effect.Effect<void, VcsError> = Effect.fn("GitVcsDriver.checkpoints.captureCheckpoint")(
+    function* (
+      input: VcsDriver.VcsCaptureCheckpointInput,
+      resolveRepository = resolveCaptureRepository,
+    ) {
       const operation = VcsProcess.CHECKPOINT_CAPTURE_OPERATION;
       // Scratch split-index writes can expire sharedindex files still used by the real index.
       const indexConfig = [
@@ -1084,8 +1060,8 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         "-c",
         "splitIndex.sharedIndexExpire=never",
       ];
-      const { gitCommonDir, indexPath, topLevel, prefix, headExists, head } =
-        yield* resolveCaptureRepository(input.cwd);
+      const { gitCommonDir, indexPath, topLevel, prefix, headExists, head, resolveSubmodule } =
+        yield* resolveRepository(input.cwd);
       // Read before the snapshot and pinned to the same HEAD: a switch that lands while files are
       // being staged then belongs to the next checkpoint instead of being applied to this one.
       const headMoves = head === undefined ? [] : yield* readHeadMoves(input.cwd);
@@ -1125,6 +1101,18 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
               }),
             ),
           ),
+      );
+      // Bulk-checkin moves completed packs into this alternate object-store bucket.
+      yield* fileSystem.makeDirectory(path.join(privateObjects, "pack")).pipe(
+        Effect.mapError(
+          (cause) =>
+            new VcsCheckpointStorageError({
+              operation,
+              cwd: input.cwd,
+              stage: "isolate",
+              cause,
+            }),
+        ),
       );
       const commitEnv: NodeJS.ProcessEnv = {
         GIT_INDEX_FILE: tempIndexPath,
@@ -1168,11 +1156,11 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           const reusedIndex = yield* Effect.gen(function* () {
             const userIndexPath =
               indexPath ??
-              (yield* execute({
+              (yield* resolveCapturePath(
+                input.cwd,
+                ["rev-parse", "--path-format=absolute", "--git-path", "index"],
                 operation,
-                cwd: input.cwd,
-                args: ["rev-parse", "--path-format=absolute", "--git-path", "index"],
-              })).stdout.trim();
+              ));
             const { mtime } = yield* fileSystem.stat(userIndexPath);
             if (Option.isNone(mtime)) return false;
             // Stay below the source timestamp even if Date rounded up, preserving Git's racy check.
@@ -1766,9 +1754,13 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           Effect.forEach(
             submodules,
             (cwd) =>
-              checkpoints
-                .captureCheckpoint({ cwd, checkpointRef: input.checkpointRef })
-                .pipe(
+              Effect.gen(function* () {
+                // Reject an unregistered target before even the failure cleanup can
+                // write its refs. Only this private recursion uses the continuation.
+                const repository = yield* resolveSubmodule(cwd);
+                yield* captureCheckpoint({ cwd, checkpointRef: input.checkpointRef }, () =>
+                  Effect.succeed(repository),
+                ).pipe(
                   Effect.catch((cause) =>
                     Effect.logWarning("submodule checkpoint capture failed", { cwd, cause }).pipe(
                       Effect.andThen(
@@ -1778,7 +1770,12 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
                       ),
                     ),
                   ),
+                );
+              }).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("submodule checkpoint authorization failed", { cwd, cause }),
                 ),
+              ),
             { discard: true },
           ),
         ),
@@ -1786,7 +1783,12 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           Effect.logWarning("submodule checkpoint capture failed", { cwd: input.cwd, cause }),
         ),
       );
-    }, Effect.scoped),
+    },
+    Effect.scoped,
+  );
+
+  const checkpoints: VcsDriver.VcsCheckpointOps = {
+    captureCheckpoint: (input) => captureCheckpoint(input),
 
     hasCheckpointRef: (input) =>
       resolveCheckpointCommit(input.cwd, input.checkpointRef).pipe(
@@ -2252,7 +2254,30 @@ export const makeVcsDriver = Effect.gen(function* () {
 
 export const make = Effect.gen(function* () {
   const git = yield* makeGitVcsDriverCore();
-  return GitVcsDriver.of(git);
+  return GitVcsDriver.of({
+    ...git,
+    // Native recreation writes refs and the worktree list outside this driver's
+    // commands, so cached refs and repository paths for `cwd` are dropped after it.
+    // The observation itself is not interruptible: its outcome must be reported.
+    recreateCheckout: Effect.fn("GitVcsDriver.recreateCheckout")(function* (
+      input: RecreationInput,
+    ) {
+      return yield* Effect.tryPromise({
+        try: () => recreate(input),
+        catch: (cause) =>
+          cause instanceof RecreationHold
+            ? cause
+            : new RecreationHold(
+                "unknown",
+                input.source.binding.path,
+                input.owner,
+                "native recreation observation unavailable",
+                "Reconcile this exact checkout before retrying.",
+                { cause },
+              ),
+      }).pipe(Effect.uninterruptible, Effect.ensuring(git.invalidateRefs(input.cwd)));
+    }),
+  });
 });
 
 export const layerVcs = Layer.effect(VcsDriver.VcsDriver, makeVcsDriver);

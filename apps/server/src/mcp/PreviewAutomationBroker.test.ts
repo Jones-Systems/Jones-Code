@@ -1,4 +1,3 @@
-import * as TestClock from "effect/testing/TestClock";
 import * as Exit from "effect/Exit";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -23,7 +22,6 @@ import {
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
-import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Queue from "effect/Queue";
 import * as Scheduler from "effect/Scheduler";
@@ -887,35 +885,18 @@ it.effect("retains a disconnected provider session affinity until its hold expir
 
       yield* broker.focusHost({
         clientId: "client-first",
-        connectionId: request.connectionId,
-        requestId: request.requestId,
-        ok: true,
-        result: request.operation === "open" ? { host: "first", tabId: firstTabId } : "first",
-      }),
-    ).pipe(Effect.forkScoped);
-    yield* Stream.runForEach(secondRequests, (request) => {
-      secondRoutedTabId = request.tabId;
-      return broker.respond({
-        clientId: "client-second",
-        connectionId: request.connectionId,
-        requestId: request.requestId,
-        ok: true,
-        result: "second",
+        environmentId: scope.environmentId,
+        connectionId: firstConnectionId,
+        focused: true,
+        liveTabs: [{ threadId: scope.thread.threadId, tabId: firstTabId }],
       });
-    }).pipe(Effect.forkScoped);
-    yield* Effect.yieldNow;
+      expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toEqual({
+        host: "first",
+        tabId: firstTabId,
+      });
 
-    yield* broker.focusHost({
-      clientId: "client-first",
-      environmentId: scope.environmentId,
-      connectionId: firstConnectionId,
-      focused: true,
-      liveTabs: [{ threadId: scope.thread.threadId, tabId: firstTabId }],
-    });
-    expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toEqual({
-      host: "first",
-      tabId: firstTabId,
-    });
+      yield* Fiber.interrupt(firstConsumer);
+      yield* Effect.yieldNow;
 
       expect(
         yield* broker
@@ -984,10 +965,10 @@ it.effect("does not carry a tab id across a replacement automation stream", () =
       ).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
 
-    expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toEqual({
-      host: "first",
-      tabId: openedTabId,
-    });
+      expect(yield* broker.invoke({ scope, operation: "open", input: {} })).toEqual({
+        host: "first",
+        tabId: openedTabId,
+      });
 
       const routedRequests: RoutedRequest[] = [];
       const replacementRequests = requestsFrom(
@@ -1005,11 +986,12 @@ it.effect("does not carry a tab id across a replacement automation stream", () =
       }).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
 
-    expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
-      "replacement",
-    );
-    expect(routedRequests.at(-1)?.tabId).toBeUndefined();
-  }),
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe(
+        "replacement",
+      );
+      expect(routedRequests.at(-1)?.tabId).toBeUndefined();
+    }),
+  ),
 );
 
 it.effect("fails requests assigned to the stream that is replaced", () =>
@@ -1047,12 +1029,21 @@ it.effect(
       const broker = yield* makeBroker;
       const clientId = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
       const delivered = yield* Queue.unbounded<RoutedRequest>();
+      let pings = 0;
       const requests = requestsFrom(
-        yield* broker.connect(makeHost({ clientId }), { preferred: true }),
+        yield* broker.connect(makeHost({ clientId, supportsPing: true }), { preferred: true }),
       );
-      yield* Stream.runForEach(requests, (request) => Queue.offer(delivered, request)).pipe(
-        Effect.forkScoped,
-      );
+      yield* Stream.runForEach(requests, (request) => {
+        if (request.operation !== "ping") return Queue.offer(delivered, request);
+        pings++;
+        return broker.respond({
+          clientId,
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: { alive: true },
+        });
+      }).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
       const otherScope = {
         ...scope,
@@ -1085,6 +1076,7 @@ it.effect(
         result: "ready",
       });
       expect(yield* Fiber.join(otherWait)).toEqual(Result.succeed("ready"));
+      expect(pings).toBe(1);
     }),
 );
 

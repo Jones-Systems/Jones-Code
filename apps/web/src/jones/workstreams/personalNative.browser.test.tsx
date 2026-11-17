@@ -79,6 +79,8 @@ function fixture() {
       registry.dispose();
       localStorage.removeItem("jones:workstreams:collapsed:synthetic-work");
       localStorage.removeItem("jones:workstreams:unassigned-collapsed");
+      localStorage.removeItem("jones:workstreams:named-hidden");
+      localStorage.removeItem("jones:workstreams:shared-status-filter");
     },
   };
 }
@@ -720,6 +722,73 @@ describe("personal Workstreams native presentation", () => {
     });
     expect(controller.assign).toHaveBeenCalledTimes(2);
   });
+  it.each([true, false])(
+    "saves consecutive menu assignments with pinned=%s while the first save is pending",
+    async (pinned) => {
+      using setup = fixture();
+      const { registry, controller } = setup;
+      const entry = { ...thread, pinnedAt: pinned ? thread.pinnedAt : null };
+      let finish!: (value: { ok: true; value: undefined }) => void;
+      vi.mocked(controller.assign).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const assignmentMenuRef: {
+        current: ((entry: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null;
+      } = { current: null };
+      await using _screen = await render(
+        <RegistryContext.Provider value={registry}>
+          <WorkstreamNativeSidebar
+            controller={controller}
+            threads={[entry]}
+            assignmentMenuRef={assignmentMenuRef}
+            renderThread={(row) => <li>{row.title}</li>}
+            canOperate={() => true}
+            canReorder={() => false}
+            reorder={async () => {}}
+          />
+        </RegistryContext.Provider>,
+      );
+      expect(
+        assignmentMenuRef.current!(entry).items.find(
+          (item) => item.id === "assign-workstream:remove",
+        )?.checked,
+      ).toBe(true);
+      await act(() =>
+        registry.set(setup.state, {
+          ...setup.initial,
+          assignmentsByThreadKey: new Map([
+            [
+              personalThreadKey(entry),
+              { threadId: entry.id, workstreamId: workstream.id, revision: 1, updatedAt: null },
+            ],
+          ]),
+        }),
+      );
+      expect(
+        assignmentMenuRef.current!(entry).items.find(
+          (item) => item.id === `assign-workstream:group:${workstream.id}`,
+        )?.checked,
+      ).toBe(true);
+      expect(
+        assignmentMenuRef.current!(entry).items.find(
+          (item) => item.id === "assign-workstream:remove",
+        )?.checked,
+      ).toBe(false);
+      try {
+        await act(() =>
+          assignmentMenuRef.current!(entry).onAction(`assign-workstream:group:${workstream.id}`),
+        );
+        await act(() => assignmentMenuRef.current!(entry).onAction("assign-workstream:remove"));
+        expect(controller.assign).toHaveBeenCalledTimes(2);
+        expect(controller.assign).toHaveBeenLastCalledWith(entry, null);
+      } finally {
+        await act(() => finish({ ok: true, value: undefined }));
+      }
+    },
+  );
   it("context unassign and external pinned drop confirm assignment before unpin; unpin failure keeps the assignment", async () => {
     using setup = fixture();
     const { registry, controller } = setup;

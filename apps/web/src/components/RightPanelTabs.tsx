@@ -1328,6 +1328,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
           : "Workspace panel"
       }
       mode={props.mode}
+      findResetKey={props.activeSurfaceId ?? "empty"}
       {...(props.maximized !== undefined ? { maximized: props.maximized } : {})}
       {...(props.open !== undefined ? { open: props.open } : {})}
       {...(props.widthStorageKey !== undefined ? { widthStorageKey: props.widthStorageKey } : {})}

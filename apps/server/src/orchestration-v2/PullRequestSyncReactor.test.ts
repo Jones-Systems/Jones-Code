@@ -41,6 +41,7 @@ import * as GitManager from "../git/GitManager.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerActivation from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as PullRequestSyncReactor from "./PullRequestSyncReactor.ts";
 import { type PullRequestTestThread, v2PullRequestThread } from "./testkit/pullRequestFixtures.ts";
@@ -278,6 +279,7 @@ const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: 
         ),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
+      ...unusedCorePorts(),
       getShellSnapshot: () =>
         Ref.update(shellSnapshotReads, (count) => count + 1).pipe(
           Effect.andThen(Effect.die(new Error("pull request sync must not read the shell"))),

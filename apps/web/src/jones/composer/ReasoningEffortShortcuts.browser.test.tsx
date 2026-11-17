@@ -723,7 +723,7 @@ function ShortcutRailsFixture({
                   </div>
                 </ComposerLayoutHeadline>
               ) : null}
-              <ComposerSurface.Shell>
+              <ComposerSurface.Shell contextRow>
                 <ComposerSurface.Host>
                   <form
                     ref={formRef}
@@ -769,6 +769,7 @@ function ShortcutRailsFixture({
                     </ComposerSurface.Main>
                   </form>
                 </ComposerSurface.Host>
+                <ComposerSurface.ContextStrip />
               </ComposerSurface.Shell>
               {hero ? <div data-composer-layout-hero-spacer className="h-4 sm:h-5" /> : null}
             </div>
@@ -966,56 +967,59 @@ it.each(composerLayoutCases)(
   },
 );
 
-it("keeps a growing focused draft and every shortcut operable in a narrow pane of a wide window", async () => {
-  await using _fixture = await setupTest(true);
-  const originalViewport = { width: innerWidth, height: innerHeight };
-  try {
-    await page.viewport(900, 240);
-    const view = (width: number, height: number) => (
-      <ShortcutRailsFixture
-        width={width}
-        height={height}
-        codex
-        hero={false}
-        initialPrompt={Array.from({ length: 12 }, (_, index) => `Draft line ${index + 1}`).join(
-          "\n",
-        )}
-        onAccountSelect={vi.fn()}
-        onProviderModelSelect={vi.fn()}
-      />
-    );
-    await act(async () => await root.rerender(view(320, 240)));
-    const band = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-rails]")!;
-    await expect.poll(() => band.getBoundingClientRect().height).toBeGreaterThan(0);
-    expectProductionComposerLayout();
-    const editor = container.querySelector<HTMLElement>('[role="textbox"]')!;
-    expect(editor.scrollHeight).toBeGreaterThan(editor.clientHeight);
-    await userEvent.click(editor);
-    await userEvent.keyboard("continued");
-    expect(editor.textContent).toContain("continued");
-    expectProductionComposerLayout();
-    const shortHeight = band.getBoundingClientRect().height;
-    await page.viewport(900, 800);
-    await act(async () => await root.rerender(view(620, 800)));
-    await expect
-      .poll(
-        () => container.querySelector<HTMLElement>("[data-chat-composer-overlay]")!.dataset.short,
-      )
-      .toBe("false");
-    await expect
-      .poll(() => band.getBoundingClientRect().height)
-      .toBe(
-        container
-          .querySelector<HTMLElement>("[data-chat-composer-shortcut-content]")!
-          .getBoundingClientRect().height,
+it.each([false, true])(
+  "keeps a growing focused draft and every shortcut operable in a narrow pane of a wide window (hero=%s)",
+  async (hero) => {
+    await using _fixture = await setupTest(true);
+    const originalViewport = { width: innerWidth, height: innerHeight };
+    try {
+      await page.viewport(900, 240);
+      const view = (width: number, height: number) => (
+        <ShortcutRailsFixture
+          width={width}
+          height={height}
+          codex
+          hero={hero}
+          initialPrompt={Array.from({ length: 12 }, (_, index) => `Draft line ${index + 1}`).join(
+            "\n",
+          )}
+          onAccountSelect={vi.fn()}
+          onProviderModelSelect={vi.fn()}
+        />
       );
-    expectProductionComposerLayout();
-    await page.viewport(900, 240);
-    await act(async () => await root.rerender(view(320, 240)));
-    await expect.poll(() => band.getBoundingClientRect().height).toBe(shortHeight);
-    expect(editor.textContent).toContain("continued");
-    expectProductionComposerLayout();
-  } finally {
-    await page.viewport(originalViewport.width, originalViewport.height);
-  }
-});
+      await act(async () => await root.rerender(view(320, 240)));
+      const band = container.querySelector<HTMLElement>("[data-chat-composer-shortcut-rails]")!;
+      await expect.poll(() => band.getBoundingClientRect().height).toBeGreaterThan(0);
+      expectProductionComposerLayout();
+      const editor = container.querySelector<HTMLElement>('[role="textbox"]')!;
+      expect(editor.scrollHeight).toBeGreaterThan(editor.clientHeight);
+      await userEvent.click(editor);
+      await userEvent.keyboard("continued");
+      expect(editor.textContent).toContain("continued");
+      expectProductionComposerLayout();
+      const shortHeight = band.getBoundingClientRect().height;
+      await page.viewport(900, 800);
+      await act(async () => await root.rerender(view(620, 800)));
+      await expect
+        .poll(
+          () => container.querySelector<HTMLElement>("[data-chat-composer-overlay]")!.dataset.short,
+        )
+        .toBe("false");
+      await expect
+        .poll(() => band.getBoundingClientRect().height)
+        .toBe(
+          container
+            .querySelector<HTMLElement>("[data-chat-composer-shortcut-content]")!
+            .getBoundingClientRect().height,
+        );
+      expectProductionComposerLayout();
+      await page.viewport(900, 240);
+      await act(async () => await root.rerender(view(320, 240)));
+      await expect.poll(() => band.getBoundingClientRect().height).toBe(shortHeight);
+      expect(editor.textContent).toContain("continued");
+      expectProductionComposerLayout();
+    } finally {
+      await page.viewport(originalViewport.width, originalViewport.height);
+    }
+  },
+);

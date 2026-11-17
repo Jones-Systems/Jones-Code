@@ -6,9 +6,18 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { PersonalWorkstreamAssignment } from "@t3tools/contracts/jones/workstreamsPersonal";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  effectivePersonalStatusFilter,
+  nextSharedPersonalStatusChoice,
+  personalSharedStatusFilterKey,
   personalStatusFilterKey,
+  readPersonalStatusChoice,
   readPersonalStatusFilter,
+  readSharedPersonalStatusChoice,
   selectPersonalStatusThreads,
+  setPersonalStatusFilter,
+  setSharedPersonalStatusFilter,
+  stampLocalPersonalStatusChoice,
+  type PersonalStatusChoice,
   type PersonalStatusFilter,
 } from "./personalStatusFilter";
 
@@ -65,6 +74,164 @@ describe("personal status filter storage", () => {
       },
     });
     expect(readPersonalStatusFilter("Alpha")).toBeNull();
+    expect(readSharedPersonalStatusChoice()).toBeNull();
+  });
+
+  describe("revisioned choices", () => {
+    it("reads the legacy bare literal as revision 0 and the struct as written", () => {
+      stored.set(personalStatusFilterKey("Alpha"), '"done"');
+      stored.set(personalStatusFilterKey("Beta"), '{"filter":"hide-input","rev":4}');
+      stored.set(personalStatusFilterKey("Gamma"), '{"filter":null,"rev":7}');
+      expect(readPersonalStatusChoice("Alpha")).toEqual({ filter: "done", rev: 0 });
+      expect(readPersonalStatusChoice("Beta")).toEqual({ filter: "hide-input", rev: 4 });
+      expect(readPersonalStatusChoice("Gamma")).toEqual({ filter: null, rev: 7 });
+      expect(readPersonalStatusFilter("Beta")).toBe("hide-input");
+      expect(readPersonalStatusFilter("Gamma")).toBeNull();
+    });
+
+    it.each([
+      "null",
+      "{}",
+      '{"filter":"working"}',
+      '{"rev":1}',
+      '{"filter":"inherit","rev":1}',
+      '{"filter":"working","rev":-1}',
+      '{"filter":"working","rev":1.5}',
+      '{"filter":"working","rev":"1"}',
+      "[]",
+      "not-json",
+    ])("reads %s as absent for a group and for the shared choice", (value) => {
+      stored.set(personalStatusFilterKey("Alpha"), value);
+      stored.set(personalSharedStatusFilterKey, value);
+      expect(readPersonalStatusChoice("Alpha")).toBeNull();
+      expect(readSharedPersonalStatusChoice()).toBeNull();
+    });
+
+    it("never accepts the legacy bare literal as the shared choice", () => {
+      stored.set(personalSharedStatusFilterKey, '"working"');
+      expect(readSharedPersonalStatusChoice()).toBeNull();
+    });
+  });
+});
+
+describe("personal status choice resolution", () => {
+  const choice = (filter: PersonalStatusFilter | null, rev: number): PersonalStatusChoice => ({
+    filter,
+    rev,
+  });
+
+  it("prefers a group's own choice while it is at least as recent as the shared choice", () => {
+    expect(effectivePersonalStatusFilter(null, null)).toBeNull();
+    expect(effectivePersonalStatusFilter(choice("done", 0), null)).toBe("done");
+    expect(effectivePersonalStatusFilter(null, choice("working", 1))).toBe("working");
+    expect(effectivePersonalStatusFilter(choice("done", 1), choice("working", 1))).toBe("done");
+    expect(effectivePersonalStatusFilter(choice("done", 1), choice("working", 2))).toBe("working");
+    expect(effectivePersonalStatusFilter(choice("done", 3), choice("working", 2))).toBe("done");
+  });
+
+  it("treats a group's own clear as a tombstone and a shared clear as following the global filter", () => {
+    expect(effectivePersonalStatusFilter(choice(null, 2), choice("input", 2))).toBeNull();
+    expect(effectivePersonalStatusFilter(choice("done", 2), choice(null, 3))).toBeNull();
+    expect(effectivePersonalStatusFilter(null, choice(null, 3))).toBeNull();
+  });
+
+  it("allocates revisions: only shared writes tick, a group's write is never older than shared", () => {
+    expect(nextSharedPersonalStatusChoice("working", null, [])).toEqual(choice("working", 1));
+    expect(
+      nextSharedPersonalStatusChoice("input", choice("working", 1), [choice("done", 1), null]),
+    ).toEqual(choice("input", 2));
+    // A lost shared key still outranks every present group.
+    expect(
+      nextSharedPersonalStatusChoice("done", null, [choice("hide-done", 5), choice(null, 2)]),
+    ).toEqual(choice("done", 6));
+    expect(stampLocalPersonalStatusChoice("done", null, null)).toEqual(choice("done", 0));
+    expect(
+      stampLocalPersonalStatusChoice("done", choice("working", 4), choice("input", 2)),
+    ).toEqual(choice("done", 4));
+    expect(stampLocalPersonalStatusChoice(null, choice("working", 1), choice("input", 6))).toEqual(
+      choice(null, 6),
+    );
+  });
+});
+
+describe("personal status writes", () => {
+  let stored: Map<string, string>;
+  const ids = ["Alpha", "Beta"];
+  const effective = (id: string) =>
+    effectivePersonalStatusFilter(readPersonalStatusChoice(id), readSharedPersonalStatusChoice());
+  const storedChoice = (key: string) => JSON.parse(stored.get(key) ?? "null") as unknown;
+
+  beforeEach(() => {
+    stored = new Map();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => stored.get(key) ?? null,
+        setItem: (key: string, value: string) => void stored.set(key, value),
+        removeItem: (key: string) => void stored.delete(key),
+      },
+      dispatchEvent: () => true,
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("follows the last change across the shared choice and each group", () => {
+    expect([effective("Alpha"), effective("Beta")]).toEqual([null, null]);
+    setSharedPersonalStatusFilter(ids, "working");
+    expect([effective("Alpha"), effective("Beta")]).toEqual(["working", "working"]);
+    setPersonalStatusFilter("Alpha", "done");
+    expect([effective("Alpha"), effective("Beta")]).toEqual(["done", "working"]);
+    setSharedPersonalStatusFilter(ids, "input");
+    expect([effective("Alpha"), effective("Beta")]).toEqual(["input", "input"]);
+    // Clicking the selected status clears only that group; it does not fall back to the shared choice.
+    setPersonalStatusFilter("Alpha", null);
+    expect([effective("Alpha"), effective("Beta")]).toEqual([null, "input"]);
+    // Clearing the shared choice sends every group to the global filter; nothing older revives.
+    setSharedPersonalStatusFilter(ids, null);
+    expect([effective("Alpha"), effective("Beta")]).toEqual([null, null]);
+    setPersonalStatusFilter("Alpha", "done");
+    expect([effective("Alpha"), effective("Beta")]).toEqual(["done", null]);
+  });
+
+  it("stores structs, keeps cleared records and lets only shared writes tick the sequence", () => {
+    setSharedPersonalStatusFilter(ids, "working");
+    setPersonalStatusFilter("Alpha", "done");
+    setPersonalStatusFilter("Alpha", null);
+    expect(storedChoice(personalSharedStatusFilterKey)).toEqual({ filter: "working", rev: 1 });
+    expect(storedChoice(personalStatusFilterKey("Alpha"))).toEqual({ filter: null, rev: 1 });
+    expect(stored.has(personalStatusFilterKey("Beta"))).toBe(false);
+    setSharedPersonalStatusFilter(ids, null);
+    expect(storedChoice(personalSharedStatusFilterKey)).toEqual({ filter: null, rev: 2 });
+  });
+
+  it("hydrates a legacy group value, then yields to a later shared choice", () => {
+    stored.set(personalStatusFilterKey("Alpha"), '"done"');
+    expect(effective("Alpha")).toBe("done");
+    setSharedPersonalStatusFilter(ids, "working");
+    expect(effective("Alpha")).toBe("working");
+    expect(storedChoice(personalSharedStatusFilterKey)).toEqual({ filter: "working", rev: 1 });
+  });
+
+  it("outranks every present group when the shared record was lost", () => {
+    setSharedPersonalStatusFilter(ids, "working");
+    setSharedPersonalStatusFilter(ids, "input");
+    setPersonalStatusFilter("Alpha", "done");
+    stored.delete(personalSharedStatusFilterKey);
+    expect(effective("Alpha")).toBe("done");
+    setSharedPersonalStatusFilter(ids, "hide-done");
+    expect(storedChoice(personalSharedStatusFilterKey)).toEqual({ filter: "hide-done", rev: 3 });
+    expect([effective("Alpha"), effective("Beta")]).toEqual(["hide-done", "hide-done"]);
+  });
+
+  it("gives a group created after a shared choice that choice", () => {
+    setSharedPersonalStatusFilter(ids, "working");
+    expect(effective("Gamma")).toBe("working");
+    setPersonalStatusFilter("Gamma", "done");
+    expect(effective("Gamma")).toBe("done");
   });
 });
 

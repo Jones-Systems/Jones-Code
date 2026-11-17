@@ -16,6 +16,7 @@ import {
   deferWorkHistoryRows,
   boundedTimelineEncodedBytes,
   computeLatestLocalTurnOrdinal,
+  createThreadHistoryPageBudget,
   decodeThreadHistoryCursor,
   encodeThreadHistoryCursor,
   projectedRowBoundedSnapshotEncodedBytes,
@@ -560,6 +561,46 @@ describe("threadHistoryPaging", () => {
     expect(measured).toHaveLength(testCase.measured);
     expect(page.hasMoreHistory).toBe(true);
     expect(decodeThreadHistoryCursor(page.nextCursor!).si).toBe(page.items[0]?.sourceItemId);
+  });
+
+  it("shares one page budget between the timeline selection and the Jones SQL pager", () => {
+    const policy = { maxUserTurns: 2, maxItems: 3, maxTurnItems: 5, maxEncodedBytes: 100 };
+    const row = (encodedBytes: number, userTurn = false) => ({
+      userTurn,
+      turnStart: userTurn,
+      encodedBytes,
+    });
+
+    // The first row is always admitted, so an oversized row cannot deadlock paging.
+    const oversized = createThreadHistoryPageBudget(policy, false);
+    expect(oversized.accept(row(1_000))).toBe(true);
+    expect(oversized.canAccept()).toBe(true);
+    expect(oversized.accept(row(1))).toBe(false);
+    expect(oversized.keep()).toBe(1);
+
+    // Without a user turn, `maxItems` bounds the page.
+    const plain = createThreadHistoryPageBudget(policy, false);
+    for (let index = 0; index < 3; index += 1) expect(plain.accept(row(1))).toBe(true);
+    expect(plain.canAccept()).toBe(false);
+    expect(plain.accept(row(1))).toBe(false);
+    expect(plain.keep()).toBe(3);
+
+    // With a user turn, `maxTurnItems` bounds the scan; a window that has not
+    // reached the turn start keeps only `maxItems` rows.
+    const turn = createThreadHistoryPageBudget(policy, true);
+    for (let index = 0; index < 4; index += 1) expect(turn.accept(row(1))).toBe(true);
+    expect(turn.keep()).toBe(3);
+    expect(turn.accept(row(1, true))).toBe(true);
+    expect(turn.canAccept()).toBe(false);
+    expect(turn.keep()).toBe(5);
+
+    // `maxUserTurns` stops the scan once that many user turns are selected.
+    const turns = createThreadHistoryPageBudget(policy, true);
+    expect(turns.accept(row(1, true))).toBe(true);
+    expect(turns.accept(row(1, true))).toBe(true);
+    expect(turns.canAccept()).toBe(false);
+    expect(turns.accept(row(1))).toBe(false);
+    expect(turns.keep()).toBe(2);
   });
 
   it("recovers identity-miss cursors when position is past a shrunken timeline", () => {

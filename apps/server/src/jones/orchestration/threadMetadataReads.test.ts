@@ -192,6 +192,7 @@ it.effect(
             settledOverride: row.settledOverride,
             settledAt: row.settledAt,
             createdAt: row.createdAt,
+            updatedAt: row.updatedAt,
             pinnedAt: row.pinnedAt,
             pinOrderKey: row.pinOrderKey,
             deletedAt: row.deletedAt,

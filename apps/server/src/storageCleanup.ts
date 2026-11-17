@@ -859,21 +859,6 @@ const make = Effect.gen(function* () {
     return changed === undefined ? null : reason(changed.file);
   });
 
-  // A worktree can outlive its project moving to another clone. Git removes a
-  // worktree through the repository that registered it, not through the
-  // project's current checkout, so resolve the owning repository first.
-  const worktreeRepository = Effect.fn("StorageCleanup.worktreeRepository")(function* (
-    worktreePath: string,
-  ) {
-    const commonDir = yield* git.execute({
-      operation: "StorageCleanup.worktreeRepository",
-      cwd: worktreePath,
-      args: ["rev-parse", "--git-common-dir"],
-    });
-    const resolved = path.resolve(worktreePath, commonDir.stdout.trim());
-    return path.basename(resolved) === ".git" ? path.dirname(resolved) : resolved;
-  });
-
   const localChangesReason = Effect.fn("StorageCleanup.localChangesReason")(function* (
     cwd: string,
     rules: WorktreeCleanupRules,
@@ -1330,22 +1315,42 @@ const make = Effect.gen(function* () {
               if (blockedWhileMeasuring !== null) return keep(blockedWhileMeasuring);
               if (yield* settingsChangedSinceCheck) return keep("settings changed since check");
               const reason = yield* scratchAdmission.remove({
-                target: { path: worktreeKey, storedPath: thread.worktreePath!,
-                  threadId: thread.id, projectId: thread.projectId, projectRoot: project.workspaceRoot },
+                target: {
+                  path: worktreeKey,
+                  storedPath: thread.worktreePath!,
+                  threadId: thread.id,
+                  projectId: thread.projectId,
+                  projectRoot: project.workspaceRoot,
+                },
                 revalidate: Effect.gen(function* () {
                   if ((yield* fs.realPath(worktreePath)) !== worktreeKey)
-                    return yield* new ScratchCleanupAdmission.ScratchCleanupError({ reason: "scratch cleanup path identity changed" });
-                  const blocked = (yield* scratchKeepReason(worktreePath, threadIds, settings)) ??
+                    return yield* new ScratchCleanupAdmission.ScratchCleanupError({
+                      reason: "scratch cleanup path identity changed",
+                    });
+                  const blocked =
+                    (yield* scratchKeepReason(worktreePath, threadIds, settings)) ??
                     (yield* blockedSinceCheck());
                   if (blocked !== null || (yield* settingsChangedSinceCheck))
-                    return yield* new ScratchCleanupAdmission.ScratchCleanupError({ reason: blocked ?? "settings changed since check" });
-                }).pipe(Effect.mapError((cause) => new ScratchCleanupAdmission.ScratchCleanupError({
-                  reason: "scratch cleanup revalidation failed", cause,
-                }))),
+                    return yield* new ScratchCleanupAdmission.ScratchCleanupError({
+                      reason: blocked ?? "settings changed since check",
+                    });
+                }).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ScratchCleanupAdmission.ScratchCleanupError({
+                        reason: "scratch cleanup revalidation failed",
+                        cause,
+                      }),
+                  ),
+                ),
                 remove: fs.remove(worktreePath, { recursive: true }).pipe(
-                  Effect.mapError((cause) => new ScratchCleanupAdmission.ScratchCleanupError({
-                    reason: "scratch cleanup removal outcome requires reconciliation", cause,
-                  })),
+                  Effect.mapError(
+                    (cause) =>
+                      new ScratchCleanupAdmission.ScratchCleanupError({
+                        reason: "scratch cleanup removal outcome requires reconciliation",
+                        cause,
+                      }),
+                  ),
                 ),
               });
               if (reason !== null) return keep(reason);
@@ -1514,9 +1519,12 @@ const make = Effect.gen(function* () {
             );
             const members = current.threads.filter((entry, index) => {
               const key = currentKeys[index];
-              return entry.worktreePath !== null && key !== null && key !== undefined && (
-                overlapsCleanupPath(path.resolve(entry.worktreePath), worktreePath) ||
-                overlapsCleanupPath(key, worktreeKey)
+              return (
+                entry.worktreePath !== null &&
+                key !== null &&
+                key !== undefined &&
+                (overlapsCleanupPath(path.resolve(entry.worktreePath), worktreePath) ||
+                  overlapsCleanupPath(key, worktreeKey))
               );
             });
             return (
@@ -1916,6 +1924,7 @@ const make = Effect.gen(function* () {
             ? 2
             : 3;
     const latestReport: StorageCleanupReport = {
+      operation: "cleanup",
       trigger,
       startedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
       finishedAt: DateTime.formatIso(yield* DateTime.now),

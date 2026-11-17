@@ -12,6 +12,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -56,6 +57,7 @@ import {
 import { BUNDLED_CLAUDE_MODEL_CATALOG } from "./ClaudeModelCatalog.ts";
 import { checkClaudeProviderStatus } from "./ClaudeProvider.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
+import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as AntigravityInstallation from "./AntigravityInstallation.ts";
 import * as ModelManifest from "./ModelManifest.ts";
 import { applyProviderCompatibility } from "./providerCompatibility.ts";
@@ -226,6 +228,7 @@ const makeWorkspaceRescanHarness = Effect.gen(function* () {
         Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
           getInstance: (id) =>
             Ref.get(instances).pipe(Effect.map((all) => all.find((i) => i.instanceId === id))),
+          getCatalogSource: (id) => Ref.getUnsafe(instances).find((i) => i.instanceId === id),
           listInstances: Ref.get(instances),
           listUnavailable: Effect.succeed([]),
           streamChanges: Stream.fromPubSub(changes),
@@ -531,6 +534,7 @@ const buildRegistryOverSnapshot = Effect.fn("buildRegistryOverSnapshot")(functio
   const layerInstanceRegistry = Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
     getInstance: (instanceId) =>
       Effect.succeed(instanceId === instance.instanceId ? instance : undefined),
+    getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
     listInstances: Effect.succeed([instance]),
     listUnavailable: Effect.succeed([]),
     streamChanges: Stream.empty,
@@ -553,6 +557,7 @@ const buildRegistryOverSnapshot = Effect.fn("buildRegistryOverSnapshot")(functio
 
 const layerTestNodeServices = Layer.mergeAll(
   ProviderLatestVersions.layer,
+  ProcessAttribution.layer,
   NodeServices.layer,
   NodeCrypto.layer,
   Layer.mock(CodexManagedTokenBroker.CodexManagedTokenBroker)({
@@ -1651,6 +1656,7 @@ it.layer(
               {
                 getInstance: (id) =>
                   Effect.succeed(id === instance.instanceId ? instance : undefined),
+                getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
                 listInstances: Effect.succeed([instance]),
                 listUnavailable: Effect.succeed([]),
                 streamChanges: Stream.empty,
@@ -1793,6 +1799,7 @@ it.layer(
             {
               getInstance: (id) =>
                 Effect.succeed(id === instance.instanceId ? instance : undefined),
+              getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1899,6 +1906,7 @@ it.layer(
             {
               getInstance: (id) =>
                 Effect.succeed(id === instance.instanceId ? instance : undefined),
+              getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -2217,6 +2225,7 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instances.find((instance) => instance.instanceId === instanceId)),
+            getCatalogSource: (id) => instances.find((instance) => instance.instanceId === id),
             listInstances: Effect.succeed(instances),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2388,6 +2397,7 @@ it.layer(
             {
               getInstance: (requestedId) =>
                 Effect.succeed(requestedId === instanceId ? instance : undefined),
+              getCatalogSource: (id) => (id === instanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -2484,6 +2494,7 @@ it.layer(
                 Layer.provideMerge(
                   Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
                     getInstance: (id) => Effect.succeed(instances.find((i) => i.instanceId === id)),
+                    getCatalogSource: (id) => instances.find((i) => i.instanceId === id),
                     listInstances: Effect.succeed(instances),
                     listUnavailable: Effect.succeed([]),
                     streamChanges: Stream.fromPubSub(changes),
@@ -2711,6 +2722,7 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(requestedId === instanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === instanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2808,6 +2820,7 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(requestedId === instanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === instanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2936,6 +2949,7 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(requestedId === instanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === instanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -3046,6 +3060,7 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(instances.find((instance) => instance.instanceId === requestedId)),
+            getCatalogSource: (id) => instances.find((instance) => instance.instanceId === id),
             listInstances: Effect.succeed(instances),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -3159,6 +3174,8 @@ it.layer(
                     current.find((instance) => instance.instanceId === requestedId),
                   ),
                 ),
+              getCatalogSource: (id) =>
+                Ref.getUnsafe(instances).find((instance) => instance.instanceId === id),
               listInstances: Ref.get(instances),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -3288,6 +3305,7 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(requestedId === instanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === instanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -3412,6 +3430,7 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === cursorInstanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === cursorInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -3513,6 +3532,7 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === claudeInstanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === claudeInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -3702,6 +3722,7 @@ it.layer(
             {
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === openCodeInstanceId ? instance : undefined),
+              getCatalogSource: (id) => (id === openCodeInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -3806,6 +3827,7 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === codexInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -3842,6 +3864,239 @@ it.layer(
           assert.deepStrictEqual(yield* registry.refreshInstance(codexInstanceId), [
             withBundledCompatibility(cachedProvider),
           ]);
+        }).pipe(Effect.provide(runtimeServices));
+      }),
+    );
+
+    it.effect("keeps consuming registry changes after one sync fails", () =>
+      Effect.gen(function* () {
+        const codexDriver = ProviderDriverKind.make("codex");
+        const codexInstanceId = ProviderInstanceId.make("codex");
+        const claudeDriver = ProviderDriverKind.make("claudeAgent");
+        const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+        const codexProvider = {
+          instanceId: codexInstanceId,
+          driver: codexDriver,
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-04-29T10:00:00.000Z",
+          version: "1.0.0",
+          models: [],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const claudeProvider = {
+          instanceId: claudeInstanceId,
+          driver: claudeDriver,
+          status: "ready",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          checkedAt: "2026-04-29T10:01:00.000Z",
+          version: "1.0.0",
+          models: [],
+          slashCommands: [],
+          skills: [],
+        } as const satisfies ServerProvider;
+        const makeInstance = (provider: ServerProvider): ProviderInstance => ({
+          instanceId: provider.instanceId,
+          driverKind: provider.driver,
+          continuationIdentity: {
+            driverKind: provider.driver,
+            continuationKey: `${provider.driver}:instance:${provider.instanceId}`,
+          },
+          displayName: undefined,
+          enabled: true,
+          snapshot: {
+            resolveMaintenance: () =>
+              Effect.succeed(
+                makeManualOnlyProviderMaintenanceCapabilities({
+                  provider: provider.driver,
+                  packageName: null,
+                }),
+              ),
+            getSnapshot: Effect.succeed(provider),
+            refresh: Effect.succeed(provider),
+            streamChanges: Stream.empty,
+            applyUsageLimits: () => Effect.void,
+          },
+          orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+          textGeneration: {} as ProviderInstance["textGeneration"],
+        });
+        const codexInstance = makeInstance(codexProvider);
+        const claudeInstance = makeInstance(claudeProvider);
+        const changes = yield* PubSub.unbounded<void>();
+        const instancesRef = yield* Ref.make<ReadonlyArray<ProviderInstance>>([codexInstance]);
+        const failNextList = yield* Ref.make(false);
+        const wait = () => Effect.yieldNow;
+        const layerInstanceRegistry = Layer.succeed(
+          ProviderInstanceRegistry.ProviderInstanceRegistry,
+          {
+            getCatalogSource: (id) =>
+              Ref.getUnsafe(instancesRef).find((instance) => instance.instanceId === id),
+            getInstance: (instanceId) =>
+              Ref.get(instancesRef).pipe(
+                Effect.map((instances) =>
+                  instances.find((instance) => instance.instanceId === instanceId),
+                ),
+              ),
+            listInstances: Effect.gen(function* () {
+              const shouldFail = yield* Ref.get(failNextList);
+              if (shouldFail) {
+                yield* Ref.set(failNextList, false);
+                return yield* Effect.die(new Error("simulated registry list failure"));
+              }
+              return yield* Ref.get(instancesRef);
+            }),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.fromPubSub(changes),
+            subscribeChanges: PubSub.subscribe(changes),
+          },
+        );
+        const scope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+        const runtimeServices = yield* Layer.build(
+          ProviderRegistry.layer.pipe(
+            Layer.provide(layerUnusedMutator),
+            Layer.provideMerge(layerInstanceRegistry),
+            Layer.provideMerge(
+              ServerConfig.layerTest(process.cwd(), {
+                prefix: "t3-provider-registry-sync-failure-",
+              }),
+            ),
+            Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ).pipe(Scope.provide(scope));
+
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          assert.deepStrictEqual(yield* registry.getProviders, [
+            withBundledCompatibility(codexProvider),
+          ]);
+
+          yield* Ref.set(failNextList, true);
+          yield* PubSub.publish(changes, undefined);
+
+          yield* Ref.set(instancesRef, [codexInstance, claudeInstance]);
+          yield* PubSub.publish(changes, undefined);
+
+          let providers = yield* registry.getProviders;
+          for (
+            let attempt = 0;
+            attempt < 50 && !providers.some((provider) => provider.instanceId === claudeInstanceId);
+            attempt += 1
+          ) {
+            yield* wait();
+            providers = yield* registry.getProviders;
+          }
+
+          assert.deepStrictEqual(
+            providers.map((provider) => provider.instanceId).toSorted(),
+            [codexInstanceId, claudeInstanceId].toSorted(),
+          );
+        }).pipe(Effect.provide(runtimeServices));
+      }),
+    );
+
+    it.effect("propagates real Codex probe failures to the aggregator at boot", () =>
+      Effect.gen(function* () {
+        const missingBinary = `t3code_codex_missing_`;
+        const serverSettings = yield* makeMutableServerSettingsService(
+          decodeServerSettings(
+            deepMerge(encodedDefaultServerSettings, {
+              providerInstances: {
+                ...disabledDefaultSlots("codex", "claudeAgent", "cursor", "grok", "opencode"),
+                codex_personal: {
+                  driver: "codex",
+                  displayName: "Codex Personal",
+                  enabled: true,
+                  config: {
+                    binaryPath: missingBinary,
+                    homePath: `/tmp/${missingBinary}_home`,
+                  },
+                },
+              },
+            }),
+          ),
+        );
+        const scope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+        const layerProviderRegistry = ProviderRegistry.layer.pipe(
+          Layer.provideMerge(
+            ProviderInstanceRegistryHydration.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  PortScanner.layerTest,
+                  ProviderInstallationGate.layer,
+                  SqlitePersistence.layerMemory,
+                ),
+              ),
+              Layer.provideMerge(ProcessAttribution.layer),
+            ),
+          ),
+          Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
+          Layer.provideMerge(
+            Layer.succeed(ServerSettingsModule.ServerSettingsService, serverSettings),
+          ),
+          Layer.provideMerge(ServerSecretStore.layer),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), {
+              prefix: "t3-provider-registry-",
+            }),
+          ),
+          Layer.provideMerge(layerTestHttpClient),
+          Layer.provideMerge(
+            Layer.succeed(
+              ProviderEventLoggers.ProviderEventLoggers,
+              ProviderEventLoggers.NoOpProviderEventLoggers,
+            ),
+          ),
+          Layer.provideMerge(ProviderLatestVersions.layer),
+          Layer.provideMerge(McpProviderSessions.layer),
+          Layer.provideMerge(ModelManifest.layerTest),
+          Layer.provideMerge(ResetCreditCoordinator.layerTest),
+          Layer.provideMerge(
+            OpenCodeRuntime.layer.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
+          ),
+          Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
+        );
+        const runtimeServices = yield* Layer.build(layerProviderRegistry).pipe(
+          Scope.provide(scope),
+        );
+
+        yield* Effect.gen(function* () {
+          const registry = yield* ProviderRegistry.ProviderRegistry;
+          const failedProbe = (providers: ReadonlyArray<ServerProvider>) =>
+            providers.find((provider) => provider.instanceId === "codex_personal")?.status ===
+            "error";
+          const update = yield* registry.streamChanges.pipe(
+            Stream.filter(failedProbe),
+            Stream.runHead,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          let providers = yield* registry.getProviders;
+          if (!failedProbe(providers)) providers = Option.getOrThrow(yield* Fiber.join(update));
+          const codexPersonal = providers.find(
+            (provider) => provider.instanceId === "codex_personal",
+          );
+          assert.notStrictEqual(
+            codexPersonal,
+            undefined,
+            `Expected the aggregator to know about codex_personal; instead saw: ${providers
+              .map((provider) => provider.instanceId)
+              .join(", ")}`,
+          );
+          assert.strictEqual(
+            codexPersonal?.status,
+            "error",
+            "Real Codex probe against a missing binary should surface as 'error' in the aggregator",
+          );
+          assert.strictEqual(codexPersonal?.installed, false);
+          assert.include(codexPersonal?.message, missingBinary);
+          assert.include(codexPersonal?.message, "Settings → Providers → Codex → Binary path");
         }).pipe(Effect.provide(runtimeServices));
       }),
     );

@@ -27,6 +27,7 @@ import {
   readJonesStartupGateProtocol,
 } from "./trialStartup.ts";
 import * as ServiceLauncherClient from "../../cloud/serviceLauncherClient.ts";
+import { SERVICE_LAUNCHER_PROTOCOL } from "../../cloud/serviceProtocol.ts";
 import type { QualifiedTrialRuntimeWitness } from "../cloud/qualifiedStartup.ts";
 import { runOrderedV2StartupPhases, runRuntimeShutdown } from "../../serverRuntimeStartup.ts";
 
@@ -322,7 +323,17 @@ it.live(
             }),
           );
           yield* Fiber.join(startup);
-          expect(calls).toEqual(["legacy", "provider", "failover", "self", "delegated", "questions", "planned", "worker", "bootstrap"]);
+          expect(calls).toEqual([
+            "legacy",
+            "provider",
+            "failover",
+            "self",
+            "delegated",
+            "questions",
+            "planned",
+            "worker",
+            "bootstrap",
+          ]);
           const duplicate = yield* withRuntime(
             root,
             {
@@ -405,6 +416,7 @@ function launcher(
 ) {
   return ServiceLauncherClient.ServiceLauncherClient.of({
     managed: true,
+    protocol: SERVICE_LAUNCHER_PROTOCOL,
     requestUpdate: () => Effect.die("Startup must not request another update."),
     ...input,
   });
@@ -465,9 +477,10 @@ it.live("ordinary and legacy launcher startup keep preparation in the receiving 
         requiresQualifiedTrialGate: false,
         prepareQualifiedTrial: () =>
           Effect.die("A legacy launcher has no qualified trial authority."),
-        prepareTrial: ({ baseDir }) => Effect.sync(() => {
-          expect(baseDir).toBe(root);
-        }).pipe(Effect.andThen(record("legacy-prepare")), Effect.as(undefined)),
+        prepareTrial: ({ baseDir }) =>
+          Effect.sync(() => {
+            expect(baseDir).toBe(root);
+          }).pipe(Effect.andThen(record("legacy-prepare")), Effect.as(undefined)),
       });
       yield* withRuntime(
         root,
@@ -545,12 +558,13 @@ it.live(
                 }),
               ),
             ),
-          prepareTrial: ({ baseDir }) => Effect.sync(() => {
-            expect(baseDir).toBe(root);
-            expect(established).toBe(true);
-            calls.push("outcome-read");
-            return outcome;
-          }),
+          prepareTrial: ({ baseDir }) =>
+            Effect.sync(() => {
+              expect(baseDir).toBe(root);
+              expect(established).toBe(true);
+              calls.push("outcome-read");
+              return outcome;
+            }),
         });
         const record = (label: string) =>
           Effect.sync(() => {

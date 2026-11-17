@@ -391,7 +391,11 @@ it.effect("a released 130 database refuses late 125 and applies appended 131 exa
     const title = yield* sql`SELECT * FROM orchestration_v2_projection_threads`;
     const refinement = yield* sql`SELECT * FROM jones_thread_title_refinement`;
     const late = yield* Effect.exit(
-      runJonesMigrations([...released130Entries, [125, "SyntheticLateAddition", futureMigration]]),
+      runJonesMigrations(
+        [...released130Entries, [125, "SyntheticLateAddition", futureMigration] as const].toSorted(
+          ([left], [right]) => left - right,
+        ),
+      ),
     );
     assert.isTrue(Exit.isFailure(late));
     if (Exit.isFailure(late))
@@ -484,6 +488,8 @@ it.effect(
           [153, "PersonalWorkstreams"],
           [154, "StartRefusals"],
           [155, "PeerWakeObligations"],
+          [156, "WorkspaceDutyLifetimes"],
+          [157, "RemoteSendReceipts"],
         ],
       );
       assert.deepStrictEqual(
@@ -721,6 +727,8 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [153, "PersonalWorkstreams"],
       [154, "StartRefusals"],
       [155, "PeerWakeObligations"],
+      [156, "WorkspaceDutyLifetimes"],
+      [157, "RemoteSendReceipts"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;
@@ -892,19 +900,26 @@ it.effect("Jones pending batch rollback leaves the completed upstream head durab
     const before = yield* readLedger;
     const failedBatch = runJonesMigrations([
       ...originals,
-      [100, "S1BatchProbe", Effect.gen(function* () {
-        yield* sql`CREATE TABLE s1_batch_probe(value TEXT)`;
-        yield* sql`INSERT INTO s1_batch_probe VALUES ('rolled back')`;
-      })],
-      [101, "S1BatchFailure", Effect.gen(function* () {
-        yield* sql`INSERT INTO s1_missing_table VALUES (1)`;
-      })],
+      [
+        100,
+        "S1BatchProbe",
+        Effect.gen(function* () {
+          yield* sql`CREATE TABLE s1_batch_probe(value TEXT)`;
+          yield* sql`INSERT INTO s1_batch_probe VALUES ('rolled back')`;
+        }),
+      ],
+      [101, "S1BatchFailure", sql`INSERT INTO s1_missing_table VALUES (1)`.pipe(Effect.asVoid)],
     ]);
     assert.isTrue(Exit.isFailure(yield* Effect.exit(failedBatch)));
     assert.deepStrictEqual(yield* readLedger, before);
-    assert.deepStrictEqual(yield* sql`SELECT name FROM sqlite_master WHERE name = 's1_batch_probe'`, []);
-    assert.deepStrictEqual(yield* sql`SELECT migration_id FROM effect_sql_migrations ORDER BY migration_id`,
-      migrationManifest.map(([migration_id]) => ({ migration_id })));
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM sqlite_master WHERE name = 's1_batch_probe'`,
+      [],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT migration_id FROM effect_sql_migrations ORDER BY migration_id`,
+      migrationManifest.map(([migration_id]) => ({ migration_id })),
+    );
   }).pipe(Effect.provide(memory)),
 );
 
@@ -919,12 +934,21 @@ it.effect("late guarded Jones failure suppresses FINISHED after upstream 96 comm
     const logger = Logger.make<unknown, void>(({ message }) => {
       logs.push(...(Array.isArray(message) ? message : [message]));
     });
-    assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations().pipe(Effect.provide(Logger.layer([logger]))))));
+    assert.isTrue(
+      Exit.isFailure(
+        yield* Effect.exit(runMigrations().pipe(Effect.provide(Logger.layer([logger])))),
+      ),
+    );
     assert.notInclude(logs, "Migrations ran successfully");
     assert.deepStrictEqual(yield* readLedger, before);
-    assert.deepStrictEqual(yield* sql`SELECT name FROM sqlite_master WHERE name = 'jones_peer_wake_bindings'`, []);
-    assert.deepStrictEqual(yield* sql`SELECT migration_id FROM effect_sql_migrations ORDER BY migration_id`,
-      migrationManifest.map(([migration_id]) => ({ migration_id })));
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM sqlite_master WHERE name = 'jones_peer_wake_bindings'`,
+      [],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT migration_id FROM effect_sql_migrations ORDER BY migration_id`,
+      migrationManifest.map(([migration_id]) => ({ migration_id })),
+    );
     yield* sql`DROP TABLE jones_peer_wake_holds`;
     assert.deepStrictEqual(yield* runMigrations(), []);
   }).pipe(Effect.provide(memory)),

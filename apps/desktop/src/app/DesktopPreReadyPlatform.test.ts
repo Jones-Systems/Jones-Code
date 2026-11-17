@@ -3,7 +3,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { beforeEach, vi } from "vite-plus/test";
+import { afterEach, beforeEach, vi } from "vite-plus/test";
 
 const {
   appendSwitchMock,
@@ -64,7 +64,10 @@ import * as DesktopConfig from "./DesktopConfig.ts";
 import * as DesktopPreReadyPlatform from "./DesktopPreReadyPlatform.ts";
 
 describe("DesktopPreReadyPlatform", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
   beforeEach(() => {
+    vi.stubEnv("JONES_PREVIEW_COMPANION_PRODUCT", "false");
     appendSwitchMock.mockReset();
     getSwitchValueMock.mockReset();
     hasSwitchMock.mockReset();
@@ -169,7 +172,7 @@ describe("DesktopPreReadyPlatform", () => {
         const identity = yield* Effect.promise(() => portalIdentity);
         assert.equal(identity.desktopName, "com.t3tools.T3Code.desktop");
         assert.include(identity.desktopEntry ?? "", "Exec=/Applications/current.AppImage %U");
-        assert.include(identity.desktopEntry ?? "", "Name=T3 Code (Beta)");
+        assert.include(identity.desktopEntry ?? "", "Name=Jones Code\n");
         assert.include(identity.desktopEntry ?? "", "MimeType=x-scheme-handler/t3code;");
         assert.include(
           identity.desktopEntry ?? "",
@@ -184,6 +187,46 @@ describe("DesktopPreReadyPlatform", () => {
       }),
     ).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
   });
+
+  it.effect.each([
+    { devServerUrl: "", label: "packaged" },
+    { devServerUrl: "http://localhost:5173", label: "development" },
+  ])(
+    "sets the $label companion identity before startup yields without ordinary URL entries",
+    ({ devServerUrl }) => {
+      vi.stubEnv("VITE_DEV_SERVER_URL", devServerUrl);
+      vi.stubEnv("JONES_PREVIEW_COMPANION_PRODUCT", "true");
+      getSwitchValueMock.mockReturnValue("");
+
+      return Effect.scoped(
+        Effect.gen(function* () {
+          const earlyIdentity = Promise.resolve().then(() => ({
+            desktopNames: [...setDesktopNameMock.mock.calls],
+            switches: [...appendSwitchMock.mock.calls],
+            writes: [...writeFileSyncMock.mock.calls],
+          }));
+          yield* Layer.build(
+            DesktopPreReadyPlatform.layer.pipe(
+              Layer.provide(Layer.succeed(HostProcess.Platform, "linux")),
+              Layer.provide(
+                DesktopConfig.layerTest({
+                  XDG_DATA_HOME: "/xdg",
+                  APPIMAGE: "/Applications/companion.AppImage",
+                  APPIMAGE_SILENT_INSTALL: "true",
+                }),
+              ),
+            ),
+          );
+          const identity = yield* Effect.promise(() => earlyIdentity);
+          assert.deepEqual(identity.desktopNames, [["jones-preview-companion.desktop"]]);
+          assert.includeDeepMembers(identity.switches, [["class", "jones-preview-companion"]]);
+          assert.isFalse(identity.writes.some(([path]) => String(path).startsWith("/xdg/")));
+          assert.equal(symlinkSyncMock.mock.calls.length, 0);
+          assert.equal(copyFileSyncMock.mock.calls.length, 0);
+        }),
+      ).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
+    },
+  );
 
   it.effect.each([
     { relaunchedByUpdater: "true", restored: true },

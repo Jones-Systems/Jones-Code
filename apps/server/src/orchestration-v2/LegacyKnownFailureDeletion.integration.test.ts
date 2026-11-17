@@ -29,6 +29,8 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as Sink from "effect/Sink";
 import * as Result from "effect/Result";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as PtyAdapter from "@t3tools/shared/PtyAdapter";
@@ -65,6 +67,10 @@ import {
   legacyPayloadHash,
 } from "./LegacyBootstrap.ts";
 import { projectThreadProjectionForWire, projectDomainEventForWire } from "./WireProjection.ts";
+import {
+  readRetainedProjection,
+  readRetainedThreadEvents,
+} from "../jones/legacyBootstrap/RetainedRecords.testkit.ts";
 
 type LegacyPreparationStep = LegacyPreparation["steps"][number];
 
@@ -245,8 +251,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
               const threads = yield* Management.ThreadManagementService;
               const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
               const outbox = yield* EffectOutbox.EffectOutboxV2;
+              // Private values are read back only through the Jones lifecycle reader.
               const collect = (commandId: CommandId) =>
-                sink.readByCommandId({ commandId }).pipe(
+                sink.readLifecycleByCommandId({ commandId }).pipe(
                   Stream.runCollect,
                   Effect.map((events) => Array.from(events)),
                 );
@@ -489,7 +496,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                   retryable: false,
                 },
               });
-              const projection = yield* threads.getThreadProjection(threadId);
+              const projection = yield* readRetainedProjection(threads, threadId);
               const run = projection.runs.find((run) => run.id === runId)!;
               const qualifiedFailure = ![
                 "intent_lost",
@@ -653,15 +660,28 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                 assert.isTrue(Result.isFailure(changed));
                 if (scenario === "opted_out") {
                   const store = yield* EventStore.EventStoreV2;
-                  const raw = Array.from(yield* store.read({ threadId }).pipe(Stream.runCollect));
+                  // Replay the actual stream, with each event's exact Jones metadata, through the
+                  // explicit private memory adapter rather than upstream memory projection types.
+                  const raw = yield* readRetainedThreadEvents(store, sink, threadId);
                   const created = raw[0];
                   if (created?.event.type !== "thread.created")
                     return yield* Effect.die("Real stream lacks shell birth");
-                  let memory = ProjectionStore.emptyProjection(created.event);
-                  for (const recorded of raw.slice(1))
-                    memory = ProjectionStore.applyToProjection(memory, recorded.event);
+                  const memory = yield* ProjectionStore.ProjectionStoreV2.pipe(
+                    Effect.provide(Layer.fresh(ProjectionStore.layerMemory)),
+                  );
+                  const memoryRecords = memory.legacyRecords;
+                  if (memoryRecords === undefined)
+                    return yield* Effect.die("Memory adapter lacks private records");
+                  for (const recorded of raw) yield* memory.apply(recorded.event);
+                  const memoryRun = Effect.gen(function* () {
+                    const publicRun = (yield* memory.getThreadProjection(threadId)).runs[0];
+                    if (publicRun === undefined)
+                      return yield* Effect.die("Memory replay lacks run");
+                    return yield* memoryRecords.run(publicRun);
+                  });
+                  const acceptedRun = yield* memoryRun;
                   assert.deepEqual(
-                    memory.runs[0]?.legacyPreparationFailureDecision,
+                    acceptedRun.legacyPreparationFailureDecision,
                     run.legacyPreparationFailureDecision === undefined
                       ? undefined
                       : {
@@ -673,7 +693,6 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                               : undefined,
                         },
                   );
-                  const acceptedRun = memory.runs[0]!;
                   const { legacyPreparationFailureDecision: _privateDecision, ...stale } =
                     acceptedRun;
                   const ordinary = {
@@ -743,9 +762,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                       ),
                     ),
                   );
-                  const staleMemory = ProjectionStore.applyToProjection(memory, ordinary);
+                  yield* memory.apply(ordinary);
+                  const staleMemory = yield* memoryRun;
                   assert.deepEqual(
-                    staleMemory.runs[0]?.legacyPreparationFailureDecision,
+                    staleMemory.legacyPreparationFailureDecision,
                     acceptedRun.legacyPreparationFailureDecision,
                   );
                   const staleCommit = yield* sink.commitCommand({
@@ -757,7 +777,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     effects: [],
                   });
                   assert.deepEqual(
-                    (yield* threads.getThreadProjection(threadId)).runs[0]
+                    (yield* readRetainedProjection(threads, threadId)).runs[0]
                       ?.legacyPreparationFailureDecision,
                     acceptedRun.legacyPreparationFailureDecision,
                   );
@@ -781,7 +801,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     assert.notInclude(publicJson, receivingPolicy.payloadHash);
                   }
                   assert.deepEqual(
-                    (yield* threads.getThreadProjection(threadId)).runs[0]
+                    (yield* readRetainedProjection(threads, threadId)).runs[0]
                       ?.legacyPreparationFailureDecision,
                     acceptedRun.legacyPreparationFailureDecision,
                   );
@@ -807,9 +827,13 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                       },
                     },
                   };
-                  assert.throws(
-                    () => ProjectionStore.applyToProjection(memory, tampered),
-                    /Malformed or replaced/,
+                  const tamperedMemory = yield* memory.apply(tampered).pipe(Effect.exit);
+                  assert.isTrue(Exit.isFailure(tamperedMemory));
+                  if (Exit.isFailure(tamperedMemory))
+                    assert.match(Cause.pretty(tamperedMemory.cause), /Malformed or replaced/);
+                  assert.deepEqual(
+                    (yield* memoryRun).legacyPreparationFailureDecision,
+                    acceptedRun.legacyPreparationFailureDecision,
                   );
                   const tamperId = CommandId.make("known-failure:tamper-attempt");
                   const rejectedTamper = yield* sink
@@ -826,7 +850,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                   assert.isTrue(Option.isNone(yield* receipts.getByCommandId(tamperId)));
                   assert.deepEqual(yield* collect(tamperId), []);
                   assert.deepEqual(
-                    (yield* threads.getThreadProjection(threadId)).runs[0]
+                    (yield* readRetainedProjection(threads, threadId)).runs[0]
                       ?.legacyPreparationFailureDecision,
                     acceptedRun.legacyPreparationFailureDecision,
                   );
@@ -834,14 +858,14 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     yield* ProjectionMaintenance.ProjectionMaintenanceV2;
                   yield* projectionMaintenance.rebuild;
                   assert.deepEqual(
-                    (yield* threads.getThreadProjection(threadId)).runs[0]
+                    (yield* readRetainedProjection(threads, threadId)).runs[0]
                       ?.legacyPreparationFailureDecision,
                     acceptedRun.legacyPreparationFailureDecision,
                   );
                 }
               } else {
                 assert.deepEqual(deletionEvents, []);
-                const survivor = yield* threads.getThreadProjection(threadId);
+                const survivor = yield* readRetainedProjection(threads, threadId);
                 assert.isNull(survivor.thread.deletedAt);
                 assert.isUndefined(survivor.runs[0]?.legacyPreparationFailureDecision?.deletion);
                 assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
@@ -862,7 +886,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             yield* Effect.scoped(
               Effect.gen(function* () {
                 const threads = yield* Management.ThreadManagementService;
-                const projection = yield* threads.getThreadProjection(threadId);
+                const projection = yield* readRetainedProjection(threads, threadId);
                 assert.isNotNull(projection.thread.deletedAt);
                 const run = projection.runs.find((entry) => entry.id === first.runId)!;
                 assert.equal(

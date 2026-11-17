@@ -114,7 +114,7 @@ const layerCommandReceiptStoreProvided = CommandReceiptStore.layer.pipe(
 );
 const layerIsolatedOutbox = Layer.fresh(EffectOutbox.layer.pipe(Layer.provideMerge(layerDatabase)));
 const layerProjectionMaintenanceProvided = ProjectionMaintenance.layer.pipe(
-  Layer.provide(layerDatabase),
+  Layer.provide(layerStoresProvided),
 );
 const layerProjectionReplayProvided = ProjectionReplay.layer.pipe(
   Layer.provide(layerStoresProvided),
@@ -235,6 +235,7 @@ it.effect("discovers on the reader worker and deletes on the writer", () =>
     }).pipe(
       Effect.provide(
         ProjectionMaintenance.layer.pipe(
+          Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
           Layer.provideMerge(SqlitePersistence.layerFromPath(filename)),
         ),
       ),
@@ -664,6 +665,11 @@ it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail)
           awaitWork: Effect.void,
           runRecoveryOnce: Effect.succeed(false),
           runOnce: () => Effect.succeed(false),
+          // An idle worker: no action or urgent effect is claimable either.
+          runActionOnce: () => Effect.succeed(false),
+          runUrgentOnce: () => Effect.succeed(false),
+          nextActionClaimableAt: () => Effect.succeedNone,
+          nextUrgentClaimableAt: () => Effect.succeedNone,
           nextClaimableAt: () => Effect.succeedNone,
           drain: () => Effect.succeed(0),
         }),
@@ -3663,6 +3669,11 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             awaitWork: Effect.void,
             runRecoveryOnce: Effect.succeed(false),
             runOnce: () => Effect.succeed(false),
+            // An idle worker: no action or urgent effect is claimable either.
+            runActionOnce: () => Effect.succeed(false),
+            runUrgentOnce: () => Effect.succeed(false),
+            nextActionClaimableAt: () => Effect.succeedNone,
+            nextUrgentClaimableAt: () => Effect.succeedNone,
             nextClaimableAt: () => Effect.succeedNone,
             drain: () => Effect.succeed(0),
           }),
@@ -3880,6 +3891,11 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             awaitWork: Effect.void,
             runRecoveryOnce: Effect.succeed(false),
             runOnce: () => Effect.succeed(false),
+            // An idle worker: no action or urgent effect is claimable either.
+            runActionOnce: () => Effect.succeed(false),
+            runUrgentOnce: () => Effect.succeed(false),
+            nextActionClaimableAt: () => Effect.succeedNone,
+            nextUrgentClaimableAt: () => Effect.succeedNone,
             nextClaimableAt: () => Effect.succeedNone,
             drain: () => Effect.succeed(0),
           }),
@@ -4158,7 +4174,10 @@ it.effect.each(["events", "receipts"] as const)(
       const path = yield* Path.Path;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "compaction-reader-" });
       const database = SqlitePersistence.layerFromPath(path.join(directory, "statev2.sqlite"));
-      const maintenanceLayer = ProjectionMaintenance.layer.pipe(Layer.provideMerge(database));
+      const maintenanceLayer = ProjectionMaintenance.layer.pipe(
+        Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
+        Layer.provideMerge(database),
+      );
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;

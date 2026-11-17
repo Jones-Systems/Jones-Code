@@ -73,7 +73,8 @@ const layerOrchestrator = Layer.mergeAll(
   ),
 );
 const layerOrchestration = ThreadManagement.layer.pipe(
-  Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
+  // Launch tools record durable receipts in the same store the thread service reads.
+  Layer.provideMerge(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
   Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
 );
 

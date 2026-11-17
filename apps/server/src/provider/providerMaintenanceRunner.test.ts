@@ -7,7 +7,6 @@ import {
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
 import { ServerProviderUpdateError } from "@t3tools/contracts";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -659,13 +658,23 @@ describe("providerMaintenanceRunner", () => {
           });
           const result = yield* updater.updateProvider(CODEX_DRIVER);
           assert.deepStrictEqual(fresh, [false, true, true]);
+          // The instance's own bun answers the installable latest version before the update
+          // and again after its cached answer is invalidated; neither probe uses the ambient bun.
+          const latestProbe = {
+            command: path.join(instanceEnv.PATH, "bun"),
+            args: ["outdated", "-g", "@openai/codex"],
+            env: { ...instanceEnv, FORCE_COLOR: "0" },
+            extendEnv: true,
+          };
           assert.deepStrictEqual(calls, [
+            latestProbe,
             {
               command: "bun",
               args: ["i", "-g", "@openai/codex@latest"],
               env: instanceEnv,
               extendEnv: true,
             },
+            latestProbe,
           ]);
           assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
           assert.notInclude(JSON.stringify(result), instanceEnv.HOME);
@@ -933,6 +942,7 @@ describe("providerMaintenanceRunner", () => {
     return Effect.gen(function* () {
       const personalInstanceId = ProviderInstanceId.make("codex_personal");
       const workInstanceId = ProviderInstanceId.make("codex_work");
+      const capabilityReads: ProviderInstanceId[] = [];
       const refreshedInstanceIds: Array<ProviderInstanceId> = [];
       const { registry } = yield* makeRegistry([
         {
@@ -957,9 +967,7 @@ describe("providerMaintenanceRunner", () => {
               updateArgs: ["i", "-g", "@openai/codex"],
               updateLockKey: "vite-plus-global",
             }),
-          ).pipe(
-            Effect.tap(() => Effect.sync(() => assert.strictEqual(instanceId, personalInstanceId))),
-          ),
+          ).pipe(Effect.tap(() => Effect.sync(() => capabilityReads.push(instanceId)))),
         refreshAfterUpdate: (provider, selectedInstanceId) =>
           Effect.gen(function* () {
             assert.equal(provider, CODEX_DRIVER);
@@ -983,6 +991,12 @@ describe("providerMaintenanceRunner", () => {
           command: "vp",
           args: ["i", "-g", "@openai/codex"],
         },
+      ]);
+      assert.deepStrictEqual(capabilityReads, [
+        personalInstanceId,
+        personalInstanceId,
+        workInstanceId,
+        personalInstanceId,
       ]);
       assert.deepStrictEqual(refreshedInstanceIds, [personalInstanceId, workInstanceId]);
       assert.strictEqual(result.providers[0]?.instanceId, personalInstanceId);
@@ -1381,6 +1395,7 @@ describe("providerMaintenanceRunner", () => {
           generatePrContent: () => Effect.die("unused"),
           generateBranchName: () => Effect.die("unused"),
           generateReviewGuide: () => Effect.die("unused"),
+          evaluateRemoteRequest: () => Effect.die("unused"),
           generateTranscriptionPostProcessing: () => Effect.die("unused"),
           generateThreadTitle: () =>
             Effect.sync(() => {
@@ -1395,6 +1410,7 @@ describe("providerMaintenanceRunner", () => {
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
               listInstances: Effect.succeed([instance]),
               getInstance: (id) => Effect.succeed(id === CODEX_INSTANCE_ID ? instance : undefined),
+              getCatalogSource: (id) => (id === CODEX_INSTANCE_ID ? instance : undefined),
             }),
             ServerSettings.layerTest(),
             Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),

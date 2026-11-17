@@ -11,6 +11,7 @@ import {
   OrchestratorMcpThreadWaitResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Tool from "effect/ai/Tool";
@@ -24,7 +25,7 @@ import * as PeerLinks from "./PeerLinks.ts";
 // Match local waits: return before MCP client timeouts and T3 Connect's ~100 s idle drop.
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
-export const FORWARDED_WAIT_CHUNK_MS = 45_000;
+const FORWARDED_WAIT_CHUNK_MS = 45_000;
 
 type Scope = McpInvocationContext.McpInvocationScope;
 
@@ -186,7 +187,15 @@ const make = Effect.gen(function* () {
           environmentId,
           params as OrchestratorMcpThreadWaitInput,
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params, Context.get(tool.annotations, Tool.Readonly));
+      : forward(
+          scope,
+          tool.name,
+          tool.parametersSchema,
+          tool.successSchema,
+          environmentId,
+          params,
+          Context.get(tool.annotations, Tool.Readonly),
+        );
     return Effect.andThen(requireEnabled, forwarded);
   };
 
@@ -201,7 +210,12 @@ const make = Effect.gen(function* () {
     function* (scope) {
       yield* forwardingCaller(scope);
       yield* requireEnabled;
-      const listed = yield* links.list.pipe(Effect.mapError((error) => new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message })));
+      const listed = yield* links.list.pipe(
+        Effect.mapError(
+          (error) =>
+            new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+        ),
+      );
       return {
         environmentId: scope.environmentId,
         links: listed.map((link) => ({

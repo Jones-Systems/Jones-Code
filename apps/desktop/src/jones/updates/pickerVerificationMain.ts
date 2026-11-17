@@ -2,12 +2,15 @@
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { app, BrowserWindow, ipcMain, session } from "electron";
+import * as Effect from "effect/Effect";
 import {
   createPickerVerificationCore,
   type PickerVerificationInput,
 } from "./pickerVerificationCore.ts";
 import * as Channels from "../../ipc/channels.ts";
+import * as DesktopIpc from "../../ipc/DesktopIpc.ts";
 import * as JonesChannels from "./ipcChannels.ts";
+import { registerDesktopUpdateIpc } from "./updateIpcRegistration.ts";
 
 export function prepare(input: { readonly root: string; readonly nonce: string }) {
   if (app.isReady()) throw new Error("Picker paths must be configured before Electron ready.");
@@ -64,20 +67,35 @@ export async function createHost(
     },
   });
   let installs = 0;
-  await core.register({
-    removeHandler: (channel) => ipcMain.removeHandler(channel),
-    handle: (channel, listener) =>
-      ipcMain.handle(channel, (event, raw) => {
-        if (channel === Channels.UPDATE_INSTALL_CHANNEL) installs++;
-        return listener(event, raw);
-      }),
-    removeAllListeners: (channel) => {
-      ipcMain.removeAllListeners(channel);
-    },
-    on: (channel, listener) => {
-      ipcMain.on(channel, listener);
-    },
-  });
+  await core.register(
+    registerDesktopUpdateIpc(
+      DesktopIpc.make(
+        {
+          removeHandler: (channel) => ipcMain.removeHandler(channel),
+          handle: (channel, listener) =>
+            ipcMain.handle(channel, (event, raw) => {
+              if (channel === Channels.UPDATE_INSTALL_CHANNEL) installs++;
+              return listener(event, raw);
+            }),
+          removeAllListeners: (channel) => {
+            ipcMain.removeAllListeners(channel);
+          },
+          on: (channel, listener) => {
+            ipcMain.on(channel, listener);
+          },
+        },
+        // Production's guard, bound to the picker window: only its own top frame is trusted.
+        (event) =>
+          Effect.sync(
+            () =>
+              window !== undefined &&
+              !window.isDestroyed() &&
+              event.sender.id === window.webContents.id &&
+              event.senderFrame === window.webContents.mainFrame,
+          ),
+      ),
+    ),
+  );
   window = new BrowserWindow({
     show: false,
     webPreferences: {

@@ -22,6 +22,8 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
+import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
+import * as SystemBootService from "../jones/hostService/systemBootService.ts";
 import {
   ensurePinnedRuntimeInstalled,
   findPosixLauncher,
@@ -286,6 +288,7 @@ export const updateCommand = Command.make("update", {
 );
 
 const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(function* (input: {
+  readonly baseDir: string;
   readonly serverRuntimeStatePath: string;
   readonly serviceInstalled: boolean;
 }) {
@@ -293,19 +296,37 @@ const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(func
   if (Option.isNone(state) || state.value.serviceManaged || !isProcessAlive(state.value.pid)) {
     return undefined;
   }
-  if (input.serviceInstalled && (yield* belongsToBootService(state.value.pid))) return undefined;
+  if (input.serviceInstalled && (yield* belongsToBootService(state.value.pid, input.baseDir)))
+    return undefined;
   return state.value;
 });
 
+export function isJonesBootServiceCgroup(contents: string, boundSystemUnit?: string): boolean {
+  if (boundSystemUnit !== undefined)
+    return SystemBootService.systemServiceUnitFromCgroup(contents) === boundSystemUnit;
+  return contents
+    .split("\n")
+    .some((line) =>
+      line
+        .split(":")
+        .slice(2)
+        .join(":")
+        .split("/")
+        .includes(JONES_BOOT_SERVICE_IDENTITY.systemdUnitFile),
+    );
+}
+
 const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(function* (
   pid: number,
+  baseDir: string,
 ) {
   const platform = yield* HostProcess.Platform;
   const fs = yield* FileSystem.FileSystem;
   const runner = yield* ProcessRunner.ProcessRunner;
   if (platform === "linux") {
     const cgroup = yield* fs.readFileString(`/proc/${pid}/cgroup`).pipe(Effect.option);
-    return Option.isSome(cgroup) && cgroup.value.includes("/t3code.service");
+    const binding = yield* SystemBootService.readBinding(baseDir);
+    return Option.isSome(cgroup) && isJonesBootServiceCgroup(cgroup.value, binding?.systemUnit);
   }
   if (platform === "darwin") {
     const parent = yield* runner
@@ -405,6 +426,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     path.resolve(status.installedBaseDir) === path.resolve(input.baseDir);
   const serviceInstalled = status.supported && status.installed && servesThisHome;
   const foreground = yield* findForegroundServer({
+    baseDir: input.baseDir,
     serverRuntimeStatePath: input.serverRuntimeStatePath,
     serviceInstalled,
   });
@@ -541,10 +563,32 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     );
     servicePlan = yield* BootService.BootService.pipe(
       Effect.flatMap((target) =>
-        target.install({ allowDowngrade: input.allowDowngrade, start: restartService }),
+        Effect.gen(function* () {
+          const targetStatus = yield* target.status;
+          if (
+            !targetStatus.supported ||
+            !targetStatus.installed ||
+            targetStatus.otherBaseDir !== undefined ||
+            targetStatus.installedBaseDir === undefined ||
+            !path.isAbsolute(status.unitPath) ||
+            !path.isAbsolute(targetStatus.unitPath) ||
+            path.resolve(targetStatus.installedBaseDir) !== path.resolve(input.baseDir) ||
+            path.resolve(targetStatus.unitPath) !== path.resolve(status.unitPath)
+          ) {
+            return yield* new BootService.BootServiceInstallError({
+              cause: undefined,
+              reason:
+                "The background service binding changed or could not be verified; reconcile this home's exact service before retrying.",
+            });
+          }
+          return yield* target.install({
+            allowDowngrade: input.allowDowngrade,
+            start: restartService,
+          });
+        }),
       ),
       Effect.provide(
-        BootService.layer({
+        CliService.jonesBootServiceLayer({
           baseDir: input.baseDir,
           logsDir: input.logsDir,
           cliVersion: targetVersion,

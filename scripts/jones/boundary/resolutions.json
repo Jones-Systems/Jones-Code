@@ -66,7 +66,7 @@
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "337e2973c0046906c86cfa1e05b1e08a4cf9ede652a538ab151de3397ae6838a"
+          "sha256": "6a358f8b117591e56f30a110852881d2147f6f487521bb95aab3b13e560722a7"
         }
       ],
       "targets": []
@@ -86,7 +86,7 @@
     },
     {
       "from": "apps/mobile/src/features/browser/PreviewStreamWebView.tsx",
-      "sourceSha256": "ff29478046a265c3944e99505130415ed58037c17b69a9d263433265a9c67cc9",
+      "sourceSha256": "ea562309869a8baa9d85171eac01e4a33a7642f87405229766da767262cbd232",
       "expression": "\"@t3tools/mobile-preview-stream\"",
       "reason": "Metro supplies this generated browser-script module from the pinned generator; generated output is not read or claimed verified.",
       "anchors": [
@@ -110,13 +110,13 @@
     },
     {
       "from": "apps/mobile/src/features/files/SourceFileSurface.tsx",
-      "sourceSha256": "9a1e78f4cf0e43e577215fc2d2721f228239f55e607cf19baf5a0284464c73a1",
+      "sourceSha256": "c1cff576e30a869de491644b50efb0f3d958b3264f74454d4c0ae5e923dfafd4",
       "expression": "\"@t3tools/mobile-source-text\"",
       "reason": "Metro resolves this checked-in native package through the mobile manifest file dependency and the package main/types/react-native index.ts entry. The boundary resolver supports exports maps only; exact source and manifest hashes bind this entry, which still receives boundary checking.",
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "650eb71117360b062ec68090628b86a9e84cd5589f43ce5960b052b1f334934a"
+          "sha256": "a6d6d25c14d32d135070ce85b9cce183dad53acfbabdc59ac19c95cb898cf68e"
         },
         {
           "path": "apps/mobile/metro.config.js",
@@ -150,28 +150,28 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "dbb36df535c09bae5a43f8c48cb7e1fc4687b1b50dec729e59e17b26ed83e859"
+          "sha256": "08f4c723efd860bf57ed44a15539816e1e15ba39838786da4a12394653cfecb0"
         },
         {
           "path": "scripts/package.json",
-          "sha256": "b0efc0c1f0d4b1910a7b5f7fca219b31e8e171388efbcd13e6855232ffb664ef"
+          "sha256": "e0cd4c098984331070c5592393a5deb718e27e69becfb4af2b893b19d6d086e3"
         }
       ],
       "targets": []
     },
     {
       "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
-      "sourceSha256": "f77c76d7242647e011197a3c757378991527e5ef5ce3198b132d8711c0bbc9f7",
+      "sourceSha256": "b72c5dca321e9f16d3289640f5ba6720bc5ad7e2fc9bc266e9cd6f27c1c77192",
       "expression": "\"../../../node_modules/@betteroffice/fonts/assets/Carlito-Regular.ttf?url\"",
       "reason": "Upstream document-rendering fixture loads a real installed external font through a relative node_modules URL. Dependency asset bytes are outside the source boundary; exact test and manifest/catalog hashes bind this unsupported loader, not generated or runtime verification.",
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "dbb36df535c09bae5a43f8c48cb7e1fc4687b1b50dec729e59e17b26ed83e859"
+          "sha256": "08f4c723efd860bf57ed44a15539816e1e15ba39838786da4a12394653cfecb0"
         },
         {
           "path": "pnpm-workspace.yaml",
-          "sha256": "f38c3601ebdf430bedbbbbb48608e0e41f946289fde92d5a8b7b9506f3a0c802"
+          "sha256": "3dfe15200faa64351d3b4ead5d74993ea6e30d64d976300aa9d1583040da655e"
         }
       ],
       "targets": []
@@ -184,11 +184,11 @@
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "650eb71117360b062ec68090628b86a9e84cd5589f43ce5960b052b1f334934a"
+          "sha256": "a6d6d25c14d32d135070ce85b9cce183dad53acfbabdc59ac19c95cb898cf68e"
         },
         {
           "path": "pnpm-workspace.yaml",
-          "sha256": "f38c3601ebdf430bedbbbbb48608e0e41f946289fde92d5a8b7b9506f3a0c802"
+          "sha256": "3dfe15200faa64351d3b4ead5d74993ea6e30d64d976300aa9d1583040da655e"
         }
       ],
       "targets": []
@@ -201,7 +201,7 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "437c36994a2bd1a87ed26184e40b2857beef89e8424a3ebaa2c5daf0cd46d652"
+          "sha256": "4af89773352ce89ab1d9e1ef218f07fc659fb2734376987d4f32a92839e5a0f3"
         },
         {
           "path": "apps/server/src/binCli.ts",
@@ -209,7 +209,7 @@
         },
         {
           "path": "scripts/prepare-server-compile-cache.cjs",
-          "sha256": "f21af29fdc35c811542bda4356eceb00d2658ac61b9f7eefc3c40e6167951cfb"
+          "sha256": "3a167e3ef8b799d927b441954e24806e4f2590aa574188cc23f18fb14d1ea503"
         }
       ],
       "targets": ["apps/server/src/binCli.ts"]
@@ -238,41 +238,41 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "437c36994a2bd1a87ed26184e40b2857beef89e8424a3ebaa2c5daf0cd46d652"
+          "sha256": "4af89773352ce89ab1d9e1ef218f07fc659fb2734376987d4f32a92839e5a0f3"
         },
         {
           "path": "apps/server/src/server.ts",
-          "sha256": "bdfcfa41a591907f0f0f30e28277e5e6be765869462c7a9380651b8182c4d6d5"
+          "sha256": "2609851056632af9e25691fab9267779503f76d03570a454fed043c305930038"
         },
         {
           "path": "scripts/prepare-server-compile-cache.cjs",
-          "sha256": "f21af29fdc35c811542bda4356eceb00d2658ac61b9f7eefc3c40e6167951cfb"
+          "sha256": "3a167e3ef8b799d927b441954e24806e4f2590aa574188cc23f18fb14d1ea503"
         }
       ],
       "targets": ["apps/server/src/server.ts"]
     },
     {
       "from": "apps/server/src/bin.ts",
-      "sourceSha256": "bfd166e85864948da79bee79bb7ba36eae5f6d3ab4871eb07dcaf8f6870b0598",
+      "sourceSha256": "9f9eea5cb5da893f912ec4769030696168db44f6c777bc355bb9f4411b75eb64",
       "expression": "process.execPath",
       "reason": "Upstream single-executable launch loads the CLI graph embedded in the running executable through require(process.execPath). The target exists only in the packaged executable; exact bin and bundler hashes bind this unsupported computed require, and the target names the embedded CLI source. Packaged executables are not read or claimed verified.",
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "437c36994a2bd1a87ed26184e40b2857beef89e8424a3ebaa2c5daf0cd46d652"
+          "sha256": "4af89773352ce89ab1d9e1ef218f07fc659fb2734376987d4f32a92839e5a0f3"
         }
       ],
       "targets": ["apps/server/src/binMain.ts"]
     },
     {
       "from": "apps/mobile/src/lib/highlights.ts",
-      "sourceSha256": "aee7af642c6727c903fda364d2b6521c46c6df59d4ce67a86ceebcd88cd8cded",
+      "sourceSha256": "8ab911d2fbc37ffb3cc13b96b91dbcf7fc7fa304bc4263a580cdd4cc4fa5080e",
       "expression": "\"@t3tools/mobile-highlights-native\"",
       "reason": "Upstream type-only import of the local Nitro module package installed through file:./modules/t3-highlights. The package declares only a types entry, which this boundary does not resolve; exact source and manifest hashes bind the declared type source.",
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "650eb71117360b062ec68090628b86a9e84cd5589f43ce5960b052b1f334934a"
+          "sha256": "a6d6d25c14d32d135070ce85b9cce183dad53acfbabdc59ac19c95cb898cf68e"
         },
         {
           "path": "apps/mobile/modules/t3-highlights/package.json",
@@ -280,6 +280,69 @@
         }
       ],
       "targets": ["apps/mobile/modules/t3-highlights/src/T3Highlights.nitro.ts"]
+    },
+    {
+      "from": "apps/web/src/i18n/initializeI18n.ts",
+      "sourceSha256": "db7cf7f0c357d69bad2c704b9f95a2e1363ffc75abc3c0e950fdc9270473be2f",
+      "expression": "`./translations/${locale}.json`",
+      "reason": "Pinned upstream GT translation loader uses a computed local JSON import. Expression evaluation and generated chunk selection are unsupported. Exact loader, configured locale list and all nine checked-in locale data files bind this visible disposition; targets list the complete current source directory. This does not claim runtime locale validation, generated bundle or translation quality verification.",
+      "anchors": [
+        {
+          "path": "apps/web/gt.config.json",
+          "sha256": "0baa69f603f3c178aefacafac1d6fc8db0aa95c65ccaa84165ef895d660761a3"
+        },
+        {
+          "path": "apps/web/src/i18n/locales.ts",
+          "sha256": "f316474112a8c608eca5e2d36b9f6a8e87c5df6c6d3a1e2d0c00ab6e5d6f9308"
+        },
+        {
+          "path": "apps/web/src/i18n/translations/en.json",
+          "sha256": "3746d201a26b8238eec5ca84997e5b5412de14c23848adb2252c2f744f3626be"
+        },
+        {
+          "path": "apps/web/src/i18n/translations/de.json",
+          "sha256": "0d93e7e60fe95edc45fbfebca292e1ebeff1153d3b63e556957eb4206b82bbb1"
+        },
+        {
+          "path": "apps/web/src/i18n/translations/es.json",
+          "sha256": "0925b3356f8d98aabc9f0558ecc19bf7d9653ddb5952042b87dfffc8ef2f20e7"
+        },
+        {
+          "path": "apps/web/src/i18n/translations/fr.json",
+          "sha256": "a41ca0ece38ebce7981f44612191f8c089134e001edd082347d3758c65696fd1"
+        },
+        {
+          "path": "apps/web/src/i18n/translations/ja.json",
+          "sha256": "7e13c7b315167c8078a2ca5e6b95e8130c4bf2a69169db8d80317f014c92bbfb"
+        },
+        {
+          "path": "apps/web/src/i18n/translations/ko.json",
+          "sha256": "f551b7c5cb88af57e2239c226bb4e4530cd990b1a1f9b9730a6af2fd0a37f198"
+        },
+        {
+          "path": "apps/web/src/i18n/translations/pt-BR.json",
+          "sha256": "dba37204611c0ee19c41101d3303e9e168d81500ab41948c8961087abbb1db7b"
+        },
+        {
+          "path": "apps/web/src/i18n/translations/ru.json",
+          "sha256": "57b188c1d6484cd470f477196dee2dfd3a212a10b70d3efb758bd789b9bb4132"
+        },
+        {
+          "path": "apps/web/src/i18n/translations/zh.json",
+          "sha256": "4dafb1e7c2716906fc6672c57a56927c1019cfc2faf94dd983fe75f83d32feec"
+        }
+      ],
+      "targets": [
+        "apps/web/src/i18n/translations/en.json",
+        "apps/web/src/i18n/translations/de.json",
+        "apps/web/src/i18n/translations/es.json",
+        "apps/web/src/i18n/translations/fr.json",
+        "apps/web/src/i18n/translations/ja.json",
+        "apps/web/src/i18n/translations/ko.json",
+        "apps/web/src/i18n/translations/pt-BR.json",
+        "apps/web/src/i18n/translations/ru.json",
+        "apps/web/src/i18n/translations/zh.json"
+      ]
     }
   ]
 }

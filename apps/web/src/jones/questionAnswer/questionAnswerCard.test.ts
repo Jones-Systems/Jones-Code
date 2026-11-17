@@ -139,6 +139,7 @@ describe("normal message delivery while a question is pending", () => {
       event,
       intent: {
         keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+        context: {},
         isSoftwareKeyboardOpen: false,
         isDraftThread: false,
         isRunning: true,

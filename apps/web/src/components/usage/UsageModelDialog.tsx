@@ -1,6 +1,7 @@
 import { formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { isModelCostUnknown, type ModelTotals } from "@t3tools/shared/usageMerge";
 
+import { UsageModelTokenStats } from "../../jones/usage/UsageModelTokenStats";
 import { mergeAnsweredUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { Button } from "../ui/button";
@@ -17,7 +18,6 @@ import { UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart"
 import { UsageShareBar } from "./UsageShareBar";
 import {
   cacheHitRate,
-  costPerMillionTokens,
   costTypeSegments,
   speedCostSegments,
   tokenTypeSegments,
@@ -56,13 +56,6 @@ export function UsageModelDialog({
   const presentation = PROVIDER_PRESENTATION[model.provider];
   const costUnknown = isModelCostUnknown(model);
   const hitRate = cacheHitRate(model);
-  const perMillion = costPerMillionTokens(model);
-  const stats = [
-    { label: "Cost", value: costUnknown ? "Unpriced" : formatUsd(model.costUsd) },
-    { label: "Tokens", value: formatTokens(model.totalTokens) },
-    perMillion === null ? null : { label: "Per 1M tokens", value: formatUsd(perMillion) },
-    hitRate === null ? null : { label: "Cache hit", value: formatPercent(hitRate) },
-  ].filter((stat) => stat !== null);
 
   return (
     <Dialog
@@ -88,14 +81,17 @@ export function UsageModelDialog({
         </DialogHeader>
         <DialogPanel>
           <div className="flex flex-col gap-8">
-            <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
-              {stats.map((stat) => (
-                <div key={stat.label} className="flex min-w-0 flex-col gap-0.5">
-                  <dt className="text-xs text-muted-foreground">{stat.label}</dt>
-                  <dd className="text-2xl font-semibold text-foreground">{stat.value}</dd>
+            <UsageModelTokenStats model={model} />
+            {hitRate === null ? null : (
+              <dl>
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <dt className="text-xs text-muted-foreground">Cache hit</dt>
+                  <dd className="text-2xl font-semibold text-foreground">
+                    {formatPercent(hitRate)}
+                  </dd>
                 </div>
-              ))}
-            </dl>
+              </dl>
+            )}
 
             {/* Unpriced cost is unknown, not zero, so its trend shows tokens. */}
             <UsageProviderChart

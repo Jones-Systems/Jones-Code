@@ -28,6 +28,7 @@ import { VcsProcessTimeoutError } from "@t3tools/contracts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as CheckpointCaptureService from "./CheckpointCaptureService.ts";
 import * as EventSink from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -300,6 +301,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
                     capture: () => Effect.succeed(captured),
                   }),
               Layer.mock(EventSink.EventSinkV2)({
+                supersededTerminalTrace: SupersededTerminalTrace.make(),
                 commitCommand: (input) =>
                   Ref.set(committed, input.events).pipe(
                     Effect.as({
@@ -453,6 +455,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
               capture: () => Effect.die("a discarded run must not be captured"),
             }),
             Layer.mock(EventSink.EventSinkV2)({
+              supersededTerminalTrace: SupersededTerminalTrace.make(),
               commitCommand: (input) =>
                 Ref.set(committed, input.events).pipe(Effect.as({ committed: true } as never)),
             }),
@@ -650,6 +653,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
                 ),
               ),
               Layer.mock(EventSink.EventSinkV2)({
+                supersededTerminalTrace: SupersededTerminalTrace.make(),
                 commitCommand: (input) =>
                   Ref.set(committed, input.events).pipe(Effect.as({ committed: true } as never)),
               }),
@@ -876,6 +880,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
               capture: () => Effect.succeed(captured),
             }),
             Layer.mock(EventSink.EventSinkV2)({
+              supersededTerminalTrace: SupersededTerminalTrace.make(),
               commitCommand: (input) =>
                 Effect.forEach(input.events, (event) => projectionStore.apply(event)).pipe(
                   Effect.andThen(Ref.update(commits, (count) => count + 1)),
@@ -1093,6 +1098,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
               ),
             ),
             Layer.mock(EventSink.EventSinkV2)({
+              supersededTerminalTrace: SupersededTerminalTrace.make(),
               commitCommand: (input) =>
                 Effect.forEach(input.events, (committed) => projectionStore.apply(committed)).pipe(
                   Effect.as({ committed: true } as never),

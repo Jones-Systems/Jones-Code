@@ -1,4 +1,5 @@
 import * as DateTime from "effect/DateTime";
+import { isWorkModeSentinelMessage } from "@t3tools/shared/jones/workMode";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import {
@@ -493,7 +494,13 @@ function maxIsoTimestamp(a: string | null, b: string | null): string | null {
 
 export type TimelineLatestRun = Pick<
   ThreadRunSummary,
-  "runId" | "status" | "startedAt" | "completedAt" | "turnEnded"
+  | "runId"
+  | "status"
+  | "startedAt"
+  | "completedAt"
+  | "turnEnded"
+  | "providerSettlement"
+  | "providerActivityStarted"
 >;
 
 const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
@@ -1474,6 +1481,24 @@ function runningSubagentsAtRunTail(entries: ReadonlyArray<TimelineEntry>, runId:
   return running;
 }
 
+const isSentinelEntry = (entry: TimelineEntry) =>
+  entry.kind === "message" &&
+  isWorkModeSentinelMessage({ ...entry.message, status: entry.projectedItem?.item.status });
+
+function withQuietTurnApplied<
+  Input extends {
+    readonly timelineEntries: ReadonlyArray<TimelineEntry>;
+    readonly isWorking: boolean;
+  },
+>(input: Input): Input {
+  const lastUserIndex = input.timelineEntries.findLastIndex(
+    (entry) => entry.kind === "message" && entry.message.role === "user",
+  );
+  const quietTurn =
+    lastUserIndex >= 0 && input.timelineEntries.slice(lastUserIndex).every(isSentinelEntry);
+  return quietTurn ? { ...input, isWorking: false } : input;
+}
+
 function timelineRowEntries(
   input: Pick<
     MessagesTimelineRowsInput,
@@ -1487,7 +1512,7 @@ function timelineRowEntries(
   >,
 ) {
   const visibility = input.toolCallVisibility ?? "showAll";
-  const entries = input.timelineEntries;
+  const entries = input.timelineEntries.filter((entry) => !isSentinelEntry(entry));
   let shown = entries;
   if (visibility === "zen") {
     const answering = input.isWorking && input.latestRun?.turnEnded !== true;
@@ -1535,6 +1560,7 @@ function deriveTimelineTurnFolds(
   >,
 ) {
   if (input.toolCallVisibility === "zen") return new Map<string, TurnFold>();
+  input = withQuietTurnApplied(input);
   const timelineEntries = timelineRowEntries(input);
   const unsettledRunId = deriveUnsettledRunId(input.latestRun ?? null, input.runningRunId ?? null);
   const failedRunIds = failedTimelineRunIds(timelineEntries, input.latestRun ?? null);
@@ -1574,6 +1600,7 @@ export function deriveMessagesTimelineRows(input: {
   toolCallVisibility?: ToolCallVisibility;
   revealedMessageId?: MessageId | null;
 }): MessagesTimelineRow[] {
+  input = withQuietTurnApplied(input);
   const timelineEntries = timelineRowEntries(input);
   const embeddedResultRunIds = new Set<RunId>();
   for (const entry of timelineEntries) {
@@ -2556,6 +2583,7 @@ function replaceStreamingMessageRows(
       continue;
     }
     if (entry.kind !== "message" || previousEntry.kind !== "message") return null;
+    if (isSentinelEntry(previousEntry) !== isSentinelEntry(entry)) return null;
     if (
       entry.projectedItem !== previousEntry.projectedItem &&
       (entry.projectedItem === undefined ||

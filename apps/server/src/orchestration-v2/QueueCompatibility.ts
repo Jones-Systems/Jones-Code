@@ -300,7 +300,7 @@ const make = Effect.gen(function* () {
             const previousClaim =
               existing === null
                 ? undefined
-                : (yield* threads.getThreadRecords(input.threadId, ["runs"])).thread
+                : (yield* threads.getLegacyBootstrapRecords(input.threadId)).thread
                     .legacyBootstrapClaim;
             const ownsNewThread =
               previousClaim?.createCommandId === createCommandId &&

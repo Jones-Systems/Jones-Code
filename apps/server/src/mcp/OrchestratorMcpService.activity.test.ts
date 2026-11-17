@@ -247,9 +247,18 @@ it("readThread preserves caller access errors and prefers activity-run status ov
     expect(result.thread.activeRunId).toBe(activeRunId);
     expect(result.thread.pinned).toBe(true);
     expect(result.thread.blockedOnThreadWait).toBe(true);
+    // The thread publishes the shell's own roster, and a pending subagent holds completion.
     expect(result.thread.pendingBackgroundTasks).toEqual([
-      { taskId: "task-subagent", kind: "subagent", childThreadId },
+      {
+        taskId: "task-subagent",
+        kind: "subagent",
+        parentTaskId: "task-parent",
+        providerInstanceId: parentInstanceId,
+        childThreadId,
+      },
     ]);
+    expect(result.thread.backgroundHoldsCompletion).toBe(true);
+    expect(result.thread.pendingBackgroundTasksTruncated).toBe(false);
     // Every page read must not repeat each linked PR, and an open PR shows whether it is watched.
     // A thread with many open PRs previews a few, watched first, then newest.
     const listed = result.thread.pullRequests ?? [];
@@ -675,7 +684,8 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+          getTimelinePage: () =>
+            Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
           getThreadRecords: (threadId) =>
             threadId === parentThreadId
               ? Effect.succeed(projection)
@@ -1106,7 +1116,8 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+          getTimelinePage: () =>
+            Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
           getThreadRecords: (threadId) =>
             threadId === parentThreadId
               ? Effect.succeed(projection)

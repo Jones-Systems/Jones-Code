@@ -11,10 +11,14 @@ import { jonesMigrationEntries } from "./JonesMigrations.ts";
 import isolationMigration from "./Migrations/105_JonesUpstreamReferenceIsolation.ts";
 
 const sendReceipt = {
-  command_id: "command", origin_namespace: "authenticated-peer:isolation",
-  client_request_id: "send-request", request_digest: "a".repeat(64), thread_id: "thread",
+  command_id: "command",
+  origin_namespace: "authenticated-peer:isolation",
+  client_request_id: "send-request",
+  request_digest: "a".repeat(64),
+  thread_id: "thread",
   expected_created_at: "2026-11-16T20:00:00.000Z",
-  result_json: '{"threadId":"thread","messageId":"message","runId":"run","status":"running","delivery":"started"}',
+  result_json:
+    '{"threadId":"thread","messageId":"message","runId":"run","status":"running","delivery":"started"}',
   recorded_at: "2026-11-16T20:14:00.000Z",
 };
 
@@ -432,6 +436,8 @@ it.effect(
         [153, "PersonalWorkstreams"],
         [154, "StartRefusals"],
         [155, "PeerWakeObligations"],
+        [156, "WorkspaceDutyLifetimes"],
+        [157, "RemoteSendReceipts"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

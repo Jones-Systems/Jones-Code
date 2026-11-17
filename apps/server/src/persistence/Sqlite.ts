@@ -20,6 +20,10 @@ import { readerPoolOptions } from "../jones/serverParallelism/persistenceOptions
 import { makePoolObservers } from "../jones/serverParallelism/metrics.ts";
 import { jonesMigrationEntries } from "../jones/persistence/JonesMigrations.ts";
 import { readMigrationPlan } from "../jones/updates/migrationPlan.ts";
+import * as Option from "effect/Option";
+import * as CheckedOwner from "../jones/cleanup/CheckedRuntimeOwner.ts";
+import * as Incarnation from "../jones/cleanup/sharedAdmission/DatabaseIncarnation.ts";
+import { AdmissionError } from "../jones/cleanup/sharedAdmission/Protocol.ts";
 
 const WAL_SIZE_LIMIT_BYTES = 128 * 1024 * 1024;
 
@@ -95,14 +99,49 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>, maintenance
 const layerSetup = makeLayerSetup(runMigrations());
 
 const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<never, E, R>) =>
-  Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string, readerPool?: SqliteReaderPoolOptions) {
+  Effect.fn("makeSqlitePersistenceLive")(function* (
+    dbPath: string,
+    readerPool?: SqliteReaderPoolOptions,
+  ) {
     yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
 
+    const infrastructure = yield* Effect.serviceOption(Incarnation.OpenInfrastructure);
+    // Raw paths (including schema-only CLI opens) acquire no managed authority.
+    // Root provides this port only after real account infrastructure admission.
+    const open = Option.isSome(infrastructure)
+      ? yield* Effect.gen(function* () {
+          const owner = yield* Effect.serviceOption(CheckedOwner.HeldRuntimeOwner);
+          if (Option.isNone(owner))
+            return yield* new AdmissionError({ reason: "persistence_held_owner_missing" });
+          const coordinates = yield* Effect.try({
+            try: () => CheckedOwner.inspectHeldDatabaseOwner(owner.value.token),
+            catch: (cause) =>
+              new AdmissionError({ reason: "persistence_owner_unavailable", cause }),
+          });
+          if (coordinates.dbPath !== dbPath)
+            return yield* new AdmissionError({ reason: "persistence_open_coordinate_mismatch" });
+          return yield* Incarnation.prepareOpen(
+            owner.value.token,
+            infrastructure.value.permit,
+          ).pipe(Effect.provideService(Incarnation.OpenInfrastructure, infrastructure.value));
+        })
+      : undefined;
+    const setup =
+      open === undefined
+        ? makeSetup(dbPath)
+        : Layer.effectDiscard(Incarnation.bindOpen(open)).pipe(
+            // Layer composition orders actual client certification before setup, then
+            // samples that same retained incarnation again after both migration sets.
+            (before) => Layer.provideMerge(makeSetup(dbPath), before),
+            (migrated) =>
+              Layer.provideMerge(Layer.effectDiscard(Incarnation.revalidateOpen(open)), migrated),
+          );
+
     return Layer.provideMerge(
-      makeSetup(dbPath),
+      setup,
       NodeSqliteClient.layer({
         filename: dbPath,
         readerWorker: true,
@@ -138,36 +177,60 @@ export const layerMemory = Layer.provideMerge(
 );
 
 const makeLayerConfig = <E, R>(
-  fromPath: (dbPath: string, readerPool?: SqliteReaderPoolOptions) => Layer.Layer<SqlClient.SqlClient, E, R>,
+  fromPath: (
+    dbPath: string,
+    readerPool?: SqliteReaderPoolOptions,
+  ) => Layer.Layer<SqlClient.SqlClient, E, R>,
   cli = false,
 ) =>
   Layer.unwrap(
     Effect.gen(function* () {
-      const { dbPath, serverParallelism, serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
+      const { dbPath, serverParallelism, serverRuntimeStatePath } =
+        yield* ServerConfig.ServerConfig;
       const observers = yield* makePoolObservers(serverParallelism.profile);
       yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
       let cliPending = false;
       if (cli) {
         // Inspect before copy/open/setup: a refused CLI must leave the database unchanged.
-        const plan = yield* Effect.sync(() => readMigrationPlan({
-          databasePath: dbPath, upstream: migrationManifest, jones: jonesMigrationEntries.map(([id, name]) => [id, name]),
-        }));
-        if (plan.status === "blocked") return yield* Effect.fail(new SqlError.SqlError({
-          reason: new SqlError.UnknownError({ cause: new Error(plan.reason), operation: "open", message: plan.reason }),
-        }));
-        if (plan.migrationPlan.pendingUpstream.length > 0 || plan.migrationPlan.pendingJones.length > 0) {
+        const plan = yield* Effect.sync(() =>
+          readMigrationPlan({
+            databasePath: dbPath,
+            upstream: migrationManifest,
+            jones: jonesMigrationEntries.map(([id, name]) => [id, name]),
+          }),
+        );
+        if (plan.status === "blocked")
+          return yield* new SqlError.SqlError({
+            reason: new SqlError.UnknownError({
+              cause: new Error(plan.reason),
+              operation: "open",
+              message: plan.reason,
+            }),
+          });
+        if (
+          plan.migrationPlan.pendingUpstream.length > 0 ||
+          plan.migrationPlan.pendingJones.length > 0
+        ) {
           cliPending = true;
           yield* ServerOwnership.holdServerOwnershipLock(serverRuntimeStatePath).pipe(
-            Effect.catchTags({ ServerAlreadyRunningError: ({ stateDir }) =>
-              Effect.fail(new ServerOwnsDatabaseError({ stateDir })) }),
+            Effect.catchTags({
+              ServerAlreadyRunningError: ({ stateDir }) =>
+                Effect.fail(new ServerOwnsDatabaseError({ stateDir })),
+            }),
           );
           yield* initializeV2Database(dbPath);
         }
       } else {
         yield* initializeV2Database(dbPath);
       }
-      const selected = cliPending ? layerFromPath : fromPath;
-      return selected(dbPath, readerPoolOptions(serverParallelism.readerCount, observers.reader));
+      const readerPool = readerPoolOptions(serverParallelism.readerCount, observers.reader);
+      // Layer.unwrap infers one layer type, so name the union of both open graphs.
+      const layer: Layer.Layer<
+        SqlClient.SqlClient,
+        E | Layer.Error<ReturnType<typeof layerFromPath>>,
+        R | Layer.Services<ReturnType<typeof layerFromPath>>
+      > = cliPending ? layerFromPath(dbPath, readerPool) : fromPath(dbPath, readerPool);
+      return layer;
     }),
   );
 

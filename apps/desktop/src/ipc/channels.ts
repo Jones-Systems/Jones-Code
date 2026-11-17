@@ -28,6 +28,10 @@ export const UPDATE_STATE_CHANNEL = "desktop:update-state";
 export const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 export const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
 export const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
+export const JONES_UPDATE_LIST_BUILDS_CHANNEL = "desktop:jones-update-list-builds";
+export const JONES_UPDATE_SELECT_BUILD_CHANNEL = "desktop:jones-update-select-build";
+export const FLEET_UPDATES_CHANNEL = "desktop:fleet-updates";
+export const UPDATE_DISCARD_CHANNEL = "desktop:update-discard";
 export const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 export const UPDATE_CHECK_CHANNEL = "desktop:update-check";
 export const CLI_COMMAND_GET_STATE_CHANNEL = "desktop:cli-command-get-state";
@@ -35,6 +39,8 @@ export const CLI_COMMAND_INSTALL_CHANNEL = "desktop:cli-command-install";
 export const CLI_COMMAND_UNINSTALL_CHANNEL = "desktop:cli-command-uninstall";
 export const CLI_COMMAND_ADD_TO_PATH_CHANNEL = "desktop:cli-command-add-to-path";
 export const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
+export const GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL =
+  "desktop:get-preview-automation-runtime-identity";
 export const GET_RELAY_TELEMETRY_ENABLED_CHANNEL = "desktop:get-relay-telemetry-enabled";
 export const GET_SYSTEM_LOCALE_CHANNEL = "desktop:get-system-locale";
 export const GET_PREFERRED_SYSTEM_LANGUAGES_CHANNEL = "desktop:get-preferred-system-languages";
@@ -67,6 +73,8 @@ export const DISCOVER_SSH_HOSTS_CHANNEL = "desktop:discover-ssh-hosts";
 export const RESOLVE_SSH_HOST_CHANNEL = "desktop:resolve-ssh-host";
 export const ENSURE_SSH_ENVIRONMENT_CHANNEL = "desktop:ensure-ssh-environment";
 export const DISCONNECT_SSH_ENVIRONMENT_CHANNEL = "desktop:disconnect-ssh-environment";
+export const OPEN_DEVICE_MEDIA_TUNNEL_CHANNEL = "desktop:open-device-media-tunnel";
+export const CLOSE_DEVICE_MEDIA_TUNNEL_CHANNEL = "desktop:close-device-media-tunnel";
 export const FETCH_SSH_ENVIRONMENT_DESCRIPTOR_CHANNEL = "desktop:fetch-ssh-environment-descriptor";
 export const BOOTSTRAP_SSH_BEARER_SESSION_CHANNEL = "desktop:bootstrap-ssh-bearer-session";
 export const FETCH_SSH_SESSION_STATE_CHANNEL = "desktop:fetch-ssh-session-state";
@@ -142,3 +150,9 @@ export const TAKE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:take-legacy-local-stor
 export const COMPLETE_LEGACY_LOCAL_STORAGE_CHANNEL = "desktop:complete-legacy-local-storage";
 
 export const RESTART_AUDIO_SERVICE_CHANNEL = "desktop:restart-audio-service";
+
+export const GET_CONNECTION_CATALOG_SNAPSHOT_CHANNEL = "desktop:get-connection-catalog-snapshot";
+export const LIST_CONNECTION_COMPATIBILITY_HINTS_CHANNEL =
+  "desktop:list-connection-compatibility-hints";
+export const SET_CONNECTION_COMPATIBILITY_HINT_CHANNEL =
+  "desktop:set-connection-compatibility-hint";

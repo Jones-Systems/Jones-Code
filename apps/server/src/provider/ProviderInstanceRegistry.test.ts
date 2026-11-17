@@ -1,3 +1,11 @@
+import type { GrokSettings } from "@t3tools/provider-grok/settings";
+import type { CursorSettings } from "@t3tools/provider-cursor/settings";
+import * as AntigravityInstallation from "./AntigravityInstallation.ts";
+import { CursorDriver, type CursorDriverEnv } from "@t3tools/provider-cursor/server";
+import { GrokDriver, type GrokDriverEnv } from "@t3tools/provider-grok/server";
+import { OpenCodeDriver, type OpenCodeDriverEnv } from "@t3tools/provider-opencode/server";
+import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
+import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CodexInstallation from "./CodexInstallation.ts";
 import * as CodexManagedTokenBroker from "./CodexManagedTokenBroker.ts";
@@ -40,6 +48,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../config.ts";
+import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
 import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
@@ -55,6 +64,28 @@ import * as ProviderHostLive from "./ProviderHostLive.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import type { AnyProviderDriver, ProviderInstance } from "@t3tools/provider-core/server/driver";
+
+const makeOpenCodeConfig = (overrides: Partial<OpenCodeSettings>): OpenCodeSettings => ({
+  enabled: false,
+  binaryPath: "opencode",
+  serverUrl: "",
+  serverPassword: "",
+  customModels: [],
+  ...overrides,
+});
+
+const makeGrokConfig = (overrides: Partial<GrokSettings>): GrokSettings => ({
+  enabled: false,
+  binaryPath: "grok",
+  customModels: [],
+  ...overrides,
+});
+
+const makeCursorConfig = (overrides: Partial<CursorSettings>): CursorSettings => ({
+  enabled: false,
+  customModels: [],
+  ...overrides,
+});
 
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
 
@@ -209,6 +240,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     Layer.provideMerge(ProviderInstallationGate.layer),
     Layer.provideMerge(ModelManifest.layerTest),
     Layer.provideMerge(ResetCreditCoordinator.layerTest),
+    Layer.provideMerge(ProcessAttribution.layer),
   );
   const layerBase = ProviderHostLive.layer.pipe(Layer.provideMerge(layerBaseDeps));
   const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
@@ -1118,4 +1150,206 @@ describe("ProviderInstanceRegistry secret environment", () => {
       expect(yield* registry.listUnavailable).toEqual([]);
     });
   });
+});
+describe("ProviderInstanceRegistry — all drivers slice", () => {
+  const layerInfra = OpenCodeRuntime.layer.pipe(
+    Layer.provide(OpenCodeServerLedger.layerTest),
+    Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+    Layer.provideMerge(
+      Layer.mock(CodexInstallation.CodexInstallation)({
+        managedDirectory: "unused-managed-installation",
+      }),
+    ),
+    Layer.provideMerge(
+      Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+        getEnvironmentId: Effect.succeed(
+          EnvironmentId.make("00000000-0000-4000-8000-000000000001"),
+        ),
+      }),
+    ),
+  );
+  const layerBaseDeps = AntigravityInstallation.AntigravityInstallation.layer.pipe(
+    Layer.provideMerge(
+      Layer.mock(CodexManagedTokenBroker.CodexManagedTokenBroker)({
+        endpoint: Effect.succeed("unused-private-pipe"),
+      }),
+    ),
+    Layer.provideMerge(ServerSecretStore.layer),
+    Layer.provideMerge(
+      ServerConfig.layerTest(process.cwd(), {
+        prefix: "provider-instance-registry-all-drivers-test",
+      }),
+    ),
+    Layer.provideMerge(layerInfra),
+    Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
+    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provideMerge(layerTestHttpClient),
+    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provideMerge(
+      Layer.succeed(
+        ProviderEventLoggers.ProviderEventLoggers,
+        ProviderEventLoggers.NoOpProviderEventLoggers,
+      ),
+    ),
+    Layer.provideMerge(ProviderLatestVersions.layer),
+    Layer.provideMerge(McpProviderSessions.layer),
+    Layer.provideMerge(ProviderInstallationGate.layer),
+    Layer.provideMerge(ModelManifest.layerTest),
+    Layer.provideMerge(ResetCreditCoordinator.layerTest),
+    Layer.provideMerge(ProcessAttribution.layer),
+  );
+  const layerBase = ProviderHostLive.layer.pipe(Layer.provideMerge(layerBaseDeps));
+  const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
+    Layer.provide(SqlitePersistence.layerMemory),
+    Layer.provideMerge(layerBase),
+    Layer.provideMerge(PortScanner.layerTest),
+    Layer.provideMerge(Layer.mock(SecretResolver.SecretResolver)({})),
+  );
+
+  it.live("boots one instance of every shipped driver from a single config map", () =>
+    Effect.gen(function* () {
+      const codexId = ProviderInstanceId.make("codex_default");
+      const claudeId = ProviderInstanceId.make("claude_default");
+      const cursorId = ProviderInstanceId.make("cursor_default");
+      const grokId = ProviderInstanceId.make("grok_default");
+      const openCodeId = ProviderInstanceId.make("opencode_default");
+
+      const codexDriverKind = ProviderDriverKind.make("codex");
+      const claudeDriverKind = ProviderDriverKind.make("claudeAgent");
+      const cursorDriverKind = ProviderDriverKind.make("cursor");
+      const grokDriverKind = ProviderDriverKind.make("grok");
+      const openCodeDriverKind = ProviderDriverKind.make("opencode");
+
+      const configMap: ProviderInstanceConfigMap = {
+        [codexId]: {
+          driver: codexDriverKind,
+          displayName: "Codex",
+          enabled: false,
+          config: makeCodexConfig({ homePath: "/home/julius/.codex" }),
+        },
+        [claudeId]: {
+          driver: claudeDriverKind,
+          displayName: "Claude",
+          enabled: false,
+          config: makeClaudeConfig({
+            homePath: "/home/julius/.claude-work",
+            launchArgs: "--verbose",
+          }),
+        },
+        [cursorId]: {
+          driver: cursorDriverKind,
+          displayName: "Cursor",
+          enabled: false,
+          config: makeCursorConfig({}),
+        },
+        [grokId]: {
+          driver: grokDriverKind,
+          displayName: "Grok",
+          enabled: false,
+          config: makeGrokConfig({}),
+        },
+        [openCodeId]: {
+          driver: openCodeDriverKind,
+          displayName: "OpenCode",
+          enabled: false,
+          config: makeOpenCodeConfig({}),
+        },
+      };
+
+      const { registry } = yield* makeProviderInstanceRegistry<
+        CodexDriverEnv | ClaudeDriverEnv | CursorDriverEnv | GrokDriverEnv | OpenCodeDriverEnv
+      >({
+        drivers: [CodexDriver, ClaudeDriver, CursorDriver, GrokDriver, OpenCodeDriver],
+        configMap,
+      });
+
+      const unavailable = yield* registry.listUnavailable;
+      expect(unavailable).toEqual([]);
+
+      const instances = yield* registry.listInstances;
+      expect(instances).toHaveLength(5);
+      expect(instances.map((instance) => instance.instanceId).toSorted()).toEqual(
+        [codexId, claudeId, cursorId, grokId, openCodeId].toSorted(),
+      );
+
+      const codex = yield* registry.getInstance(codexId);
+      const claude = yield* registry.getInstance(claudeId);
+      const cursor = yield* registry.getInstance(cursorId);
+      const grok = yield* registry.getInstance(grokId);
+      const openCode = yield* registry.getInstance(openCodeId);
+      expect(codex?.driverKind).toBe(codexDriverKind);
+      expect(claude?.driverKind).toBe(claudeDriverKind);
+      expect(cursor?.driverKind).toBe(cursorDriverKind);
+      expect(grok?.driverKind).toBe(grokDriverKind);
+      expect(openCode?.driverKind).toBe(openCodeDriverKind);
+      expect(codex?.displayName).toBe("Codex");
+      expect(claude?.displayName).toBe("Claude");
+      expect(cursor?.displayName).toBe("Cursor");
+      expect(grok?.displayName).toBe("Grok");
+      expect(openCode?.displayName).toBe("OpenCode");
+
+      const adapters = [
+        codex!.orchestrationAdapter,
+        claude!.orchestrationAdapter,
+        cursor!.orchestrationAdapter,
+        grok!.orchestrationAdapter,
+        openCode!.orchestrationAdapter,
+      ];
+      expect(new Set(adapters).size).toBe(adapters.length);
+      const textGenerations = [
+        codex!.textGeneration,
+        claude!.textGeneration,
+        cursor!.textGeneration,
+        grok!.textGeneration,
+        openCode!.textGeneration,
+      ];
+      expect(new Set(textGenerations).size).toBe(textGenerations.length);
+      const snapshots = [
+        codex!.snapshot,
+        claude!.snapshot,
+        cursor!.snapshot,
+        grok!.snapshot,
+        openCode!.snapshot,
+      ];
+      expect(new Set(snapshots).size).toBe(snapshots.length);
+
+      const codexSnapshot = yield* codex!.snapshot.getSnapshot;
+      expect(codexSnapshot.instanceId).toBe(codexId);
+      expect(codexSnapshot.driver).toBe(codexDriverKind);
+      expect(codexSnapshot.enabled).toBe(false);
+      expect(codexSnapshot.continuation?.groupKey).toBe(
+        `codex:home:${(yield* Path.Path).resolve("/home/julius/.codex")}`,
+      );
+
+      const claudeSnapshot = yield* claude!.snapshot.getSnapshot;
+      expect(claudeSnapshot.instanceId).toBe(claudeId);
+      expect(claudeSnapshot.driver).toBe(claudeDriverKind);
+      expect(claudeSnapshot.enabled).toBe(false);
+      expect(claudeSnapshot.continuation?.groupKey).toBe(
+        `claude:home:${(yield* Path.Path).resolve("/home/julius/.claude-work")}`,
+      );
+
+      const cursorSnapshot = yield* cursor!.snapshot.getSnapshot;
+      expect(cursorSnapshot.instanceId).toBe(cursorId);
+      expect(cursorSnapshot.driver).toBe(cursorDriverKind);
+      expect(cursorSnapshot.enabled).toBe(false);
+      expect(cursorSnapshot.continuation?.groupKey).toBe(
+        `${cursorDriverKind}:instance:${cursorId}`,
+      );
+
+      const grokSnapshot = yield* grok!.snapshot.getSnapshot;
+      expect(grokSnapshot.instanceId).toBe(grokId);
+      expect(grokSnapshot.driver).toBe(grokDriverKind);
+      expect(grokSnapshot.enabled).toBe(false);
+      expect(grokSnapshot.continuation?.groupKey).toBe(`${grokDriverKind}:instance:${grokId}`);
+
+      const openCodeSnapshot = yield* openCode!.snapshot.getSnapshot;
+      expect(openCodeSnapshot.instanceId).toBe(openCodeId);
+      expect(openCodeSnapshot.driver).toBe(openCodeDriverKind);
+      expect(openCodeSnapshot.enabled).toBe(false);
+      expect(openCodeSnapshot.continuation?.groupKey).toBe(
+        `${openCodeDriverKind}:instance:${openCodeId}`,
+      );
+    }).pipe(Effect.provide(layerTest)),
+  );
 });

@@ -1,3 +1,5 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import * as PersonalForward from "../jones/mcp/workstreams/personalForward.ts";
 import * as RemoteAdmissionMcp from "../jones/remoteAdmissionIntegration/mcp.ts";
 import {
   type EnvironmentId,
@@ -128,14 +130,33 @@ const refuseReadOnlyClient = McpInvocationContext.McpInvocationContext.pipe(
   ),
 );
 
+const assertCheckoutAttached = Effect.fn("McpToolAccess.assertCheckoutAttached")(function* (
+  caller: Caller,
+) {
+  if (caller.scope.thread === undefined) return;
+  const policy = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
+  if (Option.isSome(policy))
+    yield* policy.value.assertAttached(caller.scope.thread.threadId).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "attach_required",
+            message: "attach_required: call t3_worktree_handoff before T3 MCP writes.",
+          }),
+      ),
+    );
+});
+
 const writingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(loadCaller()),
   Effect.tap(assertLiveCaller),
+  Effect.tap(assertCheckoutAttached),
 );
 
 const orchestratingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(readCaller()),
   Effect.tap(assertLiveCaller),
+  Effect.tap(assertCheckoutAttached),
 );
 
 const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
@@ -150,6 +171,38 @@ export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>)
 
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
+
+/** The domain checks immutable receipts before invoking this fresh liveness guard. */
+export const actsAsCallerWithReceipt = <P, A, E, R>(
+  handle: (
+    params: P,
+    beforeWrite: Effect.Effect<void, OrchestratorMcpFailure>,
+  ) => Effect.Effect<A, E, R>,
+) =>
+  declare(
+    (params: P) =>
+      Effect.gen(function* () {
+        yield* requireThreadCaller;
+        yield* refuseReadOnlyClient;
+        const caller = yield* readCaller();
+        const beforeWrite = Effect.gen(function* () {
+          const fresh =
+            caller.caller === undefined
+              ? undefined
+              : yield* caller.threads
+                  .getThreadShell(caller.caller.id)
+                  .pipe(Effect.mapError(unavailable));
+          if (fresh === null)
+            return yield* new OrchestratorMcpFailure({
+              code: "thread_not_found",
+              message: "The calling thread no longer exists.",
+            });
+          yield* assertLiveCaller({ ...caller, caller: fresh });
+        });
+        return yield* handle(params, beforeWrite);
+      }),
+    undefined,
+  );
 
 export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare(
@@ -231,6 +284,22 @@ export const writesThreads = <P, A, E, R>(
     () => writingCaller,
   );
 
+/** Inspection stays readable; mutations use the same caller, mode and link checks as thread writes. */
+export const readsOrWritesThreads = <P, A, E, R>(
+  isRead: (params: P) => boolean,
+  threads: (params: P) => ReadonlyArray<ThreadId | undefined>,
+  handle: (params: P) => Effect.Effect<A, E, R>,
+) => {
+  const write = checkedHandler(writesThreads(threads, handle));
+  return declare(
+    (
+      params: P,
+    ): Effect.Effect<A, E | OrchestratorMcpFailure, R | Effect.Services<typeof writingCaller>> =>
+      isRead(params) ? handle(params) : write(params),
+    (params: P) => (isRead(params) ? Effect.void : writingCaller),
+  );
+};
+
 const escalationDenied = (refusal: DispatchModeRefusal) =>
   new OrchestratorMcpFailure({
     code:
@@ -277,6 +346,74 @@ export const startsThreads = <P, A, E, R>(
         const caller = yield* writingCaller;
         if (linked !== "stamped") yield* assertNotLinked(caller, linked.refused);
         return yield* handle(params, yield* started(caller, params));
+      }),
+    (params: P) => Effect.flatMap(writingCaller, (caller) => started(caller, params)),
+  );
+};
+
+export interface ThreadStartGate {
+  readonly start: Effect.Effect<StartedModes, OrchestratorMcpFailure>;
+  readonly continueWithin: <A, E, R>(
+    target: {
+      /** An existing thread names itself in the refusal; requested launch modes have no thread yet. */
+      readonly id?: ThreadId | undefined;
+      readonly runtimeMode: RuntimeMode;
+      readonly interactionMode: ProviderInteractionMode;
+    },
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | OrchestratorMcpFailure, R>;
+}
+
+export const startsOrContinuesThreads = <P, A, E, R>(
+  modes: (params: P) => {
+    readonly runtimeMode?: RuntimeMode | undefined;
+    readonly interactionMode?: ProviderInteractionMode | undefined;
+  },
+  handle: (params: P, gate: ThreadStartGate) => Effect.Effect<A, E, R>,
+  linked: "stamped" | { readonly refused: string },
+) => {
+  const started = Effect.fn("McpToolAccess.startsOrContinuesThreads.started")(function* (
+    caller: Caller,
+    params: P,
+  ) {
+    const requested = modes(params);
+    return {
+      runtimeMode: yield* resolveRuntimeMode(caller.limits.runtimeMode, requested.runtimeMode),
+      interactionMode: yield* resolveInteractionMode(
+        caller.limits.interactionMode,
+        requested.interactionMode,
+      ),
+      linkOrigin: callerLinkOrigin(caller),
+    } satisfies StartedModes;
+  });
+  return declare(
+    (params: P) =>
+      Effect.gen(function* () {
+        const caller = yield* writingCaller;
+        const { limits } = caller;
+        if (linked !== "stamped") yield* assertNotLinked(caller, linked.refused);
+        const gate: ThreadStartGate = {
+          start: started(caller, params),
+          continueWithin: Effect.fn("McpToolAccess.continueWithin")(function* (target, effect) {
+            const { id, runtimeMode, interactionMode } = target;
+            yield* id === undefined
+              ? resolveRuntimeMode(limits.runtimeMode, runtimeMode).pipe(
+                  Effect.andThen(resolveInteractionMode(limits.interactionMode, interactionMode)),
+                  Effect.asVoid,
+                )
+              : assertTargetWithinLimits(limits, { id, runtimeMode, interactionMode });
+            const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+            return yield* effect.pipe(
+              Effect.provideService(DispatchModeLimit, { ...limits, refused }),
+              Effect.catch((error) =>
+                Effect.flatMap(Ref.get(refused), (refusal) =>
+                  Effect.fail(refusal === undefined ? error : escalationDenied(refusal)),
+                ),
+              ),
+            );
+          }),
+        };
+        return yield* handle(params, gate);
       }),
     (params: P) => Effect.flatMap(writingCaller, (caller) => started(caller, params)),
   );
@@ -424,8 +561,10 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
   for (const [name, declaration] of Object.entries<Declaration<unknown>>(declarations)) {
     const tool = toolkit.tools[name];
     if (tool === undefined) continue;
-    handlers[name] = yield* RemoteAdmissionMcp.wrap(tool,
-      handlers[name] as (params: object) => Effect.Effect<unknown, OrchestratorMcpFailure>);
+    handlers[name] = yield* RemoteAdmissionMcp.wrap(
+      tool,
+      handlers[name] as (params: object) => Effect.Effect<unknown, OrchestratorMcpFailure>,
+    );
     const remote = remoteCheckOf(declaration);
     if (
       remote === undefined &&
@@ -454,8 +593,20 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
         if (scope.linkedEnvironments === false) return yield* PeerForwarding.linkedEnvironmentsOff;
         yield* (remote as RemoteCheck<typeof params>)(params);
         if (Option.isNone(forwarding)) return yield* linksUnavailable;
+        const enriched =
+          name === "t3_thread_workstream_set"
+            ? yield* PersonalForward.enrichAssignment(params).pipe(
+                Effect.mapError(
+                  () =>
+                    new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: "Personal Workstreams storage is unavailable.",
+                    }),
+                ),
+              )
+            : params;
         const result = yield* forwarding.value.call(scope, tool, target, {
-          ...params,
+          ...enriched,
           environmentId,
         });
         return forwarded === undefined ? result : yield* forwarded(params, target, result);

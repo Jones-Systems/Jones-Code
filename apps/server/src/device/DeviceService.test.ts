@@ -1,3 +1,4 @@
+import * as DeviceDirectGrants from "../jones/device/DeviceDirectGrants.ts";
 import { describe, expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -325,6 +326,10 @@ const fixture = Effect.fn("fixture")(function* (
   ).pipe(
     Effect.provide(NodeCrypto.layer),
     Effect.provideService(DeviceHost.DeviceHost, host),
+    Effect.provideService(DeviceDirectGrants.DeviceDirectGrants, {
+      issue: () => Effect.die("Updating a tool must not issue a direct grant"),
+      admit: () => Effect.die("Updating a tool must not admit a direct connection"),
+    }),
     Effect.provideService(
       ServerSettings.ServerSettingsService,
       ServerSettings.ServerSettingsService.of({
@@ -710,6 +715,10 @@ it.effect.each([
     const { host } = yield* fixture();
     const service = yield* DeviceService.make.pipe(
       Effect.provideService(DeviceHost.DeviceHost, host),
+      Effect.provideService(DeviceDirectGrants.DeviceDirectGrants, {
+        issue: () => Effect.die("Testing SSH issues no direct grant"),
+        admit: () => Effect.die("Testing SSH admits no direct connection"),
+      }),
       Effect.provideService(ProcessRunner.ProcessRunner, {
         run: () => Effect.die("Testing SSH does not install local tools"),
       }),
@@ -1722,6 +1731,10 @@ it.effect("reconciles SSH host settings without publishing no-op changes", () =>
       stopAgent: Effect.void,
     };
     const service = yield* DeviceService.make.pipe(
+      Effect.provideService(DeviceDirectGrants.DeviceDirectGrants, {
+        issue: () => Effect.die("Unexpected direct device grant request"),
+        admit: () => Effect.die("Unexpected direct device admission request"),
+      }),
       Effect.provideService(DeviceHost.DeviceHost, localHost),
       Effect.provideService(ServerSettings.ServerSettingsService, {
         ...settings,
@@ -1845,6 +1858,10 @@ it.effect.each(["exit", "missing"] as const)(
       };
       const service = yield* DeviceService.make.pipe(
         Effect.provideService(DeviceHost.DeviceHost, host),
+        Effect.provideService(DeviceDirectGrants.DeviceDirectGrants, {
+          issue: () => Effect.die("Updating a tool does not issue a device grant"),
+          admit: () => Effect.die("Updating a tool does not admit a device grant"),
+        }),
         Effect.provideService(ProcessRunner.ProcessRunner, {
           run: ({ command, args }) =>
             failure === "exit"

@@ -1062,7 +1062,8 @@ it("rejects a snapshot whose receive budget expired before any page inspection",
       page,
       cdp: { send } as unknown as CDPSession,
       renderScale: 2,
-      deadlineMs: Date.now() - 1,
+      // The epoch is before any wall-clock now, so the budget has already expired.
+      deadlineMs: 0,
       consoleEntries: [],
       networkEntries: [],
       actionTimeline: [],
@@ -1088,9 +1089,14 @@ it("revalidates attachment before the parse-only top-level-await retry", async (
       { send } as unknown as CDPSession,
       { expression: "await 0; window.sideEffect = 1" },
       1000,
-      () => { if (++preflights === 2) throw refusal; },
+      () => {
+        if (++preflights === 2) throw refusal;
+      },
     ),
   ).rejects.toBe(refusal);
   expect(send).toHaveBeenCalledTimes(1);
-  expect(send).toHaveBeenCalledWith("Runtime.evaluate", expect.objectContaining({ returnByValue: true }));
+  expect(send).toHaveBeenCalledWith(
+    "Runtime.evaluate",
+    expect.objectContaining({ returnByValue: true }),
+  );
 });

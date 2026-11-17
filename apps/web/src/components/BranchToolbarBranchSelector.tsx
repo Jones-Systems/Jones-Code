@@ -58,6 +58,7 @@ import {
   resolveDefaultWorktreeBaseBranch,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
+  resolveAutomaticWorktreeBaseBranch,
   sanitizeNewRefName,
   shouldIncludeBranchPickerItem,
 } from "./BranchToolbar.logic";
@@ -86,7 +87,7 @@ interface BranchToolbarBranchSelectorProps {
   threadId: ThreadId;
   draftId?: DraftId;
   envLocked: boolean;
-  effectiveEnvModeOverride?: "local" | "worktree";
+  effectiveEnvModeOverride?: "local" | "worktree" | "auto";
   activeThreadBranchOverride?: string | null;
   onActiveThreadBranchOverrideChange?: (refName: string | null) => void;
   startFromOrigin: boolean;
@@ -277,7 +278,9 @@ export function BranchToolbarBranchSelector({
   const normalizedBranchQuery = trimmedBranchQuery.toLowerCase();
   const prReference = parsePullRequestReference(trimmedBranchQuery);
   const isSelectingWorktreeBase =
-    effectiveEnvMode === "worktree" && !envLocked && !activeWorktreePath;
+    (effectiveEnvMode === "worktree" || effectiveEnvMode === "auto") &&
+    !envLocked &&
+    !activeWorktreePath;
   const isWorktreeChangeBlockedForRef = (refName: VcsRef) =>
     activeProjectCwd !== null &&
     isWorktreeChangeBlocked({
@@ -627,20 +630,23 @@ export function BranchToolbarBranchSelector({
   const threadStarted = serverSession !== null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- writes a default base branch to the server thread or draft once branches load for a new worktree thread
   useEffect(() => {
-    if (
-      threadStarted ||
-      effectiveEnvMode !== "worktree" ||
-      activeWorktreePath ||
-      activeThreadBranch ||
-      !worktreeBaseBranchCandidate
-    ) {
+    if (threadStarted) return;
+    const branch = resolveAutomaticWorktreeBaseBranch({
+      effectiveEnvMode,
+      envLocked,
+      activeWorktreePath,
+      activeThreadBranch,
+      worktreeBaseBranchCandidate,
+    });
+    if (branch === null) {
       return;
     }
-    setThreadBranch(worktreeBaseBranchCandidate, null, true);
+    setThreadBranch(branch, null, true);
   }, [
     activeThreadBranch,
     activeWorktreePath,
     effectiveEnvMode,
+    envLocked,
     setThreadBranch,
     threadStarted,
     worktreeBaseBranchCandidate,
@@ -805,7 +811,7 @@ export function BranchToolbarBranchSelector({
             : "branch"
       }
       originControl={
-        isSelectingWorktreeBase
+        isSelectingWorktreeBase && effectiveEnvMode === "worktree"
           ? { checked: startFromOrigin, onCheckedChange: onStartFromOriginChange }
           : undefined
       }

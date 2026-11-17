@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { ManagedPolicyLimits } from "@t3tools/contracts";
+import type { DesktopBridge, ManagedPolicyLimits } from "@t3tools/contracts";
 import { EDITORS, REMOTE_CAPABLE_EDITOR_IDS } from "@t3tools/contracts";
 import { resolveEditorCommand } from "@t3tools/shared/editor";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -13,15 +13,24 @@ import * as Option from "effect/Option";
 import { vi } from "vite-plus/test";
 import type * as Electron from "electron";
 
-const { focusedWebContents, ownerWindow } = vi.hoisted(() => ({
+const { focusedWebContents, ownerWindow, exposeInMainWorld, invoke } = vi.hoisted(() => ({
   focusedWebContents: vi.fn(),
   ownerWindow: vi.fn(),
+  exposeInMainWorld: vi.fn(),
+  invoke: vi.fn(),
 }));
 vi.mock("electron", () => ({
   webContents: { getFocusedWebContents: focusedWebContents },
   BrowserWindow: { fromWebContents: ownerWindow },
+  contextBridge: { exposeInMainWorld },
+  ipcRenderer: { invoke, sendSync: vi.fn(() => false) },
+  webFrame: {},
+  webUtils: {},
 }));
 
+vi.mock("@clerk/electron/preload", () => ({ exposeClerkBridge: vi.fn() }));
+
+import * as DesktopAppIdentity from "../../app/DesktopAppIdentity.ts";
 import * as DesktopBackendConfiguration from "../../backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
@@ -36,6 +45,7 @@ import {
   getLocalEnvironmentBootstraps,
   installRelayTelemetryEnabled,
   pickProjectFavicon,
+  getPreviewAutomationRuntimeIdentity,
   probeRemoteEditors,
   readMedia,
   syncHtmlFullscreen,
@@ -623,4 +633,83 @@ describe("probeRemoteEditors PATH scan", () => {
       }
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
+});
+
+describe("getPreviewAutomationRuntimeIdentity", () => {
+  const descriptor = {
+    schemaVersion: 1,
+    runtimeKind: "electron",
+    runtimeInstanceId: "synthetic-runtime",
+    appVersion: "1.2.3",
+    buildCommit: "a".repeat(40),
+  } as const;
+
+  it.effect("returns the service descriptor through the registered async IPC method", () =>
+    Effect.gen(function* () {
+      let listener: DesktopIpc.DesktopIpcHandleListener | undefined;
+      const ipc = DesktopIpc.make(
+        {
+          removeHandler: vi.fn(),
+          removeAllListeners: vi.fn(),
+          on: vi.fn(),
+          handle: (channel, registered) => {
+            assert.equal(channel, IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL);
+            listener = registered;
+          },
+        },
+        // The fixture invokes the listener as this trusted renderer.
+        (event) => Effect.succeed(event.sender.id === 1),
+      );
+      yield* ipc.handle(getPreviewAutomationRuntimeIdentity);
+      assert.deepEqual(
+        yield* Effect.promise(async () => listener!({ sender: { id: 1 } }, undefined)),
+        descriptor,
+      );
+      const invalidPayload = yield* Effect.exit(
+        getPreviewAutomationRuntimeIdentity.handler("unexpected"),
+      );
+      assert.equal(invalidPayload._tag, "Failure");
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mock(DesktopAppIdentity.DesktopAppIdentity)({
+          previewAutomationRuntimeIdentity: Effect.succeed(descriptor),
+        }),
+      ),
+    ),
+  );
+
+  it.effect("rejects a descriptor that violates the IPC result schema", () =>
+    getPreviewAutomationRuntimeIdentity.handler(undefined).pipe(
+      Effect.provide(
+        Layer.mock(DesktopAppIdentity.DesktopAppIdentity)({
+          previewAutomationRuntimeIdentity: Effect.succeed({
+            ...descriptor,
+            schemaVersion: 2,
+          } as unknown as typeof descriptor),
+        }),
+      ),
+      Effect.exit,
+      Effect.tap((exit) => Effect.sync(() => assert.equal(exit._tag, "Failure"))),
+    ),
+  );
+
+  it("exposes an async preload getter using the identity channel", async () => {
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("document", Object.assign(new EventTarget(), { fullscreenElement: null }));
+    try {
+      await import("../../preload.ts");
+      const bridge = exposeInMainWorld.mock.calls.find(
+        ([name]) => name === "desktopBridge",
+      )?.[1] as DesktopBridge;
+      assert.equal(bridge.installPlan, undefined);
+      invoke.mockResolvedValueOnce(descriptor);
+      assert.deepEqual(await bridge.getPreviewAutomationRuntimeIdentity!(), descriptor);
+      assert.deepEqual(invoke.mock.calls.at(-1), [
+        IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL,
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

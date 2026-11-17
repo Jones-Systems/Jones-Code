@@ -9,6 +9,7 @@ import {
   EnvironmentAuthorizationError,
   EnvironmentId,
   MessageId,
+  type ModelCapabilities,
   OrchestrationDispatchCommandError,
   ProjectId,
   ProviderInstanceId,
@@ -381,6 +382,21 @@ describe("thread outbox", () => {
       expect(reloaded.modelSelectionExplicit).toBe(
         origin === "legacy" ? undefined : origin === "explicit",
       );
+      // Each account lists the model it was selected with. Neither offers Fast, so no implicit
+      // Fast option joins the selection.
+      const reasoningEffort: ModelCapabilities = {
+        optionDescriptors: [
+          {
+            id: "reasoningEffort",
+            label: "Reasoning",
+            type: "select",
+            options: [
+              { id: "low", label: "Low" },
+              { id: "high", label: "High" },
+            ],
+          },
+        ],
+      };
       const settings = resolveQueuedThreadSettings(
         reloaded,
         {
@@ -389,8 +405,16 @@ describe("thread outbox", () => {
           interactionMode: "default",
         },
         [
-          { instanceId: saved.instanceId, showInteractionModeToggle: true },
-          { instanceId: current.instanceId, showInteractionModeToggle: false },
+          {
+            instanceId: saved.instanceId,
+            showInteractionModeToggle: true,
+            models: [{ slug: saved.model, capabilities: reasoningEffort }],
+          },
+          {
+            instanceId: current.instanceId,
+            showInteractionModeToggle: false,
+            models: [{ slug: current.model, capabilities: reasoningEffort }],
+          },
         ],
       );
       expect(settings).toEqual({

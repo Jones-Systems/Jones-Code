@@ -18,6 +18,7 @@ import { pendingBackgroundTurnItems } from "@t3tools/shared/orchestrationV2Pendi
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as MutableRef from "effect/MutableRef";
 import * as Scope from "effect/Scope";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -37,7 +38,12 @@ import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as Persistence from "../platform/persistence.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
-import { isAuthorizationFailure, request, subscribeDynamicWithProducer, subscriptionRetryDelay } from "../rpc/client.ts";
+import {
+  isAuthorizationFailure,
+  request,
+  subscribeDynamicWithProducer,
+  subscriptionRetryDelay,
+} from "../rpc/client.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
 import { THREAD_SNAPSHOT_IDLE_TTL_MS } from "./threadRetention.ts";
@@ -1000,13 +1006,21 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   // apart from a failed load.
   const socketOpenTried = yield* Ref.make(false);
   const socketOnlyOpen = yield* Ref.make(false);
-  const failedSocketOnlyOpen = Effect.gen(function* () {
-    return (
-      (yield* Ref.get(socketOnlyOpen)) && Option.isNone((yield* SubscriptionRef.get(state)).data)
-    );
-  });
-  // A stream defect parks the subscription until something resubscribes it.
   const resubscribes = yield* Queue.unbounded<void>();
+  const retrySocketOnlyOpen = (producer: SubscriptionProducer) =>
+    SubscriptionRef.modify(state, (current) => {
+      if (
+        !producerGuard.isCurrent(producer) ||
+        !Ref.getUnsafe(socketOnlyOpen) ||
+        Option.isSome(current.data)
+      ) {
+        return [false, current] as const;
+      }
+      // Clear before the handoff: even a defect in the successor's config must use normal backoff.
+      MutableRef.set(socketOnlyOpen.ref, false);
+      Queue.offerUnsafe(resubscribes, undefined);
+      return [true, current] as const;
+    });
   const markSynchronizing = Effect.gen(function* () {
     if (yield* Ref.get(resumingLive)) return;
     yield* SubscriptionRef.update(state, (current) =>
@@ -1019,7 +1033,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   let httpMisses = 0;
   yield* markSynchronizing;
   let applicationFailures = 0;
-  const followThread = (): Effect.Effect<void, never, EnvironmentSupervisor.EnvironmentSupervisor> =>
+  const followThread = (): Effect.Effect<
+    void,
+    never,
+    EnvironmentSupervisor.EnvironmentSupervisor
+  > =>
     subscribeDynamicWithProducer(
       ORCHESTRATION_V2_WS_METHODS.subscribeThread,
       Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (producer) {
@@ -1134,15 +1152,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         // A socket-only open that fails retries over HTTP, which tells a
         // missing thread apart from a failure, before showing an error.
         onDefect: Effect.fn("EnvironmentThreadState.onDefect")(function* (_cause, producer) {
-          if (yield* failedSocketOnlyOpen) {
-            yield* Ref.set(socketOnlyOpen, false);
-            return;
-          }
+          if (!producerGuard.isCurrent(producer)) return;
+          if (yield* retrySocketOnlyOpen(producer)) return;
           yield* setStreamError("Could not synchronize the thread.", producer);
         }),
         onExpectedFailure: Effect.fn("EnvironmentThreadState.onExpectedFailure")(
           function* (cause, producer) {
-            const retryOverHttp = !isAuthorizationFailure(cause) && (yield* failedSocketOnlyOpen);
+            if (!producerGuard.isCurrent(producer)) return;
+            const retryOverHttp =
+              !isAuthorizationFailure(cause) && (yield* retrySocketOnlyOpen(producer));
             if (!retryOverHttp) yield* setStreamError(formatThreadError(cause), producer);
           },
         ),
@@ -1153,13 +1171,22 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       },
     ).pipe(
       Stream.runForEachArray((items) => applyProducerBatches(items, applyItems)),
-      Effect.catchCause((cause) => Cause.hasInterrupts(cause) ? Effect.interrupt :
-        Effect.logWarning("Thread projection failed; resubscribing.", {
-          cause: Cause.pretty(cause), environmentId, threadId,
-        }).pipe(
-          Effect.andThen(Effect.sleep(subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, applicationFailures++))),
-          Effect.andThen(Effect.suspend(followThread)),
-        )),
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("Thread projection failed; resubscribing.", {
+              cause: Cause.pretty(cause),
+              environmentId,
+              threadId,
+            }).pipe(
+              Effect.andThen(
+                Effect.sleep(
+                  subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, applicationFailures++),
+                ),
+              ),
+              Effect.andThen(Effect.suspend(followThread)),
+            ),
+      ),
     );
   yield* Effect.forkScoped(followThread());
 

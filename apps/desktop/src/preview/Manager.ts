@@ -1,3 +1,4 @@
+import { setMonitorAwareBackgroundThrottling } from "../jones/threadMonitor/throttle.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- FileSystem.copyFile cannot request an exclusive copy.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeZlib from "node:zlib";
@@ -593,6 +594,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const controlSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<number, BrowserControlSession>
   >(new Map());
+  const controlInitializations = new Map<
+    number,
+    {
+      readonly result: Deferred.Deferred<BrowserControlSession, PreviewManagerError>;
+      readonly scope: Scope.Closeable;
+      fiber?: Fiber.Fiber<void, never>;
+    }
+  >();
+  const controlScopeOwners = new Map<number, Scope.Closeable>();
+
   const frameCaptureSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<string, FrameCaptureSession>
   >(new Map());
@@ -701,7 +712,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   ) {
     if (window.isDestroyed()) return;
     yield* attempt({ operation: "frameCapture.setBackgroundThrottling" }, () =>
-      window.webContents.setBackgroundThrottling(enabled),
+      setMonitorAwareBackgroundThrottling(window.webContents, enabled),
     );
   });
   const setFrameCaptureBackgroundThrottling = Effect.fnUntraced(function* (enabled: boolean) {
@@ -719,7 +730,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         operation: "frameCapture.setBackgroundThrottling",
         webContentsId: wc.id,
       },
-      () => wc.setBackgroundThrottling(enabled),
+      () => setMonitorAwareBackgroundThrottling(wc, enabled),
     );
   });
   const restoreFrameCaptureWebContentsBackgroundThrottling = Effect.fnUntraced(function* (
@@ -1017,6 +1028,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     webContentsId: number,
     closedServerTab?: PreviewTabState["serverTab"],
   ) {
+    const pending = controlInitializations.get(webContentsId);
+    if (pending) {
+      yield* Deferred.fail(
+        pending.result,
+        new PreviewOperationError({
+          operation: "ensureControlSession",
+          webContentsId,
+          cause: new Error("Control initialization detached"),
+        }),
+      );
+      if (pending.fiber) yield* Fiber.interrupt(pending.fiber);
+      yield* Scope.close(pending.scope, Exit.void).pipe(Effect.ignore);
+      if (controlInitializations.get(webContentsId) === pending)
+        controlInitializations.delete(webContentsId);
+    }
     const control = yield* SynchronizedRef.modify(controlSessionsRef, (sessions) => [
       sessions.get(webContentsId),
       replaceMap(sessions, (copy) => {
@@ -1044,121 +1070,157 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const ensureControlSession = Effect.fn("PreviewManager.ensureControlSession")(function* (
     wc: Electron.WebContents,
   ) {
-    return yield* SynchronizedRef.modifyEffect(
-      controlSessionsRef,
-      (
-        sessions,
-      ): Effect.Effect<
-        readonly [BrowserControlSession, ReadonlyMap<number, BrowserControlSession>],
-        PreviewManagerError
-      > => {
-        const existing = sessions.get(wc.id);
-        if (existing) return Effect.succeed([existing, sessions] as const);
-        if (wc.isDestroyed()) {
-          return Effect.fail(
-            new PreviewOperationError({
-              operation: "ensureControlSession",
-              webContentsId: wc.id,
-              cause: new Error("WebContents was destroyed"),
-            }),
-          );
-        }
-        if (wc.isDevToolsOpened()) {
-          return Effect.fail(
-            new PreviewAutomationDevToolsOpenError({
-              webContentsId: wc.id,
-            }),
-          );
-        }
-        if (wc.debugger.isAttached()) {
-          return Effect.fail(
-            new PreviewAutomationDebuggerAttachedError({
-              webContentsId: wc.id,
-            }),
-          );
-        }
-        const createControlSession = Effect.fn("PreviewManager.createControlSession")(function* () {
-          const semaphore = yield* Semaphore.make(1);
-          const scope = yield* Scope.fork(parentScope, "sequential");
-          const wcDebugger = wc.debugger;
-          const consoleReleases = yield* Queue.sliding<void>(1);
-          // Console eviction leaves strong debugger handles; release the group because we keep only text.
-          yield* Effect.forkIn(
-            Effect.forever(
-              Queue.take(consoleReleases).pipe(
-                Effect.andThen(
-                  attemptPromise({ operation: "releaseConsoleObjects", webContentsId: wc.id }, () =>
-                    wcDebugger.sendCommand("Runtime.releaseObjectGroup", {
-                      objectGroup: "console",
-                    }),
-                  ).pipe(Effect.ignore),
-                ),
-              ),
-            ),
-            scope,
-          );
-          const handleDebuggerMessage = Effect.fnUntraced(function* (method: string) {
-            if (method === "Runtime.consoleAPICalled" || method === "Runtime.exceptionThrown") {
-              yield* Queue.offer(consoleReleases, undefined);
-            }
-          });
-          const onMessage: BrowserControlSession["onMessage"] = (_event, method) => {
-            runFork(handleDebuggerMessage(method));
-          };
-          const control: BrowserControlSession = {
-            webContentsId: wc.id,
-            debugger: wcDebugger,
-            semaphore,
-            scope,
-            onMessage,
-          };
-          // Electron emits `detach` when Chromium closes the debugger session on its
-          // own. The cached session would then fail every command until the webview
-          // is replaced.
-          let dropped = false;
-          const onDetach = () => {
-            dropped = true;
-            runFork(recoverDetachedControlSession(wc, control));
-          };
-          // The listener comes off before detach() so a detach this manager requested
-          // never looks like a dropped one. A dropped session has nothing left to
-          // detach: `wc.debugger` is shared, so detaching here would hit a successor.
-          yield* Scope.addFinalizer(
-            scope,
-            attempt({ operation: "detachControlSession", webContentsId: wc.id }, () => {
-              wcDebugger.off("message", onMessage);
-              wcDebugger.off("detach", onDetach);
-              if (!dropped && wcDebugger.isAttached()) wcDebugger.detach();
-            }).pipe(Effect.ignore),
-          );
-          const initialize = Effect.fn("PreviewManager.initializeControlSession")(function* () {
-            yield* attempt({ operation: "attachDebuggerListeners", webContentsId: wc.id }, () => {
-              wcDebugger.on("message", onMessage);
-              wcDebugger.on("detach", onDetach);
-              wcDebugger.attach("1.3");
-            });
-            // Set an opaque base before first paint or background-less dark pages retain white-on-white text.
-            yield* attemptPromise(
-              { operation: "initializeDebugger.defaultBackground", webContentsId: wc.id },
-              () =>
-                wcDebugger.sendCommand("Emulation.setDefaultBackgroundColorOverride", {
-                  color: { r: 255, g: 255, b: 255, a: 1 },
+    const existing = (yield* SynchronizedRef.get(controlSessionsRef)).get(wc.id);
+    if (existing) return existing;
+    const pending = controlInitializations.get(wc.id);
+    if (pending) return yield* Deferred.await(pending.result);
+    if (wc.isDestroyed()) {
+      return yield* new PreviewOperationError({
+        operation: "ensureControlSession",
+        webContentsId: wc.id,
+        cause: new Error("WebContents was destroyed"),
+      });
+    }
+    if (wc.isDevToolsOpened())
+      return yield* new PreviewAutomationDevToolsOpenError({ webContentsId: wc.id });
+    if (wc.debugger.isAttached())
+      return yield* new PreviewAutomationDebuggerAttachedError({ webContentsId: wc.id });
+    const scope = yield* Scope.fork(parentScope, "sequential");
+    const result = yield* Deferred.make<BrowserControlSession, PreviewManagerError>();
+    const ready = (yield* SynchronizedRef.get(controlSessionsRef)).get(wc.id);
+    const winner = controlInitializations.get(wc.id);
+    if (ready || winner) {
+      yield* Scope.close(scope, Exit.void);
+      return ready ?? (yield* Deferred.await(winner!.result));
+    }
+    const slot: { result: typeof result; scope: typeof scope; fiber?: Fiber.Fiber<void, never> } = {
+      result,
+      scope,
+    };
+    controlInitializations.set(wc.id, slot);
+    const createControlSession = Effect.fn("PreviewManager.createControlSession")(function* () {
+      const semaphore = yield* Semaphore.make(1);
+      const wcDebugger = wc.debugger;
+      controlScopeOwners.set(wc.id, scope);
+      const consoleReleases = yield* Queue.sliding<void>(1);
+      // Console eviction leaves strong debugger handles; release the group because we keep only text.
+      yield* Effect.forkIn(
+        Effect.forever(
+          Queue.take(consoleReleases).pipe(
+            Effect.andThen(
+              attemptPromise({ operation: "releaseConsoleObjects", webContentsId: wc.id }, () =>
+                wcDebugger.sendCommand("Runtime.releaseObjectGroup", {
+                  objectGroup: "console",
                 }),
-            );
-            return [
-              control,
-              replaceMap(sessions, (copy) => {
-                copy.set(wc.id, control);
-              }),
-            ] as const;
-          });
-          return yield* initialize().pipe(
-            Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)),
-          );
+              ).pipe(Effect.ignore),
+            ),
+          ),
+        ),
+        scope,
+      );
+      const handleDebuggerMessage = Effect.fnUntraced(function* (method: string) {
+        if (method === "Runtime.consoleAPICalled" || method === "Runtime.exceptionThrown") {
+          yield* Queue.offer(consoleReleases, undefined);
+        }
+      });
+      const onMessage: BrowserControlSession["onMessage"] = (_event, method) => {
+        runFork(handleDebuggerMessage(method));
+      };
+      const control: BrowserControlSession = {
+        webContentsId: wc.id,
+        debugger: wcDebugger,
+        semaphore,
+        scope,
+        onMessage,
+      };
+      // Chromium can drop a session without this manager requesting detach.
+      let dropped = false;
+      const onDetach = () => {
+        dropped = true;
+        runFork(recoverDetachedControlSession(wc, control));
+      };
+      yield* Scope.addFinalizer(
+        scope,
+        attempt({ operation: "detachControlSession", webContentsId: wc.id }, () => {
+          // Remove only this session's listeners even after ownership changes.
+          wcDebugger.off("message", onMessage);
+          wcDebugger.off("detach", onDetach);
+          if (controlScopeOwners.get(wc.id) !== scope) return;
+          controlScopeOwners.delete(wc.id);
+          // A dropped session must not detach its successor's shared debugger.
+          if (!dropped && wcDebugger.isAttached()) wcDebugger.detach();
+        }).pipe(Effect.ignore),
+      );
+      const initialize = Effect.fn("PreviewManager.initializeControlSession")(function* () {
+        yield* attempt({ operation: "attachDebuggerListeners", webContentsId: wc.id }, () => {
+          wcDebugger.on("message", onMessage);
+          wcDebugger.on("detach", onDetach);
+          wcDebugger.attach("1.3");
         });
-        return createControlSession();
-      },
-    );
+        // Set an opaque base before first paint or background-less dark pages retain white-on-white text.
+        yield* attemptPromise(
+          { operation: "initializeDebugger.defaultBackground", webContentsId: wc.id },
+          () =>
+            wcDebugger.sendCommand("Emulation.setDefaultBackgroundColorOverride", {
+              color: { r: 255, g: 255, b: 255, a: 1 },
+            }),
+        );
+        return control;
+      });
+      return yield* initialize().pipe(
+        Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)),
+      );
+    });
+    const initialize = Effect.gen(function* () {
+      const exit = yield* Effect.exit(
+        createControlSession().pipe(
+          Effect.timeout(5_000),
+          Effect.catchTags({
+            TimeoutError: () =>
+              Effect.fail(
+                new PreviewOperationError({
+                  operation: "ensureControlSession",
+                  webContentsId: wc.id,
+                  cause: new Error("Control initialization timed out"),
+                }),
+              ),
+          }),
+        ),
+      );
+      const current = Exit.isSuccess(exit)
+        ? yield* SynchronizedRef.modify(controlSessionsRef, (sessions) => {
+            if (
+              controlInitializations.get(wc.id) !== slot ||
+              wc.isDestroyed() ||
+              !wc.debugger.isAttached()
+            )
+              return [false, sessions];
+            return [
+              true,
+              replaceMap(sessions, (copy) => {
+                copy.set(wc.id, exit.value);
+              }),
+            ];
+          })
+        : false;
+      if (!current) yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
+      if (controlInitializations.get(wc.id) === slot) controlInitializations.delete(wc.id);
+      yield* Deferred.done(
+        result,
+        Exit.isSuccess(exit) && !current
+          ? Exit.fail(
+              new PreviewOperationError({
+                operation: "ensureControlSession",
+                webContentsId: wc.id,
+                cause: new Error("WebContents was destroyed or its debugger detached"),
+              }),
+            )
+          : exit,
+      );
+    });
+    slot.fiber = yield* Effect.forkIn(initialize, parentScope);
+    if (controlInitializations.get(wc.id) !== slot) yield* Fiber.interrupt(slot.fiber);
+    return yield* Deferred.await(result);
   });
 
   const cancelPickElement = Effect.fn("PreviewManager.cancelPickElement")(function* (
@@ -2612,7 +2674,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
       if (!removed) return;
       yield* releaseControlSession(detached);
-      if (wc.isDestroyed()) return;
+      if (wc.isDestroyed() || controlInitializations.has(wc.id)) return;
       const tabId = yield* tabIdForWebContents(wc.id);
       if (tabId === null) return;
       yield* restoreControlSession(tabId, wc);

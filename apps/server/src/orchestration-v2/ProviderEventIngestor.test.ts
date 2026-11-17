@@ -78,6 +78,7 @@ const layerGit = GitVcsDriver.layer.pipe(
 
 const layerEmptyInstances = Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
   getInstance: () => Effect.undefined,
+  getCatalogSource: () => undefined,
 });
 const makeLayerTest = <E>(
   ingestorEventSink: Layer.Layer<EventSink.EventSinkV2, E>,
@@ -256,6 +257,7 @@ it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the sn
       displayName: undefined,
       orchestrationAdapter: adapter,
       textGeneration: {
+        evaluateRemoteRequest: () => Effect.die("unused"),
         generateBranchName: () => Effect.die("unused"),
         generateCommitMessage: () => Effect.die("unused"),
         generatePrContent: () => Effect.die("unused"),
@@ -282,6 +284,8 @@ it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the sn
           lookups.push(id);
           return id === instance.instanceId ? instance : undefined;
         }),
+      // The catalog read is synchronous and is not a usage-refresh lookup.
+      getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
     });
     yield* Effect.gen(function* () {
       const now = yield* DateTime.now;

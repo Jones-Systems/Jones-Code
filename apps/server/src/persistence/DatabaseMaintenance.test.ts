@@ -26,6 +26,7 @@ import { jonesMigrationEntries } from "../jones/persistence/JonesMigrations.ts";
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
 import * as Sqlite from "./Sqlite.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
+import { makeOwnedFixture } from "../jones/cleanup/sharedAdmission/DatabaseIncarnation.fixture.ts";
 
 const encodeNativeProviderEnrollment = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -482,4 +483,33 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
       }),
     );
   },
+);
+
+// The owner lock is checked before an application connection can compact or
+// remove even an idle participating store; SQLite exclusion is still retained.
+it.effect(
+  "maintenance refuses the existing owner before opening or changing application files",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* makeOwnedFixture;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const legacy = path.join(f.stateDir, "state.sqlite");
+        yield* fs.writeFileString(legacy, "synthetic sentinel; must not be opened as SQLite");
+        const before = yield* fs.readFile(f.dbPath);
+        const maintenance = yield* DatabaseMaintenance.DatabaseMaintenance;
+        const compact = yield* Effect.result(maintenance.compact(f.dbPath));
+        const remove = yield* Effect.result(maintenance.removeLegacyDatabase(f.dbPath));
+        assert.equal(compact._tag, "Failure");
+        assert.equal(remove._tag, "Failure");
+        if (compact._tag === "Failure") assert.equal(compact.failure._tag, "DatabaseInUseError");
+        if (remove._tag === "Failure") assert.equal(remove.failure._tag, "DatabaseInUseError");
+        assert.deepEqual(yield* fs.readFile(f.dbPath), before);
+        assert.equal(
+          yield* fs.readFileString(legacy),
+          "synthetic sentinel; must not be opened as SQLite",
+        );
+      }),
+    ).pipe(Effect.provide(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
 );

@@ -250,9 +250,9 @@ describe("remote helper lifecycle", () => {
         try {
           const bin = NodePath.join(home, "bin");
           await NodeFSP.mkdir(bin);
-          await NodeFSP.writeFile(NodePath.join(bin, "adb"), "#!/bin/sh\nexit 0\n", {
-            mode: 0o755,
-          });
+          // Android needs a complete SDK; an adb on PATH alone no longer qualifies.
+          const sdk = NodePath.join(home, "sdk");
+          await completeSdk(sdk, "exit 0");
           const root = NodePath.join(home, ".t3/device");
           const hubDir = NodePath.join(root, `tools/expo-device-hub@${DEVICE_HUB_VERSION}`);
           const agentDir = NodePath.join(root, `tools/agent-device@${AGENT_DEVICE_VERSION}`);
@@ -321,7 +321,12 @@ describe("remote helper lifecycle", () => {
                   ),
             );
             const result = await exec(process.execPath, [file], {
-              env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` },
+              env: {
+                ...process.env,
+                HOME: home,
+                PATH: `${bin}:${process.env.PATH}`,
+                ANDROID_HOME: sdk,
+              },
             });
             const value = result.stdout ? JSON.parse(result.stdout) : null;
             if (value?.directMedia) directGenerations.set(owner, value.directMedia.generation);
@@ -428,7 +433,12 @@ describe("remote helper lifecycle", () => {
               originalScript.replace(AGENT_DEVICE_VERSION, "999.0.0"),
             );
             await exec(process.execPath, [upgradedStop], {
-              env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` },
+              env: {
+                ...process.env,
+                HOME: home,
+                PATH: `${bin}:${process.env.PATH}`,
+                ANDROID_HOME: sdk,
+              },
             });
             const daemon = JSON.parse(
               await NodeFSP.readFile(NodePath.join(root, "hosts/one/daemon.json"), "utf8"),

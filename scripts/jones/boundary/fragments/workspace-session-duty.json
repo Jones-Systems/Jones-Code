@@ -1,0 +1,23 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workspace-session-duty",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/workspaceRetirement/DutyLifetimeLink.ts",
+    "apps/server/src/jones/workspaceRetirement/DutyRelease.ts",
+    "apps/server/src/jones/workspaceRetirement/SessionDuty.testkit.ts",
+    "apps/server/src/jones/workspaceRetirement/SessionDuty.test.ts",
+    "apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/DutyRelease.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/DutyLifetimeLink.ts"
+    }
+  ]
+}

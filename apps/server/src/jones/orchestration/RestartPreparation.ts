@@ -29,9 +29,14 @@ import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import type * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import type { ProviderTurnControlError } from "../../orchestration-v2/ProviderTurnControlService.ts";
-import type { ProviderTurnStartError } from "../../orchestration-v2/ProviderTurnStartService.ts";
+import type {
+  ProviderTurnStartError,
+  ProviderTurnStartRunStateMissingError,
+} from "../../orchestration-v2/ProviderTurnStartService.ts";
 import type { ProviderSessionManagerV2Error } from "../../orchestration-v2/ProviderSessionManager.ts";
 import { findSteerFailure } from "./LateSteer.ts";
+
+type RestartStartError = ProviderTurnStartError | ProviderTurnStartRunStateMissingError;
 
 export const RESTART_TERMINAL_TIMEOUT_MS = 30_000;
 
@@ -164,7 +169,7 @@ export class RestartPreparation extends Context.Service<
       readonly effect: RestartEffect;
       readonly interrupt: Effect.Effect<void, ProviderTurnControlError | RestartPreparationError>;
       readonly detach: Effect.Effect<void, ProviderSessionManagerV2Error | RestartPreparationError>;
-      readonly start: Effect.Effect<void, ProviderTurnStartError>;
+      readonly start: Effect.Effect<void, RestartStartError>;
       readonly captureStop?: (
         providerThread: OrchestrationV2ProviderThread,
       ) => Effect.Effect<
@@ -178,7 +183,7 @@ export class RestartPreparation extends Context.Service<
       void,
       | RestartPreparationError
       | RestartThreadHeld
-      | ProviderTurnStartError
+      | RestartStartError
       | ProjectionStore.ProjectionStoreV2Error
       | EventStore.EventStoreV2Error
     >;

@@ -1,3 +1,4 @@
+import { launcherFailureMessage } from "../jones/cloud/qualifiedCommitAttempt.ts";
 import { type LauncherOptions, main as runServiceLauncher } from "../serviceLauncher.ts";
 
 /** The flags a Windows task passes, parsed here so the launcher starts without the full CLI. */
@@ -21,8 +22,7 @@ export async function runServiceLauncherCli(options?: LauncherOptions): Promise<
   try {
     await runServiceLauncher(options);
   } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    process.stderr.write(`[service-launcher] ${message}\n`);
+    process.stderr.write(`[service-launcher] ${launcherFailureMessage(cause)}\n`);
     process.exitCode = 1;
   }
 }

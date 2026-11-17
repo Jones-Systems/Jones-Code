@@ -1,3 +1,4 @@
+import * as OpenCodeCreationPolicy from "./jones/OpenCodeCreationPolicy.ts";
 import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/snapshotProbe";
 import {
   ProviderDriverKind,
@@ -26,11 +27,8 @@ import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { compareSemverVersions } from "@t3tools/shared/semver";
 import * as OpenCodeAdapterV2 from "./adapter.ts";
 import * as OpenCode2AdapterV2 from "./v2/adapter.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { openCodeUsageReader, type OpenCodeUsageReaderEnv } from "./usage.ts";
 import { readOpenCodeGoUsageLimits } from "./usageLimits.ts";
@@ -50,6 +48,11 @@ import {
 } from "./status.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
+import { readOpenCodeProtocolSource } from "./jones/protocolFreshness.ts";
+import {
+  selectOpenCodeRuntimeAdapter,
+  selectOpenCodeRuntimeTextGeneration,
+} from "./jones/protocolFreshnessSelection.ts";
 import {
   makeOpenCodeRuntimeProbe,
   probeOpenCodeRuntime,
@@ -136,10 +139,6 @@ export const openCodeUpdateFor = (generation: ProbedOpenCode["generation"]) =>
     mise: { tool: "opencode", upgrade: generation === "v2" },
   });
 
-type OpenCodeRuntimeProbe = Effect.Success<
-  ReturnType<typeof makeOpenCodeRuntimeProbe<OpenCodeRuntime.OpenCodeRuntimeError>>
->;
-
 function byOpenCodeRuntime<A, E, R, PE>(
   probed: Effect.Effect<ProbedOpenCode | undefined, PE>,
   paths: { readonly v1: Effect.Effect<A, E, R>; readonly v2: Effect.Effect<A, E, R> },
@@ -159,79 +158,6 @@ function workspaceModelsFor(
   return Equal.equals(cwdModels.value, machineModels)
     ? {}
     : { models: cwdModels.value, workspaceModels: cwdModels.value };
-}
-
-// Hot reads use the last successful probe; session opens await it to select the correct protocol.
-function selectOpenCodeRuntimeAdapter(input: {
-  readonly probe: OpenCodeRuntimeProbe;
-  readonly resolve: Effect.Effect<ProbedOpenCode, OpenCodeRuntime.OpenCodeRuntimeError>;
-  readonly v1: ProviderAdapter.ProviderAdapterV2["Service"];
-  readonly v2: ProviderAdapter.ProviderAdapterV2["Service"];
-}): ProviderAdapter.ProviderAdapterV2["Service"] {
-  const pick = <PE>(probed: Effect.Effect<ProbedOpenCode | undefined, PE>) =>
-    byOpenCodeRuntime(probed, { v1: Effect.succeed(input.v1), v2: Effect.succeed(input.v2) });
-  const hot = pick(Effect.map(input.probe.lastSuccess, Option.getOrUndefined));
-  return {
-    instanceId: input.v1.instanceId,
-    driver: DRIVER_KIND,
-    getCapabilities: Effect.fn("OpenCodeDriver.getCapabilities")(function* () {
-      const probed = Option.getOrUndefined(yield* input.probe.lastSuccess);
-      const adapter = yield* pick(Effect.succeed(probed));
-      const capabilities = yield* adapter.getCapabilities();
-      return {
-        ...capabilities,
-        turns: {
-          ...capabilities.turns,
-          supportsNativeGoals:
-            capabilities.turns.supportsNativeGoals ??
-            (probed?.generation === "v2" && compareSemverVersions(probed.version, "2.2.5") >= 0),
-        },
-      };
-    }),
-    planSelectionTransition: (transition) =>
-      Effect.flatMap(hot, (adapter) => adapter.planSelectionTransition(transition)),
-    openSession: (session) =>
-      Effect.flatMap(pick(input.resolve), (adapter) => adapter.openSession(session)),
-  };
-}
-
-function selectOpenCodeRuntimeTextGeneration(
-  resolve: Effect.Effect<ProbedOpenCode, OpenCodeRuntime.OpenCodeRuntimeError>,
-  v1: ProviderTextGeneration,
-  v2: ProviderTextGeneration,
-): ProviderTextGeneration {
-  return {
-    generateCommitMessage: (input) =>
-      byOpenCodeRuntime(resolve, {
-        v1: v1.generateCommitMessage(input),
-        v2: v2.generateCommitMessage(input),
-      }),
-    generatePrContent: (input) =>
-      byOpenCodeRuntime(resolve, {
-        v1: v1.generatePrContent(input),
-        v2: v2.generatePrContent(input),
-      }),
-    generateBranchName: (input) =>
-      byOpenCodeRuntime(resolve, {
-        v1: v1.generateBranchName(input),
-        v2: v2.generateBranchName(input),
-      }),
-    generateThreadTitle: (input) =>
-      byOpenCodeRuntime(resolve, {
-        v1: v1.generateThreadTitle(input),
-        v2: v2.generateThreadTitle(input),
-      }),
-    generateReviewGuide: (input) =>
-      byOpenCodeRuntime(resolve, {
-        v1: v1.generateReviewGuide(input),
-        v2: v2.generateReviewGuide(input),
-      }),
-    generateTranscriptionPostProcessing: (input) =>
-      byOpenCodeRuntime(resolve, {
-        v1: v1.generateTranscriptionPostProcessing(input),
-        v2: v2.generateTranscriptionPostProcessing(input),
-      }),
-  };
 }
 
 export type OpenCodeDriverEnv =
@@ -276,6 +202,17 @@ export const OpenCodeDriver: ProviderDriver<
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const digest = yield* Digest.Digest;
     const host = yield* ProviderHost.ProviderHost;
+    const authorityOption = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
+    const authority = Option.isSome(authorityOption)
+      ? authorityOption.value.forInstance(instanceId)
+      : undefined;
+    if (Option.isSome(authorityOption) && authority === undefined) {
+      return yield* new ProviderDriverError({
+        driver: DRIVER_KIND,
+        instanceId,
+        detail: "OpenCode instance authority is unavailable.",
+      });
+    }
     const processEnv = yield* mergeProviderInstanceEnvironment(environment);
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
@@ -302,20 +239,17 @@ export const OpenCodeDriver: ProviderDriver<
       );
     const runtimeProbe = yield* makeOpenCodeRuntimeProbe(
       probeRuntime(providerProbeEnvironment(processEnv)),
+      readOpenCodeProtocolSource(effectiveConfig, processEnv).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, pathService),
+      ),
     );
     // A mise shim cannot install OpenCode offline; a session or text generation the user started
-    // may, so without a cached result it probes once online and caches what mise installed.
+    // may, so an admission probes online under the same physical-source and age fences.
     const resolveRuntime =
       effectiveConfig.serverUrl.trim().length > 0
         ? runtimeProbe.get
-        : runtimeProbe.lastSuccess.pipe(
-            Effect.flatMap(
-              Option.match({
-                onSome: Effect.succeed,
-                onNone: () => probeRuntime(processEnv).pipe(Effect.tap(runtimeProbe.record)),
-              }),
-            ),
-          );
+        : runtimeProbe.admit(probeRuntime(processEnv));
     const noUpdate = makeManualOnlyProviderMaintenanceCapabilities({
       provider: DRIVER_KIND,
       packageName: null,
@@ -349,15 +283,25 @@ export const OpenCodeDriver: ProviderDriver<
           : runtimeProbe.get,
       ),
     );
-    const resolveMaintenance = (options?: { readonly fresh?: boolean }) =>
-      !effectiveConfig.enabled
-        ? Effect.succeed(noUpdate)
-        : options?.fresh === true
-          ? runtimeProbe.refresh.pipe(
-              Effect.ignore,
-              Effect.andThen(cachedMaintenance({ fresh: true })),
-            )
-          : cachedMaintenance();
+    const resolveMaintenance = (options?: { readonly fresh?: boolean }) => {
+      if (!effectiveConfig.enabled) return Effect.succeed(noUpdate);
+      // A remote server's installation is not this environment's: never inspect or
+      // run the configured local executable for it. A loopback server keeps the probe.
+      if (
+        effectiveConfig.serverUrl.trim().length > 0 &&
+        !isLocalOpenCodeServerUrl(effectiveConfig.serverUrl)
+      ) {
+        return options?.fresh === true
+          ? runtimeProbe.refresh.pipe(Effect.ignore, Effect.as(noUpdate))
+          : Effect.succeed(noUpdate);
+      }
+      return options?.fresh === true
+        ? runtimeProbe.refresh.pipe(
+            Effect.ignore,
+            Effect.andThen(cachedMaintenance({ fresh: true })),
+          )
+        : cachedMaintenance();
+    };
     const openCodeV1Adapter = yield* OpenCodeAdapterV2.OpenCodeAdapterV2Driver.create({
       instanceId,
       displayName,
@@ -377,6 +321,7 @@ export const OpenCodeDriver: ProviderDriver<
       ),
     );
     const openCode2Server = yield* OpenCode2Server.make({
+      ...(authority !== undefined ? { authority } : {}),
       binaryPath: effectiveConfig.binaryPath,
       serverUrl: effectiveConfig.serverUrl,
       serverPassword: effectiveConfig.serverPassword,
@@ -398,69 +343,78 @@ export const OpenCodeDriver: ProviderDriver<
       ),
     });
     const loadOpenCode2Models = yield* makeOpenCode2ModelLoader(
-      openCode2Server.withConnection(({ client }) => loadOpenCode2Catalog(client, host.paths.cwd)),
+      openCode2Server.withConnection(
+        ({ client }) => loadOpenCode2Catalog(client, host.paths.cwd),
+        undefined,
+        "models",
+      ),
       processEnv,
     );
     const listOpenCode2Workspace = (cwd: string) =>
-      openCode2Server.withConnection(({ client, events }) =>
-        Effect.gen(function* () {
-          // OpenCode names a location by its resolved path (no trailing slash or `..`).
-          const directory = pathService.resolve(cwd);
-          const location = { directory };
-          const scanned = yield* Deferred.make<void>();
-          const pending = new Set(["command.updated", "skill.updated"]);
-          const stream = yield* events.pipe(Effect.option);
-          if (stream._tag === "Some") {
-            yield* stream.value.pipe(
-              Stream.runForEach((event) =>
-                "location" in event &&
-                event.location?.directory === directory &&
-                pending.delete(event.type) &&
-                pending.size === 0
-                  ? Deferred.succeed(scanned, undefined)
-                  : Effect.void,
-              ),
-              Effect.ignore,
-              Effect.forkScoped,
-            );
-          }
-          return yield* loadOpenCode2Workspace(
-            Effect.all(
-              {
-                skills: client.skill.list({ location }).pipe(Effect.map((list) => list.data)),
-                commands: client.command.list({ location }).pipe(Effect.map((list) => list.data)),
-              },
-              { concurrency: "unbounded" },
-            ),
-            Deferred.await(scanned),
-            // Without events no scan can be awaited, so trust the first read as before.
-            stream._tag === "None"
-              ? Effect.succeed(true)
-              : client.debug.location.list().pipe(
-                  Effect.map((loaded) => loaded.some((entry) => entry.directory === directory)),
-                  Effect.timeout("2 seconds"),
-                  Effect.orElseSucceed(() => true),
+      openCode2Server.withConnection(
+        ({ client, events }) =>
+          Effect.gen(function* () {
+            // OpenCode names a location by its resolved path (no trailing slash or `..`).
+            const directory = pathService.resolve(cwd);
+            const location = { directory };
+            const scanned = yield* Deferred.make<void>();
+            const pending = new Set(["command.updated", "skill.updated"]);
+            const stream = yield* events.pipe(Effect.option);
+            if (stream._tag === "Some") {
+              yield* stream.value.pipe(
+                Stream.runForEach((event) =>
+                  "location" in event &&
+                  event.location?.directory === directory &&
+                  pending.delete(event.type) &&
+                  pending.size === 0
+                    ? Deferred.succeed(scanned, undefined)
+                    : Effect.void,
                 ),
-            // OpenCode answers provider.list for a location only once its skill scan has ended.
-            client.provider.list({ location }).pipe(Effect.timeout("10 seconds"), Effect.ignore),
-            processEnv,
-          );
-        }).pipe(Effect.scoped),
+                Effect.ignore,
+                Effect.forkScoped,
+              );
+            }
+            return yield* loadOpenCode2Workspace(
+              Effect.all(
+                {
+                  skills: client.skill.list({ location }).pipe(Effect.map((list) => list.data)),
+                  commands: client.command.list({ location }).pipe(Effect.map((list) => list.data)),
+                },
+                { concurrency: "unbounded" },
+              ),
+              Deferred.await(scanned),
+              // Without events no scan can be awaited, so trust the first read as before.
+              stream._tag === "None"
+                ? Effect.succeed(true)
+                : client.debug.location.list().pipe(
+                    Effect.map((loaded) => loaded.some((entry) => entry.directory === directory)),
+                    Effect.timeout("2 seconds"),
+                    Effect.orElseSucceed(() => true),
+                  ),
+              // OpenCode answers provider.list for a location only once its skill scan has ended.
+              client.provider.list({ location }).pipe(Effect.timeout("10 seconds"), Effect.ignore),
+              processEnv,
+            );
+          }).pipe(Effect.scoped),
+        undefined,
+        "inventory",
       );
     const serverOwner = yield* OpenCodeServerOwner.make({
+      ...(authority !== undefined ? { authority } : {}),
       binaryPath: effectiveConfig.binaryPath,
       directory: host.paths.cwd,
       ...(effectiveConfig.serverPassword ? { serverPassword: effectiveConfig.serverPassword } : {}),
       environment: processEnv,
     });
     const textGeneration = selectOpenCodeRuntimeTextGeneration(
-      resolveRuntime,
+      runtimeProbe,
       yield* makeOpenCodeTextGeneration(effectiveConfig).pipe(
         Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
       ),
       yield* OpenCode2TextGeneration.make().pipe(
         Effect.provideService(OpenCode2Server.OpenCode2Server, openCode2Server),
       ),
+      resolveRuntime,
     );
 
     const legacyUsageLimits = readOpenCodeGoUsageLimits({
@@ -476,7 +430,7 @@ export const OpenCodeDriver: ProviderDriver<
     let unsupportedUsageVersion: string | undefined;
     const checkUsageLimits = Effect.gen(function* () {
       if (!effectiveConfig.enabled) return yield* legacyUsageLimits;
-      const runtime = yield* runtimeProbe.get;
+      const runtime = yield* runtimeProbe.observe;
       if (runtime.generation === "v1" || runtime.version === unsupportedUsageVersion)
         return yield* legacyUsageLimits;
       const limits = yield* openCode2Server.withConnection((connection) =>
@@ -518,7 +472,7 @@ export const OpenCodeDriver: ProviderDriver<
         provider: checkOpenCodeProviderStatus(
           effectiveConfig,
           host.paths.cwd,
-          runtimeProbe.refresh,
+          runtimeProbe.observe,
           loadOpenCode2Models,
           processEnv,
         ).pipe(
@@ -592,6 +546,11 @@ export const OpenCodeDriver: ProviderDriver<
                   : {}),
                 environment: processEnv,
               });
+              yield* OpenCodeCreationPolicy.authorizeConsumption(
+                server.ownedProcess,
+                authority,
+                "inventory",
+              );
               const client = openCodeRuntime.createOpenCodeSdkClient({
                 baseUrl: server.url,
                 directory: cwd,
@@ -602,16 +561,19 @@ export const OpenCodeDriver: ProviderDriver<
               return yield* loadWorkspaceInventory(client);
             }),
           )
-        : serverOwner.withServer((server) =>
-            loadWorkspaceInventory(
-              openCodeRuntime.createOpenCodeSdkClient({
-                baseUrl: server.url,
-                directory: cwd,
-                ...(server.serverPassword !== undefined
-                  ? { serverPassword: server.serverPassword }
-                  : {}),
-              }),
-            ),
+        : serverOwner.withServer(
+            (server) =>
+              loadWorkspaceInventory(
+                openCodeRuntime.createOpenCodeSdkClient({
+                  baseUrl: server.url,
+                  directory: cwd,
+                  ...(server.serverPassword !== undefined
+                    ? { serverPassword: server.serverPassword }
+                    : {}),
+                }),
+              ),
+            undefined,
+            "inventory",
           );
 
     const serverUrl = effectiveConfig.serverUrl.trim();

@@ -327,6 +327,9 @@ const fixture = Effect.gen(function* () {
           revoke: () => Effect.succeed(false),
           revokeAllExcept: () => Effect.succeed([]),
           setLastConnectedAt: () => Effect.void,
+          // The fixture session is not bound to a proof key.
+          getProofKeyThumbprint: () => Effect.succeedNone,
+          revokeByProofKey: () => Effect.succeed([]),
         }),
       ),
     ),

@@ -261,6 +261,10 @@ it.effect("releases the forward of a bootstrap interrupted before its hub answer
           ? Deferred.succeed(publishing, undefined).pipe(Effect.andThen(Effect.never))
           : Effect.void,
     ).pipe(
+      Effect.provideService(DeviceDirectGrants, {
+        issue: () => Effect.die("A host without a direct target issues no direct grant"),
+        admit: () => Effect.die("A host without a direct target admits no direct connection"),
+      }),
       Effect.provide(Layer.mergeAll(ServerConfig.layerTest(home, home), Net.layer)),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.provideService(

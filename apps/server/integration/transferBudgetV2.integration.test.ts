@@ -118,12 +118,15 @@ const CLIENT_THREAD_SUBSCRIPTION = {
   acceptCompactTurnItems: true,
   acceptCompactIds: true,
   acceptDedupedBodies: true,
+  acceptCompactThreadVisits: true,
 } satisfies Required<Omit<OrchestrationV2SubscribeThreadInput, "threadId" | "afterSequence">>;
 type ShellResumeField = "afterSequence" | "httpSnapshotFallback" | "knownProjectIdentities";
 const CLIENT_SHELL_SUBSCRIPTION = {
   requestCompletionMarker: true,
   omitIdleSubagents: true,
   omitOlderSettled: true,
+  // Sent because this server advertises shellThreadRefresh, as shellRefresh.ts does.
+  acceptThreadRefresh: true,
 } satisfies Required<Omit<OrchestrationV2SubscribeShellInput, ShellResumeField>>;
 const query = (optIns: Readonly<Record<string, string>>) => new URLSearchParams(optIns).toString();
 const CLIENT_BOUNDED_QUERY = query(CLIENT_BOUNDED_OPT_INS);

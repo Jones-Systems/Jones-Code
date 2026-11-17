@@ -1,10 +1,3 @@
-import {
-  completionSentinel,
-  completionSentinelPattern,
-  stripTerminalControl,
-  wrapCommandForCompletion,
-  type CompletionShell,
-} from "../jones/workspaceRetirement/ScriptCompletionProtocol.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
 import type { TerminalError, TerminalSessionSnapshot } from "@t3tools/contracts";
@@ -223,6 +216,7 @@ export class ProjectSetupScriptRunner extends Context.Service<
 
 /** @public */
 // Random per-run tokens prevent script output from spoofing completion.
+const COMPLETION_SENTINEL_PREFIX = "__T3_SETUP_DONE__";
 const OUTPUT_LINE_MAX_LENGTH = 400;
 const PARTIAL_LINE_MAX_LENGTH = 4_096;
 

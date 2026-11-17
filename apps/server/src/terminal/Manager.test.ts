@@ -767,7 +767,11 @@ it.layer(
           if (mode === "oversized" || mode === "unavailable")
             assert.equal(process.writes[0], input.data);
           else {
-            const marker = /__T3_SETUP_DONE__([_a-f0-9]+):/.exec(process.writes[0]!);
+            const observed = process.writes[0];
+            // The observation wraps the script text, so the PTY receives a string write.
+            if (typeof observed !== "string")
+              return yield* Effect.die("project-script observation wrote non-text PTY input");
+            const marker = /__T3_SETUP_DONE__([_a-f0-9]+):/.exec(observed);
             assert.ok(marker);
             if (mode === "interruption") {
               assert.lengthOf(process.writes, 1);
@@ -4520,6 +4524,7 @@ it.layer(
         historyByteLimit: 8,
         resolveProviderInstanceEnvironment: (rawProviderInstanceId, env) =>
           TerminalManager.resolveProviderInstanceTerminalEnvironment({
+            deriveProviderInstanceConfigMap,
             serverSettings,
             path,
             rawProviderInstanceId,

@@ -148,6 +148,7 @@ async function render(props: Partial<React.ComponentProps<typeof QueuedRunsContr
       onOpenThread={() => undefined}
       onEditQueuedRun={() => undefined}
       onCancelEdit={() => undefined}
+      onImageExpand={() => undefined}
       {...props}
     />,
     { router: false },

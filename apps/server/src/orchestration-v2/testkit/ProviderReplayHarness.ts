@@ -1,3 +1,15 @@
+import * as RuntimeStop from "../../jones/runtime/RuntimeStop.ts";
+import * as AuthSessions from "../../persistence/AuthSessions.ts";
+import * as RestartPreparation from "../../jones/orchestration/RestartPreparation.ts";
+import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
+import * as NativeStartAdmission from "../../jones/nativeCreation/NativeStartAdmission.ts";
+import * as StartRefusals from "../../jones/startRefusal/Store.ts";
+import * as StartRefusalProbe from "../../jones/startRefusal/Probe.ts";
+import * as GoalContinuityRuntime from "../../jones/goals/continuity/RuntimeIntegration.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import type * as CheckoutIntent from "../../jones/ordinaryCheckout/CheckoutIntent.ts";
+import * as RuntimeLayer from "../runtimeLayer.ts";
+import { resolveServerParallelismProfile } from "../../jones/serverParallelism/config.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -77,6 +89,13 @@ import {
   type ProviderReplayGate,
 } from "@t3tools/provider-testing/replayGate";
 
+/** A supplied database may be the real persistence open graph, including managed-open admission. */
+type ReplayDatabaseError = Layer.Error<ReturnType<typeof SqlitePersistence.layerFromPath>>;
+/** Replay also builds the server environment identity in its temporary state directory. */
+type ReplayInfrastructureError =
+  | ReplayDatabaseError
+  | ServerEnvironment.ServerEnvironmentIdPersistenceError;
+
 export function makeReplayServerConfig(
   scenario: string,
 ): Effect.Effect<
@@ -142,7 +161,9 @@ export function makeReplayServerConfig(
       desktopBootstrapToken: undefined,
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
+      serverParallelism: resolveServerParallelismProfile(undefined),
       stateDir,
+      authorityStateDir: path.join(baseDir, "native-store-authority"),
       dbPath: path.join(stateDir, "state.sqlite"),
       keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
       settingsPath: path.join(stateDir, "settings.json"),
@@ -198,10 +219,13 @@ export function runOrchestratorV2ProviderReplayScenario<
   scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
   harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
   options: {
-    readonly databaseLayer?: Layer.Layer<
-      SqlClient.SqlClient,
-      MigrationError | PlatformError.PlatformError | SqlError
-    >;
+    readonly databaseLayer?: Layer.Layer<SqlClient.SqlClient, ReplayDatabaseError>;
+    readonly continuationRequestsLayer?: Layer.Layer<never>;
+    readonly startAdmissionLayer?: Layer.Layer<ControlAdmission.ControlAdmission>;
+    readonly configureMcp?: boolean;
+    readonly onSessionDetached?: (
+      input: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["detach"]>[0],
+    ) => Effect.Effect<void>;
     readonly runEffectWorker?: boolean;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
@@ -213,9 +237,7 @@ export function runOrchestratorV2ProviderReplayScenario<
   | Orchestrator.OrchestratorV2Error
   | OrchestratorV2ScenarioStepError
   | Error
-  | MigrationError
-  | PlatformError.PlatformError
-  | SqlError,
+  | ReplayInfrastructureError,
   never
 > {
   const replayGate = makeProviderReplayGate(
@@ -241,10 +263,13 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
   scenario: OrchestratorV2ProviderReplayScenario<Transcript>,
   harness: OrchestratorV2ProviderReplayHarness<Transcript, Error>,
   options: {
-    readonly databaseLayer?: Layer.Layer<
-      SqlClient.SqlClient,
-      MigrationError | PlatformError.PlatformError | SqlError
-    >;
+    readonly databaseLayer?: Layer.Layer<SqlClient.SqlClient, ReplayDatabaseError>;
+    readonly continuationRequestsLayer?: Layer.Layer<never>;
+    readonly startAdmissionLayer?: Layer.Layer<ControlAdmission.ControlAdmission>;
+    readonly configureMcp?: boolean;
+    readonly onSessionDetached?: (
+      input: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["detach"]>[0],
+    ) => Effect.Effect<void>;
     readonly runEffectWorker?: boolean;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
@@ -255,10 +280,12 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
   | EffectWorker.OrchestrationEffectWorkerV2
+  | EffectWorker.OrchestrationEffectExecutorV2
+  | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
   | CommandOutputRecorder.CommandOutputRecorder
   | ProviderSessionManager.ProviderSessionManagerV2,
-  Error | MigrationError | PlatformError.PlatformError | SqlError
+  Error | ReplayInfrastructureError
 > {
   const layerRegistry = harness.makeProviderAdapterRegistryLayer(
     scenario.transcript,
@@ -268,6 +295,48 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
 }
 
 export function layerWithRegistry<Error>(
+  ...args: Parameters<typeof layerWithRegistryAndServices<Error>>
+): Layer.Layer<
+  | Orchestrator.OrchestratorV2
+  | EffectWorker.OrchestrationEffectWorkerV2
+  | EffectWorker.OrchestrationEffectExecutorV2
+  | EffectOutbox.EffectOutboxV2
+  | EventSink.EventSinkV2
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | CommandOutputRecorder.CommandOutputRecorder
+  | ThreadCommandExecutor.ThreadCommandExecutor,
+  Error | ReplayInfrastructureError
+> {
+  // Narrow the runtime context too: leaked mocks override consumers' real services.
+  return Layer.mergeAll(
+    Layer.effect(Orchestrator.OrchestratorV2, Orchestrator.OrchestratorV2),
+    Layer.effect(
+      EffectWorker.OrchestrationEffectWorkerV2,
+      EffectWorker.OrchestrationEffectWorkerV2,
+    ),
+    Layer.effect(
+      EffectWorker.OrchestrationEffectExecutorV2,
+      EffectWorker.OrchestrationEffectExecutorV2,
+    ),
+    Layer.effect(EffectOutbox.EffectOutboxV2, EffectOutbox.EffectOutboxV2),
+    Layer.effect(EventSink.EventSinkV2, EventSink.EventSinkV2),
+    Layer.effect(
+      ProviderSessionManager.ProviderSessionManagerV2,
+      ProviderSessionManager.ProviderSessionManagerV2,
+    ),
+    Layer.effect(
+      CommandOutputRecorder.CommandOutputRecorder,
+      CommandOutputRecorder.CommandOutputRecorder,
+    ),
+    Layer.effect(
+      ThreadCommandExecutor.ThreadCommandExecutor,
+      ThreadCommandExecutor.ThreadCommandExecutor,
+    ),
+  ).pipe(Layer.provide(layerWithRegistryAndServices(...args)));
+}
+
+/** Exposes domain services for registered-tool tests without leaking workspace mocks. */
+export function layerWithRegistryAndServices<Error>(
   scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
   registryLayer: Layer.Layer<
     ProviderAdapterRegistry.ProviderAdapterRegistryV2,
@@ -275,11 +344,23 @@ export function layerWithRegistry<Error>(
     McpProviderSessions.McpProviderSessions
   >,
   options: {
-    readonly databaseLayer?: Layer.Layer<
-      SqlClient.SqlClient,
+    readonly eventStoreLayer?: Layer.Layer<EventStore.EventStoreV2, never, SqlClient.SqlClient>;
+    readonly checkoutIntentLayer?: Layer.Layer<
+      CheckoutIntent.CheckoutIntent,
       MigrationError | PlatformError.PlatformError | SqlError
     >;
+    readonly serverConfigLayer?: Layer.Layer<ServerConfig.ServerConfig>;
+    readonly databaseLayer?: Layer.Layer<SqlClient.SqlClient, ReplayDatabaseError>;
     readonly runEffectWorker?: boolean;
+    readonly continuationRequestsLayer?: Layer.Layer<never>;
+    readonly startAdmissionLayer?: Layer.Layer<ControlAdmission.ControlAdmission>;
+    readonly configureMcp?: boolean;
+    readonly beforeEffectExecution?: (
+      effect: EffectOutbox.OrchestrationEffectV2,
+    ) => Effect.Effect<void>;
+    readonly onSessionDetached?: (
+      input: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["detach"]>[0],
+    ) => Effect.Effect<void>;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -290,6 +371,15 @@ export function layerWithRegistry<Error>(
     readonly managedPolicy?: ManagedPolicyDocument;
   } = {},
 ): Layer.Layer<
+  | RuntimeStop.CurrentRuntimeStop
+  | AuthSessions.AuthSessionRepository
+  | ProjectionStore.ProjectionStoreV2
+  | ProviderSwitchService.ProviderSwitchServiceV2
+  | ProviderTurnStartService.ProviderTurnStartServiceV2
+  | ServerSettings.ServerSettingsService
+  | SqlClient.SqlClient
+  | ThreadManagementService.ThreadManagementService
+  | EffectWorker.OrchestrationEffectExecutorV2
   | Orchestrator.OrchestratorV2
   | EffectOutbox.EffectOutboxV2
   | EffectWorker.OrchestrationEffectWorkerV2
@@ -297,12 +387,14 @@ export function layerWithRegistry<Error>(
   | ProviderSessionManager.ProviderSessionManagerV2
   | CommandOutputRecorder.CommandOutputRecorder
   | ThreadCommandExecutor.ThreadCommandExecutor,
-  Error | MigrationError | PlatformError.PlatformError | SqlError
+  Error | ReplayInfrastructureError
 > {
-  const layerServerConfig = Layer.effect(
-    ServerConfig.ServerConfig,
-    makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
-  ).pipe(Layer.provide(NodeServices.layer));
+  const layerServerConfig =
+    options.serverConfigLayer ??
+    Layer.effect(
+      ServerConfig.ServerConfig,
+      makeReplayServerConfig(scenario.name).pipe(Effect.orDie),
+    ).pipe(Layer.provide(NodeServices.layer));
   const layerRuntimeBase =
     scenario.runtimePolicyOverride === undefined
       ? RuntimePolicy.layer
@@ -312,10 +404,8 @@ export function layerWithRegistry<Error>(
   const layerDatabase = options.databaseLayer ?? SqlitePersistence.layerMemory;
   // Share one continuation queue across adapters, orchestrator, and worker through layer memoization.
   const layerContinuationRequests =
-    options.runContinuationWorker === true ? ProviderContinuationRequests.layer : Layer.empty;
-  const layerProvidedRegistry = registryLayer.pipe(
-    Layer.provide(Layer.merge(layerContinuationRequests, McpProviderSessions.layer)),
-  );
+    options.continuationRequestsLayer ??
+    (options.runContinuationWorker === true ? ProviderContinuationRequests.layer : Layer.empty);
   const layerServerSettings = Layer.unwrap(
     Effect.map(ManagedPolicy.fromDocument("/test/policy.json", options.managedPolicy), (policy) =>
       ServerSettings.layerTest(
@@ -341,15 +431,32 @@ export function layerWithRegistry<Error>(
           }),
         ).pipe(Layer.provide(ProjectionStore.layer));
   const layerStores = Layer.mergeAll(
-    EventStore.layer,
+    options.eventStoreLayer ?? EventStore.layer,
     layerProjectionStore,
     ProjectStore.layer,
+    AuthSessions.layer,
     CommandReceiptStore.layer,
     layerEffectOutboxProvided,
     TurnItemPositionStore.layer,
-  ).pipe(Layer.provide(layerDatabase));
+  ).pipe(Layer.provideMerge(layerDatabase));
+  const layerStartRefusals = StartRefusals.layer.pipe(Layer.provide(layerDatabase));
+  const layerControlAdmission = options.startAdmissionLayer ?? ControlAdmission.layer;
+  const layerGoalContinuity = GoalContinuityRuntime.layer.pipe(Layer.provide(layerDatabase));
+  const layerEnvironment = ServerEnvironment.layerIdentity.pipe(Layer.provide(layerServerConfig));
+  const layerProvidedRegistry = registryLayer.pipe(
+    Layer.provide(
+      Layer.mergeAll(layerContinuationRequests, McpProviderSessions.layer, layerEnvironment),
+    ),
+  );
+  const layerAdmissionProbe = StartRefusalProbe.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(layerStores, layerControlAdmission, layerGoalContinuity, layerEnvironment),
+    ),
+  );
   const layerEventSinkProvided = EventSink.layerFromStores.pipe(
-    Layer.provide(Layer.mergeAll(layerStores, layerDatabase)),
+    Layer.provide(
+      Layer.mergeAll(layerStores, layerStartRefusals, options.checkoutIntentLayer ?? Layer.empty),
+    ),
   );
   const layerRuntime = RuntimePolicy.layerEnforcingCeiling.pipe(
     Layer.provide(Layer.merge(layerRuntimeBase, layerServerSettings)),
@@ -362,6 +469,7 @@ export function layerWithRegistry<Error>(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
           getInstance: () => Effect.undefined,
+          getCatalogSource: () => undefined,
         }),
         layerStores,
         layerEventSinkProvided,
@@ -399,8 +507,8 @@ export function layerWithRegistry<Error>(
   const layerCommandOutputHubProvided = CommandOutputRecorder.layer.pipe(
     Layer.provide(Layer.merge(layerEventSinkProvided, layerStores)),
   );
-  const layerProviderSessionManagerProvided = ProviderSessionManager.layerWithOptions({
-    configureMcp: false,
+  const layerProviderSessionManagerBase = ProviderSessionManager.layerWithOptions({
+    configureMcp: options.configureMcp ?? false,
   }).pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -410,14 +518,37 @@ export function layerWithRegistry<Error>(
         IdAllocator.layer,
         McpProviderSessions.layer,
         McpSessionRegistryTestkit.layer,
+        layerServerSettings,
         layerProviderEventIngestorProvided,
         layerStores,
         ProviderInstallationGate.layer,
       ),
     ),
   );
+  const onSessionDetached = options.onSessionDetached;
+  const layerProviderSessionManagerProvided =
+    onSessionDetached === undefined
+      ? layerProviderSessionManagerBase
+      : Layer.effect(
+          ProviderSessionManager.ProviderSessionManagerV2,
+          Effect.gen(function* () {
+            const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+            return ProviderSessionManager.ProviderSessionManagerV2.of({
+              ...sessions,
+              detach: (input) =>
+                sessions.detach(input).pipe(Effect.tap(() => onSessionDetached(input))),
+            });
+          }),
+        ).pipe(Layer.provide(layerProviderSessionManagerBase));
   const layerProviderSwitchServiceProvided = ProviderSwitchService.layer.pipe(
-    Layer.provide(layerProvidedRegistry),
+    Layer.provide(
+      Layer.mergeAll(
+        layerProvidedRegistry,
+        layerStores,
+        layerEventSinkProvided,
+        layerStartRefusals,
+      ),
+    ),
   );
   const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
     Layer.provide(
@@ -434,7 +565,32 @@ export function layerWithRegistry<Error>(
       ),
     ),
   );
-  const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+  const layerRestartPreparation = RestartPreparation.layer.pipe(
+    Layer.provide(Layer.merge(layerStores, layerEventSinkProvided)),
+  );
+  const layerNativeStartAdmission = NativeStartAdmission.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerStores,
+        layerEventSinkProvided,
+        layerControlAdmission,
+        layerStartRefusals,
+      ),
+    ),
+  );
+  const layerProviderTurnStartServiceProvided = RuntimeLayer.layerCapturedProviderTurnStart.pipe(
+    Layer.provide(ProviderTurnStartService.layer),
+    Layer.provide(
+      Layer.mergeAll(
+        layerNativeStartAdmission,
+        layerGoalContinuity,
+        layerEnvironment,
+        layerControlAdmission,
+        layerStartRefusals,
+        layerRestartPreparation,
+        layerProviderSwitchServiceProvided,
+      ),
+    ),
     Layer.provide(
       Layer.mergeAll(
         layerContextHandoffServiceProvided,
@@ -503,6 +659,9 @@ export function layerWithRegistry<Error>(
         CommandPolicy.layer,
         layerContextHandoffServiceProvided,
         layerPersistence,
+        layerStartRefusals,
+        layerAdmissionProbe,
+        options.checkoutIntentLayer ?? Layer.empty,
         layerProvidedRegistry,
         layerContinuationRequests,
         layerRuntime,
@@ -519,6 +678,19 @@ export function layerWithRegistry<Error>(
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       return Layer.mock(ThreadManagementService.ThreadManagementService)({
         dispatch: orchestrator.dispatch,
+        getThreadShell: orchestrator.getThreadShell,
+        getProjectThreadRecords: ({ threadId }, fields, filter) =>
+          orchestrator.getThreadRecords(threadId, fields, filter).pipe(Effect.orDie),
+        stopDelegatedTasks: ({ threadId }) =>
+          orchestrator
+            .getThreadRecords(threadId, ["subagents"])
+            .pipe(
+              Effect.flatMap(({ subagents }) =>
+                subagents.length === 0
+                  ? Effect.void
+                  : Effect.die("Replay stop fixture requires explicit delegated-child handling"),
+              ),
+            ),
         getThreadRecords: orchestrator.getThreadRecords,
         getThreadProjection: orchestrator.getThreadProjection,
         recoverDelegatedTask: orchestrator.recoverDelegatedTask,
@@ -540,7 +712,19 @@ export function layerWithRegistry<Error>(
           ),
         )
       : Layer.empty;
-  const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
+  const layerCurrentRuntimeStop = RuntimeStop.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerStores,
+        layerEventSinkProvided,
+        layerProviderSessionManagerProvided,
+        layerRestartPreparation,
+      ),
+    ),
+  );
+  const layerEffectExecutorBase = EffectWorker.layerExecutor.pipe(
+    Layer.provide(layerCurrentRuntimeStop),
+    Layer.provide(layerRestartPreparation),
     Layer.provide(
       Layer.mergeAll(
         layerRunFinalizationServiceProvided,
@@ -556,10 +740,33 @@ export function layerWithRegistry<Error>(
       ),
     ),
   );
+  const beforeEffectExecution = options.beforeEffectExecution;
+  const layerEffectExecutorProvided = Layer.effect(
+    EffectWorker.OrchestrationEffectExecutorV2,
+    Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const runtimeStop = yield* RuntimeStop.CurrentRuntimeStop;
+      return EffectWorker.OrchestrationEffectExecutorV2.of({
+        ...executor,
+        execute: (effect, executionOptions) =>
+          (beforeEffectExecution?.(effect) ?? Effect.void).pipe(
+            Effect.andThen(executor.execute(effect, executionOptions)),
+            Effect.provideService(RuntimeStop.CurrentRuntimeStop, runtimeStop),
+          ),
+      });
+    }),
+  ).pipe(Layer.provide(Layer.merge(layerEffectExecutorBase, layerCurrentRuntimeStop)));
   const layerEffectWorkerProvided = EffectWorker.layer.pipe(
     Layer.provide(Layer.merge(layerStores, layerEffectExecutorProvided)),
   );
   const layerReplayRuntime = Layer.mergeAll(
+    layerCurrentRuntimeStop,
+    layerStores,
+    layerServerSettings,
+    layerThreadManagementProvided,
+    layerProviderSwitchServiceProvided,
+    layerProviderTurnStartServiceProvided,
+    layerEffectExecutorProvided,
     layerEffectOutboxProvided,
     layerOrchestratorProvided,
     layerProviderSessionManagerProvided,
@@ -569,7 +776,7 @@ export function layerWithRegistry<Error>(
     layerCommandOutputHubProvided,
     ThreadCommandExecutor.layer,
   ).pipe(
-    Layer.provide(ProviderTurnStartServiceTestkit.layer),
+    Layer.provide(ProviderTurnStartServiceTestkit.layerWorkspace),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
 
@@ -577,10 +784,7 @@ export function layerWithRegistry<Error>(
     return layerReplayRuntime;
   }
   // Build recovery before runtime so it commits before the effect worker claims work.
-  const layerStartupRecovery: Layer.Layer<
-    never,
-    MigrationError | PlatformError.PlatformError | SqlError
-  > =
+  const layerStartupRecovery: Layer.Layer<never, ReplayInfrastructureError> =
     options.recoverOnStartup === true
       ? Layer.effectDiscard(
           ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService.use(
@@ -589,12 +793,18 @@ export function layerWithRegistry<Error>(
         ).pipe(
           Layer.provide(ProviderRuntimeRecoveryService.layer),
           Layer.provide(
+            // Environment identity needs the platform while it is built, not as a sibling.
             Layer.mergeAll(
               layerStores,
               layerEventSinkProvided,
               IdAllocator.layer,
               layerServerSettings,
-            ),
+              layerStartRefusals,
+              layerRestartPreparation,
+              layerControlAdmission,
+              layerGoalContinuity,
+              layerEnvironment,
+            ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
           ),
         )
       : Layer.empty;

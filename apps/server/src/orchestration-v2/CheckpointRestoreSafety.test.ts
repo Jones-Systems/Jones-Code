@@ -21,6 +21,7 @@ import { isCheckpointRestoreIsolated } from "./CheckpointRestoreSafety.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreV2, type ProjectionCheckpointRollbackContext } from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -147,7 +148,10 @@ it.effect.each([
                 yield* fs.remove(otherFile).pipe(Effect.orDie);
               }),
           }),
-          Layer.mock(EventSinkV2)({ write: () => Effect.succeed([]) }),
+          Layer.mock(EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
+            write: () => Effect.succeed([]),
+          }),
           Layer.mock(ProviderSessionManagerV2)({
             open: () =>
               Effect.succeed({

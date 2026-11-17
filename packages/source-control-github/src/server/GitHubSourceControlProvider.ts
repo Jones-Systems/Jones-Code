@@ -28,6 +28,7 @@ import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import { GH_PROCESS_CONCURRENCY } from "./GitHubCredentials.ts";
 import * as GitHubAppSignIn from "./GitHubAppSignIn.ts";
 import * as GitHubRest from "./GitHubRest.ts";
+import { listQualifiedHeadPullRequests } from "../jones/qualifiedHeadDiscovery.ts";
 import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
 import * as GitHubChangeRequestTemplate from "./gitHubChangeRequestTemplate.ts";
 import * as GitHubGraphQlClient from "./gitHubGraphQlClient.ts";
@@ -621,6 +622,29 @@ export const make = Effect.gen(function* () {
     const limit = Math.min(Math.max(Math.trunc(input.limit), 1), 100);
     const ownerMatch = /^([^:/\s]+):(.+)$/u.exec(input.headSelector.trim());
     const headRefName = ownerMatch?.[2] ?? input.headSelector.trim();
+    // Jones: a GitHub owner-qualified head pages through REST without spending the reserve,
+    // and fails at its bound instead of reporting a partial scan as complete.
+    if (
+      /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}:[^\s:]+$/u.test(input.headSelector.trim())
+    ) {
+      return yield* listQualifiedHeadPullRequests({
+        locator,
+        headSelector: input.headSelector.trim(),
+        state: input.state,
+        limit,
+      }).pipe(
+        Effect.provideService(GitHubRest.GitHubRest, api),
+        Effect.mapError((error) => {
+          if (error._tag === "QualifiedHeadDecodeError") {
+            return failure("GitHub returned an invalid change request list.", error);
+          }
+          if (error._tag === "QualifiedHeadPageLimitError") {
+            return failure("Qualified pull request discovery exceeded ten REST pages.", error);
+          }
+          return fromGitHubApiError(error);
+        }),
+      );
+    }
     if (ownerMatch) {
       // GraphQL cannot filter heads by owner, and names like a fork's `main` match thousands.
       const query = new URLSearchParams({

@@ -2,6 +2,8 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "provider-background-activity",
   "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/ThreadActivityProjection.ts",
+    "apps/server/src/jones/mcp/ThreadActivityProjection.test.ts",
     "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.ts",
     "apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.test.ts",
     "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts",
@@ -18,6 +20,10 @@
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/mcp/ThreadActivityProjection.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
       "to": "apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.ts"

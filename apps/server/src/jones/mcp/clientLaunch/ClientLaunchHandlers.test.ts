@@ -25,10 +25,13 @@ import * as Launch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as Threads from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Receipts from "../../../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../../../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../../orchestration/SupersededTerminalTrace.ts";
 import { DispatchModeLimit } from "../../../orchestration-v2/DispatchModeLimit.ts";
 import * as Projects from "../../../project/ProjectService.ts";
 import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ManagedFolders from "../../../project/ManagedProjectFolders.ts";
+import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
+import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as Git from "../../../vcs/GitVcsDriver.ts";
 import * as Invocation from "../../../mcp/McpInvocationContext.ts";
 import * as Access from "../../../mcp/McpToolAccess.ts";
@@ -119,6 +122,9 @@ function harness(
     Layer.succeed(Invocation.McpInvocationContext, scope),
     Layer.mock(ManagedFolders.ManagedProjectFolders)({ namedProjectsRoot: "/synthetic" }),
     Layer.mock(Git.GitVcsDriver)({}),
+    // The project toolkit's clone tools are never called by these launch cases.
+    Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
+    Layer.mock(Repositories.SourceControlRepositoryService)({}),
     Layer.mock(Receipts.CommandReceiptStoreV2)({
       getByCommandId: (command) =>
         Effect.sync(() => {
@@ -127,6 +133,7 @@ function harness(
         }),
     }),
     Layer.mock(EventSink.EventSinkV2)({
+      supersededTerminalTrace: SupersededTerminalTrace.make(),
       commitRejectedCommand: (input) =>
         Effect.sync(() => {
           const existing = receipts.get(input.commandId);

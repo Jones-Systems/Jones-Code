@@ -45,6 +45,7 @@ import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../../../secrets/SecretRequests.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as TerminalManager from "../../../terminal/Manager.ts";
+import * as CheckpointStore from "../../../checkpointing/CheckpointStore.ts";
 import * as TextGeneration from "../../../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import {
@@ -397,6 +398,8 @@ function makeHarness(
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: closeTerminal }),
+    // Launches read repository status through the checkpoint store.
+    Layer.mock(CheckpointStore.CheckpointStore)({ isGitRepository: () => Effect.succeed(true) }),
     Layer.succeed(ProjectService.ProjectService, {
       create: () => Effect.die("unused"),
       bootstrap: () => Effect.die("unused"),
@@ -411,6 +414,7 @@ function makeHarness(
               : Option.none(),
         ),
       getByWorkspaceRoot: () => Effect.succeedSome(projectRecord),
+      workspaceScanDirectory: () => Effect.die("unused"),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
@@ -420,7 +424,6 @@ function makeHarness(
       createWorktree,
       removeWorktree,
       hasCommit,
-      isRepository: () => Effect.succeed(true),
       renameBranch: (input) => Effect.succeed({ branch: input.newBranch }),
       fetchRemote: () => Effect.void,
       remoteExists: () => Effect.succeed(true),
@@ -480,7 +483,8 @@ function makeHarness(
       folderForThread: () => Effect.succeedNone,
     }),
   );
-  const launch = ThreadLaunch.layer.pipe(
+  // The composition production installs: these launches never take ordinary checkout custody.
+  const launch = ThreadLaunch.layerProduction.pipe(
     Layer.provide(ThreadMetadataReads.layer.pipe(Layer.provide(database))),
     Layer.provide(
       Layer.mergeAll(

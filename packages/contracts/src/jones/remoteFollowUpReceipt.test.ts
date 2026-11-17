@@ -87,15 +87,23 @@ const sent = {
 const accepted = { ...receiptIdentity, outcome: "accepted", sent };
 const decodeLookup = Schema.decodeUnknownSync(OrchestratorMcpThreadSendReceiptLookupInput);
 const decodeReceipt = Schema.decodeUnknownSync(OrchestratorMcpThreadSendReceiptLookupResult);
-const receiptJson = Schema.toCodecJson(OrchestratorMcpThreadSendReceiptLookupResult);
+const receiptJson = Schema.fromJsonString(
+  Schema.toCodecJson(OrchestratorMcpThreadSendReceiptLookupResult),
+);
+
+const decodePreviousSend = Schema.decodeUnknownSync(PreviousSendInput);
+const decodePreviousSendJson = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.toCodecJson(PreviousSendInput)),
+);
+const decodePreviousFeatures = Schema.decodeUnknownSync(PreviousFeatures);
 
 describe("remote follow-up SEND fence compatibility", () => {
   const decodeSend = Schema.decodeUnknownSync(OrchestratorMcpThreadSendInput);
-  const sendJson = Schema.toCodecJson(OrchestratorMcpThreadSendInput);
+  const sendJson = Schema.fromJsonString(Schema.toCodecJson(OrchestratorMcpThreadSendInput));
 
   it("keeps an old SEND valid without inventing a target creation fence", () => {
     expect(decodeSend(oldSend)).toEqual(oldSend);
-    expect(Schema.decodeUnknownSync(sendJson)(JSON.stringify(oldSend))).toEqual(oldSend);
+    expect(Schema.decodeSync(sendJson)(JSON.stringify(oldSend))).toEqual(oldSend);
     expect(decodeSend(oldSend)).not.toHaveProperty("expectedThreadCreatedAt");
   });
 
@@ -105,8 +113,11 @@ describe("remote follow-up SEND fence compatibility", () => {
     expect(decoded).toEqual(input);
     const encoded = Schema.encodeSync(sendJson)(decoded);
     expect(JSON.parse(encoded)).toEqual(input);
-    expect(Schema.decodeUnknownSync(sendJson)(encoded)).toEqual(decoded);
-    const replacement = decodeSend({ ...input, expectedThreadCreatedAt: "2026-11-16T19:07:15.124Z" });
+    expect(Schema.decodeSync(sendJson)(encoded)).toEqual(decoded);
+    const replacement = decodeSend({
+      ...input,
+      expectedThreadCreatedAt: "2026-11-16T19:07:15.124Z",
+    });
     expect(Schema.encodeSync(sendJson)(replacement)).not.toBe(encoded);
     expect(() => decodeSend({ ...input, expectedThreadCreatedAt: 123 })).toThrow();
     expect(() => decodeSend({ ...input, expectedThreadCreatedAt: null })).toThrow();
@@ -114,15 +125,16 @@ describe("remote follow-up SEND fence compatibility", () => {
 
   it("establishes that an old decoder drops the fence, so schema acceptance cannot prove support", () => {
     const input = { ...oldSend, expectedThreadCreatedAt: "2026-11-16T19:07:15.123Z" };
-    expect(Schema.decodeUnknownSync(PreviousSendInput)(input)).toEqual(oldSend);
-    expect(Schema.decodeUnknownSync(Schema.toCodecJson(PreviousSendInput))(JSON.stringify(input)))
-      .toEqual(oldSend);
+    expect(decodePreviousSend(input)).toEqual(oldSend);
+    expect(decodePreviousSendJson(JSON.stringify(input))).toEqual(oldSend);
   });
 });
 
 describe("remote follow-up capability compatibility", () => {
   const decodeCapabilities = Schema.decodeUnknownSync(OrchestratorMcpCapabilitiesResult);
-  const capabilitiesJson = Schema.toCodecJson(OrchestratorMcpCapabilitiesResult);
+  const capabilitiesJson = Schema.fromJsonString(
+    Schema.toCodecJson(OrchestratorMcpCapabilitiesResult),
+  );
 
   it("preserves absent capabilities without advertising either mechanism", () => {
     const decoded = decodeCapabilities(oldCapabilities);
@@ -141,9 +153,10 @@ describe("remote follow-up capability compatibility", () => {
     const input = { ...oldCapabilities, features };
     const decoded = decodeCapabilities(input);
     expect(decoded).toEqual(input);
-    expect(Schema.decodeUnknownSync(capabilitiesJson)(Schema.encodeSync(capabilitiesJson)(decoded)))
-      .toEqual(input);
-    expect(Schema.decodeUnknownSync(PreviousFeatures)(features)).toEqual(oldCapabilities.features);
+    expect(
+      Schema.decodeSync(capabilitiesJson)(Schema.encodeSync(capabilitiesJson)(decoded)),
+    ).toEqual(input);
+    expect(decodePreviousFeatures(features)).toEqual(oldCapabilities.features);
   });
 
   it.each(["remoteFollowUpSendVersion", "remoteFollowUpReceiptVersion"] as const)(
@@ -151,23 +164,27 @@ describe("remote follow-up capability compatibility", () => {
     (field) => {
       const features = { ...oldCapabilities.features, [field]: REMOTE_FOLLOW_UP_RECEIPT_VERSION };
       expect(decodeCapabilities({ ...oldCapabilities, features }).features).toEqual(features);
-      expect(() => decodeCapabilities({
-        ...oldCapabilities,
-        features: { ...features, [field]: "jones.remote-followup-receipt/v2" },
-      })).toThrow();
+      expect(() =>
+        decodeCapabilities({
+          ...oldCapabilities,
+          features: { ...features, [field]: "jones.remote-followup-receipt/v2" },
+        }),
+      ).toThrow();
     },
   );
 });
 
 describe("remote follow-up receipt identity and strict results", () => {
   it("round-trips only the caller's target, key and digest, without a caller-supplied auth context", () => {
-    const codec = Schema.toCodecJson(OrchestratorMcpThreadSendReceiptLookupInput);
+    const codec = Schema.fromJsonString(
+      Schema.toCodecJson(OrchestratorMcpThreadSendReceiptLookupInput),
+    );
     const decoded = decodeLookup(lookup);
     expect(decoded).toEqual(lookup);
-    expect(Schema.decodeUnknownSync(codec)(Schema.encodeSync(codec)(decoded))).toEqual(lookup);
+    expect(Schema.decodeSync(codec)(Schema.encodeSync(codec)(decoded))).toEqual(lookup);
     for (const extra of [{ namespace: "other-origin" }, { environmentId: "other-environment" }]) {
       expect(() => decodeLookup({ ...lookup, ...extra })).toThrow();
-      expect(() => Schema.decodeUnknownSync(codec)(JSON.stringify({ ...lookup, ...extra }))).toThrow();
+      expect(() => Schema.decodeSync(codec)(JSON.stringify({ ...lookup, ...extra }))).toThrow();
     }
     for (const field of ["clientRequestId", "requestDigest"] as const) {
       expect(() => decodeLookup({ ...lookup, [field]: "" })).toThrow();
@@ -177,19 +194,23 @@ describe("remote follow-up receipt identity and strict results", () => {
   it("preserves the exact accepted message/run receipt instead of substituting a current run", () => {
     const decoded = decodeReceipt(accepted);
     expect(decoded).toEqual(accepted);
-    expect(Schema.decodeUnknownSync(receiptJson)(Schema.encodeSync(receiptJson)(decoded)))
-      .toEqual(accepted);
+    expect(Schema.decodeSync(receiptJson)(Schema.encodeSync(receiptJson)(decoded))).toEqual(
+      accepted,
+    );
     if (decoded.outcome === "accepted") {
       expect(decoded.sent.messageId).toBe("message:original");
       expect(decoded.sent.runId).toBe("run:original");
     }
   });
 
-  it.each(["unknown", "rejected"] as const)("retains %s as a distinct null-sent outcome", (outcome) => {
-    const receipt = { ...receiptIdentity, outcome, sent: null };
-    expect(decodeReceipt(receipt)).toEqual(receipt);
-    expect(Schema.decodeUnknownSync(receiptJson)(JSON.stringify(receipt))).toEqual(receipt);
-  });
+  it.each(["unknown", "rejected"] as const)(
+    "retains %s as a distinct null-sent outcome",
+    (outcome) => {
+      const receipt = { ...receiptIdentity, outcome, sent: null };
+      expect(decodeReceipt(receipt)).toEqual(receipt);
+      expect(Schema.decodeSync(receiptJson)(JSON.stringify(receipt))).toEqual(receipt);
+    },
+  );
 
   it.each([
     { ...accepted, sent: null },
@@ -211,6 +232,6 @@ describe("remote follow-up receipt identity and strict results", () => {
     { ...receiptIdentity, outcome: "unknown", sent: null, namespace: "other-origin" },
   ])("rejects inconsistent or augmented receipt shape %# in native and peer JSON", (input) => {
     expect(() => decodeReceipt(input)).toThrow();
-    expect(() => Schema.decodeUnknownSync(receiptJson)(JSON.stringify(input))).toThrow();
+    expect(() => Schema.decodeSync(receiptJson)(JSON.stringify(input))).toThrow();
   });
 });

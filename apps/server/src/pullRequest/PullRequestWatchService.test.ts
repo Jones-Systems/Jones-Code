@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
 import {
   type PullRequestTestThread,
   v2PullRequestThread,
@@ -127,6 +128,7 @@ const makeHarness = Effect.fn("makePullRequestWatchHarness")(function* (
       getShell: () => Effect.succeed(Option.fromNullishOr(project)),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
+      ...unusedCorePorts(),
       getThreadShell: (id) =>
         Effect.succeed(id === thread?.id ? v2PullRequestThread(thread) : null),
       dispatch: (command) =>

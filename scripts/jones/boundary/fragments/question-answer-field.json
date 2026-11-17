@@ -2,6 +2,9 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "question-answer-field",
   "jonesOwnedPaths": [
+    "apps/web/src/jones/questionAnswer/answerProgress.ts",
+    "apps/web/src/jones/questionAnswer/displacedAnswer.ts",
+    "apps/web/src/jones/questionAnswer/displacedAnswer.test.ts",
     "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts",
     "apps/mobile/src/jones/questionAnswer/composerDispatch.ts",
     "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts",
@@ -30,6 +33,18 @@
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/usePendingThreadRequests.ts",
+      "to": "apps/web/src/jones/questionAnswer/displacedAnswer.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/usePendingThreadRequests.ts",
+      "to": "apps/web/src/jones/questionAnswer/answerProgress.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "apps/web/src/jones/questionAnswer/answerProgress.ts"
+    },
     {
       "from": "apps/web/src/components/ChatView.tsx",
       "to": "apps/web/src/jones/questionAnswer/questionAnswerCard.ts"
@@ -105,6 +120,14 @@
     {
       "from": "apps/web/src/pendingUserInput.ts",
       "to": "apps/web/src/jones/questionAnswer/pendingAnswers.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.tsx",
+      "to": "apps/web/src/jones/questionAnswer/questionAnswerCard.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/usePendingThreadRequests.ts",
+      "to": "apps/web/src/jones/questionAnswer/threadReferenceAnswer.ts"
     }
   ]
 }

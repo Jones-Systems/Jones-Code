@@ -6,7 +6,9 @@
     "packages/provider-core/src/server/jones/ProviderEventOrigin.ts",
     "packages/provider-core/src/server/jones/ProviderRuntimeBindingDiagnostics.ts",
     "apps/server/src/jones/provider/claudeQueryExitObserver.ts",
-    "apps/server/src/jones/provider/opencode/OpenCode2ReconnectOrigin.test.ts"
+    "apps/server/src/jones/provider/opencode/OpenCode2ReconnectOrigin.test.ts",
+    "packages/provider-acp/src/jones/adapterOriginComposition.test.ts",
+    "packages/provider-cursor/src/jones/adapterOriginComposition.test.ts"
   ],
   "hookPaths": [
     "packages/provider-acp/src/server/adapter.ts",
@@ -89,6 +91,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
       "to": "apps/server/src/jones/provider/claudeQueryExitObserver.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+      "to": "packages/provider-core/src/server/jones/ProviderEventOrigin.ts"
     }
   ]
 }

@@ -15,9 +15,10 @@ import { ProviderAdapterProtocolError } from "@t3tools/provider-core/server/Prov
 import type { NativeProviderExecutionGuard } from "@t3tools/provider-core/server/jones/runtimeTypes";
 export type { NativeProviderExecutionGuard } from "@t3tools/provider-core/server/jones/runtimeTypes";
 // Only the existing whole-operation executor provides this issued private handle.
-export class CurrentNativeGuard extends Context.Service<CurrentNativeGuard, NativeProviderExecutionGuard>()(
-  "jones/nativeCreation/CurrentNativeGuard",
-) {}
+export class CurrentNativeGuard extends Context.Service<
+  CurrentNativeGuard,
+  NativeProviderExecutionGuard
+>()("t3/jones/nativeCreation/NativeCreationProviderGuard/CurrentNativeGuard") {}
 const guards = new WeakMap<
   NativeProviderExecutionGuard,
   {

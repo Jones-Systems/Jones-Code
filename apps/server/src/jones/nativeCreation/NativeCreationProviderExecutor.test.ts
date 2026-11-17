@@ -309,6 +309,9 @@ const fixture = Effect.gen(function* () {
           revoke: () => Effect.succeed(false),
           revokeAllExcept: () => Effect.succeed([]),
           setLastConnectedAt: () => Effect.void,
+          // The fixture session is not bound to a proof key.
+          getProofKeyThumbprint: () => Effect.succeedNone,
+          revokeByProofKey: () => Effect.succeed([]),
         }),
       ),
     ),
@@ -894,6 +897,9 @@ const scenario = (mode: Mode) =>
       Start.ProviderTurnStartServiceV2,
       Start.ProviderTurnStartServiceV2.of({
         start: () => Effect.void,
+        // Only the effect worker fails a starting run; this executor never does.
+        failStartingRun: () =>
+          Effect.die("Unexpected failStartingRun in the native executor fixture"),
         startNative: (input) =>
           Effect.gen(function* () {
             const receipts = yield* f.sql`SELECT 1 FROM orchestration_command_receipts

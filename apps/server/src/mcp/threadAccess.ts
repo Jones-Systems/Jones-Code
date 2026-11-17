@@ -1,3 +1,5 @@
+import * as ProviderSessions from "../orchestration-v2/ProviderSessionManager.ts";
+import * as Option from "effect/Option";
 import type {
   ProjectionRecordField,
   ProjectionRecordFilter,
@@ -176,16 +178,39 @@ export const isLiveCallerShell = (
       false));
 
 /** Thread callers need a live run or its background subagent in an unarchived thread. OAuth clients rely on their session and ceiling. */
-export function assertLiveCaller({ caller, scope }: Caller) {
+export function assertLiveCaller({ caller, scope, threads }: Caller) {
   if (caller === undefined) return Effect.void;
-  return isLiveCallerShell(caller, scope.thread?.providerInstanceId)
-    ? Effect.void
-    : Effect.fail(
-        new OrchestratorMcpFailure({
-          code: "parent_not_active",
-          message: "The calling provider no longer owns an active thread run.",
-        }),
-      );
+  return Effect.gen(function* () {
+    if (isLiveCallerShell(caller, scope.thread?.providerInstanceId)) return;
+    const manager = yield* Effect.serviceOption(ProviderSessions.ProviderSessionManagerV2);
+    if (
+      caller.archivedAt === null &&
+      caller.deletedAt === null &&
+      scope.thread !== undefined &&
+      Option.isSome(manager)
+    ) {
+      const records = yield* threads
+        .getThreadRecords(caller.id, ["runs", "providerThreads"])
+        .pipe(Effect.mapError(unavailable));
+      const run = records.runs.find((run) => run.id === caller.activeRunId);
+      const provider = records.providerThreads.find((row) => row.id === run?.providerThreadId);
+      if (
+        run?.providerInstanceId === scope.thread.providerInstanceId &&
+        provider?.providerSessionId != null &&
+        (yield* manager.value.isMcpCallerAttached({
+          threadId: caller.id,
+          providerSessionId: provider.providerSessionId,
+          providerInstanceId: scope.thread.providerInstanceId,
+          mcpCredentialId: scope.thread.providerSessionId,
+        }))
+      )
+        return;
+    }
+    return yield* new OrchestratorMcpFailure({
+      code: "parent_not_active",
+      message: "The calling provider no longer owns an active thread run.",
+    });
+  });
 }
 
 export const assertFullAccess = (context: Caller, message: string) =>

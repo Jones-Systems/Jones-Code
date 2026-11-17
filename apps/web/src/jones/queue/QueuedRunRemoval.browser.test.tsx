@@ -60,6 +60,7 @@ const props = {
   editingRunId: null,
   onEditQueuedRun: vi.fn(),
   onCancelEdit: vi.fn(),
+  onImageExpand: vi.fn(),
 } satisfies ComponentProps<typeof QueuedRunsControl>;
 
 function workflow(ids = ["a", "b", "c"]) {

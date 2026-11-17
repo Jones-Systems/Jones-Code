@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
 import {
   type PullRequestTestThread,
   v2PullRequestThread,
@@ -81,6 +82,7 @@ const layerDependenciesFor = (
       getShell: () => Effect.succeedSome(project),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
+      ...unusedCorePorts(),
       getThreadShell: () => Effect.succeed(threadShell ? v2PullRequestThread(threadShell) : null),
       dispatch,
     }),
@@ -172,6 +174,7 @@ it.effect(
       const refreshed: Array<[string, boolean | undefined]> = [];
       const layerDependencies = Layer.mergeAll(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           getThreadShell: () => Effect.succeed(v2PullRequestThread(thread)),
         }),
         Layer.mock(ProjectStore.ProjectStoreV2)({

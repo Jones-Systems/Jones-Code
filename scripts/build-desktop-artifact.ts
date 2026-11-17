@@ -1,5 +1,5 @@
-import { resolveTaggedSourceVersion } from "./lib/tagged-source-version.ts";
 #!/usr/bin/env node
+import { resolveTaggedSourceVersion } from "./lib/tagged-source-version.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Node's typed junction API avoids Windows symlink privileges while keeping the probe isolated.
 
 import * as NodeFSP from "node:fs/promises";
@@ -3831,7 +3831,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
       }),
   });
 
-  const appVersion = options.version ?? resolveTaggedSourceVersion(repoRoot, serverPackageJson.version);
+  const appVersion =
+    options.version ?? resolveTaggedSourceVersion(repoRoot, serverPackageJson.version);
   const iconAssets = resolveDesktopBuildIconAssets(appVersion);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
   const stageRoot = yield* allocateDesktopStageRoot(options.platform, options.keepStage);

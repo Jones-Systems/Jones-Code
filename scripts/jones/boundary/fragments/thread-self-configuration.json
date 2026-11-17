@@ -117,6 +117,10 @@
     {
       "from": "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts",
       "to": "apps/server/src/jones/threadConfiguration/ownerIngress.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.test.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.ts"
     }
   ]
 }

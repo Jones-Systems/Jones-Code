@@ -6,6 +6,10 @@ import type {
   ThreadPullRequestWatch,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import {
+  evaluateObservedChecks,
+  type ObservedPass,
+} from "../jones/pullRequestWatch/checkObservation.ts";
 
 /** Bounds consecutive comment-only wakes to stop bot reply loops; check, conflict, or push news resets it. */
 export const PULL_REQUEST_WATCH_WAKE_LIMIT = 10;
@@ -17,6 +21,7 @@ const SNIPPET_LENGTH = 200;
 export type PullRequestWatchChange =
   | { readonly kind: "checks-failed"; readonly failed: ReadonlyArray<PullRequestCheck> }
   | { readonly kind: "checks-passed"; readonly count: number; readonly required: boolean }
+  | ObservedPass
   | { readonly kind: "checks-awaiting-approval"; readonly checks: ReadonlyArray<PullRequestCheck> }
   | { readonly kind: "remarks"; readonly remarks: ReadonlyArray<PullRequestComment> }
   | { readonly kind: "no-checks"; readonly minutes: number }
@@ -49,6 +54,7 @@ export function evaluatePullRequestWatch(
     | "author"
     | "rebaseRequired"
     | "mergeQueueRemoval"
+    | "jonesCheckObservation"
   >,
   remarks: ReadonlyArray<PullRequestComment> | null,
   now: number,
@@ -74,7 +80,30 @@ export function evaluatePullRequestWatch(
   const checks = detail.checks.filter((check) => check.placeholder !== true);
   const failed = checks.filter(isFailedCheck);
   const awaiting = checks.filter((check) => check.status === "action-required");
-  if (checks.length > 0) {
+  // Jones: a host that bound its observation to this head decides failures and the gate from it.
+  const observed =
+    detail.jonesCheckObservation === undefined
+      ? undefined
+      : evaluateObservedChecks({
+          headSha,
+          checks,
+          // A placeholder stands for checks the host could not list, so the read is incomplete.
+          observation: unread
+            ? { ...detail.jonesCheckObservation, enumerationComplete: false }
+            : detail.jonesCheckObservation,
+          failedChecks,
+          passed,
+          passedChecks,
+          owedChecks,
+        });
+  if (observed !== undefined) {
+    if (checks.length > 0) checksPending = checks.some((check) => check.status === "pending");
+    if (!checksBaseline && observed.newlyFailed.length > 0) {
+      changes.push({ kind: "checks-failed", failed: observed.newlyFailed });
+    }
+    if (!checksBaseline && observed.pass !== undefined) changes.push(observed.pass);
+    ({ failedChecks, passed, passedChecks, owedChecks } = observed);
+  } else if (checks.length > 0) {
     // A run awaiting approval waits on a person, like a review, so only running checks count.
     checksPending = checks.some((check) => check.status === "pending");
     const newlyFailed = failed.filter((check) => !failedChecks.includes(check.name));
@@ -122,8 +151,10 @@ export function evaluatePullRequestWatch(
   const gate = required.length > 0 ? required : checks;
   const passedNow =
     awaitingApproval.length === 0 &&
+    // Jones: without required-check metadata, skipped or neutral results alone do not prove a pass.
+    (required.length > 0 || gate.some((check) => check.status === "success")) &&
     gate.every((check) => check.status !== "pending" && !isFailedCheck(check));
-  if (checks.length > 0 && !(unread && passedNow)) {
+  if (observed === undefined && checks.length > 0 && !(unread && passedNow)) {
     const gateNames = gate.map((check) => check.name);
     const told = passed && passedChecks.length === 0 ? gateNames : passedChecks;
     // Required checks can finish between sweeps; detect new names. With no required checks, ignore advisory gate growth.
@@ -371,6 +402,12 @@ function changeLines(
         ...listed(change.checks, (check) => `  - ${check.name}${check.url ? ` ${check.url}` : ""}`),
       ];
     case "checks-passed":
+      if ("observed" in change)
+        return [
+          change.required
+            ? `- The required gate passed${context.commit}. Advisory checks may still be running.`
+            : `- Observed checks completed${context.commit}: ${change.observed.successful} successful, ${change.observed.skipped} skipped, ${change.observed.neutral} neutral. Required-gate completeness is unknown.`,
+        ];
       return [
         `- All ${change.count} ${change.required ? "required " : ""}${change.count === 1 ? "check" : "checks"} passed${context.commit}.`,
       ];

@@ -431,19 +431,25 @@ describe("GitHubSourceControlProvider change request lookups by head", () => {
       title: `PR ${number}`,
       html_url: `https://github.com/acme/web/pull/${number}`,
       state: mergedAt === null ? "open" : "closed",
+      // Jones: GitHub's REST rows always carry these; qualified discovery decodes them.
+      draft: false,
       merged_at: mergedAt,
       closed_at: mergedAt,
       updated_at: "2026-01-02T00:00:00Z",
-      base: { ref: "main", repo: { full_name: "acme/web" } },
+      base: { ref: "main", repo: { full_name: "acme/web", owner: { login: "acme" } } },
       head: {
         ref: "main",
         sha: "f".repeat(40),
         repo: { name: "web", full_name: "me/web", owner: { login: "me", type: "User" } },
+        user: { login: "me" },
       },
     });
     const { layer, graphqlCalls } = harness({
       remotes,
       api: {
+        // Jones: qualified discovery pins one credential across its pages.
+        credential: () =>
+          Effect.succeed({ token: Redacted.make("synthetic"), fingerprint: "synthetic" }),
         rest: (input) =>
           Effect.sync(() => {
             paths.push(input.path);

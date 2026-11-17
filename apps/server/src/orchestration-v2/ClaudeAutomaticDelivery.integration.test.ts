@@ -178,6 +178,8 @@ it.effect.each(deliveries)(
               stopTask: () => Effect.void,
               interrupt: Effect.die("automatic delivery must never interrupt"),
               close: Effect.void,
+              // No owned process exists; the fixture session ends with its close.
+              termination: Effect.void,
             }),
           forkSession: () => Effect.die("unused"),
           subagentLaunchToolUseId: () => Effect.succeed(null),
@@ -528,6 +530,8 @@ it.effect("applies an effort change to the running Claude query without waiting 
             stopTask: () => Effect.void,
             interrupt: Effect.die("an effort change must not interrupt the turn"),
             close: Effect.void,
+            // No owned process exists; the fixture session ends with its close.
+            termination: Effect.void,
           }),
         forkSession: () => Effect.die("unused"),
         subagentLaunchToolUseId: () => Effect.succeed(null),
@@ -644,6 +648,8 @@ const renamedClaudeSessionTitles = (options: { readonly renameDuringStartup: boo
             stopTask: () => Effect.void,
             interrupt: Effect.die("a rename must not interrupt the turn"),
             close: Effect.void,
+            // No owned process exists; the fixture session ends with its close.
+            termination: Effect.void,
           }),
         forkSession: () => Effect.die("unused"),
         subagentLaunchToolUseId: () => Effect.succeed(null),
@@ -870,6 +876,8 @@ it.effect("offers a continuation for a later wake after a queued continuation is
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
                 close: Effect.void,
+                // No owned process exists; the fixture session ends with its close.
+                termination: Effect.void,
               }),
             forkSession: () => Effect.die("unused"),
             subagentLaunchToolUseId: () => Effect.succeed(null),

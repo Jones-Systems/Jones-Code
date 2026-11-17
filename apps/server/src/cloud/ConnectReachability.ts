@@ -18,10 +18,18 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientResponse, HttpServer } from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import {
+  connectHttpEvidence,
+  probeConnectLoopback,
+  unexpectedConnectResponse,
+  type ConnectHttpEvidence,
+  type ConnectLocalEvidence,
+} from "../jones/cloud/connectProbeEvidence.ts";
 import { CLOUD_ENDPOINT_RUNTIME_CONFIG } from "./config.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 
@@ -47,7 +55,7 @@ const DEAD_CONNECTOR_RESTART_AFTER = Duration.minutes(2);
 const DEAD_CONNECTOR_RESTART_AFTER_MAX = Duration.hours(1);
 
 export type EndpointProbe =
-  | { readonly kind: "status"; readonly status: number; readonly cloudflareError?: string }
+  | ({ readonly kind: "status"; readonly cloudflareError?: string } & ConnectHttpEvidence)
   | {
       readonly kind: "dns_failed";
       /** Whether public DNS has the name; absent when it could not be asked. */
@@ -60,6 +68,7 @@ export interface ReachabilityFacts {
   readonly managedTunnelConfigured: boolean;
   readonly connector: ManagedEndpointRuntime.ConnectorFacts | null;
   readonly endpoint: EndpointProbe | null;
+  readonly local?: ConnectLocalEvidence | null;
   readonly edgeReachable: boolean | null;
   readonly exitNode: TailscaleExitNode | null;
 }
@@ -159,12 +168,15 @@ export function classifyReachability(
     );
   }
   if (status !== null) {
-    const code = cloudflareError === undefined ? "" : ` (Cloudflare error ${cloudflareError})`;
-    return fail(
-      "unexpected_response",
-      `The T3 Connect address answered with HTTP ${status}${code}.`,
-      restart,
+    const explanation = unexpectedConnectResponse(
+      endpoint?.kind === "status" ? endpoint : { status },
+      facts.local,
     );
+    const reason =
+      cloudflareError === undefined
+        ? explanation.reason
+        : `${explanation.reason} Cloudflare error ${cloudflareError}.`;
+    return fail("unexpected_response", reason, explanation.fix, explanation.hint);
   }
   if (endpoint.kind === "dns_failed") {
     // A lookup made before the relay published the record leaves a cached "not found"
@@ -202,7 +214,7 @@ export function classifyReachability(
 /** The loud diagnosis the CLI prints and the server logs. */
 export function formatReachabilityFailure(result: Unreachable): string {
   return [
-    "✕ T3 Connect is NOT reachable from other devices",
+    "✕ T3 Connect reachability from other devices could not be confirmed from this host",
     `  ${result.reason}`,
     ...(result.hint ? [`  ${result.hint}`] : []),
     `  Fix: ${result.fix}`,
@@ -256,6 +268,13 @@ const make = Effect.gen(function* () {
   const runtime = yield* ManagedEndpointRuntime.CloudManagedEndpointRuntime;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const httpClient = yield* HttpClient.HttpClient;
+  const httpServer = yield* HttpServer.HttpServer;
+  const environment = yield* ServerEnvironment.ServerEnvironment;
+  const probeLocal = probeConnectLoopback().pipe(
+    Effect.provideService(HttpClient.HttpClient, httpClient),
+    Effect.provideService(HttpServer.HttpServer, httpServer),
+    Effect.provideService(ServerEnvironment.ServerEnvironment, environment),
+  );
   // `order` ranks checks by start, so a slow older one cannot replace a newer result.
   const latestRef = yield* Ref.make(
     Option.none<{ readonly order: number; readonly result: EnvironmentConnectReachability }>(),
@@ -307,7 +326,8 @@ const make = Effect.gen(function* () {
         .pipe(Effect.timeoutOption(ENDPOINT_REQUEST_TIMEOUT));
       if (Option.isNone(response)) return { kind: "timeout" } satisfies EndpointProbe;
       const { status } = response.value;
-      if (status !== 530) return { kind: "status", status } satisfies EndpointProbe;
+      const evidence = connectHttpEvidence(status, response.value.headers);
+      if (status !== 530) return { kind: "status", ...evidence } satisfies EndpointProbe;
       // Cloudflare's error page is HTML unless the client accepts JSON, which carries
       // `"error_code":1033`. Clients that send no User-Agent get `error code: 1033`.
       const body = yield* response.value.text.pipe(
@@ -317,8 +337,8 @@ const make = Effect.gen(function* () {
       const code = /error[_ ]code"?:\s*(\d{4})/i.exec(Option.getOrElse(body, () => ""))?.[1];
       return (
         code === undefined
-          ? { kind: "status", status }
-          : { kind: "status", status, cloudflareError: code }
+          ? { kind: "status", ...evidence }
+          : { kind: "status", ...evidence, cloudflareError: code }
       ) satisfies EndpointProbe;
     },
     Effect.scoped,
@@ -359,16 +379,17 @@ const make = Effect.gen(function* () {
     if (connector === null || (endpoint?.kind === "status" && endpoint.status === 200)) {
       return facts;
     }
-    const [edgeResults, exitNode] = yield* Effect.all(
+    const [edgeResults, exitNode, local] = yield* Effect.all(
       [
         Effect.forEach(TUNNEL_EDGE_HOSTS, (host) => canOpenTcp(host, TUNNEL_EDGE_PORT), {
           concurrency: "unbounded",
         }),
         readExitNode,
+        probeLocal,
       ],
       { concurrency: 2 },
     );
-    return { ...facts, edgeReachable: edgeResults.some(Boolean), exitNode };
+    return { ...facts, edgeReachable: edgeResults.some(Boolean), exitNode, local };
   });
 
   const isLatest = (order: number) =>

@@ -45,6 +45,8 @@ import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import { resolveProjectFileBackedSetting } from "@t3tools/shared/projectSettings";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
+import { makeObservedWorktreeCreation } from "../jones/nativeCreation/worktreeObservation/ObservedWorktreeCreation.ts";
+import { makeObservedBranchRename } from "../jones/nativeCreation/worktreeObservation/ObservedBranchRename.ts";
 import { removeEmptyDirectory, type RemoveEmptyDirectoryError } from "./removeEmptyDirectory.ts";
 import { VcsAutomaticFetchInterval } from "./VcsAutomaticFetchInterval.ts";
 import {
@@ -62,6 +64,12 @@ import {
 } from "../git/remoteRefs.ts";
 import { makeIsServerInternalPath } from "../auth/serverInternalPaths.ts";
 import * as ServerConfig from "../config.ts";
+import {
+  recordWorktreeProcessTime,
+  withGitExecutionTiming,
+  withGitPermitTiming,
+} from "../jones/git/gitTiming.ts";
+import { timeListRefsPhase } from "../jones/git/listRefsTelemetry.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -1098,6 +1106,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             // Synchronous spawn throws (such as E2BIG) arrive as defects.
             Effect.catchDefect((cause) => Effect.fail(spawnError(cause))),
           );
+        yield* recordWorktreeProcessTime(input.operation, "spawn");
 
         const [stdout, stderr, exitCode] = yield* Effect.all(
           [
@@ -1118,6 +1127,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               input.keepLineCallbacksAfterTruncation,
             ),
             child.exitCode.pipe(
+              Effect.tap(() => recordWorktreeProcessTime(input.operation, "exit")),
               Effect.mapError(
                 (cause) =>
                   new GitCommandError({
@@ -1210,14 +1220,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           operation: input.operation,
         },
       }),
+      withGitExecutionTiming,
       (execution) =>
         input.timeoutMs === null || (input.timeoutMs ?? DEFAULT_TIMEOUT_MS) > DEFAULT_TIMEOUT_MS
           ? execution
           : Effect.gen(function* () {
-              const lane = (yield* GitVcsDriver.BackgroundGitWork)
-                ? backgroundGitProcesses
-                : gitProcesses;
-              return yield* lane.withPermits(1)(execution);
+              const background = yield* GitVcsDriver.BackgroundGitWork;
+              return yield* withGitPermitTiming(
+                execution,
+                background ? backgroundGitProcesses : gitProcesses,
+                background ? "git.background_gate_wait_ms" : "git.shared_permit_wait_ms",
+              );
             }),
       Effect.withSpan(input.operation, {
         kind: "client",
@@ -1225,6 +1238,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           "git.operation": input.operation,
           "git.cwd": input.cwd,
           "git.args_count": input.args.length,
+          "git.background_gate_wait_ms": 0,
+          "git.shared_permit_wait_ms": 0,
         },
       }),
       // Outside the process permit: resolving the repository may itself need one.
@@ -4929,6 +4944,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           GitCommandError: (error) =>
             isMissingGitCwdError(error) ? Effect.succeed(null) : Effect.fail(error),
         }),
+        timeListRefsPhase("repositoryPathsMs"),
       );
       if (repositoryPaths === null) {
         return {
@@ -4944,7 +4960,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       // on every call and replaces whatever the cached snapshot claims for it.
       const [snapshot, currentBranch] = yield* Effect.all(
         [
-          resolveListRefsSnapshot(repositoryPaths.gitCommonDir, input.refresh === true),
+          resolveListRefsSnapshot(repositoryPaths.gitCommonDir, input.refresh === true).pipe(
+            timeListRefsPhase("snapshotMs"),
+          ),
           readCurrentBranch("GitVcsDriver.listRefs.currentBranch", input.cwd).pipe(
             Effect.orElseSucceed(() => repositoryPaths.currentBranch),
           ),
@@ -5098,6 +5116,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
   });
 
+  const createObservedWorktree = yield* makeObservedWorktreeCreation({
+    execute,
+    readConfigValue,
+    resolveBranchBase,
+    parseCheckoutProgress: parseGitCheckoutProgressLine,
+  });
+
   const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input, options) {
@@ -5141,6 +5166,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         worktreePath = `${basePath}-${suffix}`;
       }
     }
+    // The native owner observes one add -b and every subsequent material command. Cache
+    // cloning, separate branch creation, index refresh and recovery cannot satisfy that contract.
+    if (options?.legacyPreparation !== undefined)
+      return yield* createObservedWorktree({ ...input, path: worktreePath }, options);
     const newRefName = input.newRefName;
     // Older Git still creates worktrees normally, but cannot prove ownership for cancellation.
     const addHelp = newRefName
@@ -5648,6 +5677,49 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return { commitSha, remoteRefName };
     });
 
+  const resolveRemoteTrackingCommitIfExists: GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteTrackingCommitIfExists"] =
+    Effect.fn("resolveRemoteTrackingCommitIfExists")(function* (input) {
+      const operation = "GitVcsDriver.resolveRemoteTrackingCommitIfExists";
+      const remoteRefName = `${input.remoteName}/${input.branchName}`;
+      const ref = `refs/remotes/${remoteRefName}`;
+      const invalid = () =>
+        new GitCommandError({
+          operation,
+          cwd: input.cwd,
+          command: "git",
+          detail: "Remote tracking ref or commit observation is invalid or unavailable.",
+        });
+      if (input.remoteName === "" || input.branchName === "") return yield* invalid();
+      const options = { env: { GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" } };
+      yield* executeGit(operation, input.cwd, ["check-ref-format", ref], options);
+      const exists = yield* executeGit(
+        operation,
+        input.cwd,
+        ["show-ref", "--verify", "--quiet", ref],
+        {
+          ...options,
+          allowNonZeroExit: true,
+        },
+      );
+      if (exists.stdoutTruncated || exists.stderrTruncated) return yield* invalid();
+      if (exists.exitCode === 1) return null;
+      if (exists.exitCode !== 0) return yield* invalid();
+      const result = yield* executeGit(
+        operation,
+        input.cwd,
+        ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`],
+        options,
+      );
+      if (
+        result.stdoutTruncated ||
+        result.stderrTruncated ||
+        !/^(?:[a-f0-9]{40}|[a-f0-9]{64})\n$/u.test(result.stdout) ||
+        /^0+\n$/u.test(result.stdout)
+      )
+        return yield* invalid();
+      return { commitSha: result.stdout.slice(0, -1), remoteRefName };
+    });
+
   const resolveWorktreeBaseRemote: GitVcsDriver.GitVcsDriver["Service"]["resolveWorktreeBaseRemote"] =
     Effect.fn("resolveWorktreeBaseRemote")(function* (input) {
       const remoteNames = (yield* listRemoteNames(input.cwd)).toSorted(
@@ -5911,6 +5983,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
   });
 
+  const renameObservedBranch = yield* makeObservedBranchRename({
+    execute,
+    rename: (cwd, args) =>
+      executeGit("GitVcsDriver.renameBranch", cwd, args, {
+        timeoutMs: 10_000,
+        fallbackErrorDetail: "git branch rename failed",
+      }).pipe(Effect.asVoid),
+  });
+
   const renameBranch: GitVcsDriver.GitVcsDriver["Service"]["renameBranch"] = Effect.fn(
     "renameBranch",
   )(function* (input) {
@@ -5925,6 +6006,17 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         const targetBranch = input.exactName
           ? input.newBranch
           : yield* resolveAvailableBranchName(input.cwd, input.newBranch);
+
+        if (input.legacyPreparation !== undefined) {
+          yield* renameObservedBranch({
+            cwd: input.cwd,
+            oldBranch: input.oldBranch,
+            targetBranch,
+            exactName: input.exactName === true,
+            hooks: input.legacyPreparation,
+          });
+          return { branch: targetBranch };
+        }
 
         yield* executeGit(
           "GitVcsDriver.renameBranch",
@@ -6234,6 +6326,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     remoteExists,
     remoteBranchExists,
     resolveRemoteTrackingCommit,
+    resolveRemoteTrackingCommitIfExists,
     resolveWorktreeBaseRemote,
     fetchWorktreeBaseCommit: Effect.fnUntraced(function* (input) {
       return yield* withListRefsInvalidation(input.cwd, fetchWorktreeBaseCommit(input));

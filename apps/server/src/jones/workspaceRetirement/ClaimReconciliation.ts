@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 import { NativeDutyOwnerJson } from "./DurableCodecs.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import type * as SqlClient from "effect/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import type { Receipts } from "./Receipts.ts";
 import { observeNativeOwner } from "./NativeDutyOwner.ts";
 
@@ -38,6 +38,9 @@ export const reconcile = Effect.fn("WorkspaceRetirement.reconcileClaims")(functi
   sql: SqlClient.SqlClient,
   store: Receipts["Service"],
 ) {
+  // Journal recovery is needed only by reconciliation. Keep the existing
+  // ClaimAbsence reader usable independently of the provider journal graph.
+  const { retiredLifetime } = yield* Effect.promise(() => import("./DutyLifetimeLink.ts"));
   const owner = yield* ClaimAbsence;
   const claims =
     yield* sql<PersistedDuty>`SELECT c.claim_id,c.worktree,c.kind,c.owner,c.holder_json,i.native_owner_json FROM jones_workspace_duty_claims c LEFT JOIN jones_workspace_duty_identity i ON i.claim_id=c.claim_id WHERE c.released_at IS NULL LIMIT 10001`;
@@ -60,6 +63,16 @@ export const reconcile = Effect.fn("WorkspaceRetirement.reconcileClaims")(functi
         if (yield* store.reconcileClaim(claim.claim_id, claim.holder_json, true)) released++;
       }
       continue;
+    }
+    if (claim.kind === "session") {
+      const retired = yield* retiredLifetime(claim).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (retired !== null) {
+        if (retired && (yield* store.reconcileClaim(claim.claim_id, claim.holder_json, true)))
+          released++;
+        continue;
+      }
     }
     const observed = yield* owner.observe(claim);
     if (observed.status !== "verified_absent" || observed.holder !== claim.holder_json) continue;

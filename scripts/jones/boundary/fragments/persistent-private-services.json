@@ -81,6 +81,10 @@
     {
       "from": "apps/server/src/cloud/bootService.ts",
       "to": "apps/server/src/jones/hostService/privateRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/cli/update.test.ts",
+      "to": "apps/server/src/jones/hostService/identity.ts"
     }
   ]
 }

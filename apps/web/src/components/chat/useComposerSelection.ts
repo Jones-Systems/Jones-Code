@@ -29,10 +29,7 @@ import {
   resolveNewDraftStartFromOrigin,
   threadHasStarted,
 } from "../../lib/chatThreadActions";
-import {
-  type DraftThreadEnvMode,
-  useComposerDraftStore,
-} from "../../composerDraftStore";
+import { type DraftThreadEnvMode, useComposerDraftStore } from "../../composerDraftStore";
 import {
   getStartedThreadModelChangeBlockReason,
   deriveLockedProvider,
@@ -220,10 +217,10 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     // Resolve remembered traits first; a shortcut supplies its explicit effort
     // before the complete model selection is persisted.
     const store = useComposerDraftStore.getState();
-    const draft = store.getComposerDraft(composerDraftTarget);
-    const currentInstance = draft?.activeProvider ?? activeThread.modelSelection.instanceId;
+    const pickerDraft = store.getComposerDraft(composerDraftTarget);
+    const currentInstance = pickerDraft?.activeProvider ?? activeThread.modelSelection.instanceId;
     const currentSelection =
-      draft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
+      pickerDraft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
     const pickerSelection = resolveComposerPickerModelSelection({
       instanceId,
       model: resolvedModel,

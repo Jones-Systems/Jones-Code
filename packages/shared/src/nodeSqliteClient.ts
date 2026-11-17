@@ -344,7 +344,14 @@ type WorkerStartup =
   | ({ readonly type: "unavailable" } & WorkerFailure);
 
 type WorkerReply =
-  | { readonly id: number; readonly isTransaction?: boolean; readonly rows: ReadonlyArray<any>; readonly more?: boolean; readonly durationMs?: number; readonly sentAtMs?: number }
+  | {
+      readonly id: number;
+      readonly isTransaction?: boolean;
+      readonly rows: ReadonlyArray<any>;
+      readonly more?: boolean;
+      readonly durationMs?: number;
+      readonly sentAtMs?: number;
+    }
   | {
       readonly id: number;
       readonly isTransaction?: boolean;
@@ -573,7 +580,8 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
       const open = current;
       if (open === undefined) return;
       if (options.role === "writer") {
-        if (options.canClose?.() === false) throw new Error("SQLite writer retained because reader termination is unproved");
+        if (options.canClose?.() === false)
+          throw new Error("SQLite writer retained because reader termination is unproved");
         await new Promise<void>((resolve) => {
           open.worker.once("exit", () => resolve());
           open.worker.ref();
@@ -587,13 +595,23 @@ const makeWorkerConnection = Effect.fnUntraced(function* (options: {
 
   const acquire: Effect.Effect<Connection, SqlError> = Effect.suspend(() => {
     if (options.role === "reader") {
-      if (readerRetirementUnproved) return Effect.fail(failedWith({
-        message: "Database reader termination remains unproved", code: RETIREMENT_UNPROVED,
-      }, "open"));
+      if (readerRetirementUnproved)
+        return Effect.fail(
+          failedWith(
+            {
+              message: "Database reader termination remains unproved",
+              code: RETIREMENT_UNPROVED,
+            },
+            "open",
+          ),
+        );
       const pending = [...ownedReaders.values()].filter((entry) => entry !== undefined);
-      if (pending.length > 0) return Effect.withFiber((fiber) =>
-        (Context.get(fiber.context, ReadOnly) ?? identity)(Effect.promise(() => Promise.all(pending))),
-      ).pipe(Effect.andThen(acquire));
+      if (pending.length > 0)
+        return Effect.withFiber((fiber) =>
+          (Context.get(fiber.context, ReadOnly) ?? identity)(
+            Effect.promise(() => Promise.all(pending)),
+          ),
+        ).pipe(Effect.andThen(acquire));
     }
     if (current === undefined && writerStopped !== undefined) {
       return Effect.fail(failedWith({ message: writerStopped }, "execute"));
@@ -642,7 +660,9 @@ const startFailure = (error: SqlError) => {
   const cause = error.reason.cause;
   return {
     reason: cause instanceof Error ? cause.message : error.message,
-    permanent: Predicate.hasProperty(cause, "code") && (cause.code === NOT_WAL || cause.code === RETIREMENT_UNPROVED),
+    permanent:
+      Predicate.hasProperty(cause, "code") &&
+      (cause.code === NOT_WAL || cause.code === RETIREMENT_UNPROVED),
   };
 };
 
@@ -653,7 +673,12 @@ const makeReader = Effect.fnUntraced(function* (
   pool: { unavailable: boolean },
   onUnprovedRetirement: () => void,
 ) {
-  const acquire = yield* makeWorkerConnection({ filename, role: "reader", readOnly: true, onUnprovedRetirement });
+  const acquire = yield* makeWorkerConnection({
+    filename,
+    role: "reader",
+    readOnly: true,
+    onUnprovedRetirement,
+  });
   const scope = yield* Effect.scope;
   const context = yield* Effect.context<never>();
 
@@ -765,7 +790,12 @@ const makeJonesReader = Effect.fnUntraced(function* (
     let stoppedMessage: string | undefined;
     const pending = new Map<
       number,
-      { readonly endsTransaction: boolean; readonly received: Int32Array; readonly rows: Array<unknown>; readonly resume: (reply: WorkerReply) => void }
+      {
+        readonly endsTransaction: boolean;
+        readonly received: Int32Array;
+        readonly rows: Array<unknown>;
+        readonly resume: (reply: WorkerReply) => void;
+      }
     >();
     const stop = (message: string) => {
       if (stoppedMessage !== undefined) return;
@@ -1062,9 +1092,11 @@ const makeJonesReader = Effect.fnUntraced(function* (
   const interruptibleAcquire = acquire.pipe(
     Effect.onInterrupt(() => turnOff(current, "SQLite reader startup interrupted", false)),
   );
-  const coldAcquire = managed(options.readerPool
-    ? interruptibleAcquire.pipe(Effect.ensuring(awaitRetirement))
-    : interruptibleAcquire);
+  const coldAcquire = managed(
+    options.readerPool
+      ? interruptibleAcquire.pipe(Effect.ensuring(awaitRetirement))
+      : interruptibleAcquire,
+  );
   const readyConnection = () =>
     current?.ready() && !closed && !unavailable && retiring === undefined
       ? current.connection
@@ -1108,6 +1140,16 @@ const CHECKPOINT_BACKPRESSURE_FRAMES = 32_768;
 const readSafeSqliteInteger = (value: unknown) => {
   const number = typeof value === "bigint" ? Number(value) : value;
   return typeof number === "number" && Number.isSafeInteger(number) ? number : undefined;
+};
+
+// A missing WAL is within every limit; any other stat failure reaches the caller.
+const walExceedsLimit = (filename: string, limit: number): boolean => {
+  try {
+    return NodeFS.statSync(filename + "-wal").size > limit;
+  } catch (cause) {
+    if (Predicate.hasProperty(cause, "code") && cause.code === "ENOENT") return false;
+    throw cause;
+  }
 };
 
 // Evaluated source also works in bundles and single-executable builds.
@@ -1532,14 +1574,19 @@ const startJonesAsyncCheckpointWorker = Effect.fnUntraced(function* (
     return undefined;
   }
   const worker = yield* Effect.try({
-    try: () => new NodeWorkerThreads.Worker(jonesCheckpointWorkerSource, {
-      eval: true,
-      workerData: { filename, frames: CHECKPOINT_FRAMES,
-        backpressureFrames: CHECKPOINT_BACKPRESSURE_FRAMES,
-        busyTimeoutMs: CHECKPOINT_BUSY_TIMEOUT_MS, idleMs: CHECKPOINT_IDLE_MS },
-    }),
+    try: () =>
+      new NodeWorkerThreads.Worker(jonesCheckpointWorkerSource, {
+        eval: true,
+        workerData: {
+          filename,
+          frames: CHECKPOINT_FRAMES,
+          backpressureFrames: CHECKPOINT_BACKPRESSURE_FRAMES,
+          busyTimeoutMs: CHECKPOINT_BUSY_TIMEOUT_MS,
+          idleMs: CHECKPOINT_IDLE_MS,
+        },
+      }),
     catch: (cause) => failed(cause, "Failed to start checkpoint worker", "open"),
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }).pipe(Effect.orElseSucceed(() => undefined));
   if (worker === undefined) {
     yield* query(`PRAGMA wal_autocheckpoint = ${CHECKPOINT_FRAMES}`);
     return undefined;
@@ -1561,9 +1608,20 @@ const startJonesAsyncCheckpointWorker = Effect.fnUntraced(function* (
   let sizeLimit: number | undefined;
   const listeners = new Set<() => void>();
   const publish = () => {
-    readers.updateUnsafe({ generation, state: stopped
-      ? fallbackReady ? "restored" : "uncertain"
-      : uncertain ? "uncertain" : truncate !== undefined ? "truncate" : pressure ? "pressure" : "open" });
+    readers.updateUnsafe({
+      generation,
+      state: stopped
+        ? fallbackReady
+          ? "restored"
+          : "uncertain"
+        : uncertain
+          ? "uncertain"
+          : truncate !== undefined
+            ? "truncate"
+            : pressure
+              ? "pressure"
+              : "open",
+    });
     for (const listener of listeners) listener();
   };
   const handBack = () => {
@@ -1572,25 +1630,41 @@ const startJonesAsyncCheckpointWorker = Effect.fnUntraced(function* (
     generation++;
     publish();
     // Retirement proof precedes reopening admission: an errored worker may still be truncating.
-    runFork(Effect.tryPromise({
-      try: () => worker.terminate(),
-      catch: (cause) => failed(cause, "Checkpoint retirement is unproved", "close"),
-    }).pipe(
-      Effect.andThen(query(`PRAGMA wal_autocheckpoint = ${CHECKPOINT_FRAMES}`)),
-      Effect.andThen(query("PRAGMA wal_autocheckpoint")),
-      Effect.tap((rows) => Effect.sync(() => {
-        fallbackReady = Number(rows[0]?.wal_autocheckpoint) === CHECKPOINT_FRAMES;
-        if (!fallbackReady) fallbackFailure = failed(new Error("Checkpoint fallback was not restored"), "Checkpoint fallback was not restored", "execute");
-        publish();
-      })),
-      Effect.catch((cause) => Effect.sync(() => { fallbackFailure = cause; publish(); })),
-    ));
+    runFork(
+      Effect.tryPromise({
+        try: () => worker.terminate(),
+        catch: (cause) => failed(cause, "Checkpoint retirement is unproved", "close"),
+      }).pipe(
+        Effect.andThen(query(`PRAGMA wal_autocheckpoint = ${CHECKPOINT_FRAMES}`)),
+        Effect.andThen(query("PRAGMA wal_autocheckpoint")),
+        Effect.tap((rows) =>
+          Effect.sync(() => {
+            fallbackReady = Number(rows[0]?.wal_autocheckpoint) === CHECKPOINT_FRAMES;
+            if (!fallbackReady)
+              fallbackFailure = failed(
+                new Error("Checkpoint fallback was not restored"),
+                "Checkpoint fallback was not restored",
+                "execute",
+              );
+            publish();
+          }),
+        ),
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            fallbackFailure = cause;
+            publish();
+          }),
+        ),
+      ),
+    );
   };
   const send = (message: unknown) => {
     try {
       // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Node workers have no target origin.
       worker.postMessage(message);
-    } catch { handBack(); }
+    } catch {
+      handBack();
+    }
   };
   const acknowledge = () => {
     if (stopped || active || inTransaction() || truncate === undefined || acknowledged) return;
@@ -1599,7 +1673,10 @@ const startJonesAsyncCheckpointWorker = Effect.fnUntraced(function* (
   };
   const request = (force = false) => {
     if (stopped || active || inTransaction()) return;
-    if (truncate !== undefined) { acknowledge(); return; }
+    if (truncate !== undefined) {
+      acknowledge();
+      return;
+    }
     if (inFlight !== undefined) return;
     if (!force && !uncertain && !pressure && log - checkpointed < CHECKPOINT_FRAMES) return;
     inFlight = ++nextId;
@@ -1616,18 +1693,27 @@ const startJonesAsyncCheckpointWorker = Effect.fnUntraced(function* (
     } else {
       log = Math.max(0, nextLog);
       checkpointed = Math.max(0, nextCheckpointed);
-      sizeLimit = readSafeSqliteInteger(limit?.journal_size_limit);
-      let oversized = false;
-      if (sizeLimit !== undefined && sizeLimit >= 0) {
-        try { oversized = NodeFS.statSync(filename + "-wal").size > sizeLimit; }
-        catch (cause) {
-          if (!Predicate.hasProperty(cause, "code") || cause.code !== "ENOENT") throw cause;
-        }
-      }
+      const walLimit = readSafeSqliteInteger(limit?.journal_size_limit);
+      sizeLimit = walLimit;
+      // A failed size observation stays uncertain through the catchCause below.
+      const oversized =
+        walLimit !== undefined && walLimit >= 0
+          ? yield* Effect.try({
+              try: () => walExceedsLimit(filename, walLimit),
+              catch: (cause) =>
+                failed(cause, "Failed to observe checkpoint journal size", "execute"),
+            })
+          : false;
       pressure = log >= CHECKPOINT_BACKPRESSURE_FRAMES || oversized;
       uncertain = false;
     }
-  }).pipe(Effect.catchCause(() => Effect.sync(() => { uncertain = true; })));
+  }).pipe(
+    Effect.catchCause(() =>
+      Effect.sync(() => {
+        uncertain = true;
+      }),
+    ),
+  );
   worker.on("error", handBack);
   worker.on("exit", handBack);
   worker.on("message", (message: unknown) => {
@@ -1641,13 +1727,22 @@ const startJonesAsyncCheckpointWorker = Effect.fnUntraced(function* (
       acknowledge();
     } else if (message.type === "checkpoint") {
       const completed = truncate !== undefined && state.truncateId === truncate;
-      if (completed) { truncate = undefined; acknowledged = false; }
+      if (completed) {
+        truncate = undefined;
+        acknowledged = false;
+      }
       if ((completed || state.generation === generation) && !active && !inTransaction()) {
         const nextLog = readSafeSqliteInteger(state.log);
         const nextCheckpointed = readSafeSqliteInteger(state.checkpointed);
-        if (nextLog !== undefined && nextCheckpointed !== undefined && typeof state.blocked === "boolean") {
-          log = Math.max(0, nextLog); checkpointed = Math.max(0, nextCheckpointed);
-          pressure = state.blocked; uncertain = false;
+        if (
+          nextLog !== undefined &&
+          nextCheckpointed !== undefined &&
+          typeof state.blocked === "boolean"
+        ) {
+          log = Math.max(0, nextLog);
+          checkpointed = Math.max(0, nextCheckpointed);
+          pressure = state.blocked;
+          uncertain = false;
         }
       }
       if (state.id === inFlight) inFlight = undefined;
@@ -1655,45 +1750,68 @@ const startJonesAsyncCheckpointWorker = Effect.fnUntraced(function* (
       if (!completed && state.generation !== generation) request(true);
     }
   });
-  yield* Effect.addFinalizer(() => Effect.promise(async () => {
-    stopped = true;
-    fallbackReady = false;
-    readers.onReaderReleased(() => {});
-    await worker.terminate();
-  }));
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(async () => {
+      stopped = true;
+      fallbackReady = false;
+      readers.onReaderReleased(() => {});
+      await worker.terminate();
+    }),
+  );
   yield* query("PRAGMA wal_autocheckpoint = 0");
   worker.unref();
   readers.onReaderReleased(() => request(true));
   const wait = Effect.callback<void, SqlError>((resume) => {
     const ready = () => {
       if (fallbackFailure !== undefined) {
-        listeners.delete(ready); worker.unref(); resume(Effect.fail(fallbackFailure)); return;
+        listeners.delete(ready);
+        worker.unref();
+        resume(Effect.fail(fallbackFailure));
+        return;
       }
-      if (inTransaction() || (stopped ? fallbackReady : !uncertain && !pressure && truncate === undefined)) {
-        listeners.delete(ready); worker.unref(); resume(Effect.void);
+      if (
+        inTransaction() ||
+        (stopped ? fallbackReady : !uncertain && !pressure && truncate === undefined)
+      ) {
+        listeners.delete(ready);
+        worker.unref();
+        resume(Effect.void);
       }
     };
     listeners.add(ready);
     worker.ref();
     if (pressure || uncertain || truncate !== undefined) request(true);
     ready();
-    return Effect.sync(() => { listeners.delete(ready); if (listeners.size === 0) worker.unref(); });
+    return Effect.sync(() => {
+      listeners.delete(ready);
+      if (listeners.size === 0) worker.unref();
+    });
   });
   const run = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E | SqlError> =>
-    Effect.uninterruptibleMask((restore) => Effect.gen(function* () {
-      // Cancellation is restored only while waiting; a posted write and its observation drain.
-      yield* Effect.withFiber((fiber) => (fiber.getRef(TransactionAcquire)?.restore ?? restore)(wait));
-      active = true;
-      generation++;
-      return yield* effect.pipe(Effect.ensuring(
-        observe.pipe(Effect.ensuring(Effect.sync(() => {
-          active = false;
-          publish();
-          request();
-          acknowledge();
-        }))),
-      ));
-    }));
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        // Cancellation is restored only while waiting; a posted write and its observation drain.
+        yield* Effect.withFiber((fiber) =>
+          (fiber.getRef(TransactionAcquire)?.restore ?? restore)(wait),
+        );
+        active = true;
+        generation++;
+        return yield* effect.pipe(
+          Effect.ensuring(
+            observe.pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  active = false;
+                  publish();
+                  request();
+                  acknowledge();
+                }),
+              ),
+            ),
+          ),
+        );
+      }),
+    );
   return { run };
 });
 
@@ -1948,19 +2066,36 @@ const make = Effect.fn("makeWithDatabase")(function* (
   // Opening now fails the layer for a file that is not a database, not its first query.
   const opened = yield* writerConnection;
   // One checkpoint authority per writer. Wrap every operation through completion, including COMMIT.
-  const asyncCheckpoint = writerWorker && options.readonly !== true
-    ? yield* startJonesAsyncCheckpointWorker(options.filename, opened, readerAdmission, () => writerInTransaction, () => writerTransactionStateAvailable)
-    : undefined;
-  const admittedWriter: Effect.Effect<Connection, SqlError> = asyncCheckpoint === undefined
-    ? writerConnection
-    : Effect.map(writerConnection, (connection) => ({
-        execute: (sql, params, transform) => asyncCheckpoint.run(connection.execute(sql, params, transform)),
-        executeRaw: (sql, params) => asyncCheckpoint.run(connection.executeRaw(sql, params)),
-        executeValues: (sql, params) => asyncCheckpoint.run(connection.executeValues(sql, params)),
-        executeUnprepared: (sql, params, transform) => asyncCheckpoint.run(connection.executeUnprepared(sql, params, transform)),
-        executeValuesUnprepared: (sql, params) => asyncCheckpoint.run(connection.executeValuesUnprepared(sql, params)),
-        executeStream: (sql, params) => connection.executeStream(sql, params),
-      } satisfies Connection));
+  const asyncCheckpoint =
+    writerWorker && options.readonly !== true
+      ? yield* startJonesAsyncCheckpointWorker(
+          options.filename,
+          opened,
+          readerAdmission,
+          () => writerInTransaction,
+          () => writerTransactionStateAvailable,
+        )
+      : undefined;
+  const admittedWriter: Effect.Effect<Connection, SqlError> =
+    asyncCheckpoint === undefined
+      ? writerConnection
+      : Effect.map(
+          writerConnection,
+          (connection) =>
+            ({
+              execute: (sql, params, transform) =>
+                asyncCheckpoint.run(connection.execute(sql, params, transform)),
+              executeRaw: (sql, params) => asyncCheckpoint.run(connection.executeRaw(sql, params)),
+              executeValues: (sql, params) =>
+                asyncCheckpoint.run(connection.executeValues(sql, params)),
+              executeUnprepared: (sql, params, transform) =>
+                asyncCheckpoint.run(connection.executeUnprepared(sql, params, transform)),
+              executeValuesUnprepared: (sql, params) =>
+                asyncCheckpoint.run(connection.executeValuesUnprepared(sql, params)),
+              executeStream: (sql, params, transform) =>
+                connection.executeStream(sql, params, transform),
+            }) satisfies Connection,
+        );
   const readersEnabled =
     options.readerWorker !== false &&
     isFileDatabase &&
@@ -1987,8 +2122,15 @@ const make = Effect.fn("makeWithDatabase")(function* (
           Effect.map(
             Effect.all([
               options.readerStartupTimeout !== undefined || options.readerFailureMode !== undefined
-                ? Effect.map(makeJonesReader(options, 0, undefined, () => { readerRetirementUncertain = true; }), (slot) => slot.acquire)
-                : makeReader(options.filename, readerPool, () => { readerRetirementUncertain = true; }),
+                ? Effect.map(
+                    makeJonesReader(options, 0, undefined, () => {
+                      readerRetirementUncertain = true;
+                    }),
+                    (slot) => slot.acquire,
+                  )
+                : makeReader(options.filename, readerPool, () => {
+                    readerRetirementUncertain = true;
+                  }),
               Semaphore.make(1),
             ]),
             ([acquire, lock]) => ({
@@ -2020,7 +2162,11 @@ const make = Effect.fn("makeWithDatabase")(function* (
     restore: typeof Effect.interruptible,
   ) =>
     Effect.withFiber((fiber): Effect.Effect<Target, SqlError> => {
-      if (readers.length === 0 || (readerPool.unavailable && options.readerFailureMode !== "fail") || !Context.get(fiber.context, ReadOnly)) {
+      if (
+        readers.length === 0 ||
+        (readerPool.unavailable && options.readerFailureMode !== "fail") ||
+        !Context.get(fiber.context, ReadOnly)
+      ) {
         return writer;
       }
       const claim = Effect.andThen(
@@ -2047,7 +2193,13 @@ const make = Effect.fn("makeWithDatabase")(function* (
             (readerConnection) =>
               readerConnection === undefined
                 ? options.readerFailureMode === "fail"
-                  ? Effect.fail(failed(new Error("Database reader is unavailable"), workerFailureMessages.open, "open"))
+                  ? Effect.fail(
+                      failed(
+                        new Error("Database reader is unavailable"),
+                        workerFailureMessages.open,
+                        "open",
+                      ),
+                    )
                   : writer
                 : Effect.succeed<Target>({
                     name: "reader",

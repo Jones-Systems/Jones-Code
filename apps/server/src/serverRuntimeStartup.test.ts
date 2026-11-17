@@ -39,9 +39,11 @@ import * as Keybindings from "./keybindings.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
 import * as EffectOutbox from "./orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "./orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "./jones/orchestration/SupersededTerminalTrace.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "./jones/testing/UnusedCorePorts.testkit.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
@@ -86,6 +88,7 @@ it.effect.each([
         settledOverride: null,
         settledAt: null,
         createdAt: DateTime.makeUnsafe("2026-10-01T00:00:00Z"),
+        updatedAt: DateTime.makeUnsafe("2026-10-01T00:00:00Z"),
         pinnedAt: null,
         pinOrderKey: null,
         deletedAt: null,
@@ -151,7 +154,9 @@ it.effect.each([
         Path.layer,
         Layer.succeed(SqlClient.SqlClient, sql),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({}),
+        Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
+        }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({}),
         Layer.mock(ServerConfig.ServerConfig)({
           ...(yield* ServerConfig.deriveServerPaths("/bootstrap-project", undefined).pipe(
@@ -199,6 +204,7 @@ it.effect.each([
           reconcile: () => Effect.succeed(recovery),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           recoverCodexFailover: Effect.void,
           recoverSelfSettlements: Effect.void,
           recoverDelegatedTasks: Effect.void,
@@ -207,7 +213,7 @@ it.effect.each([
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ shutdown: Effect.void }),
         Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({ start: () => Effect.void }),
-        Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.never }),
+        Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: () => Effect.never }),
         Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
           publish: (event) =>
             Effect.sync(() => {
@@ -230,29 +236,15 @@ it.effect.each([
               },
             },
           }),
-      }),
-      Layer.mock(ServerSettings.ServerSettingsService)({
-        start: Effect.void,
-        getSettings: Effect.succeed({
-          ...DEFAULT_SERVER_SETTINGS,
-          defaultModelSelection:
-            scenario === "disabled-default" ? { instanceId, model: "custom-model" } : null,
-          providerInstances: {
-            [instanceId]: {
-              driver: ProviderDriverKind.make("codex"),
-              enabled: false,
-              config: {},
-            },
-          },
         }),
-      }),
-      Layer.mock(ServerEnvironment.ServerEnvironment)({
-        getDescriptor: Effect.succeed({
-          environmentId: EnvironmentId.make("bootstrap-environment"),
-          label: "Test environment",
-          platform: { os: "linux", arch: "x64" },
-          serverVersion: "0.0.0-test",
-          capabilities: { repositoryIdentity: true },
+        Layer.mock(ServerEnvironment.ServerEnvironment)({
+          getDescriptor: Effect.succeed({
+            environmentId: EnvironmentId.make("bootstrap-environment"),
+            label: "Test environment",
+            platform: { os: "linux", arch: "x64" },
+            serverVersion: "0.0.0-test",
+            capabilities: { repositoryIdentity: true },
+          }),
         }),
         Layer.mock(ProjectStore.ProjectStoreV2)({}),
         Layer.mock(ProjectService.ProjectService)({
@@ -261,25 +253,27 @@ it.effect.each([
             scenario === "project-failure"
               ? Effect.die("project bootstrap failed")
               : scenario === "project-refused"
-                ? Effect.fail(new ProjectService.ProjectInvalidError({ projectId, detail: "refused folder" }))
+                ? Effect.fail(
+                    new ProjectService.ProjectInvalidError({ projectId, detail: "refused folder" }),
+                  )
                 : Effect.succeed({
-                  created: true,
-                  project: {
-                    id: projectId,
-                    title: "Project",
-                    workspaceRoot: "/bootstrap-project",
-                    repositoryIdentity: null,
-                    faviconPath: null,
-                    scripts: [],
-                    createdAt: "2026-01-01T00:00:00Z",
-                    updatedAt: "2026-01-01T00:00:00Z",
-                    deletedAt: null,
-                    defaultModelSelection:
-                      scenario === "disabled-default"
-                        ? { instanceId, model: "custom-model" }
-                        : null,
-                  },
-                }),
+                    created: true,
+                    project: {
+                      id: projectId,
+                      title: "Project",
+                      workspaceRoot: "/bootstrap-project",
+                      repositoryIdentity: null,
+                      faviconPath: null,
+                      scripts: [],
+                      createdAt: "2026-01-01T00:00:00Z",
+                      updatedAt: "2026-01-01T00:00:00Z",
+                      deletedAt: null,
+                      defaultModelSelection:
+                        scenario === "disabled-default"
+                          ? { instanceId, model: "custom-model" }
+                          : null,
+                    },
+                  }),
         }),
         Layer.mock(ThreadManagement.ThreadManagementService)({
           countThreads: () => Effect.succeed(0),
@@ -309,6 +303,7 @@ it.effect.each([
         }),
         Layer.mock(ServiceLauncherClient.ServiceLauncherClient)({
           managed: false,
+          protocol: undefined,
           requiresQualifiedTrialGate: false,
           prepareTrial: () => Effect.undefined,
         }),
@@ -345,7 +340,10 @@ it.effect.each([
         } else {
           assert.isDefined(welcome);
           if (welcome?.type === "welcome") {
-            assert.equal(welcome.payload.bootstrapProjectId, scenario === "project-refused" ? undefined : projectId);
+            assert.equal(
+              welcome.payload.bootstrapProjectId,
+              scenario === "project-refused" ? undefined : projectId,
+            );
             if (scenario === "existing-root")
               assert.equal(welcome.payload.bootstrapThreadId, existingId);
             else assert.isUndefined(welcome.payload.bootstrapThreadId);
@@ -609,14 +607,22 @@ it.effect(
     }),
 );
 
-
-it.effect.each(["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "remote-questions", "planned-queues"] as const)(
-  "does not start workers or bootstrap when %s recovery fails",
-  (failedPhase) => Effect.gen(function* () {
+it.effect.each([
+  "trial",
+  "legacy",
+  "provider",
+  "failover",
+  "self-settlements",
+  "delegated",
+  "remote-questions",
+  "planned-queues",
+] as const)("does not start workers or bootstrap when %s recovery fails", (failedPhase) =>
+  Effect.gen(function* () {
     const phases: string[] = [];
-    const phase = (name: string) => Effect.sync(() => { phases.push(name); }).pipe(
-      Effect.andThen(name === failedPhase ? Effect.fail(failedPhase) : Effect.void),
-    );
+    const phase = (name: string) =>
+      Effect.sync(() => {
+        phases.push(name);
+      }).pipe(Effect.andThen(name === failedPhase ? Effect.fail(failedPhase) : Effect.void));
     const result = yield* ServerRuntimeStartup.runOrderedV2StartupPhases({
       awaitTrialCommit: phase("trial"),
       importLegacyShells: phase("legacy"),
@@ -630,7 +636,30 @@ it.effect.each(["trial", "legacy", "provider", "failover", "self-settlements", "
       autoBootstrap: phase("bootstrap"),
     }).pipe(Effect.result);
     assert.equal(result._tag, "Failure");
-    assert.deepEqual(phases, ["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "remote-questions", "planned-queues"].slice(0,
-      ["trial", "legacy", "provider", "failover", "self-settlements", "delegated", "remote-questions", "planned-queues"].indexOf(failedPhase) + 1));
+    assert.deepEqual(
+      phases,
+      [
+        "trial",
+        "legacy",
+        "provider",
+        "failover",
+        "self-settlements",
+        "delegated",
+        "remote-questions",
+        "planned-queues",
+      ].slice(
+        0,
+        [
+          "trial",
+          "legacy",
+          "provider",
+          "failover",
+          "self-settlements",
+          "delegated",
+          "remote-questions",
+          "planned-queues",
+        ].indexOf(failedPhase) + 1,
+      ),
+    );
   }),
 );

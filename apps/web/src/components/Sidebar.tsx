@@ -1,4 +1,5 @@
 import { sidebarRowsAreHeld, useSteadySidebarThreads } from "../jones/navigation/steadySidebar";
+import { registerThreadMenuOwner } from "../jones/workstreams/threadMenuBridge";
 import { publishWorkQueueLocalNames } from "@t3tools/client-runtime/work-queue-metadata";
 import { ensureEnvironmentScope } from "../state/session";
 import { SIDEBAR_DRAG_DISTANCE } from "./Sidebar.pointer";
@@ -993,8 +994,8 @@ function checkThreadOperations(
   return false;
 }
 
-// dnd-kit's 20% edge zone at full speed runs the list away while the pointer rests near the bottom.
-const SIDEBAR_AUTO_SCROLL: AutoScrollOptions = { threshold: { x: 0, y: 0.05 }, acceleration: 3 };
+// Start before the pointer reaches the very edge, with gentle acceleration for precise placement.
+const SIDEBAR_AUTO_SCROLL: AutoScrollOptions = { threshold: { x: 0, y: 0.15 }, acceleration: 3 };
 
 const SIDEBAR_DRAG_LABEL_HEIGHT = 24;
 
@@ -1827,7 +1828,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const settleThreads = (threadKeys: readonly string[]) => {
     const coSettlingKeys = new Set(threadKeys);
     for (const threadKey of threadKeys) {
-      const thread = readThreadShell(threadRef);
+      const thread = threadByKeyRef.current.get(threadKey);
       if (!thread || thread.settledOverride === "settled") continue;
       attemptSettle(scopeThreadRef(thread.environmentId, thread.id), { coSettlingKeys });
     }
@@ -2283,7 +2284,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     ): Promise<boolean> => {
       if (sidebarRowsAreHeld()) return false;
       const liveThread = readThreadShell(scopeThreadRef(thread.environmentId, thread.id));
-      const liveNeighbor = neighbor === null ? null : readThreadShell(scopeThreadRef(neighbor.environmentId, neighbor.id));
+      const liveNeighbor =
+        neighbor === null
+          ? null
+          : readThreadShell(scopeThreadRef(neighbor.environmentId, neighbor.id));
       if (liveThread === null || (neighbor !== null && liveNeighbor === null)) return false;
       return placePersonalThread({
         thread: liveThread,
@@ -2570,7 +2574,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       const count = threadKeys.length;
       const selectionNow = new Date();
       const selectedThreads = threadKeys.flatMap((threadKey) => {
-        const thread = readThreadShell(threadRef);
+        const thread = threadByKeyRef.current.get(threadKey);
         return thread ? [thread] : [];
       });
       const settlingThreads = selectedThreads.filter(
@@ -2752,7 +2756,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       }
       if (clicked.value === "mark-unread") {
         for (const threadKey of threadKeys) {
-          const thread = readThreadShell(threadRef);
+          const thread = threadByKeyRef.current.get(threadKey);
           if (thread) markThreadUnread(scopeThreadRef(thread.environmentId, thread.id));
         }
         clearSelection();
@@ -2774,7 +2778,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       if (
         !checkThreadOperations(
           threadKeys.flatMap((threadKey) => {
-            const thread = readThreadShell(threadRef);
+            const thread = threadByKeyRef.current.get(threadKey);
             return thread ? [thread] : [];
           }),
         )
@@ -2783,7 +2787,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
         entries: threadKeys.map((threadKey) => ({ threadKey })),
         delete: async ({ threadKey }, deletedThreadKeys) => {
-          const thread = readThreadShell(threadRef);
+          const thread = threadByKeyRef.current.get(threadKey);
           if (!thread) return null;
           return deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
             deletedThreadKeys,
@@ -2865,6 +2869,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       threadRef: ScopedThreadRef,
       position: { x: number; y: number },
       assignment?: NativeThreadAssignmentMenu,
+      onFind?: (threadRef: ScopedThreadRef) => void,
     ) => {
       void (async () => {
         const api = readLocalApi();
@@ -2918,6 +2923,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 canOperate,
                 environmentAccessStatus: environmentAccess.status,
                 assignmentItems: assignmentMenu?.items,
+                canFind: onFind !== undefined,
                 branch: thread.branch ?? null,
                 // An archived project is not a filter choice.
                 projectFilter:
@@ -2993,6 +2999,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           return;
         }
         switch (clicked.value) {
+          case "find":
+            onFind?.(threadRef);
+            return;
           case "filter-by-project":
             if (threadProjectGroup) {
               setProjectScopeKeys(
@@ -3208,6 +3217,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     },
   );
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish the mounted sidebar's complete thread menu to the chat header; retire only this registration.
+  useEffect(
+    () =>
+      registerThreadMenuOwner((threadRef, position, onFind) =>
+        handleThreadContextMenu(threadRef, position, undefined, onFind),
+      ),
+    [handleThreadContextMenu],
+  );
+
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to window keydown for thread navigation shortcuts using the current thread list
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
@@ -3249,7 +3267,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     navigateToThread,
     orderedThreadKeys,
     traversalThreadKeys,
-    routePreviewOpen,
     routeRowThreadKey,
     routeThreadRef,
     threadByKey,

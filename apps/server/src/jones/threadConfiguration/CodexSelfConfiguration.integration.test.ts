@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../orchestration/threadMetadataReads.ts";
 import * as InProcessMcp from "../../mcp/McpHttpServer.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -217,6 +218,7 @@ it.live(
           Mcp.layerThreadSelfConfigurationToolkit,
         ).pipe(
           Layer.provide(service),
+          Layer.provide(ThreadMetadataReads.layer),
           Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
           Layer.provide(NodeCrypto.layer),
           Layer.provide(runtime),

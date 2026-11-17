@@ -8,6 +8,7 @@ import {
   type EnvironmentShellStatus,
 } from "@t3tools/client-runtime/state/shell";
 import { makeThreadProjectionFixture } from "./test-fixtures";
+import { acknowledgeComposerSelection } from "./jones/threadConfiguration/composerSelection";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import {
@@ -16,7 +17,6 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import {
   defaultInstanceIdForDriver,
   DEFAULT_MODEL,
@@ -37,6 +37,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 
 const CODEX_INSTANCE = ProviderInstanceId.make("codex");
 const CODEX_SECONDARY_INSTANCE = ProviderInstanceId.make("codex_secondary");
@@ -79,11 +80,11 @@ import { createMemoryStorage } from "./lib/storage";
 import {
   COMPOSER_DRAFT_STORAGE_KEY,
   subscribeComposerDraftModelReconciliation,
-  deriveEffectiveComposerModelState,
   checkoutPullRequestUrlToLink,
   clearComposerDraftsEnvironment,
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
+  deriveEffectiveComposerModelState,
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThreadByRef,
   resolveDraftPromotionNavigationTarget,
@@ -1597,10 +1598,10 @@ describe("composerDraftStore modelSelection", () => {
     resetComposerDraftStore();
   });
 
-  it("retains a pick matching cached state until the live shell confirms it", () => {
+  it("retains a passive seed matching cached state until the live shell confirms it", () => {
     const h = modelReconciliationHarness(TEST_ENVIRONMENT_ID, threadId, "cached");
     const pick = h.model();
-    useComposerDraftStore.getState().setModelSelection(threadRef, pick, { explicit: true });
+    useComposerDraftStore.getState().setModelSelection(threadRef, pick);
     h.flush();
     const before = draftFor(threadId, TEST_ENVIRONMENT_ID);
     expect(before?.modelSelectionByProvider[pick.instanceId]).toEqual(pick);
@@ -1615,6 +1616,54 @@ describe("composerDraftStore modelSelection", () => {
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
     h.setStatus("live");
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
+  });
+
+  it("inherits reasoning effort after switching models while preserving speed options", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "old-model", {
+        reasoningEffort: "low",
+        fastMode: true,
+        serviceTier: "priority",
+      }),
+    );
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "new-model"));
+
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(
+      modelSelection(CODEX_DRIVER, "new-model", { fastMode: true, serviceTier: "priority" }),
+    );
+  });
+
+  it("keeps same-model reasoning effort when a model-only selection is repeated", () => {
+    const store = useComposerDraftStore.getState();
+    const selection = modelSelection(CODEX_DRIVER, "current-model", { reasoningEffort: "low" });
+    store.setModelSelection(threadRef, selection);
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "current-model"));
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(selection);
+  });
+
+  it("does not restore old thread effort into an optionless draft selection", () => {
+    const state = deriveEffectiveComposerModelState({
+      draft: {
+        activeProvider: CODEX_INSTANCE,
+        modelSelectionByProvider: {
+          [CODEX_INSTANCE]: modelSelection(CODEX_DRIVER, "new-model"),
+        },
+      },
+      threadStarted: false,
+      providers: [],
+      selectedProvider: CODEX_DRIVER,
+      selectedInstanceId: CODEX_INSTANCE,
+      threadModelSelection: modelSelection(CODEX_DRIVER, "old-model", { reasoningEffort: "low" }),
+      projectModelSelection: modelSelection(CODEX_DRIVER, "new-model", { reasoningEffort: "high" }),
+      settings: DEFAULT_UNIFIED_SETTINGS,
+    });
+    expect(state.modelOptions).toBeNull();
   });
 
   it("keeps a pick matching the old model while an earlier pick is still in flight", () => {
@@ -1693,6 +1742,7 @@ describe("composerDraftStore modelSelection", () => {
 
     h.update({ status: "queued" });
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
+    acknowledgeComposerSelection(threadRef, before);
     h.update({ status: "running", modelSelection: modelSelection(CODEX_DRIVER, "gpt-5.5") });
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual({
       ...before,
@@ -1773,6 +1823,9 @@ describe("composerDraftStore modelSelection", () => {
       h.update({ modelSelection });
       expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
     }
+    h.update({ modelSelection: { ...pick, options: pick.options!.toReversed() } });
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
+    acknowledgeComposerSelection(threadRef, before);
     h.update({ modelSelection: { ...pick, options: pick.options!.toReversed() } });
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
   });
@@ -2130,6 +2183,21 @@ describe("composerDraftStore sticky composer settings", () => {
       modelSelection(CURSOR_DRIVER, "composer-2.5", {
         fastMode: false,
       }),
+    );
+  });
+
+  it("inherits sticky reasoning effort after switching models while preserving speed options", () => {
+    const store = useComposerDraftStore.getState();
+    store.setStickyModelSelection(
+      modelSelection(CODEX_DRIVER, "old-model", {
+        reasoningEffort: "low",
+        fastMode: false,
+        serviceTier: "priority",
+      }),
+    );
+    store.setStickyModelSelection(modelSelection(CODEX_DRIVER, "new-model"));
+    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider[CODEX_INSTANCE]).toEqual(
+      modelSelection(CODEX_DRIVER, "new-model", { fastMode: false, serviceTier: "priority" }),
     );
   });
 

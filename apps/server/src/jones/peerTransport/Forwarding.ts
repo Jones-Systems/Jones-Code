@@ -38,6 +38,7 @@ import * as PeerMcpClient from "../../peer/PeerMcpClient.ts";
 import type { LinkedMessageOrigin } from "./LinkedMessageOrigin.ts";
 import * as RequestContextSender from "./RequestContextSender.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+const isRuntimeMode = Schema.is(RuntimeMode);
 const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const isLinkedThreadOriginLink = Schema.is(LinkedThreadOriginLink);
 const encodeDependencyRequest = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -62,7 +63,13 @@ export const make = Effect.gen(function* () {
           yield* dependencyChanges.value.publish({ threadIds: [threadId], sequence });
         }).pipe(Effect.orDie);
   const projects = yield* ProjectService.ProjectService;
-  const followUps = Option.isSome(dependencySql) ? yield* RemoteFollowUp.make : undefined;
+  // Durable follow-ups keep their intents in the same database the dependency store reads;
+  // without one (a fixture with no SQL), follow-ups stay off rather than borrowing another.
+  const followUps = Option.isSome(dependencySql)
+    ? yield* RemoteFollowUp.make.pipe(
+        Effect.provideService(SqlClient.SqlClient, dependencySql.value),
+      )
+    : undefined;
 
   /**
    * Forward the caller's own limits because the peer sees only the link credential; refuse local authority first.
@@ -111,12 +118,18 @@ export const make = Effect.gen(function* () {
       params,
     ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
     const { environmentId: _target, ...args } = encoded;
-    if (Schema.is(RuntimeMode)(args.runtimeMode)) {
+    if (isRuntimeMode(args.runtimeMode)) {
       const link = yield* links.get(environmentId).pipe(Effect.mapError(unavailable));
-      if (Option.isSome(link) && DateTime.isGreaterThan(link.value.expiresAt, yield* DateTime.now) &&
-          link.value.access !== "read-only" && runtimeModeRank(args.runtimeMode) > runtimeModeRank(link.value.access)) {
-        return yield* new OrchestratorMcpFailure({ code: "runtime_mode_escalation_denied",
-          message: `Linked environment "${link.value.label}" allows ${link.value.access}, not ${args.runtimeMode}.` });
+      if (
+        Option.isSome(link) &&
+        DateTime.isGreaterThan(link.value.expiresAt, yield* DateTime.now) &&
+        link.value.access !== "read-only" &&
+        runtimeModeRank(args.runtimeMode) > runtimeModeRank(link.value.access)
+      ) {
+        return yield* new OrchestratorMcpFailure({
+          code: "runtime_mode_escalation_denied",
+          message: `Linked environment "${link.value.label}" allows ${link.value.access}, not ${args.runtimeMode}.`,
+        });
       }
     }
     // A pending upload lives here, so it cannot go with the call.
@@ -130,7 +143,13 @@ export const make = Effect.gen(function* () {
     if (typeof args.clientRequestId === "string") {
       args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
     }
-    let followUpTarget: {readonly createdAt: string; readonly runtimeMode: RuntimeMode; readonly interactionMode: import("@t3tools/contracts").ProviderInteractionMode} | undefined;
+    let followUpTarget:
+      | {
+          readonly createdAt: string;
+          readonly runtimeMode: RuntimeMode;
+          readonly interactionMode: import("@t3tools/contracts").ProviderInteractionMode;
+        }
+      | undefined;
     let origin: LinkedMessageOrigin | undefined;
     let tracked: Dependency | undefined;
     if (toolName === "t3_thread_send") {
@@ -142,7 +161,11 @@ export const make = Effect.gen(function* () {
         success: OrchestratorMcpThreadReadResult,
       });
       followUpTarget = observed.thread;
-      if (typeof args.clientRequestId !== "string") args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, yield* random.uuidV4().pipe(Effect.mapError(unavailable)));
+      if (typeof args.clientRequestId !== "string")
+        args.clientRequestId = yield* scopedRequestId(
+          scope.requestNamespace,
+          yield* random.uuidV4().pipe(Effect.mapError(unavailable)),
+        );
       const policy = observed.remoteMessagePolicy;
       if (
         policy?.schemaVersion !== "t3.linked-message-policy/v1" ||
@@ -190,17 +213,33 @@ export const make = Effect.gen(function* () {
         const records = yield* threads
           .getThreadRecords(caller.caller.id, ["runs", "subagents"])
           .pipe(Effect.mapError(unavailable));
-        if (args.mode !== "steer" && records.subagents.some((task) =>
-          task.origin === "app_owned" && task.result !== null &&
-          task.remoteChild?.environmentId === environmentId && task.remoteChild.threadId === args.threadId))
-          return yield* new OrchestratorMcpFailure({code: "invalid_request",
-            message: "Follow-ups to a finished delegated child return a new task handle. Use task_status instead of awaitResult."});
+        if (
+          args.mode !== "steer" &&
+          records.subagents.some(
+            (task) =>
+              task.origin === "app_owned" &&
+              task.result !== null &&
+              task.remoteChild?.environmentId === environmentId &&
+              task.remoteChild.threadId === args.threadId,
+          )
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Follow-ups to a finished delegated child return a new task handle. Use task_status instead of awaitResult.",
+          });
         if (
           records.subagents.some(
             (task) =>
               task.remoteChild?.environmentId === environmentId &&
               task.remoteChild.threadId === args.threadId &&
-              task.remoteChild.runId === observed.recentRuns.find((run) => run.status === "running" || run.status === "starting" || run.status === "queued")?.runId,
+              task.remoteChild.runId ===
+                observed.recentRuns.find(
+                  (run) =>
+                    run.status === "running" ||
+                    run.status === "starting" ||
+                    run.status === "queued",
+                )?.runId,
           )
         )
           return yield* new OrchestratorMcpFailure({
@@ -301,110 +340,163 @@ export const make = Effect.gen(function* () {
       readOnly,
     }).pipe(Effect.provideService(ProjectService.ProjectService, projects));
     let followUpIntent: FollowUpIntent | undefined;
-    if (toolName === "t3_thread_send" && scope.thread !== undefined &&
-        origin?.thread !== undefined && followUpTarget !== undefined) {
+    if (
+      toolName === "t3_thread_send" &&
+      scope.thread !== undefined &&
+      origin?.thread !== undefined &&
+      followUpTarget !== undefined
+    ) {
       if (followUps === undefined) {
-        const {subagents} = yield* threads.getThreadRecords(scope.thread.threadId, ["subagents"])
+        const { subagents } = yield* threads
+          .getThreadRecords(scope.thread.threadId, ["subagents"])
           .pipe(Effect.mapError(unavailable));
-        if (subagents.some((task) => task.origin === "app_owned" && task.result !== null &&
-            task.remoteChild?.environmentId === environmentId && task.remoteChild.threadId === args.threadId))
+        if (
+          subagents.some(
+            (task) =>
+              task.origin === "app_owned" &&
+              task.result !== null &&
+              task.remoteChild?.environmentId === environmentId &&
+              task.remoteChild.threadId === args.threadId,
+          )
+        )
           return yield* unavailable();
       } else {
-        const requestDigest = Hex.encode(yield* digest.digest(Digest.sha256, new TextEncoder().encode(
-          canonicalJson({...args, expectedThreadCreatedAt: followUpTarget.createdAt}),
-        )).pipe(Effect.orDie));
-        followUpIntent = yield* followUps.prepare({scope, environmentId, hasStableClientRequestId,
-          targetModes: followUpTarget, targetCreatedAt: followUpTarget.createdAt, requestDigest,
-          capture: {arguments: args, limits, origin: {...origin, thread: origin.thread},
-            ...(context === undefined ? {} : {context})}});
+        const requestDigest = Hex.encode(
+          yield* digest
+            .digest(
+              Digest.sha256,
+              new TextEncoder().encode(
+                canonicalJson({ ...args, expectedThreadCreatedAt: followUpTarget.createdAt }),
+              ),
+            )
+            .pipe(Effect.orDie),
+        );
+        followUpIntent = yield* followUps.prepare({
+          scope,
+          environmentId,
+          hasStableClientRequestId,
+          targetModes: followUpTarget,
+          targetCreatedAt: followUpTarget.createdAt,
+          requestDigest,
+          capture: {
+            arguments: args,
+            limits,
+            origin: { ...origin, thread: origin.thread },
+            ...(context === undefined ? {} : { context }),
+          },
+        });
       }
     }
-    const invoke = followUpIntent === undefined
-      ? peers.call({environmentId, tool: toolName, arguments: args, limits,
-          ...(origin === undefined ? {} : {origin}), ...(context === undefined ? {} : {context}), success: success as Schema.Decoder<A>})
-      : followUps!.send(followUpIntent, (capture, generation) => peers.call({environmentId,
-          expectedGeneration: generation, tool: "t3_thread_send", arguments: {...capture.arguments}, limits: capture.limits,
-          origin: capture.origin, ...(capture.context === undefined ? {} : {context: capture.context}), success: OrchestratorMcpThreadSendResult})).pipe(
-          Effect.flatMap((sent) => Schema.decodeUnknownEffect(success as Schema.Decoder<A>)(sent).pipe(Effect.mapError(unavailable))));
+    const invoke =
+      followUpIntent === undefined
+        ? peers.call({
+            environmentId,
+            tool: toolName,
+            arguments: args,
+            limits,
+            ...(origin === undefined ? {} : { origin }),
+            ...(context === undefined ? {} : { context }),
+            success: success as Schema.Decoder<A>,
+          })
+        : followUps!
+            .send(followUpIntent, (capture, generation) =>
+              peers.call({
+                environmentId,
+                expectedGeneration: generation,
+                tool: "t3_thread_send",
+                arguments: { ...capture.arguments },
+                limits: capture.limits,
+                origin: capture.origin,
+                ...(capture.context === undefined ? {} : { context: capture.context }),
+                success: OrchestratorMcpThreadSendResult,
+              }),
+            )
+            .pipe(
+              Effect.flatMap((sent) =>
+                Schema.decodeEffect(success as Schema.Decoder<A>)(sent).pipe(
+                  Effect.mapError(unavailable),
+                ),
+              ),
+            );
     const result = yield* invoke.pipe(
-        Effect.tap(() =>
-          !tracked || !dependencies || Option.isNone(dependencySql)
-            ? Effect.void
-            : Effect.gen(function* () {
-                const observed = yield* peers.call({
-                  environmentId,
-                  tool: "t3_thread_request_observe",
-                  arguments: { operationId: tracked!.operationId, timeoutMs: 0 },
-                  limits,
-                  ...(origin ? { origin } : {}),
-                  success: ThreadRequestObservation,
-                });
-                yield* dependencySql.value
-                  .withTransaction(
-                    Effect.gen(function* () {
-                      yield* dependencies.observe(
+      Effect.tap(() =>
+        !tracked || !dependencies || Option.isNone(dependencySql)
+          ? Effect.void
+          : Effect.gen(function* () {
+              const observed = yield* peers.call({
+                environmentId,
+                tool: "t3_thread_request_observe",
+                arguments: { operationId: tracked!.operationId, timeoutMs: 0 },
+                limits,
+                ...(origin ? { origin } : {}),
+                success: ThreadRequestObservation,
+              });
+              yield* dependencySql.value
+                .withTransaction(
+                  Effect.gen(function* () {
+                    yield* dependencies.observe(
+                      tracked!.dependencyId,
+                      tracked!.generation,
+                      observed.observation,
+                      observed.request ?? undefined,
+                    );
+                    if (observed.outcome !== null)
+                      yield* dependencies.resolve(
                         tracked!.dependencyId,
                         tracked!.generation,
-                        observed.observation,
-                        observed.request ?? undefined,
+                        observed.outcome,
+                        observed.result ?? "The request ended without an explicit answer.",
                       );
-                      if (observed.outcome !== null)
-                        yield* dependencies.resolve(
-                          tracked!.dependencyId,
-                          tracked!.generation,
-                          observed.outcome,
-                          observed.result ?? "The request ended without an explicit answer.",
-                        );
-                      tracked = (yield* dependencies.get(tracked!.dependencyId))!;
-                    }),
+                    tracked = (yield* dependencies.get(tracked!.dependencyId))!;
+                  }),
+                )
+                .pipe(Effect.mapError(unavailable));
+            }).pipe(Effect.ignore),
+      ),
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          if (!tracked || !dependencies || Option.isNone(dependencySql)) return yield* error;
+          const definite = !["orchestration_error", "remote_admission_pending"].includes(
+            error.code,
+          );
+          yield* dependencySql.value
+            .withTransaction(
+              definite
+                ? dependencies.resolve(
+                    tracked.dependencyId,
+                    tracked.generation,
+                    "not_sent",
+                    "The linked environment refused the send before acceptance.",
+                    true,
                   )
-                  .pipe(Effect.mapError(unavailable));
-              }).pipe(Effect.ignore),
-        ),
-        Effect.catch((error) =>
-          Effect.gen(function* () {
-            if (!tracked || !dependencies || Option.isNone(dependencySql)) return yield* error;
-            const definite = !["orchestration_error", "remote_admission_pending"].includes(
-              error.code,
-            );
-            yield* dependencySql.value
-              .withTransaction(
-                definite
-                  ? dependencies.resolve(
-                      tracked.dependencyId,
-                      tracked.generation,
-                      "not_sent",
-                      "The linked environment refused the send before acceptance.",
-                      true,
-                    )
-                  : dependencies.observe(
-                      tracked.dependencyId,
-                      tracked.generation,
-                      error.code === "remote_admission_pending"
-                        ? "admission_held"
-                        : "delivery_unknown",
-                    ),
-              )
-              .pipe(Effect.mapError(unavailable));
-            return yield* new OrchestratorMcpFailure({
-              code: error.code,
-              message: error.message,
-              ...(error.remoteAdmission === undefined
-                ? {}
-                : { remoteAdmission: error.remoteAdmission }),
-              dependency: {
-                dependencyId: tracked.dependencyId,
-                requestId: tracked.requestId,
-                state: definite
-                  ? "released"
-                  : error.code === "remote_admission_pending"
-                    ? "awaiting"
-                    : tracked.state,
-              },
-            });
-          }),
-        ),
-      );
+                : dependencies.observe(
+                    tracked.dependencyId,
+                    tracked.generation,
+                    error.code === "remote_admission_pending"
+                      ? "admission_held"
+                      : "delivery_unknown",
+                  ),
+            )
+            .pipe(Effect.mapError(unavailable));
+          return yield* new OrchestratorMcpFailure({
+            code: error.code,
+            message: error.message,
+            ...(error.remoteAdmission === undefined
+              ? {}
+              : { remoteAdmission: error.remoteAdmission }),
+            dependency: {
+              dependencyId: tracked.dependencyId,
+              requestId: tracked.requestId,
+              state: definite
+                ? "released"
+                : error.code === "remote_admission_pending"
+                  ? "awaiting"
+                  : tracked.state,
+            },
+          });
+        }),
+      ),
+    );
     if (tracked && result !== null && typeof result === "object") {
       return {
         ...result,

@@ -30,12 +30,23 @@ import { makeGitVcsDriverCore } from "../vcs/GitVcsDriverCore.ts";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Sink from "effect/Sink";
-import { projectThreadProjectionForWire } from "./WireProjection.ts";
+import {
+  isPublicStoredOrchestrationEvent,
+  projectThreadProjectionForWire,
+} from "./WireProjection.ts";
 import { makeCommandObservationQuery } from "./CommandObservation.ts";
+import * as RetainedRecords from "../jones/legacyBootstrap/RetainedRecords.ts";
+import {
+  overlayRetainedRecords,
+  readRetainedEvent,
+  readRetainedProjection,
+} from "../jones/legacyBootstrap/RetainedRecords.testkit.ts";
 import * as Deferred from "effect/Deferred";
 import * as Console from "effect/Console";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import type { ProjectScript } from "@t3tools/contracts";
+import type { OrchestrationV2PrivateEvent } from "@t3tools/contracts";
+import type { LegacyPreflightReceipt } from "../jones/legacyBootstrap/StorageSchema.ts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -99,6 +110,11 @@ import * as WsProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as WsRepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as WsAgentSessionImporter from "../project/AgentSessionImporter.ts";
 import * as WsCheckpointDiffQuery from "../checkpointing/CheckpointDiffQuery.ts";
+import * as WsCheckpointStore from "../checkpointing/CheckpointStore.ts";
+import * as WsProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
+import * as WsSecretCheck from "../secrets/SecretCheck.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
 import * as WsKeybindings from "../keybindings.ts";
 import * as WsEnvironmentTheme from "../environmentTheme.ts";
 import * as WsExternalLauncher from "../process/externalLauncher.ts";
@@ -647,7 +663,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsCommandOutputHub.CommandOutputHub)({}),
     Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
     Layer.mock(WsDeviceService.DeviceService)({}),
-    Layer.mock(WsOrchestrator.OrchestratorV2)({ dispatch: denyRpcWork }),
+    Layer.mock(WsOrchestrator.OrchestratorV2)({ ...unusedCorePorts(), dispatch: denyRpcWork }),
     Layer.mock(WsUsageService.UsageService)({}),
     Layer.mock(WsUsageLimitSources.UsageLimitSources)({}),
     Layer.mock(WsProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
@@ -715,9 +731,11 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(SourceControlSignIn.SourceControlSignIn)({}),
     Layer.mock(TriageService.TriageService)({}),
     Layer.mock(NativeChildWorkQuery.NativeChildWorkQuery)({}),
+    Layer.mock(WsProviderInstallationGate.ProviderInstallationGate)({}),
+    Layer.mock(WsSecretCheck.SecretCheck)({}),
     ManagedPolicy.layerTest(),
     Layer.mock(WsProjectFaviconResolver.ProjectFaviconResolver)({}),
-    Layer.mock(EventSink.EventSinkV2)({}),
+    Layer.mock(EventSink.EventSinkV2)({ supersededTerminalTrace: SupersededTerminalTrace.make() }),
     Layer.mock(WsEffectOutbox.EffectOutboxV2)({}),
     Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
     Layer.succeed(HostProcess.Environment, {}),
@@ -948,6 +966,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
         let fetchCalls = 0;
         let worktreeCreateCalls = 0;
         let preflightStore: EventStore.EventStoreV2["Service"] | undefined;
+        let preflightSink: EventSink.EventSinkV2["Service"] | undefined;
         let preflightReceipts: Receipts.CommandReceiptStoreV2["Service"] | undefined;
         const cancelledWorktree = scenario.startsWith("actual_worktree_cancel_");
         const startedCancellation = scenario.startsWith("actual_worktree_started_cancel");
@@ -1008,8 +1027,10 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
         const process: PtyAdapter.PtyProcess = {
           pid: 92003,
           write: (data) => {
-            written = data;
-            Deferred.doneUnsafe(setupWritten, Effect.succeed(data));
+            // The terminal accepts bytes too; the setup script is written as text.
+            const text = typeof data === "string" ? data : data.toString("utf8");
+            written = text;
+            Deferred.doneUnsafe(setupWritten, Effect.succeed(text));
           },
           resize: () => {},
           kill: (signal) => {
@@ -1295,8 +1316,11 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                 Layer.mock(WsProjectCloneTracker.ProjectCloneTracker)({
                   get: () => Effect.succeed(null),
                 }),
+                // Only scheduled tasks ask the checkpoint store whether a project is a repository.
+                Layer.mock(WsCheckpointStore.CheckpointStore)({}),
                 Layer.mock(WsGitWorkflowService.GitWorkflowService)({
-                  isRepository: () => Effect.succeed(scenario !== "actual_required_non_repository"),
+                  repositoryRoot: () =>
+                    Effect.succeed(scenario === "actual_required_non_repository" ? null : cwd),
                   hasCommit: () => Effect.succeed(scenario !== "actual_required_missing_base"),
                   remoteExists: () => Effect.succeed(true),
                   fetchRemote: () =>
@@ -1304,24 +1328,43 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                       if (
                         !failedFetch ||
                         preflightStore === undefined ||
+                        preflightSink === undefined ||
                         preflightReceipts === undefined
                       )
                         return yield* Effect.die("Unexpected fetch in receiving preflight fixture");
                       const b = legacyBootstrapCreateCommandId(threadId, commandId);
                       const intentId = CommandId.make(`${b}:preflight-intent`);
+                      // Fresh private preflight is durable only in its Jones ordinal domain: its
+                      // one record and receipt come from the Jones reader, never the public store.
                       const raw = Array.from(
                         yield* preflightStore
                           .readByCommandId({ commandId: intentId })
                           .pipe(Stream.runCollect),
                       );
-                      const accepted = yield* preflightReceipts.getByCommandId(intentId);
-                      expect(raw).toHaveLength(1);
-                      expect(raw[0]?.event.type).toBe("legacy-bootstrap.preflight-intent");
-                      expect(Option.isSome(accepted)).toBe(true);
-                      if (Option.isSome(accepted)) {
-                        expect(accepted.value.status).toBe("accepted");
-                        expect(raw[0]?.sequence).toBe(accepted.value.resultSequence);
+                      const recordedIntent = yield* preflightSink.readLegacyPreflight(intentId);
+                      expect(raw).toHaveLength(0);
+                      expect(Option.isNone(yield* preflightReceipts.getByCommandId(intentId))).toBe(
+                        true,
+                      );
+                      expect(Option.isSome(recordedIntent)).toBe(true);
+                      if (Option.isSome(recordedIntent)) {
+                        expect(recordedIntent.value.event.type).toBe(
+                          "legacy-bootstrap.preflight-intent",
+                        );
+                        expect(recordedIntent.value.event.id).toBe(`${intentId}:event`);
+                        expect(recordedIntent.value.receipt.commandId).toBe(intentId);
+                        expect(recordedIntent.value.receipt.status).toBe("accepted");
+                        expect(recordedIntent.value.receipt.sequenceDomain).toBe(
+                          "jones-legacy-ordinal",
+                        );
                       }
+                      expect(
+                        Option.isNone(
+                          yield* preflightSink.readLegacyPreflight(
+                            CommandId.make(`${b}:preflight-outcome`),
+                          ),
+                        ),
+                      ).toBe(true);
                       expect(Option.isNone(yield* preflightReceipts.getByCommandId(b))).toBe(true);
                       expect(
                         Option.isNone(yield* preflightReceipts.getByCommandId(commandId)),
@@ -1443,7 +1486,9 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                   });
                 }),
               ).pipe(Layer.provide(orchestrator));
-              const launch = WsThreadLaunchService.layer.pipe(
+              // Receiving-equivalent production composition: legacy launches delegate to the
+              // retained protocol and no ordinary checkout custody is installed.
+              const launch = WsThreadLaunchService.layerProduction.pipe(
                 Layer.provide(ThreadMetadataReads.layer.pipe(Layer.provide(receivingDatabase))),
                 Layer.provide(
                   Layer.mergeAll(
@@ -1591,6 +1636,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
           Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
           Layer.mock(WsDeviceService.DeviceService)({}),
           Layer.mock(WsOrchestrator.OrchestratorV2)({
+            ...unusedCorePorts(),
             dispatch: () => Effect.die("No native command fallback"),
           }),
           Layer.mock(WsUsageService.UsageService)({}),
@@ -1669,7 +1715,11 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
           Layer.mock(NativeChildWorkQuery.NativeChildWorkQuery)({}),
           ManagedPolicy.layerTest(),
           Layer.mock(WsProjectFaviconResolver.ProjectFaviconResolver)({}),
-          Layer.mock(EventSink.EventSinkV2)({}),
+          Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
+          }),
+          WsProviderInstallationGate.layer,
+          Layer.mock(WsSecretCheck.SecretCheck)({}),
           Layer.mock(WsEffectOutbox.EffectOutboxV2)({
             listByThreadId: () => Effect.succeed([]),
             awaitCompletion: () => Effect.void,
@@ -1699,6 +1749,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             const sink = yield* EventSink.EventSinkV2;
             if (requiredPreflight) {
               preflightStore = yield* EventStore.EventStoreV2;
+              preflightSink = sink;
               preflightReceipts = yield* Receipts.CommandReceiptStoreV2;
             }
             const projectCommandId = CommandId.make("wire-forward:project-create");
@@ -1911,7 +1962,25 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                 Array.from(yield* store.readByCommandId({ commandId: id }).pipe(Stream.runCollect)),
               ).toHaveLength(0);
             }
-            const recorded = Array.from(yield* store.read({ threadId }).pipe(Stream.runCollect));
+            // Private preflight stays out of the public stream; the Jones reader returns each
+            // record with its own private-ordinal receipt.
+            expect(
+              Array.from(yield* store.read({ threadId }).pipe(Stream.runCollect)),
+            ).toHaveLength(0);
+            const preflightReader = yield* EventSink.EventSinkV2;
+            const recordedIds = [
+              CommandId.make(`${b}:preflight-intent`),
+              CommandId.make(`${b}:preflight-outcome`),
+            ];
+            const recorded: Array<{
+              readonly commandId: CommandId;
+              readonly receipt: LegacyPreflightReceipt;
+              readonly event: OrchestrationV2PrivateEvent;
+            }> = [];
+            for (const id of recordedIds) {
+              const found = yield* preflightReader.readLegacyPreflight(id);
+              if (Option.isSome(found)) recorded.push({ commandId: id, ...found.value });
+            }
             expect(recorded.map((entry) => entry.event.type)).toEqual([
               "legacy-bootstrap.preflight-intent",
               "legacy-bootstrap.preflight-outcome",
@@ -1927,7 +1996,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
               scenario === "actual_required_fetch_unknown" ? "unknown" : "known_failed",
             );
             expect(outcome.event.payload.binding).toEqual(intent.event.payload);
-            expect(outcome.event.payload.intentSequence).toBe(intent.sequence);
+            expect(outcome.event.payload.intentSequence).toBe(intent.receipt.resultSequence);
             expect(intent.event.payload.policy.createCommandId).toBe(b);
             expect(intent.event.payload.policy.releaseCommandId).toBe(commandId);
             expect(intent.event.payload.policy.messageId).toBe(messageId);
@@ -1940,13 +2009,15 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
               expect(recordedCommandId).not.toBeNull();
               if (recordedCommandId === null)
                 return yield* Effect.die("Private preflight command binding required");
-              const receipt = yield* receipts.getByCommandId(recordedCommandId);
-              expect(Option.isSome(receipt)).toBe(true);
-              if (Option.isSome(receipt)) {
-                expect(receipt.value.status).toBe("accepted");
-                expect(receipt.value.resultSequence).toBe(entry.sequence);
-              }
+              expect(entry.event.id).toBe(`${recordedCommandId}:event`);
+              expect(entry.receipt.commandId).toBe(recordedCommandId);
+              expect(entry.receipt.commandType).toBe(entry.event.type);
+              expect(entry.receipt.threadId).toBe(threadId);
+              expect(entry.receipt.status).toBe("accepted");
+              expect(entry.receipt.sequenceDomain).toBe("jones-legacy-ordinal");
+              expect(Option.isNone(yield* receipts.getByCommandId(recordedCommandId))).toBe(true);
             }
+            expect(outcome.receipt.resultSequence).toBeGreaterThan(intent.receipt.resultSequence);
             const observation = yield* makeCommandObservationQuery();
             const observed = yield* observation.observe({ threadId, commandId, messageId });
             expect(observed.commandStatus).toBe("not_found");
@@ -1969,6 +2040,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             const sink = yield* EventSink.EventSinkV2;
             yield* setupStage("setup-known-started-wait-enter");
             yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
+              Stream.mapEffect((stored) => readRetainedEvent(sink, stored)),
               Stream.filter(
                 (stored) =>
                   stored.event.type === "run.updated" &&
@@ -1993,7 +2065,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             } else {
               expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
             }
-            const preparing = yield* threads.getThreadProjection(threadId);
+            const preparing = yield* readRetainedProjection(threads, threadId);
             const steps = preparing.runs[0]?.legacyPreparation?.steps;
             expect(steps?.map((step) => [step.effect.kind, step.state])).toEqual([
               ["worktree.add", "known_succeeded"],
@@ -2206,7 +2278,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                 "pending",
               );
               expect(cancelledCard).toEqual(yield* tracker.get(threadId));
-              const received = yield* threads.getThreadProjection(threadId);
+              const received = yield* readRetainedProjection(threads, threadId);
               expect(received.thread.deletedAt).toBeNull();
               if (failurePersistenceLost) expect(received.runs[0]?.status).toBe("preparing");
               else {
@@ -2239,7 +2311,13 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                   expect(failure.value.threadId).toBe(threadId);
                   expect(rawFailure.at(-1)?.sequence).toBe(failure.value.resultSequence);
                 }
-                const failed = rawFailure.find((entry) => entry.event.type === "run.updated");
+                const failedPublic = rawFailure
+                  .filter(isPublicStoredOrchestrationEvent)
+                  .find((entry) => entry.event.type === "run.updated");
+                const failed =
+                  failedPublic === undefined
+                    ? undefined
+                    : yield* readRetainedEvent(yield* EventSink.EventSinkV2, failedPublic);
                 expect(failed?.event.type === "run.updated" && failed.event.payload).toEqual(
                   received.runs[0],
                 );
@@ -2312,7 +2390,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
               expect(
                 Array.from(yield* store.readByCommandId({ commandId }).pipe(Stream.runCollect)),
               ).toHaveLength(0);
-              const retained = yield* threads.getThreadProjection(threadId);
+              const retained = yield* readRetainedProjection(threads, threadId);
               expect(retained.runs[0]?.status).toBe("preparing");
               expect(retained.runs[0]?.id).toBe(preparing.runs[0]?.id);
               expect(retained.runs[0]?.legacyPreparation).toEqual(
@@ -2396,7 +2474,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             expect(c.value.status).toBe("accepted");
             if (disconnectedWorktree) expect(responseSequence).toBeUndefined();
             else expect(responseSequence).toBe(c.value.resultSequence);
-            const received = yield* threads.getThreadProjection(threadId);
+            const received = yield* readRetainedProjection(threads, threadId);
             const completed = received.runs[0]?.legacyPreparation?.steps;
             expect(completed?.at(-1)?.effect.kind).toBe("setup.completion");
             expect(completed?.at(-1)?.state).toBe("known_succeeded");
@@ -2471,7 +2549,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             expect(runningCard?.stages.find((stage) => stage.id === "agent")?.status).toBe(
               "pending",
             );
-            const preparing = yield* threads.getThreadProjection(threadId);
+            const preparing = yield* readRetainedProjection(threads, threadId);
             const intent = preparing.runs[0]?.legacyPreparation?.steps[0];
             expect(preparing.runs[0]?.status).toBe("preparing");
             expect(intent?.effect.kind).toBe("worktree.add");
@@ -2560,7 +2638,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             expect(cancelledCard?.stages.find((stage) => stage.id === "agent")?.status).toBe(
               "pending",
             );
-            const received = yield* threads.getThreadProjection(threadId);
+            const received = yield* readRetainedProjection(threads, threadId);
             expect(received.thread.deletedAt).toBeNull();
             expect(received.thread.modelSelection).toEqual(modelSelection);
             expect(received.messages[0]?.id).toBe(messageId);
@@ -2618,6 +2696,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             yield* Deferred.await(setupWritten).pipe(Effect.timeout("5 seconds"));
             const sink = yield* EventSink.EventSinkV2;
             yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
+              Stream.mapEffect((stored) => readRetainedEvent(sink, stored)),
               Stream.filter(
                 (stored) =>
                   stored.event.type === "run.updated" &&
@@ -2632,7 +2711,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             const threads = yield* Threads.ThreadManagementService;
             expect(written).toContain("synthetic-no-execution");
             if (scenario !== "actual_async") {
-              const preparing = yield* threads.getThreadProjection(threadId);
+              const preparing = yield* readRetainedProjection(threads, threadId);
               expect(preparing.runs[0]?.status).toBe("preparing");
               expect(Option.isNone(yield* receipts.getByCommandId(commandId))).toBe(true);
               expect(
@@ -2660,7 +2739,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
               const c = yield* receipts.getByCommandId(commandId);
               expect(Option.isSome(c)).toBe(true);
               if (Option.isSome(c)) expect(c.value.status).toBe("accepted");
-              const received = yield* threads.getThreadProjection(threadId);
+              const received = yield* readRetainedProjection(threads, threadId);
               expect(received.runs[0]?.status).toBe("starting");
               expect(
                 received.runs[0]?.legacyPreparation?.steps.map((step) => [
@@ -2698,7 +2777,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             ) {
               expect(frame.exit._tag).toBe("Failure");
               expect(Option.isNone(c)).toBe(true);
-              const received = yield* threads.getThreadProjection(threadId);
+              const received = yield* readRetainedProjection(threads, threadId);
               expect(received.thread.deletedAt).toBeNull();
               const step = received.runs[0]?.legacyPreparation?.steps.find(
                 (entry) => entry.effect.kind === "setup.open",
@@ -2755,7 +2834,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             expect(Option.isSome(birth)).toBe(true);
             if (Option.isSome(birth))
               expect(birth.value.resultSequence).toBeLessThanOrEqual(c.value.resultSequence);
-            const received = yield* threads.getThreadProjection(threadId);
+            const received = yield* readRetainedProjection(threads, threadId);
             expect(received.thread.projectId).toBe(projectId);
             expect(received.thread.modelSelection).toEqual(modelSelection);
             expect(received.messages[0]?.id).toBe(messageId);
@@ -2833,6 +2912,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                     afterSequence: c.value.resultSequence,
                   })
                   .pipe(
+                    Stream.mapEffect((stored) => readRetainedEvent(sink, stored)),
                     Stream.filter(
                       (stored) =>
                         stored.event.type === "run.updated" &&
@@ -2845,7 +2925,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                     Stream.runHead,
                     Effect.timeout("5 seconds"),
                   );
-                const completed = yield* threads.getThreadProjection(threadId);
+                const completed = yield* readRetainedProjection(threads, threadId);
                 expect(completed.runs[0]?.legacyPreparation?.steps.at(-1)?.state).toBe(
                   "known_succeeded",
                 );
@@ -2947,10 +3027,15 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
             const receipts = yield* Receipts.CommandReceiptStoreV2;
             const sink = yield* EventSink.EventSinkV2;
-            const persisted = yield* projections.getThreadProjection(threadId);
+            const readRetained = yield* RetainedRecords.make;
+            const retainedProjection = Effect.gen(function* () {
+              const projection = yield* projections.getThreadProjection(threadId);
+              return yield* overlayRetainedRecords(projection, yield* readRetained(threadId));
+            });
+            const persisted = yield* retainedProjection;
             expect(persisted.runs[0]?.legacyPreparation).toEqual(expected.legacyPreparation);
             expect((yield* maintenance.rebuild).valid).toBe(true);
-            const replayed = yield* projections.getThreadProjection(threadId);
+            const replayed = yield* retainedProjection;
             expect(replayed.runs[0]?.legacyPreparation).toEqual(expected.legacyPreparation);
             expect(legacyPreparationReleaseBlocker({ run: replayed.runs[0]! })).toBeUndefined();
             const { legacyPreparation: _preparation, ...ordinary } = replayed.runs[0]!;
@@ -2966,7 +3051,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                 },
               ],
             });
-            const stale = yield* projections.getThreadProjection(threadId);
+            const stale = yield* retainedProjection;
             expect(stale.runs[0]?.legacyPreparation).toEqual(expected.legacyPreparation);
             const preparation = expected.legacyPreparation!;
             for (const changed of [

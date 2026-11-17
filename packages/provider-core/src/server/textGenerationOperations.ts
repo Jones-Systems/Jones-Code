@@ -5,6 +5,17 @@ import { type ChatAttachment, type ModelSelection, TextGenerationError } from "@
 import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
+import { threadTitleVerdict } from "./jones/ThreadTitleAssessment.ts";
+import {
+  buildRemoteRequestEvaluationPrompt,
+  RemoteRequestEvaluationResult,
+  remoteRequestEvaluationUnsupported,
+} from "./jones/remoteRequestEvaluation.ts";
+export {
+  buildRemoteRequestEvaluationPrompt,
+  remoteRequestEvaluationUnsupported,
+} from "./jones/remoteRequestEvaluation.ts";
+
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {
   buildBranchNamePrompt,
@@ -84,7 +95,39 @@ export const generatedThreadTitle = (raw: string) => {
     : Effect.succeed(title);
 };
 
-export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
+const decodeRemoteRequestEvaluation = Schema.decodeUnknownEffect(RemoteRequestEvaluationResult);
+
+export function fromRunner(
+  name: string,
+  run: Runner,
+  /** Opt in only when the runner disables task tools, including MCP and browsing. */
+  capabilities?: { readonly remoteRequestEvaluation: "tool-less" },
+): ProviderTextGeneration {
+  const evaluateRemoteRequest: ProviderTextGeneration["evaluateRemoteRequest"] = Effect.fn(
+    `${name}.evaluateRemoteRequest`,
+  )(function* (input) {
+    if (capabilities?.remoteRequestEvaluation !== "tool-less") {
+      return yield* remoteRequestEvaluationUnsupported(name);
+    }
+    const prompt = yield* buildRemoteRequestEvaluationPrompt(input);
+    const generated = yield* run({
+      operation: "evaluateRemoteRequest",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...prompt,
+    });
+    return yield* decodeRemoteRequestEvaluation(generated).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TextGenerationError({
+            operation: "evaluateRemoteRequest",
+            detail: `${name} returned invalid structured output.`,
+            cause,
+          }),
+      ),
+    );
+  });
+
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(
     `${name}.generateCommitMessage`,
   )(function* (input) {
@@ -156,6 +199,7 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
       modelSelection: input.modelSelection,
       attachments: input.attachments,
       ...buildThreadTitlePrompt({
+        titleAssessment: input.titleAssessment,
         message: input.message,
         projectTitle: input.projectTitle,
         previousTitle: input.previousTitle,
@@ -167,7 +211,8 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
     return {
       title: yield* generatedThreadTitle(generated.title),
-      ...(generated.needsRefinement ? { needsRefinement: true } : {}),
+      ...(generated.needsRefinement === true ? { needsRefinement: true } : {}),
+      ...(input.titleAssessment ? { assessment: threadTitleVerdict(generated) } : {}),
     };
   });
 
@@ -195,6 +240,7 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
   });
 
   return {
+    evaluateRemoteRequest,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

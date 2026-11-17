@@ -43,6 +43,7 @@ import * as GitManager from "./git/GitManager.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as Settings from "./serverSettings.ts";
 import * as EventSink from "./orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "./jones/orchestration/SupersededTerminalTrace.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -571,6 +572,7 @@ const cleanupFixture = (
     const context = yield* Layer.build(StorageCleanup.layer).pipe(
       Effect.provide(
         Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
           readDeletionWorktreeRemovalStartForTarget: (id, target) =>
             withDeletionOwner((owner) => owner.readTarget(id, target)),
           startDeletionWorktreeRemoval: (input) =>
@@ -679,9 +681,11 @@ const cleanupFixture = (
                   : visible.filter((thread) => thread.archivedAt !== null),
             };
           }).pipe(
-            Effect.tap(() => ReadPriority.pipe(
-              Effect.tap((priority) => Effect.sync(() => snapshotReadPriorities.push(priority))),
-            )),
+            Effect.tap(() =>
+              ReadPriority.pipe(
+                Effect.tap((priority) => Effect.sync(() => snapshotReadPriorities.push(priority))),
+              ),
+            ),
           ),
         getThreadWorktreePaths: (input?: { includeArchived?: boolean }) =>
           Effect.sync(() =>
@@ -2941,32 +2945,36 @@ describe("storage cleanup reports and local file policies", () => {
       ),
   );
 
-  it.effect("classifies actual automatic inventory reads and later manual reads in the queued sweep", () =>
-    runCleanupTest(
-      Effect.gen(function* () {
-        yield* TestClock.setTime(NOW_MS);
-        const fixture = yield* cleanupFixture();
-        fixture.setThreads([shell({
-          branch: "feature",
-          worktreePath: fixture.worktree,
-          activeRunId: RunId.make("active-run"),
-        })]);
-        yield* fixture.activate(Stream.empty);
-        yield* fixture.service.reports.pipe(
-          Stream.filter((report) => report !== null),
-          Stream.take(1),
-          Stream.runCollect,
-        );
-        yield* fixture.service.drain;
-        const automatic = fixture.snapshotReadPriorities();
-        expect(automatic.length).toBeGreaterThan(0);
-        expect(automatic.every((priority) => priority === "background")).toBe(true);
-        yield* fixture.service.runNow;
-        const manual = fixture.snapshotReadPriorities().slice(automatic.length);
-        expect(manual.length).toBeGreaterThan(0);
-        expect(manual.every((priority) => priority === "interactive")).toBe(true);
-      }),
-    ),
+  it.effect(
+    "classifies actual automatic inventory reads and later manual reads in the queued sweep",
+    () =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(NOW_MS);
+          const fixture = yield* cleanupFixture();
+          fixture.setThreads([
+            shell({
+              branch: "feature",
+              worktreePath: fixture.worktree,
+              activeRunId: RunId.make("active-run"),
+            }),
+          ]);
+          yield* fixture.activate(Stream.empty);
+          yield* fixture.service.reports.pipe(
+            Stream.filter((report) => report !== null),
+            Stream.take(1),
+            Stream.runCollect,
+          );
+          yield* fixture.service.drain;
+          const automatic = fixture.snapshotReadPriorities();
+          expect(automatic.length).toBeGreaterThan(0);
+          expect(automatic.every((priority) => priority === "background")).toBe(true);
+          yield* fixture.service.runNow;
+          const manual = fixture.snapshotReadPriorities().slice(automatic.length);
+          expect(manual.length).toBeGreaterThan(0);
+          expect(manual.every((priority) => priority === "interactive")).toBe(true);
+        }),
+      ),
   );
 
   it.effect("publishes successive automatic reports when there is no manual report", () =>
@@ -3131,29 +3139,35 @@ describe("storage cleanup reports and local file policies", () => {
       }),
     ),
   );
-  it.effect("keeps an eligible scratch folder without positive ownership and native-start exclusion", () =>
-    runCleanupTest(
-      Effect.gen(function* () {
-        yield* TestClock.setTime(NOW_MS);
-        const fixture = yield* cleanupFixture();
-        const scratchRoot = `${fixture.config.baseDir}/scratch`;
-        const folder = `${scratchRoot}/quiet-otter`;
-        yield* fixture.fs.makeDirectory(folder, { recursive: true });
-        yield* fixture.fs.writeFileString(`${folder}/notes.md`, "scratch\n");
-        fixture.setProjectRoots([scratchRoot]);
-        fixture.setStoredWorktreePaths([]);
-        // Only this rule lets cleanup delete untracked files, which is all a scratch folder has.
-        fixture.setPolicy("tracked-changes");
-        fixture.setThreads([
-          shell({ worktreePath: folder, settledAt: at(-20 * DAY_MS), status: "completed" }),
-        ]);
-        const report = yield* fixture.service.runNow;
-        expect(report.entries).toEqual([
-          expect.objectContaining({ path: folder, outcome: "kept", reason: "Scratch cleanup ownership classification unavailable" }),
-        ]);
-        expect(yield* fixture.fs.readFileString(`${folder}/notes.md`)).toBe("scratch\n");
-      }),
-    ),
+  it.effect(
+    "keeps an eligible scratch folder without positive ownership and native-start exclusion",
+    () =>
+      runCleanupTest(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(NOW_MS);
+          const fixture = yield* cleanupFixture();
+          const scratchRoot = `${fixture.config.baseDir}/scratch`;
+          const folder = `${scratchRoot}/quiet-otter`;
+          yield* fixture.fs.makeDirectory(folder, { recursive: true });
+          yield* fixture.fs.writeFileString(`${folder}/notes.md`, "scratch\n");
+          fixture.setProjectRoots([scratchRoot]);
+          fixture.setStoredWorktreePaths([]);
+          // Only this rule lets cleanup delete untracked files, which is all a scratch folder has.
+          fixture.setPolicy("tracked-changes");
+          fixture.setThreads([
+            shell({ worktreePath: folder, settledAt: at(-20 * DAY_MS), status: "completed" }),
+          ]);
+          const report = yield* fixture.service.runNow;
+          expect(report.entries).toEqual([
+            expect.objectContaining({
+              path: folder,
+              outcome: "kept",
+              reason: "Scratch cleanup ownership classification unavailable",
+            }),
+          ]);
+          expect(yield* fixture.fs.readFileString(`${folder}/notes.md`)).toBe("scratch\n");
+        }),
+      ),
   );
   it.effect.each([
     {

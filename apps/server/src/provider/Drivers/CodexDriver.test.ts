@@ -1,3 +1,4 @@
+import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as CodexInstallation from "../CodexInstallation.ts";
 import * as CodexManagedTokenBroker from "../CodexManagedTokenBroker.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
@@ -25,8 +26,10 @@ import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import { vi } from "vite-plus/test";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
@@ -46,11 +49,25 @@ import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ProviderCredentialStore from "../ProviderCredentialStore.ts";
 import * as ProviderHostLive from "../ProviderHostLive.ts";
 
+// Record the hooks each driver hands the orchestration adapter; the real adapter is still built.
+type CodexAdapterHooks = NonNullable<Parameters<typeof CodexAdapterV2.createCodexAdapterV2>[1]>;
+const adapterHooks = vi.hoisted((): Array<CodexAdapterHooks> => []);
+vi.mock("../../orchestration-v2/Adapters/CodexAdapterV2.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof CodexAdapterV2>();
+  const createCodexAdapterV2: typeof actual.createCodexAdapterV2 = (input, hooks) => {
+    adapterHooks.push({ ...hooks });
+    return actual.createCodexAdapterV2(input, hooks);
+  };
+  return { ...actual, createCodexAdapterV2 };
+});
+
 const layerDeps = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-codex-driver-maintenance-",
 }).pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   Layer.provideMerge(IdAllocator.layer),
+  // The Codex adapter fences native effects through the real control-admission owner.
+  Layer.provideMerge(ControlAdmission.layer),
   Layer.provideMerge(McpProviderSessions.layer),
   Layer.provideMerge(PortScanner.layerTest),
   Layer.provideMerge(
@@ -78,6 +95,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provideMerge(ModelManifest.layerTest),
   Layer.provideMerge(ResetCreditCoordinator.layerTest),
+  Layer.provideMerge(ProcessAttribution.layer),
   Layer.provideMerge(
     Layer.mock(BackgroundPolicy.BackgroundPolicy)({
       shouldRunScopeWork: () => Effect.succeed(false),
@@ -111,6 +129,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
   const checkManagedAccount = (replacementTiming: "unchanged" | "during-probe") =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("restored-managed-account");
+      let evaluationRequests = 0;
       const credentials = new Map<string, Uint8Array>();
       const catalogTokens: Array<string | undefined> = [];
       const probeEntered = yield* Deferred.make<void>();
@@ -254,6 +273,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
           return;
         }
         expect(catalogTokens).toEqual(["Bearer dummy-owned-access"]);
+        expect(restored.supportsRemoteRequestEvaluation).toBe(true);
         expect(restored.auth.email).toBe("account@example.test");
         expect(restored.runtimePaths?.homePath).toBe(sharedHome);
         expect(restored.runtimePaths?.shadowHomePath).toContain(
@@ -262,6 +282,18 @@ it.layer(layerTest)("CodexDriver", (it) => {
         const scan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(Effect.exit);
         expect(Exit.isFailure(scan)).toBe(true);
         failAcquire = true;
+        expect(
+          yield* instance.textGeneration.evaluateRemoteRequest({
+            cwd: "/missing/untrusted-project",
+            modelSelection: {
+              instanceId,
+              model: "gpt-6.1-sol",
+              options: [{ id: "reasoningEffort", value: "high" }],
+            },
+            message: "Fix the parser",
+          }),
+        ).toEqual({ verdict: "pass", category: "none", reason: "Routine work" });
+        expect(evaluationRequests).toBe(1);
         const runtimeScan = yield* instance.snapshotForCwd!(serverConfig.stateDir).pipe(
           Effect.exit,
         );
@@ -300,6 +332,14 @@ it.layer(layerTest)("CodexDriver", (it) => {
         expect(after.installed).toBe(true);
         expect(after.models).toEqual([]);
         expect(Option.isNone(yield* store.get)).toBe(true);
+        yield* instance.textGeneration
+          .evaluateRemoteRequest({
+            cwd: "/missing/untrusted-project",
+            modelSelection: { instanceId, model: "gpt-6.1-sol" },
+            message: "Fix the parser",
+          })
+          .pipe(Effect.flip);
+        expect(evaluationRequests).toBe(1);
         const signedOutScan = yield* instance.snapshotForCwd!(serverConfig.stateDir);
         expect(signedOutScan.skills).toEqual([]);
       }).pipe(
@@ -312,7 +352,41 @@ it.layer(layerTest)("CodexDriver", (it) => {
                 "https://auth.openai.com/.well-known/openid-configuration",
                 "https://auth.openai.com/revoke",
                 "https://api.openai.com/v1/models",
+                "https://api.openai.com/v1/responses",
               ]).toContain(request.url);
+              if (request.url.endsWith("/responses")) {
+                evaluationRequests++;
+                expect(request.headers.authorization).toBe("Bearer dummy-owned-access");
+                return HttpClientResponse.fromWeb(
+                  request,
+                  new Response(
+                    `event: response.completed\ndata: ${JSON.stringify({
+                      type: "response.completed",
+                      response: {
+                        status: "completed",
+                        output: [
+                          {
+                            type: "message",
+                            role: "assistant",
+                            status: "completed",
+                            content: [
+                              {
+                                type: "output_text",
+                                text: JSON.stringify({
+                                  verdict: "pass",
+                                  category: "none",
+                                  reason: "Routine work",
+                                }),
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                    })}\n\n`,
+                    { headers: { "content-type": "text/event-stream" } },
+                  ),
+                );
+              }
               if (request.url.endsWith("/models")) {
                 catalogTokens.push(request.headers.authorization);
                 return HttpClientResponse.fromWeb(request, Response.json({ models: [] }));
@@ -339,6 +413,111 @@ it.layer(layerTest)("CodexDriver", (it) => {
   it.effect.each(["unchanged", "during-probe"] as const)(
     "managed catalog keeps its account label and token together: %s",
     checkManagedAccount,
+  );
+
+  // regression: managed Codex showed the catalog's default effort but, without a catalog hook,
+  // dispatched none. The adapter reads the hook at turn start, so it must see the live snapshot.
+  it.effect("managed Codex gives turn dispatch its live model catalog", () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("managed-dispatch-catalog");
+      const credentials = new Map<string, Uint8Array>();
+      const secrets = ServerSecretStore.ServerSecretStore.of({
+        get: (key) => Effect.sync(() => Option.fromUndefinedOr(credentials.get(key))),
+        set: (key, value) =>
+          Effect.sync(() => {
+            credentials.set(key, value);
+          }),
+        remove: (key) =>
+          Effect.sync(() => {
+            credentials.delete(key);
+          }),
+        create: () => Effect.die("unused"),
+        getOrCreateRandom: () => Effect.die("unused"),
+      });
+      yield* Effect.gen(function* () {
+        const store = yield* ProviderCredentialStore.make("codex-chatgpt", instanceId);
+        const json = yield* encodeCredentials({
+          clientId: "oaiapp_test",
+          accessToken: "dummy-owned-access",
+          refreshToken: "dummy-refresh",
+          expiresAt: Number.MAX_SAFE_INTEGER,
+          earliestRefreshAt: null,
+          scopes: ["chatgpt.tokens.use.direct"],
+          subject: "test-user",
+          email: "account@example.test",
+        });
+        yield* store.set(new TextEncoder().encode(json));
+        const executable = {
+          executablePath: "/user/bin/codex",
+          managedVersionDirectory: null,
+          source: "local" as const,
+          version: "0.156.1",
+        };
+        const installation = yield* CodexInstallation.CodexInstallation;
+        const sharedHome = NodePath.join(
+          (yield* ServerConfig.ServerConfig).stateDir,
+          "shared-codex-home",
+        );
+        const hooksBefore = adapterHooks.length;
+        const instance = yield* CodexDriver.create({
+          instanceId,
+          displayName: "Managed catalog",
+          enabled: true,
+          environment: [],
+          config: { ...CodexDriver.defaultConfig(), setupMode: "managed", homePath: sharedHome },
+        }).pipe(
+          Effect.provideService(
+            CodexInstallation.CodexInstallation,
+            CodexInstallation.CodexInstallation.of({
+              ...installation,
+              managedDirectory: "unused-managed-installation",
+              resolve: () => Effect.succeed(executable),
+              acquire: () => Effect.succeed(executable),
+            }),
+          ),
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make(() =>
+              PlatformError.badArgument({
+                module: "ChildProcessSpawner",
+                method: "spawn",
+                description: "The fixture app-server is unavailable",
+              }),
+            ),
+          ),
+        );
+        expect(adapterHooks).toHaveLength(hooksBefore + 1);
+        // The adapter's `models` hook is the one catalog read; dispatch uses it for effort.
+        const models = adapterHooks[hooksBefore]?.models;
+        expect(models).toBeDefined();
+        const refreshed = yield* instance.snapshot.refresh;
+        expect(refreshed.models.map((model) => model.slug)).toEqual(["gpt-5.4"]);
+        expect(yield* models!).toEqual(refreshed.models);
+      }).pipe(
+        Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.sync(() =>
+              HttpClientResponse.fromWeb(
+                request,
+                request.url.endsWith("/models")
+                  ? Response.json({
+                      models: [{ slug: "gpt-5.4", display_name: "GPT-5.4", visibility: "list" }],
+                    })
+                  : Response.json({
+                      issuer: "https://auth.openai.com",
+                      authorization_endpoint: "https://auth.openai.com/api/accounts/authorize",
+                      token_endpoint: "https://auth.openai.com/api/accounts/oauth/token",
+                      jwks_uri: "https://auth.openai.com/jwks",
+                      revocation_endpoint: "https://auth.openai.com/revoke",
+                    }),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped),
   );
 
   it.effect.skipIf(windowsHost)(
@@ -470,11 +649,21 @@ it.layer(layerTest)("CodexDriver", (it) => {
               path === binaryPath ? Effect.succeed(fixture.realPath) : fs.realPath(path),
           }),
         );
+        // The updater keeps the host environment and only replaces CODEX_HOME.
         expect((yield* instance.snapshot.resolveMaintenance()).update?.env).toEqual({
+          PATH: "/usr/bin:/bin",
+          JONES_FIXTURE_ENV: "preserved",
           CODEX_HOME: fixture.home,
         });
       }
-    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn)),
+    }).pipe(
+      Effect.provideService(HostProcess.Environment, {
+        PATH: "/usr/bin:/bin",
+        JONES_FIXTURE_ENV: "preserved",
+        CODEX_HOME: "/unrelated/account",
+      }),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
+    ),
   );
 
   // regression: #23937 `codex update` installs the native channel's release, which can lag npm.

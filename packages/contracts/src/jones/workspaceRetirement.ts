@@ -1,5 +1,9 @@
 import * as Schema from "effect/Schema";
-import { ThreadId } from "../baseSchemas.ts";
+import { ForwardCompatibleOptional, ThreadId } from "../baseSchemas.ts";
+
+export const storageCleanupReportFields = {
+  operation: ForwardCompatibleOptional(Schema.Literals(["cleanup", "propose", "retire"])),
+};
 
 export const WorkspaceRetirementAction = Schema.Struct({
   action: Schema.Literals(["propose", "retire"]),

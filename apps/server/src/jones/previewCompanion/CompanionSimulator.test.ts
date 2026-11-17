@@ -260,6 +260,11 @@ it.live.skipIf(!executable || !scratch)(
                     )
                   : cdp.send(method as Parameters<CDPSession["send"]>[0], params);
               },
+              // This fixture has only the main connection, which receives the page's frames.
+              receivesScreencast: () => true,
+              // The relay now acknowledges native frames itself, as the desktop host does.
+              ackScreencastFrame: (frameId) =>
+                void cdp.send("Page.screencastFrameAck", { sessionId: frameId }).catch(() => {}),
               targetId: async () => info.targetInfo.targetId,
               url: () => page.url(),
               title: () => "simulator",

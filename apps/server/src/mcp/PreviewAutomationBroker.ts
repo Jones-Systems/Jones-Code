@@ -1185,33 +1185,31 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const result = yield* Deferred.await(deferred).pipe(Effect.timeoutOption(responseTimeoutMs));
       return yield* Option.match(result, {
         // The enclosing operation owns the span for this inline handler.
-        onNone: Effect.fnUntraced(() =>
-          Effect.gen(function* () {
-            // Do not replay timed-out actions: their effects remain unknown.
-            // Quarantine mutations and probe liveness without discarding affinity.
-            const expiredAt = yield* Clock.currentTimeMillis;
-            const expired = yield* SynchronizedRef.modify(state, (current) => {
-              const entry = current.pending.get(requestId);
-              if (!entry) return [undefined, current] as const;
-              const pending = new Map(current.pending);
-              pending.delete(requestId);
-              const tombstones = new Map(
-                Array.from(current.tombstones).filter(([, value]) => value.expiresAt > expiredAt),
-              );
-              tombstones.set(requestId, { ...entry, expiresAt: expiredAt + 60_000 });
-              while (tombstones.size > 256) tombstones.delete(tombstones.keys().next().value!);
-              const quarantine = new Map(current.quarantine);
-              if (!readOnlyOperations.has(input.operation)) quarantine.set(requestId, entry);
-              return [entry, { ...current, pending, tombstones, quarantine }] as const;
-            });
-            if (expired && input.failurePolicy !== "request_only")
-              yield* checkLiveness(connection, expired).pipe(Effect.forkDetach);
-            return yield* new PreviewAutomationTimeoutError({
-              ...requestContext,
-              outcome: "unknown",
-            });
-          }),
-        ),
+        onNone: Effect.fnUntraced(function* () {
+          // Do not replay timed-out actions: their effects remain unknown.
+          // Quarantine mutations and probe liveness without discarding affinity.
+          const expiredAt = yield* Clock.currentTimeMillis;
+          const expired = yield* SynchronizedRef.modify(state, (current) => {
+            const entry = current.pending.get(requestId);
+            if (!entry) return [undefined, current] as const;
+            const pending = new Map(current.pending);
+            pending.delete(requestId);
+            const tombstones = new Map(
+              Array.from(current.tombstones).filter(([, value]) => value.expiresAt > expiredAt),
+            );
+            tombstones.set(requestId, { ...entry, expiresAt: expiredAt + 60_000 });
+            while (tombstones.size > 256) tombstones.delete(tombstones.keys().next().value!);
+            const quarantine = new Map(current.quarantine);
+            if (!readOnlyOperations.has(input.operation)) quarantine.set(requestId, entry);
+            return [entry, { ...current, pending, tombstones, quarantine }] as const;
+          });
+          if (expired && input.failurePolicy !== "request_only")
+            yield* checkLiveness(connection, expired).pipe(Effect.forkDetach);
+          return yield* new PreviewAutomationTimeoutError({
+            ...requestContext,
+            outcome: "unknown",
+          });
+        }),
         onSome: (value) => Effect.succeed(value as A),
       });
     });

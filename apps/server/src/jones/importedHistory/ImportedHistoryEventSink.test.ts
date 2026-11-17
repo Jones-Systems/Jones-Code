@@ -193,3 +193,124 @@ it.effect(
       );
     }).pipe(Effect.provide(testLayer)),
 );
+
+it.effect(
+  "a reserved imported choice cannot replay through an ordinary commit or change its command identity",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      const review = yield* sink.reviewImportedHistory!({
+        threadId,
+        delivery,
+        principal,
+        targetCapabilities: capabilities,
+      });
+      assert.strictEqual(review.status, "available");
+      const prepared = input(review.reviewedBasis ?? "unavailable");
+      const { importedHistory: _privateContext, ...missingContext } = prepared;
+      assert.strictEqual(
+        (yield* sink.commitCommand(missingContext).pipe(Effect.result))._tag,
+        "Failure",
+      );
+      yield* sink.commitCommand(prepared);
+      const published = yield* Ref.get(yield* Published);
+      const receipts = yield* sql`SELECT * FROM orchestration_command_receipts`;
+      const outcomes = yield* sql`SELECT * FROM jones_imported_history_outcomes`;
+      const { importedHistory: _imported, ...ordinary } = prepared;
+      assert.strictEqual((yield* sink.commitCommand(ordinary).pipe(Effect.result))._tag, "Failure");
+      assert.strictEqual(
+        (yield* sink
+          .commitCommand({ ...ordinary, commandType: "message.dispatch" })
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.strictEqual(
+        (yield* sink
+          .commitCommand({
+            ...prepared,
+            importedHistory: {
+              ...prepared.importedHistory,
+              command: { ...prepared.importedHistory.command, reviewedBasis: "another-basis" },
+            },
+          })
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.deepEqual(yield* sql`SELECT * FROM orchestration_command_receipts`, receipts);
+      assert.deepEqual(yield* sql`SELECT * FROM jones_imported_history_outcomes`, outcomes);
+      assert.deepEqual(yield* Ref.get(yield* Published), published);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "a stale imported review records a rejected choice and receipt without applying the proposed start",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      const before = yield* sink.latestSequence();
+      const review = yield* sink.reviewImportedHistory!({
+        threadId,
+        delivery,
+        principal,
+        targetCapabilities: capabilities,
+      });
+      assert.strictEqual(review.status, "available");
+      const basis = review.reviewedBasis;
+      if (typeof basis !== "string") return yield* Effect.die("Expected a real reviewed basis");
+      const staleBasis = `${basis[0] === "0" ? "1" : "0"}${basis.slice(1)}`;
+      assert.notEqual(staleBasis, basis);
+      const prepared = input(staleBasis);
+      const rejected = yield* sink.commitCommand(prepared);
+      assert.strictEqual(rejected.receipt.status, "rejected");
+      assert.strictEqual(rejected.receipt.error, "review_changed");
+      assert.strictEqual(yield* sink.latestSequence(), before);
+      assert.lengthOf(yield* sql`SELECT * FROM jones_imported_history_choices`, 1);
+      assert.lengthOf(yield* sql`SELECT * FROM jones_imported_history_outcomes`, 1);
+      assert.deepEqual(yield* sql`SELECT * FROM jones_imported_history_start_reservations`, []);
+      assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, []);
+      assert.deepEqual(yield* Ref.get(yield* Published), []);
+      assert.isFalse((yield* sink.commitCommand(prepared)).committed);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "a late imported outcome failure rolls back the real choice, receipt, projections, reservation and outbox",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      const review = yield* sink.reviewImportedHistory!({
+        threadId,
+        delivery,
+        principal,
+        targetCapabilities: capabilities,
+      });
+      assert.strictEqual(review.status, "available");
+      const before = yield* sink.latestSequence();
+      yield* sql`CREATE TRIGGER jones_test_imported_outcome_failure AFTER INSERT ON jones_imported_history_outcomes
+      BEGIN SELECT RAISE(ABORT, 'late imported outcome failure'); END`;
+      assert.strictEqual(
+        (yield* sink
+          .commitCommand(input(review.reviewedBasis ?? "unavailable"))
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.strictEqual(yield* sink.latestSequence(), before);
+      assert.deepEqual(yield* sql`SELECT * FROM jones_imported_history_choices`, []);
+      assert.deepEqual(yield* sql`SELECT * FROM jones_imported_history_outcomes`, []);
+      assert.deepEqual(yield* sql`SELECT * FROM jones_imported_history_start_reservations`, []);
+      assert.deepEqual(yield* sql`SELECT * FROM orchestration_command_receipts`, []);
+      assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, []);
+      assert.strictEqual(
+        (yield* (yield* ProjectionStore.ProjectionStoreV2).getThreadRecords(threadId, ["runs"]))
+          .runs[0]?.status,
+        "queued",
+      );
+      assert.deepEqual(yield* Ref.get(yield* Published), []);
+    }).pipe(Effect.provide(testLayer)),
+);

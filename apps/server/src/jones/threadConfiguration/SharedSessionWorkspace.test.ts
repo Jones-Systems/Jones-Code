@@ -17,6 +17,7 @@ import * as Registry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../orchestration/SupersededTerminalTrace.ts";
 import { prepareExecutionSession } from "./prepareExecutionSession.ts";
 
 function fixture(driverName: "codex" | "opencode", shared: boolean, worktreePath: string | null) {
@@ -124,6 +125,7 @@ it.effect.each(["codex", "opencode"] as const)(
               Effect.die("An unchanged shared conversation must not retire its writer."),
           }),
           Layer.mock(Sink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
             readStoppedRuntime: () => Effect.succeed(null),
             hasStoppedRuntime: () => Effect.succeed(false),
             writeIfRunCurrent: () => Effect.die("Reuse must not persist a replacement binding."),

@@ -1,5 +1,9 @@
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as AssetSigner from "../../assets/AssetSigner.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../../jones/orchestration/SupersededTerminalTrace.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -40,6 +44,8 @@ import {
   OrchestratorDispatchError,
   OrchestratorProjectionError,
   OrchestratorProviderSelectionBusyError,
+  OrchestratorV2,
+  type OrchestratorV2Shape,
 } from "../../orchestration-v2/Orchestrator.ts";
 
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
@@ -69,7 +75,30 @@ import * as PeerForwarding from "../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 
+const unexpectedCorePort = () =>
+  Effect.die(new Error("Unexpected remote command port in this fixture."));
+/** The core's remote command ports; no call in this file reaches a linked peer. */
+const unusedCorePorts: Pick<OrchestratorV2Shape, "remoteSendReceipts" | "followUpCommandOwner"> = {
+  remoteSendReceipts: {
+    available: Effect.succeed(false),
+    lookup: unexpectedCorePort,
+    withSendCommit: unexpectedCorePort,
+    pruneBefore: unexpectedCorePort,
+    guardPreparation: unexpectedCorePort,
+  },
+  followUpCommandOwner: {
+    inParentTransaction: unexpectedCorePort,
+    assertParentCaller: unexpectedCorePort,
+    dispatch: unexpectedCorePort,
+  },
+};
+
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(Layer.mock(OrchestratorV2)(unusedCorePorts)),
+  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provide(
+    Layer.mock(EventSink.EventSinkV2)({ supersededTerminalTrace: SupersededTerminalTrace.make() }),
+  ),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );
@@ -87,6 +116,7 @@ const decodeThreadSearchResult = Schema.decodeUnknownEffect(
 );
 
 const layerThreadToolkit = McpHttpServer.layerThreadToolkit.pipe(
+  Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
   Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
@@ -140,6 +170,7 @@ it.effect("checks capability through the production registration", () =>
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
       ),
@@ -175,6 +206,7 @@ it.effect("an answered question reports already answered instead of not found", 
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -442,6 +474,7 @@ it.effect("records only failed calls of tools that hand off no work", () => {
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -590,6 +623,7 @@ it.effect("rejects an unknown organize target instead of archiving the calling t
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -627,6 +661,7 @@ it.effect("keeps unexpected handler defects private through the production regis
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -745,6 +780,7 @@ it.effect("a client caller targets any thread within its ceiling and cannot act 
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -868,6 +904,7 @@ it.effect("search names the calling thread, so an agent can tell its own match a
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(
@@ -931,6 +968,7 @@ it.effect("a read-only client reads threads and is refused every write before it
     Effect.provide(
       layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -985,6 +1023,7 @@ it.effect("hides act-as-caller tools from a client caller", () =>
     Effect.provide(
       layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
         Layer.provide(ServerSettings.layerTest()),
@@ -1035,6 +1074,7 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
     Effect.provide(
       layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
         Layer.provide(ServerSettings.layerTest()),
@@ -1109,6 +1149,7 @@ it.effect.each([
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
@@ -1148,6 +1189,7 @@ it.effect("run_scheduled_task_now reports why a started run failed to dispatch",
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
@@ -1330,6 +1372,7 @@ it.effect("discovers workflow stop targets and requires orchestration capability
     Effect.provide(
       layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(Sqlite.layerMemory),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({

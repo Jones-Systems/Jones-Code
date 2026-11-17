@@ -512,13 +512,15 @@ const OrchestratorMcpThreadReadFields = Schema.Struct({
     description: "Max 20000 ordinarily; 50000 with negotiated Jones content evidence.",
   }),
 }).check(Schema.makeFilter(isThreadContentEvidenceSelection));
+// The ordinary 20000 cap applies after wire decoding; the decoded side keeps branded ids.
 export const OrchestratorMcpThreadReadInput = OrchestratorMcpThreadReadFields.pipe(
   Schema.decodeTo(
-    OrchestratorMcpThreadReadFields,
+    Schema.toType(OrchestratorMcpThreadReadFields),
     SchemaTransformation.transform({
-      decode: (input) => input.maxCharsPerItem === undefined || input.contentEvidence !== undefined
-        ? input
-        : { ...input, maxCharsPerItem: Math.min(input.maxCharsPerItem, 20_000) },
+      decode: (input) =>
+        input.maxCharsPerItem === undefined || input.contentEvidence !== undefined
+          ? input
+          : { ...input, maxCharsPerItem: Math.min(input.maxCharsPerItem, 20_000) },
       encode: (input) => input,
     }),
   ),
@@ -661,7 +663,9 @@ export const REMOTE_FOLLOW_UP_RECEIPT_VERSION = "jones.remote-followup-receipt/v
 const remoteFollowUpStruct = <Fields extends Schema.Struct.Fields>(fields: Fields) =>
   Schema.flip(
     Schema.flip(Schema.Struct(fields)).check(
-      Schema.makeFilter((value) => Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key))),
+      Schema.makeFilter((value) =>
+        Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
+      ),
     ),
   );
 

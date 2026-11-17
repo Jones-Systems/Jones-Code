@@ -1,5 +1,13 @@
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
 
+import {
+  desktopUpdateVersionLabel,
+  getJonesDesktopUpdateBlockedMessage,
+  getJonesDesktopUpdateOutcomeMessage,
+  getJonesDesktopUpdateRefusal,
+  isJonesDesktopUpdatePending,
+} from "../jones/updates/localDesktopUpdate";
+
 export type DesktopUpdateButtonAction = "download" | "install" | "none";
 
 const DEFAULT_DESKTOP_RELEASE_REPOSITORY = "pingdotgg/t3code";
@@ -68,7 +76,11 @@ export function shouldShowArm64IntelBuildWarning(state: DesktopUpdateState | nul
 }
 
 export function isDesktopUpdateButtonDisabled(state: DesktopUpdateState | null): boolean {
-  return state?.status === "downloading";
+  return (
+    state?.status === "downloading" ||
+    (state !== null &&
+      getJonesDesktopUpdateBlockedMessage(state, resolveDesktopUpdateButtonAction(state)) !== null)
+  );
 }
 
 export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState): string {
@@ -87,22 +99,27 @@ export function getArm64IntelBuildWarningDescription(state: DesktopUpdateState):
 }
 
 export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string {
+  const blocked = getJonesDesktopUpdateBlockedMessage(
+    state,
+    resolveDesktopUpdateButtonAction(state),
+  );
+  if (blocked) return blocked;
   if (
     state.notAppliedVersion !== undefined &&
     (state.status === "available" || state.status === "downloaded") &&
     getDesktopUpdateDownloadedVersion(state) === state.notAppliedVersion
   ) {
-    return `Update ${state.notAppliedVersion} did not apply. Click to retry.`;
+    return `Update ${desktopUpdateVersionLabel(state, state.notAppliedVersion)} did not apply. Click to retry.`;
   }
   if (
     (state.status === "available" || state.status === "error") &&
     state.errorContext === "download" &&
     state.availableVersion
   ) {
-    return `Download failed for ${state.availableVersion}. Click to retry.`;
+    return `Download failed for ${desktopUpdateVersionLabel(state, state.availableVersion)}. Click to retry.`;
   }
   if (state.status === "available") {
-    return `Update ${state.availableVersion ?? "available"} ready to download`;
+    return `Update ${state.availableVersion ? desktopUpdateVersionLabel(state, state.availableVersion) : "available"} ready to download`;
   }
   if (state.status === "downloading") {
     const progress =
@@ -110,18 +127,18 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     return `Downloading update${progress}`;
   }
   if (state.status === "downloaded") {
-    return `Update ${state.downloadedVersion ?? state.availableVersion ?? "ready"} downloaded. Click to restart and install.`;
+    return `Update ${desktopUpdateVersionLabel(state, state.downloadedVersion ?? state.availableVersion ?? "ready")} downloaded. Click to restart and install.`;
   }
   if (state.status === "error") {
     if (state.errorContext === "install" && state.downloadedVersion) {
-      return `Install failed for ${state.downloadedVersion}. Click to retry.`;
+      return `Install failed for ${desktopUpdateVersionLabel(state, state.downloadedVersion)}. Click to retry.`;
     }
     if (state.downloadedVersion) {
-      return `Update ${state.downloadedVersion} downloaded. Click to restart and install.`;
+      return `Update ${desktopUpdateVersionLabel(state, state.downloadedVersion)} downloaded. Click to restart and install.`;
     }
     return state.message ?? "Update failed";
   }
-  return "Up to date";
+  return getJonesDesktopUpdateOutcomeMessage(state) ?? "Up to date";
 }
 
 export function getDesktopUpdateInstallConfirmationMessage(
@@ -132,6 +149,9 @@ export function getDesktopUpdateInstallConfirmationMessage(
 }
 
 export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): string | null {
+  if (isJonesDesktopUpdatePending(result)) return null;
+  const refusal = getJonesDesktopUpdateRefusal(result);
+  if (refusal) return refusal;
   if (!result.accepted || result.completed) return null;
   if (typeof result.state.message !== "string") return null;
   const message = result.state.message.trim();

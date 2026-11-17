@@ -33,6 +33,7 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -190,6 +191,7 @@ it.effect(
             }),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           streamDomainEvents: Stream.fromEffectRepeat(
             Queue.offer(pulls, undefined).pipe(Effect.andThen(Queue.take(events))),
           ),
@@ -361,6 +363,7 @@ it.live(
             Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
             Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({}),
             Layer.mock(Orchestrator.OrchestratorV2)({
+              ...unusedCorePorts(),
               getShellSnapshot: (query) =>
                 projections
                   .getShellSnapshot(query)

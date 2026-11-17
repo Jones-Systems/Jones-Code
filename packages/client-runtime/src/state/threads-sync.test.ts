@@ -412,31 +412,40 @@ const deleted = (sequence = 3): OrchestrationV2ThreadStreamItem => {
 };
 
 describe("EnvironmentThreads", () => {
-  it.effect("opts into compact visits and applies them without replacing newer detail metadata", () =>
-    Effect.gen(function* () {
-      const projection = {
-        ...BASE_PROJECTION,
-        thread: { ...BASE_PROJECTION.thread, title: "newer metadata", threadMessagesBlocked: true },
-      };
-      const h = yield* makeHarness({ cached: projection });
-      yield* awaitThreadState(h.observed, (state) => state.status === "live");
-      expect(yield* Ref.get(h.lastAcceptCompactThreadVisits)).toBe(true);
-      const visitedAt = DateTime.add(v2Now, { seconds: 10 });
-      yield* Queue.offer(h.inputs, {
-        kind: "event",
-        sequence: 8,
-        event: {
-          id: EventId.make("compact-visit:client"),
-          threadId: THREAD_ID,
-          occurredAt: visitedAt,
-          type: "thread.visit-recorded",
-          payload: { lastVisitedAt: visitedAt },
-        },
-      });
-      const next = yield* awaitThreadState(h.observed, (state) => state.appliedSequence === 8);
-      expect(Option.getOrThrow(next.data).thread).toEqual({ ...projection.thread, lastVisitedAt: visitedAt });
-      expect(Option.getOrThrow(next.data).updatedAt).toEqual(projection.updatedAt);
-    }),
+  it.effect(
+    "opts into compact visits and applies them without replacing newer detail metadata",
+    () =>
+      Effect.gen(function* () {
+        const projection = {
+          ...BASE_PROJECTION,
+          thread: {
+            ...BASE_PROJECTION.thread,
+            title: "newer metadata",
+            threadMessagesBlocked: true,
+          },
+        };
+        const h = yield* makeHarness({ cached: projection });
+        yield* awaitThreadState(h.observed, (state) => state.status === "live");
+        expect(yield* Ref.get(h.lastAcceptCompactThreadVisits)).toBe(true);
+        const visitedAt = DateTime.add(v2Now, { seconds: 10 });
+        yield* Queue.offer(h.inputs, {
+          kind: "event",
+          sequence: 8,
+          event: {
+            id: EventId.make("compact-visit:client"),
+            threadId: THREAD_ID,
+            occurredAt: visitedAt,
+            type: "thread.visit-recorded",
+            payload: { lastVisitedAt: visitedAt },
+          },
+        });
+        const next = yield* awaitThreadState(h.observed, (state) => state.appliedSequence === 8);
+        expect(Option.getOrThrow(next.data).thread).toEqual({
+          ...projection.thread,
+          lastVisitedAt: visitedAt,
+        });
+        expect(Option.getOrThrow(next.data).updatedAt).toEqual(projection.updatedAt);
+      }),
   );
 
   it.effect.each([
@@ -864,7 +873,7 @@ describe("EnvironmentThreads", () => {
       status: "deleted",
       loads: [0, 1],
     },
-    // A defect never retries on its own, so the socket-only open resubscribes once.
+    // The first socket-only defect hands off to HTTP without waiting for the normal backoff.
     {
       label: "a socket-only open that hits a defect asks HTTP",
       socketSnapshots: true,
@@ -943,6 +952,46 @@ describe("EnvironmentThreads", () => {
       );
       expect(settled.status).toBe("empty");
       expect(configReads).toBe(2);
+    }),
+  );
+
+  it.effect.each([
+    { label: "expected failure", failure: new Error("Socket closed") },
+    { label: "defect", failure: TEST_DEFECT },
+  ])("hands a socket-only $label to HTTP without leaving a second retry", ({ failure }) =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        socketSnapshots: true,
+        httpSnapshot: { _tag: "unavailable" },
+      });
+      yield* SubscriptionRef.changes(harness.subscriptionCount).pipe(
+        Stream.filter((count) => count === 1),
+        Stream.runHead,
+      );
+
+      yield* Queue.offer(harness.inputs, failure);
+      yield* SubscriptionRef.changes(harness.subscriptionCount).pipe(
+        Stream.filter((count) => count === 2),
+        Stream.runHead,
+      );
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(1);
+      yield* TestClock.adjust("2 seconds");
+      expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(2);
+
+      yield* Queue.offer(harness.inputs, TEST_DEFECT);
+      const failed = yield* awaitThreadState(harness.observed, (value) =>
+        Option.isSome(value.error),
+      );
+      expect(Option.getOrThrow(failed.error)).toBe("Could not synchronize the thread.");
+      expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(2);
+      yield* TestClock.adjust("1 second");
+      yield* SubscriptionRef.changes(harness.subscriptionCount).pipe(
+        Stream.filter((count) => count === 3),
+        Stream.runHead,
+      );
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(2);
+      yield* TestClock.adjust("2 seconds");
+      expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(3);
     }),
   );
 

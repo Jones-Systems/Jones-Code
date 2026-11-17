@@ -5353,7 +5353,7 @@ it.effect(
         invalidate: () => Effect.void,
       };
       const unused = () => Effect.die("Unexpected runtime operation");
-      const runtime: OpenCodeRuntime.OpenCodeRuntimeShape = {
+      const runtime: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
         startOpenCodeServerProcess: unused,
         connectToOpenCodeServer: () =>
           Effect.succeed({

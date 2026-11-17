@@ -76,6 +76,7 @@ function session(client: WsRpcProtocolClient): RpcSession.RpcSession {
 const makePersistenceHarness = Effect.fn("test.makeShellPersistenceHarness")(function* (
   saveShell: Persistence.EnvironmentCacheStore["Service"]["saveShell"],
   config: Partial<ServerConfig> = {},
+  loadSnapshot?: ShellSnapshotLoader.ShellSnapshotLoader["Service"]["load"],
 ) {
   const events = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
   const subscribeInputs = yield* Queue.unbounded<unknown>();
@@ -119,7 +120,7 @@ const makePersistenceHarness = Effect.fn("test.makeShellPersistenceHarness")(fun
     Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
     Effect.provideService(Persistence.EnvironmentCacheStore, cache),
     Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, {
-      load: () => Effect.succeedNone,
+      load: loadSnapshot ?? (() => Effect.succeedNone),
     }),
     Effect.provideService(ConnectionWakeups.ConnectionWakeups, {
       changes: Stream.fromQueue(wakeups),
@@ -396,6 +397,53 @@ describe("environment shell synchronization", () => {
     }),
   );
 
+  it.effect("flushes deferred links when their publication closes the shell scope", () =>
+    Effect.gen(function* () {
+      const linksReady = yield* Deferred.make<void>();
+      const saved = yield* Ref.make<ReadonlyArray<OrchestrationV2ShellSnapshot>>([]);
+      const link: ThreadPullRequestLink = {
+        host: "github.com",
+        repository: "pingdotgg/t3code",
+        number: 1,
+        url: "https://github.com/pingdotgg/t3code/pull/1",
+        source: "agent",
+        linkedAt: "2026-06-20T00:00:00.000Z",
+        snapshot: null,
+        stack: null,
+      };
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makePersistenceHarness(
+            (_id, snapshot) => Ref.update(saved, (values) => [...values, snapshot]),
+            {},
+            () =>
+              Effect.succeedSome({
+                ...LIVE_SHELL_SNAPSHOT,
+                loadPullRequests: Deferred.await(linksReady).pipe(
+                  Effect.as(new Map([[v2ThreadShell.id, [link]]])),
+                ),
+              }),
+          );
+          yield* TestClock.adjust("500 millis");
+          expect(yield* Ref.get(saved)).toEqual([]);
+          yield* Deferred.succeed(linksReady, undefined);
+          yield* SubscriptionRef.changes(h.state).pipe(
+            Stream.filter((state) =>
+              Option.exists(
+                state.snapshot,
+                (snapshot) =>
+                  snapshot.threads[0]?.pullRequests?.some((value) => value.url === link.url) ===
+                  true,
+              ),
+            ),
+            Stream.runHead,
+          );
+        }),
+      );
+      expect((yield* Ref.get(saved)).at(-1)?.threads[0]?.pullRequests).toEqual([link]);
+    }),
+  );
+
   it.effect("retries a failed shell save after a cursor-only update", () =>
     Effect.gen(function* () {
       const attempts = yield* Ref.make<ReadonlyArray<number>>([]);
@@ -505,6 +553,7 @@ describe("environment shell synchronization", () => {
           }),
         );
         expect(yield* Queue.take(subscriptions)).toBeUndefined();
+        expect(attempts).toBe(1);
         const semaphore = shellState.semaphore;
         const withPermit = semaphore.withPermit;
         semaphore.withPermit = (effect) => {
@@ -536,6 +585,7 @@ describe("environment shell synchronization", () => {
         yield* Deferred.await(successorStarted);
         yield* Deferred.succeed(release, undefined);
         expect(yield* Queue.take(subscriptions)).toBe(2);
+        expect(attempts).toBe(2);
         const current = yield* SubscriptionRef.get(shellState);
         expect(Option.getOrThrow(current.snapshot).snapshotSequence).toBe(2);
         expect(Option.getOrThrow(current.snapshot).threads[0]?.title).toBe(v2ThreadShell.title);

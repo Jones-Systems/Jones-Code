@@ -24,7 +24,6 @@ import * as Path from "effect/Path";
 import type {
   ProjectEntry,
   ProjectEntryKind,
-  ProjectListEntriesResult,
   ProjectSearchContentsInput,
   ProjectSearchContentsResult,
   ProjectSearchEntriesResult,
@@ -35,7 +34,11 @@ import { scoreSubsequenceMatch } from "@t3tools/shared/searchRanking";
 
 import { CurrentProbeOwner, WorkspaceSearchProbe } from "../serverCompute/searchProbeClient.ts";
 import { PROBE_LIMITS, probeFailure } from "../serverCompute/searchProbeProtocol.ts";
-import { type IgnoreDecision, type IgnoreFile, parseIgnoreFile } from "../../workspace/IgnorePatterns.ts";
+import {
+  type IgnoreDecision,
+  type IgnoreFile,
+  parseIgnoreFile,
+} from "../../workspace/IgnorePatterns.ts";
 
 // fff-node stays external to the CLI bundle because it dlopens a native
 // library. A static `import` of an external package is a hard error inside a
@@ -89,7 +92,10 @@ const SYMLINK_RESCAN_WAIT = "5 millis";
 // Each page is a synchronous native call; small pages let searches run between them.
 const SYMLINK_DIRECTORY_PAGE_SIZE = 1_000;
 
-import type { WorkspaceSearchIndex, WorkspaceSearchIndexVariant } from "../../workspace/WorkspaceSearchIndex.ts";
+import type {
+  WorkspaceSearchIndex,
+  WorkspaceSearchIndexVariant,
+} from "../../workspace/WorkspaceSearchIndex.ts";
 export type { WorkspaceSearchIndex } from "../../workspace/WorkspaceSearchIndex.ts";
 import {
   WorkspaceSearchIndexCreateFailed,
@@ -99,6 +105,8 @@ import {
   WorkspaceSearchIndexDestroyFailed,
 } from "../serverCompute/workspaceErrors.ts";
 import { collectContentSearchPages } from "./contentSearchPages.ts";
+
+type SearchEvidence = Pick<WorkspaceSearchIndexSearchFailed, "queryLength" | "pageSize">;
 
 // Only the host separator becomes `/`: on POSIX `\` is a file name character.
 function toPosixPath(input: string, hostIsWindows: boolean): string {
@@ -562,7 +570,9 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   let contentIndexPending = variant === "content";
   const probes = yield* WorkspaceSearchProbe;
   let ignoredPaths = yield* listGitIgnoredPaths(probes, hostIsWindows).pipe(
-    Effect.mapError((cause) => new WorkspaceSearchIndexCreateFailed({ cwd, reason: cause.message, cause })),
+    Effect.mapError(
+      (cause) => new WorkspaceSearchIndexCreateFailed({ cwd, reason: cause.message, cause }),
+    ),
   );
   if (variant === "paths") {
     yield* waitForIndexReady(
@@ -613,12 +623,29 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
       readonly ignoreCase: boolean;
       readonly maxMatchesPerFile: number;
       readonly onlyMatching: boolean;
+      readonly pageSize: number;
     },
   ) {
-    return yield* probes.run({ kind: "grep", pattern, regexMode: options.regexMode,
-      ignoreCase: options.ignoreCase, onlyMatching: options.onlyMatching }).pipe(
-        Effect.map(Option.some),
-        Effect.mapError((cause) => new WorkspaceSearchIndexSearchFailed({ cwd, reason: cause.message, cause })),
+    return yield* probes
+      .run({
+        kind: "grep",
+        pattern,
+        regexMode: options.regexMode,
+        ignoreCase: options.ignoreCase,
+        onlyMatching: options.onlyMatching,
+      })
+      .pipe(
+        Effect.asSome,
+        Effect.mapError(
+          (cause) =>
+            new WorkspaceSearchIndexSearchFailed({
+              cwd,
+              queryLength: pattern.length,
+              pageSize: options.pageSize,
+              reason: cause.message,
+              cause,
+            }),
+        ),
       );
   });
 
@@ -660,11 +687,15 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   // None when git cannot search this folder (not a repository, git missing, no PCRE for a regex).
   const searchContentsWithGit = Effect.fn("WorkspaceSearchIndex.searchContentsWithGit")(function* (
     input: Omit<ProjectSearchContentsInput, "cwd">,
-  ): Effect.fn.Return<Option.Option<ProjectSearchContentsResult>, WorkspaceSearchIndexSearchFailed> {
+  ): Effect.fn.Return<
+    Option.Option<ProjectSearchContentsResult>,
+    WorkspaceSearchIndexSearchFailed
+  > {
     const options = {
       ignoreCase: !input.caseSensitive,
       maxMatchesPerFile: CONTENT_SEARCH_MAX_MATCHES_PER_FILE,
       onlyMatching: false,
+      pageSize: input.limit,
     };
     let regexMode = input.useRegex;
     let regexFallbackError: string | undefined;
@@ -799,7 +830,8 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
       for (let pageIndex = 0; ; pageIndex += SYMLINK_DIRECTORY_PAGE_SIZE) {
         const result = yield* Effect.promise(async () => {
           try {
-            return await finder.directorySearchAsync("", { maxThreads: 1,
+            return await finder.directorySearchAsync("", {
+              maxThreads: 1,
               pageIndex,
               pageSize: SYMLINK_DIRECTORY_PAGE_SIZE,
             });
@@ -821,6 +853,7 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   const listGitIgnored = Effect.fn("WorkspaceSearchIndex.listGitIgnored")(function* (
     repository: string,
     entries: ReadonlyArray<ProjectEntry>,
+    evidence: SearchEvidence,
   ) {
     const relativePaths = entries.map((entry) =>
       repository ? entry.path.slice(repository.length + 1) : entry.path,
@@ -828,41 +861,81 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     // Bound each upload without dropping a repository's candidates. A completed
     // check-ignore failure applies to the whole group, never just its last batch.
     const batches: string[][] = [];
-    let batch: string[] = [], bytes = 0;
+    let batch: string[] = [],
+      bytes = 0;
     for (const relative of relativePaths) {
       const size = Buffer.byteLength(relative) + 1;
       if (size > PROBE_LIMITS.pathBytes + 1 || size > PROBE_LIMITS.stdinBytes)
-        return yield* Effect.fail(new WorkspaceSearchIndexSearchFailed({ cwd, reason: "Git ignore candidate exceeds the limit.", cause: probeFailure("oversize") }));
+        return yield* new WorkspaceSearchIndexSearchFailed({
+          cwd,
+          ...evidence,
+          reason: "Git ignore candidate exceeds the limit.",
+          cause: probeFailure("oversize"),
+        });
       if (batch.length === PROBE_LIMITS.paths || bytes + size > PROBE_LIMITS.stdinBytes) {
-        batches.push(batch); batch = []; bytes = 0;
+        batches.push(batch);
+        batch = [];
+        bytes = 0;
       }
-      batch.push(relative); bytes += size;
+      batch.push(relative);
+      bytes += size;
     }
     if (batch.length) batches.push(batch);
     const ignored: string[] = [];
     for (const paths of batches) {
       const result = yield* probes.run({ kind: "ignoredCandidates", repository, paths }).pipe(
-        Effect.mapError((cause) => new WorkspaceSearchIndexSearchFailed({ cwd, reason: cause.message, cause })),
+        Effect.mapError(
+          (cause) =>
+            new WorkspaceSearchIndexSearchFailed({
+              cwd,
+              ...evidence,
+              reason: cause.message,
+              cause,
+            }),
+        ),
       );
       if (result.exitCode === 1) continue;
       if (result.exitCode !== 0 || result.stdoutTruncated || result.stdoutInvalidUtf8) {
         const presence = yield* probes.run({ kind: "repositoryPresence", repository }).pipe(
-          Effect.mapError((cause) => new WorkspaceSearchIndexSearchFailed({ cwd, reason: cause.message, cause })),
+          Effect.mapError(
+            (cause) =>
+              new WorkspaceSearchIndexSearchFailed({
+                cwd,
+                ...evidence,
+                reason: cause.message,
+                cause,
+              }),
+          ),
         );
         if (presence.exitCode === 0 && !presence.stdoutTruncated && !presence.stdoutInvalidUtf8)
           return entries.map((entry) => entry.path);
-        if (presence.exitCode === 128 && /^fatal: not a git repository(?:[ :(.]|$)/i.test(presence.stderr) &&
-            !presence.stderrTruncated && !presence.stderrInvalidUtf8) return [];
-        return yield* Effect.fail(new WorkspaceSearchIndexSearchFailed({ cwd,
-          reason: "Repository presence is unavailable.", cause: probeFailure("process-failed") }));
+        if (
+          presence.exitCode === 128 &&
+          /^fatal: not a git repository(?:[ :(.]|$)/i.test(presence.stderr) &&
+          !presence.stderrTruncated &&
+          !presence.stderrInvalidUtf8
+        )
+          return [];
+        return yield* new WorkspaceSearchIndexSearchFailed({
+          cwd,
+          ...evidence,
+          reason: "Repository presence is unavailable.",
+          cause: probeFailure("process-failed"),
+        });
       }
-      ignored.push(...result.stdout.split("\0").filter(Boolean).map((relativePath) =>
-        repository ? `${repository}/${relativePath}` : relativePath));
+      ignored.push(
+        ...result.stdout
+          .split("\0")
+          .filter(Boolean)
+          .map((relativePath) => (repository ? `${repository}/${relativePath}` : relativePath)),
+      );
     }
     return ignored;
   });
 
-  const scanSymlinkEntries = Effect.fn("WorkspaceSearchIndex.scanSymlinkEntries")(function* () {
+  const scanSymlinkEntries = Effect.fn("WorkspaceSearchIndex.scanSymlinkEntries")(function* (
+    evidence: SearchEvidence,
+  ) {
     const indexComplete = !(yield* isScanning);
     const directories = yield* listIndexedDirectories();
     const scanned = yield* Effect.forEach(
@@ -898,7 +971,7 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     const ignored = new Set(
       (yield* Effect.forEach(
         entriesByRepository,
-        ([repository, entries]) => listGitIgnored(repository, entries),
+        ([repository, entries]) => listGitIgnored(repository, entries, evidence),
         { concurrency: 4 },
       )).flat(),
     );
@@ -919,7 +992,9 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   type SymlinkScan = Effect.Success<ReturnType<typeof scanSymlinkEntries>>;
   let lastSymlinkScan: SymlinkScan | undefined;
   let lastSymlinkScanExpiresAt: number | undefined;
-  let pendingSymlinkScan: Deferred.Deferred<SymlinkScan, WorkspaceSearchIndexSearchFailed> | undefined;
+  let pendingSymlinkScan:
+    | Deferred.Deferred<SymlinkScan, WorkspaceSearchIndexSearchFailed>
+    | undefined;
   let symlinkScanStale = false;
   let knownLinkPaths: ReadonlySet<string> = new Set();
   const invalidateSymlinkScan = () => {
@@ -953,23 +1028,44 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     return unwatch !== undefined;
   });
   const indexScope = yield* Effect.scope;
-  const startSymlinkScan = Effect.fn("WorkspaceSearchIndex.startSymlinkScan")(function* () {
+  const startSymlinkScan = Effect.fn("WorkspaceSearchIndex.startSymlinkScan")(function* (
+    evidence: SearchEvidence,
+  ) {
     const lease = yield* probes.beginScan.pipe(
-      Effect.mapError((cause) => new WorkspaceSearchIndexSearchFailed({ cwd, reason: cause.message, cause })),
+      Effect.mapError(
+        (cause) =>
+          new WorkspaceSearchIndexSearchFailed({ cwd, ...evidence, reason: cause.message, cause }),
+      ),
     );
     symlinkScanStale = false;
     const done = yield* Deferred.make<SymlinkScan, WorkspaceSearchIndexSearchFailed>();
     pendingSymlinkScan = done;
-    const scanDeadline = (yield* Clock.currentTimeMillis) + PROBE_LIMITS.residentMs - PROBE_LIMITS.cancelReserveMs;
+    const scanDeadline =
+      (yield* Clock.currentTimeMillis) + PROBE_LIMITS.residentMs - PROBE_LIMITS.cancelReserveMs;
     yield* Effect.gen(function* () {
       // Subscribing before the scan starts means no change during it goes unseen.
       const watched = yield* ensureWatching();
-      const result = yield* scanSymlinkEntries();
+      const result = yield* scanSymlinkEntries(evidence);
       // Check the independent scan lifetime before publishing, including scans
       // whose final operation happened to require no Git probe.
       if ((yield* Clock.currentTimeMillis) >= scanDeadline)
-        return yield* Effect.fail(new WorkspaceSearchIndexSearchFailed({ cwd, reason: "Resident scan lease expired.", cause: probeFailure("deadline") }));
-      yield* lease.end.pipe(Effect.mapError((cause) => new WorkspaceSearchIndexSearchFailed({ cwd, reason: cause.message, cause })));
+        return yield* new WorkspaceSearchIndexSearchFailed({
+          cwd,
+          ...evidence,
+          reason: "Resident scan lease expired.",
+          cause: probeFailure("deadline"),
+        });
+      yield* lease.end.pipe(
+        Effect.mapError(
+          (cause) =>
+            new WorkspaceSearchIndexSearchFailed({
+              cwd,
+              ...evidence,
+              reason: cause.message,
+              cause,
+            }),
+        ),
+      );
       lastSymlinkScan = result;
       knownLinkPaths = result.linkPaths;
       // Without a watcher, or before fff has seen every folder, the result is kept only briefly.
@@ -980,9 +1076,17 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
       return result;
     }).pipe(
       Effect.provideService(CurrentProbeOwner, lease.owner),
-      Effect.timeoutOrElse({ duration: PROBE_LIMITS.residentMs - PROBE_LIMITS.cancelReserveMs,
-        orElse: () => Effect.fail(new WorkspaceSearchIndexSearchFailed({ cwd,
-          reason: "Resident scan lease expired.", cause: probeFailure("deadline") })),
+      Effect.timeoutOrElse({
+        duration: PROBE_LIMITS.residentMs - PROBE_LIMITS.cancelReserveMs,
+        orElse: () =>
+          Effect.fail(
+            new WorkspaceSearchIndexSearchFailed({
+              cwd,
+              ...evidence,
+              reason: "Resident scan lease expired.",
+              cause: probeFailure("deadline"),
+            }),
+          ),
       }),
       Effect.ensuring(lease.end.pipe(Effect.orDie)),
       Effect.onExit((exit) =>
@@ -998,7 +1102,9 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     );
     return done;
   }, Effect.uninterruptible);
-  const listSymlinkEntries = Effect.fn("WorkspaceSearchIndex.listSymlinkEntries")(function* () {
+  const listSymlinkEntries = Effect.fn("WorkspaceSearchIndex.listSymlinkEntries")(function* (
+    evidence: SearchEvidence,
+  ) {
     if (
       lastSymlinkScanExpiresAt !== undefined &&
       (yield* Clock.currentTimeMillis) >= lastSymlinkScanExpiresAt
@@ -1007,7 +1113,9 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     }
     const pending =
       pendingSymlinkScan ??
-      (lastSymlinkScan === undefined || symlinkScanStale ? yield* startSymlinkScan() : undefined);
+      (lastSymlinkScan === undefined || symlinkScanStale
+        ? yield* startSymlinkScan(evidence)
+        : undefined);
     let result = lastSymlinkScan;
     if (pending && result === undefined) {
       result = yield* Deferred.await(pending);
@@ -1060,16 +1168,18 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   const refreshContent: WorkspaceSearchIndex["Service"]["refreshContent"] = Effect.fn(
     "WorkspaceSearchIndex.refreshContent",
   )(function* () {
-    // scanFiles waits on fff's picker lock, which its watcher can hold for seconds.
+    // A content rescan can retain stale native file bytes or miss newly created files.
+    // Restart that index on the same handle; both operations run off the JS thread.
+    const operation = variant === "content" ? "reindexAsync" : "scanFilesAsync";
     const result = yield* Effect.tryPromise({
-      try: () => finder.scanFilesAsync(),
+      try: () => (variant === "content" ? finder.reindexAsync(cwd) : finder.scanFilesAsync()),
       catch: (cause) =>
         new WorkspaceSearchIndexRefreshFailed({
           cwd,
-          reason: "FileFinder.scanFilesAsync rejected unexpectedly.",
+          reason: `FileFinder.${operation} rejected unexpectedly.`,
           cause,
         }),
-    });
+    }).pipe(Effect.uninterruptible);
     if (!result.ok) {
       return yield* new WorkspaceSearchIndexRefreshFailed({
         cwd,
@@ -1089,13 +1199,17 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
         }),
     );
     ignoredPaths = yield* listGitIgnoredPaths(probes, hostIsWindows).pipe(
-      Effect.mapError((cause) => new WorkspaceSearchIndexRefreshFailed({ cwd, reason: cause.message, cause })),
+      Effect.mapError(
+        (cause) => new WorkspaceSearchIndexRefreshFailed({ cwd, reason: cause.message, cause }),
+      ),
     );
     invalidateSymlinkScan();
   });
 
   const refresh: WorkspaceSearchIndex["Service"]["refresh"] = () =>
-    refreshContent().pipe(Effect.catchTags({ WorkspaceSearchIndexScanTimedOut: () => Effect.void }));
+    refreshContent().pipe(
+      Effect.catchTags({ WorkspaceSearchIndexScanTimedOut: () => Effect.void }),
+    );
 
   const list: WorkspaceSearchIndex["Service"]["list"] = Effect.fn("WorkspaceSearchIndex.list")(
     function* () {
@@ -1108,7 +1222,10 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
         mixedItemPath,
       );
       const mapped = mapMixedSearchResult(result, WORKSPACE_INDEX_MAX_ENTRIES, hostIsWindows);
-      const symlinks = yield* listSymlinkEntries();
+      const symlinks = yield* listSymlinkEntries({
+        queryLength: 0,
+        pageSize: WORKSPACE_INDEX_PAGE_SIZE,
+      });
       // fff's watcher can index a link the scan rejected; only accepted links are listed.
       const indexed = mapped.entries.filter((entry) => !symlinks.linkPaths.has(entry.path));
       const sortedEntries = withDirectoryAncestors([...indexed, ...symlinks.entries]).toSorted(
@@ -1128,8 +1245,9 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     limit: number,
     kind: ProjectEntryKind | undefined,
     imageOnly: boolean | undefined,
+    evidence: SearchEvidence,
   ) {
-    const { entries: allSymlinks, linkPaths } = yield* listSymlinkEntries();
+    const { entries: allSymlinks, linkPaths } = yield* listSymlinkEntries(evidence);
     const symlinks = allSymlinks.filter((entry) =>
       imageOnly
         ? entry.kind === "file" && isProjectFaviconPath(entry.path)
@@ -1201,9 +1319,15 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     // "{" is dropped only when the query finds nothing as a glob, so "*.{ts,tsx}" keeps working.
     const query = rawQuery.replaceAll("[", "");
     const incompleteBeforeQuery = yield* hasIncompleteInitialScan();
-    let mapped = yield* searchNames(query, limit, kind, imageOnly);
+    // A resident scan keeps the triggering read's budget, including if another
+    // read later shares its pending result. Native page failures use runSearch's actual size.
+    const evidence = {
+      queryLength: rawQuery.length,
+      pageSize: imageOnly ? WORKSPACE_INDEX_PAGE_SIZE : Math.max(1, limit + 1),
+    };
+    let mapped = yield* searchNames(query, limit, kind, imageOnly, evidence);
     if (mapped.entries.length === 0 && query.includes("{")) {
-      mapped = yield* searchNames(query.replaceAll("{", ""), limit, kind, imageOnly);
+      mapped = yield* searchNames(query.replaceAll("{", ""), limit, kind, imageOnly, evidence);
     }
     return { ...mapped, truncated: incompleteBeforeQuery || mapped.truncated };
   });
@@ -1232,40 +1356,63 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     const rawPageSize = input.wholeWord
       ? Math.max(input.limit, CONTENT_SEARCH_MAX_MATCHES_PER_FILE)
       : input.limit;
-    const grepPage = (cursor: GrepCursor | null, budget: { readonly timeBudgetMs: number; readonly enforceTimeBudget: true }) =>
-      runSearch(input.query, input.limit, "grep", () => finder.grepAsync(searchQuery, {
-        mode: regexMode ? "regex" : "plain",
-        smartCase: !input.caseSensitive && !regexMode,
-        maxMatchesPerFile: Math.min(CONTENT_SEARCH_MAX_MATCHES_PER_FILE, rawPageSize),
-        pageSize: rawPageSize,
-        cursor,
-        ...budget,
-      }));
+    const grepPage = (
+      cursor: GrepCursor | null,
+      budget: { readonly timeBudgetMs: number; readonly enforceTimeBudget: true },
+    ) =>
+      runSearch(input.query, input.limit, "grep", () =>
+        finder.grepAsync(searchQuery, {
+          mode: regexMode ? "regex" : "plain",
+          smartCase: !input.caseSensitive && !regexMode,
+          maxMatchesPerFile: Math.min(CONTENT_SEARCH_MAX_MATCHES_PER_FILE, rawPageSize),
+          pageSize: rawPageSize,
+          cursor,
+          ...budget,
+        }),
+      );
     return yield* collectContentSearchPages({
       limit: input.limit,
-      searchPage: (cursor, budget) => grepPage(cursor, budget).pipe(
-        Effect.flatMap((result) => {
-          const { regexFallbackError } = result;
-          if (!regexMode || input.caseSensitive || regexFallbackError === undefined) return Effect.succeed(result);
-          ({ searchQuery, regexMode } = buildContentSearchQuery({ ...input, useRegex: false }));
-          return grepPage(cursor, budget).pipe(Effect.map((literal) => ({ ...literal, regexFallbackError })));
-        }),
-      ),
+      searchPage: (cursor, budget) =>
+        grepPage(cursor, budget).pipe(
+          Effect.flatMap((result) => {
+            const { regexFallbackError } = result;
+            if (!regexMode || input.caseSensitive || regexFallbackError === undefined)
+              return Effect.succeed(result);
+            ({ searchQuery, regexMode } = buildContentSearchQuery({ ...input, useRegex: false }));
+            return grepPage(cursor, budget).pipe(
+              Effect.map((literal) => ({ ...literal, regexFallbackError })),
+            );
+          }),
+        ),
       mapMatch: (match) => {
         if (isIgnoredPath(ignoredPaths, match.relativePath, hostIsWindows)) return undefined;
-        const matchRanges = mapContentMatchRanges(match.lineContent, match.matchRanges)
-          .filter((range) => !input.wholeWord || isWholeWordRange(match.lineContent, range));
+        const matchRanges = mapContentMatchRanges(match.lineContent, match.matchRanges).filter(
+          (range) => !input.wholeWord || isWholeWordRange(match.lineContent, range),
+        );
         if (input.wholeWord && matchRanges.length === 0) return undefined;
-        return { path: toPosixPath(match.relativePath, hostIsWindows), lineNumber: match.lineNumber, lineContent: match.lineContent, matchRanges };
+        return {
+          path: toPosixPath(match.relativePath, hostIsWindows),
+          lineNumber: match.lineNumber,
+          lineContent: match.lineContent,
+          matchRanges,
+        };
       },
     });
   });
 
-  return { list, refresh, refreshContent, search, searchContents,
+  return {
+    list,
+    refresh,
+    refreshContent,
+    search,
+    searchContents,
     status: async () => {
       const progress = await finder.getScanProgressAsync();
       if (!progress.ok) throw new Error("Native scan state unavailable.");
-      return { scanning: progress.value.isScanning, warmupComplete: progress.value.isWarmupComplete };
+      return {
+        scanning: progress.value.isScanning,
+        warmupComplete: progress.value.isWarmupComplete,
+      };
     },
   };
 });

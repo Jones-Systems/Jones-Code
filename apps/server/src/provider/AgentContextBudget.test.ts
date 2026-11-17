@@ -5,6 +5,7 @@ import * as RemoteAdmissionIntake from "../jones/remoteAdmissionIntegration/Remo
 import * as ProviderSessions from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as Receipts from "../orchestration-v2/CommandReceiptStore.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -29,6 +30,7 @@ import {
   makeClaudeQueryOptions,
 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ThreadLaunchService } from "../orchestration-v2/ThreadLaunchService.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
@@ -63,7 +65,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(AssetSigner)({}),
   Sqlite.layerMemory,
   Layer.mock(Receipts.CommandReceiptStoreV2)({}),
-  Layer.mock(EventSink.EventSinkV2)({}),
+  Layer.mock(EventSink.EventSinkV2)({ supersededTerminalTrace: SupersededTerminalTrace.make() }),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(ProviderSessions.ProviderSessionManagerV2)({}),
   Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
@@ -75,7 +77,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(McpProviderSessions)({}),
-  Layer.mock(OrchestratorV2)({}),
+  Layer.mock(OrchestratorV2)({ ...unusedCorePorts() }),
   Layer.mock(PeerForwarding)({}),
   Layer.mock(PeerLinkRequests)({}),
   Layer.mock(PeerLinks)({}),

@@ -29,7 +29,12 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/compat";
 import * as EffectAcpProtocol from "effect-acp/protocol";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
-import { AgentScope, AgentScopeThreadId, RAISE_OOM_SCORE_LINE } from "@t3tools/shared/AgentScope";
+import {
+  AgentScope,
+  AgentScopeThreadId,
+  RAISE_OOM_SCORE_LINE,
+  type AgentScopeCommand,
+} from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -215,6 +220,11 @@ export interface AcpLinuxCgroupLease {
 export interface AcpLinuxCgroupController {
   readonly create: () => AcpLinuxCgroupLease | undefined;
 }
+
+export const AcpLinuxCgroupControllerRef = Context.Reference<AcpLinuxCgroupController>(
+  "@t3tools/provider-acp/LinuxCgroupController",
+  { defaultValue: makeLinuxCgroupController },
+);
 
 export interface AcpPosixOwnershipRoot {
   captureAttempted?: boolean;
@@ -441,7 +451,7 @@ function tryCreateLinuxCgroupLease(
   };
 }
 
-export function makeLinuxCgroupController(): AcpLinuxCgroupController {
+function makeLinuxCgroupController(): AcpLinuxCgroupController {
   return {
     create: () => {
       let currentRelative: string | undefined;
@@ -1178,6 +1188,11 @@ export class AcpSessionRuntime extends Context.Service<
       },
     ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
     readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
+    readonly processContainment:
+      | "cgroup-v2"
+      | "process-ledger-reduced-guarantee"
+      | "process-group"
+      | "none";
     readonly terminateProcessGroup?: Effect.Effect<void, AcpProcessGroupTerminationError>;
     readonly setMode: (
       modeId: string,
@@ -1265,7 +1280,21 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   const random = yield* SecureRandom.SecureRandom;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const hostPlatform = yield* HostProcess.Platform;
-  const runtimeScope = yield* Scope.fork(yield* Scope.Scope);
+  const parentScope = yield* Scope.Scope;
+  const runtimeScope = yield* Scope.make();
+  let retirementExit: Exit.Exit<unknown, unknown> | undefined;
+  // Scope.close itself does not join a close already in progress in Effect 4.
+  // Keep one completion fence attached to the parent even after native exit.
+  const joinedRetirement = yield* Effect.cached(
+    Effect.suspend(() => Scope.close(runtimeScope, retirementExit ?? Exit.void)),
+  );
+  const closeRuntime = Effect.fn("AcpSessionRuntime.closeRuntime")(
+    (exit: Exit.Exit<unknown, unknown>) =>
+      Effect.sync(() => {
+        retirementExit ??= exit;
+      }).pipe(Effect.andThen(joinedRetirement)),
+  );
+  yield* Scope.addFinalizerExit(parentScope, closeRuntime);
   const eventQueue = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
   const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
   const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallTrackedState>());
@@ -1292,6 +1321,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   );
   const stoppingRef = yield* Ref.make(false);
   const stderrFailure = yield* Deferred.make<never, EffectAcpErrors.AcpError>();
+  const terminationFailure = yield* Deferred.make<never, EffectAcpErrors.AcpError>();
   const stderrTailRef = yield* Ref.make("");
   const homeDirectory = yield* HostProcess.HomeDirectory;
   const stderrDrained = yield* Deferred.make<void>();
@@ -1354,6 +1384,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     if (!firstTermination) {
       return;
     }
+    yield* Deferred.fail(terminationFailure, enriched);
     yield* closeActiveAssistantSegment({ queue: eventQueue, assistantSegmentRef });
     yield* Queue.offer(eventQueue, { _tag: "ConnectionTerminated", error: enriched });
   });
@@ -1368,7 +1399,10 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   ): Effect.Effect<A, EffectAcpErrors.AcpError> =>
     logRequest({ method, payload, status: "started" }).pipe(
       Effect.flatMap(() =>
-        (options.onStderr ? Effect.raceFirst(effect, Deferred.await(stderrFailure)) : effect).pipe(
+        Effect.raceFirst(
+          options.onStderr ? Effect.raceFirst(effect, Deferred.await(stderrFailure)) : effect,
+          Deferred.await(terminationFailure),
+        ).pipe(
           Effect.catch((error) =>
             enrichProcessExitWithStderr(error).pipe(Effect.flatMap(Effect.fail)),
           ),
@@ -1399,12 +1433,14 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           ...(options.spawn.env ? { env: options.spawn.env } : {}),
           extendEnv: options.spawn.extendEnv ?? true,
         });
+
+  const defaultLinuxCgroupController = yield* AcpLinuxCgroupControllerRef;
   const linuxCgroupLease =
     options.ownDescendantProcessGroups === true && options.processGroupPlatform === "linux"
       ? yield* Effect.sync(() => {
           try {
             if (options.linuxCgroupController === null) return undefined;
-            return (options.linuxCgroupController ?? makeLinuxCgroupController()).create();
+            return (options.linuxCgroupController ?? defaultLinuxCgroupController).create();
           } catch {
             return undefined;
           }
@@ -1446,13 +1482,23 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           threadId: yield* AgentScopeThreadId,
           env: { ...process.env, ...options.spawn.env },
         });
-  const scopedSpawnCommand =
+  const scopedSpawnCommand: AgentScopeCommand & { readonly shell: boolean } =
     scopedLaunch === undefined ? spawnCommand : { ...scopedLaunch, shell: false };
   // Finalizers run in reverse order: reap detached work after terminating the agent.
   const scopeUnit = scopedLaunch?.unit;
   const stopScope =
     scopeUnit === undefined ? Effect.void : yield* Effect.cached(agentScope.stop(scopeUnit));
   yield* Scope.addFinalizer(runtimeScope, stopScope);
+
+  const stopAgentScope = scopedSpawnCommand.stop?.pipe(
+    Effect.mapError(
+      (cause) =>
+        new AcpProcessGroupTerminationError({
+          detail: "Agent scope retirement remains unknown",
+          cause,
+        }),
+    ),
+  );
   const containedSpawnCommand =
     linuxCgroupLease === undefined
       ? scopedSpawnCommand
@@ -1491,6 +1537,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
             cause,
           }),
       ),
+      Effect.onError(() => closeRuntime(Exit.void)),
     );
 
   // Detached children can keep stdout open, delaying protocol termination.
@@ -1625,6 +1672,9 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       if (grace !== 0) yield* Effect.sleep(grace);
       return yield* terminateLinuxCgroupLease(linuxCgroupLease);
     }
+
+    if (options.ownDescendantProcessGroups === true && stopAgentScope !== undefined)
+      return yield* stopAgentScope;
     if (options.ownDescendantProcessGroups === true) {
       return yield* terminatePosixProcessTree(options.processGroupTerminationGrace ?? "1 second");
     }
@@ -1648,7 +1698,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         : linuxCgroupLease !== undefined
           ? terminateLinuxCgroupLease(linuxCgroupLease)
           : options.ownDescendantProcessGroups === true
-            ? terminatePosixProcessTree(0, hostPlatform)
+            ? (stopAgentScope ?? terminatePosixProcessTree(0, hostPlatform))
             : signalOwnedProcessGroup("SIGKILL").pipe(Effect.asVoid);
     yield* Scope.addFinalizer(
       runtimeScope,
@@ -1695,9 +1745,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       onTermination: (error) =>
         recordTermination(error).pipe(
           Effect.andThen(options.onTermination?.(error) ?? Effect.void),
-          Effect.ensuring(
-            Scope.close(runtimeScope, Exit.fail(error)).pipe(Effect.forkDetach, Effect.asVoid),
-          ),
+          Effect.ensuring(closeRuntime(Exit.fail(error)).pipe(Effect.forkDetach, Effect.asVoid)),
         ),
       ...(options.onOutgoingResponseFailure
         ? { onOutgoingResponseFailure: options.onOutgoingResponseFailure }
@@ -2464,7 +2512,26 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     }
   });
 
+  // A detached descendant may retain protocol pipes after its root exits.
+  // The captured runtime scope owns both cgroup and process-ledger cleanup.
+  const closeExitedRuntime = closeRuntime(Exit.void).pipe(Effect.forkDetach, Effect.asVoid);
+  yield* child.exitCode.pipe(
+    Effect.matchEffect({
+      onFailure: () => closeExitedRuntime,
+      onSuccess: () => closeExitedRuntime,
+    }),
+    Effect.forkIn(runtimeScope),
+  );
+
   return {
+    processContainment:
+      linuxCgroupLease !== undefined
+        ? "cgroup-v2"
+        : options.ownDescendantProcessGroups === true
+          ? "process-ledger-reduced-guarantee"
+          : options.ownDetachedProcessGroup === true
+            ? "process-group"
+            : "none",
     handleRequestPermission: acp.handleRequestPermission,
     handleElicitation: acp.handleElicitation,
     handleMcpConnect: acp.handleMcpConnect,

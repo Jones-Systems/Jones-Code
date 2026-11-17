@@ -1,3 +1,5 @@
+import { toMcpFailure } from "../../../jones/threadConfiguration/tools.ts";
+import * as JonesPinPlacement from "../../../jones/mcp/pinPlacement/pinPlacement.ts";
 import * as SelfSettlementCaller from "../../../jones/mcp/SelfSettlementCaller.ts";
 import {
   type CommandId,
@@ -9,6 +11,9 @@ import {
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as ThreadSelfConfiguration from "../../../jones/threadConfiguration/ThreadSelfConfiguration.ts";
+import type { ProjectionRecordField } from "../../../orchestration-v2/ProjectionStore.ts";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { topOfPinnedRunOrderKey } from "@t3tools/shared/pinOrderKey";
 
@@ -42,13 +47,39 @@ function queueEntry(
     truncated: characters.length > limit,
   };
 }
+// Jones content guard stays local while threadAccess follows the upstream read API.
+const readMessageWritableThread = Effect.fn("mcp.readMessageWritableThread")(function* <
+  K extends ProjectionRecordField = never,
+>(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
+  const context = yield* readThread(threadId, fields);
+  if (
+    (context.scope.client?.linked === true ||
+      (context.caller !== undefined && context.caller.id !== context.projection.thread.id)) &&
+    context.projection.thread.threadMessagesBlocked === true
+  ) {
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: `Thread ${context.projection.thread.id} is blocking messages from other threads.`,
+    });
+  }
+  return context;
+});
+
 const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
   threadId: ThreadId | undefined,
   command: (common: { commandId: CommandId; threadId: ThreadId }) => OrchestrationV2Command,
+  contentMutation = false,
 ) {
-  const { threads, projection } = yield* readThread(threadId);
+  const { threads, projection, caller } = yield* contentMutation
+    ? readMessageWritableThread(threadId)
+    : readThread(threadId);
+  const requested = command({ commandId: yield* newCommandId(), threadId: projection.thread.id });
   const result = yield* threads
-    .dispatch(command({ commandId: yield* newCommandId(), threadId: projection.thread.id }))
+    .dispatch(
+      requested.type === "queued-run.edit" && caller !== undefined
+        ? { ...requested, senderThreadId: caller.id }
+        : requested,
+    )
     .pipe(Effect.mapError(dispatchFailure));
   return { sequence: result.sequence };
 });
@@ -67,11 +98,16 @@ const topOfPinnedRunKey = Effect.fn("mcp.topOfPinnedRunKey")(function* (
   return topOfPinnedRunOrderKey(pinnedKeys) ?? undefined;
 });
 
-const readQuestion = Effect.fn("mcp.readQuestion")(function* (input: {
-  threadId?: ThreadId | undefined;
-  requestId: RuntimeRequestId;
-}) {
-  const context = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"]);
+const readQuestion = Effect.fn("mcp.readQuestion")(function* (
+  input: {
+    threadId?: ThreadId | undefined;
+    requestId: RuntimeRequestId;
+  },
+  writable = false,
+) {
+  const context = yield* writable
+    ? readMessageWritableThread(input.threadId, ["runtimeRequests", "turnItems"])
+    : readThread(input.threadId, ["runtimeRequests", "turnItems"]);
   const request = context.projection.runtimeRequests.find(
     (request) => request.id === input.requestId && request.kind === "user_input",
   );
@@ -222,11 +258,20 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         const {
           projection: { thread },
         } = yield* readThread(input.threadId);
+        const configuration = yield* Effect.serviceOption(
+          ThreadSelfConfiguration.ThreadSelfConfiguration,
+        );
         return {
           threadId: thread.id,
           modelSelection: thread.modelSelection,
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
+          threadMessagesBlocked: thread.threadMessagesBlocked ?? false,
+          ...(Option.isNone(configuration)
+            ? {}
+            : yield* configuration.value
+                .read(thread.id, yield* McpInvocationContext.McpInvocationContext)
+                .pipe(Effect.mapError(toMcpFailure))),
         };
       }),
     ),
@@ -237,6 +282,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           threads,
           projection: { thread },
         } = yield* readThread(input.threadId);
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        if (scope.thread?.threadId === thread.id)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Use t3_thread_self_configure with the revision and execution precondition from reading t3_thread_configure to safely change your own thread.",
+          });
         const type = modelSelectionCommandType(thread.providerInstanceId, modelSelection);
         const result = yield* threads
           .dispatch({ type, threadId: thread.id, commandId: yield* newCommandId(), modelSelection })
@@ -266,10 +318,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       Effect.gen(function* () {
         const requestId = yield* required(input.requestId, "requestId");
         const answers = yield* required(input.answers, "answers");
-        const { threads, projection } = yield* readQuestion({
-          threadId: input.threadId,
-          requestId,
-        });
+        const { threads, projection, caller } = yield* readQuestion(
+          {
+            threadId: input.threadId,
+            requestId,
+          },
+          true,
+        );
         const result = yield* threads
           .dispatch({
             type: "runtime-request.respond",
@@ -277,6 +332,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             commandId: yield* newCommandId(),
             requestId,
             answers,
+            ...(caller === undefined ? {} : { senderThreadId: caller.id }),
           })
           .pipe(Effect.mapError(dispatchFailure));
         return { sequence: result.sequence };
@@ -325,12 +381,16 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         switch (input.action) {
           case "edit": {
             const text = yield* required(input.text, "text");
-            return yield* dispatch(input.threadId, (common) => ({
-              ...common,
-              type: "queued-run.edit",
-              runId,
-              text,
-            }));
+            return yield* dispatch(
+              input.threadId,
+              (common) => ({
+                ...common,
+                type: "queued-run.edit",
+                runId,
+                text,
+              }),
+              true,
+            );
           }
           case "reorder": {
             const beforeRunId = yield* required(input.beforeRunId, "beforeRunId");
@@ -343,12 +403,33 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           }
           case "promote_to_steer": {
             const targetRunId = yield* required(input.targetRunId, "targetRunId");
-            return yield* dispatch(input.threadId, (common) => ({
-              ...common,
-              type: "queued-message.promote-to-steer",
-              queuedRunId: runId,
-              targetRunId,
-            }));
+            const { queuedRunIds } = input;
+            if (queuedRunIds === undefined)
+              return yield* dispatch(input.threadId, (common) => ({
+                ...common,
+                type: "queued-message.promote-to-steer",
+                queuedRunId: runId,
+                targetRunId,
+              }));
+            if (queuedRunIds[0] !== runId)
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "queuedRunId must identify the first batch member.",
+              });
+            const { threads, projection } = yield* readThread(input.threadId);
+            if (threads.promoteQueuedBatch === undefined)
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Queued batch steering is unavailable.",
+              });
+            return yield* threads
+              .promoteQueuedBatch({
+                commandId: yield* newCommandId(),
+                threadId: projection.thread.id,
+                targetRunId,
+                queuedRunIds,
+              })
+              .pipe(Effect.mapError(dispatchFailure));
           }
           default:
             return yield* dispatch(input.threadId, (common) => ({
@@ -363,13 +444,24 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   t3_thread_organize: writesThread((input) =>
     Effect.gen(function* () {
       const { threads, projection, caller } = yield* readThread(input.threadId);
+      if (input.placement !== undefined) {
+        return yield* JonesPinPlacement.pinWithPlacement({
+          threads,
+          action: input.action,
+          placement: input.placement,
+          target: projection.thread,
+        });
+      }
       const common = { commandId: yield* newCommandId(), threadId: projection.thread.id };
       if (input.action === "settle") {
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const selfSettlementCaller = SelfSettlementCaller.capture(scope, projection.thread.id);
         return yield* threads
-          .settleThread({ ...common, byOwnAgent: caller?.id === projection.thread.id,
-            ...(selfSettlementCaller === undefined ? {} : {selfSettlementCaller}) })
+          .settleThread({
+            ...common,
+            byOwnAgent: caller?.id === projection.thread.id,
+            ...(selfSettlementCaller === undefined ? {} : { selfSettlementCaller }),
+          })
           .pipe(Effect.mapError(dispatchFailure));
       }
       let command: OrchestrationV2Command;

@@ -59,6 +59,81 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it.each(["showAll", "hideAll", "zen"] as const)(
+    "keeps a sentinel-only turn quiet under %s visibility",
+    (toolCallVisibility) => {
+      const at = "2026-11-16T00:00:00Z";
+      const timelineEntries: TimelineEntry[] = ["user", "assistant"].map((role) => ({
+        kind: "message",
+        id: role,
+        createdAt: at,
+        message: {
+          id: MessageId.make(role),
+          role: role as "user" | "assistant",
+          text: "@@@@@",
+          runId: null,
+          streaming: role === "assistant",
+          createdAt: at,
+          updatedAt: at,
+        },
+      }));
+      const input = {
+        timelineEntries,
+        latestRun: null,
+        isWorking: true,
+        activeTurnStartedAt: at,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+        toolCallVisibility,
+      };
+      expect(deriveMessagesTimelineRows(input)).toEqual([]);
+      expect(timelineTurnFoldRunIdsByEntryId(input).size).toBe(0);
+    },
+  );
+
+  it("reprojects when streamed text crosses the sentinel boundary in either direction", () => {
+    const at = "2026-11-16T00:00:00Z";
+    const message = {
+      id: MessageId.make("sentinel-reply"),
+      role: "assistant" as const,
+      text: "@@@@",
+      runId: null,
+      streaming: true,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const input = {
+      timelineEntries: [{ kind: "message" as const, id: message.id, createdAt: at, message }],
+      latestRun: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    };
+    const before = deriveMessagesTimelineRowsWithState(input);
+    expect(before.rows.some((row) => row.kind === "message")).toBe(true);
+    const hidden = deriveMessagesTimelineRowsWithState(
+      {
+        ...input,
+        timelineEntries: [{ ...input.timelineEntries[0]!, message: { ...message, text: "@@@@@" } }],
+      },
+      before,
+    );
+    expect(hidden.rows).toEqual([]);
+    const after = deriveMessagesTimelineRowsWithState(
+      {
+        ...input,
+        timelineEntries: [
+          { ...input.timelineEntries[0]!, message: { ...message, text: "@@@@@!" } },
+        ],
+      },
+      hidden,
+    );
+    expect(after.rows.find((row) => row.kind === "message")).toMatchObject({
+      message: { text: "@@@@@!" },
+    });
+  });
+
   it.each([
     ["html-render", "reply-run", true],
     ["mcp-app", "reply-run", true],

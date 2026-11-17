@@ -1,5 +1,6 @@
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId, type ScopedProjectRef } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -16,6 +17,7 @@ const entities = vi.hoisted(() => ({
   projects: [] as ReadonlyArray<Project>,
   threads: [] as ReadonlyArray<Thread>,
   delegatedUnderParent: new Set<string>() as ReadonlySet<string>,
+  defaultProjectRef: undefined as ScopedProjectRef | undefined,
 }));
 vi.mock("../state/entities", async (original) => ({
   ...(await original<typeof import("../state/entities")>()),
@@ -23,6 +25,20 @@ vi.mock("../state/entities", async (original) => ({
   useVisibleThreadShells: () => entities.threads,
   useDelegatedUnderParent: () => entities.delegatedUnderParent,
 }));
+
+vi.mock("../hooks/useHandleNewThread", async (original) => {
+  const actual = await original<typeof import("../hooks/useHandleNewThread")>();
+  return {
+    ...actual,
+    useHandleNewThread: () => {
+      const result = actual.useHandleNewThread();
+      return {
+        ...result,
+        defaultProjectRef: entities.defaultProjectRef ?? result.defaultProjectRef,
+      };
+    },
+  };
+});
 
 function setup(state: Partial<typeof entities> = {}) {
   // Earlier browser test files share this origin's localStorage; a remembered project
@@ -32,6 +48,7 @@ function setup(state: Partial<typeof entities> = {}) {
   entities.projects = state.projects ?? [];
   entities.threads = state.threads ?? [];
   entities.delegatedUnderParent = state.delegatedUnderParent ?? new Set();
+  entities.defaultProjectRef = state.defaultProjectRef;
 }
 
 describe("CommandPalette open intents", () => {
@@ -111,6 +128,8 @@ describe("CommandPalette open intents", () => {
     });
     setup({
       projects: [project("acme", "Acme"), project("beta", "Beta"), project("gamma", "Gamma")],
+      // This keyboard fixture needs a current project independently of environment discovery.
+      defaultProjectRef: scopeProjectRef(environmentId, ProjectId.make("acme")),
     });
     await using _screen = await render(<CommandPalette>{null}</CommandPalette>);
 
@@ -118,6 +137,11 @@ describe("CommandPalette open intents", () => {
     await expect
       .element(page.getByPlaceholder("Search commands, projects, and threads..."))
       .toHaveFocus();
+    // Input focus can precede the virtualized list's initial highlight. ArrowDown
+    // must start on the current-project action before moving to the project picker.
+    await expect
+      .element(page.getByRole("option", { name: /^New thread in Acme/ }))
+      .toHaveAttribute("data-highlighted");
     await userEvent.keyboard("{ArrowDown}");
     await expect
       .element(page.getByRole("option", { name: /^New thread in\.\.\./ }))

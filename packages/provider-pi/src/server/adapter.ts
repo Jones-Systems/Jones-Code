@@ -1,3 +1,4 @@
+import { buildAppIdentityInstructions } from "@t3tools/provider-core/server/jones/AppIdentity";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeUtil from "node:util";
 import { AgentScope } from "@t3tools/shared/AgentScope";
@@ -524,6 +525,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         const connectionScope = yield* Scope.fork(scope, "sequential");
         return yield* Effect.gen(function* () {
           const launch = buildPiRpcLaunch({
+            appIdentityInstructions: buildAppIdentityInstructions(host.appIdentity),
             launchArgs: resolvedLaunchArgs.args,
             // PortScanner.AGENT_THREAD_ENV, as a literal because this package cannot reach apps/server.
             environment: { ...options.environment, T3CODE_THREAD_ID: input.threadId },
@@ -2842,6 +2844,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         providerThreadCreatedAt: DateTime.Utc,
       ) {
         const forkLaunch = buildPiRpcLaunch({
+          appIdentityInstructions: buildAppIdentityInstructions(host.appIdentity),
           launchArgs: resolvedLaunchArgs.args,
           environment: options.environment,
           mcpSession: undefined,

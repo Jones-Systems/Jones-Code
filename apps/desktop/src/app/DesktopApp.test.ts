@@ -72,6 +72,8 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as MacPermissions from "../permissions/MacPermissions.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as CompanionConfig from "../jones/previewCompanion/CompanionConfig.ts";
+import * as CompanionUplink from "../jones/previewCompanion/CompanionUplink.ts";
+import * as DesktopDeviceMediaTunnel from "../jones/deviceMedia/DesktopDeviceMediaTunnel.ts";
 
 it.effect.each([false, true])(
   "stops backends together before flushing history and cancels Linux registration, stop defect=%s",
@@ -109,7 +111,8 @@ it.effect.each([false, true])(
           Effect.provideService(DesktopAppIdentity.DesktopAppIdentity, {
             resolveUserDataPath: Effect.succeed("/isolated/userdata"),
             configure: record("identity"),
-          } as DesktopAppIdentity.DesktopAppIdentity["Service"]),
+            previewAutomationRuntimeIdentity: Effect.die("unexpected preview identity request"),
+          }),
           Effect.provideService(ElectronApp.ElectronApp, {
             setPath: () => Effect.void,
             whenReady: record("ready"),
@@ -228,6 +231,9 @@ it.effect.each([false, true])(
         Effect.provide(
           Layer.mergeAll(
             Layer.mock(BrowserImport.BrowserImport, {}),
+            // The mocked IPC installer registers nothing; these satisfy its declared dependencies.
+            Layer.mock(CompanionUplink.CompanionUplink, {}),
+            Layer.mock(DesktopDeviceMediaTunnel.DesktopDeviceMediaTunnel, {}),
             Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {}),
             Layer.mock(DesktopBackendConfiguration.DesktopBackendConfiguration, {}),
             Layer.mock(DesktopCliCommand.DesktopCliCommand, {}),

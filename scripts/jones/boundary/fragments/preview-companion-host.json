@@ -219,6 +219,18 @@
     {
       "from": "apps/server/src/ws.test.ts",
       "to": "apps/server/src/jones/http/registration.ts"
+    },
+    {
+      "from": "apps/desktop/src/main.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionProduct.ts"
+    },
+    {
+      "from": "apps/desktop/src/main.ts",
+      "to": "apps/desktop/src/jones/previewCompanion/CompanionIsolation.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/previewCompanion/registration.ts"
     }
   ]
 }

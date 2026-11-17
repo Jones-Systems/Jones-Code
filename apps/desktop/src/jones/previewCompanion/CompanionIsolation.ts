@@ -43,7 +43,7 @@ export function createCompanionAssignments() {
   };
 }
 
-export function localBrowserChannel(host: DesktopBrowserHost["Service"]) {
+function localBrowserChannel(host: DesktopBrowserHost["Service"]) {
   const source = {};
   const isLocal = (key: DesktopBrowserTabKey) => !host.isCompanionOwned(key);
   return {
@@ -53,7 +53,9 @@ export function localBrowserChannel(host: DesktopBrowserHost["Service"]) {
 }
 
 /** Backend-only view of the shared host. The companion uplink keeps its own source and assignments. */
-export function localBrowserHost(host: DesktopBrowserHost["Service"]): DesktopBrowserHost["Service"] {
+export function localBrowserHost(
+  host: DesktopBrowserHost["Service"],
+): DesktopBrowserHost["Service"] {
   const channel = localBrowserChannel(host);
   return {
     ...host,

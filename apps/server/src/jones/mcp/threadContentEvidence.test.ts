@@ -461,7 +461,7 @@ function readFixture() {
     getTimelinePage: (_id, selection) =>
       Effect.sync(() => {
         selections.push(selection);
-        return { items: rows, hasMore, totalItems: 9 };
+        return { items: rows, hasMore, hasEarlier: false, totalItems: 9 };
       }),
     dispatch: (command) =>
       Effect.sync(() => {
@@ -706,15 +706,31 @@ describe("native read service content evidence", () => {
 
 it("admits the final contiguous evidence page including evidence overhead before hashing", () => {
   const rows = [item("first"), { ...item("second"), position: 1 }];
-  const admitted = admitThreadEvidencePage({items: rows, maxChars: 2, budgetBytes: 3000, newestFirst: true});
+  const admitted = admitThreadEvidencePage({
+    items: rows,
+    maxChars: 2,
+    budgetBytes: 3000,
+    newestFirst: true,
+  });
   if (Result.isFailure(admitted)) throw admitted.failure;
   expect(admitted.success.start).toBe(1);
   expect(admitted.success.items).toEqual([rows[1]]);
-  expect(prepareThreadContentEvidence({request: {threadId, contentEvidence: optIn}, environmentId,
-    items: admitted.success.items, hasMore: true, maxChars: 2})._tag).toBe("Success");
+  expect(
+    prepareThreadContentEvidence({
+      request: { threadId, contentEvidence: optIn },
+      environmentId,
+      items: admitted.success.items,
+      hasMore: true,
+      maxChars: 2,
+    })._tag,
+  ).toBe("Success");
 });
 it("rejects oversized evidence metadata rather than dropping an item after acknowledgement", () => {
-  const admitted = admitThreadEvidencePage({items: [{...item("answer"), title: "x".repeat(40000)}],
-    maxChars: 2, budgetBytes: 30000, newestFirst: false});
+  const admitted = admitThreadEvidencePage({
+    items: [{ ...item("answer"), title: "x".repeat(40000) }],
+    maxChars: 2,
+    budgetBytes: 30000,
+    newestFirst: false,
+  });
   expect(Result.isFailure(admitted)).toBe(true);
 });

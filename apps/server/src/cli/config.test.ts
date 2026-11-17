@@ -86,6 +86,47 @@ const liveProcess = Effect.acquireRelease(
 );
 
 it.layer(NodeServices.layer)("cli config resolution", (it) => {
+  it.effect.each(["blank", "explicit", "home"] as const)(
+    "resolves native authority environment paths through ConfigProvider (%s)",
+    (kind) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "jones-cli-authority-env-" });
+        const baseDir = path.join(root, "app");
+        const home = path.join(root, "home");
+        yield* fs.makeDirectory(home);
+        const expected =
+          kind === "blank"
+            ? path.join(baseDir, "native-store-authority")
+            : kind === "explicit"
+              ? path.join(root, "authority")
+              : path.join(home, "authority");
+        const raw =
+          kind === "blank" ? "  " : kind === "explicit" ? `  ${expected}  ` : "  ~/authority  ";
+        const config = yield* resolveServerConfig(
+          { ...minimalDesktopFlags(baseDir), cwd: Option.some(root) },
+          Option.none(),
+        ).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              NetService.layer,
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: { T3CODE_NATIVE_AUTHORITY_STATE_DIR: raw },
+                }),
+              ),
+            ),
+          ),
+          Effect.provideService(HostProcess.HomeDirectory, home),
+        );
+        expect(config.authorityStateDir).toBe(expected);
+        expect(yield* fs.exists(expected)).toBe(true);
+        if (kind !== "blank")
+          expect(yield* fs.exists(path.join(baseDir, "native-store-authority"))).toBe(false);
+      }),
+  );
+
   it.effect("resolves the startup worker profile through the CLI environment", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -816,6 +857,60 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,
       });
+    }),
+  );
+
+  it.effect("preserves native-owner descriptors with the current desktop bootstrap options", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      for (const source of ["flag", "environment"]) {
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-native-owner-" });
+        const fd = yield* openBootstrapFd(
+          makeDesktopBootstrap({
+            desktopNativeOwnerInputFd: 71,
+            desktopNativeOwnerOutputFd: 72,
+            desktopAppUpdate: true,
+            desktopBootstrapSecret: "synthetic-bootstrap-secret",
+            shellEnvironmentPrepared: true,
+            desktopTelemetryFd: 73,
+            desktopTelemetryControlFd: 74,
+            desktopBrowserFd: 75,
+            desktopBrowserControlFd: 76,
+            resourceMonitorPath: "/synthetic/resource-monitor",
+          }),
+        );
+        const resolved = yield* resolveServerConfig(
+          {
+            ...minimalDesktopFlags(baseDir),
+            bootstrapFd: source === "flag" ? Option.some(fd) : Option.none(),
+          },
+          Option.none(),
+        ).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: source === "environment" ? { T3CODE_BOOTSTRAP_FD: String(fd) } : {},
+                }),
+              ),
+              NetService.layer,
+            ),
+          ),
+        );
+
+        expect(resolved).toMatchObject({
+          desktopNativeOwnerInputFd: 71,
+          desktopNativeOwnerOutputFd: 72,
+          desktopAppUpdate: true,
+          desktopBootstrapSecret: "synthetic-bootstrap-secret",
+          shellEnvironmentPrepared: true,
+          desktopTelemetryFd: 73,
+          desktopTelemetryControlFd: 74,
+          desktopBrowserFd: 75,
+          desktopBrowserControlFd: 76,
+          resourceMonitorPath: "/synthetic/resource-monitor",
+        });
+      }
     }),
   );
 

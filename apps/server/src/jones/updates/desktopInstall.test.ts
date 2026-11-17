@@ -103,6 +103,7 @@ it.effect("hands desktop installation to its controller before any continuation 
       }),
       Layer.mock(Launcher.ServiceLauncherClient)({
         managed: false,
+        protocol: undefined,
         requiresQualifiedTrialGate: false,
       }),
       Layer.mock(Startup.ServerRuntimeStartup)({
@@ -223,6 +224,7 @@ it.effect.each([
       Layer.mock(SelfUpdate.ServerSelfUpdate)({}),
       Layer.mock(Launcher.ServiceLauncherClient)({
         managed: false,
+        protocol: undefined,
         requiresQualifiedTrialGate: false,
       }),
       Layer.mock(Startup.ServerRuntimeStartup)({

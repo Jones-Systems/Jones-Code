@@ -3,6 +3,7 @@ import {
   CheckpointScopeId,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2RunAttempt,
   ProviderThreadId,
   ThreadId,
   VcsProcessExitError,
@@ -180,12 +181,23 @@ export const layer: Layer.Layer<
       }
 
       const targetOrdinal = checkpoint.appRunOrdinal ?? 0;
-      const rollbackTarget: ProviderAdapter.ProviderAdapterV2RollbackTarget =
+      // The rollback context carries only the target attempt's identity; the full attempt the
+      // provider control read returns is the one whose settlement the rollback clears.
+      const {
+        rollbackTarget,
+        targetRunAttempt,
+      }: {
+        readonly rollbackTarget: ProviderAdapter.ProviderAdapterV2RollbackTarget;
+        readonly targetRunAttempt: OrchestrationV2RunAttempt | undefined;
+      } =
         targetOrdinal === 0
           ? {
-              type: "thread_start",
-              checkpointId: checkpoint.id,
-              appRunOrdinal: 0,
+              rollbackTarget: {
+                type: "thread_start",
+                checkpointId: checkpoint.id,
+                appRunOrdinal: 0,
+              },
+              targetRunAttempt: undefined,
             }
           : yield* Effect.gen(function* () {
               const targetTurn =
@@ -213,11 +225,14 @@ export const layer: Layer.Layer<
                   ? undefined
                   : yield* projections.getRunMessage(input.threadId, attempt.runId);
               return {
-                type: "provider_turn" as const,
-                checkpointId: checkpoint.id,
-                appRunOrdinal: targetOrdinal,
-                providerTurn: targetTurn,
-                ...(message === undefined ? {} : { message }),
+                rollbackTarget: {
+                  type: "provider_turn" as const,
+                  checkpointId: checkpoint.id,
+                  appRunOrdinal: targetOrdinal,
+                  providerTurn: targetTurn,
+                  ...(message === undefined ? {} : { message }),
+                },
+                targetRunAttempt: attempt,
               };
             });
 
@@ -387,16 +402,16 @@ export const layer: Layer.Layer<
               }),
             );
           }
-          if (targetOrdinal > 0 && runsToRollback.length > 0 && targetAttempt !== undefined) {
+          if (targetOrdinal > 0 && runsToRollback.length > 0 && targetRunAttempt !== undefined) {
             events.push(
               yield* makeEvent({
                 type: "run-attempt.updated",
                 threadId: input.threadId,
-                runId: targetAttempt.runId,
-                nodeId: targetAttempt.rootNodeId,
-                providerInstanceId: targetAttempt.providerInstanceId,
+                runId: targetRunAttempt.runId,
+                nodeId: targetRunAttempt.rootNodeId,
+                providerInstanceId: targetRunAttempt.providerInstanceId,
                 occurredAt: now,
-                payload: { ...targetAttempt, providerSettlement: null },
+                payload: { ...targetRunAttempt, providerSettlement: null },
               }),
             );
           }

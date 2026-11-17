@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Changes from "./DependencyChanges.ts";
 import * as McpDependencies from "./McpDependencies.ts";
@@ -14,6 +15,7 @@ import * as Fixture from "./testkit.ts";
 
 // These cases observe missing or already-answered requests, without provider runs.
 const observationPorts = Layer.mock(Orchestrator.OrchestratorV2)({
+  ...unusedCorePorts(),
   getThreadEventSequence: () => Effect.succeed(0),
   streamStoredEventsFrom: () => Stream.never,
 });

@@ -1,5 +1,8 @@
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
@@ -69,6 +72,27 @@ const environmentId = EnvironmentId.make("environment-mcp-test");
 const threadId = ThreadId.make("thread-mcp-test");
 const alternateTabId = PreviewTabId.make("tab-mcp-alternate");
 const decodeJsonText = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+
+const unexpectedCorePort = () =>
+  Effect.die(new Error("Unexpected remote command port in this fixture."));
+/** The core's remote command ports; no call in this file reaches a linked peer. */
+const unusedCorePorts: Pick<
+  Orchestrator.OrchestratorV2Shape,
+  "remoteSendReceipts" | "followUpCommandOwner"
+> = {
+  remoteSendReceipts: {
+    available: Effect.succeed(false),
+    lookup: unexpectedCorePort,
+    withSendCommit: unexpectedCorePort,
+    pruneBefore: unexpectedCorePort,
+    guardPreparation: unexpectedCorePort,
+  },
+  followUpCommandOwner: {
+    inParentTransaction: unexpectedCorePort,
+    assertParentCaller: unexpectedCorePort,
+    dispatch: unexpectedCorePort,
+  },
+};
 const invocation = {
   environmentId,
   requestNamespace: "provider-session-mcp-test",
@@ -108,7 +132,7 @@ const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
       Layer.mock(ProjectService.ProjectService)({}),
       Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
       Layer.mock(PullRequestService.PullRequestService)({}),
-      Layer.mock(Orchestrator.OrchestratorV2)({}),
+      Layer.mock(Orchestrator.OrchestratorV2)(unusedCorePorts),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
       NodeServices.layer,
       NodeCrypto.layer,
@@ -342,6 +366,12 @@ const layerRecordingTools = (calls: Array<unknown>) => {
         Layer.mock(ServerSettings.ServerSettingsService)({}),
         Layer.mock(DocumentText.DocumentText)({}),
         Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        // The Jones launch tool registers with its durable-launch services; recording never uses them.
+        Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
+        Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
+        }),
+        Sqlite.layerMemory,
         ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" }),
         NodeCrypto.layer,
       ),
@@ -782,13 +812,17 @@ it.effect.each(clampedListLimits)(
   },
 );
 
-it("keeps cross-tool routing out of the delegate_task description", () => {
+it("preserves Jones child ownership and independent review routing", () => {
   const description = OrchestratorToolkit.tools.delegate_task.description ?? "";
-  expect(description).toContain("Start one child agent with only `task`");
-  // Review rounds, follow-ups, and polling are routed in the system text.
-  expect(description).not.toContain("t3_thread_send");
-  expect(description).not.toContain("Do not poll");
-  expect(description).not.toContain("Prefer native");
+  expect(description).toContain("T3-owned child agent/subagent of THIS thread");
+  expect(description).toContain("without copying parent conversation history");
+  expect(description).toContain("own provider session and backing thread");
+  expect(description).toContain(
+    "For every independent T3 delegated review round, call delegate_task again",
+  );
+  expect(description).toContain("childThreadId is backing storage, not the target");
+  expect(description).toContain("another delegated review round through t3_thread_send");
+  expect(description).toContain("end the turn instead of polling or spawning watchers");
 });
 
 it.effect(
@@ -1677,6 +1711,8 @@ it.effect("hides tools for links and refuses another environment while the beta 
         );
       const elsewhere = EnvironmentId.make("environment-elsewhere");
 
+      // Jones defaults linked environments on; this test starts from the beta being off.
+      yield* settings.updateSettings({ linkedEnvironmentsEnabled: false });
       expect(yield* listed()).toEqual(["where"]);
       expect(yield* ranIn(elsewhere)).toMatchObject({
         isError: true,
@@ -1733,7 +1769,7 @@ it.effect("lists pull request watch tools only to threads that are not delegated
             Layer.mock(ProjectService.ProjectService)({}),
             Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
             Layer.mock(PullRequestService.PullRequestService)({}),
-            Layer.mock(Orchestrator.OrchestratorV2)({}),
+            Layer.mock(Orchestrator.OrchestratorV2)(unusedCorePorts),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
             NodeServices.layer,
             NodeCrypto.layer,
@@ -1785,6 +1821,26 @@ it.effect("lists pull request watch tools only to threads that are not delegated
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
+
+const decodeUnknownEffectFromJsonStringStructResultStructContentArrayStructT =
+  Schema.decodeUnknownEffect(
+    Schema.fromJsonString(
+      Schema.Struct({
+        result: Schema.Struct({
+          content: Schema.Array(Schema.Struct({ text: Schema.String })),
+        }),
+      }),
+    ),
+  );
+const decodeUnknownEffectFromJsonStringUnionStructModesStringStructCodeString =
+  Schema.decodeUnknownEffect(
+    Schema.fromJsonString(
+      Schema.Union([
+        Schema.Struct({ modes: Schema.String }),
+        Schema.Struct({ code: Schema.String }),
+      ]),
+    ),
+  );
 
 it.effect(
   "narrows an OAuth client's modes to the T3-Mode-Limit it sends, and never widens them",
@@ -1852,23 +1908,9 @@ it.effect(
           Layer.build,
         );
         const httpClient = yield* HttpClient.HttpClient;
-        const decodeOutcome = Schema.decodeUnknownEffect(
-          Schema.fromJsonString(
-            Schema.Struct({
-              result: Schema.Struct({
-                content: Schema.Array(Schema.Struct({ text: Schema.String })),
-              }),
-            }),
-          ),
-        );
-        const decodeText = Schema.decodeUnknownEffect(
-          Schema.fromJsonString(
-            Schema.Union([
-              Schema.Struct({ modes: Schema.String }),
-              Schema.Struct({ code: Schema.String }),
-            ]),
-          ),
-        );
+        const decodeOutcome =
+          decodeUnknownEffectFromJsonStringStructResultStructContentArrayStructT;
+        const decodeText = decodeUnknownEffectFromJsonStringUnionStructModesStringStructCodeString;
         /** Starts a thread as the client, with `limit` as T3-Mode-Limit; the HTTP status or the outcome. */
         const start = (limit: string | undefined, args: Record<string, string> = {}) =>
           Effect.gen(function* () {

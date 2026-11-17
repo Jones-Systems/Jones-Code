@@ -1,4 +1,3 @@
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
@@ -709,26 +708,19 @@ describe("owned setup write milestones", () => {
   );
 });
 
-const runObservedSetup = Effect.fnUntraced(function* (command: string) {
-  const { writes, outputLines, emit, completion } = yield* setup({ command });
-  yield* emit({ ...event, type: "output", data: "\x1b[?2004h" });
-  const submitted = yield* Queue.take(writes);
+// The terminal reports the shell that runs the submitted wrapper.
+const observedShell = "/bin/bash";
+
+const runObservedShell = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
   const cwd = yield* HostProcess.WorkingDirectory;
   const env = yield* HostProcess.Environment;
-
-  // Enter becomes a newline at the terminal boundary; transport assertions below
-  // cover line-editor submissions and canonical TTY limits that bash -c bypasses.
-  const child = yield* Effect.gen(function* () {
+  return yield* Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const handle = yield* spawner.spawn(
-      ChildProcess.make(
-        "/bin/bash",
-        ["--noprofile", "--norc", "-c", submitted.replaceAll("\r", "\n")],
-        {
-          cwd,
-          env: { PATH: env.PATH },
-        },
-      ),
+      ChildProcess.make(observedShell, ["--noprofile", "--norc", ...args], {
+        cwd,
+        env: { PATH: env.PATH },
+      }),
     );
     return yield* Effect.all(
       {
@@ -739,6 +731,16 @@ const runObservedSetup = Effect.fnUntraced(function* (command: string) {
       { concurrency: "unbounded" },
     );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+});
+
+const runObservedSetup = Effect.fnUntraced(function* (command: string) {
+  const { writes, outputLines, emit, completion } = yield* setup({ command, shell: observedShell });
+  yield* emit({ ...event, type: "output", data: "\x1b[?2004h" });
+  const submitted = yield* Queue.take(writes);
+
+  // Enter becomes a newline at the terminal boundary; transport assertions below
+  // cover line-editor submissions and canonical TTY limits that bash -c bypasses.
+  const child = yield* runObservedShell(["-c", submitted.replaceAll("\r", "\n")]);
   yield* emit({ ...event, type: "output", data: submitted + "\n" });
   yield* emit({ ...event, type: "output", data: child.stdout + child.stderr });
   yield* emit({ ...event, type: "closed" });
@@ -807,11 +809,16 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("POSIX setup co
 
   it.live.each([
     { name: "an explicit exit", command: "exit 7", exitCode: 7 },
-    { name: "a syntax error", command: "if then", exitCode: 2 },
+    // The shell picks this status: bash 5 reports 2, while macOS's bash 3.2 reports 1.
+    { name: "a syntax error", command: "if then", exitCode: null },
   ])("reports a nonzero completion for $name", ({ command, exitCode }) =>
     Effect.gen(function* () {
+      // Completion must carry the status this shell itself gives when evaluating the script.
+      const reference = yield* runObservedShell(["-c", 'eval "$1"', "t3-reference", command]);
+      assert.notEqual(reference.exitCode, 0);
+      if (exitCode !== null) assert.equal(reference.exitCode, exitCode);
       const result = yield* runObservedSetup(command);
-      assert.equal(result.exitCode, exitCode);
+      assert.equal(result.exitCode, reference.exitCode);
     }),
   );
 });

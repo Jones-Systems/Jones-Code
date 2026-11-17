@@ -230,6 +230,9 @@ const makeTestRelay = Effect.fnUntraced(function* (
   const shellReads: ThreadId[] = [];
   const catchUp = { activitySnapshotReads: 0 };
   const threads = ThreadManagementService.ThreadManagementService.of({
+    reviewImportedHistory: unused,
+    startWithImportedHistory: unused,
+    observeImportedHistoryStart: unused,
     getThreadShell: unused,
     getShellSnapshot: unused,
     getAgentAwarenessSnapshot: (threadId) =>
@@ -267,6 +270,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
     getMessagesById: () => Effect.die("unused messages by id"),
     getTurnItem: () => Effect.die("unused turn item read"),
     getThreadRecords: () => Effect.die("unused record read"),
+    getLegacyBootstrapRecords: () => Effect.die("unused legacy bootstrap record read"),
     getThreadProjection: unused,
     getCheckpointContext: unused,
     getThreadSnapshot: unused,

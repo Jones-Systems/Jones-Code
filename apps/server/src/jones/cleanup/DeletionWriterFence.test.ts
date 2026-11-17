@@ -22,6 +22,7 @@ import * as Option from "effect/Option";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
@@ -31,7 +32,11 @@ import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
-import { makeDeletionAdmission } from "./DeletionAdmission.ts";
+import type { DeletionWorktreeRemovalStartV1 } from "./DeletionWorktreeRemovalTypes.ts";
+import { DeletionAdmissionError } from "./DeletionAdmission.ts";
+
+const isEventSinkWriteError = Schema.is(EventSink.EventSinkWriteError);
+const isDeletionAdmissionError = Schema.is(DeletionAdmissionError);
 
 const threadId = ThreadId.make("writer-fence-original");
 const projectId = ProjectId.make("writer-fence-project");
@@ -69,6 +74,7 @@ const fixture = <A, E>(
       ReturnType<ProjectionStore.ProjectionStoreV2["Service"]["getThread"]>
     >;
     readonly now: DateTime.Utc;
+    readonly start: DeletionWorktreeRemovalStartV1;
     readonly second: <B, F>(effect: Effect.Effect<B, F, Services>) => Effect.Effect<B, F>;
   }) => Effect.Effect<A, E, Services>,
   seedOldEffects = false,
@@ -255,8 +261,9 @@ const fixture = <A, E>(
           status: "accepted",
           error: null,
         });
-        const admission = yield* makeDeletionAdmission;
-        const admitted = yield* admission.start({
+        if (eventSink.startDeletionWorktreeRemoval === undefined)
+          return yield* Effect.die("Actual EventSink must expose deletion admission");
+        const admitted = yield* eventSink.startDeletionWorktreeRemoval({
           threadId,
           target,
           rules,
@@ -264,12 +271,26 @@ const fixture = <A, E>(
           currentLive: Effect.succeed(true),
         });
         assert.strictEqual(admitted.status, "start_now");
-        const other = yield* Layer.build(services(NodeSqliteClient.layer({ filename: dbPath })));
+        // Recovery shares the database, never the original owner's in-memory invocation permit.
+        const other = yield* Layer.build(
+          Layer.fresh(services(NodeSqliteClient.layer({ filename: dbPath }))),
+        );
+        assert.notStrictEqual(
+          yield* EventSink.EventSinkV2.pipe(Effect.provide(other)),
+          eventSink,
+          "the second writer must own a separately constructed sink",
+        );
+        assert.notStrictEqual(
+          yield* SqlClient.SqlClient.pipe(Effect.provide(other)),
+          sql,
+          "the second writer must own a separate connection to the same database",
+        );
         const reserved =
           yield* sql`SELECT * FROM jones_deletion_worktree_admissions ORDER BY effect_id`;
         const result = yield* test({
           original,
           now,
+          start: admitted.start,
           second: (effect) => effect.pipe(Effect.provide(other)),
         });
         assert.deepStrictEqual(
@@ -285,6 +306,66 @@ const refused = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     assert.isTrue(Exit.isFailure(yield* Effect.exit(effect)));
   });
+
+it.effect("a fresh sink replays the original deletion binding as observation only", () =>
+  fixture((input) =>
+    input.second(
+      Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        if (
+          sink.startDeletionWorktreeRemoval === undefined ||
+          sink.readDeletionWorktreeRemovalStart === undefined ||
+          sink.readDeletionWorktreeRemovalStartForTarget === undefined ||
+          sink.revalidateDeletionWorktreeRemovalStart === undefined
+        )
+          return yield* Effect.die("Actual EventSink must expose the original deletion ports");
+        const byId = yield* sink.readDeletionWorktreeRemovalStart(input.start.effectId);
+        const byTarget = yield* sink.readDeletionWorktreeRemovalStartForTarget(threadId, target);
+        assert.deepEqual(byId, { start: input.start, ordinal: 0 });
+        assert.deepEqual(byTarget, byId);
+        const replacement = yield* sink
+          .readDeletionWorktreeRemovalStartForTarget(threadId, {
+            ...target,
+            branch: "replacement",
+          })
+          .pipe(Effect.flip);
+        assert.instanceOf(replacement, EventSink.EventSinkWriteError);
+        if (isEventSinkWriteError(replacement)) {
+          assert.instanceOf(replacement.cause, DeletionAdmissionError);
+          if (isDeletionAdmissionError(replacement.cause))
+            assert.strictEqual(
+              replacement.cause.reason,
+              "another_original_worktree_operation_retained",
+            );
+        }
+        const replay = yield* sink.startDeletionWorktreeRemoval({
+          threadId,
+          target,
+          rules,
+          currentRules: Effect.succeed(rules),
+          currentLive: Effect.succeed(true),
+        });
+        assert.strictEqual(replay.status, "observe_only");
+        assert.deepEqual(replay.start, input.start);
+        assert.strictEqual(replay.ordinal, 0);
+        const lostPermit = yield* sink
+          .revalidateDeletionWorktreeRemovalStart(
+            replay.start,
+            replay.ordinal,
+            Effect.succeed(rules),
+            Effect.succeed(true),
+          )
+          .pipe(Effect.flip);
+        assert.instanceOf(lostPermit, EventSink.EventSinkWriteError);
+        if (isEventSinkWriteError(lostPermit)) {
+          assert.instanceOf(lostPermit.cause, DeletionAdmissionError);
+          if (isDeletionAdmissionError(lostPermit.cause))
+            assert.strictEqual(lostPermit.cause.reason, "original_start_observation_only");
+        }
+      }),
+    ),
+  ),
+);
 
 it.effect(
   "a separate actual EventSink connection cannot change a reserved thread and rolls back its event",

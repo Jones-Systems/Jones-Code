@@ -80,21 +80,33 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
   connectRoute: (
     route: ConnectionRoute,
     hasFallback: boolean,
+    hasFallbackOnTimeout: Effect.Effect<boolean>,
   ) => Effect.Effect<EnvironmentConnectionLease, ConnectionAttemptError, R | Scope.Scope>,
 ) {
   const routes = usableRoutes(entry);
+  const checked = new Map<number, RouteCheck>();
   const checks =
     routes.length === 1
       ? []
-      : yield* Effect.forEach(routes, (route) => Effect.forkChild(checkRoute(route)));
+      : yield* Effect.forEach(routes, (route, index) =>
+          Effect.forkChild(
+            checkRoute(route).pipe(
+              Effect.tap((check) => Effect.sync(() => void checked.set(index, check))),
+            ),
+          ),
+        );
   const headStart = yield* Effect.forkChild(Effect.sleep(ROUTE_CHECK_HEAD_START_MS));
   const attemptScope = yield* Scope.Scope;
   let transient: ConnectionAttemptError | undefined;
   let blocked: ConnectionAttemptError | undefined;
   // Each route gets its own scope so a half-open session closes before the next try.
-  const attempt = Effect.fnUntraced(function* (route: ConnectionRoute, hasFallback: boolean) {
+  const attempt = Effect.fnUntraced(function* (
+    route: ConnectionRoute,
+    hasFallback: boolean,
+    hasFallbackOnTimeout: Effect.Effect<boolean>,
+  ) {
     const routeScope = yield* Scope.fork(attemptScope);
-    const result = yield* connectRoute(route, hasFallback).pipe(
+    const result = yield* connectRoute(route, hasFallback, hasFallbackOnTimeout).pipe(
       Scope.provide(routeScope),
       Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : Scope.close(routeScope, exit))),
       Effect.result,
@@ -105,6 +117,12 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
     }
     return result;
   });
+  // A timeout is transient: only routes that answer their checks remain
+  // eligible. Read the existing checks at expiry, so a late answer still counts.
+  const hasFallbackOnTimeout = (indices: ReadonlyArray<number>) =>
+    Effect.forEach(indices, (index) => Fiber.join(checks[index]!)).pipe(
+      Effect.map((results) => results.some((check) => check !== "silent")),
+    );
   const silent: Array<{ readonly route: ConnectionRoute; readonly index: number }> = [];
   for (const [index, route] of routes.entries()) {
     const check =
@@ -118,7 +136,17 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
       silent.push({ route, index });
       continue;
     }
-    const result = yield* attempt(route, index < routes.length - 1 || silent.length > 0);
+    const remaining = [
+      ...silent.map(({ index }) => index),
+      ...routes.slice(index + 1).map((_, offset) => index + 1 + offset),
+    ];
+    // Pending checks are potential fallbacks; the timeout policy resolves them
+    // before deciding whether to interrupt this route.
+    const result = yield* attempt(
+      route,
+      remaining.some((index) => transient === undefined || checked.get(index) !== "silent"),
+      hasFallbackOnTimeout(remaining),
+    );
     if (result._tag === "Success") return result.success;
     // An incompatible server is the same server on every route.
     if (result.failure.reason === "unsupported") return yield* result.failure;
@@ -134,7 +162,11 @@ export const connectOverRoutes = Effect.fn("ConnectionDriver.connectOverRoutes")
     // longer than the check did. Once another route failed in a way that
     // retries, the retry reaches it sooner than waiting here would.
     if (transient !== undefined && stillSilent.some((entry) => entry.route === route)) break;
-    const result = yield* attempt(route, index < retry.length - 1);
+    const result = yield* attempt(
+      route,
+      index < (transient === undefined ? retry.length : answeredLate.length) - 1,
+      Effect.succeed(index < answeredLate.length - 1),
+    );
     if (result._tag === "Success") return result.success;
     if (result.failure.reason === "unsupported") return yield* result.failure;
   }
@@ -213,7 +245,7 @@ export const make = Effect.gen(function* () {
     return yield* connectOverRoutes(
       entry,
       (route) => checkRoute(entry, route),
-      (route, hasFallback) =>
+      (route, hasFallback, hasFallbackOnTimeout) =>
         withRouteAttemptBudget(
           hasFallback,
           Effect.gen(function* () {
@@ -244,6 +276,7 @@ export const make = Effect.gen(function* () {
               }
               return lease;
             }),
+          hasFallbackOnTimeout,
         ),
     );
   });

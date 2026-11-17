@@ -95,6 +95,7 @@ function setup() {
         {
           environmentId: id,
           label: id,
+          displayLabel: id,
           displayUrl: null,
           relayManaged: false,
           entry: {

@@ -401,6 +401,8 @@ const WORKFLOW_MEMBER_TRANSCRIPT_FLUSH_MS = 500;
 // A steer waits at most this long, from its request, for its foreground
 // subagents to move to the background before it is sent.
 const BACKGROUND_MOVE_TIMEOUT_MS = 5_000;
+// How long the retry budget waits for a Stop, then for the CLI to close, before it settles the turn.
+const CLAUDE_STOP_CONFIRM_TIMEOUT_MS = 10_000;
 // Matches the stderr tail the SDK keeps for a CLI it spawns itself.
 const CLAUDE_STDERR_TAIL_LENGTH = 2_048;
 // The process group is killed on exit, so its stderr closes promptly.
@@ -870,7 +872,7 @@ export interface ClaudeAgentSdkSubagentLookupInput {
 
 const isClaudeAgentSdkQueryRunnerError = Schema.is(ClaudeAgentSdkQueryRunnerError);
 
-const isClaudeConversationNotFound = (cause: Cause.Cause<ClaudeAgentSdkQueryRunnerError>) => {
+const isClaudeConversationNotFound = (cause: Cause.Cause<unknown>) => {
   const error = Cause.squash(cause);
   return (
     isClaudeAgentSdkQueryRunnerError(error) &&
@@ -898,7 +900,7 @@ const CLAUDE_PROCESS_EXIT_ERROR_CLASSES: ReadonlySet<unknown> = new Set([
 
 // The SDK's exit Error appends Claude's stderr tail to `message`; `telemetryMessage` omits it.
 function claudeProcessExitFailure(
-  cause: Cause.Cause<ClaudeAgentSdkQueryRunnerError>,
+  cause: Cause.Cause<unknown>,
 ): { readonly message: string; readonly code: string } | undefined {
   const error = Cause.squash(cause);
   const sdkError = isClaudeAgentSdkQueryRunnerError(error) ? error.cause : error;
@@ -1617,53 +1619,47 @@ export const layerQueryRunner: Layer.Layer<
             readonly child: NodeChildProcess.ChildProcess;
             hasExited: boolean;
           }> = [];
-          const spawnClaudeCodeProcess =
-            spawnProcess === undefined
-              ? undefined
-              : (spawnOptions: ClaudeSpawnOptions) => {
-                  const exited = Deferred.makeUnsafe<void, ClaudeAgentSdkQueryRunnerError>();
-                  processExits.push(exited);
-                  try {
-                    const child = spawnProcess(spawnOptions);
-                    // The SDK's port is a Node child handle; register before returning it to the SDK.
-                    const ownedChild = child as NodeChildProcess.ChildProcess;
-                    const owner = {
-                      child: ownedChild,
-                      hasExited: ownedChild.exitCode != null || ownedChild.signalCode != null,
-                    };
-                    capturedChildren.push(owner);
-                    if (owner.hasExited) Deferred.doneUnsafe(exited, Effect.void);
-                    const releaseAgent = portDiscovery.trackAgent();
-                    ownedChild.once("exit", releaseAgent);
-                    ownedChild.once("error", releaseAgent);
-                    ownedChild.once("exit", () => {
-                      owner.hasExited = true;
-                      Deferred.doneUnsafe(exited, Effect.void);
-                    });
-                    ownedChild.once("error", (cause) => {
-                      if (ownedChild.pid === undefined) {
-                        knownSpawnFailures++;
-                        owner.hasExited = true;
-                      }
-                      Deferred.doneUnsafe(
-                        exited,
-                        ownedChild.pid === undefined
-                          ? Effect.void
-                          : Effect.fail(queryRunnerError(cause, "termination")),
-                      );
-                    });
-                    Deferred.doneUnsafe(spawned, Effect.void);
-                    return child;
-                  } catch (cause) {
-                    // A throwing custom spawn returned no handle; its native outcome remains unknown.
-                    Deferred.doneUnsafe(
-                      exited,
-                      Effect.fail(queryRunnerError(cause, "termination")),
-                    );
-                    Deferred.doneUnsafe(spawned, Effect.void);
-                    throw cause;
-                  }
-                };
+          const spawnClaudeCodeProcess = (spawnOptions: ClaudeSpawnOptions) => {
+            const exited = Deferred.makeUnsafe<void, ClaudeAgentSdkQueryRunnerError>();
+            processExits.push(exited);
+            try {
+              const child = spawnProcess(spawnOptions);
+              // The SDK's port is a Node child handle; register before returning it to the SDK.
+              const ownedChild = child as NodeChildProcess.ChildProcess;
+              const owner = {
+                child: ownedChild,
+                hasExited: ownedChild.exitCode != null || ownedChild.signalCode != null,
+              };
+              capturedChildren.push(owner);
+              if (owner.hasExited) Deferred.doneUnsafe(exited, Effect.void);
+              const releaseAgent = portDiscovery.trackAgent();
+              ownedChild.once("exit", releaseAgent);
+              ownedChild.once("error", releaseAgent);
+              ownedChild.once("exit", () => {
+                owner.hasExited = true;
+                Deferred.doneUnsafe(exited, Effect.void);
+              });
+              ownedChild.once("error", (cause) => {
+                if (ownedChild.pid === undefined) {
+                  knownSpawnFailures++;
+                  owner.hasExited = true;
+                }
+                Deferred.doneUnsafe(
+                  exited,
+                  ownedChild.pid === undefined
+                    ? Effect.void
+                    : Effect.fail(queryRunnerError(cause, "termination")),
+                );
+              });
+              Deferred.doneUnsafe(spawned, Effect.void);
+              return child;
+            } catch (cause) {
+              // A throwing custom spawn returned no handle; its native outcome remains unknown.
+              Deferred.doneUnsafe(exited, Effect.fail(queryRunnerError(cause, "termination")));
+              Deferred.doneUnsafe(spawned, Effect.void);
+              throw cause;
+            }
+          };
           const queryRuntime = yield* Effect.uninterruptibleMask((restore) =>
             Effect.try({
               try: () =>
@@ -2544,6 +2540,7 @@ export const CLAUDE_READ_ONLY_T3_MCP_ALLOWED_TOOLS: ReadonlyArray<string> = [
   "mcp__t3-code__t3_thread_links",
   "mcp__t3-code__t3_thread_launch_lookup",
   "mcp__t3-code__t3_thread_request_observe",
+  "mcp__t3-code__t3_thread_send_receipt_lookup",
   "mcp__t3-code__t3_thread_wait",
   "mcp__t3-code__t3_worktree_status",
   "mcp__t3-code__t3_worktree_list",
@@ -5802,7 +5799,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         cwd === null
           ? null
           : yield* claudeLocalSettingsDirectory(cwd).pipe(
-              Effect.provideService(HostProcess.HomeDirectory, yield* resolveClaudeUserHome(adapterOptions.environment)),
+              Effect.provideService(
+                HostProcess.HomeDirectory,
+                yield* resolveClaudeUserHome(adapterOptions.environment),
+              ),
               Effect.provideService(FileSystem.FileSystem, fileSystem),
               Effect.provideService(Path.Path, path),
             );
@@ -6017,6 +6017,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         let queryBindingUnknown = false;
         let queryControlUnknown: ProviderControlOutcomeUnknown | undefined;
         let sourceOwnerClosed = false;
+        const sessionTeardown = yield* Deferred.make<void>();
         let sourceRegistration: SourceQueryRegistration | undefined;
         const retireGeneration = (generation: string) =>
           retirementPermit.withPermits(1)(
@@ -6717,13 +6718,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             );
             if (!ownedLiveQuery) return;
             liveQuery.stopping = true;
-            yield* liveQuery.query.close.pipe(
-              Effect.timeoutOption(CLAUDE_STOP_CONFIRM_TIMEOUT_MS),
-              Effect.ignore,
-            );
+            // The captured retirement owns close and the reader-exit witness. Joining it is
+            // bounded; settling the turn here must not stand in for an observed drain.
+            yield* closeCapturedQuery(liveQuery).pipe(Effect.ignore);
             yield* finalizeActiveTurnAfterQueryExit(liveQuery);
             yield* endSubagentCallsOfClosedQuery(liveQuery.nativeThreadId, "interrupted");
-            yield* Deferred.succeed(liveQuery.closed, undefined);
           },
         );
 
@@ -9462,10 +9461,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly result?: SDKResultMessage;
           readonly evidenceKind?: "provider_result" | "attributed_abort" | "local_failure";
         }) {
-          // A turn stopped by the retry budget settles as failed with the retry's error.
+          // A turn stopped by the retry budget settles as failed with the retry's error. An
+          // unconfirmed stop stays a local failure, not an interruption, but still reports
+          // why the turn was given up; a failure with its own code keeps it.
           const retryBudgetFailure = requested.context.retryBudgetFailure;
           const input =
-            requested.status === "interrupted" && retryBudgetFailure !== undefined
+            retryBudgetFailure !== undefined &&
+            (requested.status === "interrupted" ||
+              (requested.status === "failed" &&
+                requested.evidenceKind === "local_failure" &&
+                (requested.failure?.code ?? null) === null))
               ? { ...requested, status: "failed" as const, failure: retryBudgetFailure }
               : requested;
           input.context.steersClosed = true;
@@ -9666,12 +9671,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
 
           const threadDisposition = input.threadDisposition ?? "reusable";
-          const terminalEvidenceKind = input.evidenceKind ?? (input.result === undefined ? "local_failure" : input.status === "interrupted" ? "attributed_abort" : "provider_result");
+          const terminalEvidenceKind =
+            input.evidenceKind ??
+            (input.result === undefined
+              ? "local_failure"
+              : input.status === "interrupted"
+                ? "attributed_abort"
+                : "provider_result");
           const terminalEvent: ProviderAdapter.ProviderAdapterV2Event =
             input.status === "failed"
               ? {
                   type: "turn.terminal",
-                  providerTurn: providerTurnPayload({ context: input.context, status: input.status, completedAt: input.completedAt }),
+                  providerTurn: providerTurnPayload({
+                    context: input.context,
+                    status: input.status,
+                    completedAt: input.completedAt,
+                  }),
                   evidenceKind: terminalEvidenceKind,
                   driver: CLAUDE_PROVIDER,
                   providerThreadId: input.context.input.providerThread.id,
@@ -13098,7 +13113,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const onStop: HookCallback = () =>
             runPromise(
               Effect.gen(function* () {
-                yield* proveNativeSessionCallback(liveContext, nativeSessionProof, runtimeGeneration);
+                yield* proveNativeSessionCallback(
+                  liveContext,
+                  nativeSessionProof,
+                  runtimeGeneration,
+                );
                 if (goalsByNativeThread.get(nativeThreadId)?.status !== "active") return {};
                 const pendingWake = (yield* mcpSessions.read(turnInput.threadId))?.hasPendingWake;
                 return pendingWake !== undefined && (yield* pendingWake) ? { continue: false } : {};
@@ -13166,9 +13185,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             fileSystem,
             path,
           });
-          let launchArgSettings = reuseLaunchSettings
-            ? existing.launchArgSettings
-            : yield* readLaunchSettings;
+          let launchArgSettings =
+            reuseLaunchSettings && existing !== null
+              ? existing.launchArgSettings
+              : yield* readLaunchSettings;
           let catalog = yield* routeModelCatalog(
             modelCatalog,
             turnInput.runtimePolicy.cwd,
@@ -13371,7 +13391,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* turnInput.revalidateStartAdmission ?? Effect.void;
           const openQueryRuntime = Effect.gen(function* () {
             yield* turnInput.revalidateStartAdmission ?? Effect.void;
-            yield* input.runtimeLifecycle?.admit({ runtimeGeneration, threadId: turnInput.threadId }) ?? Effect.void;
+            yield* (
+              input.runtimeLifecycle?.admit({ runtimeGeneration, threadId: turnInput.threadId }) ??
+                Effect.void
+            );
             yield* turnInput.revalidateStartAdmission ?? Effect.void;
             return yield* queryRunner.open({
               threadId: turnInput.threadId,
@@ -13386,47 +13409,48 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? openQueryRuntime
               : adapterOptions.installationGate.execute(adapterOptions.instanceId, openQueryRuntime)
           ).pipe(
-              Effect.mapError((cause) => {
-                if (!isClaudeAgentSdkQueryRunnerError(cause) || cause.nativeOutcome === "not_spawned") return cause;
+            Effect.mapError((cause) => {
+              if (!isClaudeAgentSdkQueryRunnerError(cause) || cause.nativeOutcome === "not_spawned")
+                return cause;
+              queryBindingUnknown = true;
+              queryControlUnknown = new ProviderControlOutcomeUnknown({
+                driver: CLAUDE_PROVIDER,
+                providerSessionId: input.providerSessionId,
+                nativeThreadId,
+                operation: "retire",
+                cause,
+              });
+              return queryControlUnknown;
+            }),
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                // Open may already have invoked the owned spawn callback. A
+                // cancelled caller is not evidence that no native process exists.
                 queryBindingUnknown = true;
-                queryControlUnknown = new ProviderControlOutcomeUnknown({
+                queryControlUnknown ??= new ProviderControlOutcomeUnknown({
                   driver: CLAUDE_PROVIDER,
                   providerSessionId: input.providerSessionId,
                   nativeThreadId,
                   operation: "retire",
-                  cause,
                 });
-                return queryControlUnknown;
               }),
-              Effect.onInterrupt(() =>
-                Effect.sync(() => {
-                  // Open may already have invoked the owned spawn callback. A
-                  // cancelled caller is not evidence that no native process exists.
-                  queryBindingUnknown = true;
-                  queryControlUnknown ??= new ProviderControlOutcomeUnknown({
-                    driver: CLAUDE_PROVIDER,
-                    providerSessionId: input.providerSessionId,
-                    nativeThreadId,
-                    operation: "retire",
-                  });
-                }),
-              ),
-              Effect.onError(() =>
-                queryBindingUnknown
-                  ? Effect.void
-                  : retireGeneration(runtimeGeneration).pipe(Effect.orDie),
-              ),
-              Effect.onError(() =>
-                closedExistingNativeThreadId === nativeThreadId
-                  ? Effect.gen(function* () {
-                      yield* clearWakeStateForNativeThread(nativeThreadId);
-                      yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
-                        status: "idle",
-                      });
-                    })
-                  : Effect.void,
-              ),
-            );
+            ),
+            Effect.onError(() =>
+              queryBindingUnknown
+                ? Effect.void
+                : retireGeneration(runtimeGeneration).pipe(Effect.orDie),
+            ),
+            Effect.onError(() =>
+              closedExistingNativeThreadId === nativeThreadId
+                ? Effect.gen(function* () {
+                    yield* clearWakeStateForNativeThread(nativeThreadId);
+                    yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
+                      status: "idle",
+                    });
+                  })
+                : Effect.void,
+            ),
+          );
           // Mark only successful opens; retries must not resume sessions that failed to create.
           yield* Ref.update(openedNativeThreads, (current) => {
             if (current.has(nativeThreadId)) {
@@ -13713,7 +13737,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   if (!firstInit || reportedCwd === null || !adapterOptions.onSessionInit) {
                     return yield* handled;
                   }
-                  return yield* adapterOptions.onSessionInit(reportedCwd).pipe(Effect.andThen(handled));
+                  return yield* adapterOptions
+                    .onSessionInit(reportedCwd)
+                    .pipe(Effect.andThen(handled));
                 }),
               ),
             ),
@@ -13794,8 +13820,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             yield* turnInput.revalidateStartAdmission ?? Effect.void;
             const required = yield* RequiredNativeSession;
             const requirement = required === undefined ? undefined : { ...required };
-            if (requirement !== undefined &&
-                (requirement.runId !== turnInput.runId || requirement.attemptId !== turnInput.attemptId)) {
+            if (
+              requirement !== undefined &&
+              (requirement.runId !== turnInput.runId ||
+                requirement.attemptId !== turnInput.attemptId)
+            ) {
               return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                 driver: CLAUDE_PROVIDER,
                 detail: "Claude native session proof belongs to another run attempt.",
@@ -13936,7 +13965,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
                       Effect.provideService(Path.Path, path),
                     );
-            const querySession = yield* openQuery(turnInput, nativeThreadId, queryPolicy, nativeSessionProof);
+            const querySession = yield* openQuery(
+              turnInput,
+              nativeThreadId,
+              queryPolicy,
+              nativeSessionProof,
+            );
             yield* applySessionTitle(querySession.query, nativeThreadId, turnInput.appThread.title);
             const autoCompactWindow = yield* resolveAutoCompactWindow(
               querySession.settingsCwd,
@@ -14109,8 +14143,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     ),
                   );
             if (userMessage !== null && !turnInput.resume) {
-              const offer = attachTurn.pipe(Effect.andThen(turnInput.revalidateStartAdmission ?? Effect.void), Effect.andThen(offerUserMessage));
-              yield* nativeSessionProof === undefined ? offer : sdkMessageLock.withPermits(1)(offer);
+              const offer = attachTurn.pipe(
+                Effect.andThen(turnInput.revalidateStartAdmission ?? Effect.void),
+                Effect.andThen(offerUserMessage),
+              );
+              yield* nativeSessionProof === undefined
+                ? offer
+                : sdkMessageLock.withPermits(1)(offer);
               return;
             }
             // Transcript reads suspend replay; hold SDK frames until the buffer is applied to preserve order.
@@ -14119,9 +14158,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 yield* attachTurn;
                 yield* turnInput.revalidateStartAdmission ?? Effect.void;
                 // Buffered SDK output is accepted only for the captured observed query.
-                if (nativeSessionProof !== undefined &&
-                    (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages.length) {
-                  yield* nativeSessionProof.confirm(querySession.observedNativeSessionId, querySession.runtimeGeneration)
+                if (
+                  nativeSessionProof !== undefined &&
+                  (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages.length
+                ) {
+                  yield* nativeSessionProof
+                    .confirm(querySession.observedNativeSessionId, querySession.runtimeGeneration)
                     .pipe(Effect.onError((cause) => rejectNativeSessionQuery(querySession, cause)));
                 }
                 const buffered = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
@@ -14182,6 +14224,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     entry.subtype === "task_notification" &&
                     opaqueReplayTombstones.has(entry.task_id),
                 );
+                // Wake evidence committed by a replaced process replays under its session
+                // owner, not the retired producer or the replacement's generation.
+                const replayBuffered = (entry: SDKMessage) => {
+                  const source = messageSources.get(entry);
+                  return handleSdkMessage({
+                    query: querySession.query,
+                    message: entry,
+                    ...(source !== undefined && source.query !== querySession.query
+                      ? { acceptedWakeReplay: true }
+                      : {}),
+                  });
+                };
                 for (const entry of drained) {
                   if (
                     !(yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages.includes(entry)
@@ -14189,7 +14243,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     continue;
                   }
                   if (entry.type !== "result") {
-                    yield* handleSdkMessage({ query: querySession.query, message: entry });
+                    yield* replayBuffered(entry);
                   }
                   yield* Ref.update(wakeBuffers, (current) => {
                     const buffered = current.get(nativeThreadId);
@@ -14207,7 +14261,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   });
                 }
                 if (lastResult !== undefined && !emptyTurnBeforeNextTurn) {
-                  yield* handleSdkMessage({ query: querySession.query, message: lastResult });
+                  yield* replayBuffered(lastResult);
                   if (leavesLaterWake) yield* offerBufferedWake(nativeThreadId);
                   return;
                 }
@@ -14584,6 +14638,20 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           );
         });
 
+        // Session teardown closes the query itself, so it ends Stop's interrupt window. An
+        // interrupt that tears the session down must not hold that close behind itself.
+        // The native call keeps running detached; only its observer is awaited.
+        const interruptUntilTeardown = Effect.fnUntraced(function* <E>(
+          interrupt: Effect.Effect<void, E>,
+        ) {
+          const settled = yield* Deferred.make<void>();
+          yield* interrupt.pipe(
+            Effect.exit,
+            Effect.andThen(Deferred.succeed(settled, undefined)),
+            Effect.forkDetach({ startImmediately: true }),
+          );
+          yield* Effect.raceFirst(Deferred.await(settled), Deferred.await(sessionTeardown));
+        });
         const closeCapturedQuery = Effect.fnUntraced(
           function* (
             existing: ClaudeLiveQueryContext,
@@ -14603,7 +14671,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               existing.stopping = true;
               existing.retirement = makeClaudeQueryRetirement({
                 deadline,
-                ...(cancel ? { cancel: existing.query.interrupt } : {}),
+                ...(cancel ? { cancel: interruptUntilTeardown(existing.query.interrupt) } : {}),
                 close: existing.query.close,
                 termination: existing.query.termination,
                 drain: Deferred.await(existing.closed).pipe(
@@ -14654,6 +14722,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           Effect.sync(() => {
             sourceOwnerClosed = true;
           }).pipe(
+            Effect.andThen(Deferred.succeed(sessionTeardown, undefined)),
             Effect.andThen(closeSession()),
             // Failed or interrupted abandonment has an unknown effect. Scope
             // cleanup closes the query but must not repeat that lifecycle request.
@@ -14854,7 +14923,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               if (threadInput.nativeCreationGuard !== undefined || required !== undefined) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CLAUDE_PROVIDER,
-                  detail: "Claude cannot create a replacement for a required native session or native execution guard.",
+                  detail:
+                    "Claude cannot create a replacement for a required native session or native execution guard.",
                 });
               }
               const createdAt = yield* DateTime.now;
@@ -14892,9 +14962,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             function* (threadInput: { readonly providerThread: OrchestrationV2ProviderThread }) {
               const nativeThreadId = threadInput.providerThread.nativeThreadRef?.nativeId;
               const required = yield* RequiredNativeSession;
-              if (required !== undefined &&
-                  (threadInput.providerThread.nativeThreadRef?.driver !== CLAUDE_PROVIDER ||
-                   nativeThreadId !== required.nativeSessionId)) {
+              if (
+                required !== undefined &&
+                (threadInput.providerThread.nativeThreadRef?.driver !== CLAUDE_PROVIDER ||
+                  nativeThreadId !== required.nativeSessionId)
+              ) {
                 return yield* new NativeSessionIdentityRejected({
                   expected: required.nativeSessionId,
                   observed: nativeThreadId ?? null,
@@ -14910,15 +14982,27 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               if (
                 nativeThreadId !== undefined &&
                 nativeThreadId !== null &&
-                // A live process holds the conversation even before saving it.
-                (yield* Ref.get(queryContext))?.nativeThreadId !== nativeThreadId
+                missingNativeThreads.has(nativeThreadId)
               ) {
-                if (missingNativeThreads.has(nativeThreadId)) {
+                const bound = yield* Ref.get(queryContext);
+                // Only a live process holds a conversation; a retained binding whose
+                // reader exited after Claude Code reported it gone holds nothing.
+                if (
+                  bound?.nativeThreadId !== nativeThreadId ||
+                  (yield* Deferred.isDone(bound.closed))
+                ) {
                   return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                     driver: CLAUDE_PROVIDER,
                     detail: `Claude Code has no conversation ${nativeThreadId} to resume.`,
                   });
                 }
+              }
+              if (
+                nativeThreadId !== undefined &&
+                nativeThreadId !== null &&
+                // A live process holds the conversation even before saving it.
+                (yield* Ref.get(queryContext))?.nativeThreadId !== nativeThreadId
+              ) {
                 // An unreadable transcript leaves the resume to the CLI.
                 const transcript = yield* claudeTranscriptState(nativeThreadId).pipe(
                   Effect.orElseSucceed(() => "missing" as const),
@@ -15382,10 +15466,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ),
           forkThread: Effect.fn("ClaudeAdapterV2.forkThread")(
             function* (forkInput) {
-              if (forkInput.nativeCreationGuard !== undefined || (yield* RequiredNativeSession) !== undefined) {
+              if ((yield* RequiredNativeSession) !== undefined) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: CLAUDE_PROVIDER,
-                  detail: "Claude cannot fork a required native session or native execution guard.",
+                  detail: "Claude cannot fork a required native session.",
                 });
               }
               if (sourceOwnerClosed || queryBindingUnknown)

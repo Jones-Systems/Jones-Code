@@ -1,18 +1,16 @@
-import {
-  type CommandId,
-  type ExecutionEnvironmentCapabilities,
-  type OrchestrationV2ThreadProjection,
-} from "@t3tools/contracts";
+import { type CommandId, type ExecutionEnvironmentCapabilities } from "@t3tools/contracts";
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
+import type { ThreadStructure } from "../../state/models.ts";
 import { deriveThreadQueueWorkflowState } from "../../state/threadWorkflows.ts";
 import type { PromoteQueuedBatchInput } from "./commands.ts";
 
 export type QueuedSteerBatchCapability = ExecutionEnvironmentCapabilities["queuedSteerBatch"];
 
 export function deriveQueuedSteerBatch(input: {
-  readonly projection: OrchestrationV2ThreadProjection | null | undefined;
+  /** Quiet structure is enough; a full projection is assignable to it. */
+  readonly projection: ThreadStructure | null | undefined;
   readonly capability: QueuedSteerBatchCapability;
   readonly editing: boolean;
   readonly hasUnsavedMessages: boolean;

@@ -124,7 +124,8 @@ export function renderBootServiceUnit(
   plan: BootServicePlan,
   identity: BootServiceIdentity = UPSTREAM_BOOT_SERVICE_IDENTITY,
 ): string {
-  if (systemdUnsafeValue(plan)) throw new BootServiceBaseDirUnsupportedError({ baseDir: plan.baseDir });
+  if (systemdUnsafeValue(plan))
+    throw new BootServiceBaseDirUnsupportedError({ baseDir: plan.baseDir });
   // The user manager has no reliable network-online target; server networking retries itself.
   return [
     "[Unit]",
@@ -909,9 +910,11 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   const rootUnderSudo =
     uid === 0 && (yield* Config.String("SUDO_USER").pipe(Config.withDefault(""))) !== "";
   const identity = input.identity;
-  const runningInsideService = [identity.systemdUnitFile, `${identity.launchdLabel}.plist`, BOOT_SERVICE_TASK_FILE].includes(
-    yield* Config.String(SERVICE_UNIT_ENV).pipe(Config.withDefault("")),
-  );
+  const runningInsideService = [
+    identity.systemdUnitFile,
+    `${identity.launchdLabel}.plist`,
+    BOOT_SERVICE_TASK_FILE,
+  ].includes(yield* Config.String(SERVICE_UNIT_ENV).pipe(Config.withDefault("")));
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const processRunner = yield* ProcessRunner.ProcessRunner;
@@ -1257,7 +1260,11 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     const withoutSession =
       problems.includes("linger-unavailable") && problems.includes("user-manager-unavailable");
     const lingerDisabled = problems.includes("linger-disabled");
-    if (input.allowEnableLinger === false || rootUnderSudo || (!lingerDisabled && !withoutSession)) {
+    if (
+      input.allowEnableLinger === false ||
+      rootUnderSudo ||
+      (!lingerDisabled && !withoutSession)
+    ) {
       return yield* new BootServicePrerequisiteError({ problem: firstProblem });
     }
     yield* runStep("enabling lingering for this user", "loginctl", [
@@ -1556,7 +1563,8 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
                   : {},
               );
             }
-            if (privateRuntime && installedVersion !== activeVersion) yield* verifyPrivateCache(installedVersion);
+            if (privateRuntime && installedVersion !== activeVersion)
+              yield* verifyPrivateCache(installedVersion);
             // Read the final version after stopping the launcher; a remote update may finish after the status check.
             if (
               installedVersion !== undefined &&
@@ -1577,7 +1585,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
           const plan = planForUnit(currentlyInstalled ? yield* fs.readFileString(unitPath) : "");
           yield* writeDurably(
             statePath,
-            // @effect-diagnostics-next-line globalJsonInEffect:off - fixed launcher-owned document.
+            // @effect-diagnostics-next-line preferSchemaOverJson:off - fixed launcher-owned document.
             `${JSON.stringify(
               {
                 protocol: SERVICE_LAUNCHER_PROTOCOL,
@@ -1697,9 +1705,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
               (problems) =>
                 !problems.includes("service-disabled") || !problems.includes("service-stopped"),
             )
-          : succeeded(
-              yield* probe("launchctl", ["print", `gui/${uid}/${identity.launchdLabel}`]),
-            );
+          : succeeded(yield* probe("launchctl", ["print", `gui/${uid}/${identity.launchdLabel}`]));
     return yield* Effect.acquireUseRelease(
       // Restoration requires every stop step; uninstall skips could leave the database held.
       // A failed stop may still have taken effect, so restore on either outcome.

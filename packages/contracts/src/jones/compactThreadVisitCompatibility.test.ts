@@ -17,19 +17,29 @@ const ReceivingSubscribeThreadInput = Schema.Struct({
 });
 
 const decode = Schema.decodeUnknownSync(OrchestrationV2SubscribeThreadInput);
-const decodeJson = Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2SubscribeThreadInput));
+const decodeJson = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.toCodecJson(OrchestrationV2SubscribeThreadInput)),
+);
+
+const decodeReceiving = Schema.decodeUnknownSync(ReceivingSubscribeThreadInput);
+const decodeReceivingJson = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.toCodecJson(ReceivingSubscribeThreadInput)),
+);
 
 describe("compact thread visit acceptance", () => {
-  it.each([undefined, false, true])("preserves %s acceptance through native and JSON input", (accept) => {
-    const input = {
-      threadId: ThreadId.make("visit-subscriber"),
-      afterSequence: 17,
-      ...(accept === undefined ? {} : { acceptCompactThreadVisits: accept }),
-    };
-    expect(decode(input)).toEqual(input);
-    expect(decodeJson(JSON.stringify(input))).toEqual(input);
-    expect(Object.hasOwn(decode(input), "acceptCompactThreadVisits")).toBe(accept !== undefined);
-  });
+  it.each([undefined, false, true])(
+    "preserves %s acceptance through native and JSON input",
+    (accept) => {
+      const input = {
+        threadId: ThreadId.make("visit-subscriber"),
+        afterSequence: 17,
+        ...(accept === undefined ? {} : { acceptCompactThreadVisits: accept }),
+      };
+      expect(decode(input)).toEqual(input);
+      expect(decodeJson(JSON.stringify(input))).toEqual(input);
+      expect(Object.hasOwn(decode(input), "acceptCompactThreadVisits")).toBe(accept !== undefined);
+    },
+  );
 
   it("lets the pinned receiving decoder ignore the new opt-in without losing resume options", () => {
     const legacy = {
@@ -43,9 +53,9 @@ describe("compact thread visit acceptance", () => {
       acceptCompactIds: true,
     };
     const wire = { ...legacy, acceptCompactThreadVisits: true };
-    expect(Schema.decodeUnknownSync(ReceivingSubscribeThreadInput)(wire)).toEqual(legacy);
-    expect(Schema.decodeUnknownSync(Schema.toCodecJson(ReceivingSubscribeThreadInput))(JSON.stringify(wire))).toEqual(legacy);
-    expect(() => Schema.decodeUnknownSync(ReceivingSubscribeThreadInput)({ ...wire, afterSequence: -1 })).toThrow();
+    expect(decodeReceiving(wire)).toEqual(legacy);
+    expect(decodeReceivingJson(JSON.stringify(wire))).toEqual(legacy);
+    expect(() => decodeReceiving({ ...wire, afterSequence: -1 })).toThrow();
     expect(() => decode({ ...wire, acceptCompactThreadVisits: "true" })).toThrow();
   });
 });

@@ -59,6 +59,7 @@ import {
   expandCollapsedComposerCursor,
   pastedPathQueryLength,
 } from "~/composer-logic";
+import { createEditorSerializationCache } from "~/jones/composer/editorSerializationCache";
 import { useStableCallback } from "~/hooks/useStableCallback";
 import { caretLineDirection, ComposerTextDirectionExtension } from "~/composer-text-direction";
 import {
@@ -1021,8 +1022,19 @@ function ComposerPromptEditorTiptapInner(
     onSubmitAndSend: onCitationSubmitAndSend ?? (() => false),
   };
 
+  const serializationRef = useRef<{
+    editor: TiptapEditor;
+    read: ReturnType<typeof createEditorSerializationCache>;
+  } | null>(null);
+  const readEditorDoc = (current: TiptapEditor) => {
+    if (serializationRef.current?.editor !== current) {
+      serializationRef.current = { editor: current, read: createEditorSerializationCache() };
+    }
+    return serializationRef.current.read(current.state.doc);
+  };
+
   const handleEditorChange = (updated: TiptapEditor, transaction: Transaction) => {
-    const map = serializeEditorDoc(updated.state.doc);
+    const map = readEditorDoc(updated);
     const contextIds = literalText ? [] : [...map.contextIds];
     const { from, to } = updated.state.selection;
     const fromFlat = pmToFlat(map, from);
@@ -1073,13 +1085,9 @@ function ComposerPromptEditorTiptapInner(
       [updated.state.selection.$from.nodeBefore, updated.state.selection.$from.nodeAfter].some(
         (node) => node?.isInline && node.isAtom && !node.isText && node.type.name !== "hardBreak",
       );
-    readCallbacks().onChange(
-      nextValue,
-      nextCursor,
-      nextExpandedCursor,
-      suppressTrigger,
-      contextIds,
-    );
+    readCallbacks().onChange(nextValue, nextCursor, nextExpandedCursor, suppressTrigger, [
+      ...contextIds,
+    ]);
   };
 
   const editorAttributes = {
@@ -1434,7 +1442,9 @@ function ComposerPromptEditorTiptapInner(
             !literalText && importFragment
               ? importPastedComposerText(clipboardData, importFragment)
               : pastedText;
-          const tokens = literalText ? [] : collectComposerPromptInlineTokens(`${text}\n`);
+          const tokens = literalText
+            ? []
+            : collectComposerPromptInlineTokens(`${text}\n`, text.length);
           const isChip = (token: (typeof tokens)[number] | undefined) =>
             token?.type === "mention" ||
             (token?.type === "skill" && skillLabelFor(token.value) !== null) ||
@@ -1530,8 +1540,8 @@ function ComposerPromptEditorTiptapInner(
 
   const readSnapshot = () => {
     const snapshot = snapshotRef.current;
-    if (!editor) return snapshot;
-    const map = serializeEditorDoc(editor.state.doc);
+    if (!editor) return { ...snapshot, contextIds: [...snapshot.contextIds] };
+    const map = readEditorDoc(editor);
     const { from, to } = editor.state.selection;
     const fromFlat = pmToFlat(map, from);
     const expandedCursor = Math.max(0, Math.min(map.value.length, flatToMarkdown(map, fromFlat)));
@@ -1547,7 +1557,7 @@ function ComposerPromptEditorTiptapInner(
       end: Math.max(next.expandedCursor, flatToMarkdown(map, toFlat)),
     };
     snapshotRef.current = next;
-    return next;
+    return { ...next, contextIds: [...next.contextIds] };
   };
 
   // Save citation drafts before controlled rewrites unmount their node views.
@@ -1578,7 +1588,7 @@ function ComposerPromptEditorTiptapInner(
         })
         .setMeta("addToHistory", false),
     );
-    onCitationDraftSave(replacedValue, serializeEditorDoc(current.state.doc).value);
+    onCitationDraftSave(replacedValue, readEditorDoc(current).value);
   });
 
   // The one place the controlled value reaches the editor. Imperative handlers compare against
@@ -1628,8 +1638,8 @@ function ComposerPromptEditorTiptapInner(
         },
       );
     }
-    selectMarkdownOffset(editor, normalizedExpandedCursor);
-    const map = serializeEditorDoc(editor.state.doc);
+    selectMarkdownOffset(editor, normalizedExpandedCursor, readEditorDoc);
+    const map = readEditorDoc(editor);
     if (isFocused) scrollTiptapCaretIntoView(editor);
     // A redraw later in this commit drops the editor's scroll offset, so reveal on the next frame.
     else if (initialSelection) {
@@ -1667,6 +1677,7 @@ function ComposerPromptEditorTiptapInner(
     expandEditorCursor,
     initialExpandedCursor,
     literalText,
+    readEditorDoc,
     richText,
     skillLabelFor,
     isKnownModel,
@@ -1707,7 +1718,7 @@ function ComposerPromptEditorTiptapInner(
     const boundedCursor = clampEditorCursor(snapshotRef.current.value, nextCursor);
     const expandedCursor =
       exactExpandedCursor ?? expandEditorCursor(snapshotRef.current.value, boundedCursor);
-    selectMarkdownOffset(editor, expandedCursor);
+    selectMarkdownOffset(editor, expandedCursor, readEditorDoc);
     scrollTiptapCaretIntoView(editor);
     if (boundedCursor === snapshotRef.current.cursor) return;
     snapshotRef.current = {
@@ -1725,7 +1736,7 @@ function ComposerPromptEditorTiptapInner(
       boundedCursor,
       snapshotRef.current.expandedCursor,
       literalText,
-      snapshotRef.current.contextIds,
+      [...snapshotRef.current.contextIds],
     );
   };
 
@@ -1757,7 +1768,7 @@ function ComposerPromptEditorTiptapInner(
       requestCitationComment: (request) => {
         citationRequestRef.current = request;
         if (!editor) return;
-        const map = serializeEditorDoc(editor.state.doc);
+        const map = readEditorDoc(editor);
         if (map.value !== request.value) return;
         const target = map.runs.find(
           (run) =>
@@ -1935,9 +1946,15 @@ function insertMarkdownParagraphs(
 }
 
 /** Placing the caret can show Markdown markers, so place it again in the shown source. */
-function selectMarkdownOffset(editor: TiptapEditor, offset: number): void {
+function selectMarkdownOffset(
+  editor: TiptapEditor,
+  offset: number,
+  read: (current: TiptapEditor) => ReturnType<ReturnType<typeof createEditorSerializationCache>> = (
+    current,
+  ) => serializeEditorDoc(current.state.doc),
+): void {
   for (let pass = 0; pass < 2; pass += 1) {
-    const map = serializeEditorDoc(editor.state.doc);
+    const map = read(editor);
     const pos = flatToPm(map, markdownToFlat(map, offset));
     const { selection } = editor.state;
     if (pass > 0 && selection.empty && selection.from === pos) return;

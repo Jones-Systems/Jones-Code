@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Exact disposable fixtures execute production storage, qualification, reservation and unlink/removal paths.
+import { policyProbe } from "./LinuxInfrastructureEvidence.testkit.ts";
+import { consumerDecision, CONSUMER_LIMITS } from "./ConsumerProbe.ts";
 import { canonical } from "./Filesystem.ts";
 import { ClaimAbsence } from "./ClaimReconciliation.ts";
 import type { RetirementReceipt } from "./Receipts.ts";
@@ -26,7 +28,6 @@ import { enumerateDisposal, disposePath } from "./Disposal.ts";
 import { dutyIdentity, terminalWorkspace, revalidateTerminalWorkspace } from "./DutyIdentity.ts";
 import { captureNativeOwner, observeNativeOwner, type NativeOwnerIO } from "./NativeDutyOwner.ts";
 import { nativePid } from "./Reservation.ts";
-import { nativeServices, type ServiceIO } from "./NativeConsumers.ts";
 import { events } from "./EventIntegration.ts";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -96,6 +97,114 @@ const compiledMain3acaCodec10 = Schema.decodeEffect(RetirementReceiptJson);
 const compiledMain3acaCodec9 = Schema.encodeEffect(RetirementReceiptJson);
 
 export const retirementCases: Record<string, () => Promise<void>> = {
+  "both final stages reject changed valid process basis; fresh timestamps alone permit retirement":
+    async () => {
+      for (const changeAt of [2, 3, 0])
+        await fixture(async ({ base, repo, worktree, input }) => {
+          const f = await fixtureSql(NodePath.join(base, "policy.sqlite3"));
+          let observations = 0,
+            removals = 0;
+          try {
+            const result = await Effect.runPromise(
+              retire({
+                cause: "sweep",
+                projectRoot: repo,
+                worktree,
+                maxLevel: "branch-retained",
+                admit: Effect.void,
+                observe: Effect.tryPromise({
+                  try: async () => {
+                    observations++;
+                    const process = await policyProbe(
+                      changeAt && observations >= changeAt ? "b".repeat(64) : undefined,
+                    );
+                    process.observedAt -= observations;
+                    return { ...input, consumers: { ...input.consumers, process } };
+                  },
+                  catch: (cause) =>
+                    new RetirementError({ reason: "observation_failed", target: worktree, cause }),
+                }),
+                revalidate: Effect.void,
+                finalizeOutputs: () => Effect.void,
+                remove: Effect.tryPromise({
+                  try: async () => {
+                    removals++;
+                    await command(repo, ["worktree", "remove", "--", worktree]);
+                  },
+                  catch: (cause) =>
+                    new RetirementError({ reason: "remove_failed", target: worktree, cause }),
+                }),
+              }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+            );
+            NodeAssert.equal(removals, changeAt ? 0 : 1);
+            NodeAssert.equal(result.state, changeAt ? "not_retired" : "retired");
+            if (changeAt)
+              NodeAssert.ok(
+                result.reasons.includes(
+                  changeAt === 2 ? "final_check_conflict" : "remaining_fact_changed",
+                ),
+              );
+          } finally {
+            f.close();
+          }
+        });
+    },
+  "old and optional policy receipts roundtrip; malformed policy stays rejected": async () =>
+    fixture(async ({ input }) => {
+      const process = await policyProbe();
+      const consumers = consumerDecision(
+        input.worktree,
+        { ...input.consumers, process },
+        process.observedAt,
+      );
+      const receipt: RetirementReceipt = {
+        schema: "worktree-retirement/v1",
+        id: "policy",
+        cause: "sweep",
+        state: "not_retired",
+        binding: input.expected,
+        incarnation: incarnation(input.expected),
+        qualification: {
+          schema: "workspace-qualification/v1",
+          authority_effect: "none",
+          outcome: "unknown",
+          level: null,
+          reasons: [],
+          decision: "unknown",
+          observationMs: 0,
+          consumers,
+        },
+        coverage: {},
+        preservationRefs: [],
+        journal: "policy",
+        disposed: [],
+        reasons: [],
+        limits: [],
+        bytes: { logical: null, allocated: null, statvfs_delta: null },
+      };
+      for (const policy of [undefined, process.processPolicy]) {
+        if (policy) consumers.coverage.process!.processPolicy = policy;
+        else delete consumers.coverage.process!.processPolicy;
+        const decoded = await Effect.runPromise(
+          compiledMain3acaCodec10(await Effect.runPromise(compiledMain3acaCodec9(receipt))),
+        );
+        NodeAssert.deepEqual(decoded, receipt);
+        NodeAssert.deepEqual(decoded.qualification.consumers?.limits, CONSUMER_LIMITS);
+      }
+      const original = process.processPolicy!;
+      for (const patch of [
+        { policy: "wrong" },
+        { basisDigest: "bad" },
+        { deniedInstances: -1 },
+        { verifiedExclusions: 0 },
+        { unclassifiedInstances: 1 },
+        { assurance: "non-use" },
+        { reasons: { identity: -1 } },
+      ]) {
+        consumers.coverage.process!.processPolicy = { ...original, ...patch } as typeof original;
+        await NodeAssert.rejects(Effect.runPromise(compiledMain3acaCodec10(canonical(receipt))));
+      }
+    }),
   "receipt codecs retain absent hold/unknown qualification evidence and reject invalid authority fields":
     () =>
       fixture(async ({ input }) => {
@@ -195,45 +304,6 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         f.close();
       }
     }),
-  "loaded native service observations use bounded manager projections and retain unknown coverage":
-    async () => {
-      const calls: string[][] = [];
-      const linux: ServiceIO = {
-        uid: () => 501,
-        command: async (_file, args) => {
-          calls.push(args);
-          return args.includes("list-units")
-            ? "fixture.service loaded inactive dead Fixture\n"
-            : "Id=fixture.service\nLoadState=loaded\nWorkingDirectory=/fixture/checkout\nExecStart={ path=/outside/tool ; argv[]=/outside/tool ; }\n";
-        },
-      };
-      const result = await nativeServices("/fixture/checkout", "linux", linux);
-      NodeAssert.equal(result.status, "complete");
-      NodeAssert.deepEqual(result.paths, ["/fixture/checkout"]);
-      NodeAssert.equal(
-        calls.some((args) => args.some((a) => a.includes("Environment"))),
-        false,
-      );
-      const darwin: ServiceIO = {
-        uid: () => 501,
-        command: async (_file, args) =>
-          args[1]?.split("/").length === 2
-            ? "domain = {\n\tservices = {\n\t\t0 0 fixture.service\n\t}\n}\n"
-            : "fixture = {\n program = /outside/tool\n working directory = /fixture/checkout\n environment = {\n SECRET = never-returned\n }\n}\n",
-      };
-      const projected = await nativeServices("/fixture/checkout", "darwin", darwin);
-      NodeAssert.equal(projected.status, "complete");
-      NodeAssert.deepEqual(projected.paths, ["/fixture/checkout"]);
-      NodeAssert.equal(JSON.stringify(projected).includes("never-returned"), false);
-      const unavailable = await nativeServices("/fixture/checkout", "darwin", {
-        ...darwin,
-        command: async () => {
-          throw Error("controlled manager unavailable");
-        },
-      });
-      NodeAssert.equal(unavailable.status, "unavailable");
-      NodeAssert.equal(unavailable.paths.length, 0);
-    },
   "event admission uses batch birth binding without eager projection lookups and releases actual terminal runs":
     () =>
       fixture(async ({ base, worktree }) => {

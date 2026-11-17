@@ -14,6 +14,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as MutableRef from "effect/MutableRef";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -31,9 +32,18 @@ import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import * as Persistence from "../platform/persistence.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
 import { subscribeDynamicWithProducer } from "../rpc/client.ts";
-import { makeProducerGuard, applyProducerBatches, type SubscriptionProducer } from "../jones/sync/producerGuard.ts";
+import {
+  makeProducerGuard,
+  applyProducerBatches,
+  type SubscriptionProducer,
+} from "../jones/sync/producerGuard.ts";
 import { publishInBatches } from "../jones/shellPublication/batchedPublication.ts";
-import { shellRefreshSubscription, isThreadReplayBehindRefresh, threadOmissionRemoval, advanceThreadRefreshWatermarks } from "../jones/threadResultDependencies/shellRefresh.ts";
+import {
+  shellRefreshSubscription,
+  isThreadReplayBehindRefresh,
+  threadOmissionRemoval,
+  advanceThreadRefreshWatermarks,
+} from "../jones/threadResultDependencies/shellRefresh.ts";
 import * as ShellSnapshotLoader from "./shellSnapshotHttp.ts";
 import type { DeferredShellSnapshot } from "./shellPullRequests.ts";
 import {
@@ -287,19 +297,25 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           error: Option.none(),
         },
   );
-  const setStreamError = (error: unknown) =>
-    Ref.set(awaitingCompletion, false).pipe(
-      Effect.andThen(Effect.logWarning("Could not synchronize the environment shell.")),
-      Effect.annotateLogs({
-        environmentId,
-        ...safeErrorLogAttributes(error),
-      }),
-      Effect.andThen(
-        SubscriptionRef.update(state, (current) => ({
+  const setStreamError = (error: unknown, producer: SubscriptionProducer) =>
+    SubscriptionRef.modify(state, (current) => {
+      if (!producerGuard.isCurrent(producer)) return [false, current] as const;
+      MutableRef.set(awaitingCompletion.ref, false);
+      return [
+        true,
+        {
           ...current,
           status: shellStatusForSnapshot(current.snapshot),
           error: Option.some(SHELL_SYNCHRONIZATION_ERROR_MESSAGE),
-        })),
+        },
+      ] as const;
+    }).pipe(
+      Effect.flatMap((committed) =>
+        committed
+          ? Effect.logWarning("Could not synchronize the environment shell.").pipe(
+              Effect.annotateLogs({ environmentId, ...safeErrorLogAttributes(error) }),
+            )
+          : Effect.void,
       ),
     );
 
@@ -317,12 +333,12 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   ) {
     const fromHttp = pendingLinkIds !== undefined;
     const now = yield* Clock.currentTimeMillis;
-    let waiting = yield* Ref.get(awaitingCompletion);
-    let snapshotRequired = false;
-    let changed: OrchestrationV2ShellSnapshot | undefined;
-    let nextOrigin = yield* Ref.get(origin);
-    const committed = yield* SubscriptionRef.modify(state, (initial) => {
-      if (!canCommit()) return [false, initial] as const;
+    yield* SubscriptionRef.modify(state, (initial) => {
+      if (!canCommit()) return [undefined, initial] as const;
+      let waiting = Ref.getUnsafe(awaitingCompletion);
+      let snapshotRequired = false;
+      let changed: OrchestrationV2ShellSnapshot | undefined;
+      let nextOrigin = Ref.getUnsafe(origin);
       const disconnected = initial.status === "empty" || initial.status === "cached";
       let next = initial;
       let receivedAuthoritativeSnapshot = false;
@@ -379,7 +395,8 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           next = Object.assign({}, next, {
             snapshot: Option.some(applyShellStreamEvents(next.snapshot.value, batch)),
             removedAt: removals ?? next.removedAt,
-            status: fromHttp && disconnected ? "cached" : waiting || fromHttp ? "synchronizing" : "live",
+            status:
+              fromHttp && disconnected ? "cached" : waiting || fromHttp ? "synchronizing" : "live",
             error: Option.none(),
           });
           continue;
@@ -441,7 +458,8 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         }
         next = {
           snapshot: Option.some(nextSnapshot),
-          status: fromHttp && disconnected ? "cached" : waiting || fromHttp ? "synchronizing" : "live",
+          status:
+            fromHttp && disconnected ? "cached" : waiting || fromHttp ? "synchronizing" : "live",
           error: Option.none(),
           generation: authoritative ? ++lastShellGeneration : next.generation,
           removedAt: authoritative
@@ -453,18 +471,31 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       }
 
       if (snapshotRequired) nextOrigin = undefined;
-      else if (receivedAuthoritativeSnapshot) nextOrigin = identity === null ? undefined : { ...identity, snapshotAt: now };
-      if (pendingLinkIds !== undefined && Option.isSome(next.snapshot)) pendingLinkRows = new Set(next.snapshot.value.threads.filter((thread) => pendingLinkIds.has(thread.id)));
-      if (next.snapshot !== initial.snapshot && Option.isSome(next.snapshot)) changed = next.snapshot.value;
-      return [true, next] as const;
+      else if (receivedAuthoritativeSnapshot) {
+        nextOrigin = identity === null ? undefined : { ...identity, snapshotAt: now };
+      }
+      if (pendingLinkIds !== undefined && Option.isSome(next.snapshot)) {
+        pendingLinkRows = new Set(
+          next.snapshot.value.threads.filter((thread) => pendingLinkIds.has(thread.id)),
+        );
+      }
+      if (next.snapshot !== initial.snapshot && Option.isSome(next.snapshot)) {
+        changed = next.snapshot.value;
+      }
+      // This callback runs after the state semaphore wait. Commit metadata and nonblocking
+      // queue offers before publication, with no yield where a flush or cancellation can intervene.
+      MutableRef.set(awaitingCompletion.ref, waiting);
+      MutableRef.set(origin.ref, nextOrigin);
+      if (Option.isSome(next.snapshot)) {
+        MutableRef.set(
+          latestLive.ref,
+          Option.some({ snapshot: next.snapshot.value, origin: nextOrigin }),
+        );
+      }
+      if (snapshotRequired) Queue.offerUnsafe(reloadRequests, undefined);
+      if (changed !== undefined) Queue.offerUnsafe(persistence, changed);
+      return [undefined, next] as const;
     });
-    if (!committed) return;
-    yield* Ref.set(awaitingCompletion, waiting);
-    yield* Ref.set(origin, nextOrigin);
-    const current = yield* SubscriptionRef.get(state);
-    if (Option.isSome(current.snapshot)) yield* Ref.set(latestLive, Option.some({ snapshot: current.snapshot.value, origin: nextOrigin }));
-    if (snapshotRequired) yield* Queue.offer(reloadRequests, undefined);
-    if (changed !== undefined) yield* Queue.offer(persistence, changed);
   });
 
   const applyItems = Effect.fn("EnvironmentShellState.applyItems")(function* (
@@ -472,7 +503,12 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
     items: ReadonlyArray<OrchestrationV2ShellStreamItem>,
   ) {
     const subscription = yield* Ref.get(activeSubscription);
-    yield* applyLocked(items, subscription?.identity ?? null, undefined, () => subscription?.producer === producer && producerGuard.isCurrent(producer));
+    yield* applyLocked(
+      items,
+      subscription?.identity ?? null,
+      undefined,
+      () => subscription?.producer === producer && producerGuard.isCurrent(producer),
+    );
   }, snapshotWriteLock.withPermit);
 
   const stateScope = yield* Effect.scope;
@@ -509,35 +545,33 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       arrivedIds: ReadonlySet<ThreadId>,
       canCommit: () => boolean,
     ) {
-      const filled = yield* SubscriptionRef.modify(
-        state,
-        (current): [Option.Option<OrchestrationV2ShellSnapshot>, EnvironmentShellState] => {
-          if (!canCommit() || Option.isNone(current.snapshot)) return [Option.none(), current];
-          const snapshot = current.snapshot.value;
-          let changed = false;
-          const threads = snapshot.threads.map((thread) => {
-            if (!arrivedRows.has(thread) || !arrivedIds.has(thread.id)) return thread;
-            const links = linksByThreadId.get(thread.id);
-            if (sameThreadPullRequests(thread.pullRequests, links)) return thread;
-            changed = true;
-            if (links === undefined) {
-              const { pullRequests: _previous, ...row } = thread;
-              return row;
-            }
-            return { ...thread, pullRequests: links };
-          });
-          if (!changed) return [Option.none(), current];
-          const next = { ...snapshot, threads };
-          return [Option.some(next), { ...current, snapshot: Option.some(next) }];
-        },
-      );
-      if (!canCommit()) return;
-      pendingLinkRows = new Set();
-      const live = yield* Ref.get(latestLive);
-      if (Option.isNone(live)) return;
-      const latest = Option.isSome(filled) ? filled.value : live.value.snapshot;
-      yield* Ref.set(latestLive, Option.some({ snapshot: latest, origin: live.value.origin }));
-      yield* Queue.offer(persistence, latest);
+      yield* SubscriptionRef.modify(state, (current): [void, EnvironmentShellState] => {
+        if (!canCommit() || Option.isNone(current.snapshot)) return [undefined, current];
+        const snapshot = current.snapshot.value;
+        let changed = false;
+        const threads = snapshot.threads.map((thread) => {
+          if (!arrivedRows.has(thread) || !arrivedIds.has(thread.id)) return thread;
+          const links = linksByThreadId.get(thread.id);
+          if (sameThreadPullRequests(thread.pullRequests, links)) return thread;
+          changed = true;
+          if (links === undefined) {
+            const { pullRequests: _previous, ...row } = thread;
+            return row;
+          }
+          return { ...thread, pullRequests: links };
+        });
+        const next = changed ? { ...snapshot, threads } : snapshot;
+        pendingLinkRows = new Set();
+        const live = Ref.getUnsafe(latestLive);
+        if (Option.isSome(live)) {
+          MutableRef.set(
+            latestLive.ref,
+            Option.some({ snapshot: next, origin: live.value.origin }),
+          );
+          Queue.offerUnsafe(persistence, next);
+        }
+        return [undefined, changed ? { ...current, snapshot: Option.some(next) } : current];
+      });
     },
     (effect) => snapshotWriteLock.withPermit(effect),
   );
@@ -628,10 +662,15 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         const owner = {};
         const canCommit = () => {
           const subscription = Ref.getUnsafe(activeSubscription);
-          return Option.getOrNull(SubscriptionRef.getUnsafe(supervisor.prepared)) === prepared &&
-            (subscription === null || (subscription.httpOwner === owner && producerGuard.isCurrent(subscription.producer)));
+          return (
+            Option.getOrNull(SubscriptionRef.getUnsafe(supervisor.prepared)) === prepared &&
+            (subscription === null ||
+              (subscription.httpOwner === owner && producerGuard.isCurrent(subscription.producer)))
+          );
         };
-        const fiber = yield* loadOverHttp(prepared, identity, canCommit).pipe(Effect.forkIn(stateScope));
+        const fiber = yield* loadOverHttp(prepared, identity, canCommit).pipe(
+          Effect.forkIn(stateScope),
+        );
         const next: EarlyShellLoad = { owner, prepared, identity, fiber, claimed: claim };
         return [next, next] as const;
       }),
@@ -688,14 +727,11 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
       Effect.fn("EnvironmentShellState.makeSubscribeInput")(function* (producer) {
         yield* producerGuard.begin(producer);
         const session = producer.session;
-        const config = yield* session.initialConfig;
+        const config = yield* session.initialConfig.pipe(Effect.orElseSucceed(() => null));
         if (!producerGuard.isCurrent(producer)) return yield* Effect.never;
-        const refreshSubscription = shellRefreshSubscription(config);
-        const supportsCompletionMarker = config.shellResumeCompletionMarker === true;
-        const identity = yield* session.initialConfig.pipe(
-          Effect.map((config) => shellIdentity(config.environment, config)),
-          Effect.orElseSucceed(() => null),
-        );
+        const refreshSubscription = shellRefreshSubscription(config ?? {});
+        const supportsCompletionMarker = config?.shellResumeCompletionMarker === true;
+        const identity = config === null ? null : shellIdentity(config.environment, config);
         const { omitIdleSubagents, omitOlderSettled } = identity ?? {
           omitIdleSubagents: false,
           omitOlderSettled: false,
@@ -716,7 +752,11 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
             ? earlyExit.value
             : null;
         if (!producerGuard.isCurrent(producer)) return yield* Effect.never;
-        yield* Ref.set(activeSubscription, { producer, identity, ...(early === null ? {} : { httpOwner: early.owner }) });
+        yield* Ref.set(activeSubscription, {
+          producer,
+          identity,
+          ...(early === null ? {} : { httpOwner: early.owner }),
+        });
         yield* Ref.set(awaitingCompletion, supportsCompletionMarker);
         yield* setSynchronizing;
 
@@ -754,10 +794,17 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
           ...(omitOlderSettled ? { omitOlderSettled: true as const } : {}),
         };
         if (Option.isNone(current.snapshot) || !(resumingHeldRows || loaded?.kind === "snapshot")) {
-          return { ...omission, ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}) };
+          return {
+            ...omission,
+            ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
+          };
         }
         if (!supportsCompletionMarker) {
-          yield* producerGuard.commit(producer, state, (value) => ({ ...value, status: "live" as const, error: Option.none() }));
+          yield* producerGuard.commit(producer, state, (value) => ({
+            ...value,
+            status: "live" as const,
+            error: Option.none(),
+          }));
         }
         return {
           afterSequence: current.snapshot.value.snapshotSequence,
@@ -773,14 +820,13 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         };
       }),
       {
-        onExpectedFailure: (cause, producer) => producerGuard.isCurrent(producer) ? setStreamError(Cause.squash(cause)) : Effect.void,
+        onDefect: (cause, producer) => setStreamError(Cause.squash(cause), producer),
+        onExpectedFailure: (cause, producer) => setStreamError(Cause.squash(cause), producer),
         resubscribeWhileSessionCurrent: "250 millis",
         retryExpectedFailureAfter: "250 millis",
         resubscribe: resubscriptions,
       },
-    ).pipe(
-      Stream.runForEachArray((entries) => applyProducerBatches(entries, applyItems)),
-    ),
+    ).pipe(Stream.runForEachArray((entries) => applyProducerBatches(entries, applyItems))),
   );
   yield* SubscriptionRef.changes(supervisor.state).pipe(
     Stream.runForEach((connectionState) => {

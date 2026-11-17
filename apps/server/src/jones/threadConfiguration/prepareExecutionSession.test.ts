@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../orchestration/SupersededTerminalTrace.ts";
 import {
   ExecutionSessionRevalidationError,
   ExecutionSessionRevalidationUnavailableError,
@@ -28,6 +29,18 @@ import {
 const isRevalidationUnavailable = Schema.is(ExecutionSessionRevalidationUnavailableError);
 const isRevalidationError = Schema.is(ExecutionSessionRevalidationError);
 const isEventSinkWriteError = Schema.is(Sink.EventSinkWriteError);
+
+it.effect.each(["no-proof", "wrong-proof", "no-release"] as const)(
+  "a successful detach without the original retirement receipt refuses %s",
+  (fault) =>
+    Effect.gen(function* () {
+      const fixture = makeFixture("restart_and_resume", fault);
+      const error = yield* Effect.flip(fixture.start);
+      assert.isTrue(isRevalidationError(error));
+      assert.deepEqual(fixture.order, fault === "no-release" ? [] : ["detach"]);
+      assert.deepEqual(fixture.writes, []);
+    }),
+);
 
 it.effect(
   "retirement persists the released identity before returning for restart and handoff; retries keep event IDs",
@@ -82,7 +95,17 @@ it.effect(
 
 function makeFixture(
   transition: "restart_and_resume" | "create_with_handoff" | "switch_model_in_session" | "reuse",
-  fault?: "detach" | "persist" | "stale" | "selection" | "read" | "read-persist" | "read-stale",
+  fault?:
+    | "detach"
+    | "persist"
+    | "stale"
+    | "selection"
+    | "read"
+    | "read-persist"
+    | "read-stale"
+    | "no-proof"
+    | "wrong-proof"
+    | "no-release",
   continuation = false,
   retirement?: {
     readonly marked: boolean;
@@ -106,7 +129,30 @@ function makeFixture(
     ],
     providerThreads: [
       retirement?.stoppedProvider ?? {
+        id: ProviderThreadId.make("target-provider"),
+        appThreadId: ThreadId.make("retirement-thread"),
+        providerInstanceId: ProviderInstanceId.make("target"),
+        driver: ProviderDriverKind.make("codex"),
         providerSessionId: ProviderSessionId.make("target-session"),
+        nativeThreadRef: {
+          driver: ProviderDriverKind.make("codex"),
+          nativeId: "target-native",
+          strength: "strong",
+        },
+        runtimeIdentity: { runtimeGeneration: "target-generation" },
+      },
+      {
+        id: ProviderThreadId.make("retired-provider"),
+        appThreadId: ThreadId.make("retirement-thread"),
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("source"),
+        providerSessionId: ProviderSessionId.make("retired-session"),
+        nativeThreadRef: {
+          driver: ProviderDriverKind.make("codex"),
+          nativeId: "retired-native",
+          strength: "strong",
+        },
+        runtimeIdentity: { runtimeGeneration: "retired-generation" },
       },
     ],
     providerSessions: [
@@ -153,13 +199,30 @@ function makeFixture(
               modelChanged: true,
               targetProviderThreadId: null,
               releaseProviderSessionIds:
-                transition === "switch_model_in_session" || transition === "reuse"
+                transition === "switch_model_in_session" ||
+                transition === "reuse" ||
+                fault === "no-release"
                   ? []
                   : [projection.providerSessions[0]!.id],
               transition: { type: transition },
             }),
         }),
         Layer.mock(Sessions.ProviderSessionManagerV2)({
+          captureThreadRetirement: (binding) =>
+            Effect.succeed(
+              fault === "no-proof"
+                ? null
+                : {
+                    binding,
+                    awaitRetired: Effect.succeed({
+                      binding:
+                        fault === "wrong-proof"
+                          ? { ...binding, nativeThreadId: "foreign-native" }
+                          : binding,
+                      evidence: "thread_closed" as const,
+                    }),
+                  },
+            ),
           awaitThreadRetirement: () => retirement?.wait ?? Effect.void,
           // No live runtime reports background work, so released sessions detach.
           get: () => Effect.succeedNone,
@@ -178,6 +241,7 @@ function makeFixture(
           }),
         }),
         Layer.mock(Sink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
           readStoppedRuntime: () => Effect.succeed(retirement?.stoppedBinding ?? null),
           hasStoppedRuntime: () => Effect.succeed(retirement?.stopped ?? false),
           writeIfRunCurrent: Effect.fn("PrepareExecutionSessionTest.writeIfRunCurrent")(

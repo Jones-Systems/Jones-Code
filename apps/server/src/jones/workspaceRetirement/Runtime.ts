@@ -27,7 +27,7 @@ import { qualify, type QualificationInput } from "./Qualification.ts";
 import type { Probe } from "./ConsumerProbe.ts";
 import { NativeObservations } from "./NativeObservations.ts";
 import * as GitDriver from "../../vcs/GitVcsDriver.ts";
-import { settlementAdmission } from "./SettlementAdmission.ts";
+import { legacySettlementAdmission, settlementAdmission } from "./SettlementAdmission.ts";
 import { retire } from "./RetirementExecutor.ts";
 
 const unavailable = (limit: string): Probe => ({
@@ -182,11 +182,17 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
         request.worktree,
         DateTime.formatIso(thread.settledAt),
       );
-      if (intent === null)
-        return yield* new RetirementError({
-          target: request.worktree,
-          reason: "settlement_intent_missing",
+      if (intent === null) {
+        const legacy = legacySettlementAdmission({
+          settledAt: DateTime.toEpochMillis(thread.settledAt),
+          now: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+          execute: request.execute,
+          ownerConfirmed: request.cause === "owner_action" && request.ownerCoverage !== undefined,
         });
+        if (legacy !== null)
+          return yield* new RetirementError({ target: request.worktree, reason: legacy });
+        continue;
+      }
       const admission = settlementAdmission({
         script: intent.script_state,
         startedAt: Date.parse(intent.script_started_at ?? intent.settled_at),
@@ -261,8 +267,15 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
       nativeObservations.services(request.worktree),
     );
     const workloads = yield* nativeObservations.workloads(sql, request.worktree);
-    let registryProbe = unavailable("build-output registry is not configured"),
-      obligations = unavailable("lifecycle registry is not configured");
+    const notApplicable = (limit: string): Probe => ({ ...observed([]), limits: [limit] });
+    let registryProbe =
+        selected === null && registry === null
+          ? notApplicable("not-applicable: build-output registry is not configured")
+          : unavailable("build-output registry observation is unavailable"),
+      obligations =
+        selected === null && registry === null
+          ? notApplicable("not-applicable: lifecycle registry is not configured")
+          : unavailable("lifecycle registry observation is unavailable");
     if (registry) {
       const current = yield* registry.show(request.worktree);
       if (firstGeneration === undefined) firstGeneration = current.generation;
@@ -280,6 +293,8 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           ? [request.worktree]
           : [],
       );
+      if (!registry.outputs && selected?.outputs === undefined)
+        registryProbe = notApplicable("not-applicable: build-output registry is not configured");
       if (registry.outputs) {
         outputs = yield* registry.outputs(request.worktree);
         const own = outputs.filter(
@@ -617,8 +632,13 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
                 ? "Durable settle-script completion has not been recorded."
                 : reason === "final_checkpoint_unfinished"
                   ? "The latest run has no ready final checkpoint."
-                  : reason,
-          missingFact: reason,
+                  : reason === "observation_failed" && qualification?.observationFailure
+                    ? `Qualification observation failed at ${qualification.observationFailure.stage} (${qualification.observationFailure.errorClass}).`
+                    : reason,
+          missingFact:
+            reason === "observation_failed" && qualification?.observationFailure
+              ? `fresh_complete_${qualification.observationFailure.stage}_observation`
+              : reason,
           lineage: request.threadId ? [{ threadId: request.threadId }] : [],
           nextAction:
             reason === "settle_script_unfinished"

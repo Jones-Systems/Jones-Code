@@ -162,6 +162,14 @@ export class DesktopConnectionCatalogStore extends Context.Service<
       | DesktopConnectionCatalogStoreMigrationError
       | DesktopConnectionCatalogStoreProtectionError
     >;
+    /** Reads the persisted catalog only: no legacy migration, so a diagnostic read never writes. */
+    readonly snapshot: Effect.Effect<
+      Option.Option<string>,
+      | DesktopConnectionCatalogStoreReadError
+      | DesktopConnectionCatalogStoreDocumentDecodeError
+      | DesktopConnectionCatalogStoreDecodeError
+      | DesktopConnectionCatalogStoreProtectionError
+    >;
     readonly set: (
       catalog: string,
     ) => Effect.Effect<
@@ -517,7 +525,16 @@ export const make = Effect.gen(function* () {
     return Option.some(encoded);
   });
 
+  const snapshot = Effect.gen(function* () {
+    const document = yield* readDocument(fileSystem, catalogPath);
+    if (Option.isNone(document) || !(yield* encryptionAvailable)) {
+      return Option.none<string>();
+    }
+    return Option.some(yield* decryptDocument(document.value));
+  }).pipe(Effect.withSpan("desktop.connectionCatalogStore.snapshot"));
+
   return DesktopConnectionCatalogStore.of({
+    snapshot,
     get: Effect.gen(function* () {
       const document = yield* readDocument(fileSystem, catalogPath);
       if (Option.isNone(document)) {

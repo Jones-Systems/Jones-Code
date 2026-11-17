@@ -366,7 +366,12 @@ function repointServiceUnit(contents: string, version: string, qualified = false
     const match = program.exec(contents);
     if (match === null) continue;
     const [, prefix = "", current = "", suffix = ""] = match;
-    if (current === version || (!qualified && isExactServiceVersion(current) && compareExactServiceVersions(current, version) >= 0)) {
+    if (
+      current === version ||
+      (!qualified &&
+        isExactServiceVersion(current) &&
+        compareExactServiceVersions(current, version) >= 0)
+    ) {
       return contents;
     }
     return contents.replace(program, () => `${prefix}${version}${suffix}`);
@@ -1770,7 +1775,12 @@ export class Launcher {
       try {
         const backup = () => {
           step = "backup";
-          return backupDatabaseOnce(this.#baseDir, pending, this.#backupAdapter, this.#stopSignal.signal);
+          return backupDatabaseOnce(
+            this.#baseDir,
+            pending,
+            this.#backupAdapter,
+            this.#stopSignal.signal,
+          );
         };
         if (pending.qualified !== undefined)
           await this.#recoveryIO.ownership(this.#baseDir, backup);
@@ -1985,7 +1995,11 @@ export class Launcher {
     };
     const spawnArguments = runtimeSpawnArguments(paths);
     const child = NodeChildProcess.spawn(spawnArguments.command, spawnArguments.args, {
-      env: { ...this.#environment, T3CODE_HOME: this.#baseDir, [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context) },
+      env: {
+        ...this.#environment,
+        T3CODE_HOME: this.#baseDir,
+        [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context),
+      },
       stdio:
         this.#output === undefined
           ? ["inherit", "inherit", "inherit", "ipc"]
@@ -2295,7 +2309,7 @@ export class Launcher {
     await reply("accepted");
     this.#stopping = true;
     this.#clearTimer();
-    await terminateChild(child.process, "SIGTERM");
+    await this.#terminate(child.process, "SIGTERM");
     await this.#retractCapability(child.process);
     this.#child = null;
     this.#done = true;
@@ -2672,7 +2686,8 @@ export class Launcher {
       await this.#selectState(next, writeServiceState, () => {
         if (qualified !== undefined) {
           this.#assertQualifiedChildLive(child);
-          if (this.#exchangeExpired(receivedAt)) throw new Error("request-expired: Selection lease outlasted Install admission.");
+          if (this.#exchangeExpired(receivedAt))
+            throw new Error("request-expired: Selection lease outlasted Install admission.");
         }
       });
     } catch (cause) {
@@ -2695,11 +2710,12 @@ export class Launcher {
     }
     this.#timer = undefined;
     // Anything thrown outside its own fallback still leaves the offline backup to run.
-    const finishOnlineBackup = pending.qualified !== undefined ? undefined : await startOnlineDatabaseBackup(
-      this.#baseDir,
-      pending,
-      this.#backupSpaceProbe,
-    ).catch(() => undefined);
+    const finishOnlineBackup =
+      pending.qualified !== undefined
+        ? undefined
+        : await startOnlineDatabaseBackup(this.#baseDir, pending, this.#backupSpaceProbe).catch(
+            () => undefined,
+          );
     this.#child = null;
     await this.#terminate(child.process);
     await this.#retractCapability(child.process);
@@ -2796,7 +2812,10 @@ export class Launcher {
       await this.#selectState(next, writeServiceState, () => {
         if (pending.qualified === undefined) return;
         this.#assertQualifiedChildLive(child);
-        if (this.#exchangeExpired(receivedAt)) throw new Error("prepared-exchange-expired: Selection lease outlasted the prepared exchange.");
+        if (this.#exchangeExpired(receivedAt))
+          throw new Error(
+            "prepared-exchange-expired: Selection lease outlasted the prepared exchange.",
+          );
         // Only an attempted durable write can leave an uncertain committed pointer.
         this.#qualifiedCommitAttempt = { updateId: pending.id, step: "pointer-write" };
       });
@@ -2826,7 +2845,10 @@ export class Launcher {
       if (pending.qualified === undefined || attempt?.updateId !== pending.id) throw cause;
       throw new QualifiedCommitFailure(attempt, cause);
     } finally {
-      if (this.#state.activeVersion === pending.targetVersion && this.#state.update?.status === "committed")
+      if (
+        this.#state.activeVersion === pending.targetVersion &&
+        this.#state.update?.status === "committed"
+      )
         await this.#repointServiceUnit(pending.targetVersion);
     }
   }
@@ -2857,7 +2879,11 @@ export class Launcher {
         ) {
           return;
         }
-        const repointed = repointServiceUnit(contents, version, this.#state.update?.qualified !== undefined);
+        const repointed = repointServiceUnit(
+          contents,
+          version,
+          this.#state.update?.qualified !== undefined,
+        );
         if (repointed !== contents) await replaceFileDurably(unit.path, repointed);
         // A previous rename may have succeeded before reload failed.
         await unit.reload();
@@ -2945,13 +2971,24 @@ export class Launcher {
     const qualifiedOwner = this.#state.update?.qualified !== undefined;
     if (pending?.status === "pending") {
       if (pending.qualified !== undefined) {
-        await this.#selectState({ ...this.#state, activeVersion: pending.fromVersion,
-          update: terminalUpdate({ pending, status: "failed", reason: "state-dir-owned" }) });
+        await this.#selectState({
+          ...this.#state,
+          activeVersion: pending.fromVersion,
+          update: terminalUpdate({ pending, status: "failed", reason: "state-dir-owned" }),
+        });
         await this.#retainDigestTimings(this.#state.update);
       } else {
-        const discarded = await discardDatabaseBackup(this.#baseDir, pending.id).then(() => true, () => false);
-        const next: ServiceState = { ...this.#state, activeVersion: pending.fromVersion,
-          update: discarded ? { ...pending, phase: "accepted" } : terminalUpdate({ pending, status: "failed", reason: "state-dir-owned" }) };
+        const discarded = await discardDatabaseBackup(this.#baseDir, pending.id).then(
+          () => true,
+          () => false,
+        );
+        const next: ServiceState = {
+          ...this.#state,
+          activeVersion: pending.fromVersion,
+          update: discarded
+            ? { ...pending, phase: "accepted" }
+            : terminalUpdate({ pending, status: "failed", reason: "state-dir-owned" }),
+        };
         await this.#selectState(next);
         if (!discarded) await this.#repointServiceUnit(next.activeVersion);
       }
@@ -2960,7 +2997,9 @@ export class Launcher {
     if (qualifiedOwner) {
       // A foreign writer invalidates the qualified pair's recovery assumptions; only explicit recovery may retry it.
       this.#timer = setInterval(() => {}, 2_147_483_647);
-      this.#log("[service-launcher] Another T3 Code server owns this T3 home. Qualified recovery remains held.\n");
+      this.#log(
+        "[service-launcher] Another T3 Code server owns this T3 home. Qualified recovery remains held.\n",
+      );
       return;
     }
     this.#log(
@@ -3010,24 +3049,26 @@ export class Launcher {
       await this.#terminate(child.process);
       await this.#retractCapability(child.process);
     }
-    if (await this.#deferForDiskSpace(() => this.#returnToPrevious(pending, status, reason))) return;
-    const restore = () => this.#withCurrentSelection(async () => {
-      await restoreDatabaseBackup(this.#baseDir, pending);
-      const outcome = terminalUpdate({ pending, status, reason });
-      const next: ServiceState = {
-        ...this.#state,
-        activeVersion: pending.fromVersion,
-        update: outcome,
-      };
-      await writeServiceState(this.#statePath, next);
-      this.#state = next;
-      await this.#retainDigestTimings(next.update);
-      await cleanupTerminalDatabaseBackup(
-        this.#baseDir,
-        pending,
-        status === "rolled-back" ? "rolled-back" : undefined,
-      );
-    });
+    if (await this.#deferForDiskSpace(() => this.#returnToPrevious(pending, status, reason)))
+      return;
+    const restore = () =>
+      this.#withCurrentSelection(async () => {
+        await restoreDatabaseBackup(this.#baseDir, pending);
+        const outcome = terminalUpdate({ pending, status, reason });
+        const next: ServiceState = {
+          ...this.#state,
+          activeVersion: pending.fromVersion,
+          update: outcome,
+        };
+        await writeServiceState(this.#statePath, next);
+        this.#state = next;
+        await this.#retainDigestTimings(next.update);
+        await cleanupTerminalDatabaseBackup(
+          this.#baseDir,
+          pending,
+          status === "rolled-back" ? "rolled-back" : undefined,
+        );
+      });
     if (pending.qualified !== undefined) await withStoppedServerOwnership(this.#baseDir, restore);
     else await restore();
     try {

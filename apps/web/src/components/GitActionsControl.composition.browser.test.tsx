@@ -59,6 +59,7 @@ it("keeps composition Enter in the repository path from publishing", async () =>
       threadRef={null}
       gitCwd="/repo"
       offeredProviders={undefined}
+      prefetchDiscovery={false}
     />,
   );
   await page.getByRole("button", { name: "Next" }).click();

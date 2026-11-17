@@ -23,10 +23,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as EventSink from "./orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "./jones/orchestration/SupersededTerminalTrace.ts";
 import * as EffectOutbox from "./orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "./jones/testing/UnusedCorePorts.testkit.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
@@ -124,7 +126,9 @@ it.effect("parks automatic pull until activation without delaying command readin
         FileSystem.layerNoop({}),
         Layer.succeed(HostProcess.Environment, {}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({}),
+        Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
+        }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({}),
         Layer.mock(Keybindings.Keybindings)({ start: Effect.void }),
         Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
@@ -138,6 +142,7 @@ it.effect("parks automatic pull until activation without delaying command readin
           reconcile: () => Effect.succeed(recovery),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           recoverCodexFailover: Effect.void,
           recoverSelfSettlements: Effect.void,
           recoverDelegatedTasks: Effect.void,
@@ -147,10 +152,10 @@ it.effect("parks automatic pull until activation without delaying command readin
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ shutdown: Effect.void }),
         Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({ start: () => Effect.void }),
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
-          runOnce: Effect.never,
+          runOnce: () => Effect.never,
           awaitWork: Effect.never,
-          runActionOnce: Effect.never,
-          runUrgentOnce: Effect.never,
+          runActionOnce: () => Effect.never,
+          runUrgentOnce: () => Effect.never,
         }),
         Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
           publish: (event) => Effect.succeed({ ...event, sequence: 1 }),
@@ -178,31 +183,33 @@ it.effect("parks automatic pull until activation without delaying command readin
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(ServiceLauncherClient.ServiceLauncherClient)({
           managed: true,
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
           requiresQualifiedTrialGate: false,
-          prepareTrial: () => Deferred.succeed(prepared, undefined).pipe(
-            Effect.andThen(Deferred.await(commitTrial)),
-            Effect.as(undefined),
-          ),
-      }),
-      Layer.mock(GitVcsDriver.GitVcsDriver)({
-        statusDetails: (root) =>
-          Deferred.succeed(statusCalled, root).pipe(
-            Effect.andThen(Effect.never),
-            Effect.onInterrupt(() => Deferred.succeed(statusInterrupted, undefined)),
-          ),
-      }),
-      Layer.mock(AnalyticsService.AnalyticsService)({ record: () => Effect.void }),
-      // No provider logins or Connect link, so startup records no owners.
-      FileSystem.layerNoop({}),
-      Layer.mock(ServerSecretStore.ServerSecretStore)({ get: () => Effect.succeedNone }),
-      NodeCrypto.layer,
-      Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
-      Layer.mock(ExternalLauncher.ExternalLauncher)({}),
-      Layer.mock(HttpServer.HttpServer)({
-        address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
-      }),
-      Path.layer,
-    );
+          prepareTrial: () =>
+            Deferred.succeed(prepared, undefined).pipe(
+              Effect.andThen(Deferred.await(commitTrial)),
+              Effect.as(undefined),
+            ),
+        }),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({
+          statusDetails: (root) =>
+            Deferred.succeed(statusCalled, root).pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() => Deferred.succeed(statusInterrupted, undefined)),
+            ),
+        }),
+        Layer.mock(AnalyticsService.AnalyticsService)({ record: () => Effect.void }),
+        // No provider logins or Connect link, so startup records no owners.
+        FileSystem.layerNoop({}),
+        Layer.mock(ServerSecretStore.ServerSecretStore)({ get: () => Effect.succeedNone }),
+        NodeCrypto.layer,
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+        Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        Layer.mock(HttpServer.HttpServer)({
+          address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
+        }),
+        Path.layer,
+      );
 
       yield* Effect.gen(function* () {
         const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;

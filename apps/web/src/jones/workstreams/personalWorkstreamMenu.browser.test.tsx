@@ -13,8 +13,13 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { act, render } from "../../../test/render";
 import { WorkstreamSidebarSection } from "../../components/workstreams/WorkstreamSidebarSection";
 import { ToastProvider, toastManager } from "../../components/ui/toast";
-import { personalGroupCollapsedKey } from "./personalSidebarOrder";
-import { personalStatusFilterKey, readPersonalStatusFilter } from "./personalStatusFilter";
+import { personalGroupCollapsedKey, personalNamedGroupsHiddenKey } from "./personalSidebarOrder";
+import {
+  personalSharedStatusFilterKey,
+  personalStatusFilterKey,
+  readPersonalStatusFilter,
+  readSharedPersonalStatusChoice,
+} from "./personalStatusFilter";
 import { personalThreadExpandedKey, personalThreadLimitKey } from "./personalThreadWindow";
 
 const dragType = "application/x-jones-workstream";
@@ -32,6 +37,8 @@ const groups = [group("Alpha"), group("Beta"), group("Gamma")];
 function fixture(put?: PersonalWorkstreamsTransport["put"], memberCount = 0) {
   const keys = [
     personalGroupCollapsedKey(null),
+    personalNamedGroupsHiddenKey,
+    personalSharedStatusFilterKey,
     ...groups.flatMap((entry) => [
       personalGroupCollapsedKey(entry.id),
       personalStatusFilterKey(entry.id),
@@ -262,7 +269,7 @@ describe("Workstream options and header ordering", () => {
       .element(page.getByRole("menuitem", { name: "Move up", exact: true }))
       .toHaveAttribute("aria-disabled", "true");
     await expect
-      .element(page.getByRole("menuitem", { name: "Lifecycle Active", exact: true }))
+      .element(page.getByRole("menuitem", { name: "Workstream state Active", exact: true }))
       .toBeVisible();
     await userEvent.click(page.getByRole("menuitem", { name: "Rename", exact: true }));
     await userEvent.fill(page.getByRole("textbox", { name: "Workstream name" }), "Renamed");
@@ -305,6 +312,14 @@ describe("Workstream options and header ordering", () => {
     await expect.element(page.getByText("5 of 12 shown", { exact: true })).toBeVisible();
     await userEvent.click(page.getByRole("menuitemradio", { name: "10", exact: true }));
     await expect.element(page.getByRole("menu")).toBeVisible();
+    const choices = document.querySelector('[aria-label="Default visible threads"]')!;
+    expect(choices.textContent?.replace(/\s/g, "")).toBe("5·10·15");
+    const selected = choices.querySelector('[aria-checked="true"]')!;
+    const unselected = choices.querySelector('[aria-checked="false"]')!;
+    expect(getComputedStyle(selected).backgroundColor).not.toBe(
+      getComputedStyle(unselected).backgroundColor,
+    );
+    expect(selected.getBoundingClientRect().width).toBeGreaterThanOrEqual(24);
     await expect.element(page.getByText("10 of 12 shown", { exact: true })).toBeVisible();
     expect(alpha.querySelectorAll("[data-menu-member]")).toHaveLength(10);
     await userEvent.click(page.getByRole("menuitemradio", { name: "15", exact: true }));
@@ -363,6 +378,34 @@ describe("Workstream options and header ordering", () => {
     expect(alpha.querySelector("input")).toBeNull();
     expect(setup.controller.rename).not.toHaveBeenCalled();
     expect(setup.controller.reorder).not.toHaveBeenCalled();
+  });
+
+  it("sends one group to the global filter from its menu while the Workstreams pill selects a status", async () => {
+    using setup = fixture(undefined, 12);
+    await using screen = await render(setup.ui);
+    const bulk = screen.container.querySelector<HTMLElement>("[data-personal-workstreams-header]")!;
+    const working = (root: ParentNode) =>
+      root.querySelector<HTMLButtonElement>('button[aria-label^="Working:"]')!;
+    const alpha = working(section(screen.container, "Alpha"));
+    const beta = working(section(screen.container, "Beta"));
+    await userEvent.click(working(bulk));
+    expect(readSharedPersonalStatusChoice()).toEqual({ filter: "working", rev: 1 });
+    expect(alpha.getAttribute("aria-label")).toContain("selected");
+    expect(beta.getAttribute("aria-label")).toContain("selected");
+    await options();
+    await userEvent.click(
+      page.getByRole("menuitem", { name: "Use global status filter", exact: true }),
+    );
+    expect(readPersonalStatusFilter("menu-Alpha")).toBeNull();
+    expect(alpha.getAttribute("aria-label")).toContain("using global status filter");
+    expect(alpha.getAttribute("aria-pressed")).toBe("false");
+    // The shared choice and the other group keep their status.
+    expect(beta.getAttribute("aria-pressed")).toBe("true");
+    expect(working(bulk).getAttribute("aria-pressed")).toBe("true");
+    expect(readSharedPersonalStatusChoice()).toEqual({ filter: "working", rev: 1 });
+    await expect
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
+      .toHaveAttribute("aria-expanded", "true");
   });
 
   it("moves a group down and back up through the menu", async () => {
@@ -447,25 +490,29 @@ describe("Workstream options and header ordering", () => {
     using setup = fixture();
     await using _screen = await render(setup.ui);
     await options();
-    await userEvent.click(page.getByRole("menuitem", { name: "Lifecycle Active", exact: true }));
+    await userEvent.click(
+      page.getByRole("menuitem", { name: "Workstream state Active", exact: true }),
+    );
     await expect
       .element(page.getByRole("menuitemradio", { name: "Active", exact: true }))
       .toHaveAttribute("aria-checked", "true");
     expect(
-      [
-        ...document.querySelectorAll('[aria-label="Workstream lifecycle"] [role="menuitemradio"]'),
-      ].map((element) => element.textContent),
+      [...document.querySelectorAll('[aria-label="Workstream state"] [role="menuitemradio"]')].map(
+        (element) => element.textContent,
+      ),
     ).toEqual(["Planned", "Active", "Paused", "Completed", "Deferred", "Abandoned"]);
     await userEvent.click(page.getByRole("menuitemradio", { name: "Active", exact: true }));
     await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
     expect(setup.controller.setLifecycle).not.toHaveBeenCalled();
     await options();
-    await userEvent.click(page.getByRole("menuitem", { name: "Lifecycle Active", exact: true }));
+    await userEvent.click(
+      page.getByRole("menuitem", { name: "Workstream state Active", exact: true }),
+    );
     await userEvent.click(page.getByRole("menuitemradio", { name: "Paused", exact: true }));
     expect(setup.controller.setLifecycle).toHaveBeenCalledWith("menu-Alpha", "paused");
     await options();
     await expect
-      .element(page.getByRole("menuitem", { name: "Lifecycle Paused", exact: true }))
+      .element(page.getByRole("menuitem", { name: "Workstream state Paused", exact: true }))
       .toBeVisible();
   });
 

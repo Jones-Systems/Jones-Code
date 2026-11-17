@@ -39,6 +39,7 @@ import * as CheckpointService from "./CheckpointService.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as EventSink from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -99,7 +100,9 @@ it.effect.each(["initial", "waiting"])(
         Layer.mergeAll(
           ThreadCommandExecutor.layer,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ restore }),
-          Layer.mock(EventSink.EventSinkV2)({}),
+          Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
+          }),
           IdAllocator.layer,
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
             getThread,
@@ -268,6 +271,7 @@ it.effect.each([
               }),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
             write: () =>
               Effect.sync(() => {
                 calls.push("projection");
@@ -458,7 +462,10 @@ it.effect.each([{ restoreFiles: true }, { restoreFiles: false }])(
                   Effect.andThen(Effect.sync(() => calls.push("files"))),
                 ),
             }),
-            Layer.mock(EventSink.EventSinkV2)({ write: () => Effect.succeed([]) }),
+            Layer.mock(EventSink.EventSinkV2)({
+              supersededTerminalTrace: SupersededTerminalTrace.make(),
+              write: () => Effect.succeed([]),
+            }),
             IdAllocator.layer,
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getThread: () => Effect.succeed(projection.thread),
@@ -755,6 +762,7 @@ const seedRollbackHistory = Effect.gen(function* () {
             }),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
           write: ({ events }) =>
             Effect.gen(function* () {
               for (const event of events) yield* store.apply(event);
@@ -842,6 +850,20 @@ describe("rollback history reads", () => {
 
       assert.deepEqual(history.rollbackCounts, [4]);
       assert.deepEqual(history.restored, [checkpointId(2)]);
+      // The rollback context reads only the target attempt's identity; the settlement reset
+      // carries the full stored attempt, not that identity-only projection.
+      const attemptUpdates = history.committed.flatMap((event) =>
+        event.type === "run-attempt.updated" ? [event] : [],
+      );
+      assert.equal(attemptUpdates.length, 1);
+      const attemptUpdate = attemptUpdates[0]!;
+      assert.equal(attemptUpdate.runId, runId(2));
+      assert.equal(attemptUpdate.nodeId, nodeId(2));
+      assert.equal(attemptUpdate.payload.runId, runId(2));
+      assert.equal(attemptUpdate.payload.rootNodeId, nodeId(2));
+      assert.equal(attemptUpdate.payload.attemptOrdinal, 2);
+      assert.equal(attemptUpdate.payload.status, "completed");
+      assert.isNull(attemptUpdate.payload.providerSettlement);
       assert.sameMembers(history.deletedRefs, [3, 4, 5, 6].map(checkpointId));
       const runs = yield* sql<{ ordinal: number; status: string }>`
         SELECT ordinal, status FROM orchestration_v2_projection_runs

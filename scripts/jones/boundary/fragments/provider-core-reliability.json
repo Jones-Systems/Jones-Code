@@ -2,6 +2,9 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "provider-core-reliability",
   "jonesOwnedPaths": [
+    "apps/server/src/jones/provider/RetainedNativeLoads.ts",
+    "apps/server/src/jones/provider/RetainedNativeLoads.test.ts",
+    "apps/server/src/jones/provider/StartAdmission.ts",
     "packages/client-runtime/src/jones/deliveryEvidence.ts",
     "packages/client-runtime/src/jones/deliveryEvidence.test.ts",
     "packages/client-runtime/src/jones/preparedThreadTurn.ts",
@@ -33,6 +36,26 @@
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/StartAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/provider/StartAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/provider/StartAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/provider/StartAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/provider/RetainedNativeLoads.ts"
+    },
     {
       "from": "packages/contracts/src/orchestrationV2.ts",
       "to": "packages/contracts/src/jones/deliveryEvidence.ts"
@@ -160,6 +183,14 @@
     {
       "from": "apps/server/src/provider/EventNdjsonLogger.ts",
       "to": "apps/server/src/jones/provider/diagnosticLogging/SegmentBuffer.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+      "to": "apps/server/src/jones/provider/StartAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/provider/StartAdmission.ts"
     }
   ]
 }

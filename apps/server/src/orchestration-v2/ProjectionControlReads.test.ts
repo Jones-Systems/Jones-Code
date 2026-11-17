@@ -26,6 +26,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as EventSink from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -305,6 +306,7 @@ it.effect.each(storageCases)(
       const pulls = yield* Queue.unbounded<void>();
       const committed = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
       const layerEvents = Layer.mock(EventSink.EventSinkV2)({
+        supersededTerminalTrace: SupersededTerminalTrace.make(),
         latestSequence: () => Effect.succeed(0),
         stream: () =>
           Stream.fromEffectRepeat(

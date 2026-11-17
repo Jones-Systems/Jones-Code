@@ -11,6 +11,7 @@ import * as Scope from "effect/Scope";
 import type * as Electron from "electron";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { SERVER_CHILD_SHUTDOWN_GRACE_MS } from "@t3tools/shared/jones/shutdownBudget";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { stopChildProcessesBeforeExit, stopZygotesBeforeExit } from "./DesktopExitChildren.ts";
@@ -109,10 +110,10 @@ interface QuitState {
   waitingSinceNanos: bigint;
 }
 
-// Longer than a backend's stop budget (SIGTERM, 5s grace, SIGKILL, 1s wait),
-// so a double Cmd-Q at the start of a normal quit cannot cut the backend stop
-// short and orphan it.
-const SHUTDOWN_STALL_THRESHOLD = Duration.seconds(10);
+// Allow quit preparation (3s), the shared child grace and escalation (2s)
+// before a repeated quit can force app exit, with a further 3s margin. This
+// escape does not prove backend exit or physical writer quiescence.
+export const SHUTDOWN_STALL_THRESHOLD = Duration.millis(SERVER_CHILD_SHUTDOWN_GRACE_MS + 8_000);
 
 const startWaitingForShutdown = Effect.fn("desktop.lifecycle.startWaitingForShutdown")(function* (
   quit: QuitState,

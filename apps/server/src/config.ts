@@ -20,6 +20,13 @@ import {
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { type ReleaseChannel, releaseResourceAttributes } from "@t3tools/shared/releaseResource";
 import packageJson from "../package.json" with { type: "json" };
+import {
+  resolveServerParallelismProfile,
+  type ServerParallelismConfig,
+} from "./jones/serverParallelism/config.ts";
+import { validateAuthorityStateDir } from "./jones/updates/configComposition.ts";
+import type { Configuration as FleetCheckpointConfiguration } from "./jones/fleetCheckpoint/Configuration.ts";
+import type { Configuration as WorkspaceLifecycleConfiguration } from "./jones/workspaceLifecycle/Configuration.ts";
 
 // Official release workflows set this telemetry channel; other builds report dev.
 // Unlike __T3CODE_BUILD_CHANNEL__, this is not the sign-in page's latest/nightly channel.
@@ -37,6 +44,8 @@ export type StartupPresentation = typeof StartupPresentation.Type;
 
 export interface ServerDerivedPaths {
   readonly stateDir: string;
+  /** Native placement trust state stays outside application state and rollback backups. */
+  readonly authorityStateDir: string;
   readonly dbPath: string;
   readonly keybindingsConfigPath: string;
   readonly settingsPath: string;
@@ -59,6 +68,7 @@ export interface ServerDerivedPaths {
 
 export interface DeriveServerPathsOptions {
   readonly baseDirIsExplicit?: boolean;
+  readonly authorityStateDir?: string;
 }
 
 export class ServerConfig extends Context.Service<
@@ -105,6 +115,9 @@ export class ServerConfig extends Context.Service<
     readonly desktopBrowserFd?: number | undefined;
     readonly desktopBrowserControlFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
+    readonly serverParallelism: ServerParallelismConfig;
+    readonly fleetCheckpoint?: FleetCheckpointConfiguration | undefined;
+    readonly workspaceLifecycle?: WorkspaceLifecycleConfiguration | undefined;
     readonly autoBootstrapProjectFromCwd: boolean;
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
@@ -117,7 +130,15 @@ export class ServerConfig extends Context.Service<
   ) => layerTest(cwd, baseDirOrPrefix);
 }
 
-export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
+// Standalone CLI clients construct configuration without starting server pools.
+export const make = (
+  config: Omit<ServerConfig["Service"], "serverParallelism"> &
+    Partial<Pick<ServerConfig["Service"], "serverParallelism">>,
+) =>
+  ServerConfig.of({
+    ...config,
+    serverParallelism: config.serverParallelism ?? resolveServerParallelismProfile(undefined),
+  });
 
 export const otlpResource = (
   config: Pick<ServerConfig["Service"], "mode" | "otelEnvironment">,
@@ -155,6 +176,7 @@ export const deriveServerPaths = Effect.fn(function* (
   const providerStatusCacheDir = join(baseDir, "caches");
   return {
     stateDir,
+    authorityStateDir: options.authorityStateDir ?? join(baseDir, "native-store-authority"),
     dbPath,
     keybindingsConfigPath: join(stateDir, "keybindings.json"),
     settingsPath: join(stateDir, "settings.json"),
@@ -180,6 +202,8 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
+  yield* validateAuthorityStateDir(derivedPaths.authorityStateDir, derivedPaths.stateDir);
+
   yield* fs.makeDirectory(derivedPaths.stateDir, { recursive: true });
   // Only before the database exists: a No_COW WAL beside an existing copy-on-write database
   // could not be reflinked into one backup folder with it. When unsure, leave the folder as is.
@@ -188,6 +212,7 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
   }
   yield* Effect.all(
     [
+      fs.makeDirectory(derivedPaths.authorityStateDir, { recursive: true, mode: 0o700 }),
       fs.makeDirectory(derivedPaths.logsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.providerLogsDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.terminalLogsDir, { recursive: true }),
@@ -232,9 +257,11 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
         // symlink guards compare resolved paths, so generated test dirs must be real paths.
         yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: baseDirOrPrefix.prefix }));
   const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
-  yield* ensureServerDirectories(derivedPaths);
+  // Invalid fixture paths are setup defects rather than ordinary service failures.
+  yield* ensureServerDirectories(derivedPaths).pipe(Effect.orDie);
 
   return ServerConfig.of({
+    serverParallelism: resolveServerParallelismProfile(undefined),
     logLevel: "Error",
     traceMinLevel: "Info",
     traceTimingEnabled: true,

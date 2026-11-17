@@ -2,12 +2,26 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "word-ci-trace",
   "jonesOwnedPaths": [
+    "apps/web/src/jones/filePreview/wordOpenTrace.ts",
+    "apps/web/src/jones/filePreview/wordOpenTrace.test.ts",
     "apps/web/src/jones/wordCiTrace.ts",
     "apps/web/src/jones/wordCiTrace.test.ts"
   ],
-  "hookPaths": ["apps/web/test/browserSetup.ts"],
+  "hookPaths": [
+    "apps/web/src/components/files/office/document.worker.ts",
+    "apps/web/src/components/files/AttachmentFilePreview.office.browser.test.tsx",
+    "apps/web/test/browserSetup.ts"
+  ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/files/office/document.worker.ts",
+      "to": "apps/web/src/jones/filePreview/wordOpenTrace.ts"
+    },
+    {
+      "from": "apps/web/src/components/files/AttachmentFilePreview.office.browser.test.tsx",
+      "to": "apps/web/src/jones/wordCiTrace.ts"
+    },
     {
       "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
       "to": "apps/web/src/jones/wordCiTrace.ts"

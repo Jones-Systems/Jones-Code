@@ -164,6 +164,8 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
                   setModel: () => Effect.void,
                   applyFlagSettings: () => Effect.void,
                   setPermissionMode: () => Effect.void,
+                  // Native title sync accepts the rename, as the SDK does.
+                  renameSession: () => Effect.void,
                   backgroundTasks: () => Effect.succeed(false),
                   mcpServerStatus: Effect.succeed([]),
                   readMcpResource: () => Effect.die("unexpected MCP resource read"),
@@ -176,6 +178,8 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
               }),
             forkSession: unused,
             subagentLaunchToolUseId: () => Effect.succeed(null),
+            // The fixture's transcripts record no subagent model.
+            subagentModel: () => Effect.succeed(null),
             assertComplete: Effect.void,
           },
         });

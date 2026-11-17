@@ -2,13 +2,73 @@ import * as Cause from "effect/Cause";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { DescendantApprovalSources } from "@t3tools/client-runtime/jones/descendant-approval";
+import type { Atom as AtomType } from "effect/reactivity";
+import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
+import { makeThreadFixture } from "../../test-fixtures";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
 const state = vi.hoisted(() => ({
   childThreadInputs: [] as EnvironmentThreadShell[],
   switchRef: (async () => undefined) as (input: unknown) => Promise<unknown>,
+  setApprovalChildren: (_children: readonly EnvironmentThreadShell[]) => {},
 }));
+
+vi.mock(import("../../jones/descendantApproval/atoms"), async () => {
+  const { createDescendantApprovalAtoms } =
+    await import("@t3tools/client-runtime/jones/descendant-approval");
+  const { Atom } = await import("effect/reactivity");
+  const Option = await import("effect/Option");
+  const { RuntimeRequestId } = await import("@t3tools/contracts");
+  const { appAtomRegistry } = await import("../../rpc/atomRegistry");
+  const children = Atom.make<readonly EnvironmentThreadShell[]>([]);
+  state.setApprovalChildren = (next) => appAtomRegistry.set(children, next);
+  const shell = Atom.make<AtomType.Type<ReturnType<DescendantApprovalSources["shellStateAtom"]>>>({
+    status: "live",
+    error: Option.none(),
+  });
+  const presentation = Atom.make<
+    AtomType.Type<ReturnType<DescendantApprovalSources["presentationAtom"]>>
+  >({ connection: { phase: "connected", error: null, traceId: null } });
+  const session = Atom.make<
+    AtomType.Type<ReturnType<DescendantApprovalSources["sessionStateAtom"]>>
+  >({
+    authenticated: true,
+    scopes: ["orchestration:operate"],
+    auth: {
+      policy: "remote-reachable",
+      bootstrapMethods: [],
+      sessionMethods: [],
+      sessionCookieName: "test",
+    },
+  });
+  const requests = Atom.make({
+    approvals: [
+      {
+        requestId: RuntimeRequestId.make("descendant-approval"),
+        requestKind: "command" as const,
+        detail: "synthetic child command",
+        createdAt: "2026-11-16T00:00:00Z",
+        responseCapability: "live" as const,
+        options: [{ decision: "accept" as const, label: "Approve" }],
+      },
+    ],
+  });
+  const status = Atom.make("live" as const);
+  const error = Atom.make<string | null>(null);
+  return {
+    descendantApproval: createDescendantApprovalAtoms({
+      childThreadInputsAtom: () => children,
+      shellStateAtom: () => shell,
+      presentationAtom: () => presentation,
+      sessionStateAtom: () => session,
+      threadStatusAtom: () => status,
+      threadErrorAtom: () => error,
+      pendingRequestsAtom: () => requests,
+    }),
+  };
+});
 
 vi.mock(import("../../state/session"), async (importOriginal) => ({
   ...(await importOriginal()),
@@ -44,6 +104,7 @@ const environmentId = EnvironmentId.make("environment:test");
 
 function setup() {
   state.childThreadInputs = [];
+  state.setApprovalChildren([]);
   state.switchRef = async () => undefined;
 }
 
@@ -140,6 +201,7 @@ function RestoreBranchHarness(props: {
       {lifecycle.childInputNow?.description}
       {lifecycle.childInputNow?.actions}
       {lifecycle.workNow?.actions}
+      {lifecycle.threadStatusLine}
       <button
         type="button"
         disabled={lifecycle.isRestoringThreadBranch}
@@ -150,6 +212,53 @@ function RestoreBranchHarness(props: {
     </>
   );
 }
+
+it("renders the actual descendant approval card from the lifecycle footer and opens its environment", async () => {
+  setup();
+  const parent = threadInput("approval-parent", "main");
+  const childEnvironmentId = EnvironmentId.make("approval-remote");
+  const child = makeThreadFixture({
+    environmentId: childEnvironmentId,
+    id: ThreadId.make("approval-child"),
+    title: "Approval child",
+    hasPendingApprovals: true,
+  });
+  state.childThreadInputs = [child];
+  state.setApprovalChildren([child]);
+  const dispatch = vi.fn(async () => ({ _tag: "Success", value: undefined }));
+  state.switchRef = dispatch;
+  await using screen = await render(
+    <AppAtomRegistryProvider>
+      <RestoreBranchHarness
+        thread={parent}
+        currentRouteThreadKeyRef={{ current: parent.routeThreadKey }}
+        refreshGitStatus={() => undefined}
+        focusComposer={() => undefined}
+      />
+    </AppAtomRegistryProvider>,
+    { router: "/environment:test/approval-parent" },
+  );
+  await expect
+    .element(screen.getByText("Approval child needs approval", { exact: true }))
+    .toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Approve", exact: true })).toBeEnabled();
+  await expect
+    .element(screen.getByRole("button", { name: "Open approval", exact: true }))
+    .not.toBeInTheDocument();
+  await screen.getByRole("button", { name: "Approve", exact: true }).click();
+  expect(dispatch).toHaveBeenCalledWith({
+    environmentId: childEnvironmentId,
+    input: {
+      threadId: child.id,
+      requestId: "descendant-approval",
+      decision: "accept",
+    },
+  });
+  await screen.getByRole("button", { name: "Open", exact: true }).click();
+  await vi.waitFor(() =>
+    expect(screen.router?.state.location.pathname).toBe("/approval-remote/approval-child"),
+  );
+});
 
 it.each(["a", "b", "navigation"] as const)(
   "isolates restore completion and queued focus for %s",

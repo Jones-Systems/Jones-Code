@@ -1498,6 +1498,57 @@ describe("deriveThreadPendingBackgroundTasks", () => {
   const projection = (overrides: object) =>
     ({ ...base, ...overrides }) as unknown as ReturnType<typeof makeThreadProjectionFixture>;
 
+  it("includes shell-only result waits without duplicating provider work", () => {
+    const task = {
+      taskId: "result-wait",
+      kind: "background_task" as const,
+      awaited: true as const,
+    };
+    const detail = projection({ runs: [], providerThreads: [], turnItems: [] });
+    const shell = { id: base.thread.id, status: "idle" as const, pendingBackgroundTasks: [task] };
+    expect(deriveThreadPendingBackgroundTasks(detail, shell)).toEqual([task]);
+    expect(
+      deriveThreadPendingBackgroundTasks(detail, { ...shell, id: ThreadId.make("other") }),
+    ).toEqual([]);
+    expect(
+      deriveThreadPendingBackgroundTasks(
+        projection({
+          thread: { ...base.thread, activeProviderThreadId: null },
+          runs: [run(1, "completed")],
+          turnItems: [],
+          providerThreads: [{ id: "provider-thread-1", pendingBackgroundTasks: [task] }],
+        }),
+        shell,
+      ),
+    ).toEqual([task]);
+  });
+
+  it("dates terminal detail before clearing a shell result wait", () => {
+    const task = {
+      taskId: "result-wait",
+      kind: "background_task" as const,
+      awaited: true as const,
+    };
+    const detail = projection({
+      runs: [],
+      providerThreads: [],
+      turnItems: [{ ...item(1, "dynamic_tool", task.taskId, ""), status: "completed" }],
+    });
+    const shell = { id: base.thread.id, status: "idle" as const, pendingBackgroundTasks: [task] };
+    expect(
+      deriveThreadPendingBackgroundTasks(detail, shell, {
+        detailAppliedSequence: 4,
+        shellSnapshotSequence: 5,
+      }),
+    ).toEqual([task]);
+    expect(
+      deriveThreadPendingBackgroundTasks(detail, shell, {
+        detailAppliedSequence: 5,
+        shellSnapshotSequence: 5,
+      }),
+    ).toEqual([]);
+  });
+
   it.each(["queued", "preparing", "running"])(
     "keeps an earlier run's background shell while a %s follow-up run has a foreground command",
     (followUpStatus) => {

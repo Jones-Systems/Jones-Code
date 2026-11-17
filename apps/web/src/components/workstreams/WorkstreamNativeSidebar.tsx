@@ -23,13 +23,17 @@ import {
 } from "../chat/threadContextDrag";
 import { WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
 import { WorkstreamPicker } from "../../jones/workstreams/WorkstreamPicker";
-import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
+import {
+  showPersonalAssignment,
+  showPersonalFailure,
+} from "../../jones/workstreams/personalNotifications";
 import { summarizePersonalThreads } from "../../jones/workstreams/personalPresentation";
 import {
   liftPersonalThreadCard,
   personalThreadContextRefs,
 } from "../../jones/workstreams/personalThreadDrag";
 import { windowPersonalThreads } from "../../jones/workstreams/personalThreadWindow";
+import { createSidebarDragAutoScroll } from "../../jones/workstreams/sidebarDragAutoScroll";
 export interface NativeThreadAssignmentMenu {
   readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
   readonly onAction: (action: ThreadActionMenuId) => void;
@@ -102,12 +106,19 @@ export function WorkstreamNativeSidebar({
   const canMove = (thread: EnvironmentThreadShell) =>
     canOperate(thread) && controller.canAssign(thread);
   const move = async (thread: EnvironmentThreadShell, id: string | null) => {
-    if (busy.current || !canMove(thread)) return false;
-    busy.current = true;
+    if (!canMove(thread)) return false;
+    // The controller serializes each thread's intents; a pending drag must not discard a menu choice.
     return controller
       .assign(thread, id)
       .then((result) => {
         if (!result.ok) showPersonalFailure(result.failure);
+        else
+          showPersonalAssignment(
+            id === null
+              ? null
+              : (state.workstreams.find((item) => item.id === id)?.name ?? "Workstream"),
+            thread.pinnedAt != null,
+          );
         return result.ok;
       })
       .catch(() => {
@@ -118,9 +129,6 @@ export function WorkstreamNativeSidebar({
           dedupeKey: `assign:${personalThreadKey(thread)}:failed`,
         });
         return false;
-      })
-      .finally(() => {
-        busy.current = false;
       });
   };
   const menu = (thread: EnvironmentThreadShell): NativeThreadAssignmentMenu => ({
@@ -133,11 +141,14 @@ export function WorkstreamNativeSidebar({
       ...state.workstreams.map((item) => ({
         id: `assign-workstream:group:${item.id}` as ThreadActionMenuId,
         label: item.name,
+        checked:
+          state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId === item.id,
         disabled: !canMove(thread),
       })),
       {
         id: "assign-workstream:remove",
         label: "Unassigned",
+        checked: state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId == null,
         disabled: !canMove(thread),
         separatorBefore: true,
       },
@@ -356,6 +367,7 @@ export function WorkstreamNativeSidebar({
           : null;
     };
     sensor.current?.cancel();
+    let autoScroll: ReturnType<typeof createSidebarDragAutoScroll> | null = null;
     sensor.current = new SidebarPointerSensor({
       active: key,
       event: event.nativeEvent,
@@ -363,6 +375,7 @@ export function WorkstreamNativeSidebar({
         distance: SIDEBAR_DRAG_DISTANCE,
         onAttach: () => {},
         onFinish: () => {
+          autoScroll?.dispose();
           sensor.current = null;
           lifted.current?.dispose();
           lifted.current = null;
@@ -384,10 +397,13 @@ export function WorkstreamNativeSidebar({
       onPending: () => {},
       onAbort: () => {},
       onStart: (point) => {
-        if (canMove(thread) && !busy.current)
+        if (canMove(thread) && !busy.current) {
           lifted.current = liftPersonalThreadCard(source, point);
+          autoScroll = createSidebarDragAutoScroll(source, locateCurrent);
+        }
       },
       onMove: (point) => {
+        autoScroll?.move(point);
         const outside = outsideSidebar(point);
         lifted.current?.setVisible(!outside);
         if (outside) {
@@ -453,6 +469,8 @@ export function WorkstreamNativeSidebar({
                   ? "Unassigned threads"
                   : `${state.workstreams.find((item) => item.id === id)?.name ?? "Workstream"} threads`
               }
+              // Named members sit a fixed 8 CSS px in, independent of the root font size; Unassigned stays flush.
+              {...(id === null ? {} : { style: { paddingLeft: "8px" } })}
               className={drop === id ? "rounded ring-1 ring-primary" : ""}
             >
               {members.length === 0 ? (

@@ -1,4 +1,11 @@
 import {
+  ImportedHistoryLockUnavailable,
+  decodeImportedHistoryCorrelation,
+  encodeImportedHistoryCorrelation,
+  type ImportedHistoryCorrelationStorage,
+} from "@t3tools/client-runtime/jones/imported-history/continuation";
+import { DraftId } from "./draftId";
+import {
   composerFileAttachmentMimeType,
   composerImageDedupKey,
   rememberComposerImageBytes,
@@ -118,11 +125,10 @@ const isResponseContextRecord = Schema.is(ResponseContextRecord);
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 const COMPOSER_DRAFT_STORAGE_VERSION = 9;
-const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree"]);
+const DraftThreadEnvModeSchema = Schema.Literals(["local", "worktree", "auto"]);
 export type DraftThreadEnvMode = typeof DraftThreadEnvModeSchema.Type;
 
-export const DraftId = Schema.String.pipe(Schema.brand("DraftId"));
-export type DraftId = typeof DraftId.Type;
+export { DraftId } from "./draftId";
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 
@@ -792,6 +798,15 @@ function modelSelectionByProviderToOptions(
   return Object.keys(result).length > 0 ? result : null;
 }
 
+function modelOptionsForSelection(
+  selection: ModelSelection | null | undefined,
+  model: string,
+): ReadonlyArray<ProviderOptionSelection> | undefined {
+  return selection?.model === model
+    ? selection.options
+    : selection?.options?.filter((option) => option.id !== "reasoningEffort");
+}
+
 function cloneModelSelection(selection: ModelSelection): DeepMutable<ModelSelection> {
   return {
     ...selection,
@@ -1416,7 +1431,7 @@ interface InstanceModel {
   readonly model: string | undefined;
 }
 
-export function isSameModel(
+function isSameModel(
   input: {
     readonly providers: ReadonlyArray<ServerProvider>;
     readonly selectedProvider: ProviderDriverKind;
@@ -1533,7 +1548,7 @@ function normalizeDraftThreadEnvMode(
   value: unknown,
   fallbackWorktreePath: string | null,
 ): DraftThreadEnvMode {
-  if (value === "local" || value === "worktree") {
+  if (value === "local" || value === "worktree" || value === "auto") {
     return value;
   }
   return fallbackWorktreePath ? "worktree" : "local";
@@ -3185,11 +3200,17 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               return state;
             }
             const current = state.stickyModelSelectionByProvider[normalized.instanceId];
-            // Model-only updates omit options; preserve sticky traits across model switches and new chats.
+            // Model-only picker updates inherit effort for a new model while
+            // preserving instance-wide speed settings, including Fast/Normal
+            // across Composer 2 → 2.5 and new chats.
             const nextSelection =
               normalized.options !== undefined
                 ? normalized
-                : createModelSelection(normalized.instanceId, normalized.model, current?.options);
+                : createModelSelection(
+                    normalized.instanceId,
+                    normalized.model,
+                    modelOptionsForSelection(current, normalized.model),
+                  );
             const nextMap: Partial<Record<ProviderInstanceId, ModelSelection>> = {
               ...state.stickyModelSelectionByProvider,
               [normalized.instanceId]: nextSelection,
@@ -3314,7 +3335,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 nextMap[normalized.instanceId] = createModelSelection(
                   normalized.instanceId,
                   normalized.model,
-                  current?.options,
+                  modelOptionsForSelection(current, normalized.model),
                 );
               }
             }
@@ -3323,7 +3344,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               opts?.explicit !== true &&
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
               base.activeProvider === nextActiveProvider &&
-              !base.modelSelectionExplicit
+              base.modelSelectionExplicit !== true
             ) {
               return state;
             }
@@ -4509,7 +4530,12 @@ export function subscribeComposerDraftModelReconciliation(input: {
     const matches: Array<readonly [string, ComposerThreadDraftState]> = [];
     for (const [key, draft] of Object.entries(state.draftsByThreadKey)) {
       // Local drafts can materialize a shell before their first turn is submitted.
-      if (state.draftThreadsByThreadKey[key] || draft.activeProvider === null) continue;
+      if (
+        state.draftThreadsByThreadKey[key] ||
+        draft.activeProvider === null ||
+        draft.modelSelectionExplicit === true
+      )
+        continue;
       const ref = parseScopedThreadKey(key);
       const pick = draft.modelSelectionByProvider[draft.activeProvider];
       if (!ref || !pick || !threadKeys.has(key)) continue;
@@ -4835,5 +4861,49 @@ export function subscribeDraftThreadPromotion(input: {
     disposed = true;
     unsubscribeMilestones();
     unsubscribeDrafts();
+  };
+}
+
+export function importedHistoryCorrelationStorage(
+  ref: ScopedThreadRef,
+): ImportedHistoryCorrelationStorage {
+  const key = `jones:imported-history-choice:v1:${scopedThreadKey(ref)}`;
+  const storage = () => {
+    if (typeof localStorage === "undefined")
+      throw new Error("Durable imported history storage is unavailable.");
+    return localStorage;
+  };
+  const read = () => {
+    const raw = storage().getItem(key);
+    if (raw === null) return null;
+    const value = decodeImportedHistoryCorrelation(raw);
+    if (value.environmentId !== ref.environmentId || value.command.threadId !== ref.threadId)
+      throw new Error("Imported history storage target changed.");
+    return value;
+  };
+  return {
+    withLock<A>(operation: () => Promise<A>): Promise<A> {
+      if (typeof navigator === "undefined" || navigator.locks === undefined)
+        return Promise.reject(new ImportedHistoryLockUnavailable());
+      return navigator.locks.request(key, { mode: "exclusive" }, operation);
+    },
+    read,
+    reserve(value) {
+      composerDebouncedStorage.flush();
+      if (read() !== null)
+        throw new Error("An imported history choice already awaits observation.");
+      const encoded = encodeImportedHistoryCorrelation(value);
+      storage().setItem(key, encoded);
+      if (storage().getItem(key) !== encoded)
+        throw new Error("Imported history reservation was not persisted.");
+    },
+    remove(value) {
+      const current = read();
+      if (
+        current !== null &&
+        encodeImportedHistoryCorrelation(current) === encodeImportedHistoryCorrelation(value)
+      )
+        storage().removeItem(key);
+    },
   };
 }

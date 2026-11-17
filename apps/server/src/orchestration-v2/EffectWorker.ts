@@ -7,6 +7,9 @@ import {
   isGoalNotificationNotDelivered,
 } from "../jones/goals/GoalNotificationDelivery.ts";
 import * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
+import * as LegacyStorage from "../jones/legacyBootstrap/Storage.ts";
+import * as LegacyCleanup from "../jones/legacyBootstrap/TerminalCleanupWorker.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import { withOriginalTransition } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { LifecycleConfiguration } from "../jones/workspaceLifecycle/NativeSource.ts";
@@ -77,10 +80,7 @@ export class OrchestrationEffectExecutionError extends Schema.TaggedError<Orches
  * "is not active" would drop the outbox item without ever starting the
  * replacement turn.
  */
-export function isNonRetryableProviderTurnControlFailure(
-  effectType: string,
-  errorText: string,
-): boolean {
+function isNonRetryableProviderTurnControlFailure(effectType: string, errorText: string): boolean {
   if (effectType !== "provider-turn.interrupt") {
     return false;
   }
@@ -143,6 +143,8 @@ export const layerExecutor: Layer.Layer<
   Effect.gen(function* () {
     const runFinalization = yield* RunFinalizationService.RunFinalizationService;
     const resourceCleanup = yield* ResourceCleanupService.ResourceCleanupService;
+    const database = yield* Effect.serviceOption(SqlClient.SqlClient);
+    const legacyStorage = Option.isSome(database) ? LegacyStorage.make(database.value) : undefined;
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
@@ -349,17 +351,16 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
           case "provider-turn.start":
-            return withStartFailure(effect, startRun(effect, effect.request.runId, willRetry))
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
+            return withStartFailure(effect, startRun(effect, effect.request.runId, willRetry)).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
           case "provider-turn.interrupt": {
             const request = effect.request;
             return commandReceipts.getByCommandId(effect.commandId).pipe(
@@ -547,7 +548,9 @@ export const layerExecutor: Layer.Layer<
                   providerThreadId: request.providerThreadId,
                   providerTurnId: request.providerTurnId,
                   messageId: request.messageId,
-                  ...(request.modelSelection === undefined ? {} : { modelSelection: request.modelSelection }),
+                  ...(request.modelSelection === undefined
+                    ? {}
+                    : { modelSelection: request.modelSelection }),
                   ...(request.type === "provider-turn.steer-batch"
                     ? { messageIds: request.messageIds }
                     : {}),
@@ -582,12 +585,14 @@ export const layerExecutor: Layer.Layer<
                       if (isGoalNotificationDeliveryUnknown(error)) {
                         return yield* new GoalNotificationDeliveryUnknown({ cause: error });
                       }
-                      const steerDeclined = "steerDeclined" in error && error.steerDeclined === true;
+                      const steerDeclined =
+                        "steerDeclined" in error && error.steerDeclined === true;
                       const turnCompleted =
                         "turnCompleted" in error && error.turnCompleted === true;
                       if (
                         notificationMessage !== undefined &&
-                        !turnCompleted && !steerDeclined &&
+                        !turnCompleted &&
+                        !steerDeclined &&
                         !isGoalNotificationNotDelivered(error)
                       ) {
                         return yield* new GoalNotificationDeliveryUnknown({ cause: error });
@@ -612,14 +617,26 @@ export const layerExecutor: Layer.Layer<
                             ),
                             threadId: effect.threadId,
                             messageId: message.id,
-                            ...(steerDeclined && message.runId !== null ? { steerFollowUpOfRunId: message.runId } : {}),
-                            ...(steerDeclined && request.steerFollowUpAfterRunOrdinal !== undefined ? { steerFollowUpAfterRunOrdinal: request.steerFollowUpAfterRunOrdinal } : {}),
+                            ...(steerDeclined && message.runId !== null
+                              ? { steerFollowUpOfRunId: message.runId }
+                              : {}),
+                            ...(steerDeclined && request.steerFollowUpAfterRunOrdinal !== undefined
+                              ? {
+                                  steerFollowUpAfterRunOrdinal:
+                                    request.steerFollowUpAfterRunOrdinal,
+                                }
+                              : {}),
                             text: message.text,
                             attachments: message.attachments,
                             ...(message.context ? { context: message.context } : {}),
-                            ...(steerDeclined && request.modelSelection !== undefined ? { modelSelection: request.modelSelection } : {}),
+                            ...(steerDeclined && request.modelSelection !== undefined
+                              ? { modelSelection: request.modelSelection }
+                              : {}),
                             dispatchMode: {
-                              type: index === 0 && !steerDeclined ? "start_immediately" : "queue_after_active",
+                              type:
+                                index === 0 && !steerDeclined
+                                  ? "start_immediately"
+                                  : "queue_after_active",
                             },
                             queuedToolBoundaryEligible: index > 0,
                             createdBy: message.createdBy,
@@ -643,7 +660,11 @@ export const layerExecutor: Layer.Layer<
                       const message = projection.messages.find((item) => item.id === messageId);
                       const run = projection.runs.find((item) => item.id === message?.runId);
                       if (message === undefined || run === undefined) return yield* error;
-                      if (!turnCompleted && !steerDeclined && !isGoalNotificationNotDelivered(error)) {
+                      if (
+                        !turnCompleted &&
+                        !steerDeclined &&
+                        !isGoalNotificationNotDelivered(error)
+                      ) {
                         return yield* message.notification === undefined
                           ? error
                           : new GoalNotificationDeliveryUnknown({ cause: error });
@@ -657,8 +678,10 @@ export const layerExecutor: Layer.Layer<
                           threadId: effect.threadId,
                           messageId: message.id,
                           ...(steerDeclined ? { steerFollowUpOfRunId: run.id } : {}),
-                        ...(steerDeclined && request.steerFollowUpAfterRunOrdinal !== undefined ? { steerFollowUpAfterRunOrdinal: request.steerFollowUpAfterRunOrdinal } : {}),
-                        text: message.text,
+                          ...(steerDeclined && request.steerFollowUpAfterRunOrdinal !== undefined
+                            ? { steerFollowUpAfterRunOrdinal: request.steerFollowUpAfterRunOrdinal }
+                            : {}),
+                          text: message.text,
                           ...(message.context ? { context: message.context } : {}),
                           attachments: message.attachments,
                           // A delegated-task question is a new turn on the thread's selection;
@@ -666,14 +689,15 @@ export const layerExecutor: Layer.Layer<
                           ...(steerDeclined && request.modelSelection !== undefined
                             ? { modelSelection: request.modelSelection }
                             : message.delegatedCompletion === undefined &&
-                          (message.notification === undefined ||
-                            message.notification.source.kind === "delegated_task")
-                            ? {}
-                            : { modelSelection: run.modelSelection }),
+                                (message.notification === undefined ||
+                                  message.notification.source.kind === "delegated_task")
+                              ? {}
+                              : { modelSelection: run.modelSelection }),
                           dispatchMode: {
                             type:
                               message.delegatedCompletion === undefined &&
-                              message.notification === undefined && !steerDeclined
+                              message.notification === undefined &&
+                              !steerDeclined
                                 ? "start_immediately"
                                 : "queue_after_active",
                           },
@@ -691,7 +715,9 @@ export const layerExecutor: Layer.Layer<
                           ...(message.senderThreadId === undefined
                             ? {}
                             : { senderThreadId: message.senderThreadId }),
-                          ...(message.linkedSender === undefined ? {} : { linkedSender: message.linkedSender }),
+                          ...(message.linkedSender === undefined
+                            ? {}
+                            : { linkedSender: message.linkedSender }),
                         })
                         .pipe(
                           // Once the instance is off, the completed turn has no further retry target.
@@ -895,6 +921,23 @@ export const layerExecutor: Layer.Layer<
               );
           case "scheduled-tasks.cleanup":
             return resourceCleanup.cleanupScheduledTasks(effect.threadId).pipe(
+              Effect.andThen(
+                // Private D omits the public terminal cleanup row. Its existing
+                // scheduled cleanup retains the independent device-release duty.
+                legacyStorage === undefined
+                  ? Effect.void
+                  : legacyStorage
+                      .readLegacyReceipt(effect.commandId)
+                      .pipe(
+                        Effect.flatMap((stored) =>
+                          stored?.domain === "legacy-delete" &&
+                          stored.receipt.status === "accepted" &&
+                          stored.receipt.threadId === effect.threadId
+                            ? resourceCleanup.cleanupDevices(effect.threadId)
+                            : Effect.void,
+                        ),
+                      ),
+              ),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationEffectExecutionError({
@@ -907,7 +950,10 @@ export const layerExecutor: Layer.Layer<
           case "terminal.cleanup":
             return Effect.partition(
               [
-                resourceCleanup.cleanupTerminals(effect.threadId, effect.request.legacyOwnedControl),
+                resourceCleanup.cleanupTerminals(
+                  effect.threadId,
+                  effect.request.legacyOwnedControl,
+                ),
                 resourceCleanup.cleanupDevices(effect.threadId),
               ],
               (cleanup) => cleanup,
@@ -1055,10 +1101,18 @@ export interface OrchestrationEffectWorkerV2Shape {
   readonly runOnce: (input?: {
     readonly maxRunningTitleGenerations?: number;
   }) => Effect.Effect<boolean, OrchestrationEffectWorkerError>;
-  readonly runActionOnce: (input?: ClaimFilter) => Effect.Effect<boolean, OrchestrationEffectWorkerError>;
-  readonly runUrgentOnce: (input?: ClaimFilter) => Effect.Effect<boolean, OrchestrationEffectWorkerError>;
-  readonly nextActionClaimableAt: (input?: ClaimFilter) => Effect.Effect<Option.Option<DateTime.Utc>, OrchestrationEffectWorkerError>;
-  readonly nextUrgentClaimableAt: (input?: ClaimFilter) => Effect.Effect<Option.Option<DateTime.Utc>, OrchestrationEffectWorkerError>;
+  readonly runActionOnce: (
+    input?: ClaimFilter,
+  ) => Effect.Effect<boolean, OrchestrationEffectWorkerError>;
+  readonly runUrgentOnce: (
+    input?: ClaimFilter,
+  ) => Effect.Effect<boolean, OrchestrationEffectWorkerError>;
+  readonly nextActionClaimableAt: (
+    input?: ClaimFilter,
+  ) => Effect.Effect<Option.Option<DateTime.Utc>, OrchestrationEffectWorkerError>;
+  readonly nextUrgentClaimableAt: (
+    input?: ClaimFilter,
+  ) => Effect.Effect<Option.Option<DateTime.Utc>, OrchestrationEffectWorkerError>;
   readonly runRecoveryOnce: Effect.Effect<boolean, OrchestrationEffectWorkerError>;
   readonly nextClaimableAt: (input?: {
     readonly maxRunningTitleGenerations?: number;
@@ -1421,12 +1475,20 @@ export const layerWithOptions = (
       return OrchestrationEffectWorkerV2.of({
         awaitWork: outbox.awaitAvailable,
         runOnce,
-        runActionOnce: (input) => runOnce({ ...input, excludeTitleGeneration: true }),
-        runUrgentOnce: (input) => runOnce({ ...input, urgentOnly: true }),
+        runActionOnce: Effect.fn("OrchestrationEffectWorkerV2.runActionOnce")(
+          (input?: ClaimFilter) => runOnce({ ...input, excludeTitleGeneration: true }),
+        ),
+        runUrgentOnce: Effect.fn("OrchestrationEffectWorkerV2.runUrgentOnce")(
+          (input?: ClaimFilter) => runOnce({ ...input, urgentOnly: true }),
+        ),
         runRecoveryOnce: runOnce({ excludeRestartContinuations: true }),
         nextClaimableAt,
-        nextActionClaimableAt: (input) => nextClaimableAt({ ...input, excludeTitleGeneration: true }),
-        nextUrgentClaimableAt: (input) => nextClaimableAt({ ...input, urgentOnly: true }),
+        nextActionClaimableAt: Effect.fn("OrchestrationEffectWorkerV2.nextActionClaimableAt")(
+          (input?: ClaimFilter) => nextClaimableAt({ ...input, excludeTitleGeneration: true }),
+        ),
+        nextUrgentClaimableAt: Effect.fn("OrchestrationEffectWorkerV2.nextUrgentClaimableAt")(
+          (input?: ClaimFilter) => nextClaimableAt({ ...input, urgentOnly: true }),
+        ),
         drain: Effect.fn("EffectWorker.drain")(function* (maxEffects = Number.MAX_SAFE_INTEGER) {
           let completed = 0;
           while (completed < maxEffects && (yield* runOnce())) {
@@ -1465,18 +1527,63 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
       const livenessPollIntervalMs = Number.isFinite(requestedLivenessPollIntervalMs)
         ? Math.max(1, Math.floor(requestedLivenessPollIntervalMs))
         : DEFAULT_EFFECT_WORKER_LIVENESS_POLL_INTERVAL_MS;
-      const admission = concurrency >= 2 ? yield* makeActionWorkerAdmission(worker.awaitWork) : undefined;
+      const legacyCleanup = yield* Effect.serviceOption(LegacyCleanup.TerminalCleanupWorker);
+      if (Option.isSome(legacyCleanup)) {
+        yield* Effect.gen(function* () {
+          let previousUnresolved = -1;
+          while (true) {
+            const result = yield* legacyCleanup.value.drain().pipe(Effect.exit);
+            if (Exit.isFailure(result)) {
+              if (Cause.hasInterruptsOnly(result.cause))
+                return yield* Effect.failCause(result.cause);
+              yield* Effect.logWarning("Private legacy cleanup remains unresolved", result.cause);
+            } else if (result.value.unresolved !== previousUnresolved) {
+              previousUnresolved = result.value.unresolved;
+              if (previousUnresolved > 0)
+                yield* Effect.logWarning("Private legacy cleanup has fenced unknown outcomes", {
+                  unresolved: previousUnresolved,
+                });
+            }
+            // Startup drains first; the durable rows and liveness interval recover
+            // lost notifications. Started/unknown rows never become physical retries.
+            yield* Effect.raceFirst(
+              legacyCleanup.value.awaitWork,
+              Effect.sleep(Duration.millis(livenessPollIntervalMs)),
+            );
+          }
+        }).pipe(Effect.forkIn(scope));
+      }
+      const admission =
+        concurrency >= 2 ? yield* makeActionWorkerAdmission(worker.awaitWork) : undefined;
       // Detached executions retain their running rows. Cap titles by mixed-lane
       // capacity so slot release preserves both action and urgent reservations.
-      const claimLimits = concurrency > 1
-        ? { maxRunningTitleGenerations: concurrency - (concurrency >= 3 ? 2 : 1) }
-        : {};
+      const claimLimits =
+        concurrency > 1
+          ? { maxRunningTitleGenerations: concurrency - (concurrency >= 3 ? 2 : 1) }
+          : {};
       // Notifications wake promptly; availableAt persists retry timing, and liveness polling recovers missed wakeups.
-      const runWorker = (index: number) => Effect.gen(function* () {
+      const runWorker = Effect.fn("EffectWorker.runWorker")(function* (index: number) {
         const lane = actionWorkerLane(index, concurrency);
-        const runOnce = lane === "urgent" ? worker.runUrgentOnce : lane === "action" ? worker.runActionOnce : worker.runOnce;
-        const readNext = lane === "urgent" ? worker.nextUrgentClaimableAt : lane === "action" ? worker.nextActionClaimableAt : worker.nextClaimableAt;
-        const awaitWork = admission === undefined ? worker.awaitWork : lane === "urgent" ? admission.awaitUrgentWork : lane === "action" ? admission.awaitActionWork : admission.awaitMixedWork;
+        const runOnce =
+          lane === "urgent"
+            ? worker.runUrgentOnce
+            : lane === "action"
+              ? worker.runActionOnce
+              : worker.runOnce;
+        const readNext =
+          lane === "urgent"
+            ? worker.nextUrgentClaimableAt
+            : lane === "action"
+              ? worker.nextActionClaimableAt
+              : worker.nextClaimableAt;
+        const awaitWork =
+          admission === undefined
+            ? worker.awaitWork
+            : lane === "urgent"
+              ? admission.awaitUrgentWork
+              : lane === "action"
+                ? admission.awaitActionWork
+                : admission.awaitMixedWork;
         while (true) {
           const attempt = yield* runOnce(claimLimits).pipe(
             Effect.map((worked) => (worked ? ("worked" as const) : ("idle" as const))),
@@ -1501,15 +1608,14 @@ export const runDaemonWithOptions = (options: OrchestrationEffectDaemonOptions =
             continue;
           }
 
-          const nextClaimableAt = yield* readNext(claimLimits)
-            .pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning(
-                  "Failed to read the next orchestration effect deadline",
-                  cause,
-                ).pipe(Effect.as(Option.none<DateTime.Utc>())),
-              ),
-            );
+          const nextClaimableAt = yield* readNext(claimLimits).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning(
+                "Failed to read the next orchestration effect deadline",
+                cause,
+              ).pipe(Effect.as(Option.none<DateTime.Utc>())),
+            ),
+          );
           const now = DateTime.toEpochMillis(yield* DateTime.now);
           const sleepMs = Option.match(nextClaimableAt, {
             onNone: () => livenessPollIntervalMs,

@@ -1,3 +1,4 @@
+import * as OpenCodeCreationPolicy from "./jones/OpenCodeCreationPolicy.ts";
 import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/snapshotProbe";
 import * as NodeURL from "node:url";
 
@@ -87,6 +88,8 @@ const OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS = 64 * 1024;
 const OPENCODE_SERVER_EXIT_DRAIN_TIMEOUT = "500 millis";
 const OPENCODE_SERVER_TERMINATE_GRACE = "1 second";
 export interface OpenCodeServerProcess {
+  readonly runtimeGeneration?: string;
+  readonly ownedProcess?: OpenCodeCreationPolicy.OpenCodeOwnedProcess;
   readonly url: string;
   readonly serverPassword?: string;
   readonly version: string;
@@ -95,6 +98,7 @@ export interface OpenCodeServerProcess {
 }
 
 export interface OpenCodeServerConnection {
+  readonly ownedProcess?: OpenCodeCreationPolicy.OpenCodeOwnedProcess;
   readonly url: string;
   readonly serverPassword?: string;
   readonly version: string;
@@ -331,6 +335,7 @@ export class OpenCodeRuntime extends Context.Service<
     readonly startOpenCodeServerProcess: (input: {
       readonly binaryPath: string;
       readonly directory: string;
+      readonly creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks;
       readonly serverPassword?: string;
       readonly environment?: NodeJS.ProcessEnv;
       readonly port?: number;
@@ -341,6 +346,7 @@ export class OpenCodeRuntime extends Context.Service<
     readonly connectToOpenCodeServer: (input: {
       readonly binaryPath: string;
       readonly directory: string;
+      readonly creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks;
       readonly serverUrl?: string | null;
       readonly serverPassword?: string;
       readonly environment?: NodeJS.ProcessEnv;
@@ -623,10 +629,15 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     // Scopes close in reverse order. Forking this before the group kill is
     // registered forgets the ledger entry only once the group is stopped.
     const ledgerScope = yield* Scope.fork(runtimeScope);
+    const capture =
+      input.creationHooks === undefined
+        ? undefined
+        : yield* OpenCodeCreationPolicy.prepareGeneration(input.directory, input.creationHooks);
     const child = yield* spawner
       .spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           detached: hostPlatform !== "win32",
+          cwd: input.directory,
           shell: spawnCommand.shell,
           env: {
             ...input.environment,
@@ -780,6 +791,15 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     );
 
     return {
+      ...(capture !== undefined
+        ? {
+            runtimeGeneration: capture.runtimeGeneration,
+            ownedProcess: Object.freeze({
+              incarnation: Object.freeze({ ...capture, pid: Number(child.pid), url }),
+              isCurrent: child.isRunning.pipe(Effect.orElseSucceed(() => false)),
+            }),
+          }
+        : {}),
       url,
       ...(serverPassword !== undefined ? { serverPassword } : {}),
       version,
@@ -843,6 +863,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     return startOpenCodeServerProcess({
       binaryPath: input.binaryPath,
       directory: input.directory,
+      ...(input.creationHooks !== undefined ? { creationHooks: input.creationHooks } : {}),
       ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
       ...(input.environment !== undefined ? { environment: input.environment } : {}),
       ...(input.port !== undefined ? { port: input.port } : {}),
@@ -850,6 +871,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     }).pipe(
       Effect.map((server) => ({
+        ...(server.ownedProcess !== undefined ? { ownedProcess: server.ownedProcess } : {}),
         url: server.url,
         ...(server.serverPassword !== undefined ? { serverPassword: server.serverPassword } : {}),
         version: server.version,
@@ -905,3 +927,5 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 export const layer = Layer.effect(OpenCodeRuntime, makeOpenCodeRuntime).pipe(
   Layer.provide(NetService.layer),
 );
+
+export type OpenCodeRuntimeShape = OpenCodeRuntime["Service"];

@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -14,7 +15,7 @@ import type {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  EllipsisIcon,
+  EllipsisVerticalIcon,
   ChevronDownIcon,
   PaletteIcon,
   PencilIcon,
@@ -50,6 +51,10 @@ import { Dialog, DialogPopup, DialogHeader, DialogTitle } from "../ui/dialog";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import {
+  PersonalWorkstreamOptionsButton,
+  PersonalWorkstreamVisibleThreads,
+} from "../../jones/workstreams/PersonalWorkstreamDisplayControls";
 import { PersonalSidebarGroupHeader } from "../../jones/workstreams/PersonalSidebarGroupHeader";
 import {
   formatPersonalThreadCount,
@@ -57,11 +62,18 @@ import {
 } from "../../jones/workstreams/personalPresentation";
 import { personalWorkstreamRailColor } from "../../jones/workstreams/personalRail";
 import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalWorkstreamTitleEditor";
+import { PersonalWorkstreamsHeader } from "../../jones/workstreams/PersonalWorkstreamsHeader";
 
-import { usePersonalStatusFilter } from "../../jones/workstreams/personalStatusFilter";
-import { personalGroupCollapsedKey } from "../../jones/workstreams/personalSidebarOrder";
 import {
-  PERSONAL_THREAD_LIMITS,
+  usePersonalStatusFilter,
+  useSharedPersonalStatusFilter,
+} from "../../jones/workstreams/personalStatusFilter";
+import {
+  personalGroupCollapsedKey,
+  personalNamedGroupsHiddenKey,
+  setPersonalGroupsCollapsed,
+} from "../../jones/workstreams/personalSidebarOrder";
+import {
   usePersonalThreadWindow,
   type PersonalThreadLimit,
 } from "../../jones/workstreams/personalThreadWindow";
@@ -278,9 +290,14 @@ function Group({
               <Menu>
                 <MenuTrigger
                   aria-label={`Options for ${item.name}`}
-                  render={<Button variant="ghost" size="icon-sm" />}
+                  render={<PersonalWorkstreamOptionsButton />}
                 >
-                  <EllipsisIcon aria-hidden />
+                  <EllipsisVerticalIcon
+                    aria-hidden
+                    viewBox="10 0 4 24"
+                    preserveAspectRatio="xMaxYMid meet"
+                    className="size-4 h-4 w-1"
+                  />
                 </MenuTrigger>
                 <MenuPopup align="end">
                   <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
@@ -298,10 +315,11 @@ function Group({
                   <MenuSeparator />
                   <MenuSub>
                     <MenuSubTrigger disabled={!state.canCreate || pending}>
-                      Lifecycle <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
+                      Workstream state{" "}
+                      <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
                     </MenuSubTrigger>
                     <MenuSubPopup>
-                      <MenuRadioGroup value={item.lifecycle} aria-label="Workstream lifecycle">
+                      <MenuRadioGroup value={item.lifecycle} aria-label="Workstream state">
                         {lifecycles.map((lifecycle) => (
                           <MenuRadioItem
                             key={lifecycle}
@@ -340,26 +358,13 @@ function Group({
                         {shownCount} of {memberCount} shown
                       </span>
                     </div>
-                    <MenuRadioGroup
-                      value={String(threadWindow.limit)}
-                      className="flex mr-2"
-                      aria-label="Default visible threads"
-                    >
-                      {PERSONAL_THREAD_LIMITS.map((limit) => (
-                        <MenuRadioItem
-                          key={limit}
-                          value={String(limit)}
-                          closeOnClick={false}
-                          className="text-center"
-                          onClick={() => {
-                            threadWindow.setLimit(limit);
-                            threadWindow.setExpanded(false);
-                          }}
-                        >
-                          {limit}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
+                    <PersonalWorkstreamVisibleThreads
+                      limit={threadWindow.limit}
+                      onChange={(limit) => {
+                        threadWindow.setLimit(limit);
+                        threadWindow.setExpanded(false);
+                      }}
+                    />
                   </MenuGroup>
                   <MenuSeparator />
                   <MenuItem
@@ -508,6 +513,26 @@ export function WorkstreamSidebarSection({
     personalGroupCollapsedKey(null),
     false,
     collapsedSchema,
+  );
+  // Hiding is separate from each group's own collapsed state so showing again restores it exactly.
+  const [namedHidden, setNamedHidden] = useLocalStorage(
+    personalNamedGroupsHiddenKey,
+    false,
+    collapsedSchema,
+  );
+  const namedGroupsId = useId();
+  const namedIds = state.workstreams.map((entry) => entry.id);
+  const sharedStatus = useSharedPersonalStatusFilter(namedIds);
+  const namedSummary = state.workstreams.reduce(
+    (total, entry) => {
+      const summary = summaries?.get(entry.id) ?? emptySummary;
+      return {
+        running: total.running + summary.running,
+        attention: total.attention + summary.attention,
+        done: total.done + summary.done,
+      };
+    },
+    { running: 0, attention: 0, done: 0 },
   );
   const containerRef = useRef<HTMLDivElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
@@ -687,48 +712,65 @@ export function WorkstreamSidebarSection({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInsertion(null);
       }}
     >
-      {state.workstreams.map((item) => (
-        <div
-          key={item.id}
-          className="relative py-1"
-          onDragOver={(event) => dragOver(event, item.id)}
-          onDrop={(event) => drop(event, item.id)}
-        >
-          {insertion?.afterId === item.id ? insertionLine : null}
-          <Group
-            item={item}
-            controller={controller}
-            summary={summaries?.get(item.id) ?? emptySummary}
-            memberCount={memberCounts?.get(item.id) ?? 0}
-            dragging={draggedId === item.id}
-            confirmingDelete={deleteTarget?.id === item.id}
-            onDeleteRequested={() => {
-              removedRef.current = false;
-              setDeleteTarget({ id: item.id, name: item.name });
-            }}
-            onDragStart={(event) => {
-              if (
-                event.target instanceof Element &&
-                event.target.closest("[data-workstream-header-control]")
-              ) {
-                event.preventDefault();
-                return;
-              }
-              if (!state.canCreate || reorderPending.current) {
-                event.preventDefault();
-                return;
-              }
-              event.dataTransfer.setData(workstreamDragType, item.id);
-              event.dataTransfer.effectAllowed = "move";
-              draggedRef.current = item.id;
-              setDraggedId(item.id);
-              setInsertion(null);
-            }}
-          >
-            {(window) => renderMembers(item.id, window)}
-          </Group>
-        </div>
-      ))}
+      {state.workstreams.length > 0 ? (
+        <PersonalWorkstreamsHeader
+          summary={namedSummary}
+          hidden={namedHidden}
+          onHiddenChange={setNamedHidden}
+          onExpandAll={() => setPersonalGroupsCollapsed(namedIds, false)}
+          onCollapseAll={() => setPersonalGroupsCollapsed(namedIds, true)}
+          statusFilter={sharedStatus.filter}
+          onStatusFilterChange={sharedStatus.setFilter}
+          controlsId={namedGroupsId}
+        />
+      ) : null}
+      {/* The container stays mounted so the disclosure's aria-controls always resolves. */}
+      <div id={namedGroupsId} hidden={namedHidden}>
+        {!namedHidden
+          ? state.workstreams.map((item) => (
+              <div
+                key={item.id}
+                className="relative py-1"
+                onDragOver={(event) => dragOver(event, item.id)}
+                onDrop={(event) => drop(event, item.id)}
+              >
+                {insertion?.afterId === item.id ? insertionLine : null}
+                <Group
+                  item={item}
+                  controller={controller}
+                  summary={summaries?.get(item.id) ?? emptySummary}
+                  memberCount={memberCounts?.get(item.id) ?? 0}
+                  dragging={draggedId === item.id}
+                  confirmingDelete={deleteTarget?.id === item.id}
+                  onDeleteRequested={() => {
+                    removedRef.current = false;
+                    setDeleteTarget({ id: item.id, name: item.name });
+                  }}
+                  onDragStart={(event) => {
+                    if (
+                      event.target instanceof Element &&
+                      event.target.closest("[data-workstream-header-control]")
+                    ) {
+                      event.preventDefault();
+                      return;
+                    }
+                    if (!state.canCreate || reorderPending.current) {
+                      event.preventDefault();
+                      return;
+                    }
+                    event.dataTransfer.setData(workstreamDragType, item.id);
+                    event.dataTransfer.effectAllowed = "move";
+                    draggedRef.current = item.id;
+                    setDraggedId(item.id);
+                    setInsertion(null);
+                  }}
+                >
+                  {(window) => renderMembers(item.id, window)}
+                </Group>
+              </div>
+            ))
+          : null}
+      </div>
       <div
         className="relative py-1"
         onDragOver={(event) => dragOver(event, null)}
@@ -744,10 +786,6 @@ export function WorkstreamSidebarSection({
             onClick={() => setUnassignedCollapsed((value) => !value)}
             className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
-            <ChevronDownIcon
-              aria-hidden
-              className={`size-4 shrink-0 ${unassignedCollapsed ? "-rotate-90" : ""}`}
-            />
             <span className="truncate">Unassigned</span>
             <span className="ml-auto shrink-0 text-xs tabular-nums">
               {formatPersonalThreadCount(unassignedSummary.total)}

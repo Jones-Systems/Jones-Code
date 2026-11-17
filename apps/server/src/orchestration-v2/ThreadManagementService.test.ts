@@ -44,6 +44,26 @@ import {
   WorktreeRecreateError,
 } from "../workspace/restoreMissingWorktree.ts";
 
+const unexpectedCorePort = () =>
+  Effect.die(new Error("Unexpected remote command port in thread management fixture."));
+const unusedCorePorts: Pick<
+  Orchestrator.OrchestratorV2Shape,
+  "remoteSendReceipts" | "followUpCommandOwner"
+> = {
+  remoteSendReceipts: {
+    available: Effect.succeed(false),
+    lookup: unexpectedCorePort,
+    withSendCommit: unexpectedCorePort,
+    pruneBefore: unexpectedCorePort,
+    guardPreparation: unexpectedCorePort,
+  },
+  followUpCommandOwner: {
+    inParentTransaction: unexpectedCorePort,
+    assertParentCaller: unexpectedCorePort,
+    dispatch: unexpectedCorePort,
+  },
+};
+
 it("stamps authoritative provenance on commands that create threads or messages", () => {
   const command: OrchestrationV2Command = {
     type: "thread.create",
@@ -99,6 +119,7 @@ const layerDispatchChokepointTest =
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts,
           getThreadRecords: () =>
             Effect.succeed({
               thread: {
@@ -239,6 +260,7 @@ it.effect.each([
     Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
     Layer.provide(
       Layer.mock(Orchestrator.OrchestratorV2)({
+        ...unusedCorePorts,
         getThreadRecords: () =>
           Effect.succeed({
             thread: {
@@ -326,6 +348,7 @@ it.effect("waitForThread follows a restart continuation instead of the cut run",
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts,
           getThreadEventSequence: () => Effect.succeed(0),
           restartContinuationPending: (run) => Effect.succeed(pending && run.id === runId),
           awaitRestartContinuation: () => Effect.never,
@@ -403,6 +426,7 @@ it.effect("waitForThread can wait past an ended run for the thread's delegated w
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts,
           getThreadEventSequence: () => Effect.succeed(0),
           restartContinuationPending: () => Effect.succeed(false),
           delegatedTaskResultPending: () => Effect.succeed(false),
@@ -481,6 +505,7 @@ it.effect("waitForThread settles delegated work on a thread rolled back past its
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts,
           getThreadEventSequence: () => Effect.succeed(0),
           restartContinuationPending: () => Effect.succeed(false),
           delegatedTaskResultPending: () => Effect.succeed(false),
@@ -534,6 +559,7 @@ it.effect("waitForThread returns the cut run once its continuation is declined",
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts,
           getThreadEventSequence: () => Effect.succeed(0),
           restartContinuationPending: () => Effect.succeed(pending),
           awaitRestartContinuation: () => Deferred.await(declined),
@@ -629,6 +655,7 @@ it.effect.each([
         Layer.provide(
           Layer.mergeAll(
             Layer.mock(Orchestrator.OrchestratorV2)({
+              ...unusedCorePorts,
               getThreadRecords: () =>
                 Effect.succeed({
                   thread: {
@@ -723,6 +750,7 @@ it.effect.each([
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts,
           getThreadEventSequence: () =>
             Effect.sync(() => {
               if (followUp === "replayed-notification" && sequenceReads++ === 2) sequence = 1;
@@ -907,6 +935,7 @@ it.effect.each([
       ),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts,
           getThreadRecords: () =>
             Effect.succeed({
               thread: { id: threadId, deletedAt: null },
@@ -972,6 +1001,7 @@ it.effect("Force stop refuses once a newer run has started, before killing anyth
       Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
       Layer.provide(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts,
           getThreadRecords: () =>
             Effect.succeed({
               thread: { id: threadId, deletedAt: null },
@@ -1019,6 +1049,7 @@ it.effect(
         Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
         Layer.provide(
           Layer.mock(Orchestrator.OrchestratorV2)({
+            ...unusedCorePorts,
             getTranscriptByteFloor: () => Effect.succeed(0),
             getThreadSnapshot: (threadId) =>
               Queue.offer(started, threadId).pipe(

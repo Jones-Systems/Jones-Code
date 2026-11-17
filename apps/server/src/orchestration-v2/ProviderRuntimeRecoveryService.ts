@@ -33,6 +33,7 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as OrphanedRunRecords from "../jones/orchestration/OrphanedRunRecords.ts";
 import {
   restartContinuationBlocked,
   restartContinuationRun,
@@ -204,49 +205,118 @@ export const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const orphanedRunRecords = yield* Effect.serviceOption(OrphanedRunRecords.OrphanedRunRecords);
   const receipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
   const prefixEvidence = yield* Effect.serviceOption(StartRefusals.StartRefusals);
   const restartAdmission = yield* Effect.serviceOption(RestartPreparation.RestartPreparation);
   const controlAdmission = yield* Effect.serviceOption(ControlAdmission.ControlAdmission);
   const goalContinuity = yield* Effect.serviceOption(GoalContinuity.GoalContinuity);
   const environment = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironmentIdentity);
-  const certifiedUnsent = (projection: ProjectionStore.ProjectionRuntimeRecoveryState,
-    run: OrchestrationV2ThreadProjection["runs"][number]) => Effect.gen(function* () {
-      if (run.activeAttemptId === null || Option.isNone(receipts) || Option.isNone(prefixEvidence) || Option.isNone(restartAdmission) ||
-          Option.isNone(controlAdmission) || Option.isNone(goalContinuity) || Option.isNone(environment)) return false;
-      const attempt = projection.attempts.find((row) => row.id === run.activeAttemptId && row.runId === run.id);
+  const certifiedUnsent = Effect.fn("ProviderRuntimeRecoveryService.certifiedUnsent")(
+    function* (
+      projection: ProjectionStore.ProjectionRuntimeRecoveryState,
+      run: OrchestrationV2ThreadProjection["runs"][number],
+    ) {
+      if (
+        run.activeAttemptId === null ||
+        Option.isNone(receipts) ||
+        Option.isNone(prefixEvidence) ||
+        Option.isNone(restartAdmission) ||
+        Option.isNone(controlAdmission) ||
+        Option.isNone(goalContinuity) ||
+        Option.isNone(environment)
+      )
+        return false;
+      const attempt = projection.attempts.find(
+        (row) => row.id === run.activeAttemptId && row.runId === run.id,
+      );
       const provider = projection.providerThreads.find((row) => row.id === run.providerThreadId);
-      if (attempt === undefined || provider === undefined || provider.providerSessionId === null) return false;
-      if (!(yield* makeUnsentStartProof({ outbox, receipts: receipts.value, sink: eventSink,
-          refusals: prefixEvidence.value })(run, projection.attempts))) return false;
+      if (attempt === undefined || provider === undefined || provider.providerSessionId === null)
+        return false;
+      if (
+        !(yield* makeUnsentStartProof({
+          outbox,
+          receipts: receipts.value,
+          sink: eventSink,
+          refusals: prefixEvidence.value,
+        })(run, projection.attempts))
+      )
+        return false;
       yield* restartAdmission.value.assertThreadOpen(projection.thread.id);
-      yield* eventSink.assertRuntimeStopStartAllowed({ threadId: projection.thread.id, runId: run.id });
-      yield* controlAdmission.value.assertOpen({ instanceId: provider.providerInstanceId,
-        threadId: projection.thread.id, nativeThreadId: provider.nativeThreadRef?.nativeId ?? null,
-        producer: provider.runtimeIdentity === undefined ? null : {
-          instanceId: provider.providerInstanceId, providerSessionId: provider.providerSessionId,
-          runtimeGeneration: provider.runtimeIdentity.runtimeGeneration,
-        } });
-      const fresh = yield* projections.getThreadRecords(projection.thread.id, ["runs", "attempts", "providerThreads"]);
+      yield* eventSink.assertRuntimeStopStartAllowed({
+        threadId: projection.thread.id,
+        runId: run.id,
+      });
+      // Absent runtime or native evidence stays unavailable: no producer key, no native ID.
+      const runtimeGeneration = provider.runtimeIdentity?.runtimeGeneration;
+      yield* controlAdmission.value.assertOpen({
+        instanceId: provider.providerInstanceId,
+        threadId: projection.thread.id,
+        nativeThreadId: provider.nativeThreadRef?.nativeId ?? null,
+        producer:
+          runtimeGeneration === undefined
+            ? null
+            : {
+                instanceId: provider.providerInstanceId,
+                providerSessionId: provider.providerSessionId,
+                runtimeGeneration,
+              },
+      });
+      const fresh = yield* projections.getThreadRecords(projection.thread.id, [
+        "runs",
+        "attempts",
+        "providerThreads",
+      ]);
       const currentRun = fresh.runs.find((row) => row.id === run.id);
       const currentAttempt = fresh.attempts.find((row) => row.id === attempt.id);
       const currentProvider = fresh.providerThreads.find((row) => row.id === provider.id);
-      if (currentRun?.activeAttemptId !== attempt.id || currentRun.status !== run.status ||
-          currentRun.providerThreadId !== provider.id || !modelSelectionsEqual(currentRun.modelSelection, run.modelSelection) ||
-          currentAttempt?.runId !== run.id || currentAttempt.providerThreadId !== attempt.providerThreadId ||
-          currentProvider?.providerSessionId !== provider.providerSessionId ||
-          currentProvider.providerInstanceId !== provider.providerInstanceId || currentProvider.driver !== provider.driver ||
-          currentProvider.nativeThreadRef?.nativeId !== provider.nativeThreadRef?.nativeId ||
-          currentProvider.runtimeIdentity?.runtimeGeneration !== provider.runtimeIdentity?.runtimeGeneration ||
-          fresh.thread.archivedAt !== null || fresh.thread.deletedAt !== null || fresh.thread.settledAt != null) return false;
-      yield* eventSink.assertRuntimeStopStartAllowed({ threadId: projection.thread.id, runId: run.id });
+      if (
+        currentRun?.activeAttemptId !== attempt.id ||
+        currentRun.status !== run.status ||
+        currentRun.providerThreadId !== provider.id ||
+        !modelSelectionsEqual(currentRun.modelSelection, run.modelSelection) ||
+        currentAttempt?.runId !== run.id ||
+        currentAttempt.providerThreadId !== attempt.providerThreadId ||
+        currentProvider?.providerSessionId !== provider.providerSessionId ||
+        currentProvider.providerInstanceId !== provider.providerInstanceId ||
+        currentProvider.driver !== provider.driver ||
+        currentProvider.nativeThreadRef?.nativeId !== provider.nativeThreadRef?.nativeId ||
+        currentProvider.runtimeIdentity?.runtimeGeneration !==
+          provider.runtimeIdentity?.runtimeGeneration ||
+        fresh.thread.archivedAt !== null ||
+        fresh.thread.deletedAt !== null ||
+        fresh.thread.settledAt != null
+      )
+        return false;
+      yield* eventSink.assertRuntimeStopStartAllowed({
+        threadId: projection.thread.id,
+        runId: run.id,
+      });
       const environmentId = yield* environment.value.getEnvironmentId;
-      const requirement = yield* goalContinuity.value.requirementFor(environmentId, projection.thread.id);
-      return continuityAdmissionRefusal(requirement, provider.nativeThreadRef == null ? null : {
-        environmentId, threadId: projection.thread.id, providerInstanceId: provider.providerInstanceId,
-        providerThreadId: provider.id, driver: provider.driver, nativeThreadId: provider.nativeThreadRef.nativeId,
-      }) === undefined;
-    }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+      const requirement = yield* goalContinuity.value.requirementFor(
+        environmentId,
+        projection.thread.id,
+      );
+      // A native binding without its native ID is no continuity owner; a required owner refuses.
+      const nativeThreadId = provider.nativeThreadRef?.nativeId ?? null;
+      return (
+        continuityAdmissionRefusal(
+          requirement,
+          nativeThreadId === null
+            ? null
+            : {
+                environmentId,
+                threadId: projection.thread.id,
+                providerInstanceId: provider.providerInstanceId,
+                providerThreadId: provider.id,
+                driver: provider.driver,
+                nativeThreadId,
+              },
+        ) === undefined
+      );
+    },
+    Effect.catchCause(() => Effect.succeed(false)),
+  );
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
   const sessionsLiveAtStart = (
@@ -390,17 +460,22 @@ export const make = Effect.gen(function* () {
           cancelledBackgroundNativeIds.add(item.nativeItemRef.nativeId);
         }
       };
-      const unstartedRuns = yield* Effect.filter(runs.filter(
-        (run) =>
-          run.status === "starting" &&
-          neverStarted(run) &&
-          !projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId) &&
-          !projection.runtimeRequests.some(
-            (request) =>
-              request.status === "pending" &&
-              projection.nodes.some((node) => node.id === request.nodeId && node.runId === run.id),
-          ),
-      ), (run) => certifiedUnsent(projection, run));
+      const unstartedRuns = yield* Effect.filter(
+        runs.filter(
+          (run) =>
+            run.status === "starting" &&
+            neverStarted(run) &&
+            !projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId) &&
+            !projection.runtimeRequests.some(
+              (request) =>
+                request.status === "pending" &&
+                projection.nodes.some(
+                  (node) => node.id === request.nodeId && node.runId === run.id,
+                ),
+            ),
+        ),
+        (run) => certifiedUnsent(projection, run),
+      );
       const queuedRuns = projection.runs.filter((run) => run.status === "queued");
       const pendingRuns = [...unstartedRuns, ...queuedRuns];
       const queuedMessages =
@@ -1167,6 +1242,16 @@ export const make = Effect.gen(function* () {
       // Eventless outbox cancellations also wait for the group's durable commit.
       if (cancelledEffectIds.length > 0) yield* outbox.signalCancellations(cancelledEffectIds);
     }
+    if (trigger === "startup" && Option.isSome(orphanedRunRecords)) {
+      // Best effort: records it cannot close stay open, as they were before.
+      yield* orphanedRunRecords.value.closeAtStartup.pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : Effect.logWarning("Failed to close orphaned run records", { cause }),
+        ),
+      );
+    }
     // The original rows were fenced before recovery decisions. Recorded resend
     // effects still pass their own captured start admission before native work.
     if (resends.length > 0) {
@@ -1213,10 +1298,7 @@ export const make = Effect.gen(function* () {
               .continueThreadsAfterServerUpdate
           )
             return;
-          const run = restartContinuationRun(
-            projection,
-            yield* DateTime.now,
-          );
+          const run = restartContinuationRun(projection, yield* DateTime.now);
           if (!run) return;
           const commandId = CommandId.make(`command:restart-prepare:${run.id}`);
           yield* eventSink.writeWithEffects({

@@ -1,3 +1,8 @@
+import * as NetAddress from "effect/net/NetAddress";
+import type {
+  QualifiedTrialReceipt,
+  QualifiedTrialRuntimeWitness,
+} from "../jones/cloud/qualifiedStartup.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -16,11 +21,114 @@ import {
 } from "./serviceProtocol.ts";
 import { posixLauncherScript } from "./pinnedRuntime.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
+import * as UpdateAdmission from "../jones/updates/UpdateAdmissionFence.ts";
+
+function qualifiedFixture(protocol: 3 | 4 = 4, startupGateProtocol?: 1) {
+  const fromVersion = "0.0.0-preview.20261002.100";
+  const targetVersion = "0.0.0-preview.20261002.101.1";
+  const receipt: QualifiedTrialReceipt = {
+    protocol: 4,
+    startupGateProtocol: 1,
+    updateId: "qualified-trial",
+    stagedHandle: "11111111-1111-4111-8111-111111111111",
+    home: "/fixture",
+    databasePath: "/fixture/userdata/statev2.sqlite",
+    serviceUserdata: "/fixture/userdata",
+    environmentId: "native-fixture",
+    version: targetVersion,
+    sourceSha: "a".repeat(40),
+    sourceTree: "b".repeat(40),
+    listener: { family: "IPv4", address: "127.0.0.1", port: 43123, scopeId: 0 },
+    processId: 123,
+    resumeHeld: true,
+  };
+  const qualified = {
+    protocol: 1,
+    stagedHandle: receipt.stagedHandle,
+    binding: {
+      baseDir: receipt.home,
+      dbPath: receipt.databasePath,
+      environmentId: receipt.environmentId,
+      activeVersion: fromVersion,
+      activeSourceSha: "c".repeat(40),
+    },
+    receipt: {
+      protocol: 1,
+      repository: "Jones-Systems/Jones-Code",
+      channel: "jones-main",
+      version: targetVersion,
+      sourceSha: receipt.sourceSha,
+      sourceTree: receipt.sourceTree,
+      installedSourceSha: "c".repeat(40),
+      runId: 101,
+      runAttempt: 1,
+      artifactId: 102,
+      workflow: ".github/workflows/artifact-cli-linux.yml",
+      artifactDigest: `sha256:${"d".repeat(64)}`,
+      archiveSha256: "e".repeat(64),
+      payloadSha256: "f".repeat(64),
+      platform: "linux",
+      architecture: "x64",
+    },
+  };
+  const pending = {
+    id: receipt.updateId,
+    fromVersion,
+    targetVersion,
+    dbPath: receipt.databasePath,
+    status: "pending",
+    phase: "trial-ready",
+    qualified,
+  };
+  const context = {
+    protocol,
+    childVersion: targetVersion,
+    qualifiedUpdatesProtocol: 1,
+    ...(startupGateProtocol === undefined ? {} : { startupGateProtocol }),
+    update: pending,
+  };
+  const host = new FakeLauncherProcess(context);
+  const events: string[] = [];
+  const operations = {
+    receipt: async () => {
+      events.push("receipt");
+      return receipt;
+    },
+    assertUnreserved: async () => {
+      events.push("unreserved");
+    },
+    reserve: async () => {
+      events.push("reserved");
+    },
+  };
+  const witness: QualifiedTrialRuntimeWitness = {
+    home: receipt.home,
+    databasePath: receipt.databasePath,
+    serviceUserdata: receipt.serviceUserdata,
+    environmentId: receipt.environmentId,
+    version: targetVersion,
+    processId: receipt.processId,
+    buildMetadata: {
+      jonesSource: {
+        repository: "Jones-Systems/Jones-Code",
+        sha: receipt.sourceSha,
+        tree: receipt.sourceTree,
+      },
+    },
+    listener: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
+  };
+  const make = () =>
+    makeClient(host, targetVersion).pipe(
+      Effect.provideService(ServiceLauncherClient.QualifiedTrialOperations, operations),
+    );
+  return { host, context, pending, receipt, events, operations, witness, make };
+}
 
 class FakeLauncherProcess {
   readonly connected: boolean;
   readonly env: Record<string, string | undefined>;
   readonly sent: ServiceLauncherChildMessage[] = [];
+  readonly sentSignal = Promise.withResolvers<void>();
   readonly #listeners = new Map<string, Set<(...args: ReadonlyArray<unknown>) => void>>();
 
   constructor(context: unknown, connected = true) {
@@ -30,6 +138,7 @@ class FakeLauncherProcess {
 
   send = (message: ServiceLauncherChildMessage, callback?: (error: Error | null) => void) => {
     this.sent.push(message);
+    this.sentSignal.resolve();
     callback?.(null);
     return true;
   };
@@ -44,17 +153,26 @@ class FakeLauncherProcess {
     this.#listeners.get(event)?.delete(listener);
   };
 
+  listenerCount() {
+    return [...this.#listeners.values()].reduce((count, listeners) => count + listeners.size, 0);
+  }
+
   emit(message: ServiceLauncherParentMessage) {
     for (const listener of this.#listeners.get("message") ?? []) listener(message);
   }
 }
 
 const makeClient = (host: FakeLauncherProcess, currentVersion: string) =>
-  ServiceLauncherClient.make({ currentVersion }).pipe(
-    Effect.provideService(ServiceLauncherClient.ServiceLauncherHostProcess, host),
-    Effect.provideService(HostProcess.Environment, host.env),
-    Effect.provide(NodeServices.layer),
-  );
+  Effect.gen(function* () {
+    // requestUpdate hands off through the real fence owned by this test's scope.
+    const fence = yield* UpdateAdmission.make;
+    return yield* ServiceLauncherClient.make({ currentVersion }).pipe(
+      Effect.provideService(UpdateAdmission.UpdateAdmissionFence, fence),
+      Effect.provideService(ServiceLauncherClient.ServiceLauncherHostProcess, host),
+      Effect.provideService(HostProcess.Environment, host.env),
+      Effect.provide(NodeServices.layer),
+    );
+  });
 
 // regression: #34502 a remote update never replaces the launcher, so an installed one stays protocol 3
 it.effect.each([3, SERVICE_LAUNCHER_PROTOCOL])(
@@ -80,6 +198,7 @@ it.effect.each([3, SERVICE_LAUNCHER_PROTOCOL])(
         targetVersion: "1.1.0",
         dbPath: "/tmp/state.sqlite",
         status: "pending" as const,
+        ...(protocol === SERVICE_LAUNCHER_PROTOCOL ? { phase: "trial-ready" } : {}),
       };
       const host = new FakeLauncherProcess({ protocol, childVersion: "1.1.0", update: pending });
       host.env["HOME"] = root;
@@ -326,3 +445,42 @@ it.layer(NodeServices.layer)("self-update launchers", (it) => {
     }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 });
+
+it.effect("establishes the qualified outcome only after exact grant and durable reservation", () =>
+  Effect.gen(function* () {
+    const fixture = qualifiedFixture(4, 1);
+    const client = yield* fixture.make();
+    expect(client.requiresQualifiedTrialGate).toBe(true);
+    yield* client.prepareTrial({ baseDir: fixture.receipt.home }).pipe(Effect.flip);
+    expect(fixture.host.sent).toEqual([]);
+    const prepared = yield* Effect.forkChild(client.prepareQualifiedTrial(fixture.witness), {
+      startImmediately: true,
+    });
+    yield* Effect.promise(() => fixture.host.sentSignal.promise);
+    expect(fixture.host.sent).toEqual([
+      {
+        type: "prepared",
+        updateId: fixture.pending.id,
+        startupGateProtocol: 1,
+        qualified: fixture.receipt,
+      },
+    ]);
+    expect(fixture.events).toEqual(["receipt", "unreserved"]);
+    expect(client.qualifiedStartupOutcome).toBeUndefined();
+    fixture.host.emit({
+      type: "committed",
+      updateId: fixture.pending.id,
+      startupGateProtocol: 1,
+      qualified: { ...fixture.receipt, generation: fixture.pending.id },
+    });
+    const outcome = yield* Fiber.join(prepared);
+    expect(fixture.events).toEqual(["receipt", "unreserved", "reserved"]);
+    expect(client.qualifiedStartupOutcome).toEqual(outcome);
+    expect(yield* client.prepareTrial({ baseDir: fixture.receipt.home })).toEqual(outcome);
+    expect((yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation).toBe(
+      "qualified-replay",
+    );
+    expect(fixture.host.sent).toHaveLength(1);
+    expect(fixture.host.listenerCount()).toBe(0);
+  }),
+);

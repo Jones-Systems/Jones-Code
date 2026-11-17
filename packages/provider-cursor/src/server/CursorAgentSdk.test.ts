@@ -1,17 +1,20 @@
-import type { ListRunsOptions } from "@cursor/sdk";
+import type { InteractionUpdate, ListRunsOptions, RunResult } from "@cursor/sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Exit from "effect/Exit";
-import * as Cause from "effect/Cause";
 import { vi } from "vite-plus/test";
 
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import * as CursorSdk from "./CursorSdk.ts";
+import { loadCursorSdk, loadCursorSqlite } from "./sdk.ts";
 
 const cursorSdkMock = vi.hoisted(() => {
   const closeExecutionOrder: Array<string> = [];
@@ -19,7 +22,7 @@ const cursorSdkMock = vi.hoisted(() => {
   let agentCloseFailure: unknown;
   // The local store lists runs oldest first, like the real SDK.
   let storedRuns: Array<{ readonly id: string; readonly status: string }> = [];
-  const runWait = vi.fn(async () => ({
+  const runWait = vi.fn(async (): Promise<RunResult> => ({
     id: "run-cursor-agent-sdk-test",
     requestId: "request-cursor-agent-sdk-test",
     status: "finished",
@@ -147,7 +150,326 @@ const layerTest = CursorAgentSdk.layer.pipe(
   Layer.provide(NodeServices.layer),
 );
 
+const nativeWitnessResult: RunResult = {
+  id: "run-native-witness",
+  requestId: "request-native-witness",
+  status: "finished",
+  result: "native result",
+  model: { id: "default" },
+  durationMs: 1,
+};
+
+const makeNativeWitnessHarness = Effect.fn("makeNativeWitnessHarness")(function* (
+  input: {
+    readonly onDelta?: (update: InteractionUpdate) => Effect.Effect<void, Error>;
+    readonly log?: CursorAgentSdk.CursorAgentSdkProtocolLogger;
+    readonly bufferedUpdate?: boolean;
+  } = {},
+) {
+  const nativeResult = yield* Deferred.make<RunResult, Error>();
+  const nativeStarted = yield* Deferred.make<void>();
+  const nativeFinished = yield* Deferred.make<void>();
+  let resolveNative!: (result: RunResult) => void;
+  let rejectNative!: (error: Error) => void;
+  const nativePromise = new Promise<RunResult>((resolve, reject) => {
+    resolveNative = resolve;
+    rejectNative = reject;
+  });
+  yield* Deferred.await(nativeResult).pipe(
+    Effect.match({ onFailure: rejectNative, onSuccess: resolveNative }),
+    Effect.ensuring(Deferred.succeed(nativeFinished, undefined)),
+    Effect.forkChild,
+  );
+  const wait = vi.fn(() => {
+    Deferred.doneUnsafe(nativeStarted, Effect.void);
+    return nativePromise;
+  });
+  const cancel = vi.fn(async () => {});
+  let publish: ((input: { readonly update: unknown }) => Promise<void>) | undefined;
+  cursorSdkMock.send.mockImplementationOnce(async (_message, options) => {
+    publish = options.onDelta;
+    if (input.bufferedUpdate) {
+      await publish?.({ update: { type: "assistant-message-chunk", text: "buffered" } });
+    }
+    return {
+      id: nativeWitnessResult.id,
+      agentId: "agent-cursor-agent-sdk-test",
+      wait,
+      cancel,
+      steer: cursorSdkMock.runSteer,
+    };
+  });
+  const events: Array<CursorAgentSdk.CursorAgentSdkProtocolLogEvent> = [];
+  const runner = yield* CursorAgentSdk.makeCursorAgentSdkRunner(
+    () => (event) =>
+      Effect.sync(() => events.push(event)).pipe(Effect.andThen(input.log?.(event) ?? Effect.void)),
+  ).pipe(
+    Effect.provideService(CursorSdk.CursorSdk, {
+      load: loadCursorSdk,
+      loadSqlite: loadCursorSqlite,
+    }),
+  );
+  const session = yield* runner.open({
+    operation: "create",
+    options: {},
+    threadId: ThreadId.make("thread-native-witness"),
+    providerSessionId: ProviderSessionId.make("session-native-witness"),
+  });
+  yield* Effect.addFinalizer(() =>
+    Deferred.succeed(nativeResult, nativeWitnessResult).pipe(
+      Effect.andThen(session.close),
+      Effect.ignore,
+    ),
+  );
+  return {
+    nativeResult,
+    nativeStarted,
+    nativeFinished,
+    wait,
+    cancel,
+    events,
+    session,
+    // Forward the callback only when the case supplies one, as exact optional input requires.
+    send: session.send({
+      message: "synthetic input",
+      ...(input.onDelta === undefined ? {} : { onDelta: input.onDelta }),
+    }),
+    publish: Effect.promise(() =>
+      publish!({ update: { type: "assistant-message-chunk", text: "live update" } }),
+    ),
+  };
+});
+
 describe("CursorAgentSdkRunner", () => {
+  it.effect.each(["run.started", "buffered callback"] as const)(
+    "observes native completion before a blocked %s",
+    (blockedStage) =>
+      Effect.gen(function* () {
+        const blocked = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
+        const block = Deferred.succeed(blocked, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const h = yield* makeNativeWitnessHarness({
+          bufferedUpdate: blockedStage === "buffered callback",
+          onDelta: () => block,
+          log: (event) =>
+            blockedStage === "run.started" && event.payload.type === "run.started"
+              ? block
+              : Effect.void,
+        });
+        const sending = yield* h.send.pipe(Effect.forkChild);
+        yield* Deferred.await(blocked);
+        yield* Deferred.await(h.nativeStarted);
+        assert.strictEqual(h.wait.mock.calls.length, 1);
+        yield* Deferred.succeed(h.nativeResult, nativeWitnessResult);
+        yield* Deferred.await(h.nativeFinished);
+        assert.isUndefined(sending.pollUnsafe());
+
+        yield* Deferred.succeed(release, undefined);
+        const run = yield* Fiber.join(sending);
+        assert.isDefined(run.nativeWait);
+        assert.strictEqual(yield* run.nativeWait!, nativeWitnessResult);
+        assert.strictEqual(yield* run.nativeWait!, nativeWitnessResult);
+        assert.strictEqual(yield* run.wait, nativeWitnessResult);
+        assert.strictEqual(h.wait.mock.calls.length, 1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "keeps native completion independent of live callbacks and completion diagnostics",
+    () =>
+      Effect.gen(function* () {
+        const callbackStarted = yield* Deferred.make<void>();
+        const callbackRelease = yield* Deferred.make<void>();
+        const shellStarted = yield* Deferred.make<void>();
+        const shellRelease = yield* Deferred.make<void>();
+        const diagnosticStarted = yield* Deferred.make<void>();
+        const diagnosticRelease = yield* Deferred.make<void>();
+        yield* Effect.addFinalizer(() =>
+          Deferred.succeed(callbackRelease, undefined).pipe(
+            Effect.andThen(Deferred.succeed(shellRelease, undefined)),
+            Effect.andThen(Deferred.succeed(diagnosticRelease, undefined)),
+          ),
+        );
+        let updates = 0;
+        const h = yield* makeNativeWitnessHarness({
+          onDelta: (update) =>
+            Effect.sync(() => {
+              updates += 1;
+            }).pipe(
+              Effect.andThen(
+                update.type === "shell-output-delta"
+                  ? Deferred.succeed(shellStarted, undefined).pipe(
+                      Effect.andThen(Deferred.await(shellRelease)),
+                    )
+                  : Deferred.succeed(callbackStarted, undefined).pipe(
+                      Effect.andThen(Deferred.await(callbackRelease)),
+                    ),
+              ),
+            ),
+          log: (event) =>
+            event.payload.type === "run.completed"
+              ? Deferred.succeed(diagnosticStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(diagnosticRelease)),
+                )
+              : Effect.void,
+        });
+        const run = yield* h.send;
+        const publishing = yield* h.publish.pipe(Effect.forkChild);
+        yield* Deferred.await(callbackStarted);
+        const projected = yield* run.wait.pipe(Effect.forkChild);
+        yield* Deferred.succeed(h.nativeResult, nativeWitnessResult);
+        assert.strictEqual(yield* run.nativeWait!, nativeWitnessResult);
+        assert.isUndefined(projected.pollUnsafe());
+        assert.isFalse(Deferred.isDoneUnsafe(diagnosticStarted));
+
+        (Reflect.get(globalThis, Symbol.for("@cursor/sdk.shellStreamOutput")) as Function)({
+          conversationId: "agent-cursor-agent-sdk-test",
+          toolCallId: "shell-during-callback-drain",
+          event: { case: "stdout", value: { data: "last native output" } },
+        });
+        yield* Deferred.succeed(callbackRelease, undefined);
+        yield* Fiber.join(publishing);
+        yield* Deferred.await(shellStarted);
+        assert.isUndefined(projected.pollUnsafe());
+        assert.isFalse(Deferred.isDoneUnsafe(diagnosticStarted));
+        yield* Deferred.succeed(shellRelease, undefined);
+        yield* Deferred.await(diagnosticStarted);
+        assert.isUndefined(projected.pollUnsafe());
+        assert.strictEqual(yield* run.nativeWait!, nativeWitnessResult);
+        yield* Deferred.succeed(diagnosticRelease, undefined);
+        assert.strictEqual(yield* Fiber.join(projected), nativeWitnessResult);
+        (Reflect.get(globalThis, Symbol.for("@cursor/sdk.shellStreamOutput")) as Function)({
+          conversationId: "agent-cursor-agent-sdk-test",
+          toolCallId: "shell-after-projected-wait",
+          event: { case: "stdout", value: { data: "already unsubscribed" } },
+        });
+        assert.strictEqual(yield* run.wait, nativeWitnessResult);
+        assert.strictEqual(updates, 2);
+        assert.strictEqual(h.wait.mock.calls.length, 1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("retains native success when a later callback rejects", () =>
+    Effect.gen(function* () {
+      const callbackStarted = yield* Deferred.make<void>();
+      const callbackRelease = yield* Deferred.make<void>();
+      const failure = new Error("late callback failure");
+      yield* Effect.addFinalizer(() => Deferred.succeed(callbackRelease, undefined));
+      const h = yield* makeNativeWitnessHarness({
+        onDelta: () =>
+          Deferred.succeed(callbackStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(callbackRelease)),
+            Effect.andThen(Effect.fail(failure)),
+          ),
+      });
+      const run = yield* h.send;
+      const publishing = yield* h.publish.pipe(Effect.forkChild);
+      yield* Deferred.await(callbackStarted);
+      const projected = yield* run.wait.pipe(Effect.exit, Effect.forkChild);
+      yield* Deferred.succeed(h.nativeResult, nativeWitnessResult);
+      assert.strictEqual(yield* run.nativeWait!, nativeWitnessResult);
+      assert.isUndefined(projected.pollUnsafe());
+      yield* Deferred.succeed(callbackRelease, undefined);
+      yield* Fiber.join(publishing);
+      const failed = yield* Fiber.join(projected);
+      assert(Exit.isFailure(failed));
+      assert.deepStrictEqual(
+        Cause.squash(failed.cause),
+        new CursorAgentSdk.CursorAgentSdkRunnerError({ method: "run.wait", cause: failure }),
+      );
+      assert.strictEqual(yield* run.nativeWait!, nativeWitnessResult);
+      assert.isFalse(h.events.some((event) => event.payload.type === "run.completed"));
+      assert.strictEqual(h.wait.mock.calls.length, 1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([false, true] as const)(
+    "drains callbacks after late native rejection (callback failure: %s)",
+    (callbackFails) =>
+      Effect.gen(function* () {
+        const callbackStarted = yield* Deferred.make<void>();
+        const callbackRelease = yield* Deferred.make<void>();
+        const nativeFailure = new Error("late native failure");
+        const callbackFailure = new Error("late callback failure");
+        yield* Effect.addFinalizer(() => Deferred.succeed(callbackRelease, undefined));
+        const h = yield* makeNativeWitnessHarness({
+          onDelta: () =>
+            Deferred.succeed(callbackStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(callbackRelease)),
+              Effect.andThen(callbackFails ? Effect.fail(callbackFailure) : Effect.void),
+            ),
+        });
+        const run = yield* h.send;
+        const publishing = yield* h.publish.pipe(Effect.forkChild);
+        yield* Deferred.await(callbackStarted);
+        const projected = yield* run.wait.pipe(Effect.exit, Effect.forkChild);
+        yield* Deferred.fail(h.nativeResult, nativeFailure);
+        const nativeExit = yield* run.nativeWait!.pipe(Effect.exit);
+        assert(Exit.isFailure(nativeExit));
+        const nativeError = new CursorAgentSdk.CursorAgentSdkRunnerError({
+          method: "run.wait",
+          cause: nativeFailure,
+        });
+        assert.deepStrictEqual(Cause.squash(nativeExit.cause), nativeError);
+        assert.isUndefined(projected.pollUnsafe());
+        yield* Deferred.succeed(callbackRelease, undefined);
+        yield* Fiber.join(publishing);
+        const failed = yield* Fiber.join(projected);
+        assert(Exit.isFailure(failed));
+        const errors = failed.cause.reasons
+          .filter(Cause.isFailReason)
+          .map((reason) => reason.error);
+        assert.deepStrictEqual(
+          errors,
+          callbackFails
+            ? [
+                nativeError,
+                new CursorAgentSdk.CursorAgentSdkRunnerError({
+                  method: "run.wait",
+                  cause: callbackFailure,
+                }),
+              ]
+            : [nativeError],
+        );
+        assert.deepStrictEqual(yield* run.nativeWait!.pipe(Effect.exit), nativeExit);
+        assert.isFalse(h.events.some((event) => event.payload.type === "run.completed"));
+        assert.strictEqual(h.wait.mock.calls.length, 1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "shares one pending native wait across readers without treating cancel or close as exit",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeNativeWitnessHarness();
+        const run = yield* h.send;
+        yield* Deferred.await(h.nativeStarted);
+        const first = yield* run.nativeWait!.pipe(Effect.forkChild);
+        const second = yield* run.nativeWait!.pipe(Effect.forkChild);
+        const abandoned = yield* run.nativeWait!.pipe(Effect.forkChild);
+        yield* Fiber.interrupt(abandoned);
+        const projected = yield* run.wait.pipe(Effect.forkChild);
+        yield* run.cancel;
+        yield* h.session.close;
+        assert.isUndefined(first.pollUnsafe());
+        assert.isUndefined(second.pollUnsafe());
+        assert.isUndefined(projected.pollUnsafe());
+        assert.isFalse(Deferred.isDoneUnsafe(h.nativeFinished));
+        assert.strictEqual(h.cancel.mock.calls.length, 1);
+        assert.strictEqual(h.wait.mock.calls.length, 1);
+        yield* Deferred.succeed(h.nativeResult, nativeWitnessResult);
+        assert.strictEqual(yield* Fiber.join(first), nativeWitnessResult);
+        assert.strictEqual(yield* Fiber.join(second), nativeWitnessResult);
+        assert.strictEqual(yield* Fiber.join(projected), nativeWitnessResult);
+        assert.strictEqual(yield* run.nativeWait!, nativeWitnessResult);
+        assert.strictEqual(yield* run.wait, nativeWitnessResult);
+        assert.strictEqual(h.wait.mock.calls.length, 1);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("resumes from the original store after the working directory changes", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

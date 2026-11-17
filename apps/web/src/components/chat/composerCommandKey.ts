@@ -298,6 +298,7 @@ export function composerCommandKeyHandler(input: {
         event,
         intent: {
           keybindings,
+          context: getShortcutContext(event.target),
           isSoftwareKeyboardOpen,
           isDraftThread: routeKind === "draft",
           isRunning: phase === "running",
@@ -328,7 +329,7 @@ export function composerCommandKeyHandler(input: {
           running: phase === "running" || phase === "connecting",
           alternateModifier: submissionIntent === "alternate",
           activeTurnDefault: followUpBehavior,
-canSteer: canSteer && !steeringBlockedByQuestion,
+          canSteer: canSteer && !steeringBlockedByQuestion,
         }),
         submissionIntent,
       );

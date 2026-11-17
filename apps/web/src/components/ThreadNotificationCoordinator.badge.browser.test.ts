@@ -59,7 +59,7 @@ vi.mock(import("../state/threads"), async (original) => {
     ...actual,
     environmentThreadShells: {
       ...actual.environmentThreadShells,
-      pendingSubagentRequestsAtom: (() => noRequestsAtom) as never,
+      pendingSubagentRequestsAtom: (() => subagentRequestsAtom) as never,
       get delegatedUnderParentAtom() {
         return noDelegatedAtom as never;
       },
@@ -89,7 +89,7 @@ import { startThreadNotifications } from "./ThreadNotificationCoordinator";
 let registry: AtomRegistry.AtomRegistry;
 const shellAtom = Atom.family((_id: string) => Atom.make<unknown>(null));
 const environmentIdsAtom = Atom.make<ReadonlyArray<string>>([]);
-const noRequestsAtom = Atom.make(new Map());
+const subagentRequestsAtom = Atom.make<ReadonlyMap<string, "approval" | "user_input">>(new Map());
 const noDelegatedAtom = Atom.make<ReadonlySet<string>>(new Set<string>());
 state.shells = { set: (id, value) => registry.set(shellAtom(id), value) };
 
@@ -452,4 +452,18 @@ it("opening a thread or removing its environment closes only its in-app toasts, 
   state.inApp = false;
   app.changeSettings();
   expect(state.closeToast.mock.calls.slice(3)).toEqual([["one-other"]]);
+});
+
+it("alerts on the parent when its delegated subagent asks for approval", async () => {
+  await using app = setup();
+  state.inApp = true;
+  focused = true;
+  app.setEnvironmentIds(["one"]);
+  app.start();
+  registry.set(subagentRequestsAtom, new Map([["thread", "approval"]]));
+  registry.set(subagentRequestsAtom, new Map([["thread", "approval"]]));
+  expect(state.toast).toHaveBeenCalledTimes(1);
+  expect(state.toast).toHaveBeenLastCalledWith(
+    expect.objectContaining({ title: "Approval needed", description: "Test thread" }),
+  );
 });

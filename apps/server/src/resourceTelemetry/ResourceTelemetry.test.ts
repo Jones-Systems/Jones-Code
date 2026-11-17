@@ -14,6 +14,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as DesktopTelemetryReceiver from "./DesktopTelemetryReceiver.ts";
 import * as NativeTelemetryClient from "./NativeTelemetryClient.ts";
 import * as ResourceAttribution from "./ResourceAttribution.ts";
@@ -184,6 +185,7 @@ describe("ResourceTelemetry", () => {
           Layer.mergeAll(
             NativeTelemetryClient.layerTest({ readHistory: () => Effect.succeed(samples) }),
             DesktopTelemetryReceiver.layerTest(),
+            ProcessAttribution.layer,
             ResourceAttribution.layer,
           ),
         ),
@@ -255,7 +257,14 @@ describe("ResourceTelemetry", () => {
           latest: Effect.succeedSome(desktop),
         });
         const layerTelemetry = ResourceTelemetry.layer.pipe(
-          Layer.provide(Layer.mergeAll(layerNative, layerDesktop, ResourceAttribution.layer)),
+          Layer.provide(
+            Layer.mergeAll(
+              layerNative,
+              layerDesktop,
+              ProcessAttribution.layer,
+              ResourceAttribution.layer,
+            ),
+          ),
         );
 
         const snapshot = yield* Effect.gen(function* () {
@@ -305,6 +314,7 @@ describe("ResourceTelemetry", () => {
           Layer.mergeAll(
             layerNative,
             DesktopTelemetryReceiver.layerTest(),
+            ProcessAttribution.layer,
             ResourceAttribution.layer,
           ),
         ),
@@ -374,7 +384,9 @@ describe("ResourceTelemetry", () => {
         changes: Stream.fromPubSub(desktopChanges),
       });
       const layerTelemetry = ResourceTelemetry.layer.pipe(
-        Layer.provide(Layer.mergeAll(layerNative, layerDesktop, layerAttribution)),
+        Layer.provide(
+          Layer.mergeAll(layerNative, layerDesktop, ProcessAttribution.layer, layerAttribution),
+        ),
       );
 
       yield* Effect.gen(function* () {

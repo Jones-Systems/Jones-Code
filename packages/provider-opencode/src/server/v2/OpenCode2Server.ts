@@ -1,3 +1,4 @@
+import * as OpenCodeCreationPolicy from "../jones/OpenCodeCreationPolicy.ts";
 import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/snapshotProbe";
 // One OpenCode 2 process serves all directories; share it across instance threads.
 import type { OpenCodeClient } from "@opencode/client/effect";
@@ -19,6 +20,12 @@ export interface OpenCode2Connection extends OpenCode2Client.OpenCode2Api {
   readonly url: string;
   readonly version: string;
   readonly external: boolean;
+  readonly ownedProcess?: {
+    readonly runtimeGeneration: string;
+    readonly isRunning: Effect.Effect<boolean>;
+    readonly incarnation?: OpenCodeCreationPolicy.OpenCodePhysicalIncarnation;
+    readonly isCurrent?: Effect.Effect<boolean>;
+  };
   /** Only owned processes have an authoritative lifetime signal. */
   readonly processExit?: Effect.Effect<void>;
 }
@@ -28,6 +35,8 @@ export class OpenCode2Server extends Context.Service<
   {
     readonly withConnection: <A, E, R>(
       use: (connection: OpenCode2Connection) => Effect.Effect<A, E, R>,
+      creationHooks?: OpenCodeCreationPolicy.OpenCodeCreationHooks,
+      consumerKind?: "models" | "inventory" | "session" | "other",
     ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
     /** Drops a configured server's verified connection, so the next use reads its version again. */
     readonly forget: Effect.Effect<void>;
@@ -115,6 +124,7 @@ export const verifyServer = (client: OpenCodeClient, environment?: NodeJS.Proces
   );
 
 export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
+  readonly authority?: OpenCodeCreationPolicy.OpenCodeQualifiedAuthority;
   readonly binaryPath: string;
   readonly serverUrl: string;
   readonly serverPassword: string;
@@ -144,9 +154,19 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
       Effect.tap(remember),
     );
     return OpenCode2Server.of({
-      withConnection: Effect.fn("OpenCode2Server.withConnection")(function (use) {
+      withConnection: Effect.fn("OpenCode2Server.withConnection")(function (
+        use,
+        _hooks,
+        consumerKind = "other",
+      ) {
         return Effect.suspend(() => (latest === undefined ? connect : Effect.succeed(latest))).pipe(
-          Effect.flatMap(use),
+          Effect.flatMap((connection) =>
+            OpenCodeCreationPolicy.authorizeConsumption(
+              undefined,
+              input.authority,
+              consumerKind,
+            ).pipe(Effect.andThen(() => use(connection))),
+          ),
         );
       }),
       forget: Effect.sync(() => {
@@ -157,19 +177,46 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
 
   const password = yield* generatePassword;
   const owner = yield* OpenCodeServerOwner.make({
+    ...(input.authority !== undefined ? { authority: input.authority } : {}),
     binaryPath: input.binaryPath,
     directory: input.directory,
     environment: serverEnvironment(input.environment, password),
     verify: (url) => connectTo(url, password, false).pipe(Effect.flatMap(remember)),
   });
   return OpenCode2Server.of({
-    withConnection: Effect.fn("OpenCode2Server.withConnection")(function (use) {
-      return owner.withServer((server) =>
-        latest?.url === server.url
-          ? use({ ...latest, processExit: server.exitCode.pipe(Effect.asVoid) })
-          : Effect.die(new Error("OpenCode 2 server was lent before verification.")),
-      );
-    }),
+    withConnection: Effect.fn("OpenCode2Server.withConnection")(
+      function (use, creationHooks, consumerKind) {
+        return owner.withServer(
+          (server) => {
+            if (latest?.url !== server.url) {
+              return Effect.die(new Error("OpenCode 2 server was lent before verification."));
+            }
+            // Preserve connection identity for the same physical process across event-stream recovery.
+            if (
+              latest.ownedProcess?.incarnation !== server.ownedProcess?.incarnation ||
+              latest.processExit === undefined
+            ) {
+              latest = {
+                ...latest,
+                ...(server.ownedProcess !== undefined
+                  ? {
+                      ownedProcess: Object.freeze({
+                        ...server.ownedProcess,
+                        runtimeGeneration: server.ownedProcess.incarnation.runtimeGeneration,
+                        isRunning: server.isRunning,
+                      }),
+                    }
+                  : {}),
+                processExit: server.exitCode.pipe(Effect.asVoid),
+              };
+            }
+            return use(latest);
+          },
+          creationHooks,
+          consumerKind,
+        );
+      },
+    ),
     forget: Effect.void,
   });
 });

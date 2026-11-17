@@ -62,25 +62,34 @@ import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+import { registerAcceptedTerminalRecoveryTests } from "../jones/orchestration/AcceptedTerminalRecovery.testkit.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 
 // Consumer tests replace ingestion as an external port; retained publication uses
 // that same fixture implementation, while real retry behavior has paired ingestor tests.
-const mockIngestor = (implementation: Partial<ProviderEventIngestor.ProviderEventIngestorV2["Service"]>) =>
+const mockIngestor = (
+  implementation: Partial<ProviderEventIngestor.ProviderEventIngestorV2["Service"]>,
+) =>
   Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
     ...implementation,
-    captureTerminal: (input) => Effect.succeed({ publish: implementation.ingestNormalized!(input) }),
+    captureTerminal: (input) =>
+      Effect.succeed({ publish: implementation.ingestNormalized!(input) }),
   });
 
+// Each build owns its sink trace; no trace state is shared between tests.
 const mockEventSink = (implementation: Partial<EventSink.EventSinkV2["Service"]>) =>
-  Layer.mock(EventSink.EventSinkV2)({
-    consumeProviderEvents: (source, process, after) =>
-      source.pipe(
-        Stream.mapEffect((event) => process(event).pipe(Effect.andThen(after))),
-        Stream.takeUntil(Boolean),
-        Stream.runDrain,
-      ),
-    ...implementation,
-  });
+  Layer.suspend(() =>
+    Layer.mock(EventSink.EventSinkV2)({
+      supersededTerminalTrace: SupersededTerminalTrace.make(),
+      consumeProviderEvents: (source, process, after) =>
+        source.pipe(
+          Stream.mapEffect((event) => process(event).pipe(Effect.andThen(after))),
+          Stream.takeUntil(Boolean),
+          Stream.runDrain,
+        ),
+      ...implementation,
+    }),
+  );
 
 const driver = ProviderDriverKind.make("codex");
 const rootAppThread = (id: ThreadId) =>
@@ -3920,8 +3929,11 @@ it.effect("keeps completed runs completed when pull request refresh fails", () =
   }),
 );
 
-function captureRootRunTermination(input: {
+registerAcceptedTerminalRecoveryTests(captureRootRunTermination, rootTerminalEvent);
+
+export function captureRootRunTermination(input: {
   readonly key: string;
+  readonly driver?: ProviderDriverKind;
   readonly shouldFinalizeRun: () => Effect.Effect<boolean, ProjectionStore.ProjectionStoreV2Error>;
   readonly rejectTerminalWrite?: boolean;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
@@ -4145,7 +4157,7 @@ function captureRootRunTermination(input: {
         } as OrchestrationV2CheckpointScope,
         providerThread: {
           id: ids.providerThreadId,
-          driver,
+          driver: input.driver ?? driver,
         } as OrchestrationV2ProviderThread,
         attempt: {
           id: ids.attemptId,
@@ -4500,10 +4512,10 @@ function makeRunOwnedSubagentChildNodeFixture(input: {
   };
 }
 
-function rootTerminalEvent(
+export function rootTerminalEvent(
   ids: BackgroundScenarioIds,
   status: "completed" | "interrupted" | "cancelled" | "failed",
-): ProviderAdapter.ProviderAdapterV2Event {
+): Extract<ProviderAdapter.ProviderAdapterV2Event, { readonly type: "turn.terminal" }> {
   const common = {
     type: "turn.terminal" as const,
     driver,

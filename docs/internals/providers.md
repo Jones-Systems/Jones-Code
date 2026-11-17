@@ -169,6 +169,12 @@ with a readable, current version.
 
 ## Protocol traps
 
+Restart recovery reuses the saved Codex conversation and sends the recorded
+continuation instruction as turn input. `thread/resume` alone does not establish
+an application-owned turn, and Codex rejects `turn/start` with empty input.
+The instruction retains the warning to reconcile actions interrupted by shutdown
+before repeating them. Other providers keep their supported native continuation.
+
 Codex async questions arrive as notifications and are answered with a new user message. There is
 no pending RPC response to send. The
 [adapter](../../apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts) persists them as

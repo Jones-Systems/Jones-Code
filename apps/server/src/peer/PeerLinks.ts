@@ -1,4 +1,5 @@
 import { peerEnvironmentLinksTable } from "../jones/peerPersistence/table.ts";
+import * as InFlight from "../jones/peerTransport/InFlight.ts";
 import {
   AuthMcpClientAccess,
   AuthMcpRegistrationError,
@@ -6,6 +7,7 @@ import {
   EnvironmentHttpApi,
   EnvironmentId,
   type ExecutionEnvironmentCapabilities,
+  type ExecutionEnvironmentDescriptor,
   MCP_PEER_LINK_SOFTWARE_ID,
   type PeerLink,
   type PeerLinkCreateInput,
@@ -98,8 +100,14 @@ export class PeerLinks extends Context.Service<
     /** Whether the Linked environments beta (Settings → Labs) is on here. */
     readonly enabled: Effect.Effect<boolean>;
     readonly link: (input: PeerLinkCreateInput) => Effect.Effect<PeerLink, PeerLinkError>;
-    readonly describe: (url: string) => Effect.Effect<Option.Option<{readonly environmentId: EnvironmentId; readonly label: string}>>;
-    readonly currentGeneration: (environmentId: EnvironmentId) => Effect.Effect<Option.Option<string>, PeerLinkError>;
+    readonly describe: (
+      url: string,
+    ) => Effect.Effect<
+      Option.Option<{ readonly environmentId: EnvironmentId; readonly label: string }>
+    >;
+    readonly currentGeneration: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<Option.Option<string>, PeerLinkError>;
     readonly list: Effect.Effect<ReadonlyArray<PeerLinkSummary>, PeerLinkError>;
     /** The stored link, without asking the peer whether it answers. */
     readonly get: (
@@ -255,20 +263,31 @@ const make = Effect.gen(function* () {
       Effect.provideService(HttpClient.HttpClient, peerHttpClient),
     );
 
-  /** The environment answering at `origin`, or why nothing there answers as T3 Code. */
-  const probe = (origin: string) => {
+  // Jones: concurrent reads of one origin share its pending request, and a read
+  // no caller still waits for is cancelled. A finished read is never reused, so
+  // every caller still checks the identity it needs.
+  const descriptorReads = yield* InFlight.make<ExecutionEnvironmentDescriptor, PeerLinkError>({
+    cancelWhenUnused: true,
+  });
+
+  /** The environment answering at `url`'s origin, or why nothing there answers as T3 Code. */
+  const probe = (url: string) => {
+    const origin = new URL(url).origin;
     const timeout = probeTimeout(origin);
-    return clientFor(origin).pipe(
-      Effect.flatMap((client) => client.metadata.descriptor()),
-      // A brief network drop must not list a live peer as down; the timeout still bounds both tries.
-      Effect.retry({
-        times: 1,
-        schedule: Schedule.spaced("1 second"),
-        while: (error) => certificateErrorCode(error) === undefined,
-      }),
-      Effect.timeout(timeout),
-      // No cause: a decode error can carry the response body to the client.
-      Effect.mapError((error) => probeFailure(origin, error, timeout)),
+    return descriptorReads.run(
+      origin,
+      clientFor(origin).pipe(
+        Effect.flatMap((client) => client.metadata.descriptor()),
+        // A brief network drop must not list a live peer as down; the timeout still bounds both tries.
+        Effect.retry({
+          times: 1,
+          schedule: Schedule.spaced("1 second"),
+          while: (error) => certificateErrorCode(error) === undefined,
+        }),
+        Effect.timeout(timeout),
+        // No cause: a decode error can carry the response body to the client.
+        Effect.mapError((error) => probeFailure(origin, error, timeout)),
+      ),
     );
   };
 
@@ -310,11 +329,18 @@ const make = Effect.gen(function* () {
     );
 
   const currentGeneration: PeerLinks["Service"]["currentGeneration"] = (environmentId) =>
-    sql<{ secret_name: string }>`SELECT secret_name FROM ${sql(peerEnvironmentLinksTable)} WHERE environment_id = ${environmentId}`.pipe(
-      Effect.catch(failStorage), Effect.map((rows) => Option.fromNullishOr(rows[0]?.secret_name)));
-  const describeUrl: PeerLinks["Service"]["describe"] = (url) => peerOrigin(url).pipe(
-    Effect.flatMap(probe), Effect.map((peer) => Option.some({ environmentId: peer.environmentId, label: peer.label })),
-    Effect.orElseSucceed(() => Option.none()));
+    sql<{
+      secret_name: string;
+    }>`SELECT secret_name FROM ${sql(peerEnvironmentLinksTable)} WHERE environment_id = ${environmentId}`.pipe(
+      Effect.catch(failStorage),
+      Effect.map((rows) => Option.fromNullishOr(rows[0]?.secret_name)),
+    );
+  const describeUrl: PeerLinks["Service"]["describe"] = (url) =>
+    peerOrigin(url).pipe(
+      Effect.flatMap(probe),
+      Effect.map((peer) => Option.some({ environmentId: peer.environmentId, label: peer.label })),
+      Effect.orElseSucceed(() => Option.none()),
+    );
 
   /** Signs in to the peer's `/mcp` with a pairing code: register, decide, exchange. */
   const signIn = Effect.fn("PeerLinks.signIn")(
@@ -707,7 +733,11 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const recordOutcome: PeerLinks["Service"]["recordOutcome"] = (environmentId, generation, outcome) =>
+  const recordOutcome: PeerLinks["Service"]["recordOutcome"] = (
+    environmentId,
+    generation,
+    outcome,
+  ) =>
     DateTime.now.pipe(
       Effect.flatMap((now) =>
         outcome.error === null

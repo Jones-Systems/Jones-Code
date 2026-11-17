@@ -224,8 +224,11 @@ describe("withdrawDisplacedCustomAnswerFromPrompt", () => {
 
 it("tracks all-question readiness with message notes and attachment blockers", () => {
   const questions = ["first", "second"].map((id) => ({
-    id, header: id, question: id, multiSelect: false,
-    options: [{ label: "Done", value: "done" }],
+    id,
+    header: id,
+    question: id,
+    multiSelect: false,
+    options: [{ label: "Done", description: "Finished", value: "done" }],
   }));
   const drafts = {
     first: { selectedOptionValues: ["done"], customAnswer: "Keep my note" },
@@ -236,10 +239,18 @@ it("tracks all-question readiness with message notes and attachment blockers", (
   expect(blocked.firstUnansweredIndex).toBe(1);
   expect(blocked.canAdvance).toBe(false);
   expect(blocked.isComplete).toBe(false);
-  expect(derivePendingUserInputProgress(questions, drafts, 0, { notes: true }).resolvedAnswer).toBe("done\nNote: Keep my note");
-  const ready = derivePendingUserInputProgress(questions, {
-    ...drafts, second: { ...drafts.second, attachmentsBlocked: false },
-  }, 1, { notes: true });
+  expect(derivePendingUserInputProgress(questions, drafts, 0, { notes: true }).resolvedAnswer).toBe(
+    "done\nNote: Keep my note",
+  );
+  const ready = derivePendingUserInputProgress(
+    questions,
+    {
+      ...drafts,
+      second: { ...drafts.second, attachmentsBlocked: false },
+    },
+    1,
+    { notes: true },
+  );
   expect(ready.isComplete).toBe(true);
   expect(ready.answeredByIndex).toEqual([true, true]);
   expect(ready.firstUnansweredIndex).toBe(-1);

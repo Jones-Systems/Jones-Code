@@ -38,6 +38,27 @@ import { CHILD_PULL_REQUEST_REPORT_NEXT, PullRequestsToolkit } from "./tools.ts"
 const PROJECT_ID = ProjectId.make("project-1");
 const THREAD_ID = ThreadId.make("thread-1");
 
+const unexpectedCorePort = () =>
+  Effect.die(new Error("Unexpected remote command port in this fixture."));
+/** The core's remote command ports; no call in this file reaches a linked peer. */
+const unusedCorePorts: Pick<
+  Orchestrator.OrchestratorV2Shape,
+  "remoteSendReceipts" | "followUpCommandOwner"
+> = {
+  remoteSendReceipts: {
+    available: Effect.succeed(false),
+    lookup: unexpectedCorePort,
+    withSendCommit: unexpectedCorePort,
+    pruneBefore: unexpectedCorePort,
+    guardPreparation: unexpectedCorePort,
+  },
+  followUpCommandOwner: {
+    inParentTransaction: unexpectedCorePort,
+    assertParentCaller: unexpectedCorePort,
+    dispatch: unexpectedCorePort,
+  },
+};
+
 const testCrypto = SecureRandom.make((size) => new Uint8Array(size).fill(7));
 
 const invocation = (
@@ -192,6 +213,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
         ),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
+      ...unusedCorePorts,
       getThreadShell: (id) =>
         Effect.succeed(id === thread?.id ? v2PullRequestThread(thread) : null),
       dispatch,

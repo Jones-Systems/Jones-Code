@@ -1,6 +1,5 @@
 import type { ProjectId } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
-import { generateSpreadPinOrderKeys, pinOrderKeyBetween } from "@t3tools/shared/pinOrderKey";
 import type { EnvironmentThreadShell } from "./models.ts";
 import { planPinnedReorder, toSortableTimestamp } from "@t3tools/shared/jones/pinOrder";
 
@@ -181,8 +180,6 @@ export function getLatestThreadForProject<
 // Jones: the pinned-order helpers live in @t3tools/shared so the server's MCP
 // pin placement plans keys exactly as the sidebars do.
 export {
-  generateSpreadPinOrderKeys,
-  pinOrderKeyBetween,
   planPinnedReorder,
   sortPinnedThreadsByOrderKey,
   toSortableTimestamp,

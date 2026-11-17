@@ -21,6 +21,7 @@ import * as Layer from "effect/Layer";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
@@ -59,7 +60,10 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
-        Layer.mock(EventSink.EventSinkV2)({ commitCommand: committed }),
+        Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
+          commitCommand: committed,
+        }),
         IdAllocator.layer,
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
           runRecoveryOnce: Effect.succeed(false),
@@ -111,7 +115,10 @@ it.effect("preserves async questions across startup and shutdown", () => {
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
-        Layer.mock(EventSink.EventSinkV2)({ commitCommand }),
+        Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
+          commitCommand,
+        }),
         IdAllocator.layer,
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
           runRecoveryOnce: Effect.succeed(false),
@@ -182,6 +189,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({
@@ -327,6 +335,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -393,6 +402,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -478,6 +488,7 @@ it.effect("recovery closes a secret card's form but leaves a link card open", ()
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -699,6 +710,7 @@ it.effect.each([
           getThreadRecords: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -759,19 +771,11 @@ it.effect.each([
         assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.queuePosition : null, 1);
         assert.equal(runEvent?.type === "run.updated" ? runEvent.payload.queueHeld : false, true);
       }
-      if (status === "running") {
-        assert.deepInclude(
-          attemptEvent?.type === "run-attempt.updated" ? attemptEvent.payload : null,
-          { status: "pending", startedAt: null },
-        );
-        assert.deepInclude(nodeEvent?.type === "node.updated" ? nodeEvent.payload : null, {
-          status: "pending",
-          startedAt: null,
-        });
-      } else {
-        assert.isUndefined(attemptEvent);
-        assert.isUndefined(nodeEvent);
-      }
+      // Only still-queued work stays open here: every started status is terminalized,
+      // because these fixtures carry no durable no-effect evidence. It keeps no attempt
+      // or node rewrite.
+      assert.isUndefined(attemptEvent);
+      assert.isUndefined(nodeEvent);
     }
     // Unknown native delivery must not mint another usage-limit Resume.
     if (scenario === "running-resume") {
@@ -872,6 +876,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 2 } as never);
@@ -1006,6 +1011,7 @@ it.effect("cancels workflow members and child roots without run ids after restar
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
           commitCommand: (input) => {
             committed.push(input);
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -1171,6 +1177,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -1328,6 +1335,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -1458,6 +1466,7 @@ it.effect(
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
           Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
             commitCommand: (input) => {
               committedInput = input;
               return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
@@ -1630,6 +1639,7 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);

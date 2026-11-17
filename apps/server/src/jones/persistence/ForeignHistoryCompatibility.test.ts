@@ -1,4 +1,3 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Synthetic unsupported-FTS adapter preserves actual SQLite error codes.
 import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
@@ -175,80 +174,131 @@ it.effect("receiving startup preserves the single foreign 007 lookup index", () 
 
 // Exercise the composed file-backed writer and configured pool, with populated foreign custody.
 it.effect.each([
-  { start: 56, prefix: 11, size: 2, lookup: false }, { start: 56, prefix: 13, size: 3, lookup: false },
-  { start: 80, prefix: 11, size: 3, lookup: false }, { start: 80, prefix: 13, size: 2, lookup: false },
+  { start: 56, prefix: 11, size: 2, lookup: false },
+  { start: 56, prefix: 13, size: 3, lookup: false },
+  { start: 80, prefix: 11, size: 3, lookup: false },
+  { start: 80, prefix: 13, size: 2, lookup: false },
   { start: 56, prefix: 7, size: 2, lookup: true },
-] as const)("worker upgrade $start → 96, foreign tail $prefix, pool $size", ({ start, prefix, size, lookup }) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "s1-foreign-worker-" });
-    const filename = path.join(directory, "state.sqlite");
-    yield* Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`PRAGMA foreign_keys = ON`;
-      yield* sql`PRAGMA journal_mode = WAL`;
-      yield* releasedJones;
-      const baseline = new Set((yield* sql<{ name: string }>`SELECT name FROM sqlite_master`).map(({ name }) => name));
-      if (lookup) {
-        yield* sql`CREATE INDEX idx_orch_events_thread_creation_lookup ON orchestration_events (stream_id, sequence DESC, event_id) WHERE aggregate_kind = 'thread' AND event_type = 'thread.created'`;
-        yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (7, 'ThreadCreationLookupIndex')`;
-      }
-      for (const migration of foreignHistory.migrations.filter(({ id }) => !lookup && id <= prefix)) {
-        for (const statement of migration.statements) yield* sql.unsafe(statement);
-        yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (${migration.id}, ${migration.name})`;
-      }
-      if (!lookup) for (const statement of foreignHistory.syntheticSeeds) yield* sql.unsafe(statement);
-      if (start === 80) yield* runMigrations({ toMigrationInclusive: 80 });
-      const foreign = new Set((yield* sql<{ name: string }>`SELECT name FROM sqlite_master`)
-        .map(({ name }) => name).filter((name) => !baseline.has(name) && !name.startsWith("orchestration_v2_message_search")));
-      // Snapshot only objects created by the foreign fixture, before advancing upstream.
-      const names = new Set(foreignHistory.migrations.filter(({ id }) => id <= prefix)
-        .flatMap(({ statements }) => statements.flatMap((statement) => {
-          const match = /CREATE\s+(?:TABLE|INDEX|TRIGGER)\s+(?:IF NOT EXISTS\s+)?["`]?([\w]+)/i.exec(statement);
-          return match?.[1] === undefined ? [] : [match[1]];
-        })).filter((name) => foreign.has(name)));
-      if (lookup) names.add("idx_orch_events_thread_creation_lookup");
-      const before = yield* snapshotForeign(names);
-      yield* sql`INSERT INTO orchestration_v2_projection_messages
+] as const)(
+  "worker upgrade $start → 96, foreign tail $prefix, pool $size",
+  ({ start, prefix, size, lookup }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "s1-foreign-worker-" });
+      const filename = path.join(directory, "state.sqlite");
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`PRAGMA foreign_keys = ON`;
+        yield* sql`PRAGMA journal_mode = WAL`;
+        yield* releasedJones;
+        const baseline = new Set(
+          (yield* sql<{ name: string }>`SELECT name FROM sqlite_master`).map(({ name }) => name),
+        );
+        if (lookup) {
+          yield* sql`CREATE INDEX idx_orch_events_thread_creation_lookup ON orchestration_events (stream_id, sequence DESC, event_id) WHERE aggregate_kind = 'thread' AND event_type = 'thread.created'`;
+          yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (7, 'ThreadCreationLookupIndex')`;
+        }
+        for (const migration of foreignHistory.migrations.filter(
+          ({ id }) => !lookup && id <= prefix,
+        )) {
+          for (const statement of migration.statements) yield* sql.unsafe(statement);
+          yield* sql`INSERT INTO jones_sql_migrations (migration_id, name) VALUES (${migration.id}, ${migration.name})`;
+        }
+        if (!lookup)
+          for (const statement of foreignHistory.syntheticSeeds) yield* sql.unsafe(statement);
+        if (start === 80) yield* runMigrations({ toMigrationInclusive: 80 });
+        const foreign = new Set(
+          (yield* sql<{ name: string }>`SELECT name FROM sqlite_master`)
+            .map(({ name }) => name)
+            .filter(
+              (name) => !baseline.has(name) && !name.startsWith("orchestration_v2_message_search"),
+            ),
+        );
+        // Snapshot only objects created by the foreign fixture, before advancing upstream.
+        const names = new Set(
+          foreignHistory.migrations
+            .filter(({ id }) => id <= prefix)
+            .flatMap(({ statements }) =>
+              statements.flatMap((statement) => {
+                const match =
+                  /CREATE\s+(?:TABLE|INDEX|TRIGGER)\s+(?:IF NOT EXISTS\s+)?["`]?([\w]+)/i.exec(
+                    statement,
+                  );
+                return match?.[1] === undefined ? [] : [match[1]];
+              }),
+            )
+            .filter((name) => foreign.has(name)),
+        );
+        if (lookup) names.add("idx_orch_events_thread_creation_lookup");
+        const before = yield* snapshotForeign(names);
+        yield* sql`INSERT INTO orchestration_v2_projection_messages
         (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
         VALUES ('s1-needle', 'fixture-thread', 'user', 0, '2026-10-03', '2026-10-03', '{"text":"s1 needle","createdBy":"user"}')`;
-      yield* runMigrations();
-      assert.deepEqual(yield* sql`SELECT * FROM jones_remote_send_receipts`, []);
-      assert.deepEqual(yield* sql`PRAGMA foreign_key_list(jones_remote_send_receipts)`, []);
-      assert.deepEqual(yield* snapshotForeign(names), before);
-      assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
-      assert.deepEqual(yield* sql`PRAGMA foreign_keys`, [{ foreign_keys: 1 }]);
-      // This lane requires FTS5; unsupported-FTS behavior has a separate oracle.
-      assert.lengthOf(yield* sql`SELECT name FROM sqlite_master WHERE name = 'orchestration_v2_message_search'`, 1);
-      assert.deepEqual(yield* sql`SELECT messages.message_id FROM orchestration_v2_message_search AS search
+        yield* runMigrations();
+        assert.deepEqual(yield* sql`SELECT * FROM jones_remote_send_receipts`, []);
+        assert.deepEqual(yield* sql`PRAGMA foreign_key_list(jones_remote_send_receipts)`, []);
+        assert.deepEqual(yield* snapshotForeign(names), before);
+        assert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
+        assert.deepEqual(yield* sql`PRAGMA foreign_keys`, [{ foreign_keys: 1 }]);
+        // This lane requires FTS5; unsupported-FTS behavior has a separate oracle.
+        assert.lengthOf(
+          yield* sql`SELECT name FROM sqlite_master WHERE name = 'orchestration_v2_message_search'`,
+          1,
+        );
+        assert.deepEqual(
+          yield* sql`SELECT messages.message_id FROM orchestration_v2_message_search AS search
         JOIN orchestration_v2_projection_messages AS messages ON messages.rowid = search.rowid
-        WHERE orchestration_v2_message_search MATCH '"needle"'`.pipe(NodeSqliteClient.readOnly), [{ message_id: "s1-needle" }]);
-      assert.deepEqual(yield* runMigrations(), []);
-    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename, writerWorker: true, readerWorker: true,
-      readerFailureMode: "fail", readerPool: readerPoolOptions(size) })));
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+        WHERE orchestration_v2_message_search MATCH '"needle"'`.pipe(NodeSqliteClient.readOnly),
+          [{ message_id: "s1-needle" }],
+        );
+        assert.deepEqual(yield* runMigrations(), []);
+      }).pipe(
+        Effect.provide(
+          NodeSqliteClient.layer({
+            filename,
+            writerWorker: true,
+            readerWorker: true,
+            readerFailureMode: "fail",
+            readerPool: readerPoolOptions(size),
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("upgrades the explicit unsupported-search-index branch without inventing FTS coverage", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: 68 });
-    // The synthetic adapter returns SQLite's unsupported-option code only for FTS creation.
-    const prepare = NodeSqlite.DatabaseSync.prototype.prepare;
-    NodeSqlite.DatabaseSync.prototype.prepare = function (...args) {
-      if (String(args[0]).includes("CREATE VIRTUAL TABLE orchestration_v2_message_search")) {
-        throw Object.assign(new Error("synthetic unsupported FTS5 option"), { errcode: 1 });
-      }
-      return Reflect.apply(prepare, this, args);
-    };
-    yield* runMigrations().pipe(Effect.ensuring(Effect.sync(() => {
-      NodeSqlite.DatabaseSync.prototype.prepare = prepare;
-    })));
-    assert.deepEqual(yield* sql`SELECT name FROM sqlite_master WHERE name = 'orchestration_v2_message_search'`, []);
-    const columns = yield* sql<{ name: string }>`PRAGMA table_info(orchestration_v2_projection_messages)`;
-    assert.isTrue(columns.some(({ name }) => name === "search_text"));
-    assert.deepEqual(yield* sql`SELECT migration_id FROM effect_sql_migrations ORDER BY migration_id`,
-      migrationManifest.map(([migration_id]) => ({ migration_id })));
-  }).pipe(Effect.provide(memory)),
+it.effect(
+  "upgrades the explicit unsupported-search-index branch without inventing FTS coverage",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 68 });
+      // The synthetic adapter returns SQLite's unsupported-option code only for FTS creation.
+      const prepare = NodeSqlite.DatabaseSync.prototype.prepare;
+      NodeSqlite.DatabaseSync.prototype.prepare = function (...args) {
+        if (String(args[0]).includes("CREATE VIRTUAL TABLE orchestration_v2_message_search")) {
+          throw Object.assign(new Error("synthetic unsupported FTS5 option"), { errcode: 1 });
+        }
+        return Reflect.apply(prepare, this, args);
+      };
+      yield* runMigrations().pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            NodeSqlite.DatabaseSync.prototype.prepare = prepare;
+          }),
+        ),
+      );
+      assert.deepEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE name = 'orchestration_v2_message_search'`,
+        [],
+      );
+      const columns = yield* sql<{
+        name: string;
+      }>`PRAGMA table_info(orchestration_v2_projection_messages)`;
+      assert.isTrue(columns.some(({ name }) => name === "search_text"));
+      assert.deepEqual(
+        yield* sql`SELECT migration_id FROM effect_sql_migrations ORDER BY migration_id`,
+        migrationManifest.map(([migration_id]) => ({ migration_id })),
+      );
+    }).pipe(Effect.provide(memory)),
 );

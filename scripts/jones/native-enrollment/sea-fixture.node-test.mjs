@@ -37,8 +37,8 @@ NodeTest.test(
       NodeAssert.equal(success.status, 0, success.stderr);
       const receipt = JSON.parse(success.stdout);
       NodeAssert.equal(receipt.identity.sea, true);
-      NodeAssert.equal(receipt.identity.node, "26.12.1");
-      NodeAssert.equal(receipt.identity.sqlite, "3.54.0");
+      NodeAssert.equal(receipt.identity.node, "26.13.1");
+      NodeAssert.equal(receipt.identity.sqlite, "3.54.1");
       NodeAssert.equal(receipt.sqliteChecks, "passed");
       NodeAssert.deepEqual(NodeFS.readdirSync(root), heldDirectories);
       const failure = NodeChildProcess.spawnSync(executable, ["--fail"], {

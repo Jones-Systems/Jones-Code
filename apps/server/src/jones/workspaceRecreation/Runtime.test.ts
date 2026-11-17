@@ -23,6 +23,7 @@ import { git, exists } from "../workspaceRetirement/Filesystem.ts";
 import { recreate, RecreationHold, type RecreationInput } from "./Native.ts";
 import { acquireNativeFixture, releaseNativeFixture, partialSource } from "./Native.testkit.ts";
 import { deferRestore, prepareTurn, withTurnClaims } from "./Runtime.ts";
+import * as PreSessionFailure from "./PreSessionFailure.ts";
 
 const encodeRetirementReceipt = Schema.encodeEffect(RetirementReceiptJson);
 
@@ -41,6 +42,56 @@ const nativeOperation = <A>(action: () => Promise<A>) =>
   }).pipe(Effect.uninterruptible);
 const nativeFixture = Effect.acquireRelease(nativeOperation(acquireNativeFixture), (fixture) =>
   nativeOperation(() => releaseNativeFixture(fixture)).pipe(Effect.orDie),
+);
+
+it.effect.each(["prepared", "invoking"] as const)(
+  "missing source preserves an earlier %s lifecycle transition before settlement",
+  (state) =>
+    Effect.gen(function* () {
+      const f = yield* nativeFixture;
+      yield* nativeOperation(() => git(f.repo, ["worktree", "remove", f.checkout]));
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO jones_workspace_lifecycle_transitions VALUES ('prior',${f.checkout},'{}','{}',NULL,NULL,${state})`;
+        const before = yield* sql`SELECT * FROM jones_workspace_lifecycle_transitions`;
+        let settlements = 0;
+        const start = withTurnClaims(
+          "next",
+          PreSessionFailure.protect(
+            "recreation",
+            prepareTurn({
+              threadId: "thread",
+              runId: "next",
+              projectRoot: f.repo,
+              worktree: f.checkout,
+              managed: true,
+              nativeGuarded: false,
+            }),
+            {
+              willRetry: false,
+              nativeGuarded: false,
+              settle: () =>
+                Effect.sync(() => {
+                  settlements++;
+                }),
+            },
+          ),
+        );
+        const result = yield* Effect.result(start);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "RecreationHold",
+            reason: "unknown",
+            missingFact: "an earlier lifecycle transition still requires reconciliation",
+          },
+        });
+        expect(settlements).toBe(0);
+        expect(yield* sql`SELECT * FROM jones_workspace_lifecycle_transitions`).toEqual(before);
+        expect(yield* nativeOperation(() => exists(f.checkout))).toBe(false);
+        expect(yield* nativeOperation(() => exists(f.input.alternatePath))).toBe(false);
+      }).pipe(Effect.provide(Sqlite.layerMemory));
+    }).pipe(Effect.scoped),
 );
 
 it.effect(

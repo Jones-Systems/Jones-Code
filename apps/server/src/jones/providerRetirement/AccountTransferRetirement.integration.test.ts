@@ -285,6 +285,7 @@ const scenario = (
         }),
       ),
       Layer.provide(Layer.succeed(HostProcess.HomeDirectory, homePath)),
+      Layer.provide(PortScanner.layerTest),
     );
     const secondAttempt = yield* Deferred.make<Outbox.OrchestrationEffectV2>();
     const queuedDetach = yield* Deferred.make<DetachInput>();

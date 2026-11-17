@@ -9,8 +9,11 @@ import {
   OrganizationThreadMetadataPage,
 } from "@t3tools/contracts/jones/organizationMetadata";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/ai";
-import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
+import {
+  McpInvocationContext,
+  hiddenFromOutsideClients,
+} from "../../../mcp/McpInvocationContext.ts";
 import {
   OrganizationMetadataMcpService,
   OrganizationMetadataError,
@@ -36,7 +39,9 @@ export const OrganizationMetadataToolkit = Toolkit.make(
     .annotate(Tool.Readonly, true)
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
-    .annotate(Tool.OpenWorld, false),
+    .annotate(Tool.OpenWorld, false)
+    // It reads as its calling thread, so a client from outside, which has none, is not offered it.
+    .annotate(McpSchema.EnabledWhen, hiddenFromOutsideClients),
   Tool.make("list_organization_thread_metadata", {
     description:
       "Read environment-wide active and archived thread navigation and activity metadata without conversation bodies. Each page comes from one consistent projection read. Pass the first page's snapshotSequence on later pages; restart if the watermark changes. On a busy server, select only what you need in one page: threadIds returns those threads and pinned:true returns every pinned thread; together they return the union, so a target's pin fields and the whole pinned list share one snapshotSequence. Missing or deleted IDs are omitted. The watermark covers persisted projection state; separately sampled runtime state is not an atomic census. projectionUpdatedAt is a metadata timestamp, not activity. This grants no custody, attestation, or exclusive ownership.",

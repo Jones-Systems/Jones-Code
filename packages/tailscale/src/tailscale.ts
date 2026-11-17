@@ -304,6 +304,13 @@ const readTailscaleOutput = Effect.fn("tailscale.readTailscaleOutput")(function*
   );
 });
 
+// Jones Serve ownership needs the unfiltered response to refuse unfamiliar mappings.
+export const readTailscaleServeConfigJson = readTailscaleOutput("serve", [
+  "serve",
+  "status",
+  "--json",
+]);
+
 export const readTailscaleStatus = readTailscaleOutput("status", ["status", "--json"]).pipe(
   Effect.flatMap(parseTailscaleStatus),
 );

@@ -211,10 +211,9 @@ export class ServiceLauncherClient extends Context.Service<
       "accepted" | "deferred" | "unavailable",
       ServiceLauncherClientError
     >;
-    readonly prepareTrial: (input: { readonly baseDir: string }) => Effect.Effect<
-      ServerSelfUpdateOutcome | undefined,
-      ServiceLauncherClientError
-    >;
+    readonly prepareTrial: (input: {
+      readonly baseDir: string;
+    }) => Effect.Effect<ServerSelfUpdateOutcome | undefined, ServiceLauncherClientError>;
   }
 >()("t3/cloud/serviceLauncherClient") {}
 
@@ -699,7 +698,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
   const prepareTrial: ServiceLauncherClient["Service"]["prepareTrial"] = (input) =>
     trialOutcome.pipe(
       Effect.tap((result) =>
-        result?.status === "committed" && !qualifiedTransaction
+        result?.status === "committed" && pending !== undefined && !qualifiedTransaction
           ? repointLaunchers({ baseDir: input.baseDir, targetVersion: result.targetVersion }).pipe(
               Effect.provideService(FileSystem.FileSystem, fs),
               Effect.provideService(Path.Path, path),

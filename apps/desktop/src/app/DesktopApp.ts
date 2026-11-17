@@ -20,7 +20,7 @@ import * as DesktopCliCommand from "./DesktopCliCommand.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as PreviewPasskeys from "../preview/Passkeys.ts";
-import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
+import { prepareLocalBackendsForQuit } from "../jones/updates/jonesQuitPreparation.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopHomeOwner from "../backend/DesktopHomeOwner.ts";
 import * as DesktopLocalEnvironmentAuth from "../backend/DesktopLocalEnvironmentAuth.ts";
@@ -162,13 +162,14 @@ const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances")(
   function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool> {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
     const instances = yield* pool.list;
-    yield* Effect.forEach(
-      instances,
-      (instance) => instance.stop({ timeout: DesktopBackendManager.BACKEND_QUIT_STOP_TIMEOUT }),
-      { concurrency: "unbounded" },
-    );
+    // Preparation is bounded separately; stopping still waits for captured backend teardown.
+    yield* Effect.forEach(instances, (instance) => instance.stop(), { concurrency: "unbounded" });
   },
 );
+
+export const prepareAndStopAllPoolInstances = Effect.fn(
+  "desktop.app.prepareAndStopAllPoolInstances",
+)(() => prepareLocalBackendsForQuit().pipe(Effect.ensuring(stopAllPoolInstances())));
 
 // Spawns the local backend as soon as the protocol, IPC, and legacy storage that every window needs exist.
 export const startLocalBackend = Effect.fn("desktop.startLocalBackend")(function* <E, R>(
@@ -424,7 +425,7 @@ const scopedProgram = Effect.scoped(
 
     yield* Effect.addFinalizer(() =>
       // Quit can outrun layer finalizers; stop pooled backends here so they receive SIGTERM before OS teardown.
-      stopAllPoolInstances().pipe(
+      prepareAndStopAllPoolInstances().pipe(
         Effect.ensuring(rendererHistory.shutdown),
         Effect.ensuring(shutdown.markComplete),
         Effect.withSpan("desktop.app.shutdown"),

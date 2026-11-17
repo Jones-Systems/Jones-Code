@@ -388,7 +388,7 @@ export function pendingSubagentGuestAttentionByThread(
 /** A user-only card keeps its mark through roll-ups; clients see it as user_input. */
 export type RolledUpRequest = PendingSubagentRequest | "user_only_input";
 
-export const rolledUpRequest = (
+const rolledUpRequest = (
   thread: OrchestrationV2ThreadShell,
   request: PendingSubagentRequest | null,
 ): RolledUpRequest | null =>

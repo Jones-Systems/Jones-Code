@@ -446,6 +446,9 @@ const diagnose = (
   platform: NodeJS.Platform = "darwin",
 ) =>
   LocalDeviceHost.__testing.platformReason("android").pipe(
+    Effect.provideService(ProcessRunner.ProcessRunner, {
+      run: () => Effect.die("Android SDK diagnosis should not start a process."),
+    }),
     Effect.provideService(HostProcess.Environment, environment),
     Effect.provideService(HostProcess.Platform, platform),
     Effect.provideService(
@@ -684,8 +687,11 @@ it.effect("keeps local Android and iOS available without ffmpeg", () =>
     const fs = yield* FileSystem.FileSystem;
     const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-ffmpeg-" });
     yield* fs.makeDirectory(`${baseDir}/bin`);
-    yield* fs.writeFileString(`${baseDir}/bin/xcrun`, "#!/bin/sh\nexit 0\n");
-    yield* fs.chmod(`${baseDir}/bin/xcrun`, 0o755);
+    for (const tool of ["xcrun", "xcodebuild"]) {
+      const executable = `${baseDir}/bin/${tool}`;
+      yield* fs.writeFileString(executable, "#!/bin/sh\nexit 0\n");
+      yield* fs.chmod(executable, 0o755);
+    }
     for (const [directory, tool] of [
       ["platform-tools", "adb"],
       ["emulator", "emulator"],
@@ -711,7 +717,11 @@ it.effect("keeps local Android and iOS available without ffmpeg", () =>
         HttpClient.make(() => Effect.die(new Error("Readiness must not make network requests"))),
       ),
       Effect.provideService(ProcessRunner.ProcessRunner, {
-        run: () => Effect.die("Platform availability must not probe emulator video"),
+        run: (input) => {
+          expect(input.command).toBe("xcodebuild");
+          expect(input.args).toEqual(["-checkFirstLaunchStatus"]);
+          return Effect.succeed(processOutput(0));
+        },
       }),
     );
     expect((yield* onTestHost(host.summary)).platforms).toEqual([

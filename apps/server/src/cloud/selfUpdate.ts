@@ -60,7 +60,7 @@ import {
   qualifiedServicePreflightFailure,
 } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
-import { isExactServiceVersion } from "./serviceProtocol.ts";
+import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 export type QualifiedStageVerifier = (input: {
   readonly stagedHandle: string;

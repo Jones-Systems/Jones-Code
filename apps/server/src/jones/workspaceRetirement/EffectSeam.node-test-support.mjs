@@ -36,7 +36,8 @@ export const runPromise=e=>e.run(new Map([[rootFiber,nextRootFiber++]]));
   // Only the finite codec subset used by these sequential fixtures is interpreted.
   // Configured Effect/Schema parsing, encoding, diagnostics and types remain CI proof.
   "effect/Schema": `import {fail as failEffect,try_ as attempt} from 'effect/Effect';
-const shape=check=>({check});export const String=shape(x=>typeof x==='string'),Number=shape(x=>typeof x==='number'),Unknown=shape(()=>true),Null=shape(x=>x===null),Defect=()=>Unknown;
+const shape=predicate=>({check:(...args)=>args.every(x=>typeof x==='function')?shape(value=>predicate(value)&&args.every(f=>f(value))):predicate(args[0])});
+export const makeFilter=f=>f,isGreaterThanOrEqualTo=n=>x=>x>=n,isPattern=re=>x=>re.test(x),Int=shape(globalThis.Number.isInteger);export const String=shape(x=>typeof x==='string'),Number=shape(x=>typeof x==='number'),Unknown=shape(()=>true),Null=shape(x=>x===null),Defect=()=>Unknown;
 export const optional=s=>({...s,optional:true,allowUndefined:true}),optionalKey=s=>({...s,optional:true}),mutable=s=>s,Literal=x=>shape(v=>v===x),Literals=xs=>shape(v=>xs.includes(v));
 export const Struct=fields=>shape(x=>x!==null&&typeof x==='object'&&!globalThis.Array.isArray(x)&&Object.entries(fields).every(([k,s])=>!Object.hasOwn(x,k)?s.optional:x[k]===undefined&&s.allowUndefined||s.check(x[k])));
 export const Array=s=>shape(x=>globalThis.Array.isArray(x)&&x.every(s.check)),Tuple=ss=>shape(x=>globalThis.Array.isArray(x)&&x.length===ss.length&&ss.every((s,i)=>s.check(x[i]))),Union=ss=>shape(x=>ss.some(s=>s.check(x)));

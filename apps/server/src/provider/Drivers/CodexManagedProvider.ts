@@ -245,16 +245,13 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const resolveRuntime = runtime.auth.controller.withAccess!(runtime.resolve);
   // Launch settings bind the refresh command to the signed-in profile. The registry
   // already wraps openSession in withAccess, so resolve without re-entering it.
+  // The picker shows each model's catalog default effort; dispatch reads the same
+  // catalog so a turn without an explicit effort sends the effort that was shown.
   const models = snapshot.getSnapshot.pipe(Effect.map((value) => value.models));
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
     models,
     resolveRuntime: runtime.resolve,
-    // The picker shows each model's catalog default effort; dispatch reads the same
-    // catalog so a turn without an explicit effort sends the effort that was shown.
-    getModelCatalog: Effect.suspend(() =>
-      snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
-    ),
   }).pipe(
     Effect.mapError(
       (cause) =>

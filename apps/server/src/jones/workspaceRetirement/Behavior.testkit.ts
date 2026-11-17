@@ -11,9 +11,25 @@ import { classifyIgnored } from "./IgnoredClassifier.ts";
 import { participantGuard } from "./ParticipantGuard.ts";
 import { beginProduction, finishProduction, outputObligations } from "./ProducerFinalizer.ts";
 import { qualify, finalCheck } from "./Qualification.ts";
+import { policyProbe } from "./LinuxInfrastructureEvidence.testkit.ts";
 import { consumerDecision, processProbe, serviceProbe } from "./ConsumerProbe.ts";
 
 export const behaviorCases: Record<string, () => Promise<void>> = {
+  "fresh valid exclusion qualifies while changed valid basis invalidates proposal and final check":
+    async () =>
+      fixture(async ({ input }) => {
+        input.consumers.process = await policyProbe();
+        const first = await qualify(input);
+        NodeAssert.equal(first.outcome, "retirable");
+        input.consumers.process = await policyProbe();
+        input.consumers.process.observedAt -= 1;
+        NodeAssert.equal((await finalCheck(input, first)).conflict, false);
+        input.consumers.process = await policyProbe("b".repeat(64));
+        const changed = await finalCheck(input, first);
+        NodeAssert.equal(changed.result.outcome, "retirable");
+        NodeAssert.equal(changed.conflict, true);
+        NodeAssert.notEqual(changed.result.fingerprint, first.fingerprint);
+      }),
   "descriptor-relative root duplication retains the directory and rejects symlink entries":
     async () =>
       fixture(async ({ base, worktree }) => {

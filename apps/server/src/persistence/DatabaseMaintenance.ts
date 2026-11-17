@@ -14,7 +14,11 @@ import * as NodeOS from "node:os";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
+import * as SettlementCompactionPreflight from "../jones/persistence/settlementCompactionPreflight.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
+import * as EventStore from "../orchestration-v2/EventStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ServerOwnership from "../serverOwnership.ts";
 import { rebuildMessageSearch } from "../orchestration-v2/messageSearchIndex.ts";
 
 export class DatabaseMissingError extends Schema.TaggedError<DatabaseMissingError>()(
@@ -108,7 +112,10 @@ export class DatabaseMaintenance extends Context.Service<
         readonly deletedEventCount: number;
         readonly deletedReceiptCount: number;
       },
-      DatabaseMissingError | DatabaseInUseError | DatabaseCompactError
+      | DatabaseMissingError
+      | DatabaseInUseError
+      | DatabaseCompactError
+      | SettlementCompactionPreflight.JonesSettlementProofMigrationRequiredError
     >;
     /** Deletes only the pre-0.1.0 database; earlier versions still use it. */
     readonly removeLegacyDatabase: (
@@ -118,6 +125,9 @@ export class DatabaseMaintenance extends Context.Service<
 >()("t3/persistence/DatabaseMaintenance") {}
 
 const isDomainError = Schema.is(Schema.Union([DatabaseMissingError, DatabaseInUseError]));
+const isJonesSettlementProofMigrationRequired = Schema.is(
+  SettlementCompactionPreflight.JonesSettlementProofMigrationRequiredError,
+);
 
 const readStorage = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -186,17 +196,35 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  const holdMaintenanceOwner = Effect.fn("DatabaseMaintenance.holdOwner")(function* (
+    databasePath: string,
+  ) {
+    // The same released lock serializes participating maintenance BEFORE any
+    // application connection opens. SQLite exclusion remains an additional guard.
+    yield* ServerOwnership.holdServerOwnershipLock(
+      path.join(path.dirname(databasePath), "server-runtime.json"),
+    ).pipe(
+      Effect.mapError((cause) =>
+        cause._tag === "ServerAlreadyRunningError"
+          ? new DatabaseInUseError({ path: databasePath, cause })
+          : new DatabaseCompactError({ path: databasePath, cause }),
+      ),
+    );
+  });
+
   const compact = Effect.fn("DatabaseMaintenance.compact")(
     function* (
       databasePath: string,
       onStep: (step: DatabaseCompactStep) => Effect.Effect<void> = () => Effect.void,
     ) {
       yield* locate(databasePath);
+      yield* holdMaintenanceOwner(databasePath);
       const beforeBytes = Number((yield* fs.stat(databasePath)).size);
       const result = yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* lockExclusively(databasePath);
         const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+        yield* SettlementCompactionPreflight.requireSettlementProofsBeforeCompaction;
         yield* onStep("prune-events");
         const summary = yield* maintenance.pruneEventStore();
         yield* onStep("vacuum");
@@ -211,6 +239,7 @@ const make = Effect.gen(function* () {
       }).pipe(
         Effect.provide(
           ProjectionMaintenance.layer.pipe(
+            Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
             Layer.provideMerge(NodeSqliteClient.layer({ filename: databasePath })),
           ),
         ),
@@ -225,8 +254,11 @@ const make = Effect.gen(function* () {
     },
     (effect, databasePath) =>
       effect.pipe(
+        Effect.scoped,
         Effect.mapError((cause) =>
-          isDomainError(cause) ? cause : new DatabaseCompactError({ path: databasePath, cause }),
+          isDomainError(cause) || isJonesSettlementProofMigrationRequired(cause)
+            ? cause
+            : new DatabaseCompactError({ path: databasePath, cause }),
         ),
       ),
   );
@@ -235,6 +267,7 @@ const make = Effect.gen(function* () {
     function* (databasePath: string) {
       const legacy = legacyPath(databasePath);
       if (!(yield* fs.exists(legacy))) return;
+      yield* holdMaintenanceOwner(databasePath);
       // Delete the database before WAL to preserve commits if unlink fails.
       const removeFiles = Effect.forEach(
         ["", "-wal", "-shm"],
@@ -255,6 +288,7 @@ const make = Effect.gen(function* () {
     },
     (effect, databasePath) =>
       effect.pipe(
+        Effect.scoped,
         Effect.mapError((cause) =>
           cause._tag === "DatabaseInUseError"
             ? cause

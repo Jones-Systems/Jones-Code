@@ -16,10 +16,14 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import { OrchestratorProjectionError } from "./Orchestrator.ts";
 import { subscribeOrchestrationV2Thread } from "../ws.ts";
-import { projectThreadProjectionForWire } from "./WireProjection.ts";
+import {
+  isPublicStoredOrchestrationEvent,
+  projectThreadProjectionForWire,
+} from "./WireProjection.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -35,6 +39,7 @@ import * as Fiber from "effect/Fiber";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import {
+  LegacyPreparation,
   RecordedAppThreadJson,
   RecordedLifecycleEvent,
   RecordedLifecycleEventJson,
@@ -42,13 +47,80 @@ import {
 } from "./RecordedTypes.ts";
 import {
   canonicalLegacyPayload,
+  legacyBootstrapBirth,
   legacyBootstrapCreateCommandId,
   legacyPayloadHash,
+  legacyPreparationEffectId,
+  legacyPreparationGeneration,
+  legacyPreparationReleaseBlocker,
+  transitionLegacyPreparation,
 } from "./LegacyBootstrap.ts";
+import * as RetainedRecords from "../jones/legacyBootstrap/RetainedRecords.ts";
+import { overlayRetainedRecords } from "../jones/legacyBootstrap/RetainedRecords.testkit.ts";
 
 const decodeRecordedThreadJson = Schema.decodeUnknownSync(RecordedAppThreadJson);
 const decodeRecordedRunJson = Schema.decodeUnknownSync(RecordedRunJson);
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeLegacyPreparation = Schema.decodeUnknownSync(LegacyPreparation);
+const encodeRecordedThreadRow = Schema.encodeEffect(Schema.fromJsonString(RecordedAppThreadJson));
+const encodeRecordedRunRow = Schema.encodeEffect(Schema.fromJsonString(RecordedRunJson));
+
+// Receiving-era fixtures: the exact upstream ledger, receipt and project row shapes that
+// predate sparse Jones storage. Fresh writes never produce inline private values or
+// shared-ledger preflight.
+const insertHistoricalReceipt = Effect.fn("LegacyPersistenceFixture.receipt")(function* (input: {
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly commandType: string;
+  readonly sequence: number;
+  readonly acceptedAt: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO orchestration_command_receipts (command_id, aggregate_kind, aggregate_id, command_type, accepted_at, result_sequence, status, error)
+    VALUES (${input.commandId}, 'thread', ${input.threadId}, ${input.commandType}, ${input.acceptedAt}, ${input.sequence}, 'accepted', NULL)`;
+});
+const insertHistoricalPreflight = Effect.fn("LegacyPersistenceFixture.preflight")(
+  function* (input: {
+    readonly commandId: CommandId;
+    readonly event: OrchestrationV2PrivateEvent;
+  }) {
+    const sql = yield* SqlClient.SqlClient;
+    const occurredAt = DateTime.formatIso(input.event.occurredAt);
+    const [row] = yield* sql<{
+      readonly sequence: number;
+    }>`INSERT INTO orchestration_events (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json, application_event_version)
+    VALUES (${input.event.id}, 'thread', ${input.event.threadId}, COALESCE((SELECT MAX(stream_version) + 1 FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = ${input.event.threadId}), 0), ${input.event.type}, ${occurredAt}, ${input.commandId}, NULL, ${input.commandId}, 'server', ${JSON.stringify(input.event.payload)}, '{}', 2)
+    RETURNING sequence`;
+    if (row === undefined) return yield* Effect.die("Historical preflight position required");
+    yield* insertHistoricalReceipt({
+      commandId: input.commandId,
+      threadId: input.event.threadId,
+      commandType: input.event.type,
+      sequence: row.sequence,
+      acceptedAt: occurredAt,
+    });
+    return row.sequence;
+  },
+);
+const insertProject = Effect.fn("LegacyPersistenceFixture.project")(function* (
+  projectId: ProjectId,
+  workspaceRoot: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at)
+    VALUES(${projectId},'Legacy fixture',${workspaceRoot},'[]','2026-10-05T00:00:00.000Z','2026-10-05T00:00:00.000Z')`;
+});
+// Public projection plus only the sparse legacy values from the explicit Jones reader.
+const retainedProjection = Effect.fn("LegacyPersistenceFixture.retainedProjection")(function* (
+  threadId: ThreadId,
+) {
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const read = yield* RetainedRecords.make;
+  return yield* overlayRetainedRecords(
+    yield* projections.getThreadProjection(threadId),
+    yield* read(threadId),
+  );
+});
 
 type RecordedEventForType<EventType extends RecordedLifecycleEvent["type"]> = Extract<
   RecordedLifecycleEvent,
@@ -175,6 +247,8 @@ it.effect(
       };
       const first = yield* Effect.scoped(
         Effect.gen(function* () {
+          // Preflight binds its fetch cwd to the live project row.
+          yield* insertProject(projectId, "/repo");
           const sink = yield* EventSink.EventSinkV2;
           const results = yield* Effect.all(
             [
@@ -216,6 +290,7 @@ it.effect(
               yield* store.readByCommandId({ commandId: outcomeId }).pipe(Stream.runCollect),
             ),
           );
+          assert.isTrue(Option.isNone(yield* sink.readLegacyPreflight(outcomeId)));
           assert.isNull(yield* projections.getThreadShell(threadId));
           assert.isTrue(Option.isNone(yield* receipts.getByCommandId(releaseCommandId)));
           const changed = {
@@ -235,11 +310,32 @@ it.effect(
           const sink = yield* EventSink.EventSinkV2;
           const projections = yield* ProjectionStore.ProjectionStoreV2;
           const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
-          const events = Array.from(yield* store.read({ threadId }).pipe(Stream.runCollect));
+          // Fresh private preflight stays out of the public ledger; after reopen the Jones reader
+          // returns each record with its private-ordinal receipt.
+          assert.isEmpty(Array.from(yield* store.read({ threadId }).pipe(Stream.runCollect)));
+          const recorded = yield* Effect.forEach([intentId, outcomeId], (id) =>
+            sink.readLegacyPreflight(id),
+          );
           assert.deepEqual(
-            events.map(({ event }) => event.type),
+            recorded.map((entry) => (Option.isSome(entry) ? entry.value.event.type : null)),
             ["legacy-bootstrap.preflight-intent", "legacy-bootstrap.preflight-outcome"],
           );
+          const [recordedIntent, recordedOutcome] = recorded;
+          if (
+            recordedIntent === undefined ||
+            Option.isNone(recordedIntent) ||
+            recordedOutcome === undefined ||
+            Option.isNone(recordedOutcome)
+          )
+            return yield* Effect.die("Reopened private preflight records required");
+          assert.equal(recordedIntent.value.receipt.resultSequence, first);
+          assert.isAbove(recordedOutcome.value.receipt.resultSequence, first);
+          for (const entry of [recordedIntent.value, recordedOutcome.value]) {
+            assert.equal(entry.receipt.status, "accepted");
+            assert.equal(entry.receipt.commandType, entry.event.type);
+            assert.equal(entry.receipt.sequenceDomain, "jones-legacy-ordinal");
+            assert.isTrue(Option.isNone(yield* receipts.getByCommandId(entry.receipt.commandId)));
+          }
           assert.isFalse(
             (yield* sink.commitLegacyPreflight({ commandId: outcomeId, event: outcome })).committed,
           );
@@ -269,6 +365,7 @@ it.effect(
       const layer = Layer.mergeAll(stores, EventSink.layer.pipe(Layer.provide(stores)));
       yield* Effect.gen(function* () {
         const sink = yield* EventSink.EventSinkV2;
+        const store = yield* EventStore.EventStoreV2;
         const projections = yield* ProjectionStore.ProjectionStoreV2;
         const app = yield* ApplicationEvents.OrchestrationEventStore;
         const now = yield* DateTime.now;
@@ -368,10 +465,20 @@ it.effect(
           occurredAt: later,
           payload: binding,
         };
+        yield* insertProject(projectId, "/repo");
+        // Receiving committed preflight at upstream positions in the shared thread ledger. Those
+        // rows replay in their historical domain and are never adopted as private ordinals.
+        const intentSequence = yield* insertHistoricalPreflight({
+          commandId: intentId,
+          event: intent,
+        });
         const intentReceipt = yield* sink.commitLegacyPreflight({
           commandId: intentId,
           event: intent,
         });
+        assert.isFalse(intentReceipt.committed);
+        assert.equal(intentReceipt.receipt.resultSequence, intentSequence);
+        assert.equal(intentReceipt.receipt.sequenceDomain, "historical-upstream");
         assert.deepEqual(yield* projections.getThread(threadId), before);
         const outcome: OrchestrationV2PrivateEvent = {
           id: EventId.make("wire:outcome"),
@@ -386,10 +493,14 @@ it.effect(
             workspaceStrategy: { type: "root" },
           },
         };
-        yield* sink.commitLegacyPreflight({
-          commandId: CommandId.make(`${createCommandId}:preflight-outcome`),
+        const outcomeId = CommandId.make(`${createCommandId}:preflight-outcome`);
+        const outcomeSequence = yield* insertHistoricalPreflight({
+          commandId: outcomeId,
           event: outcome,
         });
+        assert.isFalse(
+          (yield* sink.commitLegacyPreflight({ commandId: outcomeId, event: outcome })).committed,
+        );
         assert.deepEqual(yield* projections.getThread(threadId), before);
         const receivingThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
           ensureLegacyTranscript: () => Effect.void,
@@ -410,6 +521,8 @@ it.effect(
             threadId,
             afterSequence: cursor,
             requestCompletionMarker: true,
+            // This client resumes by cursor replay, which the visit-compatibility gate requires.
+            acceptCompactThreadVisits: true,
           }),
         ).pipe(
           Stream.tap((item) =>
@@ -422,6 +535,7 @@ it.effect(
         );
         yield* Deferred.await(synchronized);
         const visible = yield* sink.write({
+          commandId: createCommandId,
           events: [
             {
               id: EventId.make("wire:visible"),
@@ -437,6 +551,24 @@ it.effect(
             },
           ],
         });
+        // Receiving persisted this visible claim inline with its accepted claim receipt.
+        const visibleClaim = {
+          ...thread,
+          title: "Visible",
+          updatedAt: later,
+          legacyBootstrapClaim: binding.policy,
+        };
+        const sql = yield* SqlClient.SqlClient;
+        const visibleRow = yield* encodeRecordedThreadRow(visibleClaim);
+        yield* sql`UPDATE orchestration_events SET payload_json = ${visibleRow} WHERE event_id = ${"wire:visible"}`;
+        yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${visibleRow} WHERE thread_id = ${threadId}`;
+        yield* insertHistoricalReceipt({
+          commandId: createCommandId,
+          threadId,
+          commandType: "thread.metadata.update",
+          sequence: visible[0]!.sequence,
+          acceptedAt: DateTime.formatIso(later),
+        });
         const served = Array.from(yield* Fiber.join(wireLive));
         assert.deepEqual(
           served.map((item) => item.kind),
@@ -450,26 +582,28 @@ it.effect(
         const serializedFrames = yield* encodeJson(publicFrames);
         assert.notInclude(serializedFrames, "legacy-bootstrap.preflight");
         assert.notInclude(serializedFrames, "legacyBootstrapClaim");
-        const persisted = yield* projections.getThreadProjection(threadId);
+        const persisted = yield* retainedProjection(threadId);
         assert.deepEqual(persisted.thread.legacyBootstrapClaim, binding.policy);
         assert.notProperty(
           projectThreadProjectionForWire(persisted).thread,
           "legacyBootstrapClaim",
         );
         assert.deepEqual(
-          (yield* projections.getThreadProjection(threadId)).thread.legacyBootstrapClaim,
+          (yield* retainedProjection(threadId)).thread.legacyBootstrapClaim,
           binding.policy,
         );
         const privateCursor = (yield* sink.commitLegacyPreflight({
-          commandId: CommandId.make(`${createCommandId}:preflight-outcome`),
+          commandId: outcomeId,
           event: outcome,
         })).receipt.resultSequence;
+        assert.equal(privateCursor, outcomeSequence);
         const wireReplay = Array.from(
           yield* Stream.unwrap(
             subscribeOrchestrationV2Thread({
               threadId,
               afterSequence: privateCursor,
               requestCompletionMarker: true,
+              acceptCompactThreadVisits: true,
             }),
           ).pipe(Stream.take(2), Stream.runCollect, Effect.provide(receivingThreads)),
         );
@@ -523,9 +657,27 @@ it.effect(
         const memory = yield* ProjectionStore.ProjectionStoreV2.pipe(
           Effect.provide(Layer.fresh(ProjectionStore.layerMemory)),
         );
-        yield* memory.apply(created[0]!.event);
-        yield* memory.apply(intent);
-        yield* memory.apply(outcome);
+        // Replay the actual ledger through birth and both historical private rows; the public
+        // selection, not the projection, owns private exclusion.
+        const ledger = Array.from(
+          yield* store.read({ threadId, throughSequence: outcomeSequence }).pipe(Stream.runCollect),
+        );
+        assert.deepEqual(
+          ledger.map((stored) => stored.event.type),
+          [
+            "thread.created",
+            "legacy-bootstrap.preflight-intent",
+            "legacy-bootstrap.preflight-outcome",
+          ],
+        );
+        assert.deepEqual(
+          ledger
+            .filter((stored) => !isPublicStoredOrchestrationEvent(stored))
+            .map((stored) => stored.sequence),
+          [intentSequence, outcomeSequence],
+        );
+        for (const stored of ledger.filter(isPublicStoredOrchestrationEvent))
+          yield* memory.apply(stored.event);
         assert.deepEqual(yield* memory.getThread(threadId), thread);
         const deletedThread = { ...thread, deletedAt: later, updatedAt: later };
         yield* projections.apply({
@@ -535,9 +687,20 @@ it.effect(
           occurredAt: later,
           payload: deletedThread,
         });
-        yield* projections.apply(intent);
-        yield* projections.apply(outcome);
+        // The deletion write preserved the inline claim first; historical private rows remain
+        // outside public replay after deletion.
+        const deletedLedger = Array.from(yield* store.read({ threadId }).pipe(Stream.runCollect));
+        assert.deepEqual(
+          deletedLedger
+            .filter((stored) => !isPublicStoredOrchestrationEvent(stored))
+            .map((stored) => stored.sequence),
+          [intentSequence, outcomeSequence],
+        );
         assert.deepEqual(yield* projections.getThread(threadId), deletedThread);
+        assert.deepEqual(
+          (yield* retainedProjection(threadId)).thread.legacyBootstrapClaim,
+          binding.policy,
+        );
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
@@ -578,9 +741,11 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
       threadId,
       messageId,
       payloadHash: "recorded-codec-payload",
-      ownsNewThread: false,
+      // The receiving claim is anchored by thread.created, which binds an owned new thread.
+      ownsNewThread: true,
       runId,
     };
+    const { runId: _claimRunId, ...claimPolicy } = policy;
     const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.1-codex" };
     const timestamp = "2026-10-05T00:00:00.000Z";
     const thread = decodeRecordedThreadJson({
@@ -605,7 +770,7 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
       settledAt: null,
       lastVisitedAt: null,
       deletedAt: null,
-      legacyBootstrapClaim: policy,
+      legacyBootstrapClaim: claimPolicy,
     });
     const run = decodeRecordedRunJson({
       id: runId,
@@ -679,7 +844,10 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
     yield* Effect.scoped(
       Effect.gen(function* () {
         const sink = yield* EventSink.EventSinkV2;
-        yield* sink.write({
+        const sql = yield* SqlClient.SqlClient;
+        yield* insertProject(projectId, "/recorded-codec");
+        const [claimStored] = yield* sink.write({
+          commandId: createCommandId,
           events: [
             {
               id: EventId.make("recorded-codec:thread"),
@@ -688,6 +856,11 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
               occurredAt: thread.createdAt,
               payload: thread,
             },
+          ],
+        });
+        const [birthStored] = yield* sink.write({
+          commandId: policy.birthCommandId,
+          events: [
             {
               id: EventId.make("recorded-codec:run"),
               threadId,
@@ -698,6 +871,31 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
             },
           ],
         });
+        if (claimStored === undefined || birthStored === undefined)
+          return yield* Effect.die("Recorded claim and birth positions required");
+        // Receiving persisted these values inline in the ledger and projection rows, with their
+        // accepted claim and birth receipts; fresh public writes no longer do.
+        const threadRow = yield* encodeRecordedThreadRow(thread);
+        const runRow = yield* encodeRecordedRunRow(run);
+        yield* sql`UPDATE orchestration_events SET payload_json = ${threadRow} WHERE event_id = ${"recorded-codec:thread"}`;
+        yield* sql`UPDATE orchestration_events SET payload_json = ${runRow} WHERE event_id = ${"recorded-codec:run"}`;
+        yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${threadRow} WHERE thread_id = ${threadId}`;
+        yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = ${runRow} WHERE run_id = ${runId}`;
+        yield* insertHistoricalReceipt({
+          commandId: createCommandId,
+          threadId,
+          commandType: "thread.create",
+          sequence: claimStored.sequence,
+          acceptedAt: timestamp,
+        });
+        yield* insertHistoricalReceipt({
+          commandId: policy.birthCommandId,
+          threadId,
+          commandType: "message.dispatch",
+          sequence: birthStored.sequence,
+          acceptedAt: timestamp,
+        });
+        assert.isEmpty(yield* sql`SELECT run_id FROM jones_legacy_bootstrap_runs`);
         const {
           legacyBootstrap: _policy,
           workspaceRunSetupScript: _setup,
@@ -730,9 +928,26 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
         assert.deepStrictEqual(storedRun.payload.legacyBootstrap, policy);
         assert.strictEqual(storedRun.payload.workspaceRunSetupScript, false);
         assert.strictEqual(storedRun.payload.legacyPreparationFailureKnown, false);
+        const sink = yield* EventSink.EventSinkV2;
+        // The stale ordinary write preserved the inline values into the Jones records first.
+        const birthLifecycle = Array.from(
+          yield* sink
+            .readLifecycleByCommandId({ commandId: policy.birthCommandId })
+            .pipe(Stream.runCollect),
+        );
+        assert.lengthOf(birthLifecycle, 1);
+        const birth = birthLifecycle[0]!.event;
+        if (birth.type !== "run.created") return yield* Effect.die("Missing recorded birth");
+        assert.deepStrictEqual(birth.payload.legacyBootstrap, policy);
+        assert.strictEqual(birth.payload.workspaceRunSetupScript, false);
+        assert.strictEqual(birth.payload.legacyPreparationFailureKnown, false);
         assert.isTrue((yield* maintenance.rebuild).valid);
-        const projection = yield* projections.getThreadProjection(threadId);
-        assert.deepStrictEqual(projection.thread.legacyBootstrapClaim, policy);
+        const projection = yield* retainedProjection(threadId);
+        assert.deepStrictEqual(
+          (yield* projections.getThreadProjection(threadId)).runs[0]?.id,
+          projection.runs[0]?.id,
+        );
+        assert.deepStrictEqual(projection.thread.legacyBootstrapClaim, claimPolicy);
         assert.deepStrictEqual(projection.runs[0]?.legacyBootstrap, policy);
         assert.strictEqual(projection.runs[0]?.workspaceRunSetupScript, false);
         assert.strictEqual(projection.runs[0]?.legacyPreparationFailureKnown, false);
@@ -742,7 +957,6 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
         assert.isFalse("workspaceRunSetupScript" in publicProjection.runs[0]!);
         assert.isFalse("legacyPreparationFailureKnown" in publicProjection.runs[0]!);
         assert.deepStrictEqual(projection.runs[0]?.legacyBootstrap, policy);
-        const sink = yield* EventSink.EventSinkV2;
         const pull = yield* Stream.toPull(
           sink.stream({ threadId, eventType: "run.created", bounded: true }),
         );
@@ -785,10 +999,405 @@ it.effect("recorded thread and run values survive SQL reopen and native projecti
         assert.equal(raw[0]!.event.type, "run.created");
         if (raw[0]!.event.type !== "run.created")
           return yield* Effect.die("Missing raw recorded run");
-        assert.deepStrictEqual(raw[0]!.event.payload.legacyBootstrap, policy);
-        assert.strictEqual(raw[0]!.event.payload.workspaceRunSetupScript, false);
-        assert.strictEqual(raw[0]!.event.payload.legacyPreparationFailureKnown, false);
+        // A fresh ordinary write persists only public values; the recorded values stay readable
+        // from the explicit Jones record and are not replaced by that write.
+        assert.notProperty(raw[0]!.event.payload, "legacyBootstrap");
+        const afterLive = yield* retainedProjection(threadId);
+        assert.deepStrictEqual(afterLive.thread.legacyBootstrapClaim, claimPolicy);
+        assert.deepStrictEqual(afterLive.runs[0]?.legacyBootstrap, policy);
+        assert.strictEqual(afterLive.runs[0]?.workspaceRunSetupScript, false);
+        assert.strictEqual(afterLive.runs[0]?.legacyPreparationFailureKnown, false);
       }).pipe(Effect.provide(Layer.fresh(layer))),
     );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "receiving inline rows with an in-flight legacy preparation decode, replay and preserve with the same semantics",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-inflight-" });
+      const database = SqlitePersistence.layerFromPath(`${directory}/inflight.sqlite`);
+      const stores = Layer.mergeAll(
+        EventStore.layer,
+        ProjectionStore.layer,
+        CommandReceiptStore.layer,
+      ).pipe(Layer.provideMerge(database));
+      const layer = Layer.mergeAll(
+        stores,
+        EventSink.layer.pipe(Layer.provide(stores)),
+        ProjectionMaintenance.layer.pipe(Layer.provide(stores)),
+      );
+      const threadId = ThreadId.make("inflight:T");
+      const runId = RunId.make("inflight:R");
+      const projectId = ProjectId.make("inflight:P");
+      const messageId = MessageId.make("inflight:M");
+      const releaseCommandId = CommandId.make("inflight:C");
+      const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
+      const birthCommandId = CommandId.make(`${createCommandId}:initial-message`);
+      const claimPolicy = {
+        version: 1 as const,
+        createCommandId,
+        birthCommandId,
+        releaseCommandId,
+        projectId,
+        threadId,
+        messageId,
+        payloadHash: "inflight-payload",
+        ownsNewThread: true,
+      };
+      const policy = { ...claimPolicy, runId };
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.1-codex",
+      };
+      const timestamp = "2026-10-05T00:00:00.000Z";
+      const workspaceRoot = "/inflight-repo";
+      const claimEventId = EventId.make("inflight:claim");
+      const birthEventId = EventId.make("inflight:birth");
+      const thread = decodeRecordedThreadJson({
+        createdBy: "user",
+        creationSource: "web",
+        id: threadId,
+        projectId,
+        title: "In-flight preparation",
+        providerInstanceId: modelSelection.instanceId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        activeProviderThreadId: null,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+        forkedFrom: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+        legacyBootstrapClaim: claimPolicy,
+      });
+      const born = decodeRecordedRunJson({
+        id: runId,
+        threadId,
+        ordinal: 1,
+        providerInstanceId: modelSelection.instanceId,
+        modelSelection,
+        providerThreadId: null,
+        userMessageId: messageId,
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "preparing",
+        requestedAt: timestamp,
+        startedAt: null,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+        workspaceRunSetupScript: false,
+        legacyBootstrap: policy,
+      });
+      const effect = {
+        kind: "worktree.add",
+        input: {
+          cwd: workspaceRoot,
+          args: [
+            "worktree",
+            "add",
+            "-b",
+            "t3code/inflight",
+            "/inflight-worktrees/T",
+            "inflight-oid",
+          ],
+          worktreePath: "/inflight-worktrees/T",
+          commonDirectory: `${workspaceRoot}/.git`,
+          baseCommitOid: "inflight-oid",
+          targetRef: "refs/heads/t3code/inflight",
+        },
+      };
+
+      // Receiving shape: claim, birth and an accepted worktree.add intent whose outcome was never
+      // recorded, all inline in the ledger and projection rows, with no Jones sidecar.
+      const fixture = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const sink = yield* EventSink.EventSinkV2;
+          const sql = yield* SqlClient.SqlClient;
+          yield* insertProject(projectId, workspaceRoot);
+          const [claim] = yield* sink.write({
+            commandId: createCommandId,
+            events: [
+              {
+                id: claimEventId,
+                threadId,
+                type: "thread.created",
+                occurredAt: thread.createdAt,
+                payload: thread,
+              },
+            ],
+          });
+          const [birth] = yield* sink.write({
+            commandId: birthCommandId,
+            events: [
+              {
+                id: birthEventId,
+                threadId,
+                runId,
+                type: "run.created",
+                occurredAt: born.requestedAt,
+                payload: born,
+              },
+            ],
+          });
+          if (claim === undefined || birth === undefined)
+            return yield* Effect.die("Receiving claim and birth positions required");
+          const generation = legacyPreparationGeneration({
+            runId,
+            birthEventId,
+            birthSequence: birth.sequence,
+          });
+          const initialized = decodeLegacyPreparation({
+            version: 1,
+            policy,
+            claimEventId,
+            claimSequence: claim.sequence,
+            claimReceiptSequence: claim.sequence,
+            birthEventId,
+            birthSequence: birth.sequence,
+            birthReceiptSequence: birth.sequence,
+            generation,
+            projectWorkspaceRoot: workspaceRoot,
+            commonDirectory: null,
+            setup: { status: "no_script" },
+            steps: [],
+          });
+          const effectId = legacyPreparationEffectId({ generation, effect });
+          const stem = `${createCommandId}:preparation:${generation}:${effectId}`;
+          const inFlight = decodeLegacyPreparation({
+            ...initialized,
+            commonDirectory: effect.input.commonDirectory,
+            steps: [
+              {
+                effectId,
+                inputHash: legacyPayloadHash(canonicalLegacyPayload(effect)),
+                effect,
+                intentCommandId: `${stem}:intent`,
+                intentEventId: `${stem}:intent:event`,
+                state: "intent",
+              },
+            ],
+          });
+          const intent = inFlight.steps[0]!;
+          // The fixture is the released transition's own in-flight state.
+          const transitioned = transitionLegacyPreparation({
+            current: initialized,
+            update: { type: "intent", step: intent },
+            commandId: intent.intentCommandId,
+          });
+          assert.equal(transitioned.type, "accepted");
+          if (transitioned.type !== "accepted")
+            return yield* Effect.die("Released intent transition required");
+          assert.strictEqual(
+            canonicalLegacyPayload(transitioned.preparation),
+            canonicalLegacyPayload(inFlight),
+          );
+          const preparing = { ...born, legacyPreparation: inFlight };
+          const [intentStored] = yield* sink.write({
+            commandId: intent.intentCommandId,
+            events: [
+              {
+                id: intent.intentEventId,
+                threadId,
+                runId,
+                type: "run.updated",
+                occurredAt: born.requestedAt,
+                payload: preparing,
+              },
+            ],
+          });
+          if (intentStored === undefined)
+            return yield* Effect.die("Receiving intent position required");
+          const threadRow = yield* encodeRecordedThreadRow(thread);
+          const bornRow = yield* encodeRecordedRunRow(born);
+          const preparingRow = yield* encodeRecordedRunRow(preparing);
+          yield* sql`UPDATE orchestration_events SET payload_json = ${threadRow} WHERE event_id = ${claimEventId}`;
+          yield* sql`UPDATE orchestration_events SET payload_json = ${bornRow} WHERE event_id = ${birthEventId}`;
+          yield* sql`UPDATE orchestration_events SET payload_json = ${preparingRow} WHERE event_id = ${intent.intentEventId}`;
+          yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${threadRow} WHERE thread_id = ${threadId}`;
+          yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = ${preparingRow} WHERE run_id = ${runId}`;
+          for (const [commandId, commandType, sequence] of [
+            [createCommandId, "thread.create", claim.sequence],
+            [birthCommandId, "message.dispatch", birth.sequence],
+            [intent.intentCommandId, "prepared-run.progress", intentStored.sequence],
+          ] as const)
+            yield* insertHistoricalReceipt({
+              commandId,
+              threadId,
+              commandType,
+              sequence,
+              acceptedAt: timestamp,
+            });
+          assert.isEmpty(yield* sql`SELECT thread_id FROM jones_legacy_bootstrap_threads`);
+          assert.isEmpty(yield* sql`SELECT run_id FROM jones_legacy_bootstrap_runs`);
+          return {
+            claimSequence: claim.sequence,
+            birthSequence: birth.sequence,
+            intentSequence: intentStored.sequence,
+            stem,
+            intent,
+            inFlight,
+            preparing,
+          };
+        }).pipe(Effect.provide(Layer.fresh(layer))),
+      );
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const sink = yield* EventSink.EventSinkV2;
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+          const sql = yield* SqlClient.SqlClient;
+          const readRetained = yield* RetainedRecords.make;
+          const lifecycle = (commandId: CommandId) =>
+            sink.readLifecycleByCommandId({ commandId }).pipe(
+              Stream.runCollect,
+              Effect.map((events) => Array.from(events)),
+            );
+
+          // Decode after SQL reopen, before any Jones sidecar exists.
+          const records = yield* readRetained(threadId);
+          assert.deepStrictEqual(records.thread.legacyBootstrapClaim, claimPolicy);
+          assert.lengthOf(records.runs, 1);
+          const retainedRun = records.runs[0]!;
+          assert.deepStrictEqual(retainedRun.legacyPreparation, fixture.inFlight);
+          assert.deepStrictEqual(retainedRun.legacyBootstrap, policy);
+          assert.strictEqual(retainedRun.workspaceRunSetupScript, false);
+          const publicProjection = yield* projections.getThreadProjection(threadId);
+          const wire = projectThreadProjectionForWire(
+            yield* overlayRetainedRecords(publicProjection, records),
+          );
+          assert.notProperty(wire.thread, "legacyBootstrapClaim");
+          assert.notProperty(wire.runs[0]!, "legacyPreparation");
+          assert.notProperty(wire.runs[0]!, "legacyBootstrap");
+
+          // Replay the receiving ledger through the Jones lifecycle reader.
+          const birthCheck = legacyBootstrapBirth({
+            policy,
+            claimEvents: yield* lifecycle(createCommandId),
+            birthEvents: yield* lifecycle(birthCommandId),
+          });
+          assert.equal(birthCheck.type, "valid");
+          if (birthCheck.type !== "valid")
+            return yield* Effect.die("Valid receiving birth required");
+          assert.equal(birthCheck.claimEventId, claimEventId);
+          assert.equal(birthCheck.claimSequence, fixture.claimSequence);
+          assert.equal(birthCheck.birthEventId, birthEventId);
+          assert.equal(birthCheck.sequence, fixture.birthSequence);
+          const intentEvents = yield* lifecycle(fixture.intent.intentCommandId);
+          assert.deepEqual(
+            intentEvents.map((stored) => [stored.sequence, stored.event.type]),
+            [[fixture.intentSequence, "run.updated"]],
+          );
+          const replayedIntent = intentEvents[0]!.event;
+          if (replayedIntent.type !== "run.updated")
+            return yield* Effect.die("Replayed preparation intent required");
+          assert.deepStrictEqual(replayedIntent.payload.legacyPreparation, fixture.inFlight);
+
+          // Same released decisions as on the receiving object: release stays blocked, the intent
+          // cannot repeat, and only its exact outcome can settle it.
+          const blocker = legacyPreparationReleaseBlocker({ run: retainedRun });
+          assert.isDefined(blocker);
+          assert.strictEqual(blocker, legacyPreparationReleaseBlocker({ run: fixture.preparing }));
+          const repeated = { type: "intent" as const, step: fixture.intent };
+          const repeatedOnRetained = transitionLegacyPreparation({
+            current: retainedRun.legacyPreparation,
+            update: repeated,
+            commandId: fixture.intent.intentCommandId,
+          });
+          assert.equal(repeatedOnRetained.type, "rejected");
+          assert.deepStrictEqual(
+            repeatedOnRetained,
+            transitionLegacyPreparation({
+              current: fixture.inFlight,
+              update: repeated,
+              commandId: fixture.intent.intentCommandId,
+            }),
+          );
+          const outcomeCommandId = CommandId.make(`${fixture.stem}:outcome`);
+          const outcome = {
+            type: "outcome" as const,
+            step: {
+              ...fixture.intent,
+              state: "unknown" as const,
+              outcomeCommandId,
+              outcomeEventId: EventId.make(`${outcomeCommandId}:event`),
+              evidence: { type: "unknown" as const, reason: "outcome_lost" as const },
+            },
+          };
+          const settledOnRetained = transitionLegacyPreparation({
+            current: retainedRun.legacyPreparation,
+            update: outcome,
+            commandId: outcomeCommandId,
+          });
+          assert.equal(settledOnRetained.type, "accepted");
+          assert.deepStrictEqual(
+            settledOnRetained,
+            transitionLegacyPreparation({
+              current: fixture.inFlight,
+              update: outcome,
+              commandId: outcomeCommandId,
+            }),
+          );
+
+          // A stale ordinary write preserves the inline values into Jones records before replacing
+          // the public row, and native rebuild keeps them.
+          const {
+            legacyPreparation: _preparation,
+            legacyBootstrap: _policy,
+            workspaceRunSetupScript: _setup,
+            ...ordinary
+          } = fixture.preparing;
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("inflight:ordinary"),
+                threadId,
+                runId,
+                type: "run.updated",
+                occurredAt: fixture.preparing.requestedAt,
+                payload: ordinary,
+              },
+            ],
+          });
+          assert.lengthOf(
+            yield* sql`SELECT thread_id FROM jones_legacy_bootstrap_threads WHERE thread_id = ${threadId}`,
+            1,
+          );
+          assert.lengthOf(
+            yield* sql`SELECT run_id FROM jones_legacy_bootstrap_runs WHERE run_id = ${runId}`,
+            1,
+          );
+          const [publicRow] = yield* sql<{
+            readonly payload_json: string;
+          }>`SELECT payload_json FROM orchestration_v2_projection_runs WHERE run_id = ${runId}`;
+          assert.notInclude(publicRow?.payload_json ?? "legacyPreparation", "legacyPreparation");
+          assert.deepStrictEqual(
+            (yield* readRetained(threadId)).runs[0]?.legacyPreparation,
+            fixture.inFlight,
+          );
+          assert.isTrue((yield* maintenance.rebuild).valid);
+          const rebuilt = (yield* readRetained(threadId)).runs[0];
+          if (rebuilt === undefined) return yield* Effect.die("Rebuilt retained run required");
+          assert.deepStrictEqual(rebuilt.legacyPreparation, fixture.inFlight);
+          assert.deepStrictEqual(rebuilt.legacyBootstrap, policy);
+          assert.strictEqual(legacyPreparationReleaseBlocker({ run: rebuilt }), blocker);
+          const preserved = yield* lifecycle(fixture.intent.intentCommandId);
+          const preservedIntent = preserved[0]?.event;
+          if (preservedIntent?.type !== "run.updated")
+            return yield* Effect.die("Preserved preparation intent required");
+          assert.deepStrictEqual(preservedIntent.payload.legacyPreparation, fixture.inFlight);
+        }).pipe(Effect.provide(Layer.fresh(layer))),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

@@ -1,6 +1,6 @@
 import * as SearchGitProbe from "./jones/workspace/SearchGitProbe.ts";
 import * as CoreFollowUpOwner from "./jones/orchestration/FollowUpCommandOwnerLayer.ts";
-import * as PreviewCompanion from "./jones/previewCompanion/registration.ts";
+import * as ControlAdmission from "./jones/orchestration/ControlAdmission.ts";
 import * as Scheduler from "./scheduling/Scheduler.ts";
 import * as WorkMode from "./jones/workMode/WorkMode.ts";
 import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
@@ -565,7 +565,7 @@ const layerTerminal = TerminalManager.layer(
 
 // One memoized registration serves placement, ServerBrowser and the companion
 // WebSocket route. A route must never construct a separate host registry.
-const layerPreviewCompanionServices = PreviewCompanion.servicesLayer.pipe(
+const layerPreviewCompanionServices = JonesHttp.previewCompanionServicesLayer.pipe(
   Layer.provide(DesktopBrowserChannel.layer),
 );
 const layerPreview = Layer.empty.pipe(
@@ -802,9 +802,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
-  Layer.provideMerge(RuntimeLayer.layerEventInfrastructure.pipe(
-    Layer.provide(DependencyChanges.layer),
-  )),
+  Layer.provideMerge(
+    RuntimeLayer.layerEventInfrastructure.pipe(Layer.provide(DependencyChanges.layer)),
+  ),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(SecretCheck.layer),
   Layer.provideMerge(SecretResolver.layer),
@@ -820,7 +820,12 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(Layer.mergeAll(Keybindings.layer, UsageLimitSources.layer)),
   Layer.provideMerge(ProviderRegistry.layer),
   Layer.provideMerge(
-    ProviderInstanceRegistryHydration.layer.pipe(Layer.provide(SqlitePersistence.layerConfig)),
+    ProviderInstanceRegistryHydration.layer.pipe(
+      Layer.provide(SqlitePersistence.layerConfig),
+      // Codex adapters check the control admission the runtime records into. The
+      // layer memoizes by reference, so this is the start-admission instance.
+      Layer.provide(ControlAdmission.layer),
+    ),
   ),
   // One gate for the server, below hydration so the Claude adapter sees it: layers memoize by
   // reference, so the runtime layer shares it.
@@ -942,7 +947,7 @@ const layerMakeRoutes = Layer.mergeAll(
     GuestHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
-    PreviewCompanion.routeLayer.pipe(Layer.provide(layerPreviewCompanionServices)),
+    JonesHttp.previewCompanionRouteLayer.pipe(Layer.provide(layerPreviewCompanionServices)),
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
     speechStreamRouteLayer,
@@ -951,6 +956,12 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provideMerge(McpHttpServer.layer),
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+  ),
+  Layer.provide(
+    DependencyReactor.layerWorker,
+    // The production runtime keeps the start-refusal probe internal; the worker reads the
+    // same memoized admission services the runtime uses.
+    [layerStartAdmission, layerThreadResultDependencies],
   ),
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(
@@ -963,10 +974,6 @@ const layerMakeRoutes = Layer.mergeAll(
         Layer.provide(TextGeneration.layer.pipe(Layer.provide(layerSourceControlProviderRegistry))),
       ),
     ),
-    Layer.provide(DependencyReactor.layer.pipe(
-      Layer.provide(layerStartAdmission),
-      Layer.provide(layerThreadResultDependencies),
-    )),
     Layer.provide(layerThreadResultDependencies),
     Layer.provide(ShellMaterialization.layer),
     Layer.provide(LinkedThreads.layer),
@@ -974,10 +981,12 @@ const layerMakeRoutes = Layer.mergeAll(
       PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
     ),
     // delegate_task to a linked environment, from /mcp and the follower above.
-    Layer.provide(RemoteDelegation.layer.pipe(
-      Layer.provide(CoreFollowUpOwner.layer),
-      Layer.provide(ProjectionStoreV2.layer),
-    )),
+    Layer.provide(
+      RemoteDelegation.layer.pipe(
+        Layer.provide(CoreFollowUpOwner.layer),
+        Layer.provide(ProjectionStoreV2.layer),
+      ),
+    ),
     // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
     Layer.provide(PeerLinkRequests.layer),
     // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
@@ -996,6 +1005,9 @@ const layerMakeRoutes = Layer.mergeAll(
     // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
     Layer.provide(
       PeerForwarding.layer.pipe(
+        // Forwarded follow-ups reserve in the orchestrator's own command transaction; the same
+        // layer reference memoizes to the owner RemoteDelegation captures above.
+        Layer.provide(CoreFollowUpOwner.layer),
         Layer.provideMerge(PeerMcpClient.layer),
         Layer.provideMerge(PeerLinks.layer),
       ),

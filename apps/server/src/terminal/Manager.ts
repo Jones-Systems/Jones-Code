@@ -95,7 +95,11 @@ import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
 import type { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { increment, terminalSessionsTotal, terminalRestartsTotal } from "../observability/Metrics.ts";
+import {
+  increment,
+  terminalSessionsTotal,
+  terminalRestartsTotal,
+} from "../observability/Metrics.ts";
 import { expandHomeVariable } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProcessRunner from "../processRunner.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
@@ -3542,7 +3546,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           idleExpiry.reset(session);
           return;
         }
-        const inspected = yield* inspector.success(terminalPid);
+        const inspected = yield* inspector.success(terminalPid, session.shell);
         const due = idleExpiry.observe(
           session,
           process,
@@ -4421,41 +4425,43 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     );
   };
 
-  const nativeWrite = Effect.fn("terminal.write")(
-    function* (input: TerminalWriteInput, viewerId?: string) {
-      const terminalId = input.terminalId;
-      const session = yield* requireSession(input.threadId, terminalId);
-      if (session.nativeSetupControl !== undefined)
-        return yield* new TerminalSessionLookupError({ threadId: input.threadId, terminalId });
-      const process = session.process;
-      if (!process || session.status !== "running") {
-        if (session.status === "exited") return;
-        return yield* new TerminalNotRunningError({
-          threadId: input.threadId,
-          terminalId,
-        });
-      }
-      if (input.reply && !acceptsQueryReply(toSessionKey(input.threadId, terminalId), viewerId)) {
-        return;
-      }
-      const cwdObservation = yield* TerminalCwdObservation;
-      const observedCwd =
-        input.observation === undefined
-          ? null
-          : yield* Effect.tryPromise({
-              try: () => cwdObservation.observe(process.pid, session.workspaceDutyIdentity),
-              catch: () => null,
-            }).pipe(Effect.orElseSucceed(() => null));
-      // Optional cwd observation can yield. Re-read the native owner before issuing
-      // bytes; closing/replacing that lifecycle must never write to the captured PTY.
-      const current = yield* requireSession(input.threadId, terminalId);
-      if (current !== session || current.process !== process || current.status !== "running")
-        return yield* new TerminalNotRunningError({ threadId: input.threadId, terminalId });
-      session.idlePrompt?.input();
-      session.inputCount += 1;
-      yield* Effect.try({
-        try: () =>
-          scriptObserver.write(
+  const nativeWrite = Effect.fn("terminal.write")(function* (
+    input: TerminalWriteInput,
+    viewerId?: string,
+  ) {
+    const terminalId = input.terminalId;
+    const session = yield* requireSession(input.threadId, terminalId);
+    if (session.nativeSetupControl !== undefined)
+      return yield* new TerminalSessionLookupError({ threadId: input.threadId, terminalId });
+    const process = session.process;
+    if (!process || session.status !== "running") {
+      if (session.status === "exited") return;
+      return yield* new TerminalNotRunningError({
+        threadId: input.threadId,
+        terminalId,
+      });
+    }
+    if (input.reply && !acceptsQueryReply(toSessionKey(input.threadId, terminalId), viewerId)) {
+      return;
+    }
+    const cwdObservation = yield* TerminalCwdObservation;
+    const observedCwd =
+      input.observation === undefined
+        ? null
+        : yield* Effect.tryPromise({
+            try: () => cwdObservation.observe(process.pid, session.workspaceDutyIdentity),
+            catch: () => null,
+          }).pipe(Effect.orElseSucceed(() => null));
+    // Optional cwd observation can yield. Re-read the native owner before issuing
+    // bytes; closing/replacing that lifecycle must never write to the captured PTY.
+    const current = yield* requireSession(input.threadId, terminalId);
+    if (current !== session || current.process !== process || current.status !== "running")
+      return yield* new TerminalNotRunningError({ threadId: input.threadId, terminalId });
+    session.idlePrompt?.input();
+    session.inputCount += 1;
+    yield* Effect.try({
+      try: () =>
+        scriptObserver.write(
           input,
           {
             process,
@@ -4469,16 +4475,15 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           },
           (data) => process.write(PtyAdapter.ptyInput(data, input.binary)),
         ),
-        catch: (cause) =>
-          new TerminalWriteError({
-            threadId: input.threadId,
-            terminalId,
-            terminalPid: process.pid,
-            cause,
-          }),
-      });
-    },
-  );
+      catch: (cause) =>
+        new TerminalWriteError({
+          threadId: input.threadId,
+          terminalId,
+          terminalPid: process.pid,
+          cause,
+        }),
+    });
+  });
 
   const checkLegacyControl = (
     session: TerminalSessionState,
@@ -4756,6 +4761,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         childCommandLabel: null,
         runtimeEnv: normalizedRuntimeEnv(input.env),
         stopOnSettle: input.stopOnSettle ?? false,
+        startupError: null,
       };
       const createdSession = session;
       yield* modifyManagerState((state) => {

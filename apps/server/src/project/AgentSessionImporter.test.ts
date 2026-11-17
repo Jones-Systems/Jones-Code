@@ -10,7 +10,6 @@ import {
   MessageId,
   RunId,
   ThreadId,
-  type ApplicationStoredEvent,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
@@ -35,6 +34,7 @@ import * as ServerConfig from "../config.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -43,6 +43,7 @@ import {
   CLAUDE_MODEL_SELECTION,
   CODEX_MODEL_SELECTION,
 } from "../orchestration-v2/testkit/fixtures/shared.ts";
+import type { ApplicationRecordedEvent } from "../persistence/OrchestrationEventStore.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -200,7 +201,8 @@ const makeImporter = Effect.fn(function* (
   const sql = yield* SqlClient.SqlClient;
   const events = yield* EventStore.EventStoreV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
-  const published: Array<ApplicationStoredEvent> = [];
+  // Committed batches carry recorded events, as publishCommitted receives them.
+  const published: Array<ApplicationRecordedEvent> = [];
   const withTransaction: typeof sql.withTransaction = (effect) =>
     beforeTransaction.pipe(Effect.andThen(sql.withTransaction(effect)));
   const importSql = new Proxy(sql, {
@@ -256,6 +258,7 @@ const makeImporter = Effect.fn(function* (
               }),
           }),
           Layer.mock(Orchestrator.OrchestratorV2)({
+            ...unusedCorePorts(),
             getThreadRecords: (threadId, fields) =>
               projections
                 .getThreadRecords(threadId, fields)

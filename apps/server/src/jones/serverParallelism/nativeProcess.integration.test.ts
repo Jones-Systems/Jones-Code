@@ -52,8 +52,11 @@ const writeNativeCaseReport = async (
 const manifestPath = process.env.JONES_SP_COMMAND_MANIFEST;
 const parentLossCount = process.env.JONES_SP_PROFILE === "vps" ? 3 : 2;
 // Missing packaging inputs are an explicit skip/unknown, never passing evidence.
-const native = (title: string, run: (probes: import("../serverCompute/searchProbeBinding.ts").SearchProbePort) => Promise<void>, timeout?: number) =>
-  it.skipIf(!manifestPath)(title, () => withNativeSearchProbePort(run), timeout);
+const native = (
+  title: string,
+  run: (probes: import("../serverCompute/searchProbeBinding.ts").SearchProbePort) => Promise<void>,
+  timeout?: number,
+) => it.skipIf(!manifestPath)(title, () => withNativeSearchProbePort(run), timeout);
 for (const count of [2, 3] as const)
   native(
     `real native ${count}-way combined load and whole-cohort retirement`,
@@ -64,21 +67,24 @@ for (const count of [2, 3] as const)
       );
       let retired = false;
       try {
-        const report = await runNativeQualification({
-          count,
-          onShutdown: () => {
-            retired = true;
+        const report = await runNativeQualification(
+          {
+            count,
+            onShutdown: () => {
+              retired = true;
+            },
+            directory: NodePath.join(scratch, "fixture"),
+            command: {
+              ...manifest,
+              env: await isolatedWorkerEnvironment(
+                scratch,
+                manifest.runtimeForm === "sea",
+                manifest.runtimeForm === "electron",
+              ),
+            },
           },
-          directory: NodePath.join(scratch, "fixture"),
-          command: {
-            ...manifest,
-            env: await isolatedWorkerEnvironment(
-              scratch,
-              manifest.runtimeForm === "sea",
-              manifest.runtimeForm === "electron",
-            ),
-          },
-        }, probes);
+          probes,
+        );
         retired = report.shutdownProved;
         await writeNativeCaseReport(count, report);
         expect(report.productiveOverlapSamples).toBeGreaterThan(0);
@@ -100,7 +106,7 @@ for (const count of [2, 3] as const)
 
 native(
   "guardian retires productive native children after captured parent SIGKILL",
-  async (_probes) => {
+  async (probes) => {
     const scratch = await NodeFSP.realpath(
       await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-parent-loss-")),
     );
@@ -170,7 +176,17 @@ native(
         count: parentLossCount,
         build: command.build,
         journal,
-        start: (boot, register, onExit) => ProcessSlot.start(command, boot, register, onExit, undefined, undefined, undefined, probes),
+        start: (boot, register, onExit) =>
+          ProcessSlot.start(
+            command,
+            boot,
+            register,
+            onExit,
+            undefined,
+            undefined,
+            undefined,
+            probes,
+          ),
       });
       proved = false;
       try {
@@ -497,7 +513,17 @@ native(
         count: parentLossCount,
         build: command.build,
         journal,
-        start: (boot, register, onExit) => ProcessSlot.start(command, boot, register, onExit, undefined, undefined, undefined, probes),
+        start: (boot, register, onExit) =>
+          ProcessSlot.start(
+            command,
+            boot,
+            register,
+            onExit,
+            undefined,
+            undefined,
+            undefined,
+            probes,
+          ),
       });
       retired = false;
       const handle = supervisor.register({ cwd: workspace, variant: "paths" });
@@ -562,7 +588,17 @@ native(
         count: 2,
         build: command.build,
         journal,
-        start: (boot, register, onExit) => ProcessSlot.start(command, boot, register, onExit, undefined, undefined, undefined, probes),
+        start: (boot, register, onExit) =>
+          ProcessSlot.start(
+            command,
+            boot,
+            register,
+            onExit,
+            undefined,
+            undefined,
+            undefined,
+            probes,
+          ),
       });
       retired = false;
       const handle = pool.register({ cwd: workspace, variant: "content" });

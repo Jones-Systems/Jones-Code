@@ -1,13 +1,25 @@
 import { decodeOrchestrationEffectPayloadV2 } from "../../orchestration-v2/EffectOutbox.ts";
-import { ThreadId } from "@t3tools/contracts";
+import {
+  OrchestrationV2RunJson,
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { readApplicationBirthRecord } from "../importedHistory/ApplicationBirth.ts";
+import * as Option from "effect/Option";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import { overlaps } from "./CheckoutTarget.ts";
 import {
+  PreparationOrigin,
+  PreparationBinding,
+  PreparationRelease,
+  TargetSnapshot,
+  preparationOriginId,
+  preparedAdmissionId,
   associationId,
   Binding,
   Birth,
@@ -28,6 +40,8 @@ import {
   type Use,
 } from "./CheckoutProtocol.ts";
 import {
+  CheckoutCertificateAuthority,
+  type PreparedAccept,
   CheckoutAcceptanceAuthority,
   CheckoutExecutorAuthority,
   CheckoutOwnershipAuthority,
@@ -47,7 +61,23 @@ const decode = <S extends Schema.Codec<unknown, unknown, never, never>>(
   Schema.decodeUnknownEffect(schema, { onExcessProperty: "error" })(value).pipe(
     Effect.mapError((cause) => new CheckoutError({ reason: "identity", cause })),
   );
+// Digest persisted encoded strings without applying decode-time trimming.
+const decodeStrategyDigest = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.toEncoded(OrchestrationV2ThreadLaunchWorkspaceStrategy)),
+  { onExcessProperty: "error" },
+);
 const isCheckoutError = Schema.is(CheckoutError);
+const decodeBridgeCertificate = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      journalId: Schema.String,
+      operationKey: Schema.String,
+      bindingSha256: Schema.String,
+      receiptId: Schema.String,
+      authorityRevision: Schema.String,
+    }),
+  ),
+);
 
 const safe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
@@ -111,6 +141,278 @@ const make = Effect.gen(function* () {
     FROM orchestration_command_receipts WHERE command_id=${id}`.pipe(
       Effect.map((rows) => rows[0] ?? null),
     );
+  const hasTable = makeJonesTablePresence(sql);
+  const requireTransaction = Effect.gen(function* () {
+    if (
+      Option.getOrUndefined(yield* Effect.serviceOption(SqlClient.SqlClient)) !== sql ||
+      Option.isNone(yield* Effect.serviceOption(sql.transactionService))
+    )
+      return yield* new CheckoutError({ reason: "unavailable" });
+  });
+  const readOrigin = Effect.fn("OrdinaryCheckoutSqlite.readPreparationOrigin")(function* (
+    id: string,
+  ) {
+    if (!(yield* hasTable("jones_ordinary_checkout_preparing_origins"))) return null;
+    const rows = yield* sql<{
+      record_json: string;
+    }>`SELECT record_json FROM jones_ordinary_checkout_preparing_origins WHERE origin_id=${id}`;
+    return rows[0]
+      ? yield* decode(Schema.fromJsonString(PreparationOrigin), rows[0].record_json)
+      : null;
+  });
+  const readBinding = Effect.fn("OrdinaryCheckoutSqlite.readPreparationBinding")(function* (
+    id: string,
+  ) {
+    const rows = yield* sql<{
+      record_json: string;
+    }>`SELECT record_json FROM jones_ordinary_checkout_preparing_bindings
+      WHERE origin_id=${id} ORDER BY binding_revision DESC LIMIT 1`;
+    return rows[0]
+      ? yield* decode(Schema.fromJsonString(PreparationBinding), rows[0].record_json)
+      : null;
+  });
+  const readRelease = Effect.fn("OrdinaryCheckoutSqlite.readPreparationRelease")(function* (
+    id: string,
+  ) {
+    if (!(yield* hasTable("jones_ordinary_checkout_preparing_releases"))) return null;
+    const rows = yield* sql<{
+      record_json: string;
+    }>`SELECT record_json FROM jones_ordinary_checkout_preparing_releases WHERE origin_id=${id}`;
+    return rows[0]
+      ? yield* decode(Schema.fromJsonString(PreparationRelease), rows[0].record_json)
+      : null;
+  });
+  const readTargetSnapshot = Effect.fn("OrdinaryCheckoutSqlite.readTargetSnapshot")(function* (
+    id: string,
+  ) {
+    const rows = yield* sql<{
+      projectId: string;
+      worktreePath: string | null;
+      threadBranch: string | null;
+      threadRevision: string;
+      projectRoot: string;
+      projectRevision: string;
+    }>`SELECT t.project_id AS projectId,
+      json_extract(t.payload_json,'$.worktreePath') AS worktreePath,
+      json_extract(t.payload_json,'$.branch') AS threadBranch,
+      json_extract(t.payload_json,'$.updatedAt') AS threadRevision,
+      p.workspace_root AS projectRoot,p.updated_at AS projectRevision
+      FROM orchestration_v2_projection_threads t JOIN projection_projects p ON p.project_id=t.project_id
+      WHERE t.thread_id=${id} AND json_extract(t.payload_json,'$.deletedAt') IS NULL AND p.deleted_at IS NULL`;
+    if (rows.length !== 1) return yield* new CheckoutError({ reason: "unavailable" });
+    return yield* decode(TargetSnapshot, { ...rows[0], threadId: id });
+  });
+  const validateBridge = Effect.fn("OrdinaryCheckoutSqlite.validatePreparationBridge")(
+    function* (input: {
+      readonly journalOperationKey: string;
+      readonly journalBindingDigest: string;
+      readonly commandId: string;
+    }) {
+      const rows = yield* sql<{
+        certificate_json: string;
+        certificate_sha256: string;
+      }>`SELECT certificate_json,certificate_sha256
+      FROM jones_common_admission_bridge WHERE operation_key=${input.journalOperationKey}`;
+      const row = rows[0];
+      if (!row) return yield* new CheckoutError({ reason: "unavailable" });
+      const certificate = yield* decodeBridgeCertificate(row.certificate_json).pipe(
+        Effect.mapError((cause) => new CheckoutError({ reason: "identity", cause })),
+      );
+      if (
+        certificate.operationKey !== input.journalOperationKey ||
+        certificate.bindingSha256 !== input.journalBindingDigest ||
+        certificate.receiptId !== input.commandId ||
+        row.certificate_sha256 !== digest(certificate)
+      )
+        return yield* new CheckoutError({ reason: "identity" });
+    },
+  );
+  const validateOrigin = Effect.fn("OrdinaryCheckoutSqlite.validatePreparationOrigin")(function* (
+    input: PreparationOrigin,
+    phase: "preparing" | "released",
+  ) {
+    const retained = yield* readOrigin(input.originId);
+    if (!retained || canonical(retained) !== canonical(input))
+      return yield* new CheckoutError({ reason: "identity" });
+    const r = yield* receipt(input.commandId);
+    if (
+      !r ||
+      r.aggregate_kind !== "thread" ||
+      r.aggregate_id !== input.receiptThreadId ||
+      r.command_type !== input.commandType ||
+      r.status !== "accepted" ||
+      r.result_sequence !== input.receiptSequence
+    )
+      return yield* new CheckoutError({ reason: "identity" });
+    yield* currentBirth(input.subjectThreadId, input.birth.eventId, input.birth.sequence);
+    yield* validateBridge(input);
+    const rows = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_runs
+      WHERE run_id=${input.runId} AND thread_id=${input.subjectThreadId}`;
+    const run = rows[0]
+      ? yield* decode(Schema.fromJsonString(OrchestrationV2RunJson), rows[0].payload_json)
+      : null;
+    if (
+      !run ||
+      run.id !== input.runId ||
+      run.activeAttemptId !== input.attemptId ||
+      run.providerThreadId !== input.providerThreadId ||
+      run.rootNodeId !== input.nodeId ||
+      run.userMessageId !== input.messageId ||
+      run.workspacePreparation === undefined ||
+      canonical(run.workspacePreparation) !== input.strategyJson ||
+      (phase === "preparing"
+        ? run.status !== "preparing"
+        : ["preparing", "queued"].includes(run.status))
+    )
+      return yield* new CheckoutError({ reason: "stale" });
+    const attempt =
+      yield* sql`SELECT attempt_id FROM orchestration_v2_projection_run_attempts WHERE attempt_id=${input.attemptId}
+      AND thread_id=${input.subjectThreadId} AND run_id=${input.runId} AND provider_thread_id=${input.providerThreadId}
+      AND root_node_id=${input.nodeId}`;
+    if (attempt.length !== 1) return yield* new CheckoutError({ reason: "identity" });
+    const basis = yield* sql<{
+      command_id: string | null;
+      event_type: string;
+      payload_json: string;
+    }>`SELECT command_id,event_type,payload_json
+      FROM orchestration_events WHERE event_id=${input.basisEventId} AND sequence=${input.basisSequence}
+        AND stream_id=${input.subjectThreadId} AND application_event_version=2`;
+    if (basis[0]) {
+      const originalRun = yield* decode(
+        Schema.fromJsonString(OrchestrationV2RunJson),
+        basis[0].payload_json,
+      );
+      if (
+        basis[0].command_id !== input.commandId ||
+        basis[0].event_type !== "run.created" ||
+        originalRun.id !== input.runId ||
+        originalRun.activeAttemptId !== input.attemptId ||
+        originalRun.providerThreadId !== input.providerThreadId ||
+        originalRun.userMessageId !== input.messageId ||
+        originalRun.rootNodeId !== input.nodeId ||
+        originalRun.status !== "preparing" ||
+        originalRun.workspacePreparation === undefined ||
+        canonical(originalRun.workspacePreparation) !== input.strategyJson
+      )
+        return yield* new CheckoutError({ reason: "identity" });
+    }
+  });
+  const assertReceipt = Effect.fn("OrdinaryCheckoutSqlite.assertPreparationReceipt")(
+    function* (input: {
+      readonly commandId: string;
+      readonly commandType: string;
+      readonly receiptThreadId: string;
+      readonly receiptSequence: number;
+    }) {
+      const r = yield* receipt(input.commandId);
+      if (
+        !r ||
+        r.aggregate_kind !== "thread" ||
+        r.aggregate_id !== input.receiptThreadId ||
+        r.command_type !== input.commandType ||
+        r.result_sequence !== input.receiptSequence ||
+        r.status !== "accepted"
+      )
+        return yield* new CheckoutError({ reason: "identity" });
+    },
+  );
+  const assertBasis = Effect.fn("OrdinaryCheckoutSqlite.assertPreparationBasis")(function* (input: {
+    readonly commandId: string;
+    readonly subjectThreadId: string;
+    readonly basisEventId: string;
+    readonly basisSequence: number;
+    readonly receiptSequence: number;
+  }) {
+    const rows =
+      yield* sql`SELECT event_id FROM orchestration_events WHERE event_id=${input.basisEventId}
+      AND sequence=${input.basisSequence} AND command_id=${input.commandId} AND stream_id=${input.subjectThreadId} AND application_event_version=2`;
+    if (rows.length !== 1 || input.basisSequence > input.receiptSequence)
+      return yield* new CheckoutError({ reason: "identity" });
+  });
+  const recordOrigin: OrdinaryCheckout["Service"]["recordPreparationOrigin"] = (input) =>
+    safe(
+      Effect.gen(function* () {
+        yield* requireTransaction;
+        yield* (yield* CheckoutCertificateAuthority).assertOrigin(input);
+        yield* decode(PreparationOrigin, input);
+        if (
+          input.originId !==
+            preparationOriginId({
+              commandId: input.commandId,
+              subjectThreadId: input.subjectThreadId,
+              birth: input.birth,
+              runId: input.runId,
+              attemptId: input.attemptId,
+            }) ||
+          digest(yield* decodeStrategyDigest(input.strategyJson)) !== input.strategyDigest
+        )
+          return yield* new CheckoutError({ reason: "identity" });
+        yield* assertReceipt(input);
+        yield* assertBasis(input);
+        yield* sql`INSERT INTO jones_ordinary_checkout_preparing_origins ${sql.insert({
+          origin_id: input.originId,
+          command_id: input.commandId,
+          subject_thread_id: input.subjectThreadId,
+          birth_event_id: input.birth.eventId,
+          run_id: input.runId,
+          attempt_id: input.attemptId,
+          record_json: canonical(input),
+        })}`;
+        yield* validateOrigin(input, "preparing");
+        if (
+          canonical(yield* readTargetSnapshot(input.subjectThreadId)) !== canonical(input.initial)
+        )
+          return yield* new CheckoutError({ reason: "stale" });
+      }),
+    );
+  const recordBinding: OrdinaryCheckout["Service"]["recordPreparationBinding"] = (input) =>
+    safe(
+      Effect.gen(function* () {
+        yield* requireTransaction;
+        yield* (yield* CheckoutCertificateAuthority).assertBinding(input);
+        yield* decode(PreparationBinding, input);
+        yield* validateBridge(input);
+        const origin = yield* readOrigin(input.originId);
+        if (!origin) return yield* new CheckoutError({ reason: "unavailable" });
+        yield* validateOrigin(origin, "preparing");
+        if (yield* readRelease(origin.originId))
+          return yield* new CheckoutError({ reason: "stale" });
+        const predecessor = yield* readBinding(input.originId);
+        if (
+          input.revision !== (predecessor?.revision ?? 0) + 1 ||
+          input.predecessorDigest !== digest(predecessor ?? origin)
+        )
+          return yield* new CheckoutError({ reason: "stale" });
+        yield* assertReceipt(input);
+        yield* assertBasis({
+          ...input,
+          subjectThreadId: origin.subjectThreadId,
+          basisEventId: input.metadataEventId,
+          basisSequence: input.metadataSequence,
+        });
+        yield* currentTarget(input.target);
+        if (
+          input.before.threadId !== origin.subjectThreadId ||
+          input.target.threadId !== origin.subjectThreadId ||
+          input.target.projectId !== origin.initial.projectId ||
+          input.target.projectRoot !== origin.initial.projectRoot ||
+          input.target.projectRevision !== origin.initial.projectRevision ||
+          (predecessor !== null &&
+            (input.target.checkoutKey !== predecessor.target.checkoutKey ||
+              directoryWitness(input.target) !== directoryWitness(predecessor.target) ||
+              input.target.worktreePath !== predecessor.target.worktreePath))
+        )
+          return yield* new CheckoutError({ reason: "identity" });
+        yield* sql`INSERT INTO jones_ordinary_checkout_preparing_bindings ${sql.insert({
+          origin_id: input.originId,
+          binding_revision: input.revision,
+          command_id: input.commandId,
+          record_json: canonical(input),
+        })}`;
+      }),
+    );
   const accepted = Effect.fn("OrdinaryCheckoutSqlite.accepted")(function* (row: Admission) {
     const current = yield* receipt(row.command_id);
     if (current === null) return false;
@@ -125,7 +427,36 @@ const make = Effect.gen(function* () {
     const basis =
       yield* sql`SELECT event_id FROM orchestration_events WHERE event_id=${row.basis_event_id}
       AND sequence=${row.basis_sequence} AND stream_id=${row.subject_thread_id} AND application_event_version=2`;
-    if (basis.length !== 1) return false;
+    let hasCertificate = false;
+    if (yield* hasTable("jones_ordinary_checkout_preparing_releases")) {
+      const releases = yield* sql<{
+        record_json: string;
+      }>`SELECT record_json FROM jones_ordinary_checkout_preparing_releases WHERE admission_id=${row.admission_id}`;
+      if (releases[0]) {
+        hasCertificate = true;
+        const release = yield* decode(
+          Schema.fromJsonString(PreparationRelease),
+          releases[0].record_json,
+        );
+        const origin = yield* readOrigin(release.originId);
+        if (
+          !origin ||
+          origin.commandId !== row.command_id ||
+          origin.commandDigest !== row.command_digest ||
+          origin.runId !== row.run_id ||
+          origin.attemptId !== row.attempt_id ||
+          origin.birth.eventId !== row.birth_event_id ||
+          origin.birth.sequence !== row.birth_sequence ||
+          origin.basisEventId !== row.basis_event_id ||
+          origin.basisSequence !== row.basis_sequence
+        )
+          return false;
+        yield* validateOrigin(origin, "released");
+        yield* assertReceipt(release);
+        yield* validateBridge(release);
+      }
+    }
+    if (basis.length !== 1 && !hasCertificate) return false;
     for (const [table, column, id] of [
       ["orchestration_v2_projection_runs", "run_id", row.run_id],
       ["orchestration_v2_projection_run_attempts", "attempt_id", row.attempt_id],
@@ -323,10 +654,17 @@ const make = Effect.gen(function* () {
       SELECT command_id,thread_id,payload_json FROM orchestration_v2_effect_outbox WHERE effect_id=${effectId}`;
     const row = rows[0];
     if (!row) return null;
-    const { request } = yield* decodeOrchestrationEffectPayloadV2(row.payload_json).pipe(
+    const decoded = yield* decodeOrchestrationEffectPayloadV2(row.payload_json).pipe(
       Effect.mapError((cause) => new CheckoutError({ reason: "identity", cause })),
     );
-    return { ...row, request };
+    return {
+      ...row,
+      request: decoded.request,
+      nativeCreationExecutionReference:
+        "nativeCreationExecutionReference" in decoded
+          ? decoded.nativeCreationExecutionReference
+          : undefined,
+    };
   });
   const link = Effect.fn("OrdinaryCheckoutSqlite.link")(function* (
     row: Admission,
@@ -353,7 +691,7 @@ const make = Effect.gen(function* () {
     SELECT a.admission_id FROM jones_ordinary_checkout_admissions a WHERE a.checkout_key=${key}
       AND (NOT EXISTS(SELECT 1 FROM jones_ordinary_checkout_all_uses u WHERE u.admission_id=a.admission_id)
         OR EXISTS(SELECT 1 FROM jones_ordinary_checkout_all_uses u WHERE u.admission_id=a.admission_id AND u.state NOT IN ('completed','no_effect')))`;
-  const accept = (input: Accept) =>
+  const acceptBody = (input: Accept, prepared?: PreparedAccept) =>
     transaction(
       Effect.gen(function* () {
         yield* decode(Utc, input.now);
@@ -363,14 +701,23 @@ const make = Effect.gen(function* () {
         yield* decode(Relation, input.relation);
         if (input.expiresAt < input.now || input.subjectThreadId !== input.target.threadId)
           return yield* new CheckoutError({ reason: "identity" });
-        const replayed = yield* replay(input, true);
+        const replayed =
+          prepared === undefined ? yield* replay(input, true) : { kind: "absent" as const };
         if (replayed.kind === "accepted") {
           const old = replayed.admissions.find(
             (row) => row.checkout_key === input.target.checkoutKey,
           );
           if (old) return old;
         }
-        yield* (yield* CheckoutAcceptanceAuthority).assertNewAcceptance(input);
+        if (prepared === undefined) {
+          const authority = yield* Effect.serviceOption(CheckoutAcceptanceAuthority);
+          if (Option.isNone(authority)) return yield* new CheckoutError({ reason: "unavailable" });
+          yield* authority.value.assertNewAcceptance(input);
+        } else {
+          const authority = yield* Effect.serviceOption(CheckoutCertificateAuthority);
+          if (Option.isNone(authority)) return yield* new CheckoutError({ reason: "unavailable" });
+          yield* authority.value.assertAdmission(prepared);
+        }
         // The receiving hook runs after its upstream receipt/event/effect writes in the same transaction.
         const r = yield* receipt(input.commandId);
         if (!r || r.status !== "accepted" || r.result_sequence !== input.receiptSequence)
@@ -381,7 +728,10 @@ const make = Effect.gen(function* () {
           yield* sql`SELECT event_id FROM orchestration_events WHERE event_id=${input.basisEventId}
       AND sequence=${input.basisSequence} AND stream_id=${input.subjectThreadId} AND command_id=${input.commandId}
       AND application_event_version=2`;
-        if (basis.length !== 1 || input.basisSequence > input.receiptSequence)
+        if (
+          (basis.length !== 1 && prepared === undefined) ||
+          input.basisSequence > input.receiptSequence
+        )
           return yield* new CheckoutError({ reason: "identity" });
         const old = yield* owner(input.target.checkoutKey);
         for (const conflict of yield* conflicts(input.target.checkoutKey)) {
@@ -429,7 +779,7 @@ const make = Effect.gen(function* () {
           receipt_thread_id: input.receiptThreadId,
           subject_thread_id: input.subjectThreadId,
           command_type: input.commandType,
-          command_digest: digest(input.command),
+          command_digest: prepared?.origin.commandDigest ?? digest(input.command),
           origin_kind: input.origin.kind,
           origin_parent_thread_id: input.origin.parentThreadId,
           request_id: input.origin.requestId,
@@ -453,6 +803,109 @@ const make = Effect.gen(function* () {
         yield* sql`INSERT INTO jones_ordinary_checkout_admissions ${sql.insert({ ...row })}`;
         for (const effect of input.effects) yield* link(row, effect, input.now);
         return row;
+      }),
+    );
+  const accept = (input: Accept) => acceptBody(input);
+  const acceptPrepared: OrdinaryCheckout["Service"]["acceptPrepared"] = (input) =>
+    safe(
+      Effect.gen(function* () {
+        yield* requireTransaction;
+        yield* (yield* CheckoutCertificateAuthority).assertAdmission(input);
+        const { origin, binding, release } = input;
+        yield* decode(PreparationRelease, release);
+        yield* validateBridge(release);
+        yield* validateBridge(binding);
+        yield* validateOrigin(origin, "released");
+        if (
+          canonical(yield* readBinding(origin.originId)) !== canonical(binding) ||
+          release.originId !== origin.originId ||
+          release.bindingRevision !== binding.revision ||
+          release.bindingDigest !== digest(binding) ||
+          release.admissionId !==
+            preparedAdmissionId(origin.originId, binding.revision, release.target.checkoutKey) ||
+          canonical(release.target) !== canonical(binding.target) ||
+          release.receiptThreadId !== origin.subjectThreadId
+        )
+          return yield* new CheckoutError({ reason: "identity" });
+        yield* assertReceipt(release);
+        yield* assertBasis({ ...release, subjectThreadId: origin.subjectThreadId });
+        if (yield* readRelease(origin.originId))
+          return yield* new CheckoutError({ reason: "replay" });
+        yield* sql`INSERT INTO jones_ordinary_checkout_preparing_releases ${sql.insert({
+          origin_id: origin.originId,
+          admission_id: release.admissionId,
+          command_id: release.commandId,
+          effect_id: release.effectId,
+          record_json: canonical(release),
+        })}`;
+        return yield* acceptBody(
+          {
+            commandId: origin.commandId,
+            commandType: origin.commandType,
+            command: null,
+            receiptThreadId: origin.receiptThreadId,
+            subjectThreadId: origin.subjectThreadId,
+            origin: origin.classification,
+            admissionId: release.admissionId,
+            target: release.target,
+            birth: origin.birth,
+            receiptSequence: origin.receiptSequence,
+            basisEventId: origin.basisEventId,
+            basisSequence: origin.basisSequence,
+            relation: {
+              runId: origin.runId,
+              attemptId: origin.attemptId,
+              nodeId: origin.nodeId,
+              messageId: origin.messageId,
+              checkpointScopeId: null,
+            },
+            leaseId: input.leaseId,
+            now: release.recordedAt,
+            expiresAt: release.recordedAt,
+            expectedOwner: input.expectedOwner,
+            effects: [],
+          },
+          input,
+        );
+      }),
+    );
+  const linkPreparedStart: OrdinaryCheckout["Service"]["linkPreparedStart"] = (input, link) =>
+    safe(
+      Effect.gen(function* () {
+        yield* requireTransaction;
+        yield* (yield* CheckoutCertificateAuthority).assertLink(input, link);
+        const { origin, release } = input;
+        yield* validateOrigin(origin, "released");
+        yield* assertReceipt(release);
+        if (
+          canonical(yield* readRelease(origin.originId)) !== canonical(release) ||
+          link.role !== "launch" ||
+          link.effectId !== release.effectId ||
+          digest(link.request) !== release.requestDigest
+        )
+          return yield* new CheckoutError({ reason: "identity" });
+        const a = yield* liveAdmission(release.admissionId);
+        const actual = yield* effectRequest(link.effectId);
+        if (
+          !actual ||
+          actual.command_id !== release.commandId ||
+          actual.thread_id !== origin.subjectThreadId ||
+          actual.request.type !== "provider-turn.start" ||
+          actual.request.runId !== origin.runId ||
+          actual.nativeCreationExecutionReference !== undefined ||
+          digest(actual.request) !== release.requestDigest ||
+          a.command_id !== origin.commandId ||
+          (yield* sql`SELECT effect_id FROM jones_ordinary_checkout_effect_links WHERE admission_id=${a.admission_id}`)
+            .length !== 0
+        )
+          return yield* new CheckoutError({ reason: "identity" });
+        yield* sql`INSERT INTO jones_ordinary_checkout_effect_links ${sql.insert({
+          effect_id: link.effectId,
+          admission_id: a.admission_id,
+          request_digest: release.requestDigest,
+          role: "launch",
+          recorded_at: release.recordedAt,
+        })}`;
       }),
     );
   const linkDerived: OrdinaryCheckout["Service"]["linkDerived"] = (input) =>
@@ -1230,6 +1683,50 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
+    readPreparationOrigin: Effect.fn("OrdinaryCheckout.readPreparationOrigin")((id) =>
+      safe(readOrigin(id)),
+    ),
+    readPreparationOrigins: Effect.fn("OrdinaryCheckout.readPreparationOrigins")((id) =>
+      safe(
+        Effect.gen(function* () {
+          if (!(yield* hasTable("jones_ordinary_checkout_preparing_origins"))) return [];
+          const rows = yield* sql<{
+            record_json: string;
+          }>`SELECT record_json FROM jones_ordinary_checkout_preparing_origins WHERE command_id=${id} ORDER BY origin_id`;
+          return yield* Effect.forEach(rows, (row) =>
+            decode(Schema.fromJsonString(PreparationOrigin), row.record_json),
+          );
+        }),
+      ),
+    ),
+    readPreparationForRun: Effect.fn("OrdinaryCheckout.readPreparationForRun")((thread, run) =>
+      safe(
+        Effect.gen(function* () {
+          if (!(yield* hasTable("jones_ordinary_checkout_preparing_origins"))) return null;
+          const rows = yield* sql<{
+            origin_id: string;
+          }>`SELECT origin_id FROM jones_ordinary_checkout_preparing_origins WHERE subject_thread_id=${thread} AND run_id=${run}`;
+          if (rows.length > 1) return yield* new CheckoutError({ reason: "identity" });
+          return rows[0] ? yield* readOrigin(rows[0].origin_id) : null;
+        }),
+      ),
+    ),
+    readPreparationBinding: Effect.fn("OrdinaryCheckout.readPreparationBinding")((id) =>
+      safe(readBinding(id)),
+    ),
+    readPreparationRelease: Effect.fn("OrdinaryCheckout.readPreparationRelease")((id) =>
+      safe(readRelease(id)),
+    ),
+    readTargetSnapshot: Effect.fn("OrdinaryCheckout.readTargetSnapshot")((id) =>
+      safe(readTargetSnapshot(id)),
+    ),
+    validatePreparationOrigin: Effect.fn("OrdinaryCheckout.validatePreparationOrigin")(
+      (origin, phase) => safe(validateOrigin(origin, phase)),
+    ),
+    recordPreparationOrigin: recordOrigin,
+    recordPreparationBinding: recordBinding,
+    acceptPrepared,
+    linkPreparedStart,
     readOwner: Effect.fn("OrdinaryCheckout.readOwner")((key) => safe(owner(key))),
     readConflict: Effect.fn("OrdinaryCheckout.readConflict")((key) => safe(conflicts(key))),
     readAdmission: Effect.fn("OrdinaryCheckout.readAdmission")((id) =>

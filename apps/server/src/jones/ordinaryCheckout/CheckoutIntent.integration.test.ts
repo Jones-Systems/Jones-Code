@@ -38,7 +38,11 @@ import * as NativeSqlite from "../nativeCreation/NativeCreationRepositorySqlite.
 import * as Physical from "../nativeCreation/NativeWorkspacePhysicalPorts.ts";
 import * as Workspace from "../nativeCreation/NativeCreationWorkspacePreparation.ts";
 import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
+import { makeCommitFixture } from "./CheckoutCommit.testkit.ts";
+import { withActiveEffectClaim } from "../workspaceLifecycle/ActiveEffectClaim.ts";
 import * as CheckoutIntent from "./CheckoutIntent.ts";
+import * as Preparation from "./CheckoutPreparation.ts";
+import * as Commit from "./CheckoutCommit.ts";
 import * as CheckoutTarget from "./CheckoutTarget.ts";
 import * as Repository from "./OrdinaryCheckoutSqlite.ts";
 import * as OrdinaryCheckout from "./OrdinaryCheckout.ts";
@@ -175,8 +179,26 @@ const observedConflicts = Layer.effect(
     };
   }),
 ).pipe(Layer.provide(conflicts), Layer.provide(observationState));
+// These older immediate/queue cases never own materialization. The external
+// physical custody port refuses it; command acceptance is the real sink issuer.
+const preparation = Preparation.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      database,
+      repository,
+      targets,
+      observedConflicts,
+      Layer.succeed(Preparation.CheckoutPreparationCustody, {
+        checkOutside: () => Effect.fail(new CheckoutError({ reason: "unavailable" })),
+        checkReleaseOutside: () => Effect.fail(new CheckoutError({ reason: "unavailable" })),
+        checkLocal: () => Effect.fail(new CheckoutError({ reason: "unavailable" })),
+        checkResult: () => Effect.fail(new CheckoutError({ reason: "unavailable" })),
+      }),
+    ),
+  ),
+);
 const intent = CheckoutIntent.layer.pipe(
-  Layer.provide(Layer.mergeAll(database, repository, targets, observedConflicts)),
+  Layer.provide(Layer.mergeAll(database, repository, targets, observedConflicts, preparation)),
 );
 const observedStore = Layer.effect(
   EventStore.EventStoreV2,
@@ -568,14 +590,44 @@ it.effect.each(["writeWithEffects", "writeIfRunCurrent"] as const)(
                 })
                 .pipe(Effect.asVoid);
             });
+      const derivedWrite = withActiveEffectClaim(outbox, claim.value, 1_000, false, (liveClaim) =>
+        write.pipe(
+          Effect.provideService(Commit.DerivedExecution, {
+            // The existing fixture's synthetic executor owns runtime custody. The
+            // source effect claim is real; no receipt/status SELECT issues authority.
+            assertCurrent: (operation) =>
+              liveClaim
+                .use((current) =>
+                  Effect.gen(function* () {
+                    if (
+                      binding.admissionId !== admission.admission_id ||
+                      current.id !== source.effectId ||
+                      current.commandId !== source.commandId ||
+                      current.threadId !== source.threadId ||
+                      current.attemptCount !== source.attempt ||
+                      digest(current.request) !== source.requestDigest ||
+                      operation.effects.some(
+                        (effect) =>
+                          effect.threadId !== threadId ||
+                          !("runId" in effect.request) ||
+                          effect.request.runId !== run.id,
+                      )
+                    )
+                      return yield* new CheckoutError({ reason: "identity" });
+                  }),
+                )
+                .pipe(Effect.mapError((cause) => new CheckoutError({ reason: "identity", cause }))),
+          }),
+        ),
+      );
       const before = yield* state;
       const published = yield* Ref.get((yield* ObservationState).published);
       yield* sql`CREATE TRIGGER synthetic_derived_failure AFTER INSERT ON jones_ordinary_checkout_effect_links BEGIN SELECT RAISE(ABORT, 'synthetic derived failure'); END`;
-      assert.isTrue(Exit.isFailure(yield* write.pipe(Effect.exit)));
+      assert.isTrue(Exit.isFailure(yield* derivedWrite.pipe(Effect.exit)));
       assert.deepEqual(yield* state, before);
       assert.equal(yield* Ref.get((yield* ObservationState).published), published);
       yield* sql`DROP TRIGGER synthetic_derived_failure`;
-      yield* write;
+      yield* derivedWrite;
       const after = yield* state;
       assert.lengthOf(after.links, before.links.length + 1);
       assert.lengthOf(after.receipts, before.receipts.length);
@@ -931,4 +983,332 @@ it.effect("target capture and foreign physical inspection both happen outside SQ
     assert.equal(yield* Ref.get(observation.commits), 1);
     assert.lengthOf((yield* state).admissions, 1);
   }).pipe(Effect.provide(testLayer)),
+);
+
+// Full certificate/bridge receiving tests use a separate real local/common SQLite
+// graph. The only substitutes are physical observations and preparation custody.
+it.effect(
+  "real original, target switch and release preserve original authority and publish after outer acknowledgement",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const g = yield* makeCommitFixture();
+        const id = ThreadId.make("preparing-thread");
+        const initial = {
+          type: "thread.create" as const,
+          commandId: CommandId.make("original-preparing"),
+          threadId: id,
+          projectId: ProjectId.make("preparing-project"),
+          title: "Preparing",
+          modelSelection,
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          branch: null,
+          worktreePath: null,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          initialMessage: {
+            messageId: MessageId.make("preparing-message"),
+            text: "Prepare exact target",
+            attachments: [],
+            workspaceStrategy: { type: "worktree" as const, branch: "work", baseRef: "main" },
+          },
+        };
+        yield* g.sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at)
+      VALUES('preparing-project','Synthetic',${g.f.bPath},'[]',${now},${now})`;
+        const localAcceptance = yield* g.reserve(initial.commandId);
+        const accepted = yield* g.orchestrator.dispatch(initial, { localAcceptance });
+        const origins = yield* g.checkout.readPreparationOrigins(initial.commandId);
+        assert.lengthOf(origins, 1);
+        assert.lengthOf(yield* g.sql`SELECT * FROM jones_ordinary_checkout_admissions`, 0);
+        assert.lengthOf(yield* g.sql`SELECT * FROM jones_ordinary_checkout_owners`, 0);
+        const origin = origins[0]!;
+        const observationCount = g.observe().observations;
+        const replayed = yield* g.orchestrator.dispatch(initial);
+        assert.isTrue(replayed.replayed);
+        assert.equal(replayed.sequence, accepted.sequence);
+        assert.equal(g.observe().observations, observationCount);
+        for (const legacyPreparationFailureKnown of [false, true]) {
+          assert.isTrue(
+            Exit.isFailure(
+              yield* g.orchestrator
+                .dispatch({ ...initial, legacyPreparationFailureKnown })
+                .pipe(Effect.exit),
+            ),
+          );
+        }
+        assert.equal(g.observe().observations, observationCount);
+        assert.lengthOf(yield* g.checkout.readPreparationOrigins(initial.commandId), 1);
+        const switchCommand = {
+          type: "thread.metadata.update" as const,
+          commandId: CommandId.make("real-switch"),
+          threadId: id,
+          worktreePath: `${g.f.bPath}/work`,
+          branch: "work",
+        };
+        const transitionAcceptance = yield* g.reserve(switchCommand.commandId);
+        const reservation: Preparation.PreparationReservation = {
+          operationId: switchCommand.commandId,
+          generation: 0,
+          acceptance: transitionAcceptance,
+        };
+        yield* g.preparation.withPreparation(
+          { originRef: origin.originId, generation: 0, reservation },
+          (handle) =>
+            Effect.gen(function* () {
+              const result: Preparation.MaterializedResult = {
+                kind: "materialize",
+                operationId: reservation.operationId,
+                generation: 0,
+                target: {
+                  ...origin.initial,
+                  worktreePath: switchCommand.worktreePath,
+                  threadBranch: "work",
+                },
+                resolvedBaseRef: "synthetic-base-commit",
+                requestedBaseRef: "main",
+                resolvedBranch: "work",
+                registeredPath: switchCommand.worktreePath,
+                resultIdentity: "exact-synthetic-materialization",
+              };
+              // The filesystem owner does not know the final planner's updatedAt.
+              const { threadRevision: _revision, ...target } = origin.initial;
+              const materialized = {
+                ...result,
+                target: {
+                  ...target,
+                  worktreePath: switchCommand.worktreePath,
+                  threadBranch: "work",
+                },
+              };
+              g.retainResult(materialized);
+              yield* g.preparation.withMaterializedResult(
+                handle,
+                { command: switchCommand, result: materialized },
+                () =>
+                  g.orchestrator.dispatch(switchCommand, {
+                    preparation: handle,
+                    localAcceptance: transitionAcceptance,
+                  }),
+              );
+              const binding = yield* g.checkout.readPreparationBinding(origin.originId);
+              assert.equal(binding?.revision, 1);
+              assert.equal(binding?.target.cwd, switchCommand.worktreePath);
+              const switchedCalls = g.observe().observations;
+              yield* g.orchestrator.dispatch(switchCommand);
+              assert.equal(g.observe().observations, switchedCalls);
+              const release = {
+                type: "prepared-run.release" as const,
+                commandId: CommandId.make("real-release"),
+                threadId: id,
+                runId: RunId.make(origin.runId),
+              };
+              const releaseAcceptance = yield* g.reserve(release.commandId);
+              yield* g.orchestrator.dispatch(release, {
+                preparation: handle,
+                localAcceptance: releaseAcceptance,
+              });
+              const admissions =
+                yield* g.sql<Admission>`SELECT * FROM jones_ordinary_checkout_admissions`;
+              assert.lengthOf(admissions, 1);
+              assert.equal(admissions[0]?.command_id, initial.commandId);
+              assert.equal(admissions[0]?.receipt_sequence, accepted.sequence);
+              assert.equal(admissions[0]?.checkout_key, switchCommand.worktreePath);
+              const released = yield* g.checkout.readPreparationRelease(origin.originId);
+              assert.equal(released?.commandId, release.commandId);
+              const links =
+                yield* g.sql`SELECT * FROM jones_ordinary_checkout_effect_links WHERE effect_id=${released!.effectId}`;
+              assert.lengthOf(links, 1);
+              const effects = yield* g.sql<{
+                command_id: string;
+              }>`SELECT command_id FROM orchestration_v2_effect_outbox WHERE effect_id=${released!.effectId}`;
+              assert.equal(effects[0]?.command_id, release.commandId);
+              const releasedCalls = g.observe().observations;
+              yield* g.orchestrator.dispatch(release);
+              assert.equal(g.observe().observations, releasedCalls);
+            }),
+        );
+        assert.isAbove(g.observe().publications, 0);
+      }),
+    ),
+);
+
+it.effect.each(["origin", "binding", "release"] as const)(
+  "actual %s failure rolls back receipt, events, projection, outbox, bridge and Jones certificate together",
+  (failure) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const g = yield* makeCommitFixture();
+        const id = ThreadId.make("rollback-preparing");
+        const original = {
+          type: "thread.create" as const,
+          commandId: CommandId.make("rollback-original"),
+          threadId: id,
+          projectId: ProjectId.make("preparing-project"),
+          title: "Preparing",
+          modelSelection,
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          branch: null,
+          worktreePath: null,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          initialMessage: {
+            messageId: MessageId.make("rollback-message"),
+            text: "Prepare root",
+            attachments: [],
+            workspaceStrategy: { type: "root" as const },
+          },
+        };
+        yield* g.sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at)
+        VALUES('preparing-project','Synthetic',${g.f.bPath},'[]',${now},${now})`;
+        const snapshot = Effect.gen(function* () {
+          const tables = [
+            "orchestration_command_receipts",
+            "orchestration_events",
+            "orchestration_v2_projection_threads",
+            "orchestration_v2_projection_runs",
+            "orchestration_v2_effect_outbox",
+            "jones_common_admission_bridge",
+            "jones_ordinary_checkout_preparing_origins",
+            "jones_ordinary_checkout_preparing_bindings",
+            "jones_ordinary_checkout_preparing_releases",
+            "jones_ordinary_checkout_admissions",
+            "jones_ordinary_checkout_effect_links",
+          ];
+          return yield* Effect.forEach(tables, (table) =>
+            g.sql.unsafe(`SELECT * FROM ${table} ORDER BY rowid`),
+          );
+        });
+        const table =
+          failure === "origin"
+            ? "jones_ordinary_checkout_preparing_origins"
+            : failure === "binding"
+              ? "jones_ordinary_checkout_preparing_bindings"
+              : "jones_ordinary_checkout_effect_links";
+        const attempt = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+          Effect.gen(function* () {
+            yield* g.sql.unsafe(
+              `CREATE TRIGGER injected_certificate_failure AFTER INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'certificate failure'); END`,
+            );
+            const before = yield* snapshot;
+            const published = g.observe().publications;
+            assert.isTrue(Exit.isFailure(yield* write.pipe(Effect.exit)));
+            assert.deepEqual(yield* snapshot, before);
+            assert.equal(g.observe().publications, published);
+            yield* g.sql`DROP TRIGGER injected_certificate_failure`;
+          });
+        const acceptance = yield* g.reserve(original.commandId);
+        if (failure === "origin") {
+          yield* attempt(g.orchestrator.dispatch(original, { localAcceptance: acceptance }));
+          return;
+        }
+        yield* g.orchestrator.dispatch(original, { localAcceptance: acceptance });
+        const origin = (yield* g.checkout.readPreparationOrigins(original.commandId))[0]!;
+        const command = {
+          type: "thread.metadata.update" as const,
+          threadId: id,
+          commandId: CommandId.make("rollback-binding"),
+          worktreePath: null,
+          branch: null,
+        };
+        const localAcceptance = yield* g.reserve(command.commandId);
+        const reservation = {
+          operationId: command.commandId,
+          generation: 0,
+          acceptance: localAcceptance,
+        };
+        yield* g.preparation.withPreparation(
+          { originRef: origin.originId, generation: 0, reservation },
+          (handle) =>
+            Effect.gen(function* () {
+              const { threadRevision: _revision, ...target } = origin.initial;
+              const result: Preparation.MaterializedResult = {
+                kind: "materialize",
+                operationId: command.commandId,
+                generation: 0,
+                target,
+                resolvedBaseRef: null,
+                requestedBaseRef: null,
+                resolvedBranch: null,
+                registeredPath: g.f.bPath,
+                resultIdentity: "root-materialized",
+              };
+              g.retainResult(result);
+              const switchWrite = g.preparation.withMaterializedResult(
+                handle,
+                { command, result },
+                () => g.orchestrator.dispatch(command, { preparation: handle, localAcceptance }),
+              );
+              if (failure === "binding") {
+                yield* attempt(switchWrite);
+                return;
+              }
+              yield* switchWrite;
+              const release = {
+                type: "prepared-run.release" as const,
+                commandId: CommandId.make("rollback-release"),
+                threadId: id,
+                runId: RunId.make(origin.runId),
+              };
+              const releaseAcceptance = yield* g.reserve(release.commandId);
+              yield* attempt(
+                g.orchestrator.dispatch(release, {
+                  preparation: handle,
+                  localAcceptance: releaseAcceptance,
+                }),
+              );
+            }),
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "lost shared acknowledgement preserves local certificate, suppresses publication, and exact replay never reacquires",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const g = yield* makeCommitFixture({ lostSharedAck: true });
+        const id = ThreadId.make("unknown-ack-thread");
+        yield* g.sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at)
+      VALUES('unknown-project','Synthetic',${g.f.bPath},'[]',${now},${now})`;
+        const original = {
+          type: "thread.create" as const,
+          commandId: CommandId.make("unknown-original"),
+          threadId: id,
+          projectId: ProjectId.make("unknown-project"),
+          title: "Unknown ack",
+          modelSelection,
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          branch: null,
+          worktreePath: null,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          initialMessage: {
+            messageId: MessageId.make("unknown-message"),
+            text: "Prepare root",
+            attachments: [],
+            workspaceStrategy: { type: "root" as const },
+          },
+        };
+        const localAcceptance = yield* g.reserve(original.commandId);
+        const published = g.observe().publications;
+        assert.isTrue(
+          Exit.isFailure(
+            yield* g.orchestrator.dispatch(original, { localAcceptance }).pipe(Effect.exit),
+          ),
+        );
+        assert.lengthOf(yield* g.checkout.readPreparationOrigins(original.commandId), 1);
+        assert.lengthOf(yield* g.sql`SELECT * FROM jones_common_admission_bridge`, 1);
+        assert.equal(g.observe().publications, published);
+        const observations = g.observe().observations;
+        assert.isTrue((yield* g.orchestrator.dispatch(original)).replayed);
+        assert.equal(g.observe().observations, observations);
+        assert.equal(g.observe().publications, published);
+        assert.lengthOf(yield* g.checkout.readPreparationOrigins(original.commandId), 1);
+        assert.lengthOf(yield* g.sql`SELECT * FROM jones_common_admission_bridge`, 1);
+      }),
+    ),
 );

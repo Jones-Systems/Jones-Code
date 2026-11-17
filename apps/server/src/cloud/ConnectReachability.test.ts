@@ -2,7 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
 
-import { T3_CONNECT_TROUBLESHOOTING_SECTIONS } from "@t3tools/contracts";
+import { EnvironmentId, T3_CONNECT_TROUBLESHOOTING_SECTIONS } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -10,14 +10,22 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as NetAddress from "effect/net/NetAddress";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+  HttpServer,
+} from "effect/http";
 import { ChildProcessSpawner } from "effect/process";
 import { vi } from "vite-plus/test";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ConnectReachability from "./ConnectReachability.ts";
 import { classifyReachability, type ReachabilityFacts } from "./ConnectReachability.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
@@ -141,22 +149,31 @@ const reachabilityLayer = (
         Layer.mock(ServerSecretStore.ServerSecretStore)({
           get: () => Effect.succeedSome(new Uint8Array()),
         }),
+        Layer.mock(HttpServer.HttpServer)({
+          address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43129),
+        }),
+        Layer.succeed(ServerEnvironment.ServerEnvironment, {
+          getEnvironmentId: Effect.succeed(EnvironmentId.make("synthetic-connect-test")),
+          getDescriptor: Effect.die("loopback must read the HTTP descriptor"),
+        }),
         Layer.succeed(
           HttpClient.HttpClient,
           HttpClient.make((request) =>
-            (Effect.isEffect(respond) ? respond : respond(request)).pipe(
-              Effect.map(({ status, body }) =>
-                HttpClientResponse.fromWeb(
-                  request,
-                  new Response(
-                    typeof body === "object" && "cloudflareError" in body
-                      ? cloudflareErrorPage(request, body.cloudflareError)
-                      : body,
-                    { status },
+            request.url.startsWith("http://127.0.0.1:43129/")
+              ? Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({})))
+              : (Effect.isEffect(respond) ? respond : respond(request)).pipe(
+                  Effect.map(({ status, body }) =>
+                    HttpClientResponse.fromWeb(
+                      request,
+                      new Response(
+                        typeof body === "object" && "cloudflareError" in body
+                          ? cloudflareErrorPage(request, body.cloudflareError)
+                          : body,
+                        { status },
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
           ),
         ),
         Layer.succeed(

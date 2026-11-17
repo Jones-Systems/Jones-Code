@@ -39,22 +39,30 @@ export function workModeRetainsSession(input: {
   );
 }
 
-/** Residency reads cannot grant work or advance the refresh clock. */
-export function makeWorkModeRetentionProbe(ports: {
-  readonly enabled: Effect.Effect<boolean, unknown>;
-  readonly projection: (threadId: ThreadId) => Effect.Effect<OrchestrationV2ThreadProjection, unknown>;
-}) {
-  return Effect.fn("WorkModeRetention.probe")((
+/**
+ * Residency reads cannot grant work or advance the refresh clock. Each port keeps
+ * its actual error channel; any failure refuses retention.
+ */
+export function makeWorkModeRetentionProbe<EnabledError, ProjectionError>(ports: {
+  readonly enabled: Effect.Effect<boolean, EnabledError>;
+  readonly projection: (
     threadId: ThreadId,
-    providerSessionId: ProviderSessionId,
-    providerInstanceId: ProviderInstanceId,
-  ) => Effect.gen(function* () {
-    if (!(yield* ports.enabled)) return false;
-    return workModeRetainsSession({
-      projection: yield* ports.projection(threadId),
-      providerSessionId,
-      providerInstanceId,
-      nowMs: yield* Clock.currentTimeMillis,
-    });
-  }).pipe(Effect.catchCause(() => Effect.succeed(false))));
+  ) => Effect.Effect<OrchestrationV2ThreadProjection, ProjectionError>;
+}) {
+  return Effect.fn("WorkModeRetention.probe")(
+    (
+      threadId: ThreadId,
+      providerSessionId: ProviderSessionId,
+      providerInstanceId: ProviderInstanceId,
+    ) =>
+      Effect.gen(function* () {
+        if (!(yield* ports.enabled)) return false;
+        return workModeRetainsSession({
+          projection: yield* ports.projection(threadId),
+          providerSessionId,
+          providerInstanceId,
+          nowMs: yield* Clock.currentTimeMillis,
+        });
+      }).pipe(Effect.catchCause(() => Effect.succeed(false))),
+  );
 }

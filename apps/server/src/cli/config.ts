@@ -28,6 +28,8 @@ import * as ServerConfig from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
 import { resolveHostCliCommand } from "./invocation.ts";
+import { resolveServerParallelismProfile } from "../jones/serverParallelism/config.ts";
+import { retainedPolicyConfig } from "../jones/updates/configComposition.ts";
 
 const modeFlag = Flag.Literals("mode", ServerConfig.RuntimeMode.literals).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
@@ -102,6 +104,15 @@ export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
 );
 
 const EnvServerConfig = Config.all({
+  retainedPolicy: retainedPolicyConfig,
+  serverParallelismProfile: Config.String("JONES_SERVER_PARALLELISM_PROFILE").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  nativeAuthorityStateDir: Config.String("T3CODE_NATIVE_AUTHORITY_STATE_DIR").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
   logLevel: Config.LogLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   traceMinLevel: Config.LogLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
   traceTimingEnabled: Config.Boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(true)),
@@ -261,23 +272,42 @@ const loadPersistedObservabilitySettings = Effect.fn(function* (settingsPath: st
   return parsePersistedServerObservabilitySettings(raw);
 });
 
+export interface ServerConfigOptions {
+  readonly startupPresentation?: ServerConfig.StartupPresentation;
+  readonly forceAutoBootstrapProjectFromCwd?: boolean;
+  readonly rejectRunningServer?: boolean;
+  readonly selectAutomaticPort?: (
+    preferred: number,
+  ) => Effect.Effect<number, NetService.NetError | CliError.UserError>;
+}
+
+// Preserve the validated desktop envelope fields at the CLI composition boundary.
+export type ResolvedServerConfig = ServerConfig.ServerConfig["Service"] & {
+  readonly desktopNativeOwnerInputFd: DesktopBackendBootstrap["desktopNativeOwnerInputFd"];
+  readonly desktopNativeOwnerOutputFd: DesktopBackendBootstrap["desktopNativeOwnerOutputFd"];
+};
+
 export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(function* (
   flags: CliServerFlags,
   cliLogLevel: Option.Option<LogLevel.LogLevel>,
-  options?: {
-    readonly startupPresentation?: ServerConfig.StartupPresentation;
-    readonly forceAutoBootstrapProjectFromCwd?: boolean;
-    readonly rejectRunningServer?: boolean;
-    readonly selectAutomaticPort?: (
-      preferred: number,
-    ) => Effect.Effect<number, NetService.NetError | CliError.UserError>;
-  },
+  options?: ServerConfigOptions,
 ) {
   const { findAvailablePort } = yield* NetService.NetService;
   const selectAutomaticPort = options?.selectAutomaticPort ?? findAvailablePort;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
   const env = yield* EnvServerConfig;
+  const serverParallelism = yield* Effect.try({
+    try: () => resolveServerParallelismProfile(env.serverParallelismProfile),
+    catch: () =>
+      new Config.ConfigError(
+        new Schema.SchemaError(
+          new SchemaIssue.InvalidValue({
+            message: "JONES_SERVER_PARALLELISM_PROFILE must be laptop or vps.",
+          }),
+        ),
+      ),
+  });
   const normalizedFlags = {
     mode: flags.mode ?? Option.none(),
     port: flags.port ?? Option.none(),
@@ -342,8 +372,14 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   );
   const rawCwd = Option.getOrElse(normalizedFlags.cwd, () => process.cwd());
   const cwd = path.resolve(yield* expandHomePath(rawCwd.trim()));
+  const configuredAuthorityStateDir = env.nativeAuthorityStateDir?.trim();
+  const authorityStateDir =
+    configuredAuthorityStateDir === undefined || configuredAuthorityStateDir === ""
+      ? undefined
+      : path.resolve(yield* expandHomePath(configuredAuthorityStateDir));
   const derivedPaths = yield* ServerConfig.deriveServerPaths(baseDir, devUrl, {
     baseDirIsExplicit: Option.isSome(explicitBaseDir),
+    ...(authorityStateDir === undefined ? {} : { authorityStateDir }),
   });
   // An interactive CLI must not start over a discovered server. Lifetime locking
   // and supervisor handoff are separate; this preflight cannot arbitrate two starts.
@@ -392,6 +428,8 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const desktopAppUpdate = bootstrap?.desktopAppUpdate;
   const desktopBrowserFd = bootstrap?.desktopBrowserFd;
   const desktopBrowserControlFd = bootstrap?.desktopBrowserControlFd;
+  const desktopNativeOwnerInputFd = bootstrap?.desktopNativeOwnerInputFd;
+  const desktopNativeOwnerOutputFd = bootstrap?.desktopNativeOwnerOutputFd;
   const resourceMonitorPath = bootstrap?.resourceMonitorPath;
   const autoBootstrapProjectFromCwd = Option.getOrElse(
     resolveOptionPrecedence(
@@ -484,7 +522,9 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     },
   );
 
-  const config: ServerConfig.ServerConfig["Service"] = {
+  const config: ResolvedServerConfig = {
+    ...env.retainedPolicy,
+    serverParallelism,
     logLevel,
     traceMinLevel: env.traceMinLevel,
     traceTimingEnabled: env.traceTimingEnabled,
@@ -526,6 +566,8 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ...(desktopAppUpdate === undefined ? {} : { desktopAppUpdate }),
     desktopBrowserFd,
     desktopBrowserControlFd,
+    desktopNativeOwnerInputFd,
+    desktopNativeOwnerOutputFd,
     resourceMonitorPath,
     autoBootstrapProjectFromCwd,
     logWebSocketEvents,

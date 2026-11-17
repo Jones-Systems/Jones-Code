@@ -4,7 +4,10 @@ import { it } from "@effect/vitest";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createModelSelection } from "@t3tools/shared/model";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -13,7 +16,7 @@ import * as Result from "effect/Result";
 import { expect } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
-import { processProbeSource } from "../testUtils/processProbe.ts";
+import { makeProcessProbe, processProbeSource } from "../testUtils/processProbe.ts";
 import {
   SYNTHETIC_CLAUDE_CAPABLE_MODEL,
   SYNTHETIC_CLAUDE_COLLIDING_ALIAS,
@@ -57,7 +60,7 @@ function makeFakeClaudeBinary(dir: string, lifecyclePort?: number) {
       source:
         lifecyclePort === undefined
           ? source
-          : `process.on("SIGTERM", () => {}); ${processProbeSource(lifecyclePort)}`,
+          : `process.on("SIGTERM", () => {});\n${source}\n${processProbeSource(lifecyclePort)}`,
     });
     return binDir;
   });
@@ -75,6 +78,10 @@ function withFakeClaudeEnv<A, E, R>(
     stdinMustContain?: string;
     configDirMustBe?: string;
     cwdMustNotBe?: string;
+    capturePath?: string;
+    evaluation?: boolean;
+    investigation?: boolean;
+    managedMcpConfig?: boolean;
     claudeConfig?: Partial<ClaudeSettings>;
   },
   effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
@@ -97,6 +104,10 @@ function withFakeClaudeEnv<A, E, R>(
       T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN: input.stdinMustContain,
       T3_FAKE_CLAUDE_CWD_MUST_NOT_BE: input.cwdMustNotBe,
       T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE: input.configDirMustBe,
+      T3_FAKE_CLAUDE_CAPTURE_PATH: input.capturePath,
+      T3_FAKE_CLAUDE_EVALUATION: input.evaluation ? "1" : undefined,
+      T3_FAKE_CLAUDE_INVESTIGATION: input.investigation ? "1" : undefined,
+      T3_FAKE_CLAUDE_MANAGED_MCP_CONFIG: input.managedMcpConfig ? "1" : undefined,
     };
     const environment: NodeJS.ProcessEnv = {
       ...Object.fromEntries(
@@ -114,7 +125,15 @@ function withFakeClaudeEnv<A, E, R>(
       environment,
       Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
     );
-    return yield* effectFn(textGeneration);
+    return yield* effectFn(textGeneration).pipe(
+      Effect.provideService(FileSystem.FileSystem, {
+        ...fs,
+        exists: (candidate) =>
+          /[/\\]managed-mcp\.json$/.test(candidate)
+            ? Effect.succeed(input.managedMcpConfig ?? false)
+            : fs.exists(candidate),
+      }),
+    );
   }).pipe(Effect.scoped);
 }
 
@@ -133,6 +152,8 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
           }),
           argsMustContain: "--disallowedTools mcp__*",
           stdinMustContain: "Untrusted request JSON:",
+          cwdMustNotBe: process.cwd(),
+          evaluation: true,
         },
         (generation) =>
           Effect.gen(function* () {
@@ -158,6 +179,114 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
             }
           }),
       ),
+  );
+
+  it.effect.each([false, true])(
+    "denies evaluator MCP tools with managed MCP configuration=%s",
+    (managedMcpConfig) =>
+      withFakeClaudeEnv(
+        {
+          output: JSON.stringify({
+            structured_output: { verdict: "pass", category: "none", reason: "Bounded work." },
+          }),
+          evaluation: true,
+          managedMcpConfig,
+          cwdMustNotBe: process.cwd(),
+          claudeConfig: {
+            launchArgs: "--chrome --mcp-config ignored.json --tools Read WebSearch",
+          },
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            expect(
+              yield* generation.evaluateRemoteRequest({
+                cwd: process.cwd(),
+                message: "Fix the parser",
+                modelSelection: createModelSelection(
+                  ProviderInstanceId.make("claudeAgent"),
+                  SYNTHETIC_CLAUDE_STANDARD_MODEL,
+                ),
+              }),
+            ).toEqual({ verdict: "pass", category: "none", reason: "Bounded work." });
+          }),
+      ),
+  );
+
+  it.effect("kills an interrupted evaluator and removes its isolated cwd", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "claude-evaluation-cancel-" });
+      const capturePath = path.join(tempDir, "launch.json");
+      const probe = yield* makeProcessProbe;
+      yield* withFakeClaudeEnv(
+        {
+          output: "",
+          lifecyclePort: probe.port,
+          capturePath,
+          evaluation: true,
+          cwdMustNotBe: process.cwd(),
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const fiber = yield* generation
+              .evaluateRemoteRequest({
+                cwd: process.cwd(),
+                message: "Fix the parser",
+                modelSelection: createModelSelection(
+                  ProviderInstanceId.make("claudeAgent"),
+                  SYNTHETIC_CLAUDE_STANDARD_MODEL,
+                ),
+              })
+              .pipe(Effect.forkScoped);
+            yield* probe.started;
+            const launch = yield* decodeCapturedLaunch(yield* fs.readFileString(capturePath));
+            expect(yield* fs.exists(launch.cwd)).toBe(true);
+            const interrupted = yield* Fiber.interrupt(fiber).pipe(Effect.forkScoped);
+            yield* probe.exited;
+            yield* Fiber.join(interrupted);
+            const exit = yield* Fiber.await(fiber);
+            expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+            expect(yield* fs.exists(launch.cwd)).toBe(false);
+          }),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps review-guide investigation in the checkout with read-only tool policy", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "claude-review-guide-" });
+      const capturePath = path.join(tempDir, "launch.json");
+      yield* withFakeClaudeEnv(
+        {
+          output: JSON.stringify({ structured_output: { stops: [] } }),
+          investigation: true,
+          capturePath,
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const generated = yield* generation.generateReviewGuide({
+              cwd: process.cwd(),
+              number: 1,
+              title: "Synthetic guide",
+              description: "Explain the parser change.",
+              baseBranch: "main",
+              baseCommit: "synthetic-base",
+              settledReview: "No outstanding findings.",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              ),
+            });
+            expect(generated).toEqual({ stops: [] });
+          }),
+      );
+      const launch = yield* decodeCapturedLaunch(yield* fs.readFileString(capturePath));
+      expect(launch.cwd).toBe(yield* fs.realPath(process.cwd()));
+      expect(launch.stdin).toContain("Investigate before you answer, read-only.");
+    }).pipe(Effect.scoped),
   );
 
   it.effect("forwards Claude thinking settings without passing unsupported effort", () =>
@@ -382,6 +511,31 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
           });
 
           expect(generated.title).toBe(sanitizeThreadTitle("Use instance settings"));
+        }),
+    ),
+  );
+
+  it.effect("keeps evaluator isolation when retrying without --no-session-persistence", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: { verdict: "pass", category: "none", reason: "Bounded work." },
+        }),
+        rejectsNoSessionPersistence: true,
+        evaluation: true,
+        cwdMustNotBe: process.cwd(),
+      },
+      (generation) =>
+        Effect.gen(function* () {
+          const generated = yield* generation.evaluateRemoteRequest({
+            cwd: process.cwd(),
+            message: "Fix the parser",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              SYNTHETIC_CLAUDE_STANDARD_MODEL,
+            ),
+          });
+          expect(generated).toEqual({ verdict: "pass", category: "none", reason: "Bounded work." });
         }),
     ),
   );
@@ -637,7 +791,10 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
   );
 
   it.effect.each([
-    { flag: "--settings", launchArgs: "--settings=private-settings-value" },
+    {
+      flag: "--settings",
+      launchArgs: `--settings '{"env":{"SYNTHETIC":"private-settings-value"}}'`,
+    },
     { flag: "--unknown-account-flag", launchArgs: "--unknown-account-flag private-account-value" },
   ])(
     "refuses evaluator launch flag $flag while title generation remains available",
@@ -704,8 +861,10 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
   );
 });
 
-const decodeCapturedArgs = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(Schema.Array(Schema.String)),
+const decodeCapturedLaunch = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({ argv: Schema.Array(Schema.String), cwd: Schema.String, stdin: Schema.String }),
+  ),
 );
 
 it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) => {
@@ -728,10 +887,12 @@ it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) =
         platform,
         source: [
           'import { writeFileSync } from "node:fs";',
-          `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));`,
+          'let stdin = ""; for await (const chunk of process.stdin) stdin += chunk;',
+          `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), stdin }));`,
           `process.stdout.write(${JSON.stringify(JSON.stringify({ structured_output: reply }))});`,
         ].join("\n"),
       });
+      let routedCwd: string | undefined;
       const generation = yield* makeClaudeTextGeneration(
         decodeClaudeSettings({
           binaryPath,
@@ -747,6 +908,11 @@ it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) =
         }),
         { PATH: process.env.PATH },
         Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
+        (catalog, cwd) =>
+          Effect.gen(function* () {
+            routedCwd = yield* fs.realPath(cwd).pipe(Effect.orDie);
+            return catalog;
+          }),
       );
       const input = {
         cwd: tempDir,
@@ -762,7 +928,13 @@ it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) =
         ),
       };
       const result = yield* generation.evaluateRemoteRequest(input).pipe(Effect.result);
-      const args = yield* decodeCapturedArgs(yield* fs.readFileString(argvPath));
+      const launch = yield* decodeCapturedLaunch(yield* fs.readFileString(argvPath));
+      const args = launch.argv;
+      expect(launch.cwd).not.toBe(yield* fs.realPath(tempDir));
+      expect(launch.cwd).toBe(routedCwd);
+      expect(yield* fs.exists(launch.cwd)).toBe(false);
+      expect(launch.stdin).toContain("Untrusted request JSON:");
+      expect(launch.stdin).toContain('"message":"Fix the parser"');
       const argument = (flag: string) => {
         const index = args.indexOf(flag);
         expect(index).toBeGreaterThanOrEqual(0);
@@ -812,6 +984,7 @@ it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) =
       }
       expect(args).not.toContain("configured-model");
       expect(argument("--disallowedTools")).toBe("mcp__*");
+      expect(args.filter((arg) => arg === "--disallowedTools")).toHaveLength(1);
       expect(argument("--permission-mode")).toBe("dontAsk");
       expect(JSON.parse(argument("--settings")!)).toMatchObject({
         disableAllHooks: true,

@@ -5,6 +5,7 @@ import {
   type RecordedEvent as OrchestrationV2RecordedEvent,
 } from "../orchestration-v2/RecordedTypes.ts";
 import {
+  OrchestrationV2DomainEventJson,
   ApplicationEventMetadata,
   ApplicationProjectEvent,
   CommandId,
@@ -27,7 +28,10 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { isPublicApplicationEvent } from "../orchestration-v2/WireProjection.ts";
+import {
+  isPublicApplicationEvent,
+  projectDomainEventForWire,
+} from "../orchestration-v2/WireProjection.ts";
 import { replayAndBufferProjectedLiveEvents } from "../orchestration-v2/LiveStreamBudget.ts";
 
 import {
@@ -190,7 +194,7 @@ interface ApplicationEventRow {
 }
 
 const decodeV2EventJson = Schema.decodeUnknownEffect(OrchestrationV2RecordedEventJson);
-const encodeV2EventJson = Schema.encodeEffect(OrchestrationV2RecordedEventJson);
+const encodeV2EventJson = Schema.encodeEffect(OrchestrationV2DomainEventJson);
 const decodeV2StoredEvent = Schema.decodeUnknownEffect(OrchestrationV2RecordedStoredEvent);
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -464,7 +468,14 @@ const makeEventStore = Effect.gen(function* () {
       input.events,
       (event) =>
         Effect.gen(function* () {
-          const encoded = yield* encodeV2EventJson(event);
+          if (
+            event.type === "legacy-bootstrap.preflight-intent" ||
+            event.type === "legacy-bootstrap.preflight-outcome"
+          )
+            return yield* toPersistenceSqlError(
+              "OrchestrationEventStore.appendAgentEvents:private-preflight",
+            )(new Error("Fresh preflight events require Jones private storage."));
+          const encoded = yield* encodeV2EventJson(projectDomainEventForWire(event));
           const subagent =
             encoded.type === "subagent.updated"
               ? encoded.payload

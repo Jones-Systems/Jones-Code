@@ -635,7 +635,8 @@ it.effect(
                       backgroundStatus: "known" as const,
                     }),
                 }),
-            getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+            getTimelinePage: () =>
+              Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
           }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),

@@ -15,7 +15,7 @@ import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
  * threads and pending user answers for the user. Ended provider turns also block unless a settled run
  * is being woken for the awaited work it lost.
  */
-export function restartContinuationBlocked(
+function restartContinuationBlocked(
   projection: Pick<
     ProjectionRuntimeRecoveryState,
     "thread" | "runtimeRequests" | "providerTurns" | "turnItems"

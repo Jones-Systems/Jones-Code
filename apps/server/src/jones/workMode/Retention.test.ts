@@ -6,11 +6,14 @@ import {
   ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import { workModeFixture } from "./Fixtures.testkit.ts";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import { makeWorkModeRetentionProbe, workModeRetainsSession } from "./Retention.ts";
+
+class ProjectionReadUnavailable extends Data.TaggedError("ProjectionReadUnavailable") {}
 
 const fixture = workModeFixture();
 const input = {
@@ -164,9 +167,15 @@ it.effect("does not read conversation state while Work mode is disabled", () =>
     let reads = 0;
     const probe = makeWorkModeRetentionProbe({
       enabled: Effect.succeed(false),
-      projection: () => Effect.sync(() => { reads += 1; return fixture; }),
+      projection: () =>
+        Effect.sync(() => {
+          reads += 1;
+          return fixture;
+        }),
     });
-    expect(yield* probe(fixture.thread.id, input.providerSessionId, input.providerInstanceId)).toBe(false);
+    expect(yield* probe(fixture.thread.id, input.providerSessionId, input.providerInstanceId)).toBe(
+      false,
+    );
     expect(reads).toBe(0);
   }),
 );
@@ -175,13 +184,25 @@ it.effect("retention probe uses current eligibility and refuses unreadable state
   Effect.gen(function* () {
     yield* TestClock.setTime(30 * 60_000);
     const probe = makeWorkModeRetentionProbe({
-      enabled: Effect.succeed(true), projection: () => Effect.succeed(fixture),
+      enabled: Effect.succeed(true),
+      projection: () => Effect.succeed(fixture),
     });
-    expect(yield* probe(fixture.thread.id, input.providerSessionId, input.providerInstanceId)).toBe(true);
-    expect(yield* probe(fixture.thread.id, ProviderSessionId.make("replacement"), input.providerInstanceId)).toBe(false);
+    expect(yield* probe(fixture.thread.id, input.providerSessionId, input.providerInstanceId)).toBe(
+      true,
+    );
+    expect(
+      yield* probe(
+        fixture.thread.id,
+        ProviderSessionId.make("replacement"),
+        input.providerInstanceId,
+      ),
+    ).toBe(false);
     const unavailable = makeWorkModeRetentionProbe({
-      enabled: Effect.succeed(true), projection: () => Effect.fail(new Error("read unavailable")),
+      enabled: Effect.succeed(true),
+      projection: () => Effect.fail(new ProjectionReadUnavailable()),
     });
-    expect(yield* unavailable(fixture.thread.id, input.providerSessionId, input.providerInstanceId)).toBe(false);
+    expect(
+      yield* unavailable(fixture.thread.id, input.providerSessionId, input.providerInstanceId),
+    ).toBe(false);
   }),
 );

@@ -4,6 +4,7 @@ import type {
   OrchestrationV2Run,
   OrchestrationV2ProviderThread,
   RunAttemptId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import type {
@@ -16,16 +17,29 @@ import type { NativeProviderExecutionGuard } from "@t3tools/provider-core/server
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export const CurrentRevalidation = Context.Reference<Effect.Effect<void, ProviderAdapterV2Error> | undefined>(
-  "jones/provider/CurrentStartRevalidation", { defaultValue: () => undefined },
-);
+export const CurrentRevalidation = Context.Reference<
+  Effect.Effect<void, ProviderAdapterV2Error> | undefined
+>("jones/provider/CurrentStartRevalidation", { defaultValue: () => undefined });
 
 // Issued only by the manager's original lifecycle reservation while publishing
 // its actual native result. It permits one exact predecessor-bound successor.
-export const CurrentBindingPublication = Context.Reference<{
-  readonly previousGeneration: string | null;
-  readonly binding: ProviderRuntimeBinding;
-} | undefined>("jones/provider/CurrentBindingPublication", { defaultValue: () => undefined });
+export const CurrentBindingPublication = Context.Reference<
+  | {
+      readonly previousGeneration: string | null;
+      readonly binding: ProviderRuntimeBinding;
+    }
+  | undefined
+>("jones/provider/CurrentBindingPublication", { defaultValue: () => undefined });
+
+// Only the provider owning an acknowledged turn may continue it after the start claim settles.
+export const CurrentCapacityContinuation = Context.Reference<
+  | {
+      readonly runId: RunId;
+      readonly attemptId: RunAttemptId;
+      readonly binding: ProviderRuntimeBinding;
+    }
+  | undefined
+>("jones/provider/CurrentCapacityContinuation", { defaultValue: () => undefined });
 
 export interface CapturedStartAdmission {
   readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;
@@ -38,14 +52,17 @@ export interface CapturedStartAdmission {
 }
 
 // The durable command owner supplies this port. There is deliberately no permissive layer.
-export class StartAdmission extends Context.Service<StartAdmission, {
-  readonly capture: (input: {
-    readonly threadId: ThreadId;
-    readonly run: OrchestrationV2Run;
-    readonly attemptId: RunAttemptId;
-    readonly providerThread: OrchestrationV2ProviderThread;
-  }) => Effect.Effect<CapturedStartAdmission, ProviderAdapterV2Error>;
-}>()("jones/provider/StartAdmission") {}
+export class StartAdmission extends Context.Service<
+  StartAdmission,
+  {
+    readonly capture: (input: {
+      readonly threadId: ThreadId;
+      readonly run: OrchestrationV2Run;
+      readonly attemptId: RunAttemptId;
+      readonly providerThread: OrchestrationV2ProviderThread;
+    }) => Effect.Effect<CapturedStartAdmission, ProviderAdapterV2Error>;
+  }
+>()("t3/jones/provider/StartAdmission") {}
 
 export function withStartAdmission(
   session: ProviderAdapterV2SessionRuntime,
@@ -63,19 +80,31 @@ export function withStartAdmission(
   });
   return {
     ...session,
-    get providerSession() { return session.providerSession; },
+    get providerSession() {
+      return session.providerSession;
+    },
     startTurn: (value) => revalidate.pipe(Effect.andThen(session.startTurn(input(value)))),
-    ...(session.resumeTurn === undefined ? {} : {
-      resumeTurn: (value) => {
-        const guarded = input(resumeTurnInput(value));
-        const { message: _message, resume: _resume, ...rest } = guarded;
-        return revalidate.pipe(Effect.andThen(session.resumeTurn!({
-          ...rest, messageId: value.messageId,
-        })));
-      },
-    }),
-    ...(session.compactThread === undefined ? {} : {
-      compactThread: (value) => revalidate.pipe(Effect.andThen(session.compactThread!(input(value)))),
-    }),
+    ...(session.resumeTurn === undefined
+      ? {}
+      : {
+          resumeTurn: (value) => {
+            const guarded = input(resumeTurnInput(value));
+            const { message: _message, resume: _resume, ...rest } = guarded;
+            return revalidate.pipe(
+              Effect.andThen(
+                session.resumeTurn!({
+                  ...rest,
+                  messageId: value.messageId,
+                }),
+              ),
+            );
+          },
+        }),
+    ...(session.compactThread === undefined
+      ? {}
+      : {
+          compactThread: (value) =>
+            revalidate.pipe(Effect.andThen(session.compactThread!(input(value)))),
+        }),
   };
 }

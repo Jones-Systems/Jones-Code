@@ -224,6 +224,14 @@ const layerTestProviderInstanceRegistry = Layer.succeed(
       antigravityProviderInstance,
     ]),
     listUnavailable: Effect.succeed([]),
+    // The catalog source of a configured instance is the instance itself.
+    getCatalogSource: (instanceId) =>
+      [
+        providerInstance,
+        alternateProviderInstance,
+        claudeProviderInstance,
+        antigravityProviderInstance,
+      ].find((instance) => instanceId === instance.instanceId),
     streamChanges: Stream.empty,
     subscribeChanges: Effect.never,
   },

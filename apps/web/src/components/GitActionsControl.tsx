@@ -1,3 +1,4 @@
+import { showScopedGitActionResult } from "../jones/requestEconomy/gitActionResultToast";
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import {
@@ -403,13 +404,16 @@ interface PublishRepositoryDialogProps {
   readonly threadRef: ScopedThreadRef | null;
   readonly gitCwd: string;
   readonly offeredProviders: OfferedSourceControlProviders | undefined;
+  readonly prefetchDiscovery: boolean;
 }
 
 export function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
   const openLink = useOpenLink(props.threadRef);
   const navigate = useNavigate();
+  // Discovery spawns provider CLIs on the server, so run it only where publishing is offered.
+  // Prefetching while closed keeps provider readiness known when the dialog opens.
   const sourceControlDiscovery = useEnvironmentQuery(
-    props.environmentId === null
+    props.environmentId === null || !(props.open || props.prefetchDiscovery)
       ? null
       : sourceControlEnvironment.discovery({
           environmentId: props.environmentId,
@@ -930,6 +934,7 @@ export default function GitActionsControl({
     "thread branch metadata update",
   );
   const activeEnvironmentId = activeThreadRef?.environmentId ?? null;
+  const openResultPullRequest = useOpenLink(activeThreadRef);
   const successScopeKey = `${activeEnvironmentId ?? ""}\u0000${gitCwd ?? ""}`;
   const canWriteSourceControl = useEnvironmentScope(
     activeEnvironmentId,
@@ -1283,6 +1288,15 @@ export default function GitActionsControl({
 
     const actionResult = result.value;
     syncThreadBranchAfterGitAction(actionResult);
+    showScopedGitActionResult({
+      result: actionResult,
+      threadRef: activeThreadRef,
+      // The CTA only starts the follow-up action; that run reports its own outcome.
+      run: async (action) => {
+        await runGitActionWithToast({ action });
+      },
+      openPullRequest: openResultPullRequest,
+    });
     const createdPullRequest = actionResult.pr.status === "created";
     setInlineSuccess({
       title: createdPullRequest
@@ -1934,6 +1948,7 @@ export default function GitActionsControl({
       {/* Its discovery query should stop when the Git actions row that opens it is hidden. */}
       {showActions ? (
         <PublishRepositoryDialog
+          prefetchDiscovery={false}
           open={isPublishDialogOpen}
           onOpenChange={setIsPublishDialogOpen}
           environmentId={activeEnvironmentId}

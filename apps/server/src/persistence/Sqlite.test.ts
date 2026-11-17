@@ -23,6 +23,9 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ServerOwnership from "../serverOwnership.ts";
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 import * as SqlitePersistence from "./Sqlite.ts";
+import * as CheckedOwner from "../jones/cleanup/CheckedRuntimeOwner.ts";
+import * as Incarnation from "../jones/cleanup/sharedAdmission/DatabaseIncarnation.ts";
+import { makeOwnedFixture } from "../jones/cleanup/sharedAdmission/DatabaseIncarnation.fixture.ts";
 
 const workerData = vi.hoisted((): Array<unknown> => []);
 
@@ -241,16 +244,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
       const { dbPath } = yield* ServerConfig.ServerConfig;
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`DELETE FROM jones_sql_migrations WHERE migration_id = 155`;
+        yield* sql`DELETE FROM jones_sql_migrations WHERE migration_id = (SELECT MAX(migration_id) FROM jones_sql_migrations)`;
         yield* sql`CREATE TABLE s1_stat_probe(value TEXT)`;
         yield* sql`INSERT INTO s1_stat_probe VALUES ('retained')`;
         yield* sql`ANALYZE s1_stat_probe`;
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
       const before = NodeFS.readFileSync(dbPath);
       yield* ownT3Home();
-      const result = yield* Effect.void.pipe(Effect.provide(SqlitePersistence.layerCliConfig), Effect.result);
+      const result = yield* Effect.void.pipe(
+        Effect.provide(SqlitePersistence.layerCliConfig),
+        Effect.result,
+      );
       assert.equal(result._tag, "Failure");
-      if (result._tag === "Failure") assert.instanceOf(result.failure, SqlitePersistence.ServerOwnsDatabaseError);
+      if (result._tag === "Failure")
+        assert.instanceOf(result.failure, SqlitePersistence.ServerOwnsDatabaseError);
       assert.deepEqual(NodeFS.readFileSync(dbPath), before);
     }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
   );
@@ -265,31 +272,71 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
   );
 });
 
-it.effect.each([2, 3] as const)("worker startup applies pragmas and routes pool size %i read-only", (size) => {
-  const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "s1-startup-"));
-  const filename = NodePath.join(tempDir, "statev2.sqlite");
-  const observations: Array<{ slotId: number }> = [];
-  return Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    for (const [pragma, expected] of [
-      ["foreign_keys", 1], ["synchronous", 1], ["busy_timeout", 5000],
-      ["checkpoint_fullfsync", 1], ["temp_store", 2], ["journal_size_limit", 128 * 1024 * 1024],
-    ] as const) {
-      const rows = yield* sql.unsafe(`PRAGMA ${pragma}`);
-      assert.equal(Object.values(rows[0]!)[0], expected, pragma);
-    }
-    assert.deepEqual(yield* sql`PRAGMA journal_mode`, [{ journal_mode: "wal" }]);
-    yield* sql`CREATE TABLE s1_parent(id INTEGER PRIMARY KEY)`;
-    yield* sql`CREATE TABLE s1_child(parent_id INTEGER REFERENCES s1_parent(id))`;
-    assert.isTrue(Exit.isFailure(yield* Effect.exit(sql`INSERT INTO s1_child VALUES (77)`)));
-    assert.deepEqual(yield* sql`SELECT 1 AS value`.pipe(NodeSqliteClient.readOnly), [{ value: 1 }]);
-    assert.isTrue(Exit.isFailure(yield* Effect.exit(
-      sql`INSERT INTO s1_parent VALUES (77)`.pipe(NodeSqliteClient.readOnly),
-    )));
-    assert.isTrue(observations.some(({ slotId }) => slotId >= 0 && slotId < size));
-  }).pipe(
-    Effect.provide(SqlitePersistence.layerFromPath(filename, readerPoolOptions(size, (event) => observations.push(event)))
-      .pipe(Layer.provide(NodeServices.layer))),
-    Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
-  );
-});
+it.effect.each([2, 3] as const)(
+  "worker startup applies pragmas and routes pool size %i read-only",
+  (size) => {
+    const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "s1-startup-"));
+    const filename = NodePath.join(tempDir, "statev2.sqlite");
+    const observations: Array<{ slotId: number }> = [];
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      for (const [pragma, expected] of [
+        ["foreign_keys", 1],
+        ["synchronous", 1],
+        ["busy_timeout", 5000],
+        ["checkpoint_fullfsync", 1],
+        ["temp_store", 2],
+        ["journal_size_limit", 128 * 1024 * 1024],
+      ] as const) {
+        const rows = yield* sql.unsafe(`PRAGMA ${pragma}`);
+        assert.equal(Object.values(rows[0]!)[0], expected, pragma);
+      }
+      assert.deepEqual(yield* sql`PRAGMA journal_mode`, [{ journal_mode: "wal" }]);
+      yield* sql`CREATE TABLE s1_parent(id INTEGER PRIMARY KEY)`;
+      yield* sql`CREATE TABLE s1_child(parent_id INTEGER REFERENCES s1_parent(id))`;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(sql`INSERT INTO s1_child VALUES (77)`)));
+      assert.deepEqual(yield* sql`SELECT 1 AS value`.pipe(NodeSqliteClient.readOnly), [
+        { value: 1 },
+      ]);
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            sql`INSERT INTO s1_parent VALUES (77)`.pipe(NodeSqliteClient.readOnly),
+          ),
+        ),
+      );
+      assert.isTrue(observations.some(({ slotId }) => slotId >= 0 && slotId < size));
+    }).pipe(
+      Effect.provide(
+        SqlitePersistence.layerFromPath(
+          filename,
+          readerPoolOptions(size, (event) => observations.push(event)),
+        ).pipe(Layer.provide(NodeServices.layer)),
+      ),
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  },
+);
+
+// Jones integration seam: the actual worker-backed persistence layer consumes
+// root's infrastructure port before setup and retains its checked open binding.
+it.effect("participating persistence certifies the actual worker before and after migrations", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const f = yield* makeOwnedFixture;
+      const before = NodeFS.statSync(f.dbPath, { bigint: true });
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const token = yield* CheckedOwner.bindHeldDatabaseOwner(f.owner);
+        assert.equal(Incarnation.bindingForSql(token, sql).database.inode, String(before.ino));
+        CheckedOwner.assertCheckedDatabaseOwner(token);
+        const migrations = yield* sql`SELECT migration_id FROM jones_sql_migrations`;
+        assert.isAbove(migrations.length, 0);
+      }).pipe(
+        Effect.provide(SqlitePersistence.layerFromPath(f.dbPath)),
+        Effect.provideService(Incarnation.OpenInfrastructure, f.infrastructure),
+        Effect.provideService(CheckedOwner.HeldRuntimeOwner, { token: f.owner }),
+      );
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ContextHandoffId, MessageId, NodeId, RunAttemptId, RunId } from "@t3tools/contracts";
+import {
+  ContextHandoffId,
+  MessageId,
+  NodeId,
+  ProviderDriverKind,
+  RunAttemptId,
+  RunId,
+} from "@t3tools/contracts";
 import type { OrchestrationV2ContextHandoff } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { deliverContextHandoffs } from "../../orchestration-v2/ContextHandoffDelivery.ts";
@@ -91,21 +98,42 @@ describe("restart continuation prompt delivery", () => {
     expect(started.message).toEqual(input.message);
   });
 
-  it("preserves native resume only for the original thread without new prompt context", () => {
+  it("delivers the restart prompt to the original Codex conversation", () => {
     const { input } = fixture();
-    const options = {
+    const started = continuationPrompt(input, {
       sameNativeThread: true,
       noteContinuation: false,
       context: "",
       userText: input.message.text,
-    };
-    expect(continuationPrompt(input, options).restartContinuationOfRunId).toBe(
-      input.restartContinuationOfRunId,
-    );
-    for (const patch of [{ context: "Lost background task." }, { noteContinuation: true }]) {
-      expect(
-        continuationPrompt(input, { ...options, ...patch }).restartContinuationOfRunId,
-      ).toBeUndefined();
-    }
+    });
+    expect(started.restartContinuationOfRunId).toBeUndefined();
+    expect(started.providerThread).toBe(input.providerThread);
+    expect(started.message).toEqual(input.message);
+    expect(input.restartContinuationOfRunId).toBeDefined();
   });
+
+  it.each(["claudeAgent", "opencode"])(
+    "preserves native %s continuation without new context",
+    (driver) => {
+      const original = fixture().input;
+      const input = {
+        ...original,
+        providerThread: { ...original.providerThread, driver: ProviderDriverKind.make(driver) },
+      };
+      const options = {
+        sameNativeThread: true,
+        noteContinuation: false,
+        context: "",
+        userText: input.message.text,
+      };
+      expect(continuationPrompt(input, options).restartContinuationOfRunId).toBe(
+        input.restartContinuationOfRunId,
+      );
+      for (const patch of [{ context: "Lost background task." }, { noteContinuation: true }]) {
+        expect(
+          continuationPrompt(input, { ...options, ...patch }).restartContinuationOfRunId,
+        ).toBeUndefined();
+      }
+    },
+  );
 });

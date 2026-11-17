@@ -2,12 +2,15 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "thread-attention",
   "jonesOwnedPaths": [
+    "apps/web/src/jones/threadStatusFilter/attention.ts",
+    "apps/web/src/jones/threadStatusFilter/attention.test.ts",
     "packages/shared/src/jones/threadAttention.ts",
     "packages/shared/src/jones/threadAttention.test.ts",
     "apps/server/src/jones/threadAttention.ts",
     "apps/server/src/jones/threadAttention.test.ts"
   ],
   "hookPaths": [
+    "apps/web/src/components/ThreadStatusIndicators.tsx",
     "apps/server/src/orchestration-v2/http.ts",
     "apps/web/src/components/Sidebar.logic.ts",
     "packages/client-runtime/src/state/models.ts",
@@ -15,6 +18,14 @@
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/ThreadStatusIndicators.tsx",
+      "to": "apps/web/src/jones/threadStatusFilter/attention.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.logic.ts",
+      "to": "apps/web/src/jones/threadStatusFilter/attention.ts"
+    },
     {
       "from": "apps/server/src/environment/ServerEnvironment.ts",
       "to": "packages/contracts/src/jones/threadAttention.ts"

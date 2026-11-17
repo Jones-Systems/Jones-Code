@@ -40,6 +40,7 @@ import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegist
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
+import * as SupersededTerminalTrace from "./SupersededTerminalTrace.ts";
 import {
   isAdmissionUnavailable,
   isTransientLocalStorageFailure,
@@ -183,6 +184,7 @@ it.effect.each([1, 3])(
       ThreadCommandExecutor.layer,
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       Layer.mock(EventSink.EventSinkV2)({
+        supersededTerminalTrace: SupersededTerminalTrace.make(),
         write: () =>
           Effect.sync(() => {
             writes++;
@@ -230,6 +232,7 @@ it.effect("a model read after subagent publication retries only the read and wri
     ThreadCommandExecutor.layer,
     Layer.mock(GitVcsDriver.GitVcsDriver)({}),
     Layer.mock(EventSink.EventSinkV2)({
+      supersededTerminalTrace: SupersededTerminalTrace.make(),
       write: (input) =>
         Effect.sync(() => {
           writes++;
@@ -562,56 +565,91 @@ it.effect(
     }),
 );
 
-it.effect("provider-owner terminal publication reconciles the exact batch after a lost commit reply", () => {
-  let writes = 0;
-  let retained: ReadonlyArray<import("@t3tools/contracts").OrchestrationV2StoredEvent> = [];
-  const sink = Layer.mock(EventSink.EventSinkV2)({
-    writeIfProviderThreadOwner: (input) => Effect.gen(function* () {
-      writes++;
-      retained = input.events.map((event, index) => ({ event, sequence: index + 1, commandId: input.commandId! }));
-      return yield* busy();
-    }),
-    readByCommandId: ({ commandId }) => Stream.fromArray(retained.filter((row) => row.commandId === commandId)),
-  });
-  return Effect.gen(function* () {
-    const publish = yield* makeTerminalPublisher;
-    const original = event("event:owner-original", { ...run, status: "waiting" });
-    const request = {
-      type: "provider-owner" as const,
-      input: { providerThreadId, runId, activeAttemptId: attemptId, expectedLastRunOrdinal: 1,
-        events: [original] },
-    };
-    const first = yield* publish(terminal, "owner-ingestion", request).pipe(Effect.exit);
-    assert.isTrue(Exit.isFailure(first));
-    const result = yield* publish(terminal, "owner-ingestion", {
-      ...request, input: { ...request.input, events: [event("event:replacement", { ...run, status: "failed" })] },
+it.effect(
+  "provider-owner terminal publication reconciles the exact batch after a lost commit reply",
+  () => {
+    let writes = 0;
+    let retained: ReadonlyArray<import("@t3tools/contracts").OrchestrationV2StoredEvent> = [];
+    const sink = Layer.mock(EventSink.EventSinkV2)({
+      supersededTerminalTrace: SupersededTerminalTrace.make(),
+      writeIfProviderThreadOwner: (input) =>
+        Effect.gen(function* () {
+          writes++;
+          retained = input.events.map((event, index) => ({
+            event,
+            sequence: index + 1,
+            commandId: input.commandId!,
+          }));
+          return yield* busy();
+        }),
+      readByCommandId: ({ commandId }) =>
+        Stream.fromArray(retained.filter((row) => row.commandId === commandId)),
     });
-    assert.isTrue(result.committed);
-    assert.equal(result.storedEvents[0]?.event.id, original.id);
-    assert.equal(writes, 1);
-  }).pipe(Effect.provide(sink));
-});
+    return Effect.gen(function* () {
+      const publish = yield* makeTerminalPublisher;
+      const original = event("event:owner-original", { ...run, status: "waiting" });
+      const request = {
+        type: "provider-owner" as const,
+        input: {
+          providerThreadId,
+          runId,
+          activeAttemptId: attemptId,
+          expectedLastRunOrdinal: 1,
+          events: [original],
+        },
+      };
+      const first = yield* publish(terminal, "owner-ingestion", request).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(first));
+      const result = yield* publish(terminal, "owner-ingestion", {
+        ...request,
+        input: {
+          ...request.input,
+          events: [event("event:replacement", { ...run, status: "failed" })],
+        },
+      });
+      assert.isTrue(result.committed);
+      assert.equal(result.storedEvents[0]?.event.id, original.id);
+      assert.equal(writes, 1);
+    }).pipe(Effect.provide(sink));
+  },
+);
 
-it.effect("a refused handoff and native finalization retain independent publication identities", () => {
-  const calls: Array<CommandId> = [];
-  const sink = Layer.mock(EventSink.EventSinkV2)({
-    writeIfRunCurrent: (input) => Effect.sync(() => {
-      calls.push(input.commandId!);
-      return { committed: calls.length > 1, storedEvents: [] };
-    }),
-  });
-  return Effect.gen(function* () {
-    const publish = yield* makeTerminalPublisher;
-    const request = { type: "current" as const, input: {
-      threadId, runId, activeAttemptId: attemptId, expectedStatus: "running" as const,
-      events: [event("event:handoff", { ...run, status: "waiting" })],
-    } };
-    assert.isFalse((yield* publish(terminal, "handoff-finalization", request)).committed);
-    const native = { ...request, input: { ...request.input,
-      events: [event("event:native-final", { ...run, status: "interrupted" })] } };
-    assert.isTrue((yield* publish(terminal, "finalization", native)).committed);
-    assert.isTrue((yield* publish(terminal, "finalization", native)).committed);
-    assert.equal(calls.length, 2);
-    assert.notEqual(calls[0], calls[1]);
-  }).pipe(Effect.provide(sink));
-});
+it.effect(
+  "a refused handoff and native finalization retain independent publication identities",
+  () => {
+    const calls: Array<CommandId> = [];
+    const sink = Layer.mock(EventSink.EventSinkV2)({
+      supersededTerminalTrace: SupersededTerminalTrace.make(),
+      writeIfRunCurrent: (input) =>
+        Effect.sync(() => {
+          calls.push(input.commandId!);
+          return { committed: calls.length > 1, storedEvents: [] };
+        }),
+    });
+    return Effect.gen(function* () {
+      const publish = yield* makeTerminalPublisher;
+      const request = {
+        type: "current" as const,
+        input: {
+          threadId,
+          runId,
+          activeAttemptId: attemptId,
+          expectedStatus: "running" as const,
+          events: [event("event:handoff", { ...run, status: "waiting" })],
+        },
+      };
+      assert.isFalse((yield* publish(terminal, "handoff-finalization", request)).committed);
+      const native = {
+        ...request,
+        input: {
+          ...request.input,
+          events: [event("event:native-final", { ...run, status: "interrupted" })],
+        },
+      };
+      assert.isTrue((yield* publish(terminal, "finalization", native)).committed);
+      assert.isTrue((yield* publish(terminal, "finalization", native)).committed);
+      assert.equal(calls.length, 2);
+      assert.notEqual(calls[0], calls[1]);
+    }).pipe(Effect.provide(sink));
+  },
+);

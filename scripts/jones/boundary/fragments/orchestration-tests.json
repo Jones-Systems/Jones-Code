@@ -1,7 +1,10 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "orchestration-tests",
-  "jonesOwnedPaths": ["apps/server/src/jones/orchestration/"],
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/orchestration/",
+    "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+  ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
@@ -16,6 +19,94 @@
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
       "to": "apps/server/src/jones/orchestration/QueueHoldProvenance.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/orchestration/RemoteSendReceiptStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/FollowUpCommandOwner.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/RemoteSendReceiptStore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/SelfSettlement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+      "to": "apps/server/src/jones/orchestration/RestartPreparation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+      "to": "apps/server/src/jones/orchestration/ControlAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/orchestration/FollowUpCommandOwnerLayer.ts"
+    },
+    {
+      "from": "apps/server/src/assets/AssetAccess.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/git/linkCreatedPullRequest.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/mcpApps/McpAppRequests.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/IdleCompaction.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/PullRequestSyncReactor.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/UsageLimitRecoveryWorker.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/peer/RemoteDelegation.test.ts",
+      "to": "apps/server/src/jones/orchestration/FollowUpCommandOwnerLayer.ts"
+    },
+    {
+      "from": "apps/server/src/project/AgentSessionImporter.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/pullRequest/PullRequestWatchService.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/orchestration/ControlAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.test.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
     }
   ]
 }

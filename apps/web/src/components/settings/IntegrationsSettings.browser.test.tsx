@@ -46,6 +46,7 @@ const environments: EnvironmentPresentation[] = [
   {
     environmentId,
     label: "Desk",
+    displayLabel: "Desk",
     displayUrl: "http://localhost:12345",
     relayManaged: false,
     entry: {

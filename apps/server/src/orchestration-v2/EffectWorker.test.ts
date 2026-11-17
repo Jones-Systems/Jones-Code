@@ -121,6 +121,8 @@ function layerExecutorFor(input: {
         open: () => Effect.die("unused open"),
         get: () => Effect.succeedNone,
         isLive: () => Effect.succeed(false),
+        // No session is live, so no MCP caller can be attached.
+        isMcpCallerAttached: () => Effect.succeed(false),
         close: () => Effect.void,
         closeInstance: () => Effect.void,
         release: () => record("release"),
@@ -178,10 +180,14 @@ function layerExecutorFor(input: {
         layerDependencies,
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({ getByCommandId: () => Effect.succeedNone }),
+        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
+          getByCommandId: () => Effect.succeedNone,
+        }),
         // Lifecycle custody is covered through its real owner integration suite.
         // These executor cases exercise interrupt/rollback/respond/continuation ports.
-        Layer.mock(RestartPreparation.RestartPreparation)({ recordSteerFailure: () => Effect.void }),
+        Layer.mock(RestartPreparation.RestartPreparation)({
+          recordSteerFailure: () => Effect.void,
+        }),
         ServerSettings.layerTest(
           input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},
         ),
@@ -860,10 +866,13 @@ it.effect("keeps the two-title cap after default daemon slots detach long execut
       });
     const worker = Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
       awaitWork: Effect.never,
-      runOnce: claim("mixed"), runActionOnce: claim("action"), runUrgentOnce: claim("urgent"),
+      runOnce: claim("mixed"),
+      runActionOnce: claim("action"),
+      runUrgentOnce: claim("urgent"),
     });
     const daemon = yield* EffectWorker.runDaemonWithOptions().pipe(
-      Effect.provide(worker), Effect.forkChild,
+      Effect.provide(worker),
+      Effect.forkChild,
     );
     yield* Deferred.await(initial);
     yield* TestClock.adjust(Duration.seconds(30));

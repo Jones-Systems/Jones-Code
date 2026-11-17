@@ -19,6 +19,7 @@ import * as Statement from "effect/sql/Statement";
 import { listLinkedPullRequestThreads } from "../../pullRequest/linkedThreads.ts";
 import * as EventSink from "../EventSink.ts";
 import * as EventStore from "../EventStore.ts";
+import * as RetainedRecords from "../../jones/legacyBootstrap/RetainedRecords.ts";
 import * as LegacyV1ThreadImporter from "./LegacyV1ThreadImporter.ts";
 import * as ProjectionReplay from "../testkit/ProjectionReplay.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
@@ -852,8 +853,10 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
       assert.deepStrictEqual(repaired.thread.pullRequests, []);
       assert.equal(repaired.thread.branchPullRequest?.number, 9001);
       assert.equal(repaired.thread.activeOrderKey, "az");
+      // The claim is private: it survives the repair in its Jones record, not the public row.
+      const readRetainedRecords = yield* RetainedRecords.make;
       assert.deepStrictEqual(
-        repaired.thread.legacyBootstrapClaim,
+        (yield* readRetainedRecords(threadId)).thread.legacyBootstrapClaim,
         previousRepairThread.legacyBootstrapClaim,
       );
 

@@ -7,6 +7,7 @@ import {
 import { checkpointFileTotals } from "@t3tools/client-runtime/state/thread-checkpoints";
 import { COMPACT_COMMAND_PATTERN } from "@t3tools/client-runtime/state/context-window";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { deriveDependencyBannerTasks } from "../jones/threadResultDependencies/bannerTasks";
 import {
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
@@ -1165,6 +1166,29 @@ export function mergeDirectPreviewAnnotation(input: {
   return { images, previewAnnotations };
 }
 
+export function resolveComposerPickerModelSelection(input: {
+  instanceId: ProviderInstanceId;
+  model: string;
+  currentSelection: ModelSelection | null | undefined;
+  rememberedOptions: ModelSelection["options"];
+}): ModelSelection {
+  const options =
+    input.rememberedOptions?.filter((option) => option.id !== "reasoningEffort") ?? [];
+  if (
+    input.currentSelection?.instanceId === input.instanceId &&
+    input.currentSelection.model === input.model
+  ) {
+    const effort = input.currentSelection.options?.find(
+      (option) => option.id === "reasoningEffort",
+    );
+    if (effort !== undefined) options.push(effort);
+  }
+  return {
+    instanceId: input.instanceId,
+    model: input.model,
+    ...(options.length ? { options } : {}),
+  };
+}
 export { isThreadWokeUnseen } from "@t3tools/client-runtime/state/thread-settled";
 
 export function formatOutgoingPrompt(params: {
@@ -1509,7 +1533,14 @@ const LIVE_RUN_STATUSES = new Set(["queued", "preparing", "starting", "running"]
  * foreground work, so they never count as background. The provider roster is
  * not run-tied, so it drops entries naming a live run's item by native id.
  */
-export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure | null) {
+export function deriveThreadPendingBackgroundTasks(
+  projection: ThreadStructure | null,
+  shell?: Parameters<typeof deriveDependencyBannerTasks>[0]["shell"],
+  freshness?: Pick<
+    Parameters<typeof deriveDependencyBannerTasks>[0],
+    "detailAppliedSequence" | "shellSnapshotSequence"
+  >,
+) {
   if (projection === null) return [];
   const sessionError =
     projection.providerSessions.findLast(
@@ -1526,23 +1557,33 @@ export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure |
   const latestRun =
     usageLimitRunPresentedAsLatest(projection.runs, projection.turnItems, sessionError) ??
     latestUnheldRun(projection.runs.filter((run) => !liveRunIds.has(run.id)));
-  return [
-    ...derivePendingBackgroundWork({
-      latestRun,
-      providerThreads: projection.providerThreads.map((thread) => ({
-        ...thread,
-        pendingBackgroundTasks: thread.pendingBackgroundTasks?.filter(
-          (task) => !foregroundTaskIds.has(task.taskId),
-        ),
-      })),
-      turnItems: projection.turnItems.filter(
-        (item) => item.runId === null || !liveRunIds.has(item.runId),
+  const tasks = derivePendingBackgroundWork({
+    latestRun,
+    providerThreads: projection.providerThreads.map((thread) => ({
+      ...thread,
+      pendingBackgroundTasks: thread.pendingBackgroundTasks?.filter(
+        (task) => !foregroundTaskIds.has(task.taskId),
       ),
-      activeProviderThreadId: projection.thread.activeProviderThreadId,
-      hasActiveRun: false,
-      runs: projection.runs,
-      pullRequests: projection.thread.pullRequests,
-    }),
+    })),
+    turnItems: projection.turnItems.filter(
+      (item) => item.runId === null || !liveRunIds.has(item.runId),
+    ),
+    activeProviderThreadId: projection.thread.activeProviderThreadId,
+    hasActiveRun: false,
+    runs: projection.runs,
+    pullRequests: projection.thread.pullRequests,
+  });
+  const taskIds = new Set(tasks.map((task) => task.taskId));
+  return [
+    ...tasks,
+    ...deriveDependencyBannerTasks({
+      threadId: projection.thread.id,
+      shell,
+      ...freshness,
+      latestRun: null,
+      providerThreads: [],
+      turnItems: projection.turnItems,
+    }).filter((task) => !taskIds.has(task.taskId)),
   ];
 }
 

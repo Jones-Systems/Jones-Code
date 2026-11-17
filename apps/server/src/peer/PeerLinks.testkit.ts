@@ -72,6 +72,8 @@ export const servePeer = <E, R>(
     const descriptor = yield* Ref.make(initial);
     const bearers = yield* Ref.make<ReadonlyArray<string>>([]);
     const probes = yield* Ref.make(0);
+    const mcpOpens = yield* Ref.make(0);
+    const mcpSessions = yield* Ref.make<ReadonlyArray<string>>([]);
     const asleep = yield* Ref.make(false);
     const unanswered = yield* Queue.unbounded<void>();
     const wake = yield* Deferred.make<void>();
@@ -101,6 +103,11 @@ export const servePeer = <E, R>(
               yield* Deferred.await(wake);
               return yield* Effect.die("the peer was closed while asleep");
             }
+          }
+          if (request.url === "/mcp" && request.method === "POST") {
+            const sessionId = request.headers["mcp-session-id"];
+            if (sessionId === undefined) yield* Ref.update(mcpOpens, (count) => count + 1);
+            else yield* Ref.update(mcpSessions, (sessions) => [...sessions, sessionId]);
           }
           const authorization = request.headers.authorization;
           if (authorization !== undefined) {
@@ -166,6 +173,10 @@ export const servePeer = <E, R>(
       bearers,
       /** How often its descriptor was asked for, as a probe of whether it answers. */
       probes,
+      /** How many MCP sessions it was asked to open: each `POST /mcp` without a session. */
+      mcpOpens,
+      /** The session each later `POST /mcp` named, in order. */
+      mcpSessions,
       /** While set, its descriptor never answers, as a machine that is asleep. */
       asleep,
       /** One entry per descriptor request it left unanswered while asleep. */

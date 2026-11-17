@@ -232,6 +232,54 @@ describe("DesktopRemoteUpdates Jones selection", () => {
     );
   });
 
+  it.effect("re-reports a prepared Jones stage only to a retry of the same selection", () => {
+    const jones = makeJonesUpdates();
+    return runRemoteUpdatesTest(
+      makeHarness(),
+      ({ reports, requests }) =>
+        Effect.gen(function* () {
+          yield* Queue.offer(requests, {
+            ...request("jones-prepared"),
+            action: "download",
+            ...jones.selection,
+          });
+          yield* settle;
+          assert.equal(terminalReports(reports).at(-1)?.outcome, "ready-to-install");
+
+          yield* Queue.offer(requests, {
+            ...request("jones-retry"),
+            action: "download",
+            ...jones.selection,
+          });
+          yield* settle;
+          assert.equal(terminalReports(reports).at(-1)?.outcome, "ready-to-install");
+          assert.equal(terminalReports(reports).at(-1)?.preparedRequestId, "jones-prepared");
+
+          const others: ReadonlyArray<DesktopTelemetryRequestDesktopUpdate> = [
+            {
+              ...request("jones-other-artifact"),
+              action: "download",
+              ...jones.selection,
+              artifactId: 14,
+            },
+            request("release-while-staged"),
+          ];
+          for (const other of others) {
+            yield* Queue.offer(requests, other);
+            yield* settle;
+            const report = terminalReports(reports).at(-1);
+            assert.equal(report?.requestId, other.requestId);
+            assert.equal(report?.outcome, "failed");
+            assert.equal(report?.reason, "A prepared desktop update is already in progress.");
+            assert.isUndefined(report?.preparedRequestId);
+          }
+          assert.deepEqual(jones.selectedDownloads, [jones.selection]);
+          assert.equal(jones.releaseDownloadCount(), 0);
+        }),
+      jones.updates,
+    );
+  });
+
   it.effect.each([
     { field: "artifactId", mismatch: { artifactId: 14 } },
     { field: "sourceSha", mismatch: { sourceSha: "f".repeat(40) } },

@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Electron from "electron";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
+import { companionLinuxIdentity } from "../jones/previewCompanion/CompanionProduct.ts";
 import * as DesktopEarlyElectronStartup from "./DesktopEarlyElectronStartup.ts";
 import { trimmedString } from "./DesktopConfig.ts";
 import { resolveDesktopAppBranding } from "./DesktopEnvironment.ts";
@@ -73,8 +74,11 @@ export const make = Effect.gen(function* () {
       platform === "linux"
         ? readCommandLineSwitchValue(Electron.app.commandLine, "password-store")
         : null;
-    const linux =
-      platform === "linux" ? resolveEarlyLinuxElectronOptionsFromProcess(homeDirectory) : null;
+    const companion = process.env.JONES_PREVIEW_COMPANION_PRODUCT === "true";
+    const linux = companionLinuxIdentity(
+      platform === "linux" ? resolveEarlyLinuxElectronOptionsFromProcess(homeDirectory) : null,
+      companion,
+    );
 
     if (linux !== null) {
       DesktopEarlyElectronStartup.restoreEarlyLinuxDeviceScaleFactor({
@@ -90,77 +94,85 @@ export const make = Effect.gen(function* () {
       });
       // The portal also requires a valid desktop entry. An AppImage update may
       // have removed the executable referenced by the previous launch's entry.
-      try {
-        const applicationsDir = NodePath.posix.join(
-          Option.getOrElse(linuxDesktopEntryConfig.xdgDataHome, () =>
-            NodePath.posix.join(homeDirectory, ".local", "share"),
-          ),
-          "applications",
-        );
-        NodeFS.mkdirSync(applicationsDir, { recursive: true });
-        const iconPath = Electron.app.isPackaged
-          ? NodePath.posix.join(
-              applicationsDir,
-              "..",
-              "icons",
-              `${linux.linuxDesktopEntryName}.png`,
-            )
-          : undefined;
-        if (iconPath !== undefined) {
-          try {
-            NodeFS.mkdirSync(NodePath.posix.dirname(iconPath), { recursive: true });
-            // Electron's copyFileSync from app.asar extracts to a temp file it never deletes.
-            NodeFS.writeFileSync(
-              iconPath,
-              NodeFS.readFileSync(
-                NodePath.posix.join(
-                  Electron.app.getAppPath(),
-                  "apps/desktop/prod-resources/icon.png",
+      if (!companion) {
+        try {
+          const applicationsDir = NodePath.posix.join(
+            Option.getOrElse(linuxDesktopEntryConfig.xdgDataHome, () =>
+              NodePath.posix.join(homeDirectory, ".local", "share"),
+            ),
+            "applications",
+          );
+          NodeFS.mkdirSync(applicationsDir, { recursive: true });
+          const iconPath = Electron.app.isPackaged
+            ? NodePath.posix.join(
+                applicationsDir,
+                "..",
+                "icons",
+                `${linux.linuxDesktopEntryName}.png`,
+              )
+            : undefined;
+          if (iconPath !== undefined) {
+            try {
+              NodeFS.mkdirSync(NodePath.posix.dirname(iconPath), { recursive: true });
+              // Electron's copyFileSync from app.asar extracts to a temp file it never deletes.
+              NodeFS.writeFileSync(
+                iconPath,
+                NodeFS.readFileSync(
+                  NodePath.posix.join(
+                    Electron.app.getAppPath(),
+                    "apps/desktop/prod-resources/icon.png",
+                  ),
                 ),
-              ),
-            );
-          } catch {}
-        }
-        const desktopEntryPath = NodePath.posix.join(applicationsDir, linux.linuxDesktopEntryName);
-        const { appImagePath } = linuxDesktopEntryConfig;
-        if (
-          Option.isSome(appImagePath) &&
-          Option.isNone(linuxDesktopEntryConfig.launcherPath) &&
-          Option.contains(linuxDesktopEntryConfig.relaunchedByUpdater, "true")
-        ) {
-          try {
-            const replacedPath = replacedVersionedAppImagePath({
-              previousEntry: NodeFS.readFileSync(desktopEntryPath, "utf8"),
-              appImagePath: appImagePath.value,
-            });
-            // Relative, so the pair survives a moved folder; symlink never overwrites a file.
-            if (replacedPath !== null) {
-              NodeFS.symlinkSync(NodePath.posix.basename(appImagePath.value), replacedPath);
-            }
-          } catch {}
-        }
-        NodeFS.writeFileSync(
-          desktopEntryPath,
-          renderUrlHandlerDesktopEntry({
-            displayName: resolveDesktopAppBranding({
-              isDevelopment: linux.isDevelopment,
-              appVersion: Electron.app.getVersion(),
-            }).displayName,
-            execTarget:
-              Option.getOrUndefined(
-                Option.orElse(
-                  linuxDesktopEntryConfig.launcherPath,
-                  () => linuxDesktopEntryConfig.appImagePath,
-                ),
-              ) ?? process.execPath,
-            scheme: ElectronProtocol.getDesktopScheme(linux.isDevelopment),
-            ...(iconPath === undefined ? {} : { iconPath }),
-          }),
-          "utf8",
-        );
-      } catch {}
+              );
+            } catch {}
+          }
+          const desktopEntryPath = NodePath.posix.join(
+            applicationsDir,
+            linux.linuxDesktopEntryName,
+          );
+          const { appImagePath } = linuxDesktopEntryConfig;
+          if (
+            Option.isSome(appImagePath) &&
+            Option.isNone(linuxDesktopEntryConfig.launcherPath) &&
+            Option.contains(linuxDesktopEntryConfig.relaunchedByUpdater, "true")
+          ) {
+            try {
+              const replacedPath = replacedVersionedAppImagePath({
+                previousEntry: NodeFS.readFileSync(desktopEntryPath, "utf8"),
+                appImagePath: appImagePath.value,
+              });
+              // Relative, so the pair survives a moved folder; symlink never overwrites a file.
+              if (replacedPath !== null) {
+                NodeFS.symlinkSync(NodePath.posix.basename(appImagePath.value), replacedPath);
+              }
+            } catch {}
+          }
+          NodeFS.writeFileSync(
+            desktopEntryPath,
+            renderUrlHandlerDesktopEntry({
+              displayName: resolveDesktopAppBranding({
+                isDevelopment: linux.isDevelopment,
+                appVersion: Electron.app.getVersion(),
+              }).displayName,
+              execTarget:
+                Option.getOrUndefined(
+                  Option.orElse(
+                    linuxDesktopEntryConfig.launcherPath,
+                    () => linuxDesktopEntryConfig.appImagePath,
+                  ),
+                ) ?? process.execPath,
+              scheme: ElectronProtocol.getDesktopScheme(linux.isDevelopment),
+              ...(iconPath === undefined ? {} : { iconPath }),
+            }),
+            "utf8",
+          );
+        } catch {}
+      }
       // Chromium caches portal identity; set it before any asynchronous initialization.
       Electron.app.setDesktopName(linux.linuxDesktopEntryName);
+      if (linux.linuxWmClass !== undefined) {
+        Electron.app.commandLine.appendSwitch("class", linux.linuxWmClass);
+      }
       if (linux.passwordStore !== null && linuxPasswordStoreCommandLine === null) {
         Electron.app.commandLine.appendSwitch("password-store", linux.passwordStore);
       }

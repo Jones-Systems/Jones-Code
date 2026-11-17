@@ -1,6 +1,9 @@
+import { useLocation } from "@tanstack/react-router";
+import { PanelFindScope } from "../jones/panelFind/PanelFind";
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
 import { useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { ownsProviderReorderKey } from "~/jones/settings/providerReorderKeyboard";
 
 import { useNativeTitlebarHeight } from "../lib/windowControlsOverlay";
 import { useCloseAppModal } from "./sidebar/mainAppLocation";
@@ -15,6 +18,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
  */
 export function AppRouteModal({ label, children }: { label: string; children: ReactNode }) {
   const closeAppModal = useCloseAppModal();
+  const pathname = useLocation({ select: (location) => location.pathname });
   const [open, setOpen] = useState(true);
   // Text selection that ends on the backdrop is not a dismissal.
   const backdropPressRef = useRef(false);
@@ -33,6 +37,15 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
       disablePointerDismissal
       onOpenChange={(nextOpen, eventDetails) => {
         if (nextOpen) return;
+        if (
+          eventDetails.reason === "escape-key" &&
+          ownsProviderReorderKey("Escape", eventDetails.event.target)
+        ) {
+          // Let the document-owned drag sensor cancel before a later Esc dismisses Settings.
+          eventDetails.cancel();
+          eventDetails.allowPropagation();
+          return;
+        }
         // Esc from a layer outside Base UI (Clerk's modals) is that layer's to handle.
         const target = eventDetails.event.target;
         if (
@@ -75,6 +88,10 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
           }}
         >
           <DialogPrimitive.Popup
+            onKeyDown={(event) => {
+              // Base UI consumes composite keys here; the active drag sensor owns them.
+              if (ownsProviderReorderKey(event.key, event.target)) event.preventBaseUIHandler();
+            }}
             ref={popupRef}
             initialFocus={popupRef}
             finalFocus={false}
@@ -88,7 +105,14 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
               aria-hidden
               className="absolute inset-x-0 top-0 hidden h-(--app-modal-titlebar-height) [-webkit-app-region:drag] max-sm:block"
             />
-            {children}
+            <PanelFindScope
+              label={label.toLowerCase()}
+              resetKey={pathname}
+              data-find-default
+              className="relative flex min-h-0 min-w-0 flex-1 flex-col"
+            >
+              {children}
+            </PanelFindScope>
           </DialogPrimitive.Popup>
         </DialogPrimitive.Viewport>
       </DialogPrimitive.Portal>

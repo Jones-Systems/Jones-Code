@@ -1,10 +1,25 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "thread-stop-settlement",
-  "jonesOwnedPaths": [],
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/SelfSettlementCaller.ts",
+    "apps/server/src/jones/mcp/SelfSettlementCaller.test.ts"
+  ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/mcp/SelfSettlementCaller.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/mcp/SelfSettlementCaller.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/thread/handlers.ts",
+      "to": "apps/server/src/jones/mcp/SelfSettlementCaller.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
       "to": "apps/server/src/jones/orchestration/WaitingRunSettlement.ts"

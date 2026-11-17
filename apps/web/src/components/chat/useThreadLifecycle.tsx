@@ -1,3 +1,9 @@
+import { pendingSends } from "../../jones/pendingSends/store";
+import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
+import {
+  acknowledgeComposerSelection,
+  composerSelectionForDispatch,
+} from "../../jones/threadConfiguration/composerSelection";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { Dispatch } from "react";
@@ -77,6 +83,8 @@ import type { RunStopPresentation } from "@t3tools/client-runtime/state/thread-e
 import { Atom } from "effect/reactivity";
 import { environmentThreadDetails } from "../../state/threads";
 import { resolveThreadOpenRoute } from "../../lib/sideChatPane";
+import { useDescendantApprovalBanner } from "../../jones/descendantApproval/useDescendantApprovalBanner";
+import { ComposerBannerStack } from "./ComposerBannerStack";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
 const RELATED_THREAD_SHELL_WAIT_MS = 1_000;
 const NO_RUN_STOP_ATOM = Atom.make<RunStopPresentation | null>(null).pipe(
@@ -190,9 +198,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   const regenerateThreadTitle = useOrchestrationCommand(threadEnvironment.regenerateTitle, {
     reportFailure: false,
   });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = usePendingTurn();
   const interruptThreadTurn = useOrchestrationCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -503,9 +509,15 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     });
   };
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
+  const descendantApprovalBanner = useDescendantApprovalBanner({
+    parentRef: activeThreadRef,
+    onOpenThread: (ref) => onOpenRelatedThreadStable(ref.threadId, ref.environmentId),
+  });
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
   const childInputNow = childInputNowItem({
-    childThreadInputs,
+    childThreadInputs: descendantApprovalBanner
+      ? childThreadInputs.filter((child) => !child.hasPendingApprovals)
+      : childThreadInputs,
     parentAwaitingUser: Boolean(
       activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput,
     ),
@@ -516,6 +528,8 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     if (!activeThread || !clientSettingsHydrated || sendInFlightRef.current) return;
     const context = composerRef.current?.getSendContext();
     if (!context?.providerAvailable) return;
+    const submittedDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+    const selection = composerSelectionForDispatch(context.selectedModelSelection, submittedDraft);
 
     const threadId = activeThread.id;
     const messageId = newMessageId();
@@ -536,6 +550,12 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       },
     ]);
     scrollToEnd();
+    let accepted = false;
+    pendingSends.whenAccepted(environmentId, threadId, messageId, () => {
+      accepted = true;
+      acknowledgeComposerSelection(composerDraftTarget, submittedDraft);
+      clearUsageLimitsFor(routeThreadKey);
+    });
     // Commands settle into a result, so this always runs.
     const settingsResult = await persistThreadSettingsForNextTurn({
       threadId,
@@ -552,16 +572,14 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
             input: {
               threadId,
               message: { messageId, role: "user", text, attachments: [] },
-              modelSelection: context.selectedModelSelection,
+              ...selection,
               runtimeMode,
               interactionMode: DEFAULT_INTERACTION_MODE,
               createdAt,
             },
           });
-    if (result._tag === "Failure") {
-      setOptimisticUserMessages((messages) =>
-        messages.filter((message) => message.id !== messageId),
-      );
+    if (result._tag === "Failure" && !accepted) {
+      pendingSends.failBeforeDispatch(environmentId, threadId, messageId);
       resetLocalDispatch();
       if (!isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
@@ -719,6 +737,16 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     sendStandaloneCommand,
     setBranchMismatchDismissTick,
     showBranchMismatchBanner,
-    threadStatusLine,
+    threadStatusLine:
+      descendantApprovalBanner === null ? (
+        threadStatusLine
+      ) : (
+        <>
+          <div className="chat-content-lane">
+            <ComposerBannerStack items={[descendantApprovalBanner]} detached />
+          </div>
+          {threadStatusLine}
+        </>
+      ),
   };
 }

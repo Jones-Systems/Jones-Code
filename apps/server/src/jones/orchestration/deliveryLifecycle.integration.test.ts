@@ -29,6 +29,7 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Checkpoints from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as Git from "../../git/GitWorkflowService.ts";
 import * as Codex from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -497,7 +498,9 @@ const fixture = (runEffectWorker: boolean) =>
         isScratchProject: () => Effect.succeed(false),
         folderForThread: () => Effect.succeedNone,
       }),
-      Layer.mock(Git.GitWorkflowService)({ isRepository: () => Effect.succeed(true) }),
+      // Every fixture checkout is its own repository root.
+      Layer.mock(Git.GitWorkflowService)({ repositoryRoot: (path) => Effect.succeed(path) }),
+      Layer.mock(Checkpoints.CheckpointStore)({ isGitRepository: () => Effect.succeed(true) }),
       Layer.mock(Setup.ProjectSetupScriptRunner)({
         runForThread: () => Effect.succeed({ status: "no-script" as const }),
       }),
@@ -509,7 +512,8 @@ const fixture = (runEffectWorker: boolean) =>
         getProviders: Ref.update(providerReads, (count) => count + 1).pipe(Effect.as([])),
       }),
     );
-    const launches = Launch.layer.pipe(
+    // The production owner, as runtimeLayer composes it: no ordinary checkout custody.
+    const launches = Launch.layerProduction.pipe(
       Layer.provide(
         Layer.mergeAll(
           runtime,

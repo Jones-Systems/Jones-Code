@@ -1,3 +1,4 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import type { AgentAwarenessThread } from "../orchestration-v2/ProjectionStore.ts";
 import {
   isListedThreadLineage,
@@ -77,9 +78,10 @@ function isTurnItemPayload(
   );
 }
 
-function shouldPublishAgentAwarenessEvent(
-  event: Pick<OrchestrationV2DomainEvent, "type"> & { readonly payload?: unknown },
-): boolean {
+export function shouldPublishAgentAwarenessEvent(event: {
+  readonly type: OrchestrationV2DomainEvent["type"] | "provider-session.detach-requested";
+  readonly payload?: unknown;
+}): boolean {
   if (
     event.type === "thread.created" &&
     typeof event.payload === "object" &&
@@ -136,6 +138,7 @@ function shouldPublishAgentAwarenessEvent(
         (turnItemUpdateCanEndBackgroundWork(event.payload) ||
           turnItemCanChangeUserWait(event.payload))
       );
+    case "provider-session.detach-requested":
     case "message.updated":
     case "plan.updated":
     case "checkpoint-scope.created":
@@ -869,13 +872,15 @@ export const make = Effect.gen(function* () {
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
     const projectSnapshot = yield* projects.snapshot;
-    const activitySnapshot = yield* threads.getAgentAwarenessSnapshot();
+    const activitySnapshot = yield* threads
+      .getAgentAwarenessSnapshot()
+      .pipe(NodeSqliteClient.readOnly);
     // Live children aren't listed, but a waiting one makes its top-level thread wait.
     const liveChildren = yield* Effect.forEach(
-      (yield* threads.listActiveShellIndex()).filter(
+      (yield* threads.listActiveShellIndex().pipe(NodeSqliteClient.readOnly)).filter(
         (thread) => thread.lineage.relationshipToParent === "subagent" && thread.mayBeLive,
       ),
-      (thread) => readAwarenessThread(thread.id),
+      (thread) => readAwarenessThread(thread.id).pipe(NodeSqliteClient.readOnly),
     );
     const activeThreadIds = resolveAgentAwarenessRelayActiveThreadIds({
       environmentId,

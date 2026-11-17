@@ -78,6 +78,7 @@ import * as BrowserSession from "./preview/BrowserSession.ts";
 import * as DesktopBrowserHost from "./preview/DesktopBrowserHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PreviewPasskeys from "./preview/Passkeys.ts";
+import * as DesktopDeviceMediaTunnel from "./jones/deviceMedia/DesktopDeviceMediaTunnel.ts";
 import * as CompanionConfig from "./jones/previewCompanion/CompanionConfig.ts";
 import * as CompanionProduct from "./jones/previewCompanion/CompanionProduct.ts";
 import * as CompanionUplink from "./jones/previewCompanion/CompanionUplink.ts";
@@ -123,7 +124,9 @@ const resolveDesktopSshCliRunner = (
       nodeEngineRange: serverPackageJson.engines.node,
     };
   }
-  return { archiveVersion: environment.appVersion };
+  return environment.branding.baseName === "Jones Code"
+    ? { hostManagedRuntime: true }
+    : { archiveVersion: environment.appVersion };
 };
 
 const layerDesktopSshEnvironment = Layer.unwrap(
@@ -260,6 +263,7 @@ const layerDesktopApplication = Layer.mergeAll(
       Layer.provide(DesktopManagedPolicy.layer),
     ),
   ),
+  Layer.provideMerge(DesktopDeviceMediaTunnel.layer),
   // Updates closes the same tunnels the SSH IPC opens before quitAndInstall.
   Layer.provideMerge(layerDesktopSsh),
   Layer.provideMerge(layerDesktopWslBackend),

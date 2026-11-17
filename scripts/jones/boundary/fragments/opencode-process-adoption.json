@@ -3,7 +3,8 @@
   "feature": "opencode-process-adoption",
   "jonesOwnedPaths": [
     "apps/server/src/jones/provider/opencode/OpenCodeCreationPolicy.test.ts",
-    "packages/provider-opencode/src/server/jones/OpenCodeCreationPolicy.ts"
+    "packages/provider-opencode/src/server/jones/OpenCodeCreationPolicy.ts",
+    "packages/provider-opencode/src/jones/authorityOriginComposition.test.ts"
   ],
   "hookPaths": [
     "packages/provider-opencode/src/server/adapter.test.ts",

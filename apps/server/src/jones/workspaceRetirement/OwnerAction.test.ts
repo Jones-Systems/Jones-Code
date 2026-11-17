@@ -62,6 +62,7 @@ describe("owner retirement proposal failures", () => {
         Effect.gen(function* () {
           const f = yield* fixture();
           const report = yield* f.action({ action: "propose" });
+          expect(report.operation).toBe("propose");
           expect(report.counts).toEqual({ removed: 0, kept: 0, failed: 1 });
           expect(report.entries).toMatchObject([
             {

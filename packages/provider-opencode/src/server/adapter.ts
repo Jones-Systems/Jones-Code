@@ -1,3 +1,5 @@
+import * as OpenCodeCreationPolicy from "./jones/OpenCodeCreationPolicy.ts";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 import type {
   Event as OpenCodeEvent,
   Message as OpenCodeMessage,
@@ -465,6 +467,7 @@ interface PendingOpenCodeRequest {
 }
 
 export interface OpenCodeAdapterV2Options {
+  readonly authority?: OpenCodeCreationPolicy.OpenCodeQualifiedAuthority;
   readonly instanceId: ProviderInstanceId;
   readonly settings: OpenCodeSettings;
   readonly environment: NodeJS.ProcessEnv;
@@ -1053,7 +1056,19 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             ? { serverPassword: settingsSecretLiteral(options.settings.serverPassword) }
             : {}),
           environment: options.environment,
+          ...(options.authority !== undefined
+            ? { creationHooks: options.authority.creationHooks }
+            : {}),
         });
+        const adoption =
+          options.authority === undefined
+            ? undefined
+            : yield* OpenCodeCreationPolicy.adoptSession({
+                parent: connection.ownedProcess,
+                authority: options.authority,
+                providerInstanceId: options.instanceId,
+                session: input,
+              });
         const client = runtime.createOpenCodeSdkClient({
           baseUrl: connection.url,
           directory: cwd,
@@ -1096,6 +1111,36 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           lastError: null,
         };
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event, Cause.Done>();
+        const eventProducer = ProviderEventOrigin.makeProviderEventProducer(
+          {
+            driver: OPENCODE_PROVIDER,
+            instanceId: options.instanceId,
+            providerSessionId: input.providerSessionId,
+            ...(adoption !== undefined
+              ? { runtimeGeneration: adoption.capture.runtimeGeneration }
+              : {}),
+          },
+          adoption?.isCurrent,
+        );
+        const bindAdoption = (providerThread: OrchestrationV2ProviderThread) =>
+          adoption === undefined
+            ? Effect.succeed(providerThread)
+            : OpenCodeCreationPolicy.bindSessionAdoption(adoption, input.runtimeLifecycle!, {
+                providerThread,
+                requested: ProviderAdapter.requestedRuntimeIdentity(
+                  input.modelSelection,
+                  OPENCODE_PROVIDER,
+                ),
+                observed: ProviderAdapter.unobservedRuntimeIdentity(),
+                producerOrigin: eventProducer.origin,
+              });
+        const requireAdoption =
+          adoption === undefined
+            ? Effect.void
+            : OpenCodeCreationPolicy.requireCurrent({
+                incarnation: adoption.capture.parent,
+                isCurrent: adoption.isCurrent,
+              }).pipe(Effect.asVoid);
         let nativeStreamFailure: OrchestrationV2ProviderFailure | null = null;
         const threads = new Map<string, OpenCodeThreadState>();
         const variantCache: OpenCodeRuntime.OpenCodeVariantCache = new Map();
@@ -1127,7 +1172,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
         const eventPermit = Semaphore.makeUnsafe(1);
 
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+          Queue.offer(
+            events,
+            ProviderEventOrigin.stampProviderEvent(event, { producer: eventProducer.origin }),
+          ).pipe(Effect.asVoid);
 
         const logProtocolEvent = makeOpenCodeProtocolLogger({
           nativeEventLogger: options.nativeEventLogger,
@@ -1148,6 +1196,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             method,
             payload,
           }).pipe(
+            Effect.andThen(requireAdoption),
             Effect.andThen(OpenCodeRuntime.runOpenCodeSdk(method, call)),
             Effect.tap((response) =>
               logProtocolEvent({
@@ -2236,6 +2285,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           status: TerminalTurnStatus,
           terminal?: {
             readonly failure?: OrchestrationV2ProviderFailure;
+            readonly evidenceKind?: "local_failure";
             readonly threadDisposition?: "reusable" | "broken";
           },
         ) {
@@ -2245,7 +2295,11 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               if (turn.finalized) return;
               if (nativeStreamFailure !== null) {
                 status = "failed";
-                terminal = { failure: nativeStreamFailure, threadDisposition: "broken" };
+                terminal = {
+                  failure: nativeStreamFailure,
+                  evidenceKind: "local_failure",
+                  threadDisposition: "broken",
+                };
               }
               let lastError = sessionEntity.lastError;
               if (status === "completed" && turn.contextOverflow !== null) {
@@ -2327,6 +2381,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 status === "failed"
                   ? {
                       type: "turn.terminal",
+                      providerTurn: turn.providerTurn,
                       driver: OPENCODE_PROVIDER,
                       providerThreadId: turn.providerThreadId,
                       providerTurnId: turn.providerTurnId,
@@ -2336,6 +2391,9 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                         `terminal-failure:${turn.providerTurnId}`,
                       ),
                       status,
+                      ...(terminal?.evidenceKind === undefined
+                        ? {}
+                        : { evidenceKind: terminal.evidenceKind }),
                       failure:
                         terminal?.failure ??
                         makeProviderFailure({
@@ -2346,6 +2404,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                     }
                   : {
                       type: "turn.terminal",
+                      providerTurn: turn.providerTurn,
                       driver: OPENCODE_PROVIDER,
                       providerThreadId: turn.providerThreadId,
                       providerTurnId: turn.providerTurnId,
@@ -3238,6 +3297,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   });
                 yield* settleLaunchedSubagents(state.nativeSessionId, "failed");
               }
+              eventProducer.drain();
               yield* Queue.end(events);
             }),
           ),
@@ -3303,6 +3363,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           scope,
           Effect.sync(() => {
             closing = true;
+            eventProducer.drain();
             for (const state of threads.values()) state.wake = null;
           }),
         );
@@ -3475,7 +3536,11 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             ...(variant === undefined ? {} : { variant }),
             system: [
               orchestrationSystemPrompt,
-              buildRuntimeInstructions({ harness: "OpenCode", model: turn.modelSelection.model }),
+              buildRuntimeInstructions({
+                harness: "OpenCode",
+                model: turn.modelSelection.model,
+                ...(host.appIdentity === undefined ? {} : { appIdentity: host.appIdentity }),
+              }),
             ]
               .filter(Boolean)
               .join("\n\n"),
@@ -3591,6 +3656,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           driver: OPENCODE_PROVIDER,
           providerSessionId: input.providerSessionId,
           providerSession: sessionEntity,
+          eventOriginMode: "captured",
           events: Stream.fromEffectRepeat(Queue.take(events)),
           hasPendingBackgroundWork: Effect.sync(
             () =>
@@ -3599,6 +3665,13 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           ),
           ensureThread: Effect.fn("OpencodeAdapter.ensureThread")(
             function* (threadInput) {
+              yield* requireAdoption;
+              if (adoption !== undefined && threadInput.threadId !== adoption.capture.threadId) {
+                return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+                  operation: "bindAdoption",
+                  detail: "This OpenCode session adoption does not authorize the target thread.",
+                });
+              }
               if (threadInput.existingProviderThread?.nativeThreadRef != null) {
                 return yield* runtimeSession.resumeThread({
                   providerThread: threadInput.existingProviderThread,
@@ -3631,8 +3704,9 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                       status: created.status,
                       updatedAt: created.updatedAt,
                     };
-              registerThread(nativeSession, providerThread, null).permission = permission;
-              return providerThread;
+              const bound = yield* bindAdoption(providerThread);
+              registerThread(nativeSession, bound, null).permission = permission;
+              return bound;
             },
             (effect, threadInput) =>
               effect.pipe(
@@ -3648,6 +3722,16 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           ),
           resumeThread: Effect.fn("OpencodeAdapter.resumeThread")(
             function* (threadInput) {
+              yield* requireAdoption;
+              if (
+                adoption !== undefined &&
+                threadInput.providerThread.appThreadId !== adoption.capture.threadId
+              ) {
+                return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+                  operation: "bindAdoption",
+                  detail: "This OpenCode session adoption does not authorize the target thread.",
+                });
+              }
               const sessionId = nativeThreadId(threadInput.providerThread);
               const response = yield* sdkCall("session.get", { sessionID: sessionId }, () =>
                 client.session.get({ sessionID: sessionId }),
@@ -3660,11 +3744,12 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 status: "idle" as const,
                 updatedAt: dateTimeFromEpoch(nativeSession.time.updated, resumedAt),
               };
-              const state = registerThread(nativeSession, providerThread, null);
+              const bound = yield* bindAdoption(providerThread);
+              const state = registerThread(nativeSession, bound, null);
               if (threadInput.runtimePolicy !== undefined) {
                 yield* applyPermissionRules(state, threadInput.runtimePolicy);
               }
-              return providerThread;
+              return bound;
             },
             (effect, threadInput) =>
               effect.pipe(
@@ -3687,6 +3772,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           resumeTurn: (input) => runtimeSession.startTurn(ProviderAdapter.resumeTurnInput(input)),
           startTurn: Effect.fn("OpencodeAdapter.startTurn")(
             function* (turnInput) {
+              yield* requireAdoption;
               if (closing || nativeStreamFailure !== null) {
                 return yield* protocolError(
                   "OpenCode event stream has ended; reconnect the provider session before starting another turn.",
@@ -4352,6 +4438,16 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           ),
           forkThread: Effect.fn("OpencodeAdapter.forkThread")(
             function* (forkInput) {
+              yield* requireAdoption;
+              if (
+                adoption !== undefined &&
+                forkInput.targetThreadId !== adoption.capture.threadId
+              ) {
+                return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+                  operation: "bindAdoption",
+                  detail: "This OpenCode session adoption does not authorize the target thread.",
+                });
+              }
               const sourceSessionId = nativeThreadId(forkInput.sourceProviderThread);
               const sourceState = threads.get(sourceSessionId);
               if (sourceState?.activeTurn !== null && sourceState?.activeTurn !== undefined) {
@@ -4401,8 +4497,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 },
                 now: forkedAt,
               });
-              registerThread(nativeSession, providerThread, null);
-              return providerThread;
+              yield* requireAdoption;
+              const bound = yield* bindAdoption(providerThread);
+              registerThread(nativeSession, bound, null);
+              return bound;
             },
             (effect, forkInput) =>
               effect.pipe(
@@ -4453,7 +4551,18 @@ export const OpenCodeAdapterV2Driver: ProviderAdapterDriver<
     function* (input: ProviderAdapterDriverCreateInput<OpenCodeSettings>) {
       const hostEnvironment = yield* HostProcess.Environment;
       const providerEventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
+      const authorityOption = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
+      const authority = Option.isSome(authorityOption)
+        ? authorityOption.value.forInstance(input.instanceId)
+        : undefined;
+      if (Option.isSome(authorityOption) && authority === undefined) {
+        return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+          operation: "authority",
+          detail: "OpenCode instance authority is unavailable.",
+        });
+      }
       return yield* makeOpenCodeAdapterV2({
+        ...(authority !== undefined ? { authority } : {}),
         instanceId: input.instanceId,
         settings: { ...input.config, enabled: input.enabled },
         environment: yield* mergeProviderInstanceEnvironment(input.environment, hostEnvironment),

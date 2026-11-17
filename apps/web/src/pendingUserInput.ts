@@ -189,5 +189,8 @@ export function derivePendingUserInputProgress<Q extends UserInputQuestion>(
   };
 }
 
-
-export type { PendingUserInputDraftAnswer, PendingUserInputAnswer } from "./jones/questionAnswer/pendingAnswers";
+export {
+  buildPendingUserInputAnswers,
+  type PendingUserInputDraftAnswer,
+  type PendingUserInputAnswer,
+} from "./jones/questionAnswer/pendingAnswers";

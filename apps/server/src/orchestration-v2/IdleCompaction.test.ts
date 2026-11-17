@@ -21,6 +21,8 @@ import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import * as TestClock from "effect/testing/TestClock";
 
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as IdleCompactionService from "./IdleCompactionService.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -265,7 +267,10 @@ describe("IdleCompactionService", () => {
           },
         });
         const dependencies = Layer.mergeAll(
+          // The dependency roster reads Jones sidecar tables on this database.
+          Sqlite.layerMemory,
           Layer.mock(Orchestrator.OrchestratorV2)({
+            ...unusedCorePorts(),
             streamDomainEvents: Stream.make({
               id: EventId.make("idle-completed"),
               type: "run.updated",
@@ -374,7 +379,10 @@ describe("IdleCompactionService", () => {
       const dispatched: Array<string> = [];
       const streamDone = yield* Deferred.make<void>();
       const dependencies = Layer.mergeAll(
+        // The dependency roster reads Jones sidecar tables on this database.
+        Sqlite.layerMemory,
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           // A delegated completion on the earlier run lands after the later run completed.
           streamDomainEvents: Stream.make(completed(laterRun), completed(earlierRun)).pipe(
             Stream.ensuring(Deferred.succeed(streamDone, undefined)),

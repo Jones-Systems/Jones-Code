@@ -1,5 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off - Synchronous fixture hashing verifies exact boundary source bytes.
+// @effect-diagnostics nodeBuiltinImport:off - Synchronous fixtures verify source hashes and literal filesystem paths.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import {
   boundaryExit,
@@ -8,6 +11,7 @@ import {
   parseFragment,
   parseInventory,
   parseResolutionCases,
+  regularPath,
   runCli,
   safePath,
 } from "./check-boundary.ts";
@@ -219,13 +223,124 @@ describe("Jones boundary", () => {
       "/outside",
       "../outside",
       "a/../b",
+      "a/./b",
+      "a//b",
+      "//outside",
+      "C:/outside",
+      "C:outside",
+      "file:/outside",
+      "",
       "-option",
-      "apps/*jones*/",
       "a\\b",
       "a\nb",
+      "a\0b",
+      "a\x7fb",
     ])
       expect(() => safePath(name, true)).toThrow("Unsafe");
     expect(() => runCli(["--upstream", "HEAD;touch outside"])).toThrow("Unknown");
+  });
+  it.each([
+    "apps/marketing/src/pages/[...locale]/download.astro",
+    "apps/web/src/routes/[project]/[[...thread]].tsx",
+    "apps/web/src/routes/(group)/file #1.ts",
+    "apps/web/src/routes/literal*?{name}.ts",
+  ])("classifies literal route names without expanding patterns: %s", (name) => {
+    const inv = parseInventory({ ...inventory(), paths: { [name]: "accepted-shared" } });
+    expect(safePath(name)).toBe(name);
+    const other = name.replace(/\[[^\]]*\]|[*?{}#]/g, "expanded");
+    const result = checkBoundary(inv, [], new Map([[name, ""]]), new Set([name]), [name, other]);
+    expect(result.classified).toEqual({ [name]: "accepted-shared" });
+    expect(result.violations).toEqual([
+      {
+        code: "unclassified-path",
+        path: other,
+        detail: "Changed path has no explicit classification",
+      },
+    ]);
+  });
+  it("keeps exact route imports, hooks, tombstones and resolution targets literal", () => {
+    const route = "apps/web/src/routes/[project].ts";
+    const f = parseFragment({
+      ...fragment(),
+      hookPaths: [route],
+      allowedImports: [{ from: route, to: implementation }],
+    });
+    const text = 'import {value} from "../jones/usage/view";';
+    const tree = new Map([
+      [route, text],
+      [implementation, ""],
+    ]);
+    const run = () => checkBoundary(inventory(), [f], tree, new Set([route]), [route]);
+    expect(run().violations).toEqual([]);
+    f.allowedImports = [];
+    expect(run().violations[0]?.code).toBe("unlisted-upstream-import");
+    const inv = parseInventory({ ...inventory(), tombstones: [route] });
+    expect(checkBoundary(inv, [], new Map([[route, ""]]), new Set(), []).violations[0]?.code).toBe(
+      "tombstone-resurrected",
+    );
+    const hash = NodeCrypto.createHash("sha256").update("").digest("hex");
+    const cases = parseResolutionCases({
+      schema: "jones.boundary-resolutions/v1",
+      cases: [
+        {
+          from: route,
+          sourceSha256: hash,
+          expression: "destination",
+          reason: "Literal route fixture",
+          anchors: [{ path: route, sha256: hash }],
+          targets: [route],
+        },
+      ],
+    });
+    expect(cases[0]?.targets).toEqual([route]);
+  });
+  it.each([
+    "apps/web/src/jones/*/",
+    "apps/web/src/jones/[name]/",
+    "apps/web/src/jones/{a,b}.ts",
+    "apps/web/src/jones/a?.ts",
+    "apps/web/src/jones/a#b.ts",
+  ])("rejects pattern-like ownership declarations: %s", (name) => {
+    expect(() => parseFragment({ ...fragment(), jonesOwnedPaths: [name] })).toThrow(
+      "Unsafe ownership path",
+    );
+    expect(() => parseInventory({ ...inventory(), jonesOwnedPaths: [name] })).toThrow(
+      "Unsafe ownership path",
+    );
+  });
+  it("reads bracketed paths literally and rejects symlink files and ancestors", () => {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-boundary-path-"));
+    try {
+      NodeFS.mkdirSync(NodePath.join(root, "[...locale]"));
+      NodeFS.writeFileSync(NodePath.join(root, "[...locale]", "route.ts"), "export {};");
+      expect(NodeFS.readFileSync(regularPath(root, "[...locale]/route.ts"), "utf8")).toBe(
+        "export {};",
+      );
+      NodeFS.symlinkSync(
+        NodePath.join(root, "[...locale]", "route.ts"),
+        NodePath.join(root, "[file].ts"),
+      );
+      NodeFS.symlinkSync(
+        NodePath.join(root, "[...locale]"),
+        NodePath.join(root, "[directory]"),
+        "dir",
+      );
+      NodeFS.symlinkSync(NodePath.dirname(root), NodePath.join(root, "[escape]"), "dir");
+      expect(() => regularPath(root, "[file].ts")).toThrow("Symlink source is unsupported");
+      expect(() => regularPath(root, "[directory]/route.ts")).toThrow(
+        "Symlink source is unsupported",
+      );
+      expect(() => regularPath(root, "[escape]/outside.ts")).toThrow(
+        "Symlink source is unsupported",
+      );
+      expect(() => regularPath(root, "[...locale]")).toThrow("Source must be a regular file");
+      expect(() => regularPath(root, "[...locale]/../outside.ts")).toThrow(
+        "Unsafe repository path",
+      );
+      expect(() => regularPath(root, "[...locale]/route.ts/")).toThrow("Unsafe repository path");
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
   });
   it("checks imports in unchanged upstream files too", () => {
     const f = fragment();

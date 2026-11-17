@@ -110,12 +110,11 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
         let created = yield* Effect.forEach(births, (e) => compiledDecodeEffect1(e.payload_json));
         let releaseBinding = false;
         if (receipt?.command_type === "prepared-run.release" && receipt.status === "accepted") {
-          const releases = yield* Effect.forEach(
-            events.filter((e) => e.event_type === "run.updated"),
-            (e) =>
-              compiledDecodeEffect1(e.payload_json).pipe(
-                Effect.map((run) => ({ run, sequence: e.sequence })),
-              ),
+          const releaseEvents = yield* eventSink
+            .readLifecycleByCommandId({ commandId: input.commandId })
+            .pipe(Stream.runCollect);
+          const releases = releaseEvents.flatMap(({ event, sequence }) =>
+            event.type === "run.updated" ? [{ run: event.payload, sequence }] : [],
           );
           const legacyReleases = releases.filter(({ run }) => run.legacyBootstrap !== undefined);
           if (legacyReleases.length > 1) correlation = "ambiguous";
@@ -123,7 +122,7 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
             const release = legacyReleases[0]!;
             const policy = release.run.legacyBootstrap!;
             const collect = (commandId: CommandId) =>
-              eventSink.readByCommandId({ commandId }).pipe(
+              eventSink.readLifecycleByCommandId({ commandId }).pipe(
                 Stream.runCollect,
                 Effect.map((stored) => Array.from(stored)),
               );

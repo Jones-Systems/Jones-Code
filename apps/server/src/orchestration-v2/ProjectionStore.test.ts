@@ -285,6 +285,24 @@ const addRolledBackRecoveryCandidate = Effect.fn("addRolledBackRecoveryCandidate
   return threadId;
 });
 
+it.effect("detach intent preserves the pure projection and persisted activity timestamp", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = yield* addRolledBackRecoveryCandidate("detach-intent");
+    const before = yield* store.getThreadProjection(threadId);
+    const event = {
+      id: EventId.make("event:detach-intent"),
+      type: "provider-session.detach-requested" as const,
+      threadId,
+      occurredAt: DateTime.add(before.updatedAt, { minutes: 1 }),
+      payload: { providerSessionId: ProviderSessionId.make("session:detach-intent") },
+    };
+    assert.strictEqual(ProjectionStore.applyToProjection(before, event), before);
+    yield* store.apply(event);
+    assert.deepEqual(yield* store.getThreadProjection(threadId), before);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("routes full projection reads to readers and retains uncommitted writer state", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;

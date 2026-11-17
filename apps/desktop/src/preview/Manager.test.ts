@@ -846,6 +846,7 @@ describe("PreviewManager", () => {
         // As in Chromium: the hung renderer answers nothing, and a terminate reaches it only
         // while no navigation is pending.
         let stopped = false;
+        let debuggerAttached = false;
         const probed = yield* Deferred.make<void>();
         const navigatedAfterStop: Array<boolean> = [];
         const navigated = () => {
@@ -870,8 +871,13 @@ describe("PreviewManager", () => {
             goForward: navigated,
           },
           debugger: {
-            isAttached: () => false,
-            attach: vi.fn(),
+            isAttached: () => debuggerAttached,
+            attach: vi.fn(() => {
+              debuggerAttached = true;
+            }),
+            detach: vi.fn(() => {
+              debuggerAttached = false;
+            }),
             sendCommand,
             on: vi.fn(),
             off: vi.fn(),

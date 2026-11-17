@@ -1,4 +1,9 @@
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
+import { useSortedProjectGroups } from "./CommandPaletteLookups";
+import { sortEnvironmentOptions } from "../jones/presentationOrder/environmentOrder";
+import { useUiStateStore } from "../uiStateStore";
+import { useCurrentRuntimeStop } from "../hooks/useCurrentRuntimeStop";
+
 import { threadPullRequestLinkMode } from "@t3tools/client-runtime/thread-pull-request-compatibility";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
@@ -120,7 +125,7 @@ import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesys
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
-import { threadEnvironment } from "../state/threads";
+
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -236,7 +241,6 @@ import {
   selectCommandPaletteClientSettings,
   useEnvironmentLookups,
   useProjectLookups,
-  useSortedProjectGroups,
 } from "./CommandPaletteLookups";
 import {
   buildNewThreadInProjectItems,
@@ -472,12 +476,11 @@ function OpenCommandPaletteDialog(props: {
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
     reportFailure: false,
   });
-  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
-    reportFailure: false,
-  });
+  const restartCurrentRuntime = useCurrentRuntimeStop();
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
+  const environmentOrder = useUiStateStore((store) => store.environmentOrder);
   const { environments } = useEnvironments();
   const desktopLocalBootstraps = useDesktopLocalBootstraps();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -554,7 +557,7 @@ function OpenCommandPaletteDialog(props: {
   const [isRemoteProjectLookingUp, setIsRemoteProjectLookingUp] = useState(false);
   const [isRemoteProjectCloning, setIsRemoteProjectCloning] = useState(false);
   const { environmentLabelById, projectEnvironmentLocationById } = useEnvironmentLookups();
-  const projectGroups = useSortedProjectGroups(environmentLabelById);
+  const projectGroups = useSortedProjectGroups();
   const contextualProjectRef = resolveThreadActionProjectRef({
     activeDraftThread,
     activeThread: activeThread ?? undefined,
@@ -610,19 +613,13 @@ function OpenCommandPaletteDialog(props: {
         };
       });
 
-    options.sort((left, right) => {
-      if (left.isPrimary !== right.isPrimary) {
-        return left.isPrimary ? -1 : 1;
-      }
-      return left.label.localeCompare(right.label);
-    });
-
-    return options;
+    return sortEnvironmentOptions(options, environmentOrder);
   })();
   const defaultAddProjectEnvironmentId =
-    addProjectEnvironmentOptions.find((option) => option.isConnected)?.environmentId ?? null;
+    sortEnvironmentOptions(addProjectEnvironmentOptions, []).find((option) => option.isConnected)
+      ?.environmentId ?? null;
   const wslAddProjectEnvironmentOption =
-    addProjectEnvironmentOptions.find((option) => {
+    sortEnvironmentOptions(addProjectEnvironmentOptions, []).find((option) => {
       if (!option.isConnected) {
         return false;
       }
@@ -1290,7 +1287,7 @@ function OpenCommandPaletteDialog(props: {
   };
 
   const openNewProjectFlow = () => {
-    const firstOption = newProjectEnvironmentOptions[0];
+    const firstOption = sortEnvironmentOptions(newProjectEnvironmentOptions, [])[0];
     if (firstOption) startNewProject(firstOption.environmentId, null);
   };
 
@@ -1508,29 +1505,39 @@ function OpenCommandPaletteDialog(props: {
       icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         const { environmentId } = thread;
-        if (thread.runtime !== null) {
-          const stopped = await stopThreadSession({
-            environmentId,
-            input: { threadId: thread.id },
-          });
-          if (stopped._tag === "Failure") throw squashAtomCommandFailure(stopped);
-        }
-        toastManager.add({
-          type: "success",
-          title: "Agent session will restart",
-          description: "Your next message starts a fresh session.",
-        });
-        const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
-        if (!project) return;
-        const refreshed = await refreshProviders({
-          environmentId,
-          input: {
-            instanceId: thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId,
-            cwd: thread.worktreePath ?? project.workspaceRoot,
-            fresh: true,
+        const result = await restartCurrentRuntime(
+          scopeThreadRef(environmentId, thread.id),
+          activeThreadServerConfig?.environment.capabilities.currentRuntimeStop,
+          async (target) => {
+            const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
+            if (!project)
+              throw new Error("The thread project is unavailable for provider refresh.");
+            const refreshed = await refreshProviders({
+              environmentId,
+              input: {
+                instanceId: target.binding.providerInstanceId,
+                cwd: thread.worktreePath ?? project.workspaceRoot,
+                fresh: true,
+              },
+            });
+            if (refreshed._tag === "Failure") throw squashAtomCommandFailure(refreshed);
           },
+        );
+        toastManager.add({
+          type:
+            result.status === "stopped"
+              ? "success"
+              : result.status === "accepted"
+                ? "info"
+                : "error",
+          title:
+            result.status === "stopped"
+              ? "Agent session stopped"
+              : result.status === "accepted"
+                ? "Agent stop accepted"
+                : "Agent stop not confirmed",
+          description: result.reason,
         });
-        if (refreshed._tag === "Failure") throw squashAtomCommandFailure(refreshed);
       },
     });
   }

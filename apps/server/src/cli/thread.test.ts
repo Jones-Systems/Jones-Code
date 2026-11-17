@@ -7,6 +7,7 @@ import * as NetService from "@t3tools/shared/Net";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -30,25 +31,300 @@ import {
   titleFromMessage,
   waitForRun,
 } from "./thread.ts";
+import { workstreamCommand } from "./workstream.ts";
+
+const authCalls = vi.hoisted(() => {
+  const issued: Array<unknown> = [];
+  const revoked: Array<string> = [];
+  return { issued, revoked };
+});
 
 vi.mock("../auth/EnvironmentAuth.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../auth/EnvironmentAuth.ts")>();
   return {
     ...actual,
     layerRuntime: Layer.mock(actual.EnvironmentAuth)({
-      issueMcpClientSession: () =>
-        Effect.map(DateTime.now, (expiresAt) => ({
-          sessionId: AuthSessionId.make("test-session"),
-          token: "synthetic-token",
-          expiresAt,
-        })),
-      revokeSession: () => Effect.succeed(true),
+      issueMcpClientSession: (input) =>
+        Effect.map(DateTime.now, (expiresAt) => {
+          authCalls.issued.push(input);
+          return {
+            sessionId: AuthSessionId.make("test-session"),
+            token: "synthetic-token",
+            expiresAt,
+          };
+        }),
+      revokeSession: (sessionId) =>
+        Effect.sync(() => {
+          authCalls.revoked.push(sessionId);
+          return true;
+        }),
     }),
   };
 });
 
 const threadId = ThreadId.make("thread-1");
 const runId = RunId.make("run-1");
+
+it.effect(
+  "workstream commands share the scoped owner session and preserve remote tool arguments",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workstream-cli-" });
+      yield* persistServerRuntimeState({
+        path: path.join(baseDir, "userdata", "server-runtime.json"),
+        state: yield* makePersistedServerRuntimeState({
+          config: { host: "127.0.0.1", devUrl: undefined },
+          port: 3_773,
+        }),
+      });
+      const environmentId = "remote-environment";
+      const read = { threadId, workstreamId: "old", workstreamName: "Old", revision: 7 };
+      const receipt = { commandId: "server-command", accepted: true };
+      const calls: Array<{
+        readonly tool: string;
+        readonly args: Readonly<Record<string, unknown>>;
+      }> = [];
+      const sessions: Array<McpBridge.McpToolSessionOptions> = [];
+      const port: McpBridge.McpToolSession = {
+        call: (tool, args) => {
+          calls.push({ tool, args });
+          return Effect.succeed({
+            structuredContent: tool === "t3_thread_workstream_read" ? read : receipt,
+          });
+        },
+      };
+      using session = vi.spyOn(McpBridge, "mcpToolSession").mockImplementation((options) => {
+        sessions.push(options);
+        return Effect.succeed(port);
+      });
+      const issuedBefore = authCalls.issued.length;
+      const revokedBefore = authCalls.revoked.length;
+      const cases = [
+        {
+          command: ["list"],
+          expected: [{ tool: "t3_workstreams_list", args: { environmentId } }],
+        },
+        {
+          command: ["create", "  New  ", "--id", "stable-workstream"],
+          expected: [
+            {
+              tool: "t3_workstream_create",
+              args: { id: "stable-workstream", name: "New", environmentId },
+            },
+          ],
+        },
+        {
+          command: ["rename", "stable-workstream", "  Renamed  "],
+          expected: [
+            {
+              tool: "t3_workstream_update",
+              args: { id: "stable-workstream", name: "Renamed", environmentId },
+            },
+          ],
+        },
+        {
+          command: ["recolor", "stable-workstream", "#aabbcc"],
+          expected: [
+            {
+              tool: "t3_workstream_update",
+              args: { id: "stable-workstream", color: "#AABBCC", environmentId },
+            },
+          ],
+        },
+        {
+          command: ["reorder", "stable-workstream", "order-key"],
+          expected: [
+            {
+              tool: "t3_workstream_update",
+              args: { id: "stable-workstream", orderKey: "order-key", environmentId },
+            },
+          ],
+        },
+        {
+          command: ["delete", "stable-workstream"],
+          expected: [
+            {
+              tool: "t3_workstream_update",
+              args: { id: "stable-workstream", delete: true, environmentId },
+            },
+          ],
+        },
+        {
+          command: ["assign", threadId, "--workstream-id", "stable-workstream"],
+          expected: [
+            { tool: "t3_thread_workstream_read", args: { threadId, environmentId } },
+            {
+              tool: "t3_thread_workstream_set",
+              args: {
+                threadId,
+                environmentId,
+                workstreamId: "stable-workstream",
+                expectedRevision: 7,
+              },
+            },
+          ],
+        },
+        {
+          command: ["unassign", threadId],
+          expected: [
+            { tool: "t3_thread_workstream_read", args: { threadId, environmentId } },
+            {
+              tool: "t3_thread_workstream_set",
+              args: { threadId, environmentId, workstreamId: null, expectedRevision: 7 },
+            },
+          ],
+        },
+        {
+          command: ["read", threadId],
+          expected: [{ tool: "t3_thread_workstream_read", args: { threadId, environmentId } }],
+        },
+      ];
+      for (const entry of cases) {
+        const before = calls.length;
+        yield* Command.runWith(workstreamCommand, { version: "0.0.0" })([
+          ...entry.command,
+          "--json",
+          "--base-dir",
+          baseDir,
+          "--environment-id",
+          environmentId,
+        ]);
+        assert.deepStrictEqual(calls.slice(before), entry.expected);
+        assert.strictEqual(
+          (yield* TestConsole.logLines).at(-1),
+          JSON.stringify(entry.command[0] === "read" ? read : receipt),
+        );
+        assert.strictEqual(authCalls.revoked.length - revokedBefore, sessions.length);
+      }
+      assert.strictEqual(session.mock.calls.length, cases.length);
+      assert.deepStrictEqual(
+        sessions,
+        cases.map(() => ({
+          endpoint: "http://127.0.0.1:3773/mcp",
+          authorization: "Bearer synthetic-token",
+          clientName: "t3-thread-cli",
+        })),
+      );
+      assert.deepStrictEqual(
+        authCalls.issued.slice(issuedBefore),
+        cases.map(() => ({
+          label: "t3 thread cli",
+          access: "full-access",
+          peerLink: false,
+          client: { deviceType: "bot" },
+        })),
+      );
+      assert.deepStrictEqual(
+        authCalls.revoked.slice(revokedBefore),
+        cases.map(() => "test-session"),
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          NetService.layer,
+          ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_PORT: "3773" } })),
+        ),
+      ),
+    ),
+);
+
+it.effect("workstream failures and interruption revoke the issued session without replay", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-workstream-failure-" });
+    yield* persistServerRuntimeState({
+      path: path.join(baseDir, "userdata", "server-runtime.json"),
+      state: yield* makePersistedServerRuntimeState({
+        config: { host: "127.0.0.1", devUrl: undefined },
+        port: 3_773,
+      }),
+    });
+    const bridgeError = new McpBridge.AcpMcpBridgeError({ message: "synthetic connection loss" });
+    const outcomes = [
+      { effect: Effect.fail(bridgeError), tag: "ThreadServerUnreachableError" },
+      {
+        effect: Effect.succeed({
+          isError: true,
+          content: [{ type: "text", text: "not permitted" }],
+        }),
+        tag: "ThreadToolFailedError",
+      },
+      {
+        effect: Effect.succeed({ structuredContent: { revision: "invalid" } }),
+        tag: "ThreadToolFailedError",
+      },
+    ];
+    for (const outcome of outcomes) {
+      const revokedBefore = authCalls.revoked.length;
+      const call = vi.fn<McpBridge.McpToolSession["call"]>(() => outcome.effect);
+      using session = vi
+        .spyOn(McpBridge, "mcpToolSession")
+        .mockReturnValue(Effect.succeed({ call }));
+      const error = yield* Command.runWith(workstreamCommand, { version: "0.0.0" })([
+        "assign",
+        threadId,
+        "--workstream-id",
+        "stable-workstream",
+        "--json",
+        "--base-dir",
+        baseDir,
+      ]).pipe(Effect.flip);
+      assert.strictEqual(error._tag, outcome.tag);
+      assert.strictEqual(session.mock.calls.length, 1);
+      assert.strictEqual(call.mock.calls.length, 1);
+      assert.strictEqual(authCalls.revoked.length, revokedBefore + 1);
+      assert.strictEqual(authCalls.revoked.at(-1), "test-session");
+    }
+    {
+      const revokedBefore = authCalls.revoked.length;
+      using session = vi
+        .spyOn(McpBridge, "mcpToolSession")
+        .mockReturnValue(Effect.fail(bridgeError));
+      const error = yield* Command.runWith(workstreamCommand, { version: "0.0.0" })([
+        "list",
+        "--json",
+        "--base-dir",
+        baseDir,
+      ]).pipe(Effect.flip);
+      assert.strictEqual(error._tag, "ThreadServerUnreachableError");
+      assert.strictEqual(session.mock.calls.length, 1);
+      assert.strictEqual(authCalls.revoked.length, revokedBefore + 1);
+    }
+    {
+      const revokedBefore = authCalls.revoked.length;
+      const call = vi.fn<McpBridge.McpToolSession["call"]>(() => Effect.interrupt);
+      using session = vi
+        .spyOn(McpBridge, "mcpToolSession")
+        .mockReturnValue(Effect.succeed({ call }));
+      const exit = yield* Command.runWith(workstreamCommand, { version: "0.0.0" })([
+        "list",
+        "--json",
+        "--base-dir",
+        baseDir,
+      ]).pipe(Effect.exit);
+      assert.isTrue(Exit.hasInterrupts(exit));
+      assert.strictEqual(session.mock.calls.length, 1);
+      assert.strictEqual(call.mock.calls.length, 1);
+      assert.strictEqual(authCalls.revoked.length, revokedBefore + 1);
+    }
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        NetService.layer,
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_PORT: "3773" } })),
+      ),
+    ),
+  ),
+);
 
 it.effect(
   "start resolves home-relative project paths while preserving ids and relative paths",
@@ -155,6 +431,7 @@ it.effect("does not sign in to whatever took over a dead server's port", () =>
     using session = vi
       .spyOn(McpBridge, "mcpToolSession")
       .mockReturnValue(Effect.die("no session should open"));
+    const issuedBefore = authCalls.issued.length;
 
     const error = yield* Command.runWith(threadCommand, { version: "0.0.0" })([
       "list",
@@ -164,6 +441,15 @@ it.effect("does not sign in to whatever took over a dead server's port", () =>
 
     assert.strictEqual(error._tag, "ThreadServerNotRunningError");
     assert.strictEqual(session.mock.calls.length, 0);
+    const workstreamError = yield* Command.runWith(workstreamCommand, { version: "0.0.0" })([
+      "list",
+      "--json",
+      "--base-dir",
+      baseDir,
+    ]).pipe(Effect.flip);
+    assert.strictEqual(workstreamError._tag, "ThreadServerNotRunningError");
+    assert.strictEqual(session.mock.calls.length, 0);
+    assert.strictEqual(authCalls.issued.length, issuedBefore);
   }).pipe(
     Effect.scoped,
     Effect.provide(

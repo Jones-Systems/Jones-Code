@@ -1,3 +1,15 @@
+import { openOwnedThreadMenu } from "../jones/workstreams/threadMenuBridge";
+import {
+  readEnvironmentSupportsSettlement,
+  readEnvironmentSupportsSnooze,
+  readEnvironmentSupportsPinning,
+  readEnvironmentSupportsTitleRegeneration,
+} from "../state/entities";
+import { SETTLEMENT_RESTORE_MENU_ID } from "../jones/settlementRestore/menu";
+import {
+  undoSettleFromMenu,
+  withThreadSettlementRestore,
+} from "../jones/settlementRestore/threadMenu";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import { openGuestShareDialog } from "../components/chat/guestShareDialogState";
@@ -29,7 +41,6 @@ import { threadEnvironment } from "../state/threads";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope } from "../state/session";
 import {
-  readEnvironmentServerConfigLoaded,
   readEnvironmentSupportsAutoSettleOptOut,
   readThreadShell,
   useProjects,
@@ -89,6 +100,9 @@ export function useThreadActionMenu(input: {
     markThreadUnread,
     turnThreadIntoProject,
   } = useThreadActions();
+  const stopThread = useOrchestrationCommand(threadEnvironment.interruptTurn, {
+    reportFailure: false,
+  });
   const regenerateThreadTitle = useOrchestrationCommand(threadEnvironment.regenerateTitle, {
     reportFailure: false,
   });
@@ -109,6 +123,10 @@ export function useThreadActionMenu(input: {
 
   const openMenu = (position: { x: number; y: number }) => {
     if (threadRef === null) return;
+    // Unloaded threads keep this path's "not loaded yet" notice; the sidebar menu closes silently.
+    if (readThreadShell(threadRef) !== null && openOwnedThreadMenu(threadRef, position, onFind)) {
+      return;
+    }
     void (async () => {
       const api = readLocalApi();
       if (!api) return;
@@ -118,23 +136,27 @@ export function useThreadActionMenu(input: {
         return;
       }
       const now = new Date();
-      const configLoaded = readEnvironmentServerConfigLoaded(threadRef.environmentId);
       const supports = {
-        settlement: configLoaded,
+        settlement: readEnvironmentSupportsSettlement(threadRef.environmentId),
         autoSettleOptOut: readEnvironmentSupportsAutoSettleOptOut(threadRef.environmentId),
-        snooze: configLoaded,
-        pinning: configLoaded,
-        titleRegeneration: configLoaded,
+        snooze: readEnvironmentSupportsSnooze(threadRef.environmentId),
+        pinning: readEnvironmentSupportsPinning(threadRef.environmentId),
+        titleRegeneration: readEnvironmentSupportsTitleRegeneration(threadRef.environmentId),
       };
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
-      const items = buildThreadActionMenuItems({
+      const canOperate = readEnvironmentScope(
+        threadRef.environmentId,
+        AuthOrchestrationOperateScope,
+      );
+      const isSettled = supports.settlement && thread.settledOverride === "settled";
+      const menuItems = buildThreadActionMenuItems({
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
         canFind: onFind !== undefined,
         branch: thread.branch ?? null,
         projectFilter: null,
         isPinned: thread.pinnedAt != null,
-        isSettled: supports.settlement && thread.settledOverride === "settled",
+        isSettled,
         autoSettleEnabled: thread.autoSettleDisabledAt == null,
         isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
         canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
@@ -145,9 +167,18 @@ export function useThreadActionMenu(input: {
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
       });
+      // Jones: persistent Undo settle, for servers that keep a restore record.
+      const items = withThreadSettlementRestore(menuItems, { threadRef, isSettled, canOperate });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
-      const action: ThreadActionMenuId = clicked.value;
+      const choice = clicked.value;
+      if (choice === SETTLEMENT_RESTORE_MENU_ID) {
+        await undoSettleFromMenu(threadRef, (error) =>
+          failureToast("Failed to undo settle", error),
+        );
+        return;
+      }
+      const action: ThreadActionMenuId = choice;
       if (
         threadActionRequiresOperate(action) &&
         !readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)
@@ -217,6 +248,14 @@ export function useThreadActionMenu(input: {
           }
           return;
         }
+        case "stop-thread":
+          await reportFailure("Failed to stop thread", () =>
+            stopThread({
+              environmentId: threadRef.environmentId,
+              input: { threadId: threadRef.threadId },
+            }),
+          );
+          return;
         case "settle":
           await reportFailure("Failed to settle thread", () => settleThread(threadRef));
           return;

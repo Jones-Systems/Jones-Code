@@ -287,6 +287,7 @@ it.each([true, false])(
       await expect.element(screen.getByRole("option", { name: "Antigravity" })).toHaveFocus();
       await userEvent.keyboard("{ArrowDown}{Enter}");
     } else await screen.getByRole("option", { name: "Second", exact: true }).click();
+    await expect.element(screen.getByRole("combobox")).toHaveTextContent("Second");
     await expect
       .element(
         screen.getByRole("combobox", {

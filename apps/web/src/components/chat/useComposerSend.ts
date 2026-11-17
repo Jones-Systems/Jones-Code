@@ -57,7 +57,6 @@ import {
 } from "@t3tools/client-runtime/environment";
 import { createModelSelection } from "@t3tools/shared/model";
 import { type SetStateAction, useLayoutEffect, useRef } from "react";
-import { flushSync } from "react-dom";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
   isAtomCommandInterrupted,
@@ -116,6 +115,7 @@ import {
 import { useMultipleModelSend } from "./useMultipleModelSend";
 import { type ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import {
+  awaitAttachmentUploads,
   getUploadedAttachments,
   refreshExpiredAttachmentUploads,
   readAttachmentUpload,
@@ -1612,7 +1612,11 @@ export function useComposerSend(input: ComposerSendInput) {
       pendingSends.whenAccepted(environmentId, threadIdForSend, messageIdForSend, () => {
         turnStartSucceeded = true;
         acknowledgeComposerSelection(recoveryTarget(), submittedComposerDraft);
-        if (checkoutPullRequestUrl) linkCheckoutPullRequest(scopeThreadRef(environmentId, threadIdForSend), checkoutPullRequestUrl);
+        if (checkoutPullRequestUrl)
+          linkCheckoutPullRequest(
+            scopeThreadRef(environmentId, threadIdForSend),
+            checkoutPullRequestUrl,
+          );
         setKeepFullHistory(routeThreadKey, false);
         if (freshArm !== undefined) disarmFreshSession(routeThreadKey, freshArm);
         clearUsageLimitsFor(routeThreadKey);
@@ -1642,7 +1646,9 @@ export function useComposerSend(input: ComposerSendInput) {
             attachments: turnAttachmentsResult.value,
             ...withMessageContext({
               text: outgoingMessageText,
-              supportsInlineMessageContext: appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities.inlineMessageContext === true,
+              supportsInlineMessageContext:
+                appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
+                  .capabilities.inlineMessageContext === true,
               context: buildOutgoingMessageContext(
                 boundAttachmentIds(turnAttachmentsResult.value, composerAttachmentsSnapshot),
               ),
@@ -1803,5 +1809,9 @@ export function useComposerSend(input: ComposerSendInput) {
     });
     if (ready) return onSendLatest(...args);
   };
-  return { onSend: onSendWithRouting, importedHistoryChoice: importedHistory.banner, onImportedHistoryChoice: importedHistory.onImportedHistoryChoice };
+  return {
+    onSend: onSendWithRouting,
+    importedHistoryChoice: importedHistory.banner,
+    onImportedHistoryChoice: importedHistory.onImportedHistoryChoice,
+  };
 }

@@ -1,3 +1,4 @@
+import { typecheckTask } from "../../scripts/jones/tsrs/task-cache.ts";
 import "vite-plus/test/config";
 import * as NodeOS from "node:os";
 
@@ -79,11 +80,7 @@ export default defineConfig({
         dependsOn: ["t3#build"],
         cache: false,
       },
-      // A local tsbuildinfo is leftover build state, not a typecheck input.
-      typecheck: {
-        command: "effect-tsgo tsrs --noEmit",
-        cache: { input: [{ auto: true }, "!*.tsbuildinfo"] },
-      },
+      typecheck: typecheckTask("node ../../scripts/jones/tsrs/typecheck.ts --noEmit"),
     },
   },
   pack: [

@@ -207,9 +207,20 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
+
+      # The development host refuses a locked version younger than its pnpm
+      # minimumReleaseAge unless pnpm-workspace.yaml excludes that exact version.
+      # CI has no such policy, so this is where the lockfile meets it. The npm
+      # registry is read only when a pull request adds lock entries.
+      - name: Check dependency release-age exclusions
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          node scripts/jones/ci/release-age.mjs ${BASE_SHA:+--base "$BASE_SHA"}
+          git diff --exit-code -- pnpm-lock.yaml
 
       - name: Check Jones migration order
         run: node scripts/jones/ci/jones-migration-order.cjs
@@ -309,7 +320,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -385,7 +396,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -468,7 +479,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -570,7 +581,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -668,7 +679,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -735,7 +746,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -807,7 +818,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -906,7 +917,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: false
           run-install: false
 
@@ -983,7 +994,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -1182,7 +1193,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: false
           run-install: false
 
@@ -1463,7 +1474,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: |
             args:
@@ -1540,7 +1551,7 @@ jobs:
       - name: Install dependencies on the supported development runtime
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -1661,7 +1672,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: |
             args:

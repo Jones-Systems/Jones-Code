@@ -5,6 +5,7 @@ import * as StartRefusals from "../jones/startRefusal/Store.ts";
 import { makeUnsentStartProof } from "../jones/provider/UnsentStartProof.ts";
 import {
   executionProjection,
+  executionWorkspace,
 } from "../jones/threadConfiguration/executionSelection.ts";
 import {
   ModelSelection,
@@ -146,12 +147,24 @@ export const layer: Layer.Layer<
                   thread.providerInstanceId === current.instanceId,
               )?.driver ?? currentSessions[0]?.driver);
           const certifiedUnsent = new Set<string>();
-          if (beforeStartEvidence !== undefined && Option.isSome(outbox) && Option.isSome(receipts) &&
-              Option.isSome(sink) && Option.isSome(refusals)) {
-            const proveUnsent = makeUnsentStartProof({ outbox: outbox.value, receipts: receipts.value,
-              sink: sink.value, refusals: refusals.value });
+          if (
+            beforeStartEvidence !== undefined &&
+            Option.isSome(outbox) &&
+            Option.isSome(receipts) &&
+            Option.isSome(sink) &&
+            Option.isSome(refusals)
+          ) {
+            const proveUnsent = makeUnsentStartProof({
+              outbox: outbox.value,
+              receipts: receipts.value,
+              sink: sink.value,
+              refusals: refusals.value,
+            });
             for (const run of beforeStartEvidence.runs) {
-              if (run.activeAttemptId !== null && (yield* proveUnsent(run, beforeStartEvidence.attempts)))
+              if (
+                run.activeAttemptId !== null &&
+                (yield* proveUnsent(run, beforeStartEvidence.attempts))
+              )
                 certifiedUnsent.add(run.activeAttemptId);
             }
           }
@@ -162,7 +175,11 @@ export const layer: Layer.Layer<
             currentInstance.value.driver === targetInstance.value.driver &&
             targetInstance.value.enabled
               ? ((currentInstance.value.driver === "codex"
-                  ? interruptedPendingProviderThread(projection, beforeStartEvidence, certifiedUnsent)
+                  ? interruptedPendingProviderThread(
+                      projection,
+                      beforeStartEvidence,
+                      certifiedUnsent,
+                    )
                   : undefined) ??
                 (rebindPreparing === true &&
                 beforeStartEvidence?.providerThreads[0]?.driver === targetInstance.value.driver
@@ -256,7 +273,10 @@ export const layer: Layer.Layer<
                           modelSelection: current,
                           runtimeMode: projection.thread.runtimeMode,
                           interactionMode: projection.thread.interactionMode,
-                          workspace,
+                          workspace: executionWorkspace(
+                            projection.thread.worktreePath,
+                            currentSession,
+                          ),
                         },
                   target: {
                     driver: targetInstance.value.driver,

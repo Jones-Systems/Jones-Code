@@ -240,7 +240,7 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
   return { events, effects };
 });
 
-export function threadCreationCleanupEffects(effects: ReadonlyArray<OrchestrationEffectV2>) {
+function threadCreationCleanupEffects(effects: ReadonlyArray<OrchestrationEffectV2>) {
   return effects.filter(
     ({ request }) =>
       request.type === "scheduled-tasks.cleanup" ||

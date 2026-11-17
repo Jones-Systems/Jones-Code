@@ -1,3 +1,5 @@
+import { remoteXcodeReadinessSource } from "../jones/device/xcodeReadiness.ts";
+import { directDeviceGatewaySource } from "../jones/device/directDeviceGateway.ts";
 import { deviceToolMaintenanceScript } from "./deviceToolMaintenance.ts";
 import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
 
@@ -21,13 +23,16 @@ if [ -n "$JAVA_HOME" ]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
 /** Runs on the host and returns host-local paths. */
 export const remoteDeviceScript = (
   owner: string,
-  mode: "probe" | "start" | "agent-start" | "stop-agent" | "stop",
+  mode: "probe" | "start" | "agent-start" | "stop-agent" | "stop" | "stop-direct",
+  direct?: { readonly hostId: string; readonly generation: string },
 ) =>
   `
 const owner = ${JSON.stringify(owner)};
 const mode = ${JSON.stringify(mode)};
 const hubVersion = ${JSON.stringify(DEVICE_HUB_VERSION)};
 const agentVersion = ${JSON.stringify(AGENT_DEVICE_VERSION)};
+const direct = ${JSON.stringify(direct ?? null)};
+const gatewaySource = ${JSON.stringify(directDeviceGatewaySource)};
 ` +
   deviceToolMaintenanceScript +
   String.raw`
@@ -39,6 +44,9 @@ const { spawn, spawnSync } = require('node:child_process');
 const root = path.join(os.homedir(), '.t3', 'device');
 const state = path.join(root, 'hosts', owner);
 const run = (command, args, options = {}) => spawnSync(command, args, { encoding: 'utf8', timeout: 30000, ...options });
+` +
+  remoteXcodeReadinessSource +
+  String.raw`
 const read = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
 const write = (file, value) => { const tmp = file + '.' + process.pid; fs.writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 }); fs.renameSync(tmp, file); };
 const toolVersions = (name, requiredVersion, entry, record) => {
@@ -77,7 +85,60 @@ const stopHub = hub => {
     try { process.kill(hub.pid, 'SIGTERM'); } catch {}
   }
 };
+const readGateway = file => {
+  let value;
+  try { value = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  if (!value || typeof value.owner !== 'string' || typeof value.generation !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(value.generation) ||
+      !Number.isSafeInteger(value.pid) || value.pid <= 0 || value.entryPath !== path.join(state, 'direct-gateway-' + value.generation + '.cjs')) throw Error('Unconfirmed direct gateway record.');
+  return value;
+};
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const stopGateway = async gateway => {
+  if (!gateway) return;
+  if (gateway.owner !== owner || typeof gateway.generation !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(gateway.generation) ||
+      !Number.isSafeInteger(gateway.pid) || gateway.pid <= 0 ||
+      gateway.entryPath !== path.join(state, 'direct-gateway-' + gateway.generation + '.cjs')) throw Error('Unconfirmed direct gateway identity.');
+  let source;
+  try { source = fs.readFileSync(gateway.entryPath, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (source !== undefined) {
+    const first = /^const config = (.+);/.exec(source)?.[1];
+    const captured = first ? JSON.parse(first) : null;
+    if (captured?.owner !== gateway.owner || captured?.generation !== gateway.generation) throw Error('Unconfirmed direct gateway script.');
+  }
+  const inspect = () => {
+    const result = run('ps', ['-ww', '-p', String(gateway.pid), '-o', 'stat=', '-o', 'command=']);
+    if (result.error || (result.status !== 0 && result.status !== 1)) throw Error('Cannot inspect direct gateway PID.');
+    const output = (result.stdout || '').trim();
+    if (!output) return false;
+    const state = /^(\S+)\s+(.*)$/.exec(output);
+    if (!state) throw Error('Cannot parse direct gateway PID identity.');
+    if (state[1].startsWith('Z')) return false;
+    const command = state[2];
+    if (!source || !command.endsWith(' ' + gateway.entryPath)) {
+      // ps can read stat before exit and command after it. Confirm this exact PID is gone
+      // before retiring its record; a still-live mismatch never authorizes a signal.
+      const current = run('ps', ['-p', String(gateway.pid), '-o', 'stat=']);
+      if (current.error || (current.status !== 0 && current.status !== 1)) throw Error('Cannot inspect direct gateway PID.');
+      const currentState = (current.stdout || '').trim();
+      if (!currentState || /^Z\S*$/.test(currentState)) return false;
+      throw Error('Direct gateway PID identity changed.');
+    }
+    return true;
+  };
+  if (inspect()) {
+    try { process.kill(gateway.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+    const deadline = Date.now() + 5000;
+    while (inspect()) { if (Date.now() >= deadline) throw Error('Direct gateway termination is unconfirmed.'); await sleep(25); }
+  }
+  const file = path.join(state, 'direct-gateway.json');
+  const current = readGateway(file);
+  if (current && (current.owner !== gateway.owner || current.generation !== gateway.generation || current.pid !== gateway.pid || current.entryPath !== gateway.entryPath)) return;
+  if (source !== undefined) {
+    if (fs.readFileSync(gateway.entryPath, 'utf8') !== source) throw Error('Direct gateway script changed during retirement.');
+    fs.unlinkSync(gateway.entryPath);
+  }
+  if (current) fs.unlinkSync(file);
+};
 const healthy = async (port, route) => { try { return (await fetch('http://127.0.0.1:' + port + route, { signal: AbortSignal.timeout(2000) })).ok; } catch { return false; } };
 const port = () => new Promise((resolve, reject) => { const server = net.createServer(); server.once('error', reject); server.listen(0, '127.0.0.1', () => { const value = server.address().port; server.close(() => resolve(value)); }); });
 async function acquireLock(lock, complete = () => false) {
@@ -132,8 +193,9 @@ async function install(name, version, entry) {
     release();
   }
 }
-(async () => {
-  const ios = process.platform === 'darwin' && run('xcrun', ['simctl', 'help']).status === 0;
+const inspectPlatforms = () => {
+  const setupReason = process.platform === 'darwin' ? checkXcodeSetup() : 'iOS needs macOS with Xcode.';
+  const ios = setupReason === null && run('xcrun', ['simctl', 'help'], { timeout: 5000 }).status === 0;
   // The SSH shell setup chose ANDROID_HOME, so later commands use the SDK accepted here.
   const sdk = process.env.ANDROID_HOME;
   const executable = (relative) => {
@@ -153,10 +215,14 @@ async function install(name, version, entry) {
     : null;
   const android = androidReason === null;
   const platforms = [
-    { platform: 'ios', available: ios, ...(!ios ? { reason: 'iOS needs macOS with Xcode and working xcrun simctl.' } : {}) },
+    { platform: 'ios', available: ios, ...(!ios ? { reason: setupReason || 'iOS needs macOS with Xcode and working xcrun simctl.' } : {}) },
     { platform: 'android', available: android, ...(!android ? { reason: androidReason } : {}) },
   ];
+  return { ios, android, platforms };
+};
+(async () => {
   if (mode === 'probe') {
+    const { platforms } = inspectPlatforms();
     const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
     if (nodeMajor < 22 || (nodeMajor === 22 && nodeMinor < 12)) throw Error('Node 22.12 or newer is required on the device host.');
     if (run('npm', ['--version']).status !== 0) throw Error('npm is missing from the non-interactive SSH PATH.');
@@ -170,6 +236,14 @@ async function install(name, version, entry) {
   const hubFile = path.join(state, 'hub.json');
   const daemonFile = path.join(state, 'daemon.json');
   const agentFile = path.join(state, 'agent.json');
+  const gatewayFile = path.join(state, 'direct-gateway.json');
+  if (mode === 'stop-direct') {
+    if (!direct) throw Error('Missing captured direct generation.');
+    const gateway = readGateway(gatewayFile);
+    if (gateway?.owner === owner && gateway.generation === direct.generation) await stopGateway(gateway);
+    else if (!gateway && fs.existsSync(path.join(state, 'direct-gateway-' + direct.generation + '.cjs'))) throw Error('Direct gateway startup effect is unconfirmed.');
+    return;
+  }
   const stopAgent = () => {
     const entry = read(agentFile)?.entryPath || path.join(root, 'tools', 'agent-device@' + agentVersion, 'node_modules', 'agent-device', 'bin', 'agent-device.mjs');
     if (fs.existsSync(entry)) return run(process.execPath, [entry, 'daemon', 'stop', '--state-dir', state]).status === 0;
@@ -179,6 +253,10 @@ async function install(name, version, entry) {
   };
   if (mode === 'stop' || mode === 'stop-agent') {
     const hub = read(hubFile);
+    if (mode === 'stop') {
+      const gateway = readGateway(gatewayFile);
+      if (direct && gateway?.owner === owner && gateway.generation === direct.generation) await stopGateway(gateway);
+    }
     if (mode === 'stop' && hub && hub.owner === owner) {
       stopHub(hub);
       fs.rmSync(hubFile, { force: true });
@@ -193,11 +271,12 @@ async function install(name, version, entry) {
     if (!stopAgent()) throw Error('Could not stop the agent-device daemon in ' + state);
     fs.rmSync(daemonFile, { force: true });
   }
+  const { ios, android, platforms } = inspectPlatforms();
   if (!ios && !android) throw Error(platforms.map(p => p.reason).join(' '));
   fs.mkdirSync(state, { recursive: true, mode: 0o700 });
   const hubEntry = await install('expo-device-hub', hubVersion, 'dist/server/cli.mjs');
-  // Only a Mac can list Apple simulators. Recording the filter replaces hubs started without it.
-  const hubPlatform = process.platform === 'darwin' ? undefined : 'android';
+  // An unavailable platform must not block discovery on a healthy one.
+  const hubPlatform = ios && android ? undefined : ios ? 'ios' : 'android';
   const cameraArgs = android ? ['front', 'back'].flatMap(facing => {
     const emulator = process.env.ANDROID_HOME ? path.join(process.env.ANDROID_HOME, 'emulator', 'emulator') : 'emulator';
     const help = run(emulator, ['-help-camera-' + facing], { timeout: 5000 });
@@ -233,6 +312,39 @@ async function install(name, version, entry) {
       if (attempt === 4) throw Error('Device hub exited before becoming ready. See ' + path.join(state, 'hub.log'));
     }
   }
+  let directResult = {};
+  const previousGateway = readGateway(gatewayFile);
+  if (direct) {
+    if (previousGateway && previousGateway.owner !== owner) throw Error('Direct gateway ownership mismatch.');
+    await stopGateway(previousGateway);
+    if (!/^[a-zA-Z0-9-]{1,128}$/.test(direct.generation)) throw Error('Invalid direct generation.');
+    const admissionPort = await port();
+    const entryPath = path.join(state, 'direct-gateway-' + direct.generation + '.cjs');
+    const config = { hostId: direct.hostId, owner, generation: direct.generation, hubPort: hub.port, hubEntry, admissionPort };
+    fs.writeFileSync(entryPath, 'const config = ' + JSON.stringify(config) + ';\n' + gatewaySource, { mode: 0o600 });
+    let log;
+    let captured;
+    try {
+      log = fs.openSync(path.join(state, 'direct-gateway.log'), 'a');
+      const child = spawn(process.execPath, [entryPath], { cwd: state, detached: true, stdio: ['ignore', log, log, 'ipc'] });
+      if (child.pid) { captured = { owner, generation: direct.generation, pid: child.pid, entryPath }; write(gatewayFile, captured); }
+      await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+      const gatewayPort = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error('Direct gateway startup timed out.')), 10000);
+        const finish = (error, value) => { clearTimeout(timer); child.removeAllListeners('exit'); child.removeAllListeners('message'); child.removeAllListeners('error'); error ? reject(error) : resolve(value); };
+        child.once('message', message => Number.isInteger(message?.port) && message.port > 0 && message.port < 65536 ? finish(null, message.port) : finish(Error('Invalid direct gateway port.')));
+        child.once('exit', () => finish(Error('Direct gateway exited before becoming ready.')));
+        child.once('error', error => finish(error));
+      });
+      write(gatewayFile, { ...captured, port: gatewayPort, admissionPort });
+      child.unref();
+      directResult = { directMedia: { gatewayPort, admissionPort, generation: direct.generation } };
+    } catch (error) {
+      if (captured) await stopGateway(captured);
+      else fs.unlinkSync(entryPath);
+      throw error;
+    } finally { if (log !== undefined) fs.closeSync(log); }
+  }
   let agentResult = {};
   if (mode === 'agent-start') {
   const agentEntry = await install('agent-device', agentVersion, 'bin/agent-device.mjs');
@@ -258,7 +370,7 @@ async function install(name, version, entry) {
   const vendor = path.resolve(path.dirname(hubEntry), '../../vendor/serve-sim/dist');
   const optional = file => fs.existsSync(file) ? file : null;
   await pruneTools(path.join(root, 'tools'), [['expo-device-hub', hubVersion], ...(mode === 'agent-start' ? [['agent-device', agentVersion]] : [])], true).catch(() => {});
-  console.log(JSON.stringify({ nodePath: process.execPath, platforms, tools: versions(), hubPort: hub.port, ...agentResult,
+  console.log(JSON.stringify({ nodePath: process.execPath, platforms, tools: versions(), hubPort: hub.port, ...agentResult, ...directResult,
     helpers: { serveSimAxSettings: optional(path.join(vendor, 'simax/serve-sim-ax-settings')), serveSimCli: optional(path.join(vendor, 'serve-sim.js')) } }));
   } finally { releaseHost(); }
 })().catch(error => { console.error(error.message); process.exitCode = 1; });

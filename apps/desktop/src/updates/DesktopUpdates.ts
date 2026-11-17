@@ -39,6 +39,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import { makeCompanionProductUpdates } from "../jones/previewCompanion/CompanionProductUpdates.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";

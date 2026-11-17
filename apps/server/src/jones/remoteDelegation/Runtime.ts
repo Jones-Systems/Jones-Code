@@ -3,6 +3,8 @@ import {
   CommandId,
   type EnvironmentId,
   NodeId,
+  OrchestratorMcpCapabilitiesInput,
+  OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpFailure,
   type OrchestratorMcpTaskCancelResult,
   type OrchestrationV2RemoteTaskChild,
@@ -14,13 +16,14 @@ import {
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import type * as Tool from "effect/ai/Tool";
+import * as Tool from "effect/ai/Tool";
 
 import type * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
@@ -46,12 +49,25 @@ import { refuseUnsolicitedSupervision } from "../mcp/delegatedTaskSupervision/De
 import type { RemoteDelegation } from "../../peer/RemoteDelegation.ts";
 import * as FollowerSupervision from "./FollowerSupervision.ts";
 const FOLLOW_WAIT_MS = 50_000;
+/** A follower that hits this many defects in a row ends instead of retrying. */
+const FOLLOW_MAX_DEFECTS = 3;
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
 /** Loss of access fails the local task, while remote stop debt remains until acknowledged. */
 const isFinal = (error: OrchestratorMcpFailure) =>
   error.code === "capability_denied" ||
   error.code === "thread_not_found" ||
   error.code === "run_not_found";
+
+/**
+ * `orchestrator_capabilities` there. The orchestrator toolkit imports this
+ * runtime through RemoteDelegation, so the tool is described here.
+ */
+const RemoteCapabilitiesTool = Tool.make("orchestrator_capabilities", {
+  parameters: OrchestratorMcpCapabilitiesInput,
+  success: OrchestratorMcpCapabilitiesResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+}).annotate(Tool.Readonly, true);
 
 export const make = Effect.gen(function* () {
   const forwarding = yield* PeerForwarding.PeerForwarding;
@@ -72,10 +88,18 @@ export const make = Effect.gen(function* () {
     followOne(parentThreadId, taskId).pipe(Effect.forkIn(followers), Effect.asVoid),
   );
 
-  const followUp: RemoteDelegation["Service"]["followUp"] = (scope, _environmentId, _request, sent) => {
+  const followUp: RemoteDelegation["Service"]["followUp"] = (
+    scope,
+    _environmentId,
+    _request,
+    sent,
+  ) => {
     // Reservation and exact binding already committed inside peer forwarding.
     if (scope.thread === undefined || sent.taskId === undefined) return Effect.succeed(sent);
-    return followOne(scope.thread.threadId, sent.taskId).pipe(Effect.forkIn(followers), Effect.as(sent));
+    return followOne(scope.thread.threadId, sent.taskId).pipe(
+      Effect.forkIn(followers),
+      Effect.as(sent),
+    );
   };
 
   /** The peer's project with this thread's repository, or the one the caller named. */
@@ -123,6 +147,49 @@ export const make = Effect.gen(function* () {
           ? `No project there has this repository (${key}). Pass target.projectId; t3_project_list with this environmentId lists them. To bring the repository there, use t3_project_clone and then t3_project_create with this environmentId.`
           : `Several projects there have this repository: ${matches.map((project) => `${project.title} (${project.id})`).join(", ")}. Pass target.projectId.`,
     });
+  });
+
+  /**
+   * The instance there of the driver the caller named, preferring the one this
+   * thread runs on, as a task here does. Read from that side's capabilities, so
+   * a model of another driver never runs on this thread's instance id there.
+   */
+  const resolveRemoteInstance = Effect.fn("RemoteDelegation.resolveRemoteInstance")(function* (
+    scope: ThreadScope,
+    environmentId: EnvironmentId,
+    requested: {
+      readonly driverKind: ProviderDriverKind;
+      readonly providerInstanceId: ProviderInstanceId | undefined;
+      readonly inheritedInstanceId: ProviderInstanceId;
+    },
+  ) {
+    const { providers } = yield* forwarding.call(scope, RemoteCapabilitiesTool, environmentId, {});
+    if (requested.providerInstanceId !== undefined) {
+      const named = providers.find(
+        (provider) => provider.providerInstanceId === requested.providerInstanceId,
+      );
+      if (named !== undefined && named.driverKind !== requested.driverKind) {
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: `Provider instance ${named.providerInstanceId} there uses driver ${named.driverKind}, not ${requested.driverKind}.`,
+        });
+      }
+      return requested.providerInstanceId;
+    }
+    const candidates = providers.filter(
+      (provider) => provider.driverKind === requested.driverKind && provider.canRunChildTask,
+    );
+    const chosen =
+      candidates.find(
+        (provider) => provider.providerInstanceId === requested.inheritedInstanceId,
+      ) ?? candidates[0];
+    if (chosen === undefined) {
+      return yield* new OrchestratorMcpFailure({
+        code: "provider_unavailable",
+        message: `No instance of driver ${requested.driverKind} there can run a child task. orchestrator_capabilities with this environmentId lists its providers.`,
+      });
+    }
+    return chosen.providerInstanceId;
   });
 
   const observe: RemoteDelegation["Service"]["observe"] = Effect.fn("RemoteDelegation.observe")(
@@ -223,7 +290,14 @@ export const make = Effect.gen(function* () {
       // The provider and model inherit as they do for a task here. Another
       // provider there has no model to inherit, so the caller names one.
       const inherited = parent.thread.modelSelection;
-      const instanceId = target.providerInstanceId ?? inherited.instanceId;
+      const instanceId =
+        target.driverKind === undefined
+          ? (target.providerInstanceId ?? inherited.instanceId)
+          : yield* resolveRemoteInstance(scope, target.environmentId, {
+              driverKind: target.driverKind,
+              providerInstanceId: target.providerInstanceId,
+              inheritedInstanceId: inherited.instanceId,
+            });
       const model =
         target.model ?? (instanceId === inherited.instanceId ? inherited.model : undefined);
       if (model === undefined) {
@@ -323,6 +397,8 @@ export const make = Effect.gen(function* () {
     result: string,
     stoppedThere: "ran-out" | "stopped" | undefined,
     stopCount?: number,
+    /** Only what the provider there reported for the result run; never the requested model. */
+    executedModel?: string,
   ) {
     const attempt = yield* random.uuidV4().pipe(Effect.orDie);
     yield* threads
@@ -335,6 +411,7 @@ export const make = Effect.gen(function* () {
         result,
         ...(stoppedThere === undefined ? {} : { stoppedThere }),
         ...(stopCount === undefined ? {} : { stopCount }),
+        ...(executedModel === undefined ? {} : { executedModel }),
       })
       .pipe(
         Effect.catch((error) =>
@@ -406,6 +483,44 @@ export const make = Effect.gen(function* () {
   });
 
   /**
+   * `lastReply`, with the model the provider there reported running `runId`,
+   * taken from the same reads as the reply. A run those reads do not list, or
+   * one whose provider reported nothing, has no executed model here.
+   */
+  const lastReplyWithExecutedModel = Effect.fn("RemoteDelegation.lastReplyWithExecutedModel")(
+    function* (
+      scope: ThreadScope,
+      remote: OrchestrationV2RemoteTaskChild,
+      runId: RunId,
+      failed: boolean,
+    ) {
+      const observed: { listed: boolean; executedModel: string | undefined } = {
+        listed: false,
+        executedModel: undefined,
+      };
+      const text = yield* FinalText.lastReply(
+        (input) =>
+          forwarding.readThread(scope, remote.environmentId, input).pipe(
+            Effect.tap((read) =>
+              Effect.sync(() => {
+                if (observed.listed) return;
+                const run = read.recentRuns.find((candidate) => candidate.runId === runId);
+                if (run === undefined) return;
+                // The first read listing the run is the one the reply's model note uses.
+                observed.listed = true;
+                observed.executedModel = run.executedModel ?? undefined;
+              }),
+            ),
+          ),
+        remote.threadId,
+        runId,
+        failed,
+      );
+      return { text, executedModel: observed.executedModel };
+    },
+  );
+
+  /**
    * Why following a task can never succeed, if that is what `error` means.
    * The far side's message already says what was refused and what to do; a
    * link forgotten here only reads as a bad request, so it is named.
@@ -429,13 +544,56 @@ export const make = Effect.gen(function* () {
   /** A task's thread there that ended without a reply. */
   const noReply = "(The thread in the linked environment ended without a reply.)";
 
-  /**
-   * Follow remote completion and complete locally, or stop remotely if the local task ended first.
-   * Revoked/expired/missing links or missing thread/run fail the task. Only a missing thread proves
-   * no remaining stop debt; lost access retains that debt across bounded retries and restart.
-   */
+  // The follower retains stop debt across lost access and stops after consecutive defects.
+  // A missing thread alone proves no stop remains owed.
   const follow = (parentThreadId: ThreadId, taskId: NodeId): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      let defects = 0;
+      const noDefect = Effect.sync(() => {
+        defects = 0;
+      });
+      return followAttempts(parentThreadId, taskId, noDefect).pipe(
+        Effect.tapError(() => noDefect),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterrupts(cause) || !Cause.hasDies(cause)) return Effect.failCause(cause);
+          defects += 1;
+          return defects < FOLLOW_MAX_DEFECTS
+            ? Effect.failCause(cause)
+            : followGaveUp(parentThreadId, taskId);
+        }),
+        (operation) => FollowerSupervision.retry(operation, { operation: "follow", taskId }),
+      );
+    });
+
+  /** A follower that kept hitting defects: the task fails unless it already has its result. */
+  const followGaveUp = Effect.fn("RemoteDelegation.followGaveUp")(function* (
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+  ) {
+    const { subagents } = yield* threads.getThreadRecords(parentThreadId, ["subagents"], {
+      subagentIds: [taskId],
+    });
+    const task = subagents.find((candidate) => candidate.id === taskId);
+    const remote = task?.remoteChild;
+    // A task with its result keeps it; completing it again would owe another stop there.
+    if (task === undefined || remote === undefined || task.result !== null) return;
+    yield* complete(
+      parentThreadId,
+      taskId,
+      "failed",
+      `Following the thread ${remote.threadId} in ${remote.label} failed repeatedly, so it may still run there (task_cancel stops it).`,
+      undefined,
+    );
+  });
+
+  /** Follow attempts until the task is done here, resetting the defect count after each. */
+  const followAttempts = (
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    noDefect: Effect.Effect<void>,
+  ) =>
     followOnce(parentThreadId, taskId).pipe(
+      Effect.tap(() => noDefect),
       // `false` means it is still running there: follow again straight away.
       Effect.repeat({ while: (done) => !done }),
       Effect.catchTags({
@@ -467,7 +625,6 @@ export const make = Effect.gen(function* () {
           }),
         ),
       }),
-      (operation) => FollowerSupervision.retry(operation, { operation: "follow", taskId }),
     );
 
   /**
@@ -619,13 +776,20 @@ export const make = Effect.gen(function* () {
       runId: remote.runId ?? waited.runId,
       status: waited.status,
     };
-    const result = yield* lastReply(scope, remote, resultRun.runId, resultRun.status === "failed");
+    const result = yield* lastReplyWithExecutedModel(
+      scope,
+      remote,
+      resultRun.runId,
+      resultRun.status === "failed",
+    );
     yield* complete(
       parentThreadId,
       taskId,
       terminalStatus(resultRun.status),
-      result ?? noReply,
+      result.text ?? noReply,
       "ran-out",
+      undefined,
+      result.executedModel,
     );
     return yield* settled(parentThreadId, taskId);
   });
@@ -686,7 +850,8 @@ export const make = Effect.gen(function* () {
     function* (scope, task, input) {
       const remote = task.remoteChild;
       if (remote === undefined) {
-        if (yield* durableFollowUps.cancel(task.id, input.reason)) return {taskId: task.id, status: "cancel_requested" as const};
+        if (yield* durableFollowUps.cancel(task.id, input.reason))
+          return { taskId: task.id, status: "cancel_requested" as const };
         return yield* lifecycle.cancelPending(task, input.reason);
       }
       const { reason } = input;
@@ -814,21 +979,40 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  const runStatus: RemoteDelegation["Service"]["runStatus"] = (scope, task) => Effect.gen(function* () {
-    const refreshed = task.remoteChild === undefined
-      ? yield* durableFollowUps.refresh(task.id).pipe(Effect.orElseSucceed(() => undefined)) : undefined;
+  const runStatus: RemoteDelegation["Service"]["runStatus"] = Effect.fn(
+    "RemoteDelegation.runStatus",
+  )(function* (scope, task) {
+    const refreshed =
+      task.remoteChild === undefined
+        ? yield* durableFollowUps.refresh(task.id).pipe(Effect.orElseSucceed(() => undefined))
+        : undefined;
     const remote = (refreshed ?? task).remoteChild;
-    if (remote?.runId === undefined) return refreshed?.result === null ? "starting" as const : null;
-    if (refreshed !== undefined) yield* followOne(task.threadId, task.id).pipe(Effect.forkIn(followers));
-    return yield* forwarding.readThread(scope, remote.environmentId, {
-      threadId: remote.threadId, runLimit: 50, limit: 1,
-    }).pipe(
-      Effect.map((read) => read.recentRuns.find((run) => run.runId === remote.runId)?.status ?? null),
-      Effect.orElseSucceed(() => null),
-    );
+    if (remote?.runId === undefined)
+      return refreshed?.result === null ? ("starting" as const) : null;
+    if (refreshed !== undefined)
+      yield* followOne(task.threadId, task.id).pipe(Effect.forkIn(followers));
+    return yield* forwarding
+      .readThread(scope, remote.environmentId, {
+        threadId: remote.threadId,
+        runLimit: 50,
+        limit: 1,
+      })
+      .pipe(
+        Effect.map(
+          (read) => read.recentRuns.find((run) => run.runId === remote.runId)?.status ?? null,
+        ),
+        Effect.orElseSucceed(() => null),
+      );
   });
 
-  return { observe, delegate, followUp, runStatus, cancel, start } satisfies RemoteDelegation["Service"];
+  return {
+    observe,
+    delegate,
+    followUp,
+    runStatus,
+    cancel,
+    start,
+  } satisfies RemoteDelegation["Service"];
 });
 
 const isTerminal = (status: string) =>

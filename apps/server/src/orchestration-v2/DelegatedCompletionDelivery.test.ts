@@ -5649,7 +5649,9 @@ it.layer(layerTest)("restored completion acceptance and restart", (it) => {
         assert.isTrue(yield* orchestrator.delegatedTaskResultPending(resumed.childThreadId));
         assert.isFalse(yield* orchestrator.delegatedTaskResultPending(stopped.childThreadId));
         // A replayed first continuation settling must not release the second one's hold.
-        yield* orchestrator.recoverDelegatedTask(recut.childThreadId, recut.childRunId);
+        yield* orchestrator.recoverDelegatedTask(recut.childThreadId, {
+          sourceRunId: recut.childRunId,
+        });
         const replayed = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(replayed.subagents.find((row) => row.id === recut.taskId)?.status, "running");
         // A caller that read the cancelled run before the child resumed sees it as pending.

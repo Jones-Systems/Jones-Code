@@ -582,6 +582,94 @@
     "./pinOrderKey": {
       "types": "./src/pinOrderKey.ts",
       "import": "./src/pinOrderKey.ts"
+    },
+    "./jones/sqliteReaders/admissionFailure": {
+      "types": "./src/jones/sqliteReaders/admissionFailure.ts",
+      "import": "./src/jones/sqliteReaders/admissionFailure.ts"
+    },
+    "./jones/documentMarkdownAst": {
+      "types": "./src/jones/documentMarkdownAst.ts",
+      "import": "./src/jones/documentMarkdownAst.ts"
+    },
+    "./jones/shutdownBudget": {
+      "types": "./src/jones/shutdownBudget.ts",
+      "import": "./src/jones/shutdownBudget.ts"
+    },
+    "./jones/sqliteReadPriority": {
+      "types": "./src/jones/sqliteReadPriority.ts",
+      "import": "./src/jones/sqliteReadPriority.ts"
+    },
+    "./jones/sqliteReaderContracts": {
+      "types": "./src/jones/sqliteReaderContracts.ts",
+      "import": "./src/jones/sqliteReaderContracts.ts"
+    },
+    "./jones/queuedSteerBatch": {
+      "types": "./src/jones/queuedSteerBatch.ts",
+      "import": "./src/jones/queuedSteerBatch.ts"
+    },
+    "./jones/desktopNativeOwner": {
+      "types": "./src/jones/desktopNativeOwner.ts",
+      "import": "./src/jones/desktopNativeOwner.ts"
+    },
+    "./jones/nativeWriterFence": {
+      "types": "./src/jones/nativeWriterFence.ts",
+      "import": "./src/jones/nativeWriterFence.ts"
+    },
+    "./jones/pinOrder": {
+      "types": "./src/jones/pinOrder.ts",
+      "import": "./src/jones/pinOrder.ts"
+    },
+    "./jones/composerThreadQuery": {
+      "types": "./src/jones/composerThreadQuery.ts",
+      "import": "./src/jones/composerThreadQuery.ts"
+    },
+    "./jones/previewCompanionProduct": {
+      "types": "./src/jones/previewCompanionProduct.ts",
+      "import": "./src/jones/previewCompanionProduct.ts"
+    },
+    "./jones/previewCompanionFraming": {
+      "types": "./src/jones/previewCompanionFraming.ts",
+      "import": "./src/jones/previewCompanionFraming.ts"
+    },
+    "./jones/importedHistoryCanonical": {
+      "types": "./src/jones/importedHistoryCanonical.ts",
+      "import": "./src/jones/importedHistoryCanonical.ts"
+    },
+    "./jones/workMode": {
+      "types": "./src/jones/workMode.ts",
+      "import": "./src/jones/workMode.ts"
+    },
+    "./conversationLibrary": {
+      "types": "./src/conversationLibrary.ts",
+      "import": "./src/conversationLibrary.ts"
+    },
+    "./jones/buildTime": {
+      "types": "./src/jones/buildTime.ts",
+      "import": "./src/jones/buildTime.ts"
+    },
+    "./jones/jonesActions": {
+      "types": "./src/jones/jonesActions.ts",
+      "import": "./src/jones/jonesActions.ts"
+    },
+    "./jones/threadAttention": {
+      "types": "./src/jones/threadAttention.ts",
+      "import": "./src/jones/threadAttention.ts"
+    },
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "import": "./src/jones/threadReferenceExcerpt.ts"
+    },
+    "./jones/linkedThreads/handoffText": {
+      "types": "./src/jones/linkedThreads/handoffText.ts",
+      "import": "./src/jones/linkedThreads/handoffText.ts"
+    },
+    "./jones/packaging/pnpmProjectLockfile": {
+      "types": "./src/jones/packaging/pnpmProjectLockfile.ts",
+      "import": "./src/jones/packaging/pnpmProjectLockfile.ts"
+    },
+    "./composerContextLegacySend": {
+      "types": "./src/composerContextLegacySend.ts",
+      "import": "./src/composerContextLegacySend.ts"
     }
   },
   "scripts": {

@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../orchestration/threadMetadataReads.ts";
 import * as InProcessMcp from "../../mcp/McpHttpServer.ts";
 import { withOwnerSelectionIngress } from "./ownerIngress.ts";
 import { assert, it } from "@effect/vitest";
@@ -123,6 +124,7 @@ const catalog: ServerProvider = {
   slashCommands: [],
   skills: [],
 };
+const isThreadSelfConfigurationError = Schema.is(Service.ThreadSelfConfigurationError);
 const decodeCommand = Schema.decodeUnknownEffect(OrchestrationV2Command);
 
 const decodeEvidence = Schema.decodeUnknownEffect(ThreadConfigurationEvidence);
@@ -167,6 +169,7 @@ function scenario<E>(
     readonly capabilities: OrchestrationV2ProviderCapabilities;
   },
   preparing = false,
+  transactionRace?: "configuration_changed" | "execution_changed",
 ) {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -260,8 +263,56 @@ function scenario<E>(
             })),
         },
       );
+      const selfConfigurationRuntime =
+        transactionRace === undefined
+          ? runtime
+          : Layer.merge(
+              runtime,
+              Layer.effect(
+                Sink.EventSinkV2,
+                Effect.gen(function* () {
+                  const sink = yield* Sink.EventSinkV2;
+                  return Sink.EventSinkV2.of({
+                    ...sink,
+                    commitCommand: (input) =>
+                      input.threadSelfConfiguration === undefined
+                        ? sink.commitCommand(input)
+                        : sink.commitCommand({
+                            ...input,
+                            threadSelfConfiguration: {
+                              revalidate: () =>
+                                Effect.gen(function* () {
+                                  // Inject after optimistic validation, inside the real acceptance transaction.
+                                  // The domain callback must detect this changed authority and roll it back.
+                                  if (transactionRace === "configuration_changed") {
+                                    yield* sql`INSERT INTO jones_owner_selections
+                        (thread_id, command_id, result_sequence, model_selection_json, recorded_at)
+                        VALUES (${threadId}, 'interleaved-owner', 2147483647,
+                          ${JSON.stringify(initialSelection)}, '2026-01-01T00:00:00Z')
+                        ON CONFLICT(thread_id) DO UPDATE SET result_sequence = 2147483647`;
+                                  } else {
+                                    yield* sql`UPDATE orchestration_v2_projection_runs
+                        SET status = 'completed', payload_json = json_set(payload_json, '$.status', 'completed')
+                        WHERE thread_id = ${threadId} AND status = 'running'`;
+                                  }
+                                  return yield* input.threadSelfConfiguration!.revalidate();
+                                }).pipe(
+                                  Effect.mapError((error) =>
+                                    isThreadSelfConfigurationError(error)
+                                      ? error
+                                      : new Service.ThreadSelfConfigurationError({
+                                          reason: "state_unavailable",
+                                        }),
+                                  ),
+                                ),
+                            },
+                          }),
+                  });
+                }),
+              ).pipe(Layer.provide(runtime)),
+            );
       const service = Service.layer.pipe(
-        Layer.provide(runtime),
+        Layer.provide(selfConfigurationRuntime),
         Layer.provide(
           Layer.mock(Catalog.ProviderRegistry)({
             getProviders: Effect.succeed([
@@ -288,6 +339,7 @@ function scenario<E>(
         Mcp.layerThreadSelfConfigurationToolkit,
       ).pipe(
         Layer.provide(service),
+        Layer.provide(ThreadMetadataReads.layer),
         Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(runtime),
@@ -568,6 +620,32 @@ it.live(
           })).isError,
           true,
         );
+        for (const caller of [
+          { ...scope, capabilities: new Set<Invocation.McpCapability>() },
+          {
+            ...scope,
+            client: { sessionId: "read-only", label: "test", access: "read-only" as const },
+          },
+          {
+            ...scope,
+            thread: { ...scope.thread!, providerSessionId: "foreign-credential" },
+          },
+          {
+            ...scope,
+            thread: { ...scope.thread!, providerInstanceId: ProviderInstanceId.make("foreign") },
+          },
+          {
+            ...scope,
+            thread: undefined,
+            client: {
+              sessionId: "linked",
+              label: "peer",
+              access: "full-access" as const,
+              linked: true,
+            },
+          },
+        ])
+          assert.equal((yield* call("t3_thread_self_configure", request, caller)).isError, true);
         assert.notEqual((yield* call("t3_thread_organize", { action: "pin" })).isError, true);
         assert.equal(
           (yield* decodeEvidence((yield* call("t3_thread_configure")).structuredContent))
@@ -2721,4 +2799,60 @@ it.live("owner unchanged Claude restart intent retains the generic typed refusal
     false,
     { driver: "claude-code", capabilities: ClaudeProviderCapabilitiesV2 },
   ),
+);
+
+it.live.each(["configuration_changed", "execution_changed"] as const)(
+  "registered self-configuration rolls back a %s interleaving at EventSink acceptance",
+  (reason) =>
+    scenario(
+      "self-configure-transaction-race-" + reason,
+      false,
+      ({ threadId, call, sql, state }) =>
+        Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const sink = yield* Sink.EventSinkV2;
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          const evidence = yield* decodeEvidence(
+            (yield* call("t3_thread_configure")).structuredContent,
+          );
+          const sequence = yield* sink.latestSequence({ threadId });
+          const receipts =
+            yield* sql`SELECT * FROM orchestration_command_receipts WHERE aggregate_id = ${threadId} ORDER BY command_id`;
+          const effects =
+            yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} ORDER BY effect_id`;
+          const owner =
+            yield* sql`SELECT * FROM jones_owner_selections WHERE thread_id = ${threadId}`;
+          const response = yield* call("t3_thread_self_configure", {
+            clientRequestId: "interleaved-save",
+            modelSelection: replacement,
+            expectedConfigurationRevision: evidence.configurationRevision,
+            executionPrecondition: evidence.executionPrecondition,
+          });
+          assert.include(failure(response).message, reason);
+          assert.equal(yield* sink.latestSequence({ threadId }), sequence);
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(after.thread, before.thread);
+          assert.deepEqual(after.runs, before.runs);
+          assert.deepEqual(
+            yield* sql`SELECT * FROM orchestration_command_receipts WHERE aggregate_id = ${threadId} ORDER BY command_id`,
+            receipts,
+          );
+          assert.deepEqual(
+            yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} ORDER BY effect_id`,
+            effects,
+          );
+          assert.deepEqual(
+            yield* sql`SELECT * FROM jones_owner_selections WHERE thread_id = ${threadId}`,
+            owner,
+          );
+          assert.equal((yield* Ref.get(state)).closedSessionCount, 0);
+          assert.lengthOf((yield* Ref.get(state)).started, 1);
+        }),
+      undefined,
+      undefined,
+      false,
+      undefined,
+      false,
+      reason,
+    ),
 );

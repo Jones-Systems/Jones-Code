@@ -6,6 +6,7 @@ import {
   type ChatAttachment,
   EventId,
   MessageId,
+  NodeId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -13,23 +14,29 @@ import {
   RunId,
   TextGenerationError,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/sql/SqlClient";
 import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as TitleStore from "../jones/threadTitle/store.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
+import * as EventStore from "./EventStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "./ThreadTitleRegenerationService.ts";
@@ -54,6 +61,7 @@ const adapter = {
 function makeHarness(
   options: {
     readonly generateTitle?: TextGeneration.TextGeneration["Service"]["generateThreadTitle"];
+    readonly automaticTitles?: boolean;
   } = {},
 ) {
   const layerDatabase = SqlitePersistence.layerMemory;
@@ -98,6 +106,10 @@ function makeHarness(
       ),
   });
   const layerTitleRegeneration = ThreadTitleRegeneration.layer.pipe(
+    // Exercise the optional upstream composition and the Jones reader on the same command DB.
+    Layer.provide(
+      options.automaticTitles ? TitleStore.layer.pipe(Layer.provide(layerDatabase)) : Layer.empty,
+    ),
     Layer.provide(
       Layer.mergeAll(
         layerThreadManagement,
@@ -124,6 +136,7 @@ function createThread(input: {
   readonly command: string;
   readonly thread: string;
   readonly worktreePath?: string;
+  readonly title?: string;
 }) {
   return Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
@@ -133,7 +146,7 @@ function createThread(input: {
       commandId: CommandId.make(input.command),
       threadId,
       projectId,
-      title: "Seed title",
+      title: input.title ?? "Seed title",
       modelSelection,
       runtimeMode: "full-access",
       interactionMode: "default",
@@ -151,6 +164,7 @@ function dispatchUserMessage(input: {
   readonly threadId: ThreadId;
   readonly text: string;
   readonly attachments?: ReadonlyArray<ChatAttachment>;
+  readonly titleSeed?: string;
 }) {
   return Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
@@ -160,6 +174,7 @@ function dispatchUserMessage(input: {
       threadId: input.threadId,
       messageId: MessageId.make(`${input.command}:message`),
       text: input.text,
+      ...(input.titleSeed === undefined ? {} : { titleSeed: input.titleSeed }),
       attachments: input.attachments ?? [],
       modelSelection,
       dispatchMode: { type: "defer_start" },
@@ -177,11 +192,14 @@ function recordRun(input: {
   readonly user: string;
   readonly assistant: string;
   readonly status?: "completed" | "rolled_back";
+  readonly nativeRootReply?: boolean;
 }) {
   return Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
     const now = yield* DateTime.now;
     const providerThreadId = ProviderThreadId.make(`${input.threadId}:provider`);
+    const rootNodeId = NodeId.make(`${input.runId}:root`);
+    const replyNodeId = NodeId.make(`${input.runId}:reply`);
     const message = (role: "user" | "assistant", text: string) => ({
       id: EventId.make(`${input.runId}:${role}`),
       type: "message.updated" as const,
@@ -192,7 +210,7 @@ function recordRun(input: {
         id: MessageId.make(`${input.runId}:${role}`),
         threadId: input.threadId,
         runId: input.runId,
-        nodeId: null,
+        nodeId: input.nativeRootReply && role === "assistant" ? replyNodeId : null,
         role,
         text,
         attachments: [],
@@ -219,7 +237,7 @@ function recordRun(input: {
             modelSelection,
             providerThreadId,
             userMessageId: MessageId.make(`${input.runId}:user`),
-            rootNodeId: null,
+            rootNodeId: input.nativeRootReply ? rootNodeId : null,
             activeAttemptId: null,
             status: input.status ?? "completed",
             requestedAt: now,
@@ -254,6 +272,61 @@ function recordRun(input: {
         },
         message("user", input.user),
         message("assistant", input.assistant),
+        ...(input.nativeRootReply
+          ? [
+              ...(["root_turn", "assistant_message"] as const).map((kind) => ({
+                id: EventId.make(`${input.runId}:node:${kind}`),
+                type: "node.updated" as const,
+                threadId: input.threadId,
+                runId: input.runId,
+                occurredAt: now,
+                payload: {
+                  id: kind === "root_turn" ? rootNodeId : replyNodeId,
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  parentNodeId: kind === "root_turn" ? null : rootNodeId,
+                  rootNodeId,
+                  kind,
+                  status: "completed" as const,
+                  countsForRun: true,
+                  providerThreadId,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  runtimeRequestId: null,
+                  checkpointScopeId: null,
+                  startedAt: now,
+                  completedAt: now,
+                },
+              })),
+              {
+                id: EventId.make(`${input.runId}:reply-item`),
+                type: "turn-item.updated" as const,
+                threadId: input.threadId,
+                runId: input.runId,
+                occurredAt: now,
+                payload: {
+                  id: TurnItemId.make(`${input.runId}:reply-item`),
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  nodeId: replyNodeId,
+                  providerThreadId,
+                  providerTurnId: null,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 1,
+                  status: "completed" as const,
+                  title: null,
+                  startedAt: now,
+                  completedAt: now,
+                  updatedAt: now,
+                  type: "assistant_message" as const,
+                  messageId: MessageId.make(`${input.runId}:assistant`),
+                  text: input.assistant,
+                  streaming: false,
+                },
+              },
+            ]
+          : []),
       ],
     });
   });
@@ -272,6 +345,25 @@ function armRegeneration(input: { readonly command: string; readonly threadId: T
     return requestId;
   });
 }
+
+const executePendingAutomaticTitle = Effect.fn("test.title.executePendingAutomaticTitle")(
+  function* (threadId: ThreadId) {
+    const store = yield* TitleStore.make;
+    const state = yield* store.read(threadId);
+    assert.isOk(state?.pending);
+    const pending = state!.pending!;
+    const service = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+    yield* service.execute({
+      threadId,
+      requestId: pending.requestId,
+      kind:
+        state!.covered.length === 0
+          ? { type: "initial", messageId: pending.evidence[0]! }
+          : { type: "regenerate" },
+    });
+    return pending.requestId;
+  },
+);
 
 /** Forks a source thread at its middle run, between a rolled-back run and later work. */
 function forkSeededSource(prefix: string, sideChat = false, rollbackPriorRun = true) {
@@ -869,5 +961,389 @@ describe("ThreadTitleRegenerationService", () => {
         });
       }).pipe(Effect.provide(harness.layer));
     }),
+  );
+});
+
+describe("ThreadTitleRegenerationService automatic state composition", () => {
+  it.effect(
+    "uses pending owner evidence and persisted root replies, then commits an unchanged sufficient refinement",
+    () => {
+      let calls = 0;
+      const harness = makeHarness({
+        automaticTitles: true,
+        generateTitle: () =>
+          Effect.succeed({
+            title: "Installation and update choices",
+            assessment: ++calls === 1 ? "insufficient" : "sufficient",
+          }),
+      });
+      return Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const store = yield* TitleStore.make;
+        const threadId = yield* createThread({
+          command: "create",
+          thread: "thread",
+          title: "New thread",
+        });
+        yield* dispatchUserMessage({ command: "maintenance", threadId, text: "/compact" });
+        assert.isNull(yield* store.read(threadId));
+        const attachments = Array.from({ length: 8 }, (_, index) => ({
+          type: "image" as const,
+          id: ChatAttachmentId.make(`image-${index}`),
+          name: `image-${index}.png`,
+          mimeType: "image/png",
+          sizeBytes: 1,
+        }));
+        yield* dispatchUserMessage({
+          command: "one",
+          threadId,
+          text:
+            "Goal: installation and update choices\n" +
+            "handoff history ".repeat(2_000) +
+            "\nAdopt this goal",
+          titleSeed: "New thread",
+          attachments,
+        });
+        const beforeReply = yield* threads.getThreadRecords(threadId, ["runs"]);
+        yield* recordRun({
+          threadId,
+          runId: RunId.make("settled-root"),
+          ordinal: Math.max(0, ...beforeReply.runs.map((run) => run.ordinal)) + 1,
+          user: "UNACCEPTED OWNER EVIDENCE",
+          assistant: "The installation options include storage and backups.",
+          nativeRootReply: true,
+        });
+        yield* dispatchUserMessage({
+          command: "two",
+          threadId,
+          text: "Choose full backup versus clone",
+        });
+        assert.deepEqual((yield* store.read(threadId))?.pending?.evidence, [
+          MessageId.make("one:message"),
+        ]);
+        yield* executePendingAutomaticTitle(threadId);
+        const first = harness.generateThreadTitle.mock.calls[0]![0]!;
+        assert.isTrue(first.titleAssessment);
+        assert.equal(first.linkedContext, "");
+        assert.isUndefined(first.forkSource);
+        assert.isUndefined(first.previousTitle);
+        assert.equal(first.projectTitle, "Project");
+        assert.equal(first.projectId, projectId);
+        assert.isAtMost(first.message.length, 8_000);
+        assert.include(first.message, "Goal: installation and update choices");
+        assert.include(first.message, "Adopt this goal");
+        assert.include(first.message, "ASSISTANT:\nThe installation options");
+        assert.notInclude(first.message, "UNACCEPTED OWNER EVIDENCE");
+        assert.notInclude(first.message, "full backup versus clone");
+        assert.notInclude(first.message, "/compact");
+        assert.deepEqual(first.attachments, [...attachments.slice(0, 1), ...attachments.slice(-3)]);
+        const next = yield* store.read(threadId);
+        assert.deepEqual(next?.covered, [MessageId.make("one:message")]);
+        assert.equal(next?.lastRequestId, "one");
+        assert.deepEqual(next?.pending?.evidence, [
+          MessageId.make("one:message"),
+          MessageId.make("two:message"),
+        ]);
+        const refinement = yield* executePendingAutomaticTitle(threadId);
+        const second = harness.generateThreadTitle.mock.calls[1]![0]!;
+        assert.isTrue(second.titleAssessment);
+        assert.equal(second.linkedContext, "");
+        assert.equal(second.previousTitle, "Installation and update choices");
+        assert.include(second.message, "full backup versus clone");
+        const completed = yield* store.read(threadId);
+        assert.equal(completed?.status, "sufficient");
+        assert.isTrue(completed?.knownInsufficient);
+        assert.equal(completed?.lastRequestId, refinement);
+        assert.isNull(completed?.pending);
+        const snapshot = yield* threads.getThreadProjection(threadId);
+        assert.equal(snapshot.thread.title, "Installation and update choices");
+        assert.deepInclude(snapshot.thread.lastTitleRegeneration, {
+          requestId: refinement,
+          status: "unchanged",
+        });
+        yield* dispatchUserMessage({ command: "three", threadId, text: "Keep updates manual" });
+        assert.isNotOk((yield* threads.getThreadProjection(threadId)).thread.titleRegeneration);
+        assert.equal(calls, 2);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect.each([
+    {
+      label: "sufficient",
+      result: { title: "Installation choices", assessment: "sufficient" as const },
+      status: "sufficient",
+      insufficient: false,
+    },
+    {
+      label: "missing",
+      result: { title: "Installation choices" },
+      status: "active",
+      insufficient: false,
+    },
+    // Deliberately malformed provider output bypasses the static union at this external seam.
+    {
+      label: "malformed",
+      result: { title: "Installation choices", assessment: "invalid" as "unknown" },
+      status: "active",
+      insufficient: false,
+    },
+    {
+      label: "explicit refinement",
+      result: {
+        title: "Installation choices",
+        assessment: "sufficient" as const,
+        needsRefinement: true,
+      },
+      status: "active",
+      insufficient: true,
+    },
+    {
+      label: "truthy refinement",
+      result: { title: "Installation choices", needsRefinement: "true" as unknown as boolean },
+      status: "active",
+      insufficient: false,
+    },
+  ])("commits $label assessment without inventing a pass", ({ result, status, insufficient }) => {
+    const harness = makeHarness({
+      automaticTitles: true,
+      generateTitle: () => Effect.succeed(result),
+    });
+    return Effect.gen(function* () {
+      const store = yield* TitleStore.make;
+      const threadId = yield* createThread({
+        command: "create",
+        thread: "thread",
+        title: "New thread",
+      });
+      yield* dispatchUserMessage({
+        command: "one",
+        threadId,
+        text: "Choose installation options",
+        titleSeed: "New thread",
+      });
+      yield* executePendingAutomaticTitle(threadId);
+      const state = yield* store.read(threadId);
+      assert.equal(state?.status, status);
+      assert.equal(state?.knownInsufficient, insufficient);
+      assert.deepEqual(state?.accepted, [MessageId.make("one:message")]);
+      assert.deepEqual(state?.covered, [MessageId.make("one:message")]);
+      assert.equal(state?.lastRequestId, "one");
+      assert.isNull(state?.pending);
+      assert.equal(harness.generateThreadTitle.mock.calls.length, 1);
+      assert.isTrue(harness.generateThreadTitle.mock.calls[0]![0]!.titleAssessment);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect(
+    "rolls the assessed title, evidence, events, receipt and next effect back on a state write failure",
+    () => {
+      const harness = makeHarness({
+        automaticTitles: true,
+        generateTitle: () =>
+          Effect.succeed({ title: "Installation choices", assessment: "insufficient" }),
+      });
+      return Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const store = yield* TitleStore.make;
+        const events = yield* EventStore.EventStoreV2.pipe(Effect.provide(EventStore.layer));
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2.pipe(
+          Effect.provide(CommandReceiptStore.layer),
+        );
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const threadId = yield* createThread({
+          command: "create",
+          thread: "thread",
+          title: "New thread",
+        });
+        yield* dispatchUserMessage({
+          command: "one",
+          threadId,
+          text: "Choose installation options",
+          titleSeed: "New thread",
+        });
+        yield* dispatchUserMessage({
+          command: "two",
+          threadId,
+          text: "Include storage and backups",
+        });
+        const before = yield* store.read(threadId);
+        const sequence = yield* events.latestSequence({ threadId });
+        const completionId = CommandId.make("one:title-complete");
+        yield* sql`CREATE TEMP TRIGGER reject_title_state BEFORE UPDATE ON jones_thread_title_refinement
+        BEGIN SELECT RAISE(ABORT, 'synthetic title state failure'); END`;
+        const failed = yield* executePendingAutomaticTitle(threadId).pipe(Effect.exit);
+        assert.equal(failed._tag, "Failure");
+        assert.deepEqual(yield* store.read(threadId), before);
+        assert.equal((yield* threads.getThreadProjection(threadId)).thread.title, "New thread");
+        assert.equal(yield* events.latestSequence({ threadId }), sequence);
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(completionId)));
+        assert.deepEqual(yield* outbox.listByCommandId(completionId), []);
+        yield* sql`DROP TRIGGER reject_title_state`;
+        yield* executePendingAutomaticTitle(threadId);
+        const committed = yield* store.read(threadId);
+        assert.equal(committed?.lastRequestId, "one");
+        assert.deepEqual(committed?.covered, [MessageId.make("one:message")]);
+        assert.deepEqual(committed?.pending?.evidence, [
+          MessageId.make("one:message"),
+          MessageId.make("two:message"),
+        ]);
+        const receipt = yield* receipts.getByCommandId(completionId);
+        assert.isTrue(Option.isSome(receipt));
+        const effects = yield* outbox.listByCommandId(completionId);
+        assert.equal(
+          effects.filter((effect) => effect.request.type === "thread-title.generate").length,
+          1,
+        );
+        const committedSequence = yield* events.latestSequence({ threadId });
+        yield* threads.dispatch({
+          type: "thread.title.regeneration.complete",
+          threadId,
+          requestId: CommandId.make("one"),
+          commandId: completionId,
+          title: "Replay must not win",
+        });
+        assert.deepEqual(yield* store.read(threadId), committed);
+        assert.deepEqual(yield* receipts.getByCommandId(completionId), receipt);
+        assert.deepEqual(yield* outbox.listByCommandId(completionId), effects);
+        assert.equal(yield* events.latestSequence({ threadId }), committedSequence);
+        assert.equal(
+          (yield* threads.getThreadProjection(threadId)).thread.title,
+          "Installation choices",
+        );
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "rejects a late automatic verdict after manual replacement and does not assess the replacement",
+    () => {
+      let started: Deferred.Deferred<void>;
+      let release: Deferred.Deferred<void>;
+      let calls = 0;
+      const harness = makeHarness({
+        automaticTitles: true,
+        generateTitle: () =>
+          Effect.gen(function* () {
+            if (++calls === 1) {
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(release);
+              return { title: "Late automatic title", assessment: "sufficient" as const };
+            }
+            return { title: "Manual regeneration", assessment: "insufficient" as const };
+          }),
+      });
+      return Effect.gen(function* () {
+        started = yield* Deferred.make<void>();
+        release = yield* Deferred.make<void>();
+        const store = yield* TitleStore.make;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const service = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+        const threadId = yield* createThread({
+          command: "create",
+          thread: "thread",
+          title: "New thread",
+        });
+        yield* dispatchUserMessage({
+          command: "one",
+          threadId,
+          text: "Choose installation options",
+          titleSeed: "New thread",
+        });
+        const worker = yield* executePendingAutomaticTitle(threadId).pipe(Effect.forkChild);
+        yield* Deferred.await(started).pipe(Effect.raceFirst(Fiber.join(worker)));
+        const replacement = yield* armRegeneration({ command: "manual", threadId });
+        const stopped = yield* store.read(threadId);
+        assert.equal(stopped?.status, "stopped");
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(worker);
+        assert.deepEqual(yield* store.read(threadId), stopped);
+        const afterLate = yield* threads.getThreadProjection(threadId);
+        assert.equal(afterLate.thread.title, "New thread");
+        assert.equal(afterLate.thread.titleRegeneration?.requestId, replacement);
+        yield* service.execute({ threadId, requestId: replacement, kind: { type: "regenerate" } });
+        assert.isUndefined(harness.generateThreadTitle.mock.calls[1]![0]!.titleAssessment);
+        assert.isUndefined(harness.generateThreadTitle.mock.calls[1]![0]!.linkedContext);
+        assert.deepEqual(yield* store.read(threadId), stopped);
+        assert.equal(
+          (yield* threads.getThreadProjection(threadId)).thread.title,
+          "Manual regeneration",
+        );
+        yield* dispatchUserMessage({ command: "two", threadId, text: "More detail" });
+        assert.isNotOk((yield* threads.getThreadProjection(threadId)).thread.titleRegeneration);
+        assert.equal(calls, 2);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect(
+    "keeps custom and imported legacy titles outside automatic policy with the real reader installed",
+    () => {
+      const harness = makeHarness({ automaticTitles: true });
+      return Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const store = yield* TitleStore.make;
+        const service = yield* ThreadTitleRegeneration.ThreadTitleRegenerationService;
+        const custom = yield* createThread({
+          command: "custom:create",
+          thread: "custom",
+          title: "Custom title",
+        });
+        yield* dispatchUserMessage({
+          command: "custom:one",
+          threadId: custom,
+          text: "Choose installation options",
+          titleSeed: "New thread",
+        });
+        assert.isNull(yield* store.read(custom));
+        const customSnapshot = yield* threads.getThreadProjection(custom);
+        assert.equal(customSnapshot.thread.title, "Custom title");
+        assert.isNotOk(customSnapshot.thread.titleRegeneration);
+        const manual = yield* armRegeneration({ command: "custom:manual", threadId: custom });
+        yield* service.execute({
+          threadId: custom,
+          requestId: manual,
+          kind: { type: "regenerate" },
+        });
+        assert.isUndefined(harness.generateThreadTitle.mock.calls[0]![0]!.titleAssessment);
+        assert.equal((yield* store.read(custom))?.status, "stopped");
+
+        const legacy = yield* createThread({
+          command: "legacy:create",
+          thread: "legacy",
+          title: "New thread",
+        });
+        const { thread } = yield* threads.getThreadProjection(legacy);
+        const sink = yield* EventSink.EventSinkV2;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("legacy:history"),
+              type: "thread.metadata-updated",
+              threadId: legacy,
+              occurredAt: yield* DateTime.now,
+              payload: { ...thread, historyOrigin: "v1_import" },
+            },
+          ],
+        });
+        yield* dispatchUserMessage({
+          command: "legacy:one",
+          threadId: legacy,
+          text: "Legacy subject",
+          titleSeed: "New thread",
+        });
+        assert.isNull(yield* store.read(legacy));
+        yield* service.execute({
+          threadId: legacy,
+          requestId: CommandId.make("legacy:one"),
+          kind: { type: "initial", messageId: MessageId.make("legacy:one:message") },
+        });
+        assert.equal(harness.generateThreadTitle.mock.calls.length, 2);
+        assert.isUndefined(harness.generateThreadTitle.mock.calls[1]![0]!.titleAssessment);
+        assert.isNull(yield* store.read(legacy));
+        assert.equal((yield* threads.getThreadProjection(legacy)).thread.title, "Generated title");
+      }).pipe(Effect.provide(harness.layer));
+    },
   );
 });

@@ -47,6 +47,8 @@ import {
 import { FILE_HEADERS_ONLY, formatPatch, structuredPatch } from "diff";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -1744,6 +1746,10 @@ function acpSubagentHasPendingBackgroundWork(subagent: ActiveAcpSubagent): boole
   );
 }
 
+class AcpEventProducerContext extends Context.Reference<
+  ProviderEventOrigin.ProviderEventProducerOrigin | undefined
+>("t3/AcpAdapterV2/EventProducerContext", { defaultValue: () => undefined }) {}
+
 type AcpCarryoverSubagents = {
   readonly sessionId: string;
   /** The root's subscriber keeps ingesting, so late child terminals can still project. */
@@ -2131,12 +2137,43 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const runtimeTeardownState = yield* Ref.make<AcpRuntimeTeardownState>({ _tag: "Idle" });
         const runtimeCallbackGeneration = yield* Ref.make(0);
         const runtimeCallbackGenerationCounter = yield* Ref.make(0);
+        const sessionEventProducer = ProviderEventOrigin.makeProviderEventProducer({
+          driver,
+          instanceId: options.instanceId,
+          providerSessionId: input.providerSessionId,
+        });
+        const callbackProducers = new Map<number, ProviderEventOrigin.ProviderEventProducer>();
+        const producerAtGeneration = (generation: number) => {
+          let producer = callbackProducers.get(generation);
+          if (producer === undefined) {
+            producer = ProviderEventOrigin.makeProviderEventProducer({
+              driver,
+              instanceId: options.instanceId,
+              providerSessionId: input.providerSessionId,
+            });
+            callbackProducers.set(generation, producer);
+          }
+          return producer;
+        };
+        const commitCallbackProducer = (generation: number) => {
+          for (const [previous, producer] of callbackProducers) {
+            if (previous === generation) continue;
+            producer.retire();
+            callbackProducers.delete(previous);
+          }
+        };
         const allocateRuntimeCallbackGeneration = Ref.updateAndGet(
           runtimeCallbackGenerationCounter,
           (generation) => generation + 1,
         );
         const advanceRuntimeCallbackGeneration = allocateRuntimeCallbackGeneration.pipe(
-          Effect.tap((generation) => Ref.set(runtimeCallbackGeneration, generation)),
+          Effect.tap((generation) =>
+            Ref.getAndSet(runtimeCallbackGeneration, generation).pipe(
+              Effect.tap((previous) =>
+                Effect.sync(() => callbackProducers.get(previous)?.retire()),
+              ),
+            ),
+          ),
         );
         const runtimeCallbackPermit = yield* Semaphore.make(1);
         const runtimeTransitionPermit = yield* Semaphore.make(1);
@@ -2176,7 +2213,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               if ((yield* Ref.get(runtimeCallbackGeneration)) !== generation) {
                 return Option.none<A>();
               }
-              return Option.some(yield* effect);
+              return Option.some(
+                yield* effect.pipe(
+                  Effect.provideService(
+                    AcpEventProducerContext,
+                    producerAtGeneration(generation).origin,
+                  ),
+                ),
+              );
             }),
           );
         const registerNativeResponseAcknowledgement =
@@ -2329,7 +2373,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         });
         const closeNativeTransport = runtimeCallbackPermit.withPermit(
           Effect.gen(function* () {
-            yield* advanceRuntimeCallbackGeneration;
+            const previousGeneration = yield* Ref.get(runtimeCallbackGeneration);
+            producerAtGeneration(previousGeneration).drain();
+            sessionEventProducer.drain();
+            yield* allocateRuntimeCallbackGeneration.pipe(
+              Effect.flatMap((generation) => Ref.set(runtimeCallbackGeneration, generation)),
+            );
             const acknowledgements = yield* Ref.getAndSet(
               nativeResponseAcknowledgements,
               new Map(),
@@ -2488,8 +2537,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
           });
 
-        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+        // Streaming events already belong to the runtime callback; avoid a span per chunk.
+        const emitProviderEvent = Effect.fnUntraced(function* (
+          event: ProviderAdapter.ProviderAdapterV2Event,
+        ) {
+          const producer = (yield* AcpEventProducerContext) ?? sessionEventProducer.origin;
+          yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
+        });
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
 
@@ -7282,6 +7336,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const mcpContext = yield* readMcpContext(threadId);
           runtimeMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, runtimeScope);
           const runtimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
+          producerAtGeneration(runtimeGeneration);
           openAgentRequests = new Set();
           runtime = yield* flavor
             .makeRuntime(
@@ -7294,6 +7349,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               Effect.provideService(AgentScope, agentScope),
               Effect.provideService(AgentScopeThreadId, threadId ?? undefined),
             );
+          commitCallbackProducer(runtimeGeneration);
         });
 
         const startAcpRuntime = Effect.fnUntraced(function* (
@@ -7393,6 +7449,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             ),
           );
           if (Exit.isFailure(replacementExit)) {
+            callbackProducers.get(replacementGeneration)?.retire();
+            callbackProducers.delete(replacementGeneration);
             yield* runtimeCallbackPermit.withPermit(
               quarantineNativeTransportAtGeneration(replacementGeneration),
             );
@@ -7429,6 +7487,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   runtime = replacementExit.value.replacementRuntime;
                   runtimeScope = replacementScope;
                   runtimeMcpBridge = replacementMcpBridge;
+                  commitCallbackProducer(replacementGeneration);
                   openAgentRequests = replacementAgentRequests;
                   yield* Ref.set(runtimeCallbackGeneration, replacementGeneration);
                   prepareTerminalEnvironment(
@@ -7448,6 +7507,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       buffered,
                       (notification) =>
                         projectAcpRuntimeSessionUpdateEffect(notification).pipe(
+                          Effect.provideService(
+                            AcpEventProducerContext,
+                            producerAtGeneration(replacementGeneration).origin,
+                          ),
                           Effect.catchCause((cause) =>
                             Effect.logError("failed to replay staged ACP session update", {
                               driver,
@@ -8461,6 +8524,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const sessionSetup = yield* Ref.get(activeSessionSetup);
           const runtimeInstructions = buildRuntimeInstructions({
             harness: flavor.runtimeHarness ?? driver,
+            ...(host.appIdentity === undefined ? {} : { appIdentity: host.appIdentity }),
             model: turnInput.modelSelection.model,
             pullRequestLinking:
               sessionSetup === null ||
@@ -9111,6 +9175,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           providerSessionId: input.providerSessionId,
           providerSession,
           canResumeAfterRestart: canLoadSession || canResumeSession,
+          eventOriginMode: "captured",
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ...(flavor.getModelContextWindow === undefined
             ? {}

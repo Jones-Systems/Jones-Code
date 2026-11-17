@@ -15,9 +15,11 @@ import {
   ProviderDriverKind,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -105,6 +107,8 @@ export interface CursorAgentSdkRun {
   readonly runId: string;
   readonly agentId: string;
   readonly wait: Effect.Effect<RunResult, CursorAgentSdkRunnerError>;
+  /** Native completion without the callback and diagnostic drain that `wait` adds. */
+  readonly nativeWait: Effect.Effect<RunResult, CursorAgentSdkRunnerError>;
   readonly cancel: Effect.Effect<void, CursorAgentSdkRunnerError>;
   /** Absent on test doubles that never steer. The live runner always sets it. */
   readonly steer?: (text: string) => Effect.Effect<SteerAckOutcome, CursorAgentSdkRunnerError>;
@@ -658,6 +662,28 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
           );
           abandonedRunRecoveryAvailable = false;
           runId = run.id;
+          const unsubscribeShellOutput = subscribeShellStreamOutput((output) => {
+            if (output.conversationId !== agent.agentId || typeof output.toolCallId !== "string") {
+              return;
+            }
+            const update: InteractionUpdate = {
+              type: "shell-output-delta",
+              event: { ...output.event, toolCallId: output.toolCallId },
+            };
+            if (!callbacksReady) {
+              pendingUpdates.push(update);
+              return;
+            }
+            void dispatchUpdate(update);
+          });
+          // Capture native exit before diagnostics or buffered callbacks can block send's return.
+          const nativeWait = yield* Effect.cached(
+            Effect.tryPromise({
+              try: () => run.wait(),
+              catch: (cause) => runnerError(cause, "run.wait"),
+            }),
+          );
+          yield* nativeWait.pipe(Effect.exit, Effect.forkDetach({ startImmediately: true }));
           yield* log({
             direction: "incoming",
             stage: "decoded",
@@ -668,15 +694,6 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
             },
           });
           callbacksReady = true;
-          const unsubscribeShellOutput = subscribeShellStreamOutput((output) => {
-            if (output.conversationId !== agent.agentId || typeof output.toolCallId !== "string") {
-              return;
-            }
-            void dispatchUpdate({
-              type: "shell-output-delta",
-              event: { ...output.event, toolCallId: output.toolCallId },
-            });
-          });
           for (const update of pendingUpdates) {
             yield* Effect.tryPromise({
               try: () => dispatchUpdate(update),
@@ -687,16 +704,29 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
           return {
             runId: run.id,
             agentId: run.agentId,
-            wait: Effect.tryPromise({
-              try: async () => {
-                const result = await run.wait();
-                await callbackChain;
-                if (callbackFailure !== undefined) {
-                  throw callbackFailure.cause;
-                }
-                return result;
-              },
-              catch: (cause) => runnerError(cause, "run.wait"),
+            nativeWait,
+            wait: Effect.gen(function* () {
+              const nativeExit = yield* Effect.exit(nativeWait);
+              const callbackExit = yield* Effect.tryPromise({
+                try: async () => {
+                  let draining: Promise<void>;
+                  do {
+                    draining = callbackChain;
+                    await draining;
+                  } while (draining !== callbackChain);
+                  if (callbackFailure !== undefined) throw callbackFailure.cause;
+                },
+                catch: (cause) => runnerError(cause, "run.wait"),
+              }).pipe(Effect.exit);
+              if (Exit.isFailure(nativeExit)) {
+                return yield* Effect.failCause(
+                  Exit.isFailure(callbackExit)
+                    ? Cause.combine(nativeExit.cause, callbackExit.cause)
+                    : nativeExit.cause,
+                );
+              }
+              if (Exit.isFailure(callbackExit)) return yield* Effect.failCause(callbackExit.cause);
+              return nativeExit.value;
             }).pipe(
               Effect.ensuring(Effect.sync(unsubscribeShellOutput)),
               Effect.tap((result) =>

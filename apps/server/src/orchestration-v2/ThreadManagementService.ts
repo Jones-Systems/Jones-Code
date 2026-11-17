@@ -1,3 +1,13 @@
+import type { PreparationContext } from "../jones/ordinaryCheckout/CheckoutCommit.ts";
+import * as RetirementOutcome from "../jones/workspaceRetirement/Outcome.ts";
+import * as LegacyBootstrapRecords from "../jones/legacyBootstrap/RetainedRecords.ts";
+import type {
+  LegacyFailureDeleteCommand,
+  LegacyGuardRejectionDeleteCommand,
+} from "./RecordedTypes.ts";
+import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { queuedSteerBatchCandidates } from "../jones/orchestration/QueuedSteerBatch.ts";
 import * as ThreadActivityProjection from "../jones/mcp/ThreadActivityProjection.ts";
 import * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
@@ -7,7 +17,10 @@ import type { SendIngressPorts } from "../jones/remoteDelegation/SendIngress.ts"
 import * as SendPreparation from "../jones/remoteDelegation/SendPreparation.ts";
 import type { ObservationPorts } from "../jones/remoteDelegation/ObservationHooks.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
-import { blockingQuestions, questionsChanged } from "../jones/remoteDelegation/BlockingQuestions.ts";
+import {
+  blockingQuestions,
+  questionsChanged,
+} from "../jones/remoteDelegation/BlockingQuestions.ts";
 import type { RemoteBlockingQuestions } from "@t3tools/contracts";
 import * as Queue from "effect/Queue";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
@@ -406,24 +419,41 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
-export interface ThreadManagementServiceShape extends ObservationPorts, SendIngressPorts, SelfSettlementCaller.Ports {
-  readonly observeThreadActivity?: (threadId: ThreadId) => Effect.Effect<RuntimeObservation.ProviderThreadActivityObservation>;
+export interface ThreadManagementServiceShape
+  extends ObservationPorts, SendIngressPorts, SelfSettlementCaller.Ports {
+  readonly observeThreadActivity?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RuntimeObservation.ProviderThreadActivityObservation>;
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
   ) => Stream.Stream<OrchestrationV2SearchThreadResult, Orchestrator.OrchestratorV2Error>;
   readonly searchThread: (
     input: OrchestrationV2SearchThreadInput,
   ) => Effect.Effect<OrchestrationV2SearchThreadResult, Orchestrator.OrchestratorV2Error>;
+  readonly reviewImportedHistory: Orchestrator.OrchestratorV2["Service"]["reviewImportedHistory"];
+  readonly startWithImportedHistory: Orchestrator.OrchestratorV2["Service"]["startWithImportedHistory"];
+  readonly observeImportedHistoryStart: Orchestrator.OrchestratorV2["Service"]["observeImportedHistoryStart"];
   readonly ensureLegacyTranscript: (
     threadId: ThreadId,
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
+    preparation?: PreparationContext,
   ) => Effect.Effect<
     Orchestrator.OrchestratorV2DispatchResult,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
+  readonly promoteQueuedBatch?: (input: {
+    readonly commandId: CommandId;
+    readonly threadId: ThreadId;
+    readonly targetRunId: RunId;
+    readonly queuedRunIds: ReadonlyArray<RunId>;
+  }) => Effect.Effect<
+    { readonly sequence: number; readonly promotedCount: number; readonly remainingCount: number },
+    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  >;
   readonly getThreadHistoryPage: Orchestrator.OrchestratorV2["Service"]["getThreadHistoryPage"];
+  readonly getTimelinePages: Orchestrator.OrchestratorV2["Service"]["getTimelinePages"];
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: Orchestrator.OrchestratorV2["Service"]["getMessageCount"];
   readonly getMessagesById: Orchestrator.OrchestratorV2["Service"]["getMessagesById"];
@@ -432,6 +462,19 @@ export interface ThreadManagementServiceShape extends ObservationPorts, SendIngr
     readonly itemId: TurnItemId;
   }) => Effect.Effect<OrchestrationV2GetTurnItemResult, Orchestrator.OrchestratorV2Error>;
   readonly getThreadRecords: Orchestrator.OrchestratorV2["Service"]["getThreadRecords"];
+  readonly getLegacyBootstrapRecords: (
+    threadId: ThreadId,
+    filter?: { readonly runIds?: ReadonlyArray<RunId> },
+  ) => Effect.Effect<
+    LegacyBootstrapRecords.LegacyBootstrapRecords,
+    Orchestrator.OrchestratorProjectionError
+  >;
+  readonly dispatchLegacyFailureDelete?: (
+    command: LegacyFailureDeleteCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+  readonly dispatchLegacyGuardRejectionDelete?: (
+    command: LegacyGuardRejectionDeleteCommand,
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
   readonly getThreadProjection: (
     threadId: ThreadId,
   ) => Effect.Effect<OrchestrationV2ThreadProjection, Orchestrator.OrchestratorV2Error>;
@@ -493,7 +536,9 @@ export interface ThreadManagementServiceShape extends ObservationPorts, SendIngr
   }) => Effect.Effect<boolean>;
   /** Receipt replays start no work; skip enablement checks with the same command id so settings cannot reject accepted retries. */
   readonly getCommandReceipt: CommandReceiptStore.CommandReceiptStoreV2["Service"]["getByCommandId"];
-  readonly getDispatchDeliveryEvidence: (command: OrchestrationV2Command) => Effect.Effect<DispatchDeliveryEvidence>;
+  readonly getDispatchDeliveryEvidence: (
+    command: OrchestrationV2Command,
+  ) => Effect.Effect<DispatchDeliveryEvidence>;
   readonly hasReceipt: (commandId: CommandId) => Effect.Effect<boolean>;
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
@@ -631,7 +676,11 @@ const isForceStopThreadError = Schema.is(OrchestrationV2ForceStopThreadError);
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  const remoteHooks = orchestrator as typeof orchestrator & ObservationPorts & SendIngressPorts & SelfSettlementCaller.Ports;
+  const getLegacyBootstrapRecords = yield* LegacyBootstrapRecords.make;
+  const remoteHooks = orchestrator as typeof orchestrator &
+    ObservationPorts &
+    SendIngressPorts &
+    SelfSettlementCaller.Ports;
   const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const layerScope = yield* Effect.scope;
   const agentScope = yield* AgentScope;
@@ -677,10 +726,16 @@ const make = Effect.gen(function* () {
       Effect.map(Option.isSome),
     );
 
-  const observationSessions = yield* Effect.serviceOption(ProviderSessionManager.ProviderSessionManagerV2);
-  const activitySessions = Option.isSome(observationSessions) ? observationSessions.value as typeof observationSessions.value & {
-    readonly observeThreadActivity?: (threadId: ThreadId) => Effect.Effect<RuntimeObservation.ProviderRuntimeObservation>;
-  } : undefined;
+  const observationSessions = yield* Effect.serviceOption(
+    ProviderSessionManager.ProviderSessionManagerV2,
+  );
+  const activitySessions = Option.isSome(observationSessions)
+    ? (observationSessions.value as typeof observationSessions.value & {
+        readonly observeThreadActivity?: (
+          threadId: ThreadId,
+        ) => Effect.Effect<RuntimeObservation.ProviderRuntimeObservation>;
+      })
+    : undefined;
   const observeThreadActivity = Effect.fn("ThreadManagementService.observeThreadActivity")(
     (threadId: ThreadId) =>
       Effect.gen(function* () {
@@ -879,15 +934,72 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) => {
+  const dispatch: ThreadManagementServiceShape["dispatch"] = (command, preparation) => {
     const dispatched = ensureCommandTranscripts(command).pipe(
       Effect.andThen(assertDispatchTargetEnabled(command)),
-      Effect.andThen(orchestrator.dispatch(command)),
+      Effect.andThen(orchestrator.dispatch(command, preparation)),
     );
     return command.type === "message.dispatch" && command.scheduledTaskId !== undefined
       ? UpdateAdmissionFence.holdScheduledDispatch(updateAdmission, dispatched)
       : dispatched;
   };
+
+  const promoteQueuedBatch: NonNullable<ThreadManagementServiceShape["promoteQueuedBatch"]> =
+    Effect.fn("ThreadManagementService.promoteQueuedBatch")(function* (input) {
+      const projection = yield* orchestrator.getThreadRecords(
+        input.threadId,
+        [
+          "runs",
+          "messages",
+          "nodes",
+          "attempts",
+          "providerThreads",
+          "providerSessions",
+          "providerTurns",
+          "runtimeRequests",
+        ],
+        { runStatuses: ["queued", "running"], messageRoles: ["user"], omitSettledLeafNodes: true },
+      );
+      const candidates = queuedSteerBatchCandidates(projection, input.targetRunId).slice(
+        0,
+        input.queuedRunIds.length,
+      );
+      const reject = (cause: string) =>
+        new Orchestrator.OrchestratorDispatchError({
+          commandId: input.commandId,
+          commandType: "queued-message.promote-batch-to-steer",
+          cause,
+        });
+      if (
+        candidates.length !== input.queuedRunIds.length ||
+        candidates.some((candidate, index) => candidate.run.id !== input.queuedRunIds[index])
+      )
+        return yield* reject("Refresh the queue and select its leading messages in order.");
+      const plan = planQueuedSteerBatch(
+        candidates.map((candidate) => ({
+          message: candidate.message!,
+          eligible: candidate.eligible,
+        })),
+      );
+      if (plan.count === 0)
+        return yield* reject(`${plan.reason}: use the first row's individual Steer action.`);
+      const result = yield* dispatch({
+        type: "queued-message.promote-batch-to-steer",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        targetRunId: input.targetRunId,
+        items: candidates.slice(0, plan.count).map((entry) => ({
+          queuedRunId: entry.run.id,
+          messageId: entry.message!.id,
+          messageUpdatedAt: DateTime.formatIso(entry.message!.updatedAt),
+        })),
+      });
+      return {
+        sequence: result.sequence,
+        promotedCount: plan.count,
+        remainingCount: plan.remainingCount,
+      };
+    });
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (
     input,
@@ -973,29 +1085,47 @@ const make = Effect.gen(function* () {
       dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
     } else {
       dispatchMode = {
-        type: mode === "queue" || mode === "separate_turn" ? "queue_after_active" : "start_immediately",
+        type:
+          mode === "queue" || mode === "separate_turn" ? "queue_after_active" : "start_immediately",
       };
     }
 
     // Turn start would fail on its own after the send reported success; a replay keeps its answer.
     // A live steer starts no turn, so it needs no workspace.
     if (dispatchMode.type !== "steer_active") {
-      const restoration = hasReceipt(input.commandId).pipe(Effect.flatMap((replay) => replay ? Effect.void :
-        worktreeRestore.restore(target.thread).pipe(
-          Effect.catch((cause) =>
-            hasReceipt(input.commandId).pipe(
-              Effect.flatMap((replayed) => replayed ? Effect.void : Effect.fail(
-                new ThreadManagementWorktreeRestoreError({threadId: input.threadId, cause}),
-              )),
-            ),
-          ),
+      const restoration = hasReceipt(input.commandId).pipe(
+        Effect.flatMap((replay) =>
+          replay
+            ? Effect.void
+            : worktreeRestore.restore(target.thread).pipe(
+                Effect.catch((cause) =>
+                  hasReceipt(input.commandId).pipe(
+                    Effect.flatMap((replayed) =>
+                      replayed
+                        ? Effect.void
+                        : Effect.fail(
+                            new ThreadManagementWorktreeRestoreError({
+                              threadId: input.threadId,
+                              cause,
+                            }),
+                          ),
+                    ),
+                  ),
+                ),
+              ),
         ),
-      ));
-      yield* SendPreparation.prepare(remoteHooks,
-        input.commandId, restoration).pipe(Effect.mapError((cause) => SendPreparation.isReceiptError(cause)
-          ? new Orchestrator.OrchestratorDispatchError({commandId: input.commandId,
-              commandType: "message.dispatch", cause})
-          : cause));
+      );
+      yield* SendPreparation.prepare(remoteHooks, input.commandId, restoration).pipe(
+        Effect.mapError((cause) =>
+          SendPreparation.isReceiptError(cause)
+            ? new Orchestrator.OrchestratorDispatchError({
+                commandId: input.commandId,
+                commandType: "message.dispatch",
+                cause,
+              })
+            : cause,
+        ),
+      );
     }
 
     const dispatched = yield* dispatch({
@@ -1012,9 +1142,12 @@ const make = Effect.gen(function* () {
       ...(input.freshContext ? { freshContext: true } : {}),
       dispatchMode,
       ...(mode === "auto" ? { deliveryIntent: "auto" as const } : {}),
-      ...(input.creationSource === "mcp" && (input.senderThreadId !== undefined || (yield* IncomingLinkedMessage)) &&
-        input.scheduledTaskId === undefined && (input.mode === "queue" || input.mode === "auto")
-        ? { queuedToolBoundaryEligible: true } : {}),
+      ...(input.creationSource === "mcp" &&
+      (input.senderThreadId !== undefined || (yield* IncomingLinkedMessage)) &&
+      input.scheduledTaskId === undefined &&
+      (input.mode === "queue" || input.mode === "auto")
+        ? { queuedToolBoundaryEligible: true }
+        : {}),
       createdBy: input.createdBy,
       creationSource: input.creationSource,
     });
@@ -1364,9 +1497,12 @@ const make = Effect.gen(function* () {
     if (input.byOwnAgent && input.selfSettlementCaller !== undefined) {
       // Core persists intent and owns terminal/checkpoint/wake/watch settlement.
       // Never call its private consume method or schedule an ephemeral competitor.
-      yield* SelfSettlementCaller.request(remoteHooks, {threadId: input.threadId,
-        commandId: input.commandId, ...input.selfSettlementCaller});
-      return {settlesWhenTurnEnds: true} as const;
+      yield* SelfSettlementCaller.request(remoteHooks, {
+        threadId: input.threadId,
+        commandId: input.commandId,
+        ...input.selfSettlementCaller,
+      });
+      return { settlesWhenTurnEnds: true } as const;
     }
     const shell = input.byOwnAgent ? yield* orchestrator.getThreadShell(input.threadId) : null;
     if (shell != null && shell.activeRunId !== null) {
@@ -1819,6 +1955,15 @@ const make = Effect.gen(function* () {
 
   return ThreadManagementService.of({
     ensureLegacyTranscript,
+    reviewImportedHistory: Effect.fn("ThreadManagementService.reviewImportedHistory")(
+      function (input) {
+        return ensureProjectionTranscript(input.threadId).pipe(
+          Effect.andThen(orchestrator.reviewImportedHistory(input)),
+        );
+      },
+    ),
+    startWithImportedHistory: orchestrator.startWithImportedHistory,
+    observeImportedHistoryStart: orchestrator.observeImportedHistoryStart,
     searchThreadStream: (input) =>
       Stream.unwrap(
         ensureProjectionTranscript(input.threadId).pipe(
@@ -1845,6 +1990,15 @@ const make = Effect.gen(function* () {
           ),
         );
       },
+    ),
+    // Hydrate a legacy transcript first; the page selections then share one read-only read.
+    getTimelinePages: Effect.fn("ThreadManagementService.getTimelinePages")(
+      (threadId, selections) =>
+        ensureProjectionTranscript(threadId).pipe(
+          Effect.andThen(
+            orchestrator.getTimelinePages(threadId, selections).pipe(NodeSqliteClient.readOnly),
+          ),
+        ),
     ),
     getTimelinePage: Effect.fn("ThreadManagementService.getTimelinePage")(
       function (threadId, options) {
@@ -1875,10 +2029,32 @@ const make = Effect.gen(function* () {
       function (threadId, fields, filter) {
         return ensureProjectionTranscript(threadId).pipe(
           Effect.andThen(orchestrator.getThreadRecords(threadId, fields, filter)),
+          Effect.flatMap((records) =>
+            Effect.gen(function* () {
+              const lookup = yield* RetirementOutcome.lookup;
+              return { ...records, thread: { ...records.thread, ...(yield* lookup(threadId)) } };
+            }),
+          ),
         );
       },
     ),
-    getThreadProjection,
+    getLegacyBootstrapRecords,
+    ...(orchestrator.dispatchLegacyFailureDelete === undefined
+      ? {}
+      : { dispatchLegacyFailureDelete: orchestrator.dispatchLegacyFailureDelete }),
+    ...(orchestrator.dispatchLegacyGuardRejectionDelete === undefined
+      ? {}
+      : { dispatchLegacyGuardRejectionDelete: orchestrator.dispatchLegacyGuardRejectionDelete }),
+    getThreadProjection: Effect.fn("ThreadManagementService.getThreadProjection")((threadId) =>
+      getThreadProjection(threadId).pipe(
+        Effect.flatMap((records) =>
+          Effect.gen(function* () {
+            const lookup = yield* RetirementOutcome.lookup;
+            return { ...records, thread: { ...records.thread, ...(yield* lookup(threadId)) } };
+          }),
+        ),
+      ),
+    ),
     getCheckpointContext,
     getThreadSnapshot,
     getThreadTranscript,
@@ -1904,11 +2080,15 @@ const make = Effect.gen(function* () {
     getThreadLinkMetadata: orchestrator.getThreadLinkMetadata,
     listProjectThreads,
     sendToThread,
+    promoteQueuedBatch,
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
     hasReceipt,
     getCommandReceipt: receipts.getByCommandId,
-    getDispatchDeliveryEvidence: (command) => dispatchDeliveryEvidence(receipts, command),
+    getDispatchDeliveryEvidence: Effect.fn("ThreadManagementService.getDispatchDeliveryEvidence")(
+      (command: Parameters<ThreadManagementServiceShape["getDispatchDeliveryEvidence"]>[0]) =>
+        dispatchDeliveryEvidence(receipts, command),
+    ),
     waitForThread,
     settleAfterRun,
     settleThread,
@@ -1918,21 +2098,33 @@ const make = Effect.gen(function* () {
     forceStopThread,
     awaitBackgroundTasks,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
-    ...(remoteHooks.requestSelfSettlement === undefined ? {} : {requestSelfSettlement: remoteHooks.requestSelfSettlement}),
-    ...(remoteHooks.remoteSendReceipts === undefined ? {} : {remoteSendReceipts: remoteHooks.remoteSendReceipts}),
+    ...(remoteHooks.requestSelfSettlement === undefined
+      ? {}
+      : { requestSelfSettlement: remoteHooks.requestSelfSettlement }),
+    ...(remoteHooks.remoteSendReceipts === undefined
+      ? {}
+      : { remoteSendReceipts: remoteHooks.remoteSendReceipts }),
     // Preserve optionality until the core owner's normal parent merge.
-    ...(remoteHooks.observeRemoteTask === undefined ? {} : {
-      observeRemoteTask: remoteHooks.observeRemoteTask!,
-    }),
-    ...(remoteHooks.readRemoteTaskObservation === undefined ? {} : {
-      readRemoteTaskObservation: remoteHooks.readRemoteTaskObservation!,
-    }),
-    ...(remoteHooks.reconcileRemoteTaskQuestions === undefined ? {} : {
-      reconcileRemoteTaskQuestions: remoteHooks.reconcileRemoteTaskQuestions!,
-    }),
-    ...(remoteHooks.recoverRemoteTaskQuestions === undefined ? {} : {
-      recoverRemoteTaskQuestions: remoteHooks.recoverRemoteTaskQuestions!,
-    }),
+    ...(remoteHooks.observeRemoteTask === undefined
+      ? {}
+      : {
+          observeRemoteTask: remoteHooks.observeRemoteTask!,
+        }),
+    ...(remoteHooks.readRemoteTaskObservation === undefined
+      ? {}
+      : {
+          readRemoteTaskObservation: remoteHooks.readRemoteTaskObservation!,
+        }),
+    ...(remoteHooks.reconcileRemoteTaskQuestions === undefined
+      ? {}
+      : {
+          reconcileRemoteTaskQuestions: remoteHooks.reconcileRemoteTaskQuestions!,
+        }),
+    ...(remoteHooks.recoverRemoteTaskQuestions === undefined
+      ? {}
+      : {
+          recoverRemoteTaskQuestions: remoteHooks.recoverRemoteTaskQuestions!,
+        }),
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
     cancelDelegatedTask: orchestrator.cancelDelegatedTask,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,

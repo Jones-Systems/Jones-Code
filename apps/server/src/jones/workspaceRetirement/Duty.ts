@@ -10,7 +10,14 @@ import * as Context from "effect/Context";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import { Receipts, layer, RetirementError } from "./Receipts.ts";
-import { captureNativeOwner, observeNativeOwner, type NativeDutyOwner } from "./NativeDutyOwner.ts";
+import {
+  captureNativeOwner,
+  captureUnresolvedOwner,
+  unresolvedOwner,
+  observeNativeOwner,
+  type NativeDutyOwner,
+} from "./NativeDutyOwner.ts";
+import { bindOwner, linkLifetime, type DutyClaimHandle } from "./DutyLifetimeLink.ts";
 import type { DutyIdentity } from "./DutyIdentity.ts";
 
 export class NativeOwnerCapture extends Context.Reference<{
@@ -50,7 +57,7 @@ export const hooks = Effect.gen(function* () {
       expected?: { bootId: string; startTime: string },
     ) => Effect.Effect<void, RetirementError>
   >();
-  const sessions = new Map<string, Effect.Effect<void, RetirementError>>();
+  const generations = new WeakMap<object, string>();
   const identities = new WeakMap<object, DutyIdentity>();
   const nativeOwner = yield* NativeOwnerCapture;
   const observation = yield* NativeOwnerObservation;
@@ -122,6 +129,15 @@ export const hooks = Effect.gen(function* () {
           .pipe(Effect.result);
         if (result._tag === "Success") {
           const release = store.releaseClaim(id);
+          if (sql._tag === "Some" && kind === "session") {
+            const initial = yield* Effect.promise(() =>
+              captureUnresolvedOwner("session_native_launch_capture_pending"),
+            );
+            yield* bindOwner({ id, holder, owner }, initial).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql.value),
+              Effect.catchCause(() => Effect.logDebug("Workspace duty host capture unavailable")),
+            );
+          }
           identities.set(release, result.success);
           claims.set(release, { id, holder, worktree, kind, owner });
           nativeBindings.set(release, (pid, expected) =>
@@ -135,20 +151,30 @@ export const hooks = Effect.gen(function* () {
                 }),
             }).pipe(
               Effect.flatMap((native) =>
-                store
-                  .bindNativeOwner(id, holder, native)
-                  .pipe(
-                    Effect.andThen(Effect.sync(() => owners.set(release, native))),
-                    Effect.andThen(
-                      Effect.suspend(() =>
-                        parentExits.has(release) ? observeParentExit(release) : Effect.void,
-                      ),
+                bindOwner({ id, holder, owner }, native).pipe(
+                  Effect.provideService(SqlClient.SqlClient, Option.getOrThrow(sql)),
+                  Effect.mapError(
+                    (cause) =>
+                      new RetirementError({
+                        target: worktree,
+                        reason: "native_owner_binding_unavailable",
+                        cause,
+                      }),
+                  ),
+                  Effect.tap((bound) =>
+                    Effect.sync(() => {
+                      if (bound) owners.set(release, bound);
+                    }),
+                  ),
+                  Effect.andThen(
+                    Effect.suspend(() =>
+                      parentExits.has(release) ? observeParentExit(release) : Effect.void,
                     ),
                   ),
+                ),
               ),
             ),
           );
-          if (kind === "session") sessions.set(owner, release);
           return release;
         }
         if (result.failure.reason !== "retiring" || attempt === 20) return yield* result.failure;
@@ -159,18 +185,51 @@ export const hooks = Effect.gen(function* () {
     bindNative: (release: Effect.Effect<void, RetirementError>, pid: number) =>
       nativeBindings.get(release)?.(pid) ?? Effect.void,
     observeParentExit,
+    openClaim: (release: Effect.Effect<void, RetirementError>) => ({
+      link: (binding: Parameters<typeof linkLifetime>[1]) => {
+        const claim: DutyClaimHandle | undefined = claims.get(release);
+        if (!claim || Option.isNone(sql)) return Effect.void;
+        return linkLifetime(claim, binding).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql.value),
+          Effect.catchCause(() =>
+            Effect.logWarning("Workspace duty lifetime link unavailable; restart duty retained"),
+          ),
+        );
+      },
+    }),
     claimed: (release: Effect.Effect<void, RetirementError>) => claims.has(release),
     identity: (release: Effect.Effect<void, RetirementError>) => identities.get(release),
     // Consume the observation already made by the provider's native lifecycle. No
     // extra diagnostics request, capture worker, provenance or start-path retry.
     bindSession: Effect.fn("WorkspaceRetirement.bindSessionOwner")(function* (
-      owner: string,
+      release: Effect.Effect<void, RetirementError>,
       providerThreadId: string,
       generation: string,
     ) {
       if (Option.isNone(sql)) return;
-      const release = sessions.get(owner);
-      if (!release) return;
+      const claim = claims.get(release);
+      if (!claim) return;
+      const priorGeneration = generations.get(release);
+      // Record the generation before optional observation: a failed capture of
+      // one producer cannot permit a later producer to replace its coverage.
+      if (priorGeneration === undefined) generations.set(release, generation);
+      else if (priorGeneration !== generation) {
+        yield* bindOwner(
+          claim,
+          unresolvedOwner("multiple_producer_generations", owners.get(release)?.host),
+        ).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql.value),
+          Effect.mapError(
+            (cause) =>
+              new RetirementError({
+                target: claim.worktree,
+                reason: "native_owner_binding_unavailable",
+                cause,
+              }),
+          ),
+        );
+        return;
+      }
       const rows = yield* sql.value<{
         observation_json: string;
       }>`SELECT observation_json FROM jones_physical_process_evidence WHERE provider_thread_id=${providerThreadId} AND runtime_generation=${generation} ORDER BY rowid DESC LIMIT 1`;

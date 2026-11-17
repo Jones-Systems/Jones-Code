@@ -30,6 +30,7 @@ import * as AuthHttp from "../../auth/http.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SelfUpdate from "../../cloud/selfUpdate.ts";
 import * as Launcher from "../../cloud/serviceLauncherClient.ts";
+import { SERVICE_LAUNCHER_PROTOCOL } from "../../cloud/serviceProtocol.ts";
 import * as Startup from "../../serverRuntimeStartup.ts";
 import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import { jonesUpdatesHttpApiLayer } from "./http.ts";
@@ -204,10 +205,11 @@ it.layer(NodeServices.layer)("settlement service and native evidence", (it) => {
           Layer.mock(DesktopReceiver.DesktopTelemetryReceiver)({}),
           Layer.succeed(Launcher.ServiceLauncherClient, {
             managed: true,
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
             currentVersion: version,
             qualifiedUpdateMigrationPlan: previousMigrationPlan,
             requiresQualifiedTrialGate: false,
-            prepareTrial: Effect.undefined,
+            prepareTrial: () => Effect.undefined,
             prepareQualifiedTrial: () => Effect.die("No trial in settlement test"),
             requestUpdate: () => Effect.die("No install in settlement test"),
             ...(supported ? { launcherVersion: "0.1.0", qualifiedSettlement: true } : {}),
@@ -405,11 +407,12 @@ it.layer(NodeServices.layer)("Jones update Release compatibility", (it) => {
           Layer.provide(
             Layer.succeed(Launcher.ServiceLauncherClient, {
               managed: false,
+              protocol: undefined,
               requiresQualifiedTrialGate: false,
               prepareQualifiedTrial: () =>
                 Effect.die("Release state must not prepare a qualified trial"),
               requestUpdate: () => Effect.die("Release state must not request Install"),
-              prepareTrial: Effect.undefined,
+              prepareTrial: () => Effect.undefined,
             }),
           ),
         );
