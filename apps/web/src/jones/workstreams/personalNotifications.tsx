@@ -48,6 +48,15 @@ function close(key: string) {
   if (id) toastManager.close(id);
   dismissed.delete(key);
 }
+export function showPersonalAssignment(workstreamName: string | null, pinned: boolean) {
+  toastManager.add(
+    stackedThreadToast({
+      type: "success",
+      title: workstreamName === null ? "Thread is now Unassigned" : `Assigned to ${workstreamName}`,
+      ...(pinned ? { description: "This thread remains in Pinned." } : {}),
+    }),
+  );
+}
 export function showPersonalFailure(failure: PersonalWorkstreamsFailure) {
   const persistent = ["offline", "read_only", "update_required"].includes(failure.reason);
   const key = persistent
