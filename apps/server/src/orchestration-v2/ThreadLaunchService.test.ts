@@ -5455,6 +5455,7 @@ it.effect("launch reaches setup while unbounded optional provenance is skipped",
 it.effect.each([
   "message",
   "empty",
+  "reuse-empty-with-message",
   "eager",
   "project-eager",
   "project-on-write",
@@ -5513,16 +5514,39 @@ it.effect.each([
     });
     yield* Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const result = yield* launches.launch(
-        launchInput({
-          command: `command:c9:${kind}`,
-          thread: `thread:c9:${kind}`,
-          workspace: kind === "explicit" ? { type: "root" } : { type: "auto", baseRef: "main" },
-          ...(kind === "empty" ? {} : { message: "Inspect the source." }),
-        }),
-      );
+      const input = launchInput({
+        command: `command:c9:${kind}`,
+        thread: `thread:c9:${kind}`,
+        workspace: kind === "explicit" ? { type: "root" } : { type: "auto", baseRef: "main" },
+        ...(kind === "empty" ? {} : { message: "Inspect the source." }),
+      });
+      if (kind === "reuse-empty-with-message") {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("command:c9:empty-shell"),
+          threadId: input.threadId,
+          projectId,
+          title: input.title,
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          branch: "main",
+          worktreePath: null,
+          createdBy: input.createdBy,
+          creationSource: input.creationSource,
+        });
+      }
+      const result = yield* launches.launch({
+        ...input,
+        ...(kind === "reuse-empty-with-message" ? { reuseExistingThread: true } : {}),
+      });
       if (kind !== "empty") yield* preparationSettled(result.threadId);
-      const isConversation = kind === "empty" || kind === "message" || kind === "project-on-write";
+      const isConversation =
+        kind === "empty" ||
+        kind === "message" ||
+        kind === "reuse-empty-with-message" ||
+        kind === "project-on-write";
       assert.equal(allocated, isConversation ? 1 : 0);
       assert.equal(fallback, 0);
       assert.equal(
@@ -5535,6 +5559,7 @@ it.effect.each([
           : 0,
       );
       if (isConversation) {
+        assert.equal(bindings.get(result.threadId)?.path, cwd);
         assert.equal(harness.runSetup.mock.calls.length, 0);
         const sql = yield* SqlClient.SqlClient;
         assert.lengthOf(
