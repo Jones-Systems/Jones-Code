@@ -367,6 +367,12 @@ describe("Workstream options and header ordering", () => {
     ).toBeLessThan(1);
     expect(button.querySelectorAll("[aria-hidden]")).toHaveLength(1);
     expect(button.querySelector("svg")?.getBoundingClientRect().width).toBe(10);
+    const startDivider = getComputedStyle(button, "::before");
+    const endDivider = getComputedStyle(button, "::after");
+    expect([startDivider.height, endDivider.height]).toEqual(["1px", "1px"]);
+    const dividerWidths = [startDivider, endDivider].map((divider) => parseFloat(divider.width));
+    expect(Math.min(...dividerWidths)).toBeGreaterThan(0);
+    expect(Math.max(...dividerWidths) - Math.min(...dividerWidths)).toBeLessThan(1);
     const style = getComputedStyle(button);
     expect(style.fontSize).toBe("11px");
     expect(style.fontWeight).toBe("400");

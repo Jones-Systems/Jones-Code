@@ -425,7 +425,7 @@ function Group({
             <button
               data-workstream-window-footer
               type="button"
-              className="flex h-4 w-full cursor-pointer items-center justify-center gap-1 rounded-sm text-2xs leading-none font-normal whitespace-nowrap text-sidebar-muted-foreground outline-hidden hover:text-sidebar-foreground focus-visible:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring pointer-coarse:min-h-6"
+              className="flex h-4 w-full cursor-pointer items-center justify-center gap-1 rounded-sm px-2 text-2xs leading-none font-normal whitespace-nowrap text-sidebar-muted-foreground outline-hidden before:me-1 before:h-px before:min-w-0 before:flex-1 before:bg-sidebar-border/30 after:ms-1 after:h-px after:min-w-0 after:flex-1 after:bg-sidebar-border/30 hover:text-sidebar-foreground focus-visible:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring pointer-coarse:min-h-6"
               aria-expanded={threadWindow.expanded}
               aria-label={
                 threadWindow.expanded
