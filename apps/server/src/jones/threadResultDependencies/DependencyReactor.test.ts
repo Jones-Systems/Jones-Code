@@ -203,6 +203,21 @@ it.effect(
           ),
           Stream.runHead,
         );
+      const finishWakeRuns = Effect.gen(function* () {
+        const records = yield* f.projection.getThreadRecords(f.waiter.id, ["runs"]);
+        yield* f.sink.write({
+          events: records.runs
+            .filter((run) => run.status === "queued")
+            .map((run) =>
+              f.event({
+                type: "run.updated",
+                threadId: run.threadId,
+                runId: run.id,
+                payload: { ...run, status: "completed", completedAt: Fixture.time },
+              }),
+            ),
+        });
+      });
       yield* Effect.gen(function* () {
         // Route acquisition must finish while recovery still holds activation.
         // No wake may be admitted for recovery to cancel in this interval.
@@ -240,6 +255,9 @@ it.effect(
         yield* awaitDelivered(4);
         assert.equal(peerObservations, 1);
         assert.equal((yield* f.store.get("recovered-remote"))?.result, "Done");
+        assert.equal((yield* f.store.get("dependency:pending"))?.state, "awaiting");
+        // Shells show background waits after the reply-processing runs finish.
+        yield* finishWakeRuns;
         const waiting = yield* f.projection.getThreadShell(f.waiter.id);
         assert.lengthOf(waiting?.pendingBackgroundTasks ?? [], 1);
         assert.equal(
@@ -256,6 +274,7 @@ it.effect(
           ),
         );
         yield* awaitDelivered(5);
+        yield* finishWakeRuns;
         assert.deepEqual(
           (yield* f.projection.getThreadShell(f.waiter.id))?.pendingBackgroundTasks,
           [],
