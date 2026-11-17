@@ -3625,6 +3625,8 @@
     ".github/workflows/jones-packaged-picker.yml": "policy",
     "apps/server/src/jones/storageCleanup/ReportRead.test.ts": "jones-owned",
     "apps/server/src/jones/storageCleanup/ReportRead.ts": "jones-owned",
+    "apps/server/src/jones/storageCleanup/RetirementReport.test.ts": "jones-owned",
+    "apps/server/src/jones/storageCleanup/RetirementReport.ts": "jones-owned",
     "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts": "jones-owned",
     "apps/server/src/jones/mcp/storageCleanup/handlers.ts": "jones-owned",
     "apps/server/src/jones/mcp/storageCleanup/tools.ts": "jones-owned",
