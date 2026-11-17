@@ -27,8 +27,12 @@ import { qualify, type QualificationInput } from "./Qualification.ts";
 import type { Probe } from "./ConsumerProbe.ts";
 import { NativeObservations } from "./NativeObservations.ts";
 import * as GitDriver from "../../vcs/GitVcsDriver.ts";
-import { legacySettlementAdmission, settlementAdmission } from "./SettlementAdmission.ts";
-import { retire } from "./RetirementExecutor.ts";
+import {
+  finalCheckpointSettled,
+  legacySettlementAdmission,
+  settlementAdmission,
+} from "./SettlementAdmission.ts";
+import { nativeWorktreeRemoval, retire } from "./RetirementExecutor.ts";
 
 const unavailable = (limit: string): Probe => ({
   observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()),
@@ -167,11 +171,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
         return yield* new RetirementError({ target: request.worktree, reason: "binding_changed" });
       const checkpoints = yield* projections.getCheckpointContext(thread.id);
       const last = [...checkpoints.runs].sort((a, b) => b.ordinal - a.ordinal)[0];
-      const ready =
-        last === undefined ||
-        (["completed", "cancelled", "interrupted"].includes(last.status) &&
-          checkpoints.checkpoints.some((c) => c.runId === last.id && c.status === "ready"));
-      if (!ready)
+      if (!finalCheckpointSettled(last, checkpoints.checkpoints))
         return yield* new RetirementError({
           target: request.worktree,
           reason: "final_checkpoint_unfinished",
@@ -505,27 +505,10 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
       revalidate: scriptGate.pipe(Effect.andThen(request.revalidate)),
       ...(Option.isSome(gitDriver)
         ? {
-            remove: gitDriver.value
-              .execute({
-                operation: "WorkspaceRetirement.remove",
-                cwd: request.projectRoot,
-                args: ["worktree", "remove", "--", request.worktree],
-                allowNonZeroExit: true,
-              })
-              .pipe(
-                Effect.flatMap((result) =>
-                  result.exitCode === 0
-                    ? Effect.void
-                    : Effect.fail(
-                        new RetirementError({
-                          target: request.worktree,
-                          reason: "git_removal_refused",
-                          cause: `git worktree remove: ${result.stderr.trim().split(/\r?\n/)[0] ?? "native removal refused"}`,
-                        }),
-                      ),
-                ),
-                mapError,
-              ),
+            remove: nativeWorktreeRemoval(gitDriver.value, {
+              projectRoot: request.projectRoot,
+              worktree: request.worktree,
+            }).pipe(mapError),
           }
         : {}),
       finalizeOutputs: (receipt) => {
@@ -626,7 +609,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           fact:
             "removalDiagnostic" in result &&
             typeof result.removalDiagnostic === "string" &&
-            reason === "git_removal_refused"
+            (reason === "git_removal_refused" || reason === "removal_interrupted")
               ? result.removalDiagnostic
               : reason === "settle_script_unfinished"
                 ? "Durable settle-script completion has not been recorded."
