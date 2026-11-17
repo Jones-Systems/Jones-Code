@@ -3652,7 +3652,14 @@
     "apps/web/src/jones/storageCleanupResults/runStatus.testkit.ts": "jones-owned",
     "apps/web/src/jones/storageCleanupResults/runStatus.test.ts": "jones-owned",
     "apps/web/src/jones/storageCleanupResults/runStatus.node-test.mjs": "jones-owned",
-    "packages/contracts/src/jones/storageCleanupReportStatus.test.ts": "jones-owned"
+    "packages/contracts/src/jones/storageCleanupReportStatus.test.ts": "jones-owned",
+    "apps/server/src/jones/hostFiles/HostFiles.test.ts": "jones-owned",
+    "apps/server/src/jones/hostFiles/HostFiles.ts": "jones-owned",
+    "apps/server/src/jones/mcp/hostFiles/handlers.test.ts": "jones-owned",
+    "apps/server/src/jones/mcp/hostFiles/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/hostFiles/tools.ts": "jones-owned",
+    "packages/contracts/src/jones/hostFiles.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/host-files.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

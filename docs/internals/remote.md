@@ -117,6 +117,14 @@ shared access declarations, not tool by tool:
 Reads are not fenced, and a client's own `thread.create` can never carry
 `linkOrigin`.
 
+**File tools are the exception to unfenced reads.** `t3_file_read` and
+`t3_file_write` ([handlers](../../apps/server/src/jones/mcp/hostFiles/handlers.ts))
+reach any path the receiving environment's user can, with no workspace
+boundary, so a read there needs a full-access runtime mode as well. Without
+that, a read-only outside client or a link paired below full access could read
+files no thread of its own could. The check runs where the file lives, against
+the link's access narrowed by `T3-Mode-Limit`.
+
 **A delegated task can run in a linked environment.** Its child is then an
 ordinary thread there, so the parent here records the task without a child
 thread of its own (`remoteChild` instead of `childThreadId`). A follower in

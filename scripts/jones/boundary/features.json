@@ -3462,6 +3462,15 @@
         "apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs"
       ],
       "scope": "Immutable open claim handles, interruption-safe registration, independent release retries, permanent multiple-generation downgrade and exact validated runtime-use retirement links. Existing producer lifetime remains the sole drain authority; old/unlinked and unsupported producers retain uncertainty."
+    },
+    {
+      "id": "host-files",
+      "tests": [
+        "apps/server/src/jones/hostFiles/HostFiles.test.ts",
+        "apps/server/src/jones/mcp/hostFiles/handlers.test.ts",
+        "apps/server/src/provider/AgentContextBudget.test.ts"
+      ],
+      "scope": "Agents read text files, list directories and write text files by absolute path in their own environment or a linked one, through two MCP tools that take the native linked-environment target and ride existing peer forwarding. Reads need a full-access runtime mode and writes a full-access/default caller, checked in the environment that owns the file against the link's access narrowed to the calling agent's modes; read-only and lower-access clients are refused before the disk is touched. Reads are bounded line windows of text files up to 8 MiB with a 192 KiB result budget, listings stop at 1000 entries, and writes stop at 1 MiB and replace an existing file only on request. The small McpHttpServer hook registers the toolkit and the contracts index exports its schemas. No client UI, persisted state, provider or transport behavior changes; an older linked environment answers the call as an unknown tool."
     }
   ]
 }
