@@ -418,7 +418,8 @@ describe("Workstream options and header ordering", () => {
     await expect
       .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .toHaveAttribute("aria-expanded", "true");
-    await expect.element(page.getByText("5 of 12 threads shown", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("12 threads", { exact: true })).toBeVisible();
+    expect(alpha.textContent).not.toContain("5 of 12");
     expect(alpha.textContent).toContain(
       "12 threads, 3 working, 2 need attention, 6 done, 1 failed.",
     );
