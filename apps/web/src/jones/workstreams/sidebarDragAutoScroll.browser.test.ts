@@ -38,9 +38,9 @@ describe("sidebar drag edge scrolling", () => {
   });
 
   it.each([
-    ["center", { x: 120, y: 250 }],
-    ["composer", { x: 400, y: 105 }],
-  ])("stops immediately when the pointer moves to the %s", async (_name, point) => {
+    { name: "center", point: { x: 120, y: 250 } },
+    { name: "composer", point: { x: 400, y: 105 } },
+  ])("stops immediately when the pointer moves to the $name", async ({ point }) => {
     using f = fixture();
     f.scroll.move({ x: 120, y: 105 });
     await vi.waitFor(() => expect(f.viewport.scrollTop).toBeLessThan(480));
