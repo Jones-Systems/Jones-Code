@@ -59,7 +59,7 @@ const make = Effect.gen(function* () {
     observation: Observation,
     key: Store.DecisionKey,
     excludedIds: readonly string[],
-  ): Effect.fn.Return<RecordedOutcome, unknown> {
+  ) {
     const shell = yield* threads.getThreadShell(observation.threadId);
     if (shell === null || shell.archivedAt !== null || shell.deletedAt != null)
       return { state: "skipped", code: "thread_unavailable" } as const;
@@ -85,7 +85,7 @@ const make = Effect.gen(function* () {
     const candidates = selectCandidates(yield* personal.readDefinitions(), excludedIds, stats);
     if (candidates.length === 0) return { state: "abstained", code: "no_candidates" } as const;
 
-    const prompt = buildClassifierPrompt({
+    const evidence = buildClassifierPrompt({
       promptText: observation.text,
       threadTitle: shell.title,
       projectName: yield* store.projectName(shell.projectId),
@@ -94,7 +94,7 @@ const make = Effect.gen(function* () {
     });
     const reply = yield* model
       .run({
-        prompt,
+        prompt: evidence.prompt,
         projectId: shell.projectId,
         onRequested: (requested) =>
           store
@@ -108,11 +108,11 @@ const make = Effect.gen(function* () {
         code: reply.failure.category === "timeout" ? "model_timeout" : "model_unavailable",
         candidateCount: candidates.length,
       } as const;
-    const decision: Decision = decide(reply.success, candidates);
+    const decision: Decision = decide(reply.success, evidence.candidates);
     if (decision.state !== "assigned") return { ...decision, candidateCount: candidates.length };
 
     const chosen = candidates.find((candidate) => candidate.id === decision.workstreamId);
-    if (chosen === undefined) return { state: "failed", code: "invalid_choice" };
+    if (chosen === undefined) return { state: "failed", code: "invalid_choice" } as const;
 
     const assigned = yield* personal
       .assignAutomatically({
@@ -191,26 +191,25 @@ const make = Effect.gen(function* () {
   const recovered = yield* now.pipe(
     Effect.flatMap(store.recoverInterrupted),
     Effect.catchCause(() =>
-      Effect.logWarning("Workstream auto-route recovery failed").pipe(
-        Effect.as({ interrupted: 0, reconciled: 0 }),
-      ),
+      Effect.logWarning("Workstream auto-route recovery failed").pipe(Effect.as(0)),
     ),
   );
-  if (recovered.interrupted + recovered.reconciled > 0)
+  if (recovered > 0)
     yield* Effect.logInfo("Workstream auto-route recovered interrupted decisions").pipe(
-      Effect.annotateLogs(recovered),
+      Effect.annotateLogs({ interrupted: recovered }),
     );
   const worker = yield* makeDrainableWorker((observation: Observation) =>
     Effect.asVoid(process(observation)),
   );
   return WorkstreamAutoRoute.of({
-    observe: (observation) =>
+    observe: Effect.fn("WorkstreamAutoRoute.observe")((observation: Observation) =>
       Effect.asVoid(
         worker.enqueue({
           ...observation,
           text: observation.text.slice(0, AUTO_ROUTE_BOUNDS.promptTextChars),
         }),
       ),
+    ),
     process,
     drain: worker.drain,
   });

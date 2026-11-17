@@ -379,15 +379,16 @@ const make = Effect.gen(function* () {
                 "Bootstrap has no exact accepted release receipt",
                 "orchestration_dispatch_failed",
               );
-            return { sequence: launched.legacyReleaseSequence, replayed: launched.resumed };
+            // A resumed bootstrap can be the first to return the accepted release.
+            // Launch verifies the persisted payload hash, and the worker deduplicates the release ID.
+            return { sequence: launched.legacyReleaseSequence, observeAutoRoute: true };
           }
           const result = yield* Intake.dispatchCommand(command).pipe(Effect.provide(context));
-          return { sequence: result.sequence, replayed: result.replayed };
+          return { sequence: result.sequence, observeAutoRoute: result.replayed !== true };
         });
         return yield* send.pipe(
-          // A replay can carry a different payload than the accepted command.
-          Effect.tap(({ replayed }) =>
-            transport === "http" && replayed !== true && Option.isSome(autoRoute)
+          Effect.tap(({ observeAutoRoute }) =>
+            transport === "http" && observeAutoRoute && Option.isSome(autoRoute)
               ? autoRoute.value
                   .observe({
                     threadId: input.threadId,

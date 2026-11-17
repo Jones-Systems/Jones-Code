@@ -103,6 +103,40 @@ it.effect.each([
   }),
 );
 
+it.effect.each([
+  {
+    kind: "openaiCompatible",
+    reply: { choices: [{ finish_reason: "tool_calls", message: { content: "{}" } }] },
+  },
+  {
+    kind: "openaiCompatible",
+    reply: {
+      choices: [
+        { finish_reason: "stop", message: { content: "{}", tool_calls: [{ id: "synthetic" }] } },
+      ],
+    },
+  },
+  {
+    kind: "anthropic",
+    reply: {
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "{}" }, { type: "tool_use" }],
+    },
+  },
+] as const)("prompt-only $kind rejects tool-call replies", ({ kind, reply }) =>
+  Effect.gen(function* () {
+    const generators = yield* TextGenerators.TextGenerators.pipe(
+      Effect.provide(layer({ kind, apiKey: "synthetic" })),
+    );
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(reply));
+    const failure = yield* generators
+      .generatePromptOnlyText(request)
+      .pipe(Effect.provideService(FetchHttpClient.Fetch, fetch), Effect.flip);
+    expect(failure.detail).toContain("did not finish with text only");
+    expect(fetch).toHaveBeenCalledOnce();
+  }),
+);
+
 it.effect("a turned-off text generator fails instead of calling its API", () =>
   Effect.gen(function* () {
     const upstream = vi.fn<typeof fetch>();

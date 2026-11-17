@@ -14,6 +14,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Config from "../../../config.ts";
@@ -32,6 +33,7 @@ import autoRouteMigration from "../../persistence/Migrations/158_JonesWorkstream
 import * as Personal from "../personal/service.ts";
 import * as AutoRoute from "./WorkstreamAutoRoute.ts";
 import * as Model from "./WorkstreamClassifierModel.ts";
+import type { FailCode } from "./policy.ts";
 
 const environmentId = EnvironmentId.make("synthetic-auto-route-server");
 const projectId = ProjectId.make("synthetic-project");
@@ -169,9 +171,13 @@ const seed = (fixture: ReturnType<typeof makeFixture>) =>
     return s;
   });
 
-const run = <A, E>(body: (fixture: ReturnType<typeof makeFixture>) => Effect.Effect<A, E, any>) => {
+type Fixture = ReturnType<typeof makeFixture>;
+
+const run = <A, E>(
+  body: (fixture: Fixture) => Effect.Effect<A, E, Layer.Success<Fixture["base"]> | Scope.Scope>,
+) => {
   const fixture = makeFixture();
-  return Effect.scoped(body(fixture)).pipe(Effect.provide(fixture.base)) as Effect.Effect<A, E>;
+  return Effect.scoped(body(fixture)).pipe(Effect.provide(fixture.base));
 };
 
 it.effect("assigns a clear match, marks it automatic, and stores no prompt text", () =>
@@ -324,6 +330,38 @@ it.effect("a human choosing the same group keeps manual provenance", () =>
   ),
 );
 
+it.effect.each(["voice", "updates"] as const)(
+  "an interactive move to %s supersedes the competing initial automatic assignment",
+  (targetId) =>
+    run((f) =>
+      Effect.gen(function* () {
+        const s = yield* seed(f);
+        const threadId = yield* f.thread("target", "Voice changes");
+        const router = yield* route;
+        f.model.next = () => Effect.succeed(reply(1));
+        yield* router.process(observation(threadId));
+        assert.strictEqual((yield* s.snapshot()).autoAssignments?.[0]?.workstreamId, "voice");
+
+        const input = {
+          threadId,
+          workstream: targetId === "voice" ? w("voice", "Voice") : w("updates", "Updates"),
+          expectedRevision: 0,
+        };
+        const options = { supersedeInitialAutoAssignment: true };
+        const applied = yield* s.assign(input, options);
+        assert.strictEqual(applied.outcome, "applied");
+        assert.strictEqual(applied.assignment.revision, 2);
+        assert.strictEqual(applied.assignment.workstreamId, targetId);
+        assert.deepStrictEqual((yield* s.snapshot()).autoAssignments, []);
+        assert.strictEqual((yield* s.assign(input, options)).outcome, "already_satisfied");
+        const conflict = yield* s
+          .assign({ ...input, workstream: w("third", "Third") }, options)
+          .pipe(Effect.flip);
+        assert.strictEqual(conflict.code, "precondition_failed");
+      }),
+    ),
+);
+
 it.effect("an accepted HTTP compatibility dispatch reaches the durable routing worker", () =>
   run((f) =>
     Effect.gen(function* () {
@@ -378,28 +416,29 @@ it.effect("model failures and bad replies leave the thread unassigned", () =>
     Effect.gen(function* () {
       const s = yield* seed(f);
       const router = yield* route;
-      const cases: [string, () => Effect.Effect<string, Model.WorkstreamClassifierModelError>][] = [
+      const cases: [FailCode, () => Effect.Effect<string, Model.WorkstreamClassifierModelError>][] =
         [
-          "model_unavailable",
-          () =>
-            Effect.fail(
-              new Model.WorkstreamClassifierModelError({
-                category: "unavailable",
-              }),
-            ),
-        ],
-        [
-          "model_timeout",
-          () =>
-            Effect.fail(
-              new Model.WorkstreamClassifierModelError({
-                category: "timeout",
-              }),
-            ),
-        ],
-        ["invalid_output", () => Effect.succeed("not json")],
-        ["invalid_choice", () => Effect.succeed(reply(7))],
-      ];
+          [
+            "model_unavailable",
+            () =>
+              Effect.fail(
+                new Model.WorkstreamClassifierModelError({
+                  category: "unavailable",
+                }),
+              ),
+          ],
+          [
+            "model_timeout",
+            () =>
+              Effect.fail(
+                new Model.WorkstreamClassifierModelError({
+                  category: "timeout",
+                }),
+              ),
+          ],
+          ["invalid_output", () => Effect.succeed("not json")],
+          ["invalid_choice", () => Effect.succeed(reply(7))],
+        ];
       for (const [code, next] of cases) {
         const target = yield* f.thread(`t-${code}`, code);
         f.model.next = next;
@@ -476,7 +515,7 @@ it.effect("never offers Storage or excluded groups, so only they remain means no
   ),
 );
 
-it.effect("recovery fails pending rows and reconciles assigning rows by the assignment", () =>
+it.effect("recovery fails interrupted rows and preserves a matching manual assignment", () =>
   run((f) =>
     Effect.gen(function* () {
       const s = yield* seed(f);
@@ -493,18 +532,17 @@ it.effect("recovery fails pending rows and reconciles assigning rows by the assi
       yield* insert(pending, "pending", null);
       yield* insert(landed, "assigning", "voice");
       yield* insert(lost, "assigning", "voice");
+      assert.deepStrictEqual((yield* s.snapshot()).autoAssignments, []);
       yield* route;
       const states = (yield* rows).map((r) => [r.thread_id, r.state, r.code]);
       assert.deepStrictEqual(states, [
         [pending, "failed", "interrupted"],
-        [landed, "assigned", null],
+        [landed, "failed", "interrupted"],
         [lost, "failed", "interrupted"],
       ]);
       assert.strictEqual(f.model.calls, 0);
-      assert.deepStrictEqual(
-        (yield* s.snapshot()).autoAssignments?.map((a) => a.threadId),
-        [landed],
-      );
+      assert.strictEqual((yield* s.readThread(landed)).assignment.workstreamId, "voice");
+      assert.deepStrictEqual((yield* s.snapshot()).autoAssignments, []);
     }),
   ),
 );

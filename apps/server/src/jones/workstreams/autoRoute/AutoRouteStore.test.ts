@@ -16,10 +16,7 @@ it.effect("reads as absent when the Jones table is missing", () =>
     assert.isFalse(yield* store.available);
     assert.isNull(yield* store.latest(threadId));
     assert.isUndefined(yield* store.currentAutoAssignments());
-    assert.deepStrictEqual(yield* store.recoverInterrupted("2026-01-01T00:00:00.000Z"), {
-      interrupted: 0,
-      reconciled: 0,
-    });
+    assert.strictEqual(yield* store.recoverInterrupted("2026-01-01T00:00:00.000Z"), 0);
   }).pipe(Effect.provide(memory)),
 );
 

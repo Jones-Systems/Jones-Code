@@ -54,35 +54,38 @@ const modelLayer = (
   options: {
     instance?: ProviderInstance;
     generate?: TextGenerators.TextGenerators["Service"]["generatePromptOnlyText"];
+    settings?: Parameters<typeof ServerSettings.layerTest>[0];
   } = {},
 ) =>
   Model.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         ServerSettings.layerTest(
-          options.generate === undefined
-            ? {}
-            : {
-                textGenerators: {
-                  [textGeneratorId]: {
-                    kind: "openaiCompatible",
-                    baseUrl: "https://generator.invalid/v1",
-                  },
-                },
-                projectSettingsOverrides: {
-                  [projectId]: {
-                    textGenerationModelSelection: {
-                      instanceId: textGeneratorId,
-                      model: "exact-model",
-                      options: [],
+          options.settings ??
+            (options.generate === undefined
+              ? {}
+              : {
+                  textGenerators: {
+                    [textGeneratorId]: {
+                      kind: "openaiCompatible",
+                      baseUrl: "https://generator.invalid/v1",
                     },
                   },
-                },
-              },
+                  projectSettingsOverrides: {
+                    [projectId]: {
+                      textGenerationModelSelection: {
+                        instanceId: textGeneratorId,
+                        model: "exact-model",
+                        options: [],
+                      },
+                    },
+                  },
+                }),
         ),
         Layer.mock(ProviderInstances.ProviderInstanceRegistry)({
           getInstance: (id) =>
             Effect.succeed(id === selection.instanceId ? options.instance : undefined),
+          getCatalogSource: (id) => (id === selection.instanceId ? options.instance : undefined),
         }),
         Layer.mock(TextGenerators.TextGenerators)(
           options.generate === undefined ? {} : { generatePromptOnlyText: options.generate },
@@ -159,6 +162,41 @@ it.effect(
           .pipe(Effect.flip);
         assert.strictEqual(result.category, "unavailable");
       }
+    }),
+);
+
+it.effect.each(["project", "environment"] as const)(
+  "a disabled %s selection never falls back to the enabled managed model",
+  (scope) =>
+    Effect.gen(function* () {
+      const disabledSelection = { instanceId: textGeneratorId, model: "disabled-model" };
+      const model = yield* Model.WorkstreamClassifierModel.pipe(
+        Effect.provide(
+          modelLayer({
+            instance: provider(() => Effect.die("must not invoke the fallback model")),
+            settings: {
+              textGenerators: {
+                [textGeneratorId]: {
+                  kind: "openaiCompatible",
+                  baseUrl: "https://generator.invalid/v1",
+                  enabled: false,
+                },
+              },
+              ...(scope === "environment"
+                ? { textGenerationModelSelection: disabledSelection }
+                : {
+                    projectSettingsOverrides: {
+                      [projectId]: { textGenerationModelSelection: disabledSelection },
+                    },
+                  }),
+            },
+          }),
+        ),
+      );
+      const failure = yield* model
+        .run({ ...input, onRequested: () => Effect.die("must not record a model request") })
+        .pipe(Effect.flip);
+      assert.strictEqual(failure.category, "unavailable");
     }),
 );
 

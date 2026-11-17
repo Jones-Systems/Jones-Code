@@ -1,9 +1,4 @@
-import {
-  type ProjectId,
-  resolveTextGenerationSelectionEnabled,
-  textGeneratorForSelection,
-} from "@t3tools/contracts";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import type { ProjectId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -45,14 +40,14 @@ const make = Effect.gen(function* () {
   const registry = yield* ProviderInstances.ProviderInstanceRegistry;
   return WorkstreamClassifierModel.of({
     run: Effect.fn("WorkstreamClassifierModel.run")(function* (input) {
-      const settings = yield* settingsService.getSettings.pipe(Effect.mapError(unavailable));
-      const selection = resolveProjectSettings(settings, input.projectId).settings
-        .textGenerationModelSelection;
-      if (!resolveTextGenerationSelectionEnabled(settings, input.projectId, selection.instanceId))
-        return yield* unavailable();
+      const readConfigured = settingsService.getConfiguredTextGeneration;
+      if (readConfigured === undefined) return yield* unavailable();
+      const configured = yield* readConfigured(input.projectId).pipe(Effect.mapError(unavailable));
+      if (configured === null) return yield* unavailable();
 
+      const { selection } = configured;
       const request = { prompt: input.prompt, modelSelection: selection };
-      const generator = textGeneratorForSelection(settings, selection.instanceId);
+      const generator = configured.transport === "generator";
       const transport = generator
         ? generators.generatePromptOnlyText
         : (yield* resolveRemoteEvaluationModel(selection).pipe(

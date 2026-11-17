@@ -97,6 +97,7 @@ export const make = Effect.gen(function* () {
       readonly modelSelection: ModelSelection;
       readonly prompt: string;
     },
+    requireTextOnly = false,
   ) =>
     connect(config).pipe(
       Effect.flatMap((connection) =>
@@ -104,6 +105,7 @@ export const make = Effect.gen(function* () {
           connection,
           request.modelSelection.model,
           request.prompt,
+          requireTextOnly,
         ),
       ),
       Effect.provideService(HttpClient.HttpClient, http),
@@ -213,7 +215,7 @@ export const make = Effect.gen(function* () {
         detail:
           "The configured text generator is unavailable or does not support the selected options.",
       });
-    return yield* generateText(config.value, { ...input, operation });
+    return yield* generateText(config.value, { ...input, operation }, true);
   });
   return TextGenerators.of({ runner, listModels, generatePromptOnlyText });
 });

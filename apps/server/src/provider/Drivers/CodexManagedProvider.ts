@@ -313,7 +313,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     snapshot,
     orchestrationAdapter,
     textGeneration,
-    generatePromptOnlyText: toolFree.generatePromptOnlyText,
+    generatePromptOnlyText: (value) =>
+      protect("generatePromptOnlyText", toolFree.generatePromptOnlyText(value)),
     auth: runtime.auth.controller,
     snapshotForCwd: (cwd: string) =>
       enabled

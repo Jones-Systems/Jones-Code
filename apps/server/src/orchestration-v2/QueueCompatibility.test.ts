@@ -474,4 +474,48 @@ it.layer(configLayer)("V2 compatibility command intake", (it) => {
       assert.lengthOf(observed, 1);
     }),
   );
+  it.effect("offers the hash-verified release of a resumed HTTP bootstrap", () =>
+    Effect.gen(function* () {
+      const observed: AutoRoute.Observation[] = [];
+      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" };
+      const f = yield* fixture(
+        undefined,
+        false,
+        (input) =>
+          Effect.succeed({
+            threadId: input.threadId!,
+            projection: {} as never,
+            resumed: true,
+            legacyReleaseSequence: 43,
+          }),
+        observed,
+      );
+      const bootstrapCommand = {
+        ...command,
+        modelSelection,
+        bootstrap: {
+          createThread: {
+            projectId: "project",
+            title: "Queue",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: command.createdAt,
+          },
+        },
+      };
+      assert.deepEqual(yield* f.bridge.dispatch(bootstrapCommand), { sequence: 43 });
+      yield* f.bridge.dispatch(bootstrapCommand, "legacy_websocket");
+      assert.deepEqual(observed, [
+        {
+          threadId: ThreadId.make(command.threadId),
+          commandId: command.commandId,
+          messageId: command.message.messageId,
+          text: command.message.text,
+        },
+      ]);
+    }),
+  );
 });

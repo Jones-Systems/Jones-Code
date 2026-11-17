@@ -3533,9 +3533,13 @@
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts",
         "apps/server/src/textGeneration/TextGenerators.test.ts",
+        "apps/server/src/provider/Drivers/CodexDriver.test.ts",
+        "apps/server/src/provider/AgentContextBudget.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
         "apps/web/src/jones/workstreams/WorkstreamPickerProvenance.browser.test.tsx"
       ],
-      "scope": "Accepted HTTP starts offer bounded classification for never-assigned main conversations. A clear choice advances the assignment from revision 0 and commits provenance in the same transaction. Replay never classifies. Only the exact configured text API or an explicitly capable managed provider receives evidence. The managed Codex hook reuses the existing tool-free Responses transport. The picker and snapshot expose current provenance. Queue, settings, server and optional provider hooks preserve existing caller behavior."
+      "scope": "Accepted HTTP starts offer bounded classification for never-assigned main conversations. A clear choice advances the assignment from revision 0 and commits provenance in the same transaction. An interactive move can supersede that initial automatic write. Ordinary replays skip observation, and verified bootstrap release identities are deduplicated durably. Only the policy-applied configured selection receives evidence. Managed Codex uses the guarded, tool-free Responses transport. The picker and snapshot expose committed, current provenance."
     }
   ]
 }

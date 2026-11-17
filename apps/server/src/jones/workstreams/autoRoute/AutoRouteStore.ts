@@ -147,6 +147,17 @@ export const make = Effect.gen(function* () {
     return rows.length > 0;
   });
 
+  const hasCommittedAssignment = Effect.fn("AutoRouteStore.hasCommittedAssignment")(function* (
+    assignment: P.PersonalWorkstreamAssignment,
+  ) {
+    if (!(yield* available)) return false;
+    const rows = yield* sql`SELECT 1 FROM jones_workstream_auto_route_decisions
+      WHERE thread_id=${assignment.threadId} AND state='assigned'
+        AND workstream_id=${assignment.workstreamId} AND assignment_revision=${assignment.revision}
+        AND decided_at=${assignment.updatedAt} LIMIT 1`;
+    return rows.length > 0;
+  });
+
   /** Automatic assignments still in force: the thread holds the exact workstream and revision written. */
   const currentAutoAssignments = Effect.fn("AutoRouteStore.currentAutoAssignments")(function* () {
     if (!(yield* available)) return undefined;
@@ -156,8 +167,9 @@ export const make = Effect.gen(function* () {
       FROM jones_workstream_auto_route_decisions d
       JOIN jones_personal_workstream_assignments a ON a.thread_id=d.thread_id
       JOIN orchestration_v2_projection_threads t ON t.thread_id=d.thread_id
-      WHERE d.state IN ('assigning','assigned') AND t.deleted_at IS NULL
+      WHERE d.state='assigned' AND t.deleted_at IS NULL
         AND a.workstream_id=d.workstream_id AND a.revision=d.assignment_revision
+        AND a.updated_at=d.decided_at
       ORDER BY d.thread_id`;
   });
 
@@ -239,31 +251,18 @@ export const make = Effect.gen(function* () {
     return rows[0]?.title ?? null;
   });
 
-  /**
-   * Startup recovery. Pending rows are not replayed. An assigning row becomes assigned only when
-   * the thread holds exactly the assignment it wrote.
-   */
+  /** Interrupted records have no atomic provenance. A matching assignment could be manual. */
   const recoverInterrupted = Effect.fn("AutoRouteStore.recoverInterrupted")(function* (
     now: string,
   ) {
-    if (!(yield* available)) return { interrupted: 0, reconciled: 0 };
-    const reconciled = yield* sql<{
-      thread_id: string;
-    }>`UPDATE jones_workstream_auto_route_decisions
-      SET state='assigned', code=NULL, decided_at=${now}
-      WHERE state='assigning' AND EXISTS (
-        SELECT 1 FROM jones_personal_workstream_assignments a
-        WHERE a.thread_id=jones_workstream_auto_route_decisions.thread_id
-          AND a.workstream_id=jones_workstream_auto_route_decisions.workstream_id
-          AND a.revision=jones_workstream_auto_route_decisions.assignment_revision)
-      RETURNING thread_id`;
+    if (!(yield* available)) return 0;
     const interrupted = yield* sql<{
       thread_id: string;
     }>`UPDATE jones_workstream_auto_route_decisions
       SET state='failed', code='interrupted', decided_at=${now}
       WHERE state IN ('pending','assigning')
       RETURNING thread_id`;
-    return { interrupted: interrupted.length, reconciled: reconciled.length };
+    return interrupted.length;
   });
 
   return {
@@ -276,6 +275,7 @@ export const make = Effect.gen(function* () {
     latest,
     wasAssigned,
     isAssignableThread,
+    hasCommittedAssignment,
     currentAutoAssignments,
     corrections,
     candidateStats,

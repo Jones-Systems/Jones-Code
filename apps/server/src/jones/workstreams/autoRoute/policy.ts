@@ -107,7 +107,9 @@ export interface ThreadFacts {
 }
 
 /** Gates that need no model call, in order. `null` means the thread may be classified. */
-export const gate = (facts: ThreadFacts): AutoRouteOutcome | null => {
+export const gate = (
+  facts: ThreadFacts,
+): Extract<AutoRouteOutcome, { state: "skipped" }> | null => {
   if (!facts.exists || facts.archivedOrDeleted)
     return { state: "skipped", code: "thread_unavailable" };
   if (!facts.mainConversation) return { state: "skipped", code: "not_main_thread" };
@@ -152,6 +154,7 @@ const INSTRUCTIONS = [
 ].join("\n");
 
 const render = (evidence: ClassifierEvidence, memberTitles: number) => {
+  const candidates = evidence.candidates.slice(0, AUTO_ROUTE_BOUNDS.maxCandidates);
   const data = {
     thread: {
       title: clip(evidence.threadTitle, AUTO_ROUTE_BOUNDS.threadTitleChars),
@@ -161,14 +164,15 @@ const render = (evidence: ClassifierEvidence, memberTitles: number) => {
           : clip(evidence.projectName, AUTO_ROUTE_BOUNDS.projectNameChars),
       newPrompt: clip(evidence.promptText, AUTO_ROUTE_BOUNDS.promptTextChars),
     },
-    candidates: evidence.candidates.slice(0, AUTO_ROUTE_BOUNDS.maxCandidates).map((c, index) => ({
+    candidates: candidates.map((c, index) => ({
       index: index + 1,
       name: clip(c.name, AUTO_ROUTE_BOUNDS.workstreamNameChars),
       memberCount: c.memberCount,
       membersInThisProject: c.projectMemberCount,
       recentMemberTitles: c.memberTitles
         .slice(0, memberTitles)
-        .map((title) => clip(title, AUTO_ROUTE_BOUNDS.memberTitleChars)),
+        .map((title) => clip(title, AUTO_ROUTE_BOUNDS.memberTitleChars))
+        .filter((title) => title.trim().length > 0),
     })),
     ownerCorrections: evidence.corrections.slice(0, AUTO_ROUTE_BOUNDS.corrections).map((c) => ({
       thread: clip(c.threadTitle, AUTO_ROUTE_BOUNDS.memberTitleChars),
@@ -178,21 +182,27 @@ const render = (evidence: ClassifierEvidence, memberTitles: number) => {
     })),
   };
   // JSON encoding keeps untrusted titles inside string values.
-  return `${INSTRUCTIONS}\n\nData:\n${JSON.stringify(data)}`;
+  return {
+    prompt: `${INSTRUCTIONS}\n\nData:\n${JSON.stringify(data)}`,
+    candidates: candidates.map(({ id }, index) => ({
+      id,
+      hasMemberTitles: data.candidates[index]!.recentMemberTitles.length > 0,
+    })),
+  };
 };
 
 /** The classification prompt, within `maxPromptChars` by dropping member titles in steps. */
-export const buildClassifierPrompt = (evidence: ClassifierEvidence): string => {
-  let prompt = render(evidence, AUTO_ROUTE_BOUNDS.memberTitles);
+export const buildClassifierPrompt = (evidence: ClassifierEvidence) => {
+  let rendered = render(evidence, AUTO_ROUTE_BOUNDS.memberTitles);
   for (const titles of AUTO_ROUTE_BOUNDS.reducedMemberTitles) {
-    if (prompt.length <= AUTO_ROUTE_BOUNDS.maxPromptChars) break;
-    prompt = render(evidence, titles);
+    if (rendered.prompt.length <= AUTO_ROUTE_BOUNDS.maxPromptChars) break;
+    rendered = render(evidence, titles);
   }
-  if (prompt.length > AUTO_ROUTE_BOUNDS.maxPromptChars) {
+  if (rendered.prompt.length > AUTO_ROUTE_BOUNDS.maxPromptChars) {
     // Keep the candidate index stable if JSON escaping consumes the remaining budget.
-    prompt = render({ ...evidence, promptText: "" }, 0);
+    return render({ ...evidence, promptText: "" }, 0);
   }
-  return prompt;
+  return rendered;
 };
 
 const CandidateIndex = Schema.Int;
@@ -218,7 +228,10 @@ export type Decision =
     });
 
 /** Applies the decision rule to the model's raw reply; only an unambiguous, high, grounded choice assigns. */
-export const decide = (raw: string, candidates: readonly Candidate[]): Decision => {
+export const decide = (
+  raw: string,
+  candidates: ReadonlyArray<{ readonly id: string; readonly hasMemberTitles: boolean }>,
+): Decision => {
   if (raw.length > 4_096) return { state: "failed", code: "invalid_output" };
   const exit = decodeReply(extractJsonObject(raw));
   if (Exit.isFailure(exit)) return { state: "failed", code: "invalid_output" };
@@ -233,7 +246,11 @@ export const decide = (raw: string, candidates: readonly Candidate[]): Decision 
   )
     return { state: "failed", code: "invalid_choice", ...graded };
   const chosen = reply.choice === null ? undefined : candidates[reply.choice - 1];
-  if (reply.basis === "similar_threads" && chosen !== undefined && chosen.memberCount === 0)
+  if (
+    chosen !== undefined &&
+    !chosen.hasMemberTitles &&
+    (reply.basis === "similar_threads" || reply.basis === "both")
+  )
     return { state: "failed", code: "invalid_choice", ...graded };
   if (chosen === undefined) return { state: "abstained", code: "unclear", ...graded };
   if (reply.runnerUp !== null) return { state: "abstained", code: "ambiguous", ...graded };

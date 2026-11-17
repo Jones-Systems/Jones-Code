@@ -27,7 +27,7 @@ export function WorkstreamAutoRouteSettings() {
         settingKeys={SETTING_KEYS}
         mixed={mixed}
         title={TITLE}
-        description="When a prompt arrives from a work queue for a thread with no Workstream, assign the thread when one Workstream is clearly the right place. Unclear matches are left alone."
+        description="Assign clear matches using the project or environment’s Text generation model. Requires an enabled Text Generator or managed Codex. Unclear matches stay unassigned."
         resetAction={
           enabled !== DEFAULT_SERVER_SETTINGS.workstreamAutoRouteEnabled ? (
             <SettingResetButton

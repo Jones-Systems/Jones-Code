@@ -33,6 +33,7 @@ export class PersonalWorkstreams extends Context.Service<
     ) => Effect.Effect<P.PutResult, P.WorkstreamsPersonalError>;
     readonly assign: (
       input: P.AssignPersonalWorkstreamInput,
+      options?: { readonly supersedeInitialAutoAssignment: boolean },
     ) => Effect.Effect<P.AssignResult, P.WorkstreamsPersonalError>;
     readonly assignAutomatically: (
       input: AutoRouteStore.DecisionKey & {
@@ -236,45 +237,54 @@ const make = Effect.gen(function* () {
         }),
       ),
   );
-  const assign = Effect.fn("PersonalWorkstreams.assign")((input: P.AssignPersonalWorkstreamInput) =>
-    decodeAssignment(input).pipe(
-      Effect.mapError(() => new P.WorkstreamsPersonalError({ code: "invalid_request" })),
-      Effect.flatMap((valid) =>
-        write(
-          Effect.gen(function* (): Effect.fn.Return<
-            P.AssignResult,
-            SqlError | P.WorkstreamsPersonalError
-          > {
-            if (!(yield* exists(valid.threadId)))
-              return yield* new P.WorkstreamsPersonalError({ code: "thread_not_found" });
-            const workstream =
-              valid.workstream === null ? null : (yield* merge(valid.workstream)).workstream;
-            if (workstream?.deletedAt != null)
-              return yield* new P.WorkstreamsPersonalError({ code: "workstream_deleted" });
-            const current = yield* assignment(valid.threadId);
-            const target = workstream?.id ?? null;
-            if (current.workstreamId === target)
+  const assign = Effect.fn("PersonalWorkstreams.assign")(
+    (
+      input: P.AssignPersonalWorkstreamInput,
+      options?: { readonly supersedeInitialAutoAssignment: boolean },
+    ) =>
+      decodeAssignment(input).pipe(
+        Effect.mapError(() => new P.WorkstreamsPersonalError({ code: "invalid_request" })),
+        Effect.flatMap((valid) =>
+          write(
+            Effect.gen(function* (): Effect.fn.Return<
+              P.AssignResult,
+              SqlError | P.WorkstreamsPersonalError
+            > {
+              if (!(yield* exists(valid.threadId)))
+                return yield* new P.WorkstreamsPersonalError({ code: "thread_not_found" });
+              const workstream =
+                valid.workstream === null ? null : (yield* merge(valid.workstream)).workstream;
+              if (workstream?.deletedAt != null)
+                return yield* new P.WorkstreamsPersonalError({ code: "workstream_deleted" });
+              const current = yield* assignment(valid.threadId);
+              const target = workstream?.id ?? null;
+              const supersedesAutomatic =
+                options?.supersedeInitialAutoAssignment === true &&
+                valid.expectedRevision === 0 &&
+                current.revision === 1 &&
+                (yield* autoRoute.hasCommittedAssignment(current));
+              if (current.workstreamId === target && !supersedesAutomatic)
+                return {
+                  outcome: "already_satisfied",
+                  assignment: current,
+                  workstream,
+                  sequence: yield* sequence(),
+                };
+              if (valid.expectedRevision !== current.revision && !supersedesAutomatic)
+                return yield* new P.WorkstreamsPersonalError({
+                  code: "precondition_failed",
+                  currentAssignment: current,
+                });
               return {
-                outcome: "already_satisfied",
-                assignment: current,
+                outcome: "applied",
+                assignment: yield* persistAssignment(valid.threadId, target, current.revision + 1),
                 workstream,
                 sequence: yield* sequence(),
               };
-            if (valid.expectedRevision !== current.revision)
-              return yield* new P.WorkstreamsPersonalError({
-                code: "precondition_failed",
-                currentAssignment: current,
-              });
-            return {
-              outcome: "applied",
-              assignment: yield* persistAssignment(valid.threadId, target, current.revision + 1),
-              workstream,
-              sequence: yield* sequence(),
-            };
-          }),
+            }),
+          ),
         ),
       ),
-    ),
   );
   const assignAutomatically: PersonalWorkstreams["Service"]["assignAutomatically"] = Effect.fn(
     "PersonalWorkstreams.assignAutomatically",
