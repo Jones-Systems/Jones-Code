@@ -201,6 +201,7 @@ function lastRunSummary(
 }
 
 const COVERAGE_LABEL = {
+  regenerable_output: "Discard regenerable build output",
   declared_cache: "Discard declared caches",
   dependency_reproduction: "Discard reproducible dependencies",
   format_recognized: "Discard recognized format files",
@@ -818,7 +819,12 @@ export function WorktreeCleanupSection() {
                       }
                     />
                     {(
-                      ["declared_cache", "dependency_reproduction", "format_recognized"] as const
+                      [
+                        "regenerable_output",
+                        "declared_cache",
+                        "dependency_reproduction",
+                        "format_recognized",
+                      ] as const
                     ).map((coverage) => (
                       <SettingsRow
                         key={coverage}

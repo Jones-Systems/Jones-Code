@@ -120,7 +120,7 @@ describe("serverSettings helpers", () => {
       worktreeUnchanged: false,
       worktreeKeepWhen: "uncommitted-changes",
       worktreeSettledScope: "branch-retained",
-      worktreeCoveredDiscard: [],
+      worktreeCoveredDiscard: ["regenerable_output"],
       browserArtifactsAfterDays: null,
       logsAfterDays: 30,
       installRetention: "propose",

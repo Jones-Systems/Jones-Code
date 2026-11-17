@@ -7,10 +7,93 @@ import {
   git,
   inside,
   openAbsolute,
+  outputSecretName,
   readBounded,
   sensitive,
 } from "./Filesystem.ts";
 import { contentManifest, LIMITS, metadata, verify } from "./OutputAttestation.ts";
+
+/**
+ * `regenerable_output` roots: dependency-install roots skip name checks; build,
+ * output and cache roots hold a `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx` or
+ * `.netrc` path. A nested repository holds all; the broader names never apply.
+ */
+const DEPENDENCY_ROOT_NAMES = ["node_modules", ".venv", "venv"];
+const OUTPUT_ROOT_NAMES = [
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".tox",
+  ".turbo",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".parcel-cache",
+  ".cache",
+  "dist",
+  "build",
+  "out",
+  "target",
+  "coverage",
+  ".gradle",
+  "DerivedData",
+];
+export const REGENERABLE_ROOT_NAMES: ReadonlySet<string> = new Set([
+  ...DEPENDENCY_ROOT_NAMES,
+  ...OUTPUT_ROOT_NAMES,
+]);
+type RegenerableKind = "dependency" | "output";
+const regenerableKind = (name: string, parent: string | undefined): RegenerableKind | null =>
+  DEPENDENCY_ROOT_NAMES.includes(name) || (name === "mod" && parent === "pkg")
+    ? "dependency"
+    : OUTPUT_ROOT_NAMES.includes(name)
+      ? "output"
+      : null;
+/**
+ * Name-and-type walk; it opens no file. Git reports the topmost ignored
+ * directory, so a Go module cache can arrive as its container. A root is
+ * eligible when named for a regenerable class or all its files lie beneath one.
+ */
+async function regenerableWalk(worktree: string, root: string, deadline: number) {
+  const own = NodePath.relative(worktree, root).split(NodePath.sep);
+  const device = (await NodeFSP.lstat(root)).dev;
+  const sensitivePaths: string[] = [];
+  const stack: { path: string; kind: RegenerableKind | null; name: string }[] = [
+    { path: root, kind: regenerableKind(own.at(-1)!, own.at(-2)), name: own.at(-1)! },
+  ];
+  const named = stack[0]!.kind !== null;
+  let files = 0,
+    entries = 0,
+    loose = false;
+  while (stack.length) {
+    const frame = stack.pop()!;
+    const children = new Map<string, boolean>();
+    for await (const child of await NodeFSP.opendir(frame.path)) {
+      if (performance.now() > deadline || ++entries > LIMITS.entries)
+        throw new Error("bound_exceeded");
+      if (child.name === ".git") return { eligible: false, sensitivePaths: [] };
+      const path = NodePath.join(frame.path, child.name);
+      if (frame.kind === "output" && outputSecretName(child.name)) sensitivePaths.push(path);
+      children.set(child.name, child.isDirectory());
+      if (child.isDirectory()) {
+        if ((await NodeFSP.lstat(path)).dev !== device) throw new Error("mount_boundary");
+        stack.push({
+          path,
+          kind: frame.kind ?? regenerableKind(child.name, frame.name),
+          name: child.name,
+        });
+      } else {
+        files++;
+        loose ||= frame.kind === null;
+      }
+    }
+    // A bare repository has no `.git` entry; HEAD beside objects and refs identifies it.
+    if (children.get("HEAD") === false && children.get("objects") && children.get("refs"))
+      return { eligible: false, sensitivePaths: [] };
+  }
+  return { eligible: (named || files > 0) && !loose, sensitivePaths };
+}
 
 export interface Coverage {
   exactRoots?: readonly string[];
@@ -152,30 +235,40 @@ export async function classifyIgnored(input: {
   });
   try {
     const info = await NodeFSP.lstat(root);
+    const classes = coverage.classes ?? [];
+    const regenerable =
+      classes.includes("regenerable_output") && info.isDirectory()
+        ? await regenerableWalk(worktree, root, performance.now() + 60000)
+        : null;
     let nested: string[] = [],
       sensitivePaths: string[] = [],
       entries: string[] = [],
-      unobservedSensitiveDirectory = info.isDirectory() && sensitive(NodePath.basename(root));
-    if (root.split(NodePath.sep).some(sensitive)) sensitivePaths.push(root);
-    if (info.isDirectory()) {
-      const dir = await openAbsolute(root, true);
-      try {
-        const m = await metadata(dir, performance.now() + 60000, {
-          entries: LIMITS.entries,
-          bytes: LIMITS.bytes,
-        });
-        nested = m.nested;
-        sensitivePaths.push(...m.sensitivePaths.map((p) => NodePath.join(root, p)));
-        entries = m.entries.map((e) => e.relpath);
-        unobservedSensitiveDirectory ||= m.entries.some(
-          (e) => e.type === "directory" && sensitive(NodePath.basename(e.relpath)),
-        );
-        if (m.reasons.some((r) => r !== "nested_repository" && r !== "sensitive_ignored"))
-          return hold("attestation_unverifiable");
-      } finally {
-        await dir.close();
-      }
-    } else if (!info.isFile() && !info.isSymbolicLink()) return hold("attestation_unverifiable");
+      unobservedSensitiveDirectory =
+        !regenerable?.eligible && info.isDirectory() && sensitive(NodePath.basename(root));
+    if (regenerable?.eligible) sensitivePaths.push(...regenerable.sensitivePaths);
+    else {
+      if (NodePath.relative(worktree, root).split(NodePath.sep).some(sensitive))
+        sensitivePaths.push(root);
+      if (info.isDirectory()) {
+        const dir = await openAbsolute(root, true);
+        try {
+          const m = await metadata(dir, performance.now() + 60000, {
+            entries: LIMITS.entries,
+            bytes: LIMITS.bytes,
+          });
+          nested = m.nested;
+          sensitivePaths.push(...m.sensitivePaths.map((p) => NodePath.join(root, p)));
+          entries = m.entries.map((e) => e.relpath);
+          unobservedSensitiveDirectory ||= m.entries.some(
+            (e) => e.type === "directory" && sensitive(NodePath.basename(e.relpath)),
+          );
+          if (m.reasons.some((r) => r !== "nested_repository" && r !== "sensitive_ignored"))
+            return hold("attestation_unverifiable");
+        } finally {
+          await dir.close();
+        }
+      } else if (!info.isFile() && !info.isSymbolicLink()) return hold("attestation_unverifiable");
+    }
     if (NodePath.basename(root) === ".git") nested.push("");
     if (input.registered?.some((r) => inside(r.path, root) || inside(r.common, root)))
       return hold("shared_common_store");
@@ -217,9 +310,9 @@ export async function classifyIgnored(input: {
       return exact ? allow("covered, including additions") : hold("preservation_unverified");
     }
     if (exact) return allow("covered, including additions");
+    if (regenerable?.eligible) return allow("regenerable_output");
     if (NodePath.basename(root) === "__pycache__" || root.endsWith(".pyc"))
       return hold("unattested_ignored");
-    const classes = coverage.classes ?? [];
     if (
       classes.includes("declared_cache") &&
       info.isDirectory() &&

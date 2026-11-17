@@ -1138,16 +1138,26 @@ export const WorktreeKeepWhen = Schema.Literals([
 export type WorktreeKeepWhen = typeof WorktreeKeepWhen.Type;
 
 export const WorktreeSettledScope = Schema.Literals(["contained", "branch-retained"]);
+/**
+ * Ignored content a retired checkout may delete. `regenerable_output` is the
+ * default; a saved shorter list, including `[]`, narrows it.
+ */
 export const WorktreeCoveredDiscard = Schema.Array(
-  Schema.Literals(["declared_cache", "dependency_reproduction", "format_recognized"]),
+  Schema.Literals([
+    "regenerable_output",
+    "declared_cache",
+    "dependency_reproduction",
+    "format_recognized",
+  ]),
 );
+const DEFAULT_WORKTREE_COVERED_DISCARD: typeof WorktreeCoveredDiscard.Type = ["regenerable_output"];
 
 export const WorktreeCleanupRules = Schema.Struct({
   worktreeSettledScope: WorktreeSettledScope.pipe(
     Schema.withDecodingDefault(Effect.succeed("branch-retained")),
   ),
   worktreeCoveredDiscard: WorktreeCoveredDiscard.pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKTREE_COVERED_DISCARD)),
   ),
   worktreeKeepWhen: WorktreeKeepWhen.pipe(
     Schema.withDecodingDefault(Effect.succeed("uncommitted-changes")),
@@ -1342,7 +1352,7 @@ export const StorageCleanupSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("branch-retained")),
   ),
   worktreeCoveredDiscard: WorktreeCoveredDiscard.pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKTREE_COVERED_DISCARD)),
   ),
   installRetention: Schema.Literals(["propose", "retire"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("propose" as const)),

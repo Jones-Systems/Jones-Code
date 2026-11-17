@@ -192,7 +192,7 @@ describe("scoped settings writes", () => {
         worktreeUnchanged: false,
         worktreeKeepWhen: "uncommitted-changes",
         worktreeSettledScope: "branch-retained",
-        worktreeCoveredDiscard: [],
+        worktreeCoveredDiscard: ["regenerable_output"],
       },
     ]);
   });
@@ -438,7 +438,7 @@ describe("scoped settings writes", () => {
               worktreeUnchanged: false,
               worktreeKeepWhen: "uncommitted-changes",
               worktreeSettledScope: "branch-retained",
-              worktreeCoveredDiscard: [],
+              worktreeCoveredDiscard: ["regenerable_output"],
             },
           },
         },

@@ -45,7 +45,17 @@ describe("storage cleanup settings", () => {
   it("decodes older settings without enabling retirement and accepts additive covered classes", () => {
     const legacy = decodeServerSettings({ storageCleanup: { worktreeSettledAfterDays: null } });
     expect(legacy.storageCleanup.worktreeSettledScope).toBe("branch-retained");
-    expect(legacy.storageCleanup.worktreeCoveredDiscard).toEqual([]);
+    // Settings written before the default existed gain the regenerable class; an owner
+    // narrows it by saving a shorter list, which must survive a decode unchanged.
+    expect(legacy.storageCleanup.worktreeCoveredDiscard).toEqual(["regenerable_output"]);
+    expect(
+      decodeServerSettings({ storageCleanup: { worktreeCoveredDiscard: [] } }).storageCleanup
+        .worktreeCoveredDiscard,
+    ).toEqual([]);
+    expect(
+      decodeServerSettings({ storageCleanup: { worktreeCoveredDiscard: ["declared_cache"] } })
+        .storageCleanup.worktreeCoveredDiscard,
+    ).toEqual(["declared_cache"]);
     expect(legacy.storageCleanup.worktreeSettledAfterDays).toBeNull();
     expect(
       decodeServerSettingsPatch({ storageCleanup: { worktreeCoveredDiscard: ["declared_cache"] } })
@@ -72,7 +82,7 @@ describe("storage cleanup settings", () => {
     expect(decodeServerSettings({}).storageCleanup).toEqual({
       installRetention: "propose",
       worktreeSettledScope: "branch-retained",
-      worktreeCoveredDiscard: [],
+      worktreeCoveredDiscard: ["regenerable_output"],
       worktreeAfterDays: null,
       worktreeSettledAfterDays: null,
       worktreeOnMerge: false,
