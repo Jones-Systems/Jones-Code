@@ -1,3 +1,4 @@
+import { registerThreadMenuOwner } from "../jones/workstreams/threadMenuBridge";
 import { publishWorkQueueLocalNames } from "@t3tools/client-runtime/work-queue-metadata";
 import { ensureEnvironmentScope } from "../state/session";
 import { SIDEBAR_DRAG_DISTANCE } from "./Sidebar.pointer";
@@ -2856,6 +2857,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       threadRef: ScopedThreadRef,
       position: { x: number; y: number },
       assignment?: NativeThreadAssignmentMenu,
+      onFind?: (threadRef: ScopedThreadRef) => void,
     ) => {
       void (async () => {
         const api = readLocalApi();
@@ -2909,6 +2911,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 canOperate,
                 environmentAccessStatus: environmentAccess.status,
                 assignmentItems: assignmentMenu?.items,
+                canFind: onFind !== undefined,
                 branch: thread.branch ?? null,
                 // An archived project is not a filter choice.
                 projectFilter:
@@ -2984,6 +2987,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           return;
         }
         switch (clicked.value) {
+          case "find":
+            onFind?.(threadRef);
+            return;
           case "filter-by-project":
             if (threadProjectGroup) {
               setProjectScopeKeys(
@@ -3204,6 +3210,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         }
       })();
     },
+  );
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish the mounted sidebar's complete thread menu to the chat header; retire only this registration.
+  useEffect(
+    () =>
+      registerThreadMenuOwner((threadRef, position, onFind) =>
+        handleThreadContextMenu(threadRef, position, undefined, onFind),
+      ),
+    [handleThreadContextMenu],
   );
 
   const routeTerminalOpen = useTerminalUiStateStore((state) =>
