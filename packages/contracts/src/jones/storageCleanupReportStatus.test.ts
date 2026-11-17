@@ -2,6 +2,8 @@ import { expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import { StorageCleanupReport } from "../settings.ts";
 
+const decodeReport = Schema.decodeUnknownSync(StorageCleanupReport);
+
 const legacy = {
   trigger: "manual",
   startedAt: "2026-11-16T22:00:00.000Z",
@@ -13,21 +15,16 @@ const legacy = {
 };
 
 it("decodes retained legacy reports without inventing an operation", () => {
-  expect(Schema.decodeUnknownSync(StorageCleanupReport)(legacy).operation).toBeUndefined();
+  expect(decodeReport(legacy).operation).toBeUndefined();
 });
 
 it("keeps reports readable when a newer server supplies an unknown operation", () => {
-  expect(
-    Schema.decodeUnknownSync(StorageCleanupReport)({ ...legacy, operation: "future-action" })
-      .operation,
-  ).toBeUndefined();
+  expect(decodeReport({ ...legacy, operation: "future-action" }).operation).toBeUndefined();
 });
 
 it.each(["cleanup", "propose", "retire"] as const)(
   "preserves the %s operation across report decoding",
   (operation) => {
-    expect(Schema.decodeUnknownSync(StorageCleanupReport)({ ...legacy, operation }).operation).toBe(
-      operation,
-    );
+    expect(decodeReport({ ...legacy, operation }).operation).toBe(operation);
   },
 );

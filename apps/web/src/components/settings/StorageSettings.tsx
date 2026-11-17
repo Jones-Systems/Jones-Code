@@ -4,6 +4,7 @@ import {
   cleanupFleetTimestamp,
   cleanupReportSummary,
   cleanupRequestSummary,
+  cleanupRequestIsOutstanding,
   type CleanupOperation,
   type CleanupRequest,
 } from "../../jones/storageCleanupResults/runStatus";
@@ -28,6 +29,7 @@ import { useNowMinute } from "../../hooks/useNowMinute";
 import { useDebouncedValue } from "../../state/queries";
 import { AnimatedHeight } from "../AnimatedHeight";
 import { Button } from "../ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -216,9 +218,9 @@ const storageCleanupPermissionsAtom = environmentAtomList(
 function CleanupSection() {
   const nowMinute = useNowMinute();
   const nowMs = Date.parse(`${nowMinute}:00.000Z`);
-  const { connectedEnvironments } = useSettingsScope();
+  const { scope, connectedEnvironments } = useSettingsScope();
   const [pending, setPending] = useState(false);
-  const [requests, setRequests] = useState<Record<string, CleanupRequest>>({});
+  const [requests, setRequests] = useState<Record<string, CleanupRequest & { label: string }>>({});
   const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   const run = useAtomCommand(serverEnvironment.runStorageCleanup);
   const supported = connectedEnvironments.filter(
@@ -237,6 +239,15 @@ function CleanupSection() {
       failed: query._tag === "Failure",
     };
   });
+  const acknowledgedIds = state.flatMap(({ environmentId, report }) => {
+    const request = requests[environmentId];
+    return request && !cleanupRequestIsOutstanding(request, report) ? [environmentId] : [];
+  });
+  if (acknowledgedIds.length > 0) {
+    const remaining = { ...requests };
+    for (const environmentId of acknowledgedIds) delete remaining[environmentId];
+    setRequests(remaining);
+  }
   const hasRules = supported.some((environment) => {
     const settings = environment.serverConfig?.settings;
     if (!settings) return false;
@@ -256,15 +267,31 @@ function CleanupSection() {
       )
     );
   });
-  if (supported.length === 0) return null;
-  const summaries = supported.map((environment) => {
-    const query = state.find((entry) => entry.environmentId === environment.environmentId);
-    const report = query?.report ?? null;
-    const request = requests[environment.environmentId];
-    return {
-      environment,
-      report,
+  const displayTargets = [
+    ...supported.map((environment) => ({
+      environmentId: environment.environmentId,
       label: settingsScopeEnvironmentLabel(environment, connectedEnvironments),
+    })),
+    ...Object.entries(requests).flatMap(([environmentId, request]) =>
+      scope.environmentIds.some((id) => id === environmentId) &&
+      !supportedIds.some((id) => id === environmentId)
+        ? [{ environmentId, label: request.label }]
+        : [],
+    ),
+  ];
+  if (displayTargets.length === 0) return null;
+  const summaries = displayTargets.map(({ environmentId, label }) => {
+    const query = state.find((entry) => entry.environmentId === environmentId);
+    const request = requests[environmentId];
+    const report = query
+      ? query.report
+      : request?.status === "completed"
+        ? (request.report ?? null)
+        : null;
+    return {
+      environmentId,
+      report,
+      label,
       counts:
         request && request.status !== "completed"
           ? cleanupRequestSummary(request)
@@ -286,12 +313,14 @@ function CleanupSection() {
   });
   const timestamp = cleanupFleetTimestamp(summaries, timestampFormat, nowMs);
   const execute = async (
-    environmentId: (typeof supportedIds)[number],
+    environment: (typeof supported)[number],
     operation: CleanupOperation,
     input: Parameters<typeof run>[0]["input"],
   ) => {
+    const { environmentId } = environment;
+    const label = settingsScopeEnvironmentLabel(environment, connectedEnvironments);
     const update = (request: CleanupRequest) =>
-      setRequests((current) => ({ ...current, [environmentId]: request }));
+      setRequests((current) => ({ ...current, [environmentId]: { ...request, label } }));
     update({ operation, status: "running" });
     try {
       const result = await run({ environmentId, input });
@@ -325,25 +354,35 @@ function CleanupSection() {
     setRequests((current) => ({
       ...current,
       ...Object.fromEntries(
-        targets.map(({ environmentId }) => [
-          environmentId,
-          { operation: "propose", status: "queued" } as const,
+        targets.map((environment) => [
+          environment.environmentId,
+          {
+            operation: "propose",
+            status: "queued",
+            label: settingsScopeEnvironmentLabel(environment, connectedEnvironments),
+          } as const,
         ]),
       ),
     }));
-    try {
-      for (const { environmentId } of targets) {
-        await execute(environmentId, "propose", { retirement: { action: "propose" } });
-      }
-    } finally {
-      setPending(false);
-    }
+    await targets
+      .reduce(
+        (previous, environment) =>
+          previous.then(() => execute(environment, "propose", { retirement: { action: "propose" } })),
+        Promise.resolve(),
+      )
+      .finally(() => setPending(false));
   };
   const retireTarget = async (
     environmentId: (typeof supportedIds)[number],
     entry: StorageCleanupReport["entries"][number],
   ) => {
     if (pending || !entry.threadId || !entry.path || !entry.retirement?.fingerprint) return;
+    const environment = supported.find((candidate) => candidate.environmentId === environmentId);
+    if (
+      !environment ||
+      !state.some((entry) => entry.environmentId === environmentId && entry.allowed)
+    )
+      return;
     const coveredPaths = entry.retirement.paths;
     const confirmed = await (requestConfirmDialog(
       `Retire ${entry.path}? Branches and recovery references are kept. This authorizes disposal only of these exact selections, including additions within the listed roots:
@@ -353,36 +392,26 @@ Live consumers, tracked edits, nested repositories and other protections still h
     ) ?? Promise.resolve(false));
     if (!confirmed) return;
     setPending(true);
-    try {
-      await execute(environmentId, "retire", {
-        retirement: {
-          action: "retire",
-          threadId: entry.threadId,
-          worktreePath: entry.path,
-          expectedFingerprint: entry.retirement.fingerprint,
-          coveredPaths,
-        },
-      });
-    } finally {
-      setPending(false);
-    }
+    await execute(environment, "retire", {
+      retirement: {
+        action: "retire",
+        threadId: entry.threadId,
+        worktreePath: entry.path,
+        expectedFingerprint: entry.retirement.fingerprint,
+        coveredPaths,
+      },
+    }).finally(() => setPending(false));
   };
   const deleteNow = async () => {
     if (pending) return;
     setPending(true);
-    try {
-      await Promise.all(
-        supported
-          .filter((environment) =>
-            state.some(
-              (entry) => entry.environmentId === environment.environmentId && entry.allowed,
-            ),
-          )
-          .map(({ environmentId }) => execute(environmentId, "cleanup", {})),
-      );
-    } finally {
-      setPending(false);
-    }
+    await Promise.all(
+      supported
+        .filter((environment) =>
+          state.some((entry) => entry.environmentId === environment.environmentId && entry.allowed),
+        )
+        .map((environment) => execute(environment, "cleanup", {})),
+    ).finally(() => setPending(false));
   };
   return (
     <SettingsSection id="storage-cleanup" title="Cleanup" variant="plain">
@@ -393,9 +422,9 @@ Live consumers, tracked edits, nested repositories and other protections still h
             <span>
               {!hasRules
                 ? "Turn on a cleanup rule to use this."
-                : summaries.map(({ environment, label, description }) => (
-                    <span key={environment.environmentId} className="block">
-                      {supported.length > 1 ? `${label}: ` : ""}
+                : summaries.map(({ environmentId, label, description }) => (
+                    <span key={environmentId} className="block">
+                      {displayTargets.length > 1 ? `${label}: ` : ""}
                       {description}
                     </span>
                   ))}
@@ -443,33 +472,31 @@ Live consumers, tracked edits, nested repositories and other protections still h
         title="Last run"
         headerPlacement="inside"
         wrapHeader={false}
-        summary={lastRunSummary(summaries, connectedEnvironments.length)}
+        summary={lastRunSummary(summaries, scope.environmentIds.length)}
         control={
-          <span
-            className="truncate whitespace-nowrap text-right text-xs text-muted-foreground"
-            title={timestamp.exact}
-            aria-label={`Last completed run: ${timestamp.exact}`}
-          >
-            {timestamp.label}
-          </span>
+          <Tooltip>
+            <TooltipTrigger
+              render={<span tabIndex={0} />}
+              className="truncate whitespace-nowrap text-right text-xs text-muted-foreground"
+              aria-label={`Last completed run: ${timestamp.exact}`}
+            >
+              {timestamp.label}
+            </TooltipTrigger>
+            <TooltipPopup>{timestamp.exact}</TooltipPopup>
+          </Tooltip>
         }
       >
         <div className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
           Reports are retained until each server restarts. Manual reports stay visible ahead of
           automatic cleanup. Progress is shown for requests started in this view.
         </div>
-        {summaries.map(({ environment, label, report }) => {
-          const request = requests[environment.environmentId];
-          const query = state.find((entry) => entry.environmentId === environment.environmentId);
-          if (
-            request &&
-            (request.status !== "completed" ||
-              request.report?.startedAt !== report?.startedAt ||
-              request.report?.finishedAt !== report?.finishedAt)
-          )
+        {summaries.map(({ environmentId, label, report }) => {
+          const request = requests[environmentId];
+          const query = state.find((entry) => entry.environmentId === environmentId);
+          if (request && cleanupRequestIsOutstanding(request, report))
             return (
               <p
-                key={environment.environmentId}
+                key={environmentId}
                 role="status"
                 className="px-3 py-2.5 text-xs sm:px-4"
               >
@@ -487,7 +514,7 @@ Live consumers, tracked edits, nested repositories and other protections still h
           if (!report)
             return (
               <p
-                key={environment.environmentId}
+                key={environmentId}
                 role="status"
                 className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4"
               >
@@ -502,18 +529,21 @@ Live consumers, tracked edits, nested repositories and other protections still h
           return null;
         })}
         <CleanupResults
-          selectedEnvironmentIds={connectedEnvironments.map(({ environmentId }) => environmentId)}
-          reports={summaries.flatMap(({ environment, label, report }) =>
-            report
+          selectedEnvironmentIds={displayTargets.map(({ environmentId }) => environmentId)}
+          reports={summaries.flatMap(({ environmentId, label, report }) => {
+            const environment = supported.find(
+              (candidate) => candidate.environmentId === environmentId,
+            );
+            return report
               ? [
                   {
-                    environmentId: environment.environmentId,
+                    environmentId,
                     environmentLabel: label,
                     report,
                     timestampFormat,
                     nowMs,
                     ...(!pending &&
-                    environment.serverConfig?.environment.capabilities.settledWorktreeRetirement ===
+                    environment?.serverConfig?.environment.capabilities.settledWorktreeRetirement ===
                       true &&
                     state.some((e) => e.environmentId === environment.environmentId && e.allowed)
                       ? {
@@ -523,8 +553,8 @@ Live consumers, tracked edits, nested repositories and other protections still h
                       : {}),
                   },
                 ]
-              : [],
-          )}
+              : [];
+          })}
         />
       </FoldedSettingsSection>
     </SettingsSection>

@@ -2,6 +2,8 @@ import type { StorageCleanupReport, TimestampFormat } from "@t3tools/contracts";
 import { useState } from "react";
 import { SettingsRow } from "../../components/settings/settingsLayout";
 import { Button, InlineButton } from "../../components/ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
+import { useNowMinute } from "../../hooks/useNowMinute";
 import { formatBytes } from "../../lib/formatBytes";
 import { cleanupReportSummary, cleanupTimestamp } from "./runStatus";
 
@@ -65,10 +67,11 @@ function CleanupResultList({ reports }: { reports: readonly CleanupReport[] }) {
 
 function DeviceResults(props: CleanupReport) {
   const [expanded, setExpanded] = useState(true);
+  const nowMinute = useNowMinute();
   const timestamp = cleanupTimestamp(
     props.report.finishedAt,
     props.timestampFormat ?? "locale",
-    props.nowMs ?? Date.now(),
+    props.nowMs ?? Date.parse(`${nowMinute}:00.000Z`),
   );
   const groups = categories
     .map((category) => ({
@@ -80,25 +83,27 @@ function DeviceResults(props: CleanupReport) {
     .filter(({ entries }) => entries.length > 0);
   return (
     <section aria-label={`${props.environmentLabel} cleanup results`}>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-medium sm:px-4"
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <span aria-hidden="true">{expanded ? "▾" : "▸"}</span>
-        <span className="min-w-0 wrap-anywhere">{props.environmentLabel}</span>
-        <span className="shrink-0 text-xs text-muted-foreground">
-          {props.report.entries.length.toLocaleString()} results
-        </span>
-        <span
-          className="ms-auto text-right text-xs text-muted-foreground"
-          title={timestamp?.exact}
-          aria-label={`Completed: ${timestamp?.exact ?? "Time unavailable"}`}
+      <Tooltip>
+        <TooltipTrigger
+          render={<button type="button" />}
+          aria-expanded={expanded}
+          className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-medium sm:px-4"
+          onClick={() => setExpanded((value) => !value)}
         >
-          {timestamp?.label ?? "Time unavailable"}
-        </span>
-      </button>
+          <span aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+          <span className="min-w-0 wrap-anywhere">{props.environmentLabel}</span>
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {props.report.entries.length.toLocaleString()} results
+          </span>
+          <span
+            className="ms-auto text-right text-xs text-muted-foreground"
+            aria-label={`Completed: ${timestamp?.exact ?? "Time unavailable"}`}
+          >
+            {timestamp?.label ?? "Time unavailable"}
+          </span>
+        </TooltipTrigger>
+        <TooltipPopup>{timestamp?.exact ?? "Time unavailable"}</TooltipPopup>
+      </Tooltip>
       {expanded && (
         <div className="ml-3 border-l border-border/60 sm:ml-4">
           <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">

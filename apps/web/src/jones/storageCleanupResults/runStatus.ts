@@ -9,6 +9,20 @@ export type CleanupRequest = {
   report?: StorageCleanupReport;
 };
 
+export function cleanupRequestIsOutstanding(
+  request: CleanupRequest,
+  retained: StorageCleanupReport | null,
+) {
+  if (request.status !== "completed" || !request.report || !retained) return true;
+  const completed = request.report;
+  if (completed.startedAt === retained.startedAt && completed.finishedAt === retained.finishedAt)
+    return false;
+  return !(
+    Date.parse(retained.startedAt) >= Date.parse(completed.startedAt) &&
+    Date.parse(retained.finishedAt) >= Date.parse(completed.finishedAt)
+  );
+}
+
 function cleanupOperationLabel(operation: CleanupOperation | undefined) {
   switch (operation) {
     case "propose":
