@@ -24,6 +24,12 @@ import { consumerDecision, type ConsumerEvidence } from "./ConsumerProbe.ts";
 import { outputObligations } from "./ProducerFinalizer.ts";
 import { completionLineage } from "./CompletionObservation.ts";
 import { observeReftable } from "./ReftableObservation.ts";
+import {
+  classifyRecoverability,
+  planPreservation,
+  type PreservePlan,
+  type Recoverability,
+} from "./Recoverability.ts";
 
 export interface QualificationInput {
   worktree: string;
@@ -70,6 +76,7 @@ type ObservationStage =
   | "worktree_config"
   | "ignored_content"
   | "preservation"
+  | "preserve_plan"
   | "consumers"
   | "identity_recheck";
 type ObservationErrorClass =
@@ -251,6 +258,14 @@ export interface QualificationResult {
   preservationTips?: string[];
   untrackedPaths?: string[];
   ignored?: IgnoredResult[];
+  /**
+   * Classifies each reason by what removal would lose. It never changes
+   * `outcome` or `decision`; `recoverability.verdict` is
+   * `retirable_after_preserve` when every hold is preservable.
+   */
+  recoverability?: Recoverability;
+  /** What a preserve commit would carry and exclude. Present only when a preservable hold exists. */
+  preservePlan?: PreservePlan;
   consumers?: ReturnType<typeof consumerDecision>;
   capturedConfig?: Record<string, string>;
   sparsePatterns?: string;
@@ -287,6 +302,12 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     }
     result.reasons = [...new Set([...reasons, ...unknown])].sort();
     result.outcome = reasons.size ? "hold" : unknown.size ? "unknown" : "retirable";
+    result.recoverability = classifyRecoverability({
+      reasons: result.reasons,
+      unknown,
+      plan: result.preservePlan,
+      ignored: result.ignored,
+    });
     if (result.outcome !== "retirable") result.level = null;
     result.decision = result.outcome === "retirable" ? "propose" : result.outcome;
     const lineage = [
@@ -452,6 +473,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       .toString()
       .split("\0");
     const untracked: string[] = [];
+    const changed: string[] = [];
     for (let i = 0; i < status.length; i++) {
       const item = status[i]!;
       if (!item) continue;
@@ -460,7 +482,9 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       if (code === "??") untracked.push(path);
       else {
         reasons.add("dirty_tracked");
-        if (code.includes("R") || code.includes("C")) i++;
+        changed.push(path);
+        // A rename or copy lists its origin next; the origin path is a deletion to preserve.
+        if (code.includes("R") || code.includes("C")) changed.push(status[++i]!);
       }
     }
     result.untrackedPaths = untracked;
@@ -640,6 +664,21 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
         ))
       )
         reasons.add("preservation_unverified");
+    stage = "preserve_plan";
+    if (
+      !reasons.has("untracked_paths_bound") &&
+      ["dirty_tracked", "untracked", "repository_durability_unproven"].some((reason) =>
+        reasons.has(reason),
+      )
+    )
+      result.preservePlan = await planPreservation({
+        worktree: current.path,
+        tracked: changed,
+        untracked: reasons.has("untracked") ? untracked : [],
+        checkpoint: () => {
+          if (performance.now() - started > 60000) throw new ObservationError("timeout");
+        },
+      });
     stage = "consumers";
     const running = NodePath.join(current.path, ".t3/setup-running");
     if (await exists(running)) reasons.add("setup_unfinalized");

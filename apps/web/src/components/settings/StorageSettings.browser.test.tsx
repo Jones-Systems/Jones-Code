@@ -153,6 +153,7 @@ function setup() {
       worktreeSettledAfterDays: null,
       worktreeSettledScope: "branch-retained",
       worktreeCoveredDiscard: [],
+      worktreeRegenerableDiscard: true,
       worktreeOnMerge: false,
       worktreeOnDelete: false,
       worktreeUnchanged: false,

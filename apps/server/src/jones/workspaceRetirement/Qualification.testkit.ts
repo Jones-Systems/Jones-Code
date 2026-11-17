@@ -16,6 +16,10 @@ import { layer } from "./Receipts.ts";
 import { retire } from "./RetirementExecutor.ts";
 import { binding } from "./OutputAttestation.ts";
 import { qualify, finalCheck, type QualificationInput } from "./Qualification.ts";
+import { PRESERVE_LIMITS, SECRET_PATTERNS, secretPatternMatch } from "./Recoverability.ts";
+import { RetirementReceiptJson } from "./DurableCodecs.ts";
+import type { RetirementReceipt } from "./Receipts.ts";
+import * as Schema from "effect/Schema";
 
 async function fixture(
   run: (f: { repo: string; worktree: string; input: QualificationInput }) => Promise<void>,
@@ -408,6 +412,353 @@ export const qualificationCases: Record<string, () => Promise<void>> = {
           clock.mock.restore();
         }
       }),
+};
+
+// Fake credentials are assembled at run time so no literal secret is committed.
+const encodeReceipt = Schema.encodeSync(RetirementReceiptJson);
+const decodeReceipt = Schema.decodeSync(RetirementReceiptJson);
+const fake = {
+  private_key: () => ["-----BEGIN ", "RSA PRIVATE KEY", "-----"].join(""),
+  aws_access_key: () => ["AK", "IA", "ABCDEFGHIJKLMNOP"].join(""),
+  github_token: () => ["gh", "p_", "a1B2".repeat(9)].join(""),
+  github_pat: () => ["github", "_pat_", "x".repeat(22)].join(""),
+  sk_key: () => ["sk", "-", "abc123".repeat(4)].join(""),
+  slack_token: () => ["xo", "xb-", "1234567890", "abc"].join(""),
+  credential_assignment: () => `${["pass", "word"].join("")} = "${"p".repeat(14)}"`,
+};
+// Local excludes keep ignored fixtures out of the tracked tree, so only the ignored root differs.
+const exclude = (input: QualificationInput, ...patterns: string[]) =>
+  NodeFSP.appendFile(
+    NodePath.join(input.expected.git_common_dir, "info/exclude"),
+    patterns.join("\n") + "\n",
+  );
+const write = async (worktree: string, relative: string, bytes: string | Buffer) => {
+  const path = NodePath.join(worktree, relative);
+  await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+  await NodeFSP.writeFile(path, bytes);
+  return path;
+};
+const sparse = async (worktree: string, relative: string, size: number) => {
+  const path = NodePath.join(worktree, relative);
+  const handle = await NodeFSP.open(path, "w");
+  try {
+    await handle.truncate(size);
+  } finally {
+    await handle.close();
+  }
+};
+
+export const recoverabilityCases: Record<string, () => Promise<void>> = {
+  "a clean checkout is recreatable and produces no preserve plan": () =>
+    fixture(async ({ input }) => {
+      const result = await qualify(input);
+      NodeAssert.equal(result.outcome, "retirable");
+      NodeAssert.equal(result.recoverability?.verdict, "recreatable");
+      NodeAssert.deepEqual(result.recoverability?.reasons, {});
+      NodeAssert.equal(result.preservePlan, undefined);
+    }),
+  "dirty tracked edits, deletions and renames are preservable and name exact paths": () =>
+    fixture(async ({ worktree, input }) => {
+      await write(worktree, "tracked", "edited\n");
+      const edited = await qualify(input);
+      // The verdict semantics are unchanged: the target still holds.
+      NodeAssert.equal(edited.outcome, "hold");
+      NodeAssert.deepEqual(edited.reasons, ["dirty_tracked"]);
+      NodeAssert.deepEqual(edited.recoverability?.reasons, { dirty_tracked: "preservable" });
+      NodeAssert.equal(edited.recoverability?.verdict, "retirable_after_preserve");
+      NodeAssert.deepEqual(edited.preservePlan, {
+        schema: "workspace-preserve-plan/v1",
+        selected: ["tracked"],
+        deletions: [],
+        excluded: [],
+        selectedBytes: "edited\n".length,
+        excludedBytes: 0,
+      });
+      await NodeFSP.rm(NodePath.join(worktree, "tracked"));
+      const deleted = await qualify(input);
+      NodeAssert.deepEqual(deleted.preservePlan?.deletions, ["tracked"]);
+      NodeAssert.deepEqual(deleted.preservePlan?.selected, []);
+      await command(worktree, ["checkout", "--", "tracked"]);
+      await command(worktree, ["mv", "tracked", "renamed"]);
+      const renamed = await qualify(input);
+      NodeAssert.deepEqual(renamed.preservePlan?.selected, ["renamed"]);
+      NodeAssert.deepEqual(renamed.preservePlan?.deletions, ["tracked"]);
+      NodeAssert.equal(renamed.recoverability?.verdict, "retirable_after_preserve");
+    }),
+  "untracked files are preservable, and an unreadable sensitive file is excluded without being opened":
+    () =>
+      fixture(async ({ worktree, input }) => {
+        await write(worktree, "notes.txt", "keep\n");
+        await write(worktree, ".env.example", "SAMPLE=1\n");
+        const plain = await qualify(input);
+        NodeAssert.deepEqual(plain.reasons, ["untracked"]);
+        NodeAssert.deepEqual(plain.recoverability?.reasons, { untracked: "preservable" });
+        NodeAssert.equal(plain.recoverability?.verdict, "retirable_after_preserve");
+        NodeAssert.deepEqual(plain.preservePlan?.selected, [".env.example", "notes.txt"]);
+        const secret = await write(worktree, ".env", "SAMPLE=2\n");
+        await write(worktree, "deploy.pfx", "bytes");
+        await write(worktree, ".pypirc", "[pypi]\n");
+        await write(worktree, "config/aws-credentials.json", "{}\n");
+        // Never opened: a read of this file would fail with EACCES and make the result unknown.
+        await NodeFSP.chmod(secret, 0o000);
+        const result = await qualify(input);
+        NodeAssert.equal(result.outcome, "hold", JSON.stringify(result));
+        NodeAssert.deepEqual(
+          result.preservePlan?.excluded.map((item) => [item.path, item.reason, item.origin]),
+          [
+            [".env", "sensitive_name", "untracked"],
+            [".pypirc", "sensitive_name", "untracked"],
+            ["config/aws-credentials.json", "sensitive_name", "untracked"],
+            ["deploy.pfx", "sensitive_name", "untracked"],
+          ],
+        );
+        NodeAssert.deepEqual(result.preservePlan?.selected, [".env.example", "notes.txt"]);
+        NodeAssert.deepEqual(result.recoverability?.reasons, { untracked: "unrecreatable" });
+        NodeAssert.equal(result.recoverability?.verdict, "held");
+      }),
+  "a secret-pattern match excludes the file, records only the pattern name, and the table covers every pattern":
+    () =>
+      fixture(async ({ worktree, input }) => {
+        for (const { name } of SECRET_PATTERNS)
+          NodeAssert.equal(
+            secretPatternMatch(`prefix ${fake[name as keyof typeof fake]()} suffix`),
+            name,
+            name,
+          );
+        NodeAssert.equal(secretPatternMatch("export const task = 1;\n"), null);
+        const token = fake.github_token();
+        await write(worktree, "config.txt", `value=${token}\n`);
+        await write(worktree, "plain.txt", "nothing here\n");
+        // Neither scanned: binary content, and a file over the 2 MiB scan limit.
+        await write(worktree, "blob.bin", Buffer.concat([Buffer.from([0]), Buffer.from(token)]));
+        await write(
+          worktree,
+          "large.txt",
+          Buffer.concat([
+            Buffer.from(token),
+            Buffer.alloc(PRESERVE_LIMITS.scanBytes + 1, "a".charCodeAt(0)),
+          ]),
+        );
+        const result = await qualify(input);
+        NodeAssert.deepEqual(result.preservePlan?.excluded, [
+          { path: "config.txt", reason: "secret_pattern:github_token", origin: "untracked" },
+        ]);
+        NodeAssert.deepEqual(result.preservePlan?.selected, ["blob.bin", "large.txt", "plain.txt"]);
+        NodeAssert.equal(result.recoverability?.verdict, "held");
+        NodeAssert.ok(!JSON.stringify(result).includes(token), "no matched text is recorded");
+      }),
+  "an edited tracked file that matches a secret pattern makes dirty_tracked unrecreatable": () =>
+    fixture(async ({ worktree, input }) => {
+      await write(worktree, "tracked", `${fake.sk_key()}\n`);
+      const result = await qualify(input);
+      NodeAssert.deepEqual(result.preservePlan?.excluded, [
+        { path: "tracked", reason: "secret_pattern:sk_key", origin: "tracked" },
+      ]);
+      NodeAssert.deepEqual(result.recoverability?.reasons, { dirty_tracked: "unrecreatable" });
+      NodeAssert.equal(result.recoverability?.verdict, "held");
+    }),
+  "oversized files and a set over the total bound are excluded by size": () =>
+    fixture(async ({ worktree, input }) => {
+      await sparse(worktree, "huge.bin", PRESERVE_LIMITS.fileBytes + 1);
+      await write(worktree, "small.txt", "x");
+      const single = await qualify(input);
+      NodeAssert.deepEqual(single.preservePlan?.excluded, [
+        { path: "huge.bin", reason: "oversized", origin: "untracked" },
+      ]);
+      NodeAssert.equal(single.preservePlan?.excludedBytes, PRESERVE_LIMITS.fileBytes + 1);
+      NodeAssert.equal(single.preservePlan?.selectedBytes, 1);
+      NodeAssert.equal(single.recoverability?.verdict, "held");
+      await NodeFSP.rm(NodePath.join(worktree, "huge.bin"));
+      const each = 49 * 1024 ** 2;
+      for (let i = 0; i < 11; i++)
+        await sparse(worktree, `part-${String(i).padStart(2, "0")}`, each);
+      const total = await qualify(input);
+      NodeAssert.equal(total.preservePlan?.excluded.length, 1);
+      NodeAssert.equal(total.preservePlan?.excluded[0]?.reason, "oversized");
+      NodeAssert.ok((total.preservePlan?.selectedBytes ?? Infinity) <= PRESERVE_LIMITS.totalBytes);
+      NodeAssert.equal(total.preservePlan?.excludedBytes, each);
+      NodeAssert.equal(total.recoverability?.verdict, "held");
+    }),
+  "an untracked nested repository is excluded by exact path": () =>
+    fixture(async ({ worktree, input }) => {
+      const inner = NodePath.join(worktree, "inner");
+      await NodeFSP.mkdir(inner);
+      await command(inner, ["init", "-b", "main"]);
+      await NodeFSP.writeFile(NodePath.join(inner, "file"), "x\n");
+      await command(inner, ["add", "."]);
+      await command(inner, ["commit", "-m", "inner"]);
+      await write(worktree, "keep.txt", "keep\n");
+      const result = await qualify(input);
+      NodeAssert.deepEqual(result.preservePlan?.excluded, [
+        { path: "inner/", reason: "nested_repository", origin: "untracked" },
+      ]);
+      NodeAssert.deepEqual(result.preservePlan?.selected, ["keep.txt"]);
+      NodeAssert.equal(result.recoverability?.verdict, "held");
+    }),
+  "an unpublished HEAD is preservable, and an excluded path elsewhere does not change its class":
+    () =>
+      fixture(async ({ worktree, input }) => {
+        input.durableRepositories = [];
+        const result = await qualify(input);
+        NodeAssert.equal(result.outcome, "hold");
+        NodeAssert.deepEqual(result.reasons, ["repository_durability_unproven"]);
+        NodeAssert.deepEqual(result.recoverability?.reasons, {
+          repository_durability_unproven: "preservable",
+        });
+        NodeAssert.equal(result.recoverability?.verdict, "retirable_after_preserve");
+        NodeAssert.equal(result.preservePlan?.selected.length, 0);
+        await write(worktree, ".npmrc", "registry=x\n");
+        const mixed = await qualify(input);
+        NodeAssert.deepEqual(mixed.recoverability?.reasons, {
+          repository_durability_unproven: "preservable",
+          untracked: "unrecreatable",
+        });
+        NodeAssert.equal(mixed.recoverability?.verdict, "held");
+      }),
+  "locks, in-progress operations and mixed holds stay held and name their class": () =>
+    fixture(async ({ repo, worktree, input }) => {
+      await command(repo, ["worktree", "lock", worktree]);
+      const locked = await qualify(input);
+      NodeAssert.deepEqual(locked.reasons, ["locked"]);
+      NodeAssert.deepEqual(locked.recoverability?.reasons, { locked: "liveness" });
+      NodeAssert.equal(locked.recoverability?.verdict, "held");
+      await command(repo, ["worktree", "unlock", worktree]);
+      await write(worktree, "tracked", "edited\n");
+      const head = await command(worktree, ["rev-parse", "HEAD"]);
+      await NodeFSP.writeFile(NodePath.join(input.expected.git_dir, "MERGE_HEAD"), `${head}\n`);
+      const merging = await qualify(input);
+      NodeAssert.deepEqual(merging.recoverability?.reasons, {
+        dirty_tracked: "preservable",
+        operation_in_progress: "unrecreatable",
+      });
+      NodeAssert.equal(merging.recoverability?.verdict, "held");
+    }),
+  "regenerable roots are disposable by default classes, including a 0555 Go module cache": () =>
+    fixture(async ({ worktree, input }) => {
+      await exclude(
+        input,
+        "node_modules/",
+        "dist/",
+        "__pycache__/",
+        ".pytest_cache/",
+        "**/pkg/mod/",
+      );
+      await write(worktree, "node_modules/pkg/index.js", "x\n");
+      await write(worktree, "dist/out.js", "x\n");
+      await write(worktree, "__pycache__/m.pyc", "x\n");
+      await write(worktree, ".pytest_cache/v/cache", "x\n");
+      await write(worktree, "build/out.o", "x\n");
+      const mod = NodePath.join(worktree, "go/pkg/mod");
+      const module = NodePath.join(mod, "example.com/m@v1.0.0");
+      await write(worktree, "go/pkg/mod/example.com/m@v1.0.0/main.go", "package m\n");
+      await NodeFSP.chmod(NodePath.join(module, "main.go"), 0o444);
+      for (const directory of [module, NodePath.join(mod, "example.com"), mod])
+        await NodeFSP.chmod(directory, 0o555);
+      try {
+        const held = await qualify(input);
+        NodeAssert.equal(held.outcome, "hold");
+        NodeAssert.ok(held.reasons.includes("unattested_ignored"));
+        NodeAssert.equal(held.recoverability?.reasons.unattested_ignored, "unrecreatable");
+        NodeAssert.equal(held.recoverability?.verdict, "held");
+        NodeAssert.deepEqual(held.recoverability?.regenerable, []);
+        input.coverage = { classes: ["regenerable_output"] };
+        const result = await qualify(input);
+        NodeAssert.equal(result.outcome, "retirable", JSON.stringify(result.ignored));
+        NodeAssert.equal(result.recoverability?.verdict, "recreatable");
+        const root = result.binding!.path;
+        NodeAssert.deepEqual(
+          [...(result.recoverability?.regenerable ?? [])].sort(),
+          [
+            ".pytest_cache",
+            "__pycache__",
+            "build",
+            "dist",
+            "go",
+            "go/pkg",
+            "go/pkg/mod",
+            "node_modules",
+          ]
+            .map((name) => NodePath.join(root, name))
+            .sort(),
+        );
+        // Narrowing the classes returns these roots to a hold.
+        input.coverage = { classes: ["declared_cache"] };
+        NodeAssert.equal((await qualify(input)).recoverability?.verdict, "held");
+      } finally {
+        for (const directory of [mod, NodePath.join(mod, "example.com"), module])
+          await NodeFSP.chmod(directory, 0o755).catch(() => undefined);
+      }
+    }),
+  "a dependency root with a credentials-named file stays regenerable, while build output holding a secret name is held by exact path":
+    () =>
+      fixture(async ({ worktree, input }) => {
+        await exclude(input, "node_modules/", "dist/", "build/", ".cache/");
+        input.coverage = { classes: ["regenerable_output"] };
+        await write(worktree, "node_modules/pkg/credentials.js", "x\n");
+        await write(worktree, "node_modules/pkg/.env", "x\n");
+        const dependency = await qualify(input);
+        NodeAssert.equal(dependency.outcome, "retirable", JSON.stringify(dependency.ignored));
+        NodeAssert.equal(dependency.recoverability?.verdict, "recreatable");
+        await write(worktree, "build/.env", "SAMPLE=1\n");
+        await write(worktree, "dist/cert.pem", "x\n");
+        await write(worktree, ".cache/service-credentials.json", "{}\n");
+        await NodeFSP.mkdir(NodePath.join(worktree, "dist/vendor/.git"), { recursive: true });
+        const root = dependency.binding!.path;
+        const result = await qualify(input);
+        NodeAssert.equal(result.outcome, "hold");
+        const reasonOf = (name: string) =>
+          result.ignored?.find((item) => item.path === NodePath.join(root, name));
+        NodeAssert.equal(reasonOf("build")?.reason, "sensitive_ignored");
+        NodeAssert.deepEqual(reasonOf("build")?.paths, [NodePath.join(root, "build/.env")]);
+        // dist holds a nested repository, which refuses before any name is read.
+        NodeAssert.equal(reasonOf("dist")?.reason, "nested_repository");
+        // The broader preserve-set names do not hold a cache root.
+        NodeAssert.equal(reasonOf(".cache")?.outcome, "disposable");
+        NodeAssert.equal(reasonOf("node_modules")?.outcome, "disposable");
+        NodeAssert.deepEqual(result.recoverability?.regenerable.sort(), [
+          NodePath.join(root, ".cache"),
+          NodePath.join(root, "node_modules"),
+        ]);
+        NodeAssert.equal(result.recoverability?.verdict, "held");
+      }),
+  "the durable receipt codec round-trips recoverability and still decodes older receipts": () =>
+    fixture(async ({ worktree, input }) => {
+      await write(worktree, "tracked", "edited\n");
+      await write(worktree, ".env", "SAMPLE=1\n");
+      await exclude(input, "dist/");
+      await write(worktree, "dist/out.js", "x\n");
+      input.coverage = { classes: ["regenerable_output"] };
+      const qualification = await qualify(input);
+      NodeAssert.ok(qualification.preservePlan && qualification.recoverability);
+      const receipt: RetirementReceipt = {
+        schema: "worktree-retirement/v1",
+        id: "fixture",
+        cause: "owner_action",
+        state: "not_retired",
+        binding: input.expected,
+        incarnation: incarnation(input.expected),
+        qualification,
+        coverage: null,
+        preservationRefs: [],
+        journal: "",
+        disposed: [],
+        reasons: qualification.reasons,
+        limits: [],
+        bytes: { logical: null, allocated: null, statvfs_delta: null },
+      };
+      const encoded = encodeReceipt(receipt);
+      const decoded = decodeReceipt(encoded);
+      NodeAssert.deepEqual(decoded.qualification.preservePlan, qualification.preservePlan);
+      NodeAssert.deepEqual(decoded.qualification.recoverability, qualification.recoverability);
+      const legacy = JSON.parse(encoded);
+      delete legacy.qualification.preservePlan;
+      delete legacy.qualification.recoverability;
+      const older = decodeReceipt(JSON.stringify(legacy));
+      NodeAssert.equal(older.qualification.preservePlan, undefined);
+      NodeAssert.equal(older.qualification.recoverability, undefined);
+      legacy.qualification.recoverability = { ...qualification.recoverability, verdict: "bogus" };
+      NodeAssert.throws(() => decodeReceipt(JSON.stringify(legacy)));
+    }),
 };
 
 // Help capability observation is read-only; every admitted reftable case then
