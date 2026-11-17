@@ -1,6 +1,7 @@
 import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { observeResize } from "../../lib/observeResize";
+import { useSidebarAppearancePresentation } from "../sidebarAppearance/SidebarAppearanceContext";
 import { PersonalStatusPill } from "./PersonalStatusPill";
 import { formatPersonalThreadCount, type PersonalThreadSummary } from "./personalPresentation";
 import type { PersonalStatusFilter } from "./personalStatusFilter";
@@ -10,7 +11,7 @@ export function PersonalSidebarGroupHeader({
   collapsed,
   onToggle,
   summary,
-  visibleCount,
+  rosterTotal,
   onRenameRequested,
   nameEditor,
   actions,
@@ -22,6 +23,7 @@ export function PersonalSidebarGroupHeader({
   // Return a reversal when title double-click rename is enabled.
   onToggle: () => void | (() => void);
   summary: PersonalThreadSummary;
+  rosterTotal?: number;
   visibleCount?: number;
   onRenameRequested?: () => void;
   nameEditor?: ReactNode;
@@ -29,12 +31,15 @@ export function PersonalSidebarGroupHeader({
   statusFilter?: PersonalStatusFilter | null;
   onStatusFilterChange?: (filter: PersonalStatusFilter | null) => void;
 }) {
+  const appearance = useSidebarAppearancePresentation();
+  const total = rosterTotal ?? summary.total;
+  const numericCount = appearance?.countStyle === "numeric-right";
   const descriptionId = useId();
   const titleLaneRef = useRef<HTMLDivElement>(null);
   const titleProbeRef = useRef<HTMLSpanElement>(null);
   const countersRef = useRef<HTMLSpanElement>(null);
   const undoTitleClickRef = useRef<(() => void) | null>(null);
-  const description = `${formatPersonalThreadCount(summary.total)}, ${summary.running} working, ${summary.attention} need attention, ${summary.done} done, ${summary.failed} failed.`;
+  const description = `${formatPersonalThreadCount(total)}, ${summary.running} working, ${summary.attention} need attention, ${summary.done} done, ${summary.failed} failed.`;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Fit the DOM counter pill to measured title lines and keep resize/font subscriptions mounted.
   useLayoutEffect(() => {
     const lane = titleLaneRef.current;
@@ -124,6 +129,7 @@ export function PersonalSidebarGroupHeader({
           className="pointer-events-none invisible absolute inset-0 overflow-hidden"
         >
           <span
+            data-personal-group-title
             ref={titleProbeRef}
             className="block w-max break-words text-sm font-semibold leading-5"
           >
@@ -133,6 +139,7 @@ export function PersonalSidebarGroupHeader({
         <div className="relative min-w-0 flex-auto [&_input]:pointer-events-auto">
           {nameEditor ?? (
             <span
+              data-personal-group-title
               onClick={(event) => {
                 event.stopPropagation();
                 if (onRenameRequested && event.detail !== 0) {
@@ -186,18 +193,30 @@ export function PersonalSidebarGroupHeader({
           {actions}
         </div>
       ) : null}
-      <span className="pointer-events-none col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 text-xs leading-4 text-sidebar-muted-foreground">
-        <span className="tabular-nums">
-          {!collapsed && visibleCount !== undefined && visibleCount < summary.total
-            ? `${visibleCount} of ${formatPersonalThreadCount(summary.total)} shown`
-            : formatPersonalThreadCount(summary.total)}
+      {numericCount ? (
+        <span
+          data-personal-group-count
+          aria-hidden="true"
+          className="pointer-events-none col-span-2 col-start-1 row-start-2 mt-0.5 flex min-w-0 items-baseline justify-end whitespace-nowrap font-medium tabular-nums"
+        >
+          {summary.failed > 0 ? (
+            <>
+              <span className="text-thread-failed">{summary.failed} failed</span>
+              <span className="mx-[0.4em] text-muted-foreground/60">·</span>
+            </>
+          ) : null}
+          <span className="text-muted-foreground">{total}</span>
         </span>
-        {summary.failed > 0 ? (
-          <span className="ml-auto text-right text-thread-failed tabular-nums">
-            {summary.failed} failed
-          </span>
-        ) : null}
-      </span>
+      ) : (
+        <span className="pointer-events-none col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 text-xs leading-4 text-sidebar-muted-foreground">
+          <span className="tabular-nums">{formatPersonalThreadCount(total)}</span>
+          {summary.failed > 0 ? (
+            <span className="ml-auto text-right text-thread-failed tabular-nums">
+              {summary.failed} failed
+            </span>
+          ) : null}
+        </span>
+      )}
       <span id={descriptionId} className="sr-only">
         {description}
       </span>

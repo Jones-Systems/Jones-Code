@@ -28,7 +28,10 @@ import {
   showPersonalAssignment,
   showPersonalFailure,
 } from "../../jones/workstreams/personalNotifications";
-import { summarizePersonalThreads } from "../../jones/workstreams/personalPresentation";
+import {
+  personalSidebarRosterTotals,
+  summarizePersonalThreads,
+} from "../../jones/workstreams/personalPresentation";
 import {
   liftPersonalThreadCard,
   personalThreadContextRefs,
@@ -56,6 +59,7 @@ export function WorkstreamNativeSidebar({
   controller,
   threads,
   summaryThreads = threads,
+  rosterThreads = summaryThreads,
   renderThread,
   assignmentMenuRef,
   externalDropRef,
@@ -67,6 +71,7 @@ export function WorkstreamNativeSidebar({
   controller: PersonalWorkstreamsController;
   threads: readonly EnvironmentThreadShell[];
   summaryThreads?: readonly EnvironmentThreadShell[];
+  rosterThreads?: readonly EnvironmentThreadShell[];
   renderThread: (
     thread: EnvironmentThreadShell,
     assignment: NativeThreadAssignmentMenu,
@@ -496,6 +501,7 @@ export function WorkstreamNativeSidebar({
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        rosterTotals={personalSidebarRosterTotals(state, rosterThreads)}
         dropTargetId={drop}
         memberCounts={
           new Map(grouping.groups.map((group) => [group.workstream.id, group.threads.length]))
