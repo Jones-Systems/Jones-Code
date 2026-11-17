@@ -23,7 +23,10 @@ import {
 } from "../chat/threadContextDrag";
 import { WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
 import { WorkstreamPicker } from "../../jones/workstreams/WorkstreamPicker";
-import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
+import {
+  showPersonalAssignment,
+  showPersonalFailure,
+} from "../../jones/workstreams/personalNotifications";
 import { summarizePersonalThreads } from "../../jones/workstreams/personalPresentation";
 import {
   liftPersonalThreadCard,
@@ -103,12 +106,19 @@ export function WorkstreamNativeSidebar({
   const canMove = (thread: EnvironmentThreadShell) =>
     canOperate(thread) && controller.canAssign(thread);
   const move = async (thread: EnvironmentThreadShell, id: string | null) => {
-    if (busy.current || !canMove(thread)) return false;
-    busy.current = true;
+    if (!canMove(thread)) return false;
+    // The controller serializes each thread's intents; a pending drag must not discard a menu choice.
     return controller
       .assign(thread, id)
       .then((result) => {
         if (!result.ok) showPersonalFailure(result.failure);
+        else
+          showPersonalAssignment(
+            id === null
+              ? null
+              : (state.workstreams.find((item) => item.id === id)?.name ?? "Workstream"),
+            thread.pinnedAt != null,
+          );
         return result.ok;
       })
       .catch(() => {
@@ -119,9 +129,6 @@ export function WorkstreamNativeSidebar({
           dedupeKey: `assign:${personalThreadKey(thread)}:failed`,
         });
         return false;
-      })
-      .finally(() => {
-        busy.current = false;
       });
   };
   const menu = (thread: EnvironmentThreadShell): NativeThreadAssignmentMenu => ({
@@ -134,11 +141,14 @@ export function WorkstreamNativeSidebar({
       ...state.workstreams.map((item) => ({
         id: `assign-workstream:group:${item.id}` as ThreadActionMenuId,
         label: item.name,
+        checked:
+          state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId === item.id,
         disabled: !canMove(thread),
       })),
       {
         id: "assign-workstream:remove",
         label: "Unassigned",
+        checked: state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId == null,
         disabled: !canMove(thread),
         separatorBefore: true,
       },
