@@ -16,7 +16,7 @@ import type {
 } from "@t3tools/contracts";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
@@ -216,6 +216,7 @@ const storageCleanupPermissionsAtom = environmentAtomList(
 );
 
 function CleanupSection() {
+  const timestampId = useId();
   const nowMinute = useNowMinute();
   const nowMs = Date.parse(`${nowMinute}:00.000Z`);
   const { scope, connectedEnvironments } = useSettingsScope();
@@ -481,10 +482,13 @@ Live consumers, tracked edits, nested repositories and other protections still h
               render={<span tabIndex={0} />}
               className="truncate whitespace-nowrap text-right text-xs text-muted-foreground"
               aria-label={`Last completed run: ${timestamp.exact}`}
+              aria-describedby={timestampId}
             >
               {timestamp.label}
             </TooltipTrigger>
-            <TooltipPopup>{timestamp.exact}</TooltipPopup>
+            <TooltipPopup role="tooltip" id={timestampId}>
+              {timestamp.exact}
+            </TooltipPopup>
           </Tooltip>
         }
       >

@@ -1,5 +1,5 @@
 import type { StorageCleanupReport, TimestampFormat } from "@t3tools/contracts";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { SettingsRow } from "../../components/settings/settingsLayout";
 import { Button, InlineButton } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
@@ -66,6 +66,7 @@ function CleanupResultList({ reports }: { reports: readonly CleanupReport[] }) {
 }
 
 function DeviceResults(props: CleanupReport) {
+  const timestampId = useId();
   const [expanded, setExpanded] = useState(true);
   const nowMinute = useNowMinute();
   const timestamp = cleanupTimestamp(
@@ -87,6 +88,7 @@ function DeviceResults(props: CleanupReport) {
         <TooltipTrigger
           render={<button type="button" />}
           aria-expanded={expanded}
+          aria-describedby={timestampId}
           className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-medium sm:px-4"
           onClick={() => setExpanded((value) => !value)}
         >
@@ -102,7 +104,9 @@ function DeviceResults(props: CleanupReport) {
             {timestamp?.label ?? "Time unavailable"}
           </span>
         </TooltipTrigger>
-        <TooltipPopup>{timestamp?.exact ?? "Time unavailable"}</TooltipPopup>
+        <TooltipPopup role="tooltip" id={timestampId}>
+          {timestamp?.exact ?? "Time unavailable"}
+        </TooltipPopup>
       </Tooltip>
       {expanded && (
         <div className="ml-3 border-l border-border/60 sm:ml-4">

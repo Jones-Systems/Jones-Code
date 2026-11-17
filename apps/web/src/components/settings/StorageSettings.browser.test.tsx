@@ -516,6 +516,17 @@ it("prioritizes actionable entries, preserves guarded actions and collapses cate
   const timestamp = screen.container.querySelector('[aria-label^="Completed:"]');
   expect(timestamp?.textContent).not.toBe("");
   expect(timestamp?.getAttribute("aria-label")).toContain("2026");
+  await userEvent.tab();
+  const deviceToggle = screen.getByRole("button", { name: /Laptop.*4 results/ });
+  expect(document.activeElement).toBe(deviceToggle.element());
+  await expect
+    .element(page.getByRole("tooltip"))
+    .toHaveTextContent(timestamp!.getAttribute("aria-label")!.replace("Completed: ", ""));
+  expect(deviceToggle.element().getAttribute("aria-describedby")).toBe(
+    page.getByRole("tooltip").element().id,
+  );
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("tooltip")).not.toBeInTheDocument();
   expect(headers.slice(1)).toEqual([
     "▾Ready to retire 1",
     "▸Needs attention 1",
@@ -549,6 +560,7 @@ it("keeps the last completion timestamp in the header when cleanup rules are off
   await expect
     .element(page.getByRole("tooltip"))
     .toHaveTextContent(timestamp!.getAttribute("aria-label")!.replace("Last completed run: ", ""));
+  expect(timestamp!.getAttribute("aria-describedby")).toBe(page.getByRole("tooltip").element().id);
   await userEvent.keyboard("{Escape}");
   await expect.element(page.getByRole("tooltip")).not.toBeInTheDocument();
   expect(deleteButton(screen.container).disabled).toBe(true);
