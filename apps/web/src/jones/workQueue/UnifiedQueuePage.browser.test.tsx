@@ -2,6 +2,7 @@ import { act, fakeTimers, render as renderScreen, type Screen } from "../../../t
 import { useEffect, useState, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
+import "../../index.css";
 import {
   EnvironmentId,
   type WorkQueueMetadataResult,

@@ -27,7 +27,7 @@ interface PromptWorkstreamSources {
   readonly labels?: ThreadRegistryWorkstreams | null;
   readonly registryThread?: ThreadRegistryComposedThread | null;
   readonly threadAssignments?: ReadonlyMap<string, { readonly workstreamId: string | null }>;
-  readonly autoAssignedThreadKeys?: ReadonlySet<string>;
+  readonly autoAssignedThreadKeys?: ReadonlySet<string> | undefined;
 }
 
 export function promptWorkstreams(item: PromptItem, sources: PromptWorkstreamSources) {

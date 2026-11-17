@@ -90,8 +90,8 @@ export function PromptRow({
           if (!row.gone) onSelect();
         }}
       >
-        <span className="flex min-w-0 items-start gap-2">
-          <span className="min-w-0 flex-1 text-sm font-medium wrap-anywhere">
+        <span className="flex min-w-0 flex-wrap items-start gap-x-2 gap-y-1">
+          <span className="min-w-0 grow basis-40 text-sm font-medium wrap-anywhere">
             {row.dirty ? (
               <span
                 aria-label="Unsaved or unconfirmed work"
@@ -111,7 +111,11 @@ export function PromptRow({
               )}
             </bdi>
           </span>
-          <Badge size="sm" variant={toneVariant[row.status.tone]}>
+          <Badge
+            size="sm"
+            variant={toneVariant[row.status.tone]}
+            className="h-auto min-h-5 max-w-full text-start wrap-anywhere whitespace-normal sm:h-auto sm:min-h-4"
+          >
             {row.gone ? "Moved · refresh for current state" : row.status.label}
           </Badge>
         </span>

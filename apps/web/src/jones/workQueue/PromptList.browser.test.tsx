@@ -1,10 +1,12 @@
 import { act, render as renderScreen, type Screen } from "../../../test/render";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { PromptMasterDetail, type PromptListGroup } from "./PromptList";
 import { displayText, threadHref, toneVariant, type PromptRowView } from "./PromptRow";
 import { PromptThreadStatus } from "./PromptThreadStatus";
+import "../../index.css";
 
 const environmentId = "environment" as EnvironmentId;
 const row = (key: string, overrides: Partial<PromptRowView> = {}): PromptRowView => ({
@@ -133,6 +135,41 @@ describe("prompt master-detail list", () => {
     expect(items[1]!.textContent).toContain("Detail for b");
     expect(items[0]!.textContent).not.toContain("Detail for");
     expect(document.activeElement?.textContent).toBe("Detail for b");
+  });
+
+  it("wraps a long status below the destination in a narrow prompt row", async () => {
+    await using _fixture = await setupFixture();
+    const { innerWidth, innerHeight } = window;
+    try {
+      await page.viewport(320, 740);
+      container.style.width = "280px";
+      await act(() =>
+        root.rerender(
+          <Harness
+            groups={[
+              {
+                key: "all",
+                label: "All",
+                rows: [
+                  row("blocked", {
+                    fallbackTitle: "Destination not observed yet",
+                    status: { label: "Blocked · Needs a destination", tone: "warning" },
+                    promptHref: "/voice-review?stage=pending",
+                  }),
+                ],
+              },
+            ]}
+          />,
+        ),
+      );
+      const button = buttons()[0]!;
+      const title = button.querySelector("bdi")!.getBoundingClientRect();
+      const status = button.querySelector('[data-slot="badge"]')!.getBoundingClientRect();
+      expect(title.bottom).toBeLessThanOrEqual(status.top);
+      expect(status.right).toBeLessThanOrEqual(button.getBoundingClientRect().right);
+    } finally {
+      await page.viewport(innerWidth, innerHeight);
+    }
   });
 
   it("labels groups with counts, marks unsaved work and holds a moved row still", async () => {
