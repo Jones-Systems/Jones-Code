@@ -22,10 +22,12 @@ desktop, web, or mobile app. Set up the machine where the agents will work first
 > On a Mac that has Jones Code, do not run the upstream commands on this page.
 > `install.sh` replaces a `~/.local/bin/t3` link that points at the Jones app's
 > launcher in `~/.t3/bin/t3`, so `t3` runs upstream T3 Code instead. `npx t3`
-> and the upstream Homebrew cask install upstream builds. `t3 update` refuses a
-> Jones runtime. `t3 uninstall` removes `~/.t3/runtime`, which holds the Jones
-> install record and update recovery data. Both apps share the default `~/.t3`
-> home.
+> and the upstream Homebrew cask install upstream builds. `t3 update` and
+> `t3 uninstall` refuse a Jones runtime. Older Jones builds, including every
+> build made before November 17, 2026, lack the uninstall check: there,
+> `t3 uninstall` removes `~/.t3/runtime`, which holds the Jones install record
+> and update recovery data. Both apps share the default
+> `~/.t3` home.
 >
 > The preview DMG uses the same bundle identifier as upstream T3 Code. If both
 > apps are installed, verify which one opens `t3code://` links and app lookups
