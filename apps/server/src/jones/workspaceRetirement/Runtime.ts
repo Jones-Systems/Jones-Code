@@ -34,6 +34,7 @@ import {
 } from "./SettlementAdmission.ts";
 import { nativeWorktreeRemoval, retire } from "./RetirementExecutor.ts";
 import { interruptedRetirement } from "./InterruptedRetirement.ts";
+import { forgetWorktreeOutputs } from "./OutputFinalization.ts";
 
 const unavailable = (limit: string): Probe => ({
   observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()),
@@ -213,7 +214,10 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
   // canonical binding path; both name this checkout.
   const spellings = [...new Set([request.worktree, bound.path])];
   const within = (path: string) => spellings.some((spelling) => inside(path, spelling));
+  // The interrupted-retirement reconcile runs before the first observation, so `outputs` is still empty.
+  let outputsObserved = false;
   const observe = Effect.gen(function* () {
+    outputsObserved = true;
     const claims = [
       ...new Map(
         (yield* Effect.forEach(spellings, (spelling) => store.claims(spelling)))
@@ -522,6 +526,9 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           }
         : {}),
       finalizeOutputs: (receipt) => {
+        // The interrupted reconcile settles before any observation, so read the registry as the
+        // absent-checkout finish does.
+        if (!outputsObserved) return forgetWorktreeOutputs(registry, [...spellings], receipt);
         const internal = outputs.filter(
           (r) => within(r.path) && r.state === "active" && r.class !== "evidence",
         );

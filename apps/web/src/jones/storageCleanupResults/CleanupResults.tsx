@@ -43,11 +43,13 @@ function retireEligibleExceptPathCount(entry: CleanupEntry) {
     entry.path &&
     entry.retirement?.fingerprint &&
     entry.retirement.reasonCodes.every((reason) =>
-      // An interrupted retirement whose checkout is gone is finished by Retire, which deletes nothing.
+      // Retire finishes an interrupted retirement: it deletes nothing when the checkout is gone, and only
+      // verified regenerable leftovers when Git deregistered a directory that remains.
       [
         "unattested_ignored",
         "sensitive_ignored",
         "interrupted_retirement_checkout_absent",
+        "interrupted_retirement_checkout_unregistered",
       ].includes(reason),
     ) &&
     entry.retirement.state !== "retired",
