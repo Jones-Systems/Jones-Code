@@ -196,6 +196,12 @@ applies when the project and environment are both on **Inherit**.
 
 ## Worktree location
 
+Your project folder is the persistent checkout Jones Code uses to create new
+task worktrees. Keep that folder and its repository storage available, even
+after the thread that originally created it finishes. A project folder can
+itself be a linked worktree; automatic cleanup keeps it while it remains
+registered as a project. Apply the same rule when cleaning up folders manually.
+
 New worktrees go in the `worktrees` folder of the T3 home directory. To put them somewhere else,
 such as another drive, set **Settings → Worktrees → Worktree location** to an absolute path like
 `D:\worktrees` or `~/worktrees`. The setting is per machine. Existing worktrees stay where they

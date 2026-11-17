@@ -2,6 +2,42 @@
 
 ## First checkout
 
+### Project checkouts and task worktrees
+
+A registered project's `workspaceRoot` is its persistent checkout folder on
+that environment. Jones Code uses it for repository discovery and Git operations
+that create separate task worktrees. A thread's `worktreePath` is its working
+checkout; settling or retiring that thread does not retire the project folder.
+Several project registrations can refer to checkouts of the same repository.
+
+Choose a durable project folder, such as `~/Projects/<repository>`, outside
+temporary or disposable test directories. A linked worktree is also valid as
+a project folder, but that registration makes it persistent even when its
+name or location resembles an old task. Retain its Git common directory too:
+the checkout's `.git` file can point to a separate repository store.
+
+For a dedicated linked checkout used as a project folder, record that purpose
+with `git worktree lock --reason "Registered Jones Code project checkout"`.
+The lock prevents ordinary Git worktree removal. Release it only after the
+project has a verified replacement folder and no retained consumer needs the
+old path; it does not protect against direct filesystem deletion.
+
+Before cleanup, inspect current native project registrations on the affected
+environment and compare canonical paths, including aliases and project folders
+inside a candidate directory. Keep referenced folders regardless of their
+original thread's state. Automatic cleanup protects registered project folders;
+manual and external cleanup must preserve the same dependencies. Missing or
+incomplete binding evidence is a reason to retain the candidate.
+
+If a project folder is missing, verify the surviving repository's origin,
+retained branch and commit before restoring a dedicated checkout. Update the
+project through the native project service and read back its folder and
+repository identity; verify native worktree discovery succeeds. Preserve
+existing thread bindings and reconcile their separate checkout paths before
+resuming them. An empty replacement directory does not restore a Git checkout.
+
+### Setup
+
 Install `vp` using the [root README](../../README.md#install-vp). The checkout
 requires Node `26.12.1` and declares `pnpm@12.14.0`; Bun is optional.
 For an authorized dependency install and development run, use the repository root:
