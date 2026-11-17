@@ -19,6 +19,7 @@ import { withOperation } from "../workspaceLifecycle/NativeOperation.ts";
 import { RetirementError } from "./Receipts.ts";
 import { TargetObservation, presenceOutcome } from "./TargetPresence.ts";
 import { evaluate } from "./Runtime.ts";
+import { holdsAbsentCheckout } from "./InterruptedRetirement.ts";
 
 const compiledMain3acaCodec22 = Schema.is(ServerSettingsError);
 
@@ -171,7 +172,12 @@ export const make = Effect.gen(function* () {
           const presence = yield* Effect.promise(() =>
             observeTarget(item.worktreePath, project.value.workspaceRoot),
           );
-          if (presence.status !== "present") {
+          // An interrupted retirement whose checkout is gone is settled by evaluation, not reported absent.
+          const interrupted =
+            (presence.status === "absent_unregistered" ||
+              presence.status === "absent_registered") &&
+            (yield* holdsAbsentCheckout(item.worktreePath).pipe(Effect.provide(context)));
+          if (presence.status !== "present" && !interrupted) {
             return {
               kind: "worktree",
               outcome: "kept",

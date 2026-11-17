@@ -37,6 +37,12 @@ vi.mock("./Runtime.ts", async (importOriginal) => ({
     }),
 }));
 
+const interrupted = vi.hoisted(() => new Set<string>());
+vi.mock("./InterruptedRetirement.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./InterruptedRetirement.ts")>()),
+  holdsAbsentCheckout: (worktree: string) => Effect.succeed(interrupted.has(worktree)),
+}));
+
 const isSettingsError = Schema.is(ServerSettingsError);
 const isProjectionReadError = Schema.is(Projections.ProjectionStoreReadError);
 const threadId = ThreadId.make("synthetic-thread");
@@ -140,7 +146,10 @@ const retireThread = (name: string) => ({
   threadId: ThreadId.make(`thread-${name}`),
   worktreePath: `/synthetic/${name}`,
 });
-const retireFixture = (measure: (path: string) => number | null) =>
+const retireFixture = (
+  measure: (path: string) => number | null,
+  presence: "present" | "absent_unregistered" = "present",
+) =>
   Effect.gen(function* () {
     const candidates = [retireThread("a"), retireThread("b")];
     const threads = new Map(candidates.map((c) => [c.threadId, c]));
@@ -165,7 +174,7 @@ const retireFixture = (measure: (path: string) => number | null) =>
                 updatedAt: DateTime.nowUnsafe(),
               } as never),
           }),
-          Layer.succeed(TargetObservation, async () => ({ status: "present" as const })),
+          Layer.succeed(TargetObservation, async () => ({ status: presence })),
         ),
       ),
     );
@@ -225,6 +234,35 @@ describe("owner retirement results", () => {
         });
         expect(report.entries).toMatchObject([{ outcome: "removed", bytes: null }]);
         expect(report.bytesFreed).toBe(0);
+      }),
+    ),
+  );
+
+  it.effect("an absent checkout is evaluated only while an interrupted retirement holds it", () =>
+    runTest(
+      Effect.gen(function* () {
+        const f = yield* retireFixture(() => null, "absent_unregistered");
+        interrupted.add("/synthetic/a");
+        try {
+          evaluation.state = "held";
+          const proposed = yield* f.call({ action: "propose" });
+          expect(proposed.entries).toMatchObject([
+            { path: "/synthetic/a", retirement: { state: "held", reasonCodes: [] } },
+            {
+              path: "/synthetic/b",
+              retirement: { state: "proposed", reasonCodes: ["worktree_already_absent"] },
+            },
+          ]);
+          evaluation.state = "retired";
+          const retired = yield* f.call({
+            action: "retire",
+            ...retireThread("a"),
+            expectedFingerprint: "interrupted-receipt",
+          });
+          expect(retired.entries).toMatchObject([{ outcome: "removed", path: "/synthetic/a" }]);
+        } finally {
+          interrupted.clear();
+        }
       }),
     ),
   );

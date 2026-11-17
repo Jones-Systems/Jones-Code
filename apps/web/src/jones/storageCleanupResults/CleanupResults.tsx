@@ -43,7 +43,12 @@ function retireEligibleExceptPathCount(entry: CleanupEntry) {
     entry.path &&
     entry.retirement?.fingerprint &&
     entry.retirement.reasonCodes.every((reason) =>
-      ["unattested_ignored", "sensitive_ignored"].includes(reason),
+      // An interrupted retirement whose checkout is gone is finished by Retire, which deletes nothing.
+      [
+        "unattested_ignored",
+        "sensitive_ignored",
+        "interrupted_retirement_checkout_absent",
+      ].includes(reason),
     ) &&
     entry.retirement.state !== "retired",
   );
