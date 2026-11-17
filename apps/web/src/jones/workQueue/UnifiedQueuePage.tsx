@@ -843,6 +843,7 @@ function PromptStageList({
         labels: voice?.workstreams ?? null,
         registryThread: item.entry ? recentThread(item.entry, threads) : null,
         threadAssignments: personal.assignmentsByThreadKey,
+        autoAssignedThreadKeys: personal.autoAssignedThreadKeys,
       }),
     ]),
   );
