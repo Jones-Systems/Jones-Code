@@ -922,6 +922,10 @@
     {
       "from": "apps/web/src/hooks/useThreadActionMenu.ts",
       "to": "apps/web/src/jones/workstreams/threadMenuBridge.ts"
+    },
+    {
+      "from": "apps/web/src/hooks/useThreadActionMenu.test.ts",
+      "to": "apps/web/src/jones/workstreams/threadMenuBridge.ts"
     }
   ]
 }
