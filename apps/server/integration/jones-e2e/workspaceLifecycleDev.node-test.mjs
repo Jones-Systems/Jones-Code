@@ -1527,6 +1527,7 @@ async function qualify(v) {
       worktreeUnchanged: false,
       worktreeKeepWhen: "uncommitted-changes",
       worktreeCoveredDiscard: [],
+      worktreeRegenerableDiscard: true,
       worktreeSettledScope: "branch-retained",
     };
     await NodeFSP.writeFile(

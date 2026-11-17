@@ -7,7 +7,7 @@ import * as NodeChildProcess from "node:child_process";
 import { fixture, command, completeConsumers } from "./Conformance.testkit.ts";
 import { canonical, openAbsolute, openRelative } from "./Filesystem.ts";
 import { attest, binding, contentManifest, manifestBytes, verify } from "./OutputAttestation.ts";
-import { classifyIgnored, REGENERABLE_ROOT_NAMES } from "./IgnoredClassifier.ts";
+import { classifyIgnored, coveredClasses, REGENERABLE_ROOT_NAMES } from "./IgnoredClassifier.ts";
 import { participantGuard } from "./ParticipantGuard.ts";
 import { beginProduction, finishProduction, outputObligations } from "./ProducerFinalizer.ts";
 import { qualify, finalCheck } from "./Qualification.ts";
@@ -569,6 +569,36 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
           "sensitive_ignored",
         );
       }),
+  "the regenerable switch defaults on in the rules and narrows when saved off": async () =>
+    fixture(async ({ repo, worktree }) => {
+      const common = NodePath.resolve(repo, await command(repo, ["rev-parse", "--git-common-dir"]));
+      const root = NodePath.join(worktree, "dist");
+      await NodeFSP.mkdir(root);
+      await NodeFSP.writeFile(NodePath.join(root, "out.js"), "x\n");
+      const outcome = (rules: Parameters<typeof coveredClasses>[0]) =>
+        classifyIgnored({
+          worktree,
+          root,
+          common,
+          targets: [worktree],
+          coverage: { classes: coveredClasses(rules) },
+        });
+      NodeAssert.deepEqual(
+        coveredClasses({
+          worktreeCoveredDiscard: ["declared_cache"],
+          worktreeRegenerableDiscard: true,
+        }),
+        ["declared_cache", "regenerable_output"],
+      );
+      NodeAssert.equal(
+        (await outcome({ worktreeCoveredDiscard: [], worktreeRegenerableDiscard: true })).outcome,
+        "disposable",
+      );
+      NodeAssert.equal(
+        (await outcome({ worktreeCoveredDiscard: [], worktreeRegenerableDiscard: false })).reason,
+        "unattested_ignored",
+      );
+    }),
   "setup unknown effects survive missing producer records": async () =>
     fixture(async ({ worktree, input }) => {
       await NodeFSP.mkdir(NodePath.join(worktree, ".t3"));

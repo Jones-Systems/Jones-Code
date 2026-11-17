@@ -519,6 +519,7 @@ export function applyServerSettingsPatch(
                     worktreeUnchanged: next.storageCleanup.worktreeUnchanged,
                     worktreeSettledScope: next.storageCleanup.worktreeSettledScope,
                     worktreeCoveredDiscard: next.storageCleanup.worktreeCoveredDiscard,
+                    worktreeRegenerableDiscard: next.storageCleanup.worktreeRegenerableDiscard,
                     ...(current.worktreeCleanup?.mode === "custom"
                       ? current.worktreeCleanup.rules
                       : {}),

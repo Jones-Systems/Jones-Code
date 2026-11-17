@@ -45,22 +45,41 @@ describe("storage cleanup settings", () => {
   it("decodes older settings without enabling retirement and accepts additive covered classes", () => {
     const legacy = decodeServerSettings({ storageCleanup: { worktreeSettledAfterDays: null } });
     expect(legacy.storageCleanup.worktreeSettledScope).toBe("branch-retained");
-    // Settings written before the default existed gain the regenerable class; an owner
-    // narrows it by saving a shorter list, which must survive a decode unchanged.
-    expect(legacy.storageCleanup.worktreeCoveredDiscard).toEqual(["regenerable_output"]);
-    expect(
-      decodeServerSettings({ storageCleanup: { worktreeCoveredDiscard: [] } }).storageCleanup
-        .worktreeCoveredDiscard,
-    ).toEqual([]);
-    expect(
-      decodeServerSettings({ storageCleanup: { worktreeCoveredDiscard: ["declared_cache"] } })
-        .storageCleanup.worktreeCoveredDiscard,
-    ).toEqual(["declared_cache"]);
+    expect(legacy.storageCleanup.worktreeCoveredDiscard).toEqual([]);
     expect(legacy.storageCleanup.worktreeSettledAfterDays).toBeNull();
     expect(
       decodeServerSettingsPatch({ storageCleanup: { worktreeCoveredDiscard: ["declared_cache"] } })
         .storageCleanup?.worktreeCoveredDiscard,
     ).toEqual(["declared_cache"]);
+  });
+
+  it("adds regenerable output discard as a default-on field older clients ignore", () => {
+    expect(decodeServerSettings({}).storageCleanup.worktreeRegenerableDiscard).toBe(true);
+    expect(
+      decodeServerSettings({ storageCleanup: { worktreeRegenerableDiscard: false } }).storageCleanup
+        .worktreeRegenerableDiscard,
+    ).toBe(false);
+    expect(
+      decodeServerSettingsPatch({ storageCleanup: { worktreeRegenerableDiscard: false } })
+        .storageCleanup?.worktreeRegenerableDiscard,
+    ).toBe(false);
+    expect(
+      decodeServerSettingsPatch({
+        worktreeCleanup: { mode: "custom", rules: { worktreeRegenerableDiscard: false } },
+      }),
+    ).toEqual({
+      worktreeCleanup: { mode: "custom", rules: { worktreeRegenerableDiscard: false } },
+    });
+    // The released shape: the same three covered classes and no new key.
+    const releasedStorageCleanup = Schema.Struct({
+      worktreeCoveredDiscard: Schema.Array(
+        Schema.Literals(["declared_cache", "dependency_reproduction", "format_recognized"]),
+      ),
+    });
+    const decodeReleased = Schema.decodeUnknownSync(releasedStorageCleanup);
+    const current = JSON.parse(JSON.stringify(decodeServerSettings({}).storageCleanup));
+    expect(current.worktreeRegenerableDiscard).toBe(true);
+    expect(decodeReleased(current)).toEqual({ worktreeCoveredDiscard: [] });
   });
 
   it("decodes explicit install retention modes and rejects unknown modes", () => {
@@ -82,7 +101,8 @@ describe("storage cleanup settings", () => {
     expect(decodeServerSettings({}).storageCleanup).toEqual({
       installRetention: "propose",
       worktreeSettledScope: "branch-retained",
-      worktreeCoveredDiscard: ["regenerable_output"],
+      worktreeCoveredDiscard: [],
+      worktreeRegenerableDiscard: true,
       worktreeAfterDays: null,
       worktreeSettledAfterDays: null,
       worktreeOnMerge: false,

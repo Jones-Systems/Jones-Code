@@ -43,6 +43,14 @@ export const REGENERABLE_ROOT_NAMES: ReadonlySet<string> = new Set([
   ...DEPENDENCY_ROOT_NAMES,
   ...OUTPUT_ROOT_NAMES,
 ]);
+/** Classes the classifier applies for a cleanup rule set; regenerable output is its own switch. */
+export const coveredClasses = (rules: {
+  worktreeCoveredDiscard: readonly string[];
+  worktreeRegenerableDiscard: boolean;
+}) =>
+  rules.worktreeRegenerableDiscard
+    ? [...rules.worktreeCoveredDiscard, "regenerable_output"]
+    : rules.worktreeCoveredDiscard;
 type RegenerableKind = "dependency" | "output";
 const regenerableKind = (name: string, parent: string | undefined): RegenerableKind | null =>
   DEPENDENCY_ROOT_NAMES.includes(name) || (name === "mod" && parent === "pkg")

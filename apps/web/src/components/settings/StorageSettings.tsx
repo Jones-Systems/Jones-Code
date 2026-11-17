@@ -201,7 +201,6 @@ function lastRunSummary(
 }
 
 const COVERAGE_LABEL = {
-  regenerable_output: "Discard regenerable build output",
   declared_cache: "Discard declared caches",
   dependency_reproduction: "Discard reproducible dependencies",
   format_recognized: "Discard recognized format files",
@@ -818,13 +817,23 @@ export function WorktreeCleanupSection() {
                         </Select>
                       }
                     />
+                    <SettingsRow
+                      managedPaths={lockablePath("worktreeRegenerableDiscard")}
+                      title="Discard regenerable build output"
+                      description="Dependency installs, build output and caches such as node_modules, dist and build. A nested repository, or a .env or key file in build output, stays protected."
+                      serverScoped={!isProjectScope}
+                      control={
+                        <Switch
+                          aria-label="Discard regenerable build output"
+                          checked={settings.worktreeRegenerableDiscard}
+                          onCheckedChange={(worktreeRegenerableDiscard) =>
+                            updateWorktree({ worktreeRegenerableDiscard })
+                          }
+                        />
+                      }
+                    />
                     {(
-                      [
-                        "regenerable_output",
-                        "declared_cache",
-                        "dependency_reproduction",
-                        "format_recognized",
-                      ] as const
+                      ["declared_cache", "dependency_reproduction", "format_recognized"] as const
                     ).map((coverage) => (
                       <SettingsRow
                         key={coverage}
