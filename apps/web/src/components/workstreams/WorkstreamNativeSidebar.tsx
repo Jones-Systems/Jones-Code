@@ -441,6 +441,7 @@ export function WorkstreamNativeSidebar({
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        dropTargetId={drop}
         memberCounts={
           new Map(grouping.groups.map((group) => [group.workstream.id, group.threads.length]))
         }
@@ -471,7 +472,6 @@ export function WorkstreamNativeSidebar({
               }
               // Named members sit a fixed 8 CSS px in, independent of the root font size; Unassigned stays flush.
               {...(id === null ? {} : { style: { paddingLeft: "8px" } })}
-              className={drop === id ? "rounded ring-1 ring-primary" : ""}
             >
               {members.length === 0 ? (
                 <li className="relative px-3 pb-3 text-xs text-sidebar-muted-foreground">

@@ -153,6 +153,7 @@ function Group({
   children,
   summary,
   dragging,
+  dropTarget,
   onDragStart,
   confirmingDelete,
   onDeleteRequested,
@@ -164,6 +165,7 @@ function Group({
   memberCount: number;
   summary: PersonalThreadSummary;
   dragging: boolean;
+  dropTarget: boolean;
   onDragStart: (event: DragEvent<HTMLDivElement>) => void;
   confirmingDelete: boolean;
   onDeleteRequested: () => void;
@@ -237,12 +239,13 @@ function Group({
     <section
       ref={sectionRef}
       data-native-workstream={JSON.stringify(item.id)}
-      className={`min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""}`}
+      data-thread-drop-target={dropTarget ? "" : undefined}
+      className={`min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-1 ring-inset ring-ring/40 bg-accent/10" : ""}`}
       style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
     >
       <div
         data-workstream-header
-        className="flex min-w-0 cursor-grab active:cursor-grabbing"
+        className={`flex min-w-0 ${state.canCreate && !pending && !confirmingDelete && !editing ? "cursor-grab active:cursor-grabbing" : "cursor-default"}`}
         draggable={state.canCreate && !pending && !confirmingDelete && !editing}
         onDragStart={onDragStart}
       >
@@ -293,12 +296,7 @@ function Group({
                   aria-label={`Options for ${item.name}`}
                   render={<PersonalWorkstreamOptionsButton />}
                 >
-                  <EllipsisVerticalIcon
-                    aria-hidden
-                    viewBox="10 0 4 24"
-                    preserveAspectRatio="xMaxYMid meet"
-                    className="size-4 h-4 w-1"
-                  />
+                  <EllipsisVerticalIcon aria-hidden className="size-4" />
                 </MenuTrigger>
                 <MenuPopup align="end">
                   <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
@@ -499,8 +497,10 @@ export function WorkstreamSidebarSection({
   summaries,
   unassignedSummary = emptySummary,
   memberCounts,
+  dropTargetId,
 }: {
   controller: PersonalWorkstreamsController;
+  dropTargetId?: string | null | undefined;
   renderMembers: (
     id: string | null,
     window?: { limit: PersonalThreadLimit; expanded: boolean },
@@ -742,6 +742,7 @@ export function WorkstreamSidebarSection({
                   summary={summaries?.get(item.id) ?? emptySummary}
                   memberCount={memberCounts?.get(item.id) ?? 0}
                   dragging={draggedId === item.id}
+                  dropTarget={dropTargetId === item.id}
                   confirmingDelete={deleteTarget?.id === item.id}
                   onDeleteRequested={() => {
                     removedRef.current = false;
@@ -778,14 +779,18 @@ export function WorkstreamSidebarSection({
         onDrop={(event) => drop(event, null)}
       >
         {insertion?.afterId === null ? insertionLine : null}
-        <section data-native-workstream="null" className="min-w-0">
+        <section
+          data-native-workstream="null"
+          data-thread-drop-target={dropTargetId === null ? "" : undefined}
+          className={`min-w-0 rounded-md ${dropTargetId === null ? "ring-1 ring-inset ring-ring/40 bg-accent/10" : ""}`}
+        >
           <button
             type="button"
             aria-label={`${unassignedCollapsed ? "Expand" : "Collapse"} Unassigned`}
             aria-description={formatPersonalThreadCount(unassignedSummary.total)}
             aria-expanded={!unassignedCollapsed}
             onClick={() => setUnassignedCollapsed((value) => !value)}
-            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
             <span className="truncate">Unassigned</span>
             <span className="ml-auto shrink-0 text-xs tabular-nums">

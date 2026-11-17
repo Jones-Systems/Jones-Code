@@ -117,6 +117,9 @@ describe.each(["current", "legacy"] as const)("%s status shortcut", (layout) => 
     await act(async () => await root.rerender(<Fixture layout={layout} />));
     const target = button();
     const bounds = target.getBoundingClientRect();
+    expect(getComputedStyle(target).cursor).toBe("pointer");
+    for (const segment of target.querySelectorAll("span"))
+      expect(getComputedStyle(segment).cursor).toBe("pointer");
     await clickAt(1000);
     expect(titles()).toEqual(["Working"]);
     await clickAt(1250);

@@ -170,6 +170,93 @@ async function start(sourceRow: HTMLElement, destination: Point) {
 const insertion = () => document.querySelector<HTMLElement>("[data-personal-thread-insertion]");
 
 describe("personal thread pointer placement", () => {
+  it.each([
+    ["Drag Alpha", false],
+    ["Drag Alpha", true],
+    [null, false],
+    [null, true],
+  ] as const)(
+    "highlights the whole %s section (collapsed=%s) and clears on leave and drop",
+    async (id, collapsed) => {
+      using setup = fixture();
+      await using screen = await render(setup.ui(), { container: container() });
+      if (collapsed)
+        await userEvent.click(
+          page.getByRole("button", { name: `Collapse ${id ?? "Unassigned"}`, exact: true }),
+        );
+      const destination = section(screen.container, id);
+      const at = point(destination.querySelector("button")!);
+      const from = row(screen.container, id === null ? first : source);
+      const shadow = getComputedStyle(destination).boxShadow;
+      const fill = getComputedStyle(destination).backgroundColor;
+      const bounds = destination.getBoundingClientRect().toJSON();
+      await start(from, at);
+      expect([...screen.container.querySelectorAll("[data-thread-drop-target]")]).toEqual([
+        destination,
+      ]);
+      expect(getComputedStyle(destination).boxShadow).not.toBe(shadow);
+      expect(getComputedStyle(destination).backgroundColor).not.toBe(fill);
+      expect(destination.getBoundingClientRect().toJSON()).toEqual(bounds);
+      const outside = { x: screen.container.getBoundingClientRect().right + 20, y: at.y };
+      await act(() => pointer(document, "pointermove", outside));
+      expect(screen.container.querySelector("[data-thread-drop-target]")).toBeNull();
+      expect(getComputedStyle(destination).boxShadow).toBe(shadow);
+      expect(setup.placeThread).not.toHaveBeenCalled();
+      await act(() => pointer(document, "pointermove", at));
+      expect(destination.hasAttribute("data-thread-drop-target")).toBe(true);
+      await act(() =>
+        document.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape", bubbles: true })),
+      );
+      expect(screen.container.querySelector("[data-thread-drop-target]")).toBeNull();
+      expect(setup.placeThread).not.toHaveBeenCalled();
+      await start(from, at);
+      expect(destination.hasAttribute("data-thread-drop-target")).toBe(true);
+      await act(() => pointer(document, "pointerup", at, 0));
+      expect(screen.container.querySelector("[data-thread-drop-target]")).toBeNull();
+      expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(
+        id === null ? first : source,
+        id,
+        null,
+        false,
+      );
+    },
+  );
+
+  it.each([false, true])(
+    "highlights pinned external destinations including collapsed=%s and clears through the bridge",
+    async (collapsed) => {
+      using setup = fixture();
+      await using screen = await render(setup.ui(), { container: container() });
+      const pinned = { ...source, pinnedAt: "2026-11-12T12:00:00.000Z" };
+      for (const id of ["Drag Alpha", null]) {
+        if (collapsed)
+          await userEvent.click(
+            page.getByRole("button", { name: `Collapse ${id ?? "Unassigned"}`, exact: true }),
+          );
+        const destination = section(screen.container, id);
+        const at = point(destination.querySelector("button")!);
+        const shadow = getComputedStyle(destination).boxShadow;
+        await act(() => {
+          expect(setup.externalDropRef.current!.locateExternal(at, pinned)).toBe(true);
+        });
+        expect([...screen.container.querySelectorAll("[data-thread-drop-target]")]).toEqual([
+          destination,
+        ]);
+        expect(getComputedStyle(destination).boxShadow).not.toBe(shadow);
+        await act(() => setup.externalDropRef.current!.clear());
+        expect(screen.container.querySelector("[data-thread-drop-target]")).toBeNull();
+        expect(getComputedStyle(destination).boxShadow).toBe(shadow);
+        await act(() => {
+          expect(setup.externalDropRef.current!.locateExternal(at, pinned)).toBe(true);
+        });
+        await act(async () => {
+          expect(await setup.externalDropRef.current!.dropExternal(at, pinned)).toBe(true);
+        });
+        expect(screen.container.querySelector("[data-thread-drop-target]")).toBeNull();
+      }
+    },
+  );
+
   it("scrolls while holding a card at the top edge and stops on Escape", async () => {
     using setup = fixture();
     const viewport = container();
@@ -339,6 +426,9 @@ describe("personal thread pointer placement", () => {
       const at = point(row(screen.container, first), 0.2);
       await start(from, at);
       expect(document.querySelector("[data-personal-thread-drag]")).not.toBeNull();
+      expect(section(screen.container, "Drag Alpha").hasAttribute("data-thread-drop-target")).toBe(
+        true,
+      );
       if (cancel === "unmount") await screen.unmount();
       else
         await act(() => {
@@ -349,6 +439,7 @@ describe("personal thread pointer placement", () => {
       expect(document.querySelector("[data-personal-thread-drag]")).toBeNull();
       expect(from.style.opacity).toBe("");
       expect(insertion()).toBeNull();
+      expect(screen.container.querySelector("[data-thread-drop-target]")).toBeNull();
       await act(() => pointer(document, "pointerup", at, 0));
       expect(setup.placeThread).not.toHaveBeenCalled();
     },

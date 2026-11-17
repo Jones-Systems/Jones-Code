@@ -53,7 +53,7 @@ export function PersonalStatusPill({
       data-workstream-header-control
       data-personal-status-pill
       style={{ gap: "calc(2px * var(--personal-status-spacing, 1))" }}
-      className="pointer-events-auto relative inline-flex h-6 shrink-0 items-center rounded-full bg-muted/30 px-1 text-xs font-medium tabular-nums [-webkit-app-region:no-drag]"
+      className="pointer-events-auto relative inline-flex h-6 cursor-default shrink-0 items-center rounded-full bg-muted/30 px-1 text-xs font-medium tabular-nums [-webkit-app-region:no-drag]"
       draggable={false}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
@@ -86,7 +86,7 @@ export function PersonalStatusPill({
                 aria-label={`${statusName}: ${summary[count]}, ${state}. Click to ${active ? "use global status filter" : "show only " + statusName.toLowerCase()}; double-click within 250 ms to exclude ${statusName.toLowerCase()}.`}
                 aria-pressed={active || excluded}
                 className={cn(
-                  "shrink-0 rounded-sm outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  "shrink-0 cursor-pointer rounded-sm outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                   color,
                   active && selected,
                   excluded && "line-through decoration-2",
@@ -114,7 +114,7 @@ export function PersonalStatusPill({
               </button>
             ) : (
               <span
-                className={cn("shrink-0 rounded-sm", color)}
+                className={cn("shrink-0 cursor-default rounded-sm", color)}
                 style={{ paddingInline: "calc(6px * var(--personal-status-spacing, 1))" }}
               >
                 {summary[count]}
