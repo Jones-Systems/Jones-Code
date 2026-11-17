@@ -327,8 +327,8 @@ composer when it is empty, and is discarded otherwise.
 On web and desktop, open **Prompts** from the sidebar. Prompts collects work from
 your voice source and from work queues on the servers you are connected to. It
 does not record audio. Choose a source from the header when more than one server
-has prompts. Each tab shows a count once its sources report; `+` means the
-sample may hold more, and `?` means a source could not be read.
+has prompts. Pending and Queued show counts once their sources report. A `+`
+means the sample may hold more, and a `?` means a source could not be read.
 
 - **Pending** holds voice prompts before release. Select a prompt to see where it
   is going and what you can do. Held prompts release after their countdown.
@@ -339,7 +339,11 @@ sample may hold more, and `?` means a source could not be read.
   to a thread yet. It is read-only. The queue sample says when it was read; use
   **Refresh queue** for a newer one.
 - **Sent** lists prompts whose handoff to a thread is confirmed. Sent does not
-  mean the work is finished.
+  mean the work is finished. This sample does not provide a full history.
+
+Search within the loaded sample or click a Workstream badge to filter. Open a
+row’s prompt link to share that prompt and stage. Workstream labels show whether
+the association came from the thread, a voice suggestion, or the queue.
 
 The progress list in each prompt shows only what was observed. Closing the page
 does not resume an edit hold. If a result is uncertain, check the current state

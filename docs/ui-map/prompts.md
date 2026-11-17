@@ -11,7 +11,7 @@ utility menu. Both routes mount
 [WorkQueuePage](../../apps/web/src/components/workQueue/WorkQueuePage.tsx), which
 waits for client settings and then renders
 [UnifiedQueuePage](../../apps/web/src/jones/workQueue/UnifiedQueuePage.tsx) on the
-saved default stage.
+saved default stage unless a link supplies a stage for that visit.
 
 Each environment probes its voice source and queue independently. Checking,
 disabled, disconnected, read-failed and absent sources are distinct messages; an
@@ -55,7 +55,15 @@ Do not release real prompts.
    stale or from an earlier read, and the Queued count gains `?`.
 5. Open a queued voice prompt's Workstream section. Corrections are disabled
    while thread labels, recent prompts or the server are unavailable, and an
-   unconfirmed correction is never retried.
+   unconfirmed correction is never retried. Check that thread membership, voice
+   suggestions and queue requests remain distinct even when the names match.
+6. Search for text or an ID in the current sample. Filter by attention or click a
+   Workstream badge. Change the grouping, then clear filters and open a linked
+   prompt by its row link. A missing key reports that the item is outside the
+   current sample.
+7. Hold focus on a prompt row and refresh the source with a changed sample.
+   The focused rows stay in order, and a row that moved becomes unavailable
+   until focus leaves.
 
 ## Evidence
 

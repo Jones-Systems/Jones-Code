@@ -261,6 +261,18 @@ describe("item status and progress", () => {
       ).tone,
     ).toBe("warning");
   });
+  it("reports terminal queue evidence without contradicting a correlated handoff", () => {
+    const terminal = queueItem({ queue_state: "observed_terminal" });
+    const sent = promptProgressSteps(
+      item({ stage: "sent" }),
+      destination({ queueItem: terminal, handoff: handoff("pending") }),
+    );
+    expect(sent[3]!.detail).toBe("Queue entry ended · normal lane");
+    expect(sent[4]!.detail).toBe("Handoff confirmed");
+    const queued = promptProgressSteps(item(), destination({ queueItem: terminal }));
+    expect(queued[3]!.detail).toBe("Ended in queue · handoff not confirmed · normal lane");
+    expect(queued[4]!.status).toBe("not_observed");
+  });
   it("reports each step from its own evidence and never tracks completion", () => {
     const queued = promptProgressSteps(item(), destination());
     expect(queued.map((step) => [step.key, step.status])).toEqual([

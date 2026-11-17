@@ -13,7 +13,9 @@ import {
   subscribeWorkQueueLocalNames,
   workQueueDestinationLabel,
 } from "@t3tools/client-runtime/work-queue-metadata";
-import type { EnvironmentId, WorkQueueMetadataResult } from "@t3tools/contracts";
+import { EnvironmentId, type WorkQueueMetadataResult } from "@t3tools/contracts";
+import { usePersonalWorkstreams } from "../../state/workstreamsPersonal";
+import { useQuietThreadShells } from "../../state/entities";
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
 import { isElectron } from "../../env";
 import { useStableCallback } from "../../hooks/useStableCallback";
@@ -47,6 +49,7 @@ import {
   recentThread,
   recentThreadPurpose,
   VoiceWorkstreamCorrections,
+  VoiceWorkstreamCorrectionSession,
 } from "../../components/voiceReview/RecentVoicePrompts";
 import { useVoiceReview } from "../../components/voiceReview/useVoiceReview";
 import { WorkQueueMetadataPanel } from "./WorkQueueMetadataPanel";
@@ -54,10 +57,8 @@ import { SentPrompts } from "./SentPrompts";
 import { useWorkQueueMetadata } from "./useWorkQueueMetadata";
 import { buildPromptItems, type PromptDestination, type PromptItem } from "./promptItems";
 import { promptAttention } from "./promptAttention";
-import { combinePromptCounts, groupPromptItems, type PromptCount } from "./promptOrganize";
+import { combinePromptCounts, type PromptCount } from "./promptOrganize";
 import {
-  assignmentSummary,
-  destinationAssignment,
   itemStatus,
   promptProgressSteps,
   queueStateLabel,
@@ -66,6 +67,16 @@ import {
   textStateLabel,
   turnStateLabel,
 } from "./promptPresentation";
+import {
+  PromptToolbar,
+  PromptFilteredEmpty,
+  filteredPromptGroups,
+  usePromptListView,
+  type PromptListView,
+} from "./PromptToolbar";
+import { promptLink, type PromptNavigation } from "./promptSearch";
+import { PromptWorkstreams } from "./PromptWorkstreamDetails";
+import { promptWorkstreams, type PromptWorkstreamLine } from "./promptWorkstreams";
 import { PromptMasterDetail } from "./PromptList";
 import { PromptDetail, PromptDisclosure, PromptEvidence } from "./PromptDetail";
 import { PromptProgress } from "./PromptProgress";
@@ -96,9 +107,19 @@ const countKey = (count: PromptCount | null) =>
 const stageCountsKey = (counts: StageCounts | undefined) =>
   counts === undefined ? "absent" : `${countKey(counts.pending)}/${countKey(counts.queued)}`;
 
-export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: PromptQueueView }) {
+export function UnifiedQueuePage({
+  defaultView = "pending",
+  navigation,
+}: {
+  defaultView?: PromptQueueView;
+  navigation?: PromptNavigation | undefined;
+}) {
   const { environments } = useEnvironments();
-  const [requestedId, setRequestedId] = useState<EnvironmentId | null>(null);
+  const search = navigation?.search;
+  const [localScope, setLocalScope] = useState<EnvironmentId | null>(null);
+  const requestedId =
+    search?.source && !search.prompt ? EnvironmentId.make(search.source) : localScope;
+  const linkedPrompt = search?.prompt;
   const [sources, setSources] = useState<ReadonlyMap<EnvironmentId, PromptSources>>(
     () => new Map(),
   );
@@ -122,7 +143,24 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
       });
     },
   );
-  const [pane, setPane] = useState<PromptQueueView>(defaultView);
+  const [localPane, setLocalPane] = useState<PromptQueueView>(defaultView);
+  const pane = search?.stage ?? localPane;
+  const listControls = usePromptListView(pane, navigation);
+  const setPane = (stage: PromptQueueView) => {
+    if (stage === pane) return;
+    setLocalPane(stage);
+    navigation?.replace({
+      stage,
+      source: requestedId ?? undefined,
+      prompt: undefined,
+      filter: undefined,
+      group: undefined,
+    });
+  };
+  const linkSelection = (environmentId: EnvironmentId, key: string) => {
+    if (requestedId !== localScope) setLocalScope(requestedId);
+    navigation?.replace({ source: environmentId, stage: pane, prompt: key });
+  };
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
   const [dirtyEnvironments, setDirtyEnvironments] = useState<ReadonlySet<EnvironmentId>>(
     () => new Set(),
@@ -171,7 +209,8 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
     withResolver: true,
   });
   const applyScope = (environmentId: EnvironmentId | null) => {
-    setRequestedId(environmentId);
+    setLocalScope(environmentId);
+    navigation?.replace({ source: environmentId ?? undefined, prompt: undefined });
     setDirtyEnvironments((current) =>
       environmentId === null ? current : new Set([...current].filter((id) => id === environmentId)),
     );
@@ -185,13 +224,16 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
     if (removesDirtyEnvironment) setPendingScope({ environmentId });
     else applyScope(environmentId);
   };
+  const linkedSourceMissing =
+    linkedPrompt &&
+    search?.source &&
+    !selected.some((environment) => environment.environmentId === search.source) &&
+    !unresolved.some((environment) => environment.environmentId === search.source);
   const stageCount = (stage: PromptQueueView) =>
     stage === "sent"
       ? null
       : combinePromptCounts(
-          selected
-            .filter((environment) => counts.has(environment.environmentId))
-            .map((environment) => counts.get(environment.environmentId)![stage]),
+          selected.map((environment) => counts.get(environment.environmentId)?.[stage] ?? null),
         );
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden">
@@ -385,6 +427,12 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
             aria-labelledby={`queue-${pane}-tab`}
             className="space-y-6"
           >
+            {selected.length > 0 ? <PromptToolbar stage={pane} controls={listControls} /> : null}
+            {linkedSourceMissing ? (
+              <p role="status" className="rounded-md border p-4 text-sm">
+                This prompt is not in the current sample.
+              </p>
+            ) : null}
             {selected.length === 0 ? (
               requestedId === null && unresolved.length === 0 ? (
                 <Empty size="compact">
@@ -414,6 +462,13 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
                   preserveEditor={dirtyEnvironments.has(environment.environmentId)}
                   onDirtyChange={reportDirty}
                   onCountsChange={reportCounts}
+                  listView={listControls.view}
+                  linkedKey={
+                    linkedPrompt && (!search?.source || search.source === environment.environmentId)
+                      ? linkedPrompt
+                      : undefined
+                  }
+                  onLinkSelection={navigation ? linkSelection : undefined}
                 />
               ))
             )}
@@ -438,6 +493,9 @@ function EnvironmentPrompts({
   preserveEditor,
   onDirtyChange,
   onCountsChange,
+  listView,
+  linkedKey,
+  onLinkSelection,
 }: {
   environment: EnvironmentPresentation;
   pane: PromptQueueView;
@@ -446,6 +504,9 @@ function EnvironmentPrompts({
   preserveEditor: boolean;
   onDirtyChange: (environmentId: EnvironmentId, dirty: boolean) => void;
   onCountsChange: (environmentId: EnvironmentId, counts: StageCounts | null) => void;
+  listView: PromptListView;
+  linkedKey?: string | undefined;
+  onLinkSelection?: ((environmentId: EnvironmentId, key: string) => void) | undefined;
 }) {
   const { environmentId } = environment;
   const [metadata, setMetadata] = useState<WorkQueueMetadataResult | null>(null);
@@ -464,6 +525,7 @@ function EnvironmentPrompts({
   }, [metadata, now]);
   const voiceConfigured = sources.voice === "configured";
   const voice = useVoiceReviewMetadata(environmentId, voiceConfigured);
+  const [correctionSession] = useState(() => new VoiceWorkstreamCorrectionSession(voice.review));
   const nativeEnvironmentId =
     environment.serverConfig?.environment.environmentId === environmentId ? environmentId : null;
   const built = buildPromptItems({
@@ -495,7 +557,7 @@ function EnvironmentPrompts({
               : ("ok" as const),
         ]
       : []),
-    ...(queueConfigured
+    ...(sources.queue === "configured"
       ? [
           snapshot === null || stale
             ? ("unknown" as const)
@@ -519,6 +581,7 @@ function EnvironmentPrompts({
   }, [environmentId, onCountsChange, pendingTotal, pendingQualifier, queuedTotal, queuedQualifier]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Withdraw this environment's counts when its section unmounts.
   useEffect(() => () => onCountsChange(environmentId, null), [environmentId, onCountsChange]);
+  const onSelect = (key: string) => onLinkSelection?.(environmentId, key);
   const stage = (kind: "queued" | "sent") => (
     <PromptStageList
       environmentId={environmentId}
@@ -527,7 +590,16 @@ function EnvironmentPrompts({
       nativeEnvironmentId={nativeEnvironmentId}
       queueEnvironmentRef={snapshot?.source.environment_ref ?? null}
       voice={voiceConfigured ? voice : null}
+      correctionSession={correctionSession}
       unavailable={unavailable}
+      listView={listView}
+      linkedKey={linkedKey}
+      onLinkSelection={onLinkSelection ? onSelect : undefined}
+      partial={
+        kind === "queued"
+          ? queuedQualifier !== ""
+          : stale || snapshot?.coverage === "partial" || metadata?.status === "partial"
+      }
       empty={
         kind === "queued"
           ? queuedParts.length > 0 && queuedParts.every((part) => part === "ok")
@@ -556,14 +628,20 @@ function EnvironmentPrompts({
           onDirtyChange={reportDirty}
           unavailable={unavailable}
           onPendingCountChange={setPendingCount}
+          listView={pane === "pending" ? listView : undefined}
+          linkedKey={pane === "pending" ? linkedKey : undefined}
+          onLinkSelection={onLinkSelection ? onSelect : undefined}
+          workstreamNamesUnavailable={voice.labelsFailed}
         />
       ) : pane === "pending" ? (
         <p className="text-sm text-muted-foreground">
-          {sources.voice === "absent"
-            ? "No pending prompt review configured on this source."
-            : sources.voiceChecking
-              ? "Checking prompt review on this source…"
-              : "Prompt review could not be checked on this source. Retry sources."}
+          {linkedKey && !sources.voiceChecking
+            ? "This prompt is not in the current sample."
+            : sources.voice === "absent"
+              ? "No pending prompt review configured on this source."
+              : sources.voiceChecking
+                ? "Checking prompt review on this source…"
+                : "Prompt review could not be checked on this source. Retry sources."}
         </p>
       ) : null}
       <div hidden={pane !== "queued"} className="min-w-0 space-y-3">
@@ -632,8 +710,11 @@ function EnvironmentPrompts({
                 : { status: "unavailable" }
             }
           >
-            {built.sent.length > 0 ? stage("sent") : null}
+            {built.sent.length > 0 || (linkedKey && snapshot) ? stage("sent") : null}
           </SentPrompts>
+          {linkedKey && !snapshot && (queueFailed || !queueConfigured || metadata) ? (
+            <p role="status">This prompt is not in the current sample.</p>
+          ) : null}
         </>
       ) : null}
     </section>
@@ -670,8 +751,13 @@ function PromptStageList({
   nativeEnvironmentId,
   queueEnvironmentRef,
   voice,
+  correctionSession,
   unavailable,
   empty,
+  listView,
+  linkedKey,
+  onLinkSelection,
+  partial,
 }: {
   environmentId: EnvironmentId;
   stage: "queued" | "sent";
@@ -679,8 +765,13 @@ function PromptStageList({
   nativeEnvironmentId: string | null;
   queueEnvironmentRef: string | null;
   voice: VoiceReviewMetadata | null;
+  correctionSession: VoiceWorkstreamCorrectionSession;
   unavailable: boolean;
   empty: string | null;
+  listView: PromptListView;
+  linkedKey?: string | undefined;
+  onLinkSelection?: ((key: string) => void) | undefined;
+  partial: boolean;
 }) {
   const localNames = useSyncExternalStore(
     subscribeWorkQueueLocalNames,
@@ -715,13 +806,35 @@ function PromptStageList({
         : "Voice";
     return requestKindLabel(destination?.queueItem?.request_kind);
   };
-  const queueWorkstreams = (item: PromptItem) => [
-    ...new Set(
-      item.destinations.flatMap((destination) =>
-        destination.queueItem ? [workstreamName(destination.queueItem.workstream_id)] : [],
-      ),
-    ),
-  ];
+  const { state: personal } = usePersonalWorkstreams();
+  const personalNames = new Map(
+    personal.workstreams.map((workstream) => [workstream.id, workstream]),
+  );
+  const queueBound = queueEnvironmentRef === environmentId && nativeEnvironmentId === environmentId;
+  const linesByItem = new Map(
+    items.map((item) => [
+      item.key,
+      promptWorkstreams(item, {
+        environmentId,
+        queueBound,
+        names: personalNames,
+        labels: voice?.workstreams ?? null,
+        registryThread: item.entry ? recentThread(item.entry, threads) : null,
+        threadAssignments: personal.assignmentsByThreadKey,
+      }),
+    ]),
+  );
+  const lines = (item: PromptItem) => linesByItem.get(item.key) ?? [];
+  const liveTitles = new Map(
+    useQuietThreadShells()
+      .filter((shell) => shell.environmentId === environmentId)
+      .map((shell): [string, string] => [shell.id, shell.title]),
+  );
+  const destinationLabel = (item: PromptItem) => {
+    if (item.destinations.length > 1) return `${item.destinations.length} destinations`;
+    const threadId = resolvableThread(item.destinations[0] ?? null, nativeEnvironmentId);
+    return displayText(threadId ? liveTitles.get(threadId) : undefined, title(item));
+  };
   const statusOf = (item: PromptItem) => {
     const status = itemStatus(item);
     const turn = item.destinations[0]?.handoff?.providerState;
@@ -729,19 +842,38 @@ function PromptStageList({
       ? { ...status, label: `${status.label} · ${turnStateLabel(turn)}` }
       : status;
   };
-  const groups = groupPromptItems(items, stage, "default", {
-    attention: (item) => promptAttention(item),
-    destinationLabel: title,
-    workstream: (item) => {
-      const first = queueWorkstreams(item)[0];
-      return first === undefined ? null : { key: first, label: first };
+  const groups = filteredPromptGroups(
+    items,
+    stage,
+    listView,
+    {
+      attention: (item) => promptAttention(item),
+      destinationLabel,
+      workstream: (item) => {
+        const candidates = lines(item);
+        const first = candidates.find((line) => line.name !== null) ?? candidates[0];
+        return first === undefined
+          ? null
+          : {
+              key: first.name === null ? "unrecognized" : first.filterKey,
+              label: first.name ?? "Unrecognized workstream",
+              unrecognized: first.name === null,
+            };
+      },
+      queueStateLabel: (item) => statusOf(item).label,
     },
-    queueStateLabel: (item) => statusOf(item).label,
-  });
+    lines,
+  );
   const wide = useMediaQuery("md");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [localSelection, setSelected] = useState<string | null>(null);
+  const selected = linkedKey ?? localSelection;
   const firstKey = groups[0]?.items[0]?.key ?? null;
   if (wide && selected === null && firstKey !== null) setSelected(firstKey);
+  const filtered = items.length > 0 && groups.length === 0;
+  const choose = (key: string) => {
+    setSelected(key);
+    onLinkSelection?.(key);
+  };
   const selectedItem = items.find((item) => item.key === selected) ?? null;
   const row = (item: PromptItem): PromptRowView => {
     const text = item.text.kind === "available" ? item.text.text : null;
@@ -758,58 +890,82 @@ function PromptStageList({
       preview: text ? displayText(text, textStateLabel(item.text)) : textStateLabel(item.text),
       previewMuted: text === null,
       source: source(item),
-      workstreams: queueWorkstreams(item),
+      workstreams: lines(item),
+      promptHref: onLinkSelection
+        ? promptLink({ source: environmentId, stage, prompt: item.key })
+        : undefined,
       time: item.time,
       dirty: false,
       gone: false,
     };
   };
   return (
-    <PromptMasterDetail
-      label={stage === "queued" ? "Queued prompts" : "Sent prompts list"}
-      groups={groups.map((group) => ({
-        key: group.key,
-        label: group.label,
-        rows: group.items.map(row),
-      }))}
-      showGroupHeadings={groups.length > 1}
-      selectedKey={selected}
-      onSelect={setSelected}
-      empty={
-        empty === null ? null : (
-          <Empty size="compact">
-            <EmptyHeader>
-              <EmptyTitle>{empty}</EmptyTitle>
-            </EmptyHeader>
-          </Empty>
-        )
-      }
-      detail={
-        selectedItem ? (
-          <PromptItemDetail
-            key={selectedItem.key}
-            environmentId={environmentId}
-            item={selectedItem}
-            title={title(selectedItem)}
-            source={source(selectedItem)}
-            status={statusOf(selectedItem)}
-            nativeEnvironmentId={nativeEnvironmentId}
-            voice={voice}
-            unavailable={unavailable}
-            formatTime={formatTime}
-            workstreamName={workstreamName}
-          />
-        ) : (
-          <section className="rounded-md border p-4 text-sm text-muted-foreground">
-            {selected === null
-              ? "Select a prompt to see where it is and what was observed."
-              : stage === "queued"
-                ? "This prompt left Queued. It may now be under Sent."
-                : "This prompt is no longer in this sample."}
-          </section>
-        )
-      }
-    />
+    <div className="min-w-0 space-y-2">
+      {partial && items.length > 0 ? (
+        <p className="text-xs text-muted-foreground">Searching {items.length} loaded prompts.</p>
+      ) : null}
+      <PromptMasterDetail
+        label={stage === "queued" ? "Queued prompts" : "Sent prompts list"}
+        groups={groups.map((group) => ({
+          key: group.key,
+          label: group.label,
+          rows: group.items.map(row),
+        }))}
+        showGroupHeadings={groups.length > 1}
+        selectedKey={selected}
+        onSelect={choose}
+        onFilterWorkstream={listView.filterWorkstream}
+        viewKey={listView.key}
+        empty={
+          filtered ? (
+            <PromptFilteredEmpty view={listView} />
+          ) : empty === null ? null : (
+            <Empty size="compact">
+              <EmptyHeader>
+                <EmptyTitle>{empty}</EmptyTitle>
+              </EmptyHeader>
+            </Empty>
+          )
+        }
+        detail={
+          selectedItem ? (
+            <PromptItemDetail
+              key={selectedItem.key}
+              environmentId={environmentId}
+              item={selectedItem}
+              title={title(selectedItem)}
+              source={source(selectedItem)}
+              status={statusOf(selectedItem)}
+              nativeEnvironmentId={nativeEnvironmentId}
+              voice={voice}
+              correctionSession={correctionSession}
+              unavailable={unavailable}
+              formatTime={formatTime}
+              workstreamName={workstreamName}
+              lines={lines(selectedItem)}
+              namesUnavailable={Boolean(
+                voice?.labelsFailed ||
+                personal.environments.some(
+                  (environment) =>
+                    environment.environmentId === environmentId &&
+                    environment.status === "sync_failed",
+                ),
+              )}
+            />
+          ) : (
+            <section className="rounded-md border p-4 text-sm text-muted-foreground">
+              {selected === null
+                ? "Select a prompt to see where it is and what was observed."
+                : linkedKey
+                  ? "This prompt is not in the current sample."
+                  : stage === "queued"
+                    ? "This prompt left Queued. It may now be under Sent."
+                    : "This prompt is no longer in this sample."}
+            </section>
+          )
+        }
+      />
+    </div>
   );
 }
 
@@ -821,9 +977,12 @@ function PromptItemDetail({
   status,
   nativeEnvironmentId,
   voice,
+  correctionSession,
   unavailable,
   formatTime,
   workstreamName,
+  lines,
+  namesUnavailable,
 }: {
   environmentId: EnvironmentId;
   item: PromptItem;
@@ -832,9 +991,12 @@ function PromptItemDetail({
   status: ReturnType<typeof itemStatus>;
   nativeEnvironmentId: string | null;
   voice: VoiceReviewMetadata | null;
+  correctionSession: VoiceWorkstreamCorrectionSession;
   unavailable: boolean;
   formatTime: (ms: number) => string;
   workstreamName: (id: string) => string;
+  lines: readonly PromptWorkstreamLine[];
+  namesUnavailable: boolean;
 }) {
   const [routingOpen, setRoutingOpen] = useState(false);
   const primary = item.destinations[0] ?? null;
@@ -919,38 +1081,25 @@ function PromptItemDetail({
         )
       }
       workstreams={
-        <div className="min-w-0 space-y-2 border-t pt-3 text-xs">
-          <h4 className="font-medium">Workstream</h4>
-          {item.destinations.flatMap((destination) => {
-            const queueItem = destination.queueItem;
-            if (!queueItem) return [];
-            const assignment = destinationAssignment(destination);
-            return [
-              <p key={destination.key} className="wrap-anywhere text-muted-foreground">
-                Queue workstream: <bdi>{workstreamName(queueItem.workstream_id)}</bdi>
-                {assignment ? ` · ${assignmentSummary(assignment, workstreamName)}` : ""}
-              </p>,
-            ];
-          })}
-          {item.entry && item.stage === "queued" && voice ? (
-            <VoiceWorkstreamCorrections
-              entry={item.entry}
-              thread={thread}
-              registry={voice.registry}
-              workstreams={voice.workstreams}
-              transport={voice.review}
-              onRefresh={voice.refresh}
-              unavailable={correctionsBlocked}
-            />
-          ) : null}
-          {item.entry && item.stage === "queued" && voice?.labelsFailed ? (
-            <p className="text-muted-foreground">Workstream names unavailable.</p>
-          ) : null}
-          {item.destinations.every((destination) => destination.queueItem === null) &&
-          !(item.entry && item.stage === "queued") ? (
-            <p className="text-muted-foreground">No Workstream observed for this prompt.</p>
-          ) : null}
-        </div>
+        <PromptWorkstreams
+          environmentId={environmentId}
+          lines={lines}
+          namesUnavailable={namesUnavailable}
+          corrections={
+            item.entry && item.stage === "queued" && voice ? (
+              <VoiceWorkstreamCorrections
+                entry={item.entry}
+                thread={thread}
+                registry={voice.registry}
+                workstreams={voice.workstreams}
+                transport={voice.review}
+                session={correctionSession}
+                onRefresh={voice.refresh}
+                unavailable={correctionsBlocked || namesUnavailable}
+              />
+            ) : null
+          }
+        />
       }
       actionStatus={
         item.stage === "queued" && primary?.queueItem

@@ -41,7 +41,6 @@ describe("confirmed sent prompts frame", () => {
     await using _fixture = await setupFixture1();
     await render({ status: "ready", count: 1, omitted: false }, "Confirmed row");
     const section = container.querySelector('section[aria-label="Sent prompts"]')!;
-    expect(section.textContent).toContain("Sent confirms handoff, not completed work.");
     expect(section.textContent).toContain("Confirmed row");
     expect(section.textContent).not.toContain("No sent prompts observed.");
     expect(container.querySelector("button, input, textarea, select")).toBeNull();

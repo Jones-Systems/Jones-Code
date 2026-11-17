@@ -17,7 +17,19 @@ const row = (key: string, overrides: Partial<PromptRowView> = {}): PromptRowView
   preview: `Preview ${key}`,
   previewMuted: false,
   source: "Voice",
-  workstreams: ["Docs"],
+  workstreams: [
+    {
+      key: "docs",
+      filterKey: "environment:docs",
+      id: "docs",
+      name: "Docs",
+      color: null,
+      provenance: "suggested",
+      summary: null,
+      threadId: null,
+      assignedAutomatically: false,
+    },
+  ],
   time: null,
   dirty: false,
   gone: false,
@@ -73,6 +85,34 @@ describe("prompt master-detail list", () => {
     ),
   ];
 
+  it("keeps the focused rows in place and disables a prompt that leaves the stage", async () => {
+    await using _fixture = await setupFixture();
+    await act(() =>
+      root.rerender(
+        <Harness groups={[{ key: "all", label: "All", rows: [row("a"), row("b")] }]} />,
+      ),
+    );
+    const first = buttons()[0]!;
+    await act(() => first.focus());
+    await act(() =>
+      root.rerender(
+        <Harness
+          groups={[
+            { key: "all", label: "All", rows: [row("c"), row("b", { preview: "New preview" })] },
+          ]}
+        />,
+      ),
+    );
+    expect(buttons()[0]).toBe(first);
+    expect(first.getAttribute("aria-disabled")).toBe("true");
+    expect(first.textContent).toContain("Moved · refresh for current state");
+    expect(buttons()[1]!.textContent).toContain("New preview");
+    await act(() => first.click());
+    expect(first.getAttribute("aria-current")).toBeNull();
+    await act(() => first.blur());
+    expect(buttons()[0]!.textContent).toContain("Destination c");
+  });
+
   it("shows compact rows and opens the detail inline under the selected row on narrow screens", async () => {
     await using _fixture = await setupFixture();
     await act(() =>
@@ -86,7 +126,7 @@ describe("prompt master-detail list", () => {
     expect(first!.textContent).toContain("Destination a");
     expect(first!.textContent).toContain("Queued");
     expect(first!.textContent).toContain("Preview a");
-    expect(first!.textContent).toContain("Docs");
+    expect(first!.parentElement?.textContent).toContain("Docs");
     expect(first!.getAttribute("aria-current")).toBeNull();
     await act(() => second!.click());
     expect(second!.getAttribute("aria-current")).toBe("true");

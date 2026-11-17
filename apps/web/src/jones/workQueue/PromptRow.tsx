@@ -1,10 +1,13 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import { ArrowUpRightIcon } from "lucide-react";
+import { ArrowUpRightIcon, LinkIcon } from "lucide-react";
+import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 import { useClientSettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { requestDisplayText } from "../remoteAdmission/presentation";
 import { formatRequestTime } from "../remoteAdmission/requestTime";
+import { PromptWorkstreamBadge } from "./PromptWorkstreamDetails";
+import type { PromptWorkstreamLine } from "./promptWorkstreams";
 import type { PromptTone } from "./promptPresentation";
 import { PromptThreadStatus, PromptThreadTitle, usePromptThreadShell } from "./PromptThreadStatus";
 
@@ -46,7 +49,8 @@ export interface PromptRowView {
   readonly preview: string;
   readonly previewMuted: boolean;
   readonly source: string;
-  readonly workstreams: readonly string[];
+  readonly workstreams: readonly PromptWorkstreamLine[];
+  readonly promptHref?: string | undefined;
   readonly time: number | null;
   /** This session has unsaved text, a running action or an uncertain outcome here. */
   readonly dirty: boolean;
@@ -58,10 +62,12 @@ export function PromptRow({
   row,
   selected,
   onSelect,
+  onFilterWorkstream,
 }: {
   readonly row: PromptRowView;
   readonly selected: boolean;
   readonly onSelect: () => void;
+  readonly onFilterWorkstream?: ((line: PromptWorkstreamLine) => void) | undefined;
 }) {
   const formatTime = usePromptTime();
   const shell = usePromptThreadShell(row.environmentId, row.threadId);
@@ -70,7 +76,7 @@ export function PromptRow({
   return (
     <div
       className={cn(
-        "flex min-w-0 items-start gap-1 rounded-md border p-2.5",
+        "grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-1 rounded-md border p-2.5",
         selected ? "border-ring bg-accent" : "bg-background",
         row.gone && "opacity-60",
       )}
@@ -119,11 +125,6 @@ export function PromptRow({
         </span>
         <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
           <span>{row.source}</span>
-          {row.workstreams.map((workstream) => (
-            <bdi key={workstream} className="wrap-anywhere">
-              {workstream}
-            </bdi>
-          ))}
           {row.time !== null ? (
             <time dateTime={new Date(row.time).toISOString()}>{formatTime(row.time)}</time>
           ) : null}
@@ -131,7 +132,7 @@ export function PromptRow({
       </button>
       <span className="flex shrink-0 flex-col items-end gap-1">
         <PromptThreadStatus environmentId={row.environmentId} threadId={row.threadId} />
-        {shell && row.threadId ? (
+        {!row.gone && shell && row.threadId ? (
           <a
             href={threadHref(row.environmentId, row.threadId)}
             aria-label={`Open thread for ${row.fallbackTitle}`}
@@ -140,7 +141,36 @@ export function PromptRow({
             <ArrowUpRightIcon aria-hidden className="size-3.5" />
           </a>
         ) : null}
+        {!row.gone && row.promptHref ? (
+          <a
+            href={row.promptHref}
+            aria-label={`Open link to prompt for ${row.fallbackTitle}`}
+            className="rounded-sm p-1 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            <LinkIcon aria-hidden className="size-3.5" />
+          </a>
+        ) : null}
       </span>
+      {row.workstreams.length > 0 ? (
+        <div className="col-span-full flex min-w-0 flex-wrap items-center gap-1">
+          {row.workstreams.map((line) =>
+            onFilterWorkstream && !row.gone ? (
+              <Button
+                key={line.key}
+                size="micro"
+                variant="ghost"
+                className="h-auto max-w-full"
+                aria-label={`Filter prompts by ${line.name ?? line.id}`}
+                onClick={() => onFilterWorkstream(line)}
+              >
+                <PromptWorkstreamBadge line={line} />
+              </Button>
+            ) : (
+              <PromptWorkstreamBadge key={line.key} line={line} />
+            ),
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

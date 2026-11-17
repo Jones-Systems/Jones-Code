@@ -56,7 +56,6 @@ export function SentPrompts({
   }
   return (
     <section aria-label="Sent prompts" className="min-w-0 space-y-3">
-      <p className="text-sm text-muted-foreground">Sent confirms handoff, not completed work.</p>
       {state.observation ? (
         <p role="status" className="text-sm text-muted-foreground">
           {state.observation.stale

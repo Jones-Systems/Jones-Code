@@ -1,5 +1,7 @@
-import { useEffect, useRef, type FocusEvent, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import { useFrozenRows } from "../remoteAdmission/reviewHooks";
+import type { PromptWorkstreamLine } from "./promptWorkstreams";
 import { PromptRow, type PromptRowView } from "./PromptRow";
 
 export interface PromptListGroup {
@@ -8,11 +10,24 @@ export interface PromptListGroup {
   readonly rows: readonly PromptRowView[];
 }
 
-export interface PromptListHandlers {
-  readonly onPointerEnter: () => void;
-  readonly onPointerLeave: () => void;
-  readonly onFocusCapture: () => void;
-  readonly onBlurCapture: (event: FocusEvent<HTMLElement>) => void;
+function usePromptFrozenRows(groups: readonly PromptListGroup[], viewKey: string | undefined) {
+  const rows = groups.flatMap((group) =>
+    group.rows.map((row) => ({ groupKey: group.key, groupLabel: group.label, viewKey, row })),
+  );
+  const frozen = useFrozenRows(rows, (record) => record.row.key);
+  if (!frozen.frozen || frozen.rows[0]?.viewKey !== viewKey || frozen.rows.length === 0)
+    return { groups, handlers: frozen.handlers };
+  const latest = new Map(rows.map(({ row }) => [row.key, row]));
+  const pinned = new Map<string, { key: string; label: string; rows: PromptRowView[] }>();
+  for (const record of frozen.rows) {
+    let group = pinned.get(record.groupKey);
+    if (!group) {
+      group = { key: record.groupKey, label: record.groupLabel, rows: [] };
+      pinned.set(record.groupKey, group);
+    }
+    group.rows.push(latest.get(record.row.key) ?? { ...record.row, gone: true });
+  }
+  return { groups: [...pinned.values()], handlers: frozen.handlers };
 }
 
 /**
@@ -28,7 +43,8 @@ export function PromptMasterDetail({
   onSelect,
   detail,
   empty,
-  listHandlers,
+  onFilterWorkstream,
+  viewKey,
 }: {
   readonly label: string;
   readonly groups: readonly PromptListGroup[];
@@ -37,11 +53,16 @@ export function PromptMasterDetail({
   readonly onSelect: (key: string) => void;
   readonly detail: ReactNode;
   readonly empty: ReactNode;
-  readonly listHandlers?: PromptListHandlers;
+  readonly viewKey?: string | undefined;
+  readonly onFilterWorkstream?: ((line: PromptWorkstreamLine) => void) | undefined;
 }) {
+  const frozen = usePromptFrozenRows(groups, viewKey);
+  const visibleGroups = frozen.groups;
   const wide = useMediaQuery("md");
   const container = useRef<HTMLDivElement>(null);
-  const selectedShown = groups.some((group) => group.rows.some((row) => row.key === selectedKey));
+  const selectedShown = visibleGroups.some((group) =>
+    group.rows.some((row) => row.key === selectedKey),
+  );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Move keyboard focus to the expanded detail heading after a narrow-layout selection.
   useEffect(() => {
     if (wide || selectedKey === null) return;
@@ -52,11 +73,11 @@ export function PromptMasterDetail({
       ref={container}
       className="grid min-w-0 gap-4 md:grid-cols-[minmax(14rem,2fr)_minmax(0,3fr)]"
     >
-      <div role="group" aria-label={label} className="min-w-0 space-y-4" {...listHandlers}>
+      <div role="group" aria-label={label} className="min-w-0 space-y-4" {...frozen.handlers}>
         {!wide && selectedKey !== null && !selectedShown ? detail : null}
-        {groups.length === 0
+        {visibleGroups.length === 0
           ? empty
-          : groups.map((group) => (
+          : visibleGroups.map((group) => (
               <div key={group.key} className="min-w-0 space-y-1.5">
                 {showGroupHeadings ? (
                   <h3 className="text-xs font-medium text-muted-foreground">
@@ -73,6 +94,7 @@ export function PromptMasterDetail({
                         row={row}
                         selected={row.key === selectedKey}
                         onSelect={() => onSelect(row.key)}
+                        onFilterWorkstream={onFilterWorkstream}
                       />
                       {!wide && row.key === selectedKey ? (
                         <div className="mt-2">{detail}</div>

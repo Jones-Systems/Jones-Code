@@ -855,6 +855,8 @@
         "apps/web/src/jones/workQueue/promptItems.test.ts",
         "apps/web/src/jones/workQueue/promptOrganize.test.ts",
         "apps/web/src/jones/workQueue/promptPresentation.test.ts",
+        "apps/web/src/jones/workQueue/PromptWorkstreamDetails.browser.test.tsx",
+        "apps/web/src/jones/workQueue/promptWorkstreams.test.ts",
         "packages/contracts/src/jones/promptViewSettings.test.ts"
       ],
       "scope": "Retained integration, history, authentication or updater coverage after retirement of the Workstreams registry runtime. The listed tests retain their non-retired assertions."

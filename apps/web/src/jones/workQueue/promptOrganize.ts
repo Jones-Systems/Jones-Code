@@ -21,7 +21,7 @@ export interface PromptOrganizeContext {
   /** The item's Workstream for default Queued and Sent grouping; null when it has none. */
   readonly workstream: (
     item: PromptItem,
-  ) => { readonly key: string; readonly label: string } | null;
+  ) => { readonly key: string; readonly label: string; readonly unrecognized?: boolean } | null;
   readonly queueStateLabel: (item: PromptItem) => string;
 }
 
@@ -110,7 +110,11 @@ function groupKey(
   }
   const workstream = context.workstream(item);
   return workstream
-    ? { key: `workstream:${workstream.key}`, label: workstream.label, rank: 0 }
+    ? {
+        key: `workstream:${workstream.key}`,
+        label: workstream.label,
+        rank: workstream.unrecognized ? 2 : 0,
+      }
     : { key: "workstream:none", label: "No workstream", rank: 1 };
 }
 
@@ -192,7 +196,9 @@ export function searchPromptItems(
 export function promptSearchIdentifiers(item: PromptItem): readonly (string | null)[] {
   return [
     item.text.kind === "available" ? item.text.text : null,
+    item.key,
     item.draft?.id ?? null,
+    item.entry?.command_id ?? null,
     item.draft?.command_id ?? null,
     item.draft?.routing_target ?? null,
     ...item.destinations.flatMap((destination) => [

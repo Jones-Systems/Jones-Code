@@ -687,7 +687,7 @@ describe("submitted work page integration", () => {
       expect(container.querySelector('[aria-label="Queued prompts"]')).toBeNull();
       const row = [
         ...container.querySelectorAll<HTMLButtonElement>(
-          '[aria-label="Pending prompts"] button[aria-current]',
+          '[aria-label="Pending prompts"] li > div > button',
         ),
       ][0]!;
       expect(row.textContent).toContain("fixture-thread");

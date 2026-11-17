@@ -91,6 +91,13 @@ describe("recent voice prompt interactions", () => {
     if (!found) throw new Error(`Missing button: ${text}`);
     return found;
   }
+  const workstreamTrigger = () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label^="Choose a workstream for"]')!;
+  const workstreamOption = (label: string) =>
+    [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+      (option) => option.textContent === label,
+    )!;
+
   it("joins only the verified composite key and never a bare routing target", async () => {
     await using _fixture = await setupTest();
     const entry = voiceReviewRecentFixture.entries[0]!;
@@ -140,11 +147,8 @@ describe("recent voice prompt interactions", () => {
     expect(
       container.querySelector('button[aria-label="Remove Voice review workstream"]'),
     ).toBeNull();
-    const select = container.querySelector("select")!;
-    await act(() => {
-      select.value = record.workstream_ref;
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await act(() => workstreamTrigger().click());
+    await act(() => workstreamOption("Voice review").click());
     await act(() => button("Add").click());
     expect(correctAssociation.mock.calls[1]![0]).toMatchObject({
       state: "active",
@@ -165,7 +169,6 @@ describe("recent voice prompt interactions", () => {
     await using _fixture = await setupTest();
     const entry = { ...voiceReviewRecentFixture.entries[0]!, workstream_refs: ["native:board"] };
     const correctAssociation = await render(entry);
-    expect(container.textContent).toContain("native:board");
     expect(
       container.querySelector('button[aria-label="Remove native:board workstream"]'),
     ).toBeNull();
@@ -189,9 +192,8 @@ describe("recent voice prompt interactions", () => {
           />,
         ),
     );
-    expect([...container.querySelectorAll("option")].map((option) => option.textContent)).toContain(
-      "New workstream",
-    );
+    await act(() => workstreamTrigger().click());
+    expect(workstreamOption("New workstream")).toBeDefined();
     expect(correctAssociation).not.toHaveBeenCalled();
   });
   it("does not make a missing revision actionable", async () => {
@@ -205,7 +207,7 @@ describe("recent voice prompt interactions", () => {
     )!;
     await act(() => remove.click());
     expect(correctAssociation).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("association revisions are observed");
+    expect(container.textContent).toContain("observed command and association revisions");
   });
   it("disables corrections when context is unavailable and says the thread is stale", async () => {
     await using _fixture = await setupTest();
@@ -232,8 +234,8 @@ describe("recent voice prompt interactions", () => {
     const remove = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Remove Voice review workstream"]',
     )!;
-    expect(remove.disabled).toBe(true);
-    expect(container.querySelector("select")!.disabled).toBe(true);
+    expect(remove.getAttribute("aria-disabled")).toBe("true");
+    expect(workstreamTrigger().disabled).toBe(true);
     await act(() => remove.click());
     expect(correctAssociation).not.toHaveBeenCalled();
   });
@@ -266,22 +268,22 @@ describe("recent voice prompt interactions", () => {
       return current;
     };
     await act(() => remove().click());
-    expect(remove().disabled).toBe(true);
-    expect(container.querySelector("select")!.disabled).toBe(true);
+    expect(remove().getAttribute("aria-disabled")).toBe("true");
+    expect(workstreamTrigger().disabled).toBe(true);
     await act(() => remove().click());
     expect(correctAssociation).toHaveBeenCalledTimes(1);
     await act(() => rejectCorrection(new Error("Lost receipt")));
-    expect(remove().disabled).toBe(true);
+    expect(remove().getAttribute("aria-disabled")).toBe("true");
     expect(container.textContent).toContain("Correction is unconfirmed");
     await act(() => remove().click());
     expect(correctAssociation).toHaveBeenCalledTimes(1);
     await act(() => button("Check current workstreams").click());
     expect(container.textContent).toContain("Correction remains unconfirmed");
-    expect(remove().disabled).toBe(true);
+    expect(remove().getAttribute("aria-disabled")).toBe("true");
     await act(() => remove().click());
     expect(correctAssociation).toHaveBeenCalledTimes(1);
     await act(() => button("Check current workstreams").click());
-    expect(remove().disabled).toBe(false);
+    expect(remove().getAttribute("aria-disabled")).toBe("false");
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(correctAssociation).toHaveBeenCalledTimes(1);
     expect(onRefresh).toHaveBeenCalledTimes(2);

@@ -356,7 +356,7 @@ export function itemStatus(item: PromptItem): PromptStatus {
     return {
       label: "Handed off",
       tone: turn ? "warning" : "success",
-      explanation: "Handoff to a thread is confirmed. This does not mean the work is finished.",
+      explanation: null,
     };
   }
   if (item.stage === "queued") {
@@ -403,6 +403,10 @@ export function promptProgressSteps(
   const released = draft !== null && (draft.state === "released" || draft.command_id !== null);
   const queueItem = destination?.queueItem ?? null;
   const handoff = destination?.handoff ?? null;
+  const queueState =
+    queueItem?.queue_state === "observed_terminal" && handoff
+      ? "Queue entry ended"
+      : queueStateLabel(queueItem?.queue_state).label;
   const notVoice = "Not a voice prompt";
   return [
     {
@@ -447,7 +451,7 @@ export function promptProgressSteps(
       label: "In queue",
       status: queueItem ? "observed" : "not_observed",
       detail: queueItem
-        ? `${queueStateLabel(queueItem.queue_state).label} · ${queueItem.lane === "high" ? "high" : "normal"} lane`
+        ? `${queueState} · ${queueItem.lane === "high" ? "high" : "normal"} lane`
         : "Queue intake not observed",
       time: queueItem?.submitted_at_ms ?? null,
     },

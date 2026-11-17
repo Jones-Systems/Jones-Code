@@ -430,12 +430,60 @@ describe("Prompts environment composition", () => {
     expect(rows[0]!.textContent).toContain("Linked prompt text");
     expect(rows[0]!.textContent).toContain("Handed off · Turn not started");
     expect(container.textContent).toContain("Coverage: partial");
-    expect(container.textContent).toContain("Sent confirms handoff, not completed work.");
+    expect(container.textContent).toContain(
+      "Handoff to a thread is confirmed. This does not mean the work is finished.",
+    );
     await act(async () => rows[0]!.querySelector<HTMLButtonElement>("button")!.click());
     const detail = container.querySelector('section[aria-label="Sent prompts"] section')!;
     expect(detail.textContent).toContain("Handed to thread");
     expect(detail.textContent).toContain("Not tracked");
-    expect(detail.textContent).toContain("Queue workstream: workstream");
+    expect(detail.textContent).toContain("workstream");
+    expect(detail.textContent).toContain("queue ID");
+    expect(container.querySelector("#queue-sent-tab")?.getAttribute("aria-label")).toBeNull();
+
+    const replace = vi.fn();
+    await act(() =>
+      root.rerender(
+        <UnifiedQueuePage
+          navigation={{
+            search: { source: "alpha", stage: "sent", prompt: "queue:missing" },
+            replace,
+          }}
+        />,
+      ),
+    );
+    expect(container.textContent).toContain("This prompt is not in the current sample.");
+    await act(() =>
+      root.rerender(
+        <UnifiedQueuePage
+          navigation={{
+            search: {
+              source: "alpha",
+              stage: "sent",
+              prompt: `voice:${fixture.recent?.entries[0]?.draft.id}`,
+            },
+            replace,
+          }}
+        />,
+      ),
+    );
+    expect(container.textContent).not.toContain("This prompt is not in the current sample.");
+    expect(
+      container.querySelector('[aria-label="Sent prompts list"] button[aria-current]')?.textContent,
+    ).toContain("Linked prompt text");
+
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Search prompts"]')!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        input,
+        "no-matching-text",
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("No prompts match.");
+    await click("Clear filters");
+    expect(input.value).toBe("");
+    expect(container.textContent).not.toContain("No prompts match.");
   });
 
   it("supports arrow, Home and End tab navigation with panel labelling and retained children", async () => {

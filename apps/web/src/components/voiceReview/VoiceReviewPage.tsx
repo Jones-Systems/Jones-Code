@@ -15,7 +15,7 @@ import { Textarea } from "../ui/textarea";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { promptAttention } from "../../jones/workQueue/promptAttention";
 import { buildPromptItems, voiceItemKey, type PromptItem } from "../../jones/workQueue/promptItems";
-import { groupPromptItems, type PromptCount } from "../../jones/workQueue/promptOrganize";
+import { type PromptCount } from "../../jones/workQueue/promptOrganize";
 import {
   draftStatus,
   promptProgressSteps,
@@ -29,6 +29,13 @@ import {
   PromptDisclosure,
   PromptEvidence,
 } from "../../jones/workQueue/PromptDetail";
+import {
+  filteredPromptGroups,
+  PromptFilteredEmpty,
+  type PromptListView,
+} from "../../jones/workQueue/PromptToolbar";
+import { promptLink } from "../../jones/workQueue/promptSearch";
+import { PromptWorkstreams } from "../../jones/workQueue/PromptWorkstreamDetails";
 import { PromptMasterDetail } from "../../jones/workQueue/PromptList";
 import { PromptProgress } from "../../jones/workQueue/PromptProgress";
 import { displayText, usePromptTime, type PromptRowView } from "../../jones/workQueue/PromptRow";
@@ -136,12 +143,20 @@ export function EnvironmentVoiceReview({
   onDirtyChange,
   unavailable = false,
   onPendingCountChange,
+  listView,
+  linkedKey,
+  onLinkSelection,
+  workstreamNamesUnavailable,
 }: {
   environmentId: EnvironmentId;
   pane?: "pending" | "queued" | "sent";
   onDirtyChange?: (dirty: boolean) => void;
   unavailable?: boolean;
   onPendingCountChange?: (count: PromptCount | null) => void;
+  listView?: PromptListView | undefined;
+  linkedKey?: string | undefined;
+  onLinkSelection?: ((key: string) => void) | undefined;
+  workstreamNamesUnavailable?: boolean | undefined;
 }) {
   const { fetchList, transport, review } = useVoiceReview(environmentId);
   const [drafts, setDrafts] = useState<readonly VoiceReviewDraft[]>([]);
@@ -202,7 +217,7 @@ export function EnvironmentVoiceReview({
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const pendingCount = loading && drafts.length === 0 ? null : pending.length;
   const qualifier: PromptCount["qualifier"] =
-    error !== null ? "?" : drafts.length >= PENDING_LIMIT ? "+" : "";
+    unavailable || error !== null ? "?" : drafts.length >= PENDING_LIMIT ? "+" : "";
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish the pending count to the page tabs when it changes.
   useEffect(() => {
     onPendingCountChange?.(pendingCount === null ? null : { count: pendingCount, qualifier });
@@ -219,15 +234,22 @@ export function EnvironmentVoiceReview({
     const view = item.draft ? views.get(item.draft.id) : undefined;
     return { uncertain: view?.uncertain ?? false, ownsEdit: view?.ownsEdit ?? false };
   };
-  const groups = groupPromptItems(items, "pending", "default", {
-    attention: (item) => promptAttention(item, localAttention(item)),
-    destinationLabel: (item) =>
-      displayText(item.draft?.routing_target, "Destination not observed yet"),
-    workstream: () => null,
-    queueStateLabel: () => "",
-  });
+  const groups = filteredPromptGroups(
+    items,
+    "pending",
+    listView,
+    {
+      attention: (item) => promptAttention(item, localAttention(item)),
+      destinationLabel: (item) =>
+        displayText(item.draft?.routing_target, "Destination not observed yet"),
+      workstream: () => null,
+      queueStateLabel: () => "",
+    },
+    () => [],
+  );
   const wide = useMediaQuery("md");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [localSelection, setSelected] = useState<string | null>(null);
+  const selected = linkedKey ?? localSelection;
   const [switchTo, setSwitchTo] = useState<string | null>(null);
   const firstKey = groups[0]?.items[0]?.key ?? null;
   if (wide && selected === null && firstKey !== null) setSelected(firstKey);
@@ -236,13 +258,15 @@ export function EnvironmentVoiceReview({
     selectedItem?.draft !== null && selectedItem?.draft !== undefined
       ? (views.get(selectedItem.draft.id)?.dirty ?? false)
       : false;
+  const commitSelection = (key: string) => {
+    setSelected(key);
+    setSwitchTo(null);
+    onLinkSelection?.(key);
+  };
   const choose = (key: string) => {
     if (key === selected) return;
     if (selectedDirty) setSwitchTo(key);
-    else {
-      setSelected(key);
-      setSwitchTo(null);
-    }
+    else commitSelection(key);
   };
   const formatTime = usePromptTime();
   const rows = (item: PromptItem): PromptRowView => {
@@ -269,6 +293,9 @@ export function EnvironmentVoiceReview({
       previewMuted: !text,
       source: draft.edited ? "Voice · edited" : "Voice",
       workstreams: [],
+      promptHref: onLinkSelection
+        ? promptLink({ source: environmentId, stage: "pending", prompt: item.key })
+        : undefined,
       time: item.time,
       dirty: view?.dirty ?? false,
       gone: false,
@@ -295,14 +322,16 @@ export function EnvironmentVoiceReview({
             </Button>
             <Button
               onClick={() => {
-                setSelected(switchTo);
-                setSwitchTo(null);
+                commitSelection(switchTo);
               }}
             >
               Switch prompt
             </Button>
           </AlertAction>
         </Alert>
+      ) : null}
+      {qualifier !== "" && pending.length > 0 ? (
+        <p className="text-xs text-muted-foreground">Searching {pending.length} loaded prompts.</p>
       ) : null}
       {loading && drafts.length === 0 ? (
         <div role="status" aria-label="Loading voice prompts…" className="space-y-1.5">
@@ -321,8 +350,11 @@ export function EnvironmentVoiceReview({
           showGroupHeadings={groups.length > 1}
           selectedKey={selected}
           onSelect={choose}
+          viewKey={listView?.key}
           empty={
-            error ? null : (
+            listView && items.length > 0 ? (
+              <PromptFilteredEmpty view={listView} />
+            ) : error ? null : (
               <Empty size="compact">
                 <EmptyHeader>
                   <EmptyTitle>Nothing waiting for review.</EmptyTitle>
@@ -339,6 +371,13 @@ export function EnvironmentVoiceReview({
               <PendingPromptDetail
                 key={selectedItem.key}
                 item={selectedItem}
+                workstreams={
+                  <PromptWorkstreams
+                    environmentId={environmentId}
+                    lines={[]}
+                    namesUnavailable={workstreamNamesUnavailable ?? false}
+                  />
+                }
                 view={views.get(selectedItem.draft.id)}
                 now={now}
                 unavailable={blocked}
@@ -353,7 +392,9 @@ export function EnvironmentVoiceReview({
               />
             ) : selected !== null ? (
               <section className="rounded-md border p-4 text-sm text-muted-foreground">
-                This prompt left Pending. It may now be under Queued.
+                {linkedKey
+                  ? "This prompt is not in the current sample."
+                  : "This prompt left Pending. It may now be under Queued."}
               </section>
             ) : (
               <section className="rounded-md border p-4 text-sm text-muted-foreground">
@@ -369,6 +410,7 @@ export function EnvironmentVoiceReview({
 
 function PendingPromptDetail({
   item,
+  workstreams,
   view,
   now,
   unavailable,
@@ -379,6 +421,7 @@ function PendingPromptDetail({
   dependencyPresent,
 }: {
   item: PromptItem;
+  workstreams: import("react").ReactNode;
   view: PendingDraftView | undefined;
   now: number;
   unavailable: boolean;
@@ -421,6 +464,7 @@ function PendingPromptDetail({
   const holding = draft.state === "held" || draft.state === "editing";
   return (
     <PromptDetail
+      workstreams={workstreams}
       title={destination}
       status={status}
       meta={
@@ -481,18 +525,6 @@ function PendingPromptDetail({
               </PromptAction>
             }
           >
-            {view?.error ? (
-              <Button
-                size="sm"
-                variant="outline"
-                aria-disabled={view.busy ? true : undefined}
-                onClick={() => {
-                  if (!view.busy) store.reconcile(draft.id);
-                }}
-              >
-                Check current state
-              </Button>
-            ) : null}
             <PromptAction
               label={`${holding ? "Pause" : "Resume"} prompt to ${destination}`}
               reason={reason}
@@ -528,7 +560,21 @@ function PendingPromptDetail({
       actionStatus={
         <>
           {saveReason ? <p id={reasonId}>{saveReason}</p> : null}
-          {view?.error ? <p role="alert">{view.error}</p> : null}
+          {view?.error ? (
+            <div className="space-y-1">
+              <p role="alert">{view.error}</p>
+              <Button
+                size="sm"
+                variant="outline"
+                aria-disabled={view.busy || unavailable || undefined}
+                onClick={() => {
+                  if (!view.busy && !unavailable) store.reconcile(draft.id);
+                }}
+              >
+                Check current state
+              </Button>
+            </div>
+          ) : null}
           {ownsEdit && !editing ? (
             <p>Unsaved text is preserved. Begin a new edit before saving it.</p>
           ) : null}

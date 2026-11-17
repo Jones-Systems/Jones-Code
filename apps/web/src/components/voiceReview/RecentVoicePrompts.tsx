@@ -4,9 +4,19 @@ import type {
   ThreadRegistryWorkstreams,
   VoiceReviewRecentEntry,
 } from "@t3tools/contracts";
-import { useState } from "react";
-import { XIcon } from "lucide-react";
+import { useState, useSyncExternalStore } from "react";
+import { ChevronsUpDownIcon, XIcon } from "lucide-react";
 import { randomUUID } from "../../lib/utils";
+import { Badge } from "../ui/badge";
+import {
+  Combobox,
+  ComboboxEmpty,
+  ComboboxItem,
+  ComboboxList,
+  ComboboxPopup,
+  ComboboxSearchInput,
+  ComboboxTrigger,
+} from "../ui/combobox";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { RegistryCorrectionActions, type RegistryCorrectionTransport } from "./voiceReviewActions";
@@ -28,8 +38,40 @@ export function recentThreadPurpose(thread: Thread | null) {
   return textField(thread?.registration ?? null, "purpose");
 }
 
-function correctionState(actions: RegistryCorrectionActions) {
-  return { busy: actions.busy, uncertain: actions.uncertain, error: actions.error };
+export class VoiceWorkstreamCorrectionSession {
+  readonly actions: RegistryCorrectionActions;
+  private readonly listeners = new Set<() => void>();
+  private readonly acknowledged = new Map<string, ThreadRegistryAssociation>();
+  private snapshot = {
+    busy: false,
+    uncertain: false,
+    error: null as string | null,
+    records: [] as readonly ThreadRegistryAssociation[],
+  };
+
+  constructor(transport: RegistryCorrectionTransport) {
+    this.actions = new RegistryCorrectionActions(transport);
+  }
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+  getSnapshot = () => this.snapshot;
+  publish(record?: ThreadRegistryAssociation) {
+    if (record) this.acknowledged.set(`${record.subject}|${record.workstream_ref}`, record);
+    this.snapshot = {
+      busy: this.actions.busy,
+      uncertain: this.actions.uncertain,
+      error: this.actions.error,
+      records: [...this.acknowledged.values()],
+    };
+    for (const listener of this.listeners) listener();
+  }
+  reconcile() {
+    this.actions.reconciled();
+    this.acknowledged.clear();
+    this.publish();
+  }
 }
 
 /**
@@ -44,6 +86,7 @@ export function VoiceWorkstreamCorrections({
   registry,
   workstreams,
   transport,
+  session,
   onRefresh,
   unavailable,
 }: {
@@ -52,38 +95,57 @@ export function VoiceWorkstreamCorrections({
   registry: ThreadRegistryComposedSnapshot | null;
   workstreams: ThreadRegistryWorkstreams | null;
   transport: RegistryCorrectionTransport;
+  session?: VoiceWorkstreamCorrectionSession | undefined;
   onRefresh: () => Promise<void>;
   unavailable: boolean;
 }) {
-  const [selected, setSelected] = useState("");
-  const [actions] = useState(() => new RegistryCorrectionActions(transport));
-  const [actionState, setActionState] = useState(() => correctionState(actions));
-  const [acknowledged, setAcknowledged] = useState<readonly ThreadRegistryAssociation[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [localSession] = useState(() => new VoiceWorkstreamCorrectionSession(transport));
+  const active = session ?? localSession;
+  const actionState = useSyncExternalStore(
+    active.subscribe,
+    active.getSnapshot,
+    active.getSnapshot,
+  );
   const [refreshError, setRefreshError] = useState(false);
   const subject = entry.command_id ? `prompt:${entry.command_id}` : null;
   const associations = new Map<string, ThreadRegistryAssociation>();
   for (const record of entry.associations ?? [])
     associations.set(`${record.subject}|${record.workstream_ref}`, record);
-  for (const record of acknowledged) {
+  const relevantSubjects = new Set([
+    subject,
+    ...[...associations.values()].map((record) => record.subject),
+  ]);
+  for (const record of actionState.records) {
+    if (!relevantSubjects.has(record.subject)) continue;
     const key = `${record.subject}|${record.workstream_ref}`;
     if ((associations.get(key)?.revision ?? 0) < record.revision) associations.set(key, record);
   }
-  const native = [...(thread?.native_memberships ?? []), ...(thread?.personal_memberships ?? [])];
-  const refs = new Set([...entry.workstream_refs, ...native.map((item) => item.workstream_ref)]);
+  const refs = new Set(entry.workstream_refs.filter((ref) => ref.startsWith("inferred:")));
   for (const record of associations.values()) {
     if (record.state === "active") refs.add(record.workstream_ref);
     else refs.delete(record.workstream_ref);
   }
-  const disabled = unavailable || actionState.busy || actionState.uncertain;
+  const disabled =
+    unavailable || actionState.busy || actionState.uncertain || !registry || !workstreams;
+  const readOnlyReason = actionState.uncertain
+    ? "Check current workstreams before another change."
+    : disabled
+      ? actionState.busy
+        ? "A Workstream change is in progress."
+        : "Workstream reads or corrections are currently unavailable."
+      : !subject || entry.associations === undefined
+        ? "Prompt corrections require an observed command and association revisions."
+        : null;
   const correct = async (
     ref: string,
     state: "active" | "suppressed",
     record?: ThreadRegistryAssociation,
   ) => {
-    if (disabled) return;
+    if (readOnlyReason || active.actions.busy || active.actions.uncertain) return;
     const target = record?.subject ?? subject;
     if (!target || !ref.startsWith("inferred:") || entry.associations === undefined) return;
-    const pending = actions.correct({
+    const pending = active.actions.correct({
       schema: "voice.association-mutation/v1",
       subject: target,
       workstream_ref: ref,
@@ -92,41 +154,31 @@ export function VoiceWorkstreamCorrections({
       request_id: randomUUID(),
       command_id: entry.command_id,
     });
-    setActionState(correctionState(actions));
+    active.publish();
     const receipt = await pending;
     if (receipt && "subject" in receipt.record) {
-      const updated = receipt.record;
-      setAcknowledged((records) => [
-        ...records.filter(
-          (item) =>
-            !(item.subject === updated.subject && item.workstream_ref === updated.workstream_ref),
-        ),
-        updated,
-      ]);
-      setSelected("");
+      active.publish(receipt.record);
+      setSelected(null);
+    } else {
+      active.publish();
     }
-    setActionState(correctionState(actions));
   };
   const refresh = async () => {
+    if (active.actions.busy) return;
     try {
       await onRefresh();
-      actions.reconciled();
-      setAcknowledged([]);
+      active.reconcile();
       setRefreshError(false);
     } catch {
       setRefreshError(true);
     }
-    setActionState(correctionState(actions));
   };
   const summary = textField(thread?.summary ?? null, "text");
   const options = new Map<string, string>();
-  for (const record of registry?.threads ?? []) {
-    for (const item of record.personal_memberships ?? [])
-      options.set(item.workstream_ref, item.name);
-  }
   for (const label of workstreams?.workstreams ?? []) {
     if (label.state === "active") options.set(label.label_id, label.name);
   }
+  const available = [...options.keys()].filter((ref) => !refs.has(ref));
   return (
     <div className="flex min-w-0 flex-col gap-2 text-xs">
       {thread?.freshness.stale === true ? (
@@ -138,82 +190,89 @@ export function VoiceWorkstreamCorrections({
           const record = [...associations.values()].find(
             (item) => item.workstream_ref === ref && item.state === "active",
           );
-          const readonly = ref.startsWith("native:");
+          const name = options.get(ref);
+          const unavailable =
+            readOnlyReason ?? (record ? null : "Association revision unavailable");
           return (
-            <span
-              key={ref}
-              className="group flex items-center gap-1 rounded-full border px-2 py-1 wrap-anywhere"
-            >
-              {options.get(ref) ?? ref}
-              {readonly ? (
-                <span className="text-muted-foreground"> · native</span>
-              ) : (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        disabled={disabled || !record || entry.associations === undefined}
-                      />
-                    }
-                    className="rounded-sm opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 disabled:opacity-40"
-                    aria-label={`Remove ${options.get(ref) ?? ref} workstream`}
-                    disabled={disabled || !record || entry.associations === undefined}
-                    onClick={() => void correct(ref, "suppressed", record)}
-                  >
-                    <XIcon className="size-3" />
-                  </TooltipTrigger>
-                  <TooltipPopup>
-                    {record ? "Remove workstream association" : "Association revision unavailable"}
-                  </TooltipPopup>
-                </Tooltip>
-              )}
+            <span key={ref} className="flex min-w-0 flex-wrap items-center gap-1">
+              <Badge
+                variant="outline"
+                size="sm"
+                className="h-auto max-w-full whitespace-normal wrap-anywhere"
+              >
+                <bdi className={name ? undefined : "font-mono"}>{name ?? ref}</bdi>
+                <span className="text-muted-foreground">suggested</span>
+              </Badge>
+              <Tooltip>
+                <TooltipTrigger
+                  render={<Button type="button" size="icon-xs" variant="ghost" />}
+                  aria-label={`Remove ${name ?? ref} workstream`}
+                  aria-disabled={unavailable !== null}
+                  onClick={() => {
+                    if (!unavailable) void correct(ref, "suppressed", record);
+                  }}
+                >
+                  <XIcon aria-hidden className="size-3" />
+                </TooltipTrigger>
+                <TooltipPopup>{unavailable ?? "Remove workstream association"}</TooltipPopup>
+              </Tooltip>
             </span>
           );
         })}
       </div>
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="min-w-0 flex-1">
-          Add existing workstream
-          <select
-            aria-label={`Add existing workstream to ${entry.draft.id}`}
-            value={selected}
-            disabled={disabled || !subject || !workstreams || entry.associations === undefined}
-            onChange={(event) => setSelected(event.target.value)}
-            className="mt-1 w-full rounded-md border bg-background p-2 text-sm"
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <Combobox
+          items={available}
+          value={selected}
+          onValueChange={setSelected}
+          itemToStringLabel={(ref) => options.get(ref) ?? ref}
+          disabled={readOnlyReason !== null}
+        >
+          <ComboboxTrigger
+            render={<Button type="button" variant="outline" size="compact" />}
+            aria-label={`Choose a workstream for ${entry.draft.id}`}
+            className="max-w-full"
           >
-            <option value="">Choose a workstream…</option>
-            {[...options].map(([ref, name]) => (
-              <option key={ref} value={ref} disabled={ref.startsWith("native:") || refs.has(ref)}>
-                {name}
-                {ref.startsWith("native:") ? " (native · read-only)" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
+            <span className="truncate">
+              {selected ? (options.get(selected) ?? selected) : "Choose a workstream…"}
+            </span>
+            <ChevronsUpDownIcon aria-hidden />
+          </ComboboxTrigger>
+          <ComboboxPopup>
+            <ComboboxSearchInput
+              aria-label="Search existing workstreams"
+              placeholder="Search workstreams"
+            />
+            <ComboboxEmpty>No available workstreams.</ComboboxEmpty>
+            <ComboboxList>
+              {(ref: string) => (
+                <ComboboxItem key={ref} value={ref}>
+                  {options.get(ref)}
+                </ComboboxItem>
+              )}
+            </ComboboxList>
+          </ComboboxPopup>
+        </Combobox>
         <Button
           variant="outline"
           size="compact"
-          disabled={disabled || !selected || !subject || entry.associations === undefined}
-          onClick={() =>
+          disabled={readOnlyReason !== null || !selected || !available.includes(selected)}
+          onClick={() => {
+            if (!selected || !available.includes(selected)) return;
             void correct(
               selected,
               "active",
               [...associations.values()].find(
                 (item) => item.subject === subject && item.workstream_ref === selected,
               ),
-            )
-          }
+            );
+          }}
         >
           Add
         </Button>
       </div>
       <p className="text-muted-foreground">Workstream corrections never resend prompts.</p>
-      {!subject || entry.associations === undefined ? (
-        <p className="text-muted-foreground">
-          Prompt corrections are unavailable until command and association revisions are observed.
-        </p>
-      ) : null}
+      {readOnlyReason ? <p className="text-muted-foreground">{readOnlyReason}</p> : null}
       {actionState.error || refreshError ? (
         <p role="alert" className="text-sm">
           {refreshError
