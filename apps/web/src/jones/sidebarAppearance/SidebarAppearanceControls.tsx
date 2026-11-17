@@ -116,7 +116,9 @@ export function SidebarAppearanceControls() {
           className="cursor-pointer rounded border border-border px-2 py-1"
           onClick={() => {
             host.reset();
-            setMessage("Reset: Selected look at Current brightness. Stored record removed.");
+            setMessage(
+              `Reset to the Selected look with ${DEFAULT_SIDEBAR_APPEARANCE.threadTitleBrightnessBoost}% thread title brightness.`,
+            );
           }}
         >
           Reset all

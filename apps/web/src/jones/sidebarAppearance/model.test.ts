@@ -31,10 +31,18 @@ describe("sidebar appearance schema", () => {
       workstreamTitleWeight: "medium",
       workstreamTitleBrightness: "muted",
       pillBackgroundOpacity: 4,
-      threadTitleBrightnessBoost: 0,
+      threadTitleBrightnessBoost: 50,
       countStyle: "numeric-right",
       deviceLabel: "icon",
       laptopSymbol: "filled",
+      vpsSymbol: "outline",
+    });
+  });
+
+  it("preserves explicitly saved brightness and VPS choices", () => {
+    expect(decode({ threadTitleBrightnessBoost: 0, vpsSymbol: "filled" })).toEqual({
+      ...DEFAULT_SIDEBAR_APPEARANCE,
+      threadTitleBrightnessBoost: 0,
       vpsSymbol: "filled",
     });
   });

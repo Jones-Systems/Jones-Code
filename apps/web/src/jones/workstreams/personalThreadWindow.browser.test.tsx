@@ -181,8 +181,8 @@ const options = (name: string) =>
   page.getByRole("button", { name: `Options for ${name}`, exact: true });
 const radio = (limit: number) =>
   page.getByRole("menuitemradio", { name: String(limit), exact: true });
-const showAll = (name: string) =>
-  page.getByRole("button", { name: `Show all 13 threads in ${name}`, exact: true });
+const showMore = (name: string, count: number) =>
+  page.getByRole("button", { name: `Show ${count} more threads in ${name}`, exact: true });
 const showFewer = (name: string, limit: number) =>
   page.getByRole("button", { name: `Show only ${limit} threads in ${name}`, exact: true });
 
@@ -194,10 +194,10 @@ async function chooseLimit(name: string, limit: number) {
 }
 
 describe("personal Workstream thread windows", () => {
-  it("preserves Show all when double-click rename is cancelled", async () => {
+  it("preserves the expanded thread window when double-click rename is cancelled", async () => {
     using setup = fixture();
     await using screen = await render(<Sidebar setup={setup} />);
-    await userEvent.click(showAll("Alpha"));
+    await userEvent.click(showMore("Alpha", 8));
     await userEvent.dblClick(page.getByText("Alpha", { exact: true }));
     await expect.element(page.getByRole("textbox", { name: "Workstream name" })).toHaveFocus();
     await userEvent.keyboard("{Escape}");
@@ -209,7 +209,7 @@ describe("personal Workstream thread windows", () => {
   it("restores expansion for a native double-click after the first click has already collapsed", async () => {
     using setup = fixture();
     await using screen = await render(<Sidebar setup={setup} />);
-    await userEvent.click(showAll("Alpha"));
+    await userEvent.click(showMore("Alpha", 8));
     const title = () =>
       section(screen.container, alphaId).querySelector("[data-workstream-header] .line-clamp-2")!;
     await act(() => title().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
@@ -236,16 +236,11 @@ describe("personal Workstream thread windows", () => {
     await expect
       .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .toHaveAccessibleDescription(/13 threads/);
-    await expect.element(showAll("Alpha")).toHaveTextContent("Show all 13");
-    await expect.element(showAll("Alpha")).toHaveAttribute("aria-expanded", "false");
-    await expect
-      .element(page.getByRole("button", { name: "Show all 5 threads in Beta", exact: true }))
-      .not.toBeInTheDocument();
-    await expect.element(showFewer("Beta", 5)).not.toBeInTheDocument();
+    await expect.element(showMore("Alpha", 8)).toHaveTextContent("Show 8 more");
+    await expect.element(showMore("Alpha", 8)).toHaveAttribute("aria-expanded", "false");
+    expect(beta.querySelector("[data-workstream-window-footer]")).toBeNull();
     await expect.element(options("Unassigned")).not.toBeInTheDocument();
-    await expect
-      .element(page.getByRole("button", { name: "Show all 7 threads in Unassigned", exact: true }))
-      .not.toBeInTheDocument();
+    expect(unassigned.querySelector("[data-workstream-window-footer]")).toBeNull();
 
     await userEvent.click(options("Alpha"));
     await expect.element(page.getByText("Visible threads", { exact: true })).toBeVisible();
@@ -262,27 +257,27 @@ describe("personal Workstream thread windows", () => {
     await expect.element(radio(10)).toHaveAttribute("aria-checked", "false");
     expect(rowIds(alpha)).toEqual(ids(setup.alpha));
     await userEvent.keyboard("{Escape}");
-    await expect.element(showAll("Alpha")).not.toBeInTheDocument();
-    await expect.element(showFewer("Alpha", 15)).not.toBeInTheDocument();
+    expect(alpha.querySelector("[data-workstream-window-footer]")).toBeNull();
 
     await chooseLimit("Alpha", 5);
-    await userEvent.click(showAll("Alpha"));
+    await userEvent.click(showMore("Alpha", 8));
     expect(rowIds(alpha)).toEqual(ids(setup.alpha));
     await expect.element(showFewer("Alpha", 5)).toHaveTextContent("Show fewer");
     await expect.element(showFewer("Alpha", 5)).toHaveAttribute("aria-expanded", "true");
     await chooseLimit("Alpha", 10);
     expect(rowIds(alpha)).toEqual(ids(setup.alpha.slice(0, 10)));
-    await expect.element(showAll("Alpha")).toHaveAttribute("aria-expanded", "false");
-    await userEvent.click(showAll("Alpha"));
+    await expect.element(showMore("Alpha", 3)).toHaveTextContent("Show 3 more");
+    await expect.element(showMore("Alpha", 3)).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(showMore("Alpha", 3));
     await userEvent.click(showFewer("Alpha", 10));
     expect(rowIds(alpha)).toEqual(ids(setup.alpha.slice(0, 10)));
-    await userEvent.click(showAll("Alpha"));
+    await userEvent.click(showMore("Alpha", 3));
     await userEvent.click(page.getByRole("button", { name: "Collapse Alpha", exact: true }));
     await expect.poll(() => rowIds(alpha)).toEqual([]);
     await expect.element(showFewer("Alpha", 10)).not.toBeInTheDocument();
     await userEvent.click(page.getByRole("button", { name: "Expand Alpha", exact: true }));
     await expect.poll(() => rowIds(alpha)).toEqual(ids(setup.alpha.slice(0, 10)));
-    await expect.element(showAll("Alpha")).toHaveAttribute("aria-expanded", "false");
+    await expect.element(showMore("Alpha", 3)).toHaveAttribute("aria-expanded", "false");
     expect(rowIds(beta)).toEqual(ids(setup.beta));
     expect(rowIds(unassigned)).toEqual(ids(setup.unassigned));
     expect(setup.unexpectedMutation).not.toHaveBeenCalled();
@@ -295,14 +290,14 @@ describe("personal Workstream thread windows", () => {
     await chooseLimit("Alpha", 10);
     expect(rows(alphaId)).toEqual(ids(setup.alpha.slice(0, 10)));
     await expect.poll(() => rows(betaId)).toEqual(ids(setup.beta.slice(0, 5)));
-    await userEvent.click(showAll("Alpha"));
+    await userEvent.click(showMore("Alpha", 3));
     await chooseLimit("Beta", 15);
     expect(rows(alphaId)).toEqual(ids(setup.alpha));
     expect(rows(betaId)).toEqual(ids(setup.beta));
     await chooseLimit("Beta", 5);
     expect(rows(alphaId)).toEqual(ids(setup.alpha));
     expect(rows(betaId)).toEqual(ids(setup.beta.slice(0, 5)));
-    await userEvent.click(showAll("Beta"));
+    await userEvent.click(showMore("Beta", 8));
     await userEvent.click(showFewer("Alpha", 10));
     expect(rows(alphaId)).toEqual(ids(setup.alpha.slice(0, 10)));
     expect(rows(betaId)).toEqual(ids(setup.beta));
@@ -315,7 +310,7 @@ describe("personal Workstream thread windows", () => {
     await screen.rerender(<Sidebar setup={setup} />);
     expect(rows(alphaId)).toEqual(ids(setup.alpha.slice(0, 10)));
     expect(rows(betaId)).toEqual(ids(setup.beta));
-    await expect.element(showAll("Alpha")).toHaveAttribute("aria-expanded", "false");
+    await expect.element(showMore("Alpha", 3)).toHaveAttribute("aria-expanded", "false");
     await expect.element(showFewer("Beta", 5)).toHaveAttribute("aria-expanded", "true");
     for (const [name, limit] of [
       ["Alpha", 10],
@@ -358,7 +353,7 @@ describe("personal Workstream thread windows", () => {
       [...setup.alpha.slice(0, 10), ...tail],
       [...setup.alpha.slice(0, 10), currentThread, ...tail],
     );
-    await userEvent.click(showAll("Alpha"));
+    await userEvent.click(showMore("Alpha", 3));
     await assertNavigation([...setup.alpha, ...tail]);
     await userEvent.click(showFewer("Alpha", 10));
     await assertNavigation(

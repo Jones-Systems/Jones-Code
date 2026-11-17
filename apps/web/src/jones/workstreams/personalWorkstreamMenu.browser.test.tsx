@@ -345,23 +345,53 @@ describe("Workstream options and header ordering", () => {
       .not.toContain("Members of menu-Alpha");
   });
 
-  it("uses the Divider footer and updates the visible count while the window menu stays open", async () => {
+  it("uses a compact Show more footer and updates its count while the window menu stays open", async () => {
     using setup = fixture(undefined, 12);
     await using screen = await render(setup.ui);
     const alpha = section(screen.container, "Alpha");
     expect(alpha.querySelectorAll("[data-menu-member]")).toHaveLength(5);
-    const footer = alpha.querySelector("[data-workstream-window-footer]")!;
-    const lines = footer.querySelectorAll("span[aria-hidden]");
-    expect(lines).toHaveLength(2);
-    const button = footer.querySelector("button")!;
-    expect(button.textContent).toBe("Show all 12");
-    const footerRect = footer.getBoundingClientRect();
+    const showMore = page.getByRole("button", {
+      name: "Show 7 more threads in Alpha",
+      exact: true,
+    });
+    const button = showMore.element();
+    expect(button.textContent?.trim()).toBe("Show 7 more");
     const buttonRect = button.getBoundingClientRect();
+    const label = document.createRange();
+    label.selectNodeContents(button);
+    const labelRect = label.getBoundingClientRect();
+    expect(buttonRect.height).toBe(matchMedia("(pointer: coarse)").matches ? 24 : 16);
+    expect(buttonRect.width).toBeCloseTo(alpha.clientWidth, 0);
     expect(
-      Math.abs((buttonRect.left + buttonRect.right) / 2 - (footerRect.left + footerRect.right) / 2),
+      Math.abs((labelRect.left + labelRect.right) / 2 - (buttonRect.left + buttonRect.right) / 2),
     ).toBeLessThan(1);
-    expect(lines[0]!.getBoundingClientRect().right).toBeLessThan(buttonRect.left);
-    expect(lines[1]!.getBoundingClientRect().left).toBeGreaterThan(buttonRect.right);
+    expect(button.querySelectorAll("[aria-hidden]")).toHaveLength(1);
+    expect(button.querySelector("svg")?.getBoundingClientRect().width).toBe(10);
+    const startDivider = getComputedStyle(button, "::before");
+    const endDivider = getComputedStyle(button, "::after");
+    expect([startDivider.height, endDivider.height]).toEqual(["1px", "1px"]);
+    const dividerWidths = [startDivider, endDivider].map((divider) => parseFloat(divider.width));
+    expect(Math.min(...dividerWidths)).toBeGreaterThan(0);
+    expect(Math.max(...dividerWidths) - Math.min(...dividerWidths)).toBeLessThan(1);
+    const style = getComputedStyle(button);
+    expect(style.fontSize).toBe("11px");
+    expect(style.fontWeight).toBe("400");
+    expect(style.whiteSpace).toBe("nowrap");
+    expect(style.cursor).toBe("pointer");
+    const restingColor = style.color;
+    const restingShadow = style.boxShadow;
+    await userEvent.hover(showMore);
+    const hoverColor = getComputedStyle(button).color;
+    expect(hoverColor).not.toBe(restingColor);
+    await userEvent.unhover(showMore);
+    expect(getComputedStyle(button).color).toBe(restingColor);
+    await act(() => header(screen.container, "Beta").focus());
+    await userEvent.tab({ shift: true });
+    await expect.element(showMore).toHaveFocus();
+    expect(button.matches(":focus-visible")).toBe(true);
+    const focusedStyle = getComputedStyle(button);
+    expect(focusedStyle.color).toBe(hoverColor);
+    expect(focusedStyle.boxShadow).not.toBe(restingShadow);
     await options();
     await expect.element(page.getByText("5 of 12 shown", { exact: true })).toBeVisible();
     await userEvent.click(page.getByRole("menuitemradio", { name: "10", exact: true }));
@@ -376,15 +406,15 @@ describe("Workstream options and header ordering", () => {
     expect(selected.getBoundingClientRect().width).toBeGreaterThanOrEqual(24);
     await expect.element(page.getByText("10 of 12 shown", { exact: true })).toBeVisible();
     expect(alpha.querySelectorAll("[data-menu-member]")).toHaveLength(10);
+    expect(button.textContent).toBe("Show 2 more");
+    expect(button.getAttribute("aria-label")).toBe("Show 2 more threads in Alpha");
     await userEvent.click(page.getByRole("menuitemradio", { name: "15", exact: true }));
     await expect.element(page.getByRole("menu")).toBeVisible();
     await expect.element(page.getByText("12 of 12 shown", { exact: true })).toBeVisible();
     expect(alpha.querySelector("[data-workstream-window-footer]")).toBeNull();
     await userEvent.click(page.getByRole("menuitemradio", { name: "5", exact: true }));
     await userEvent.keyboard("{Escape}");
-    await userEvent.click(
-      page.getByRole("button", { name: "Show all 12 threads in Alpha", exact: true }),
-    );
+    await userEvent.click(showMore);
     expect(alpha.querySelectorAll("[data-menu-member]")).toHaveLength(12);
     await expect
       .element(page.getByRole("button", { name: "Show only 5 threads in Alpha", exact: true }))
