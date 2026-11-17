@@ -3,6 +3,9 @@ import { useState, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
+import { EllipsisVerticalIcon } from "lucide-react";
+import { PersonalWorkstreamOptionsButton } from "./PersonalWorkstreamDisplayControls";
+import { PersonalStatusPill } from "./PersonalStatusPill";
 import { PersonalSidebarGroupHeader } from "./PersonalSidebarGroupHeader";
 import type { PersonalStatusFilter } from "./personalStatusFilter";
 import type { PersonalThreadSummary } from "./personalPresentation";
@@ -42,9 +45,9 @@ function Header({
         onStatusFilterChange={setFilter}
         onRenameRequested={onRename}
         actions={
-          <button type="button" className="h-6 w-3" aria-label={`Options for ${name}`}>
-            …
-          </button>
+          <PersonalWorkstreamOptionsButton aria-label={`Options for ${name}`}>
+            <EllipsisVerticalIcon aria-hidden className="size-[12px]" />
+          </PersonalWorkstreamOptionsButton>
         }
       />
       <output aria-label="Local status">{filter ?? "inherit"}</output>
@@ -97,6 +100,56 @@ async function clickAt(target: Element, at: number) {
 }
 
 describe("personal Workstream header controls", () => {
+  it("uses pointer cursors for actions and a default cursor in pill gaps and read-only counters", async () => {
+    await using screen = await render(
+      <div style={{ cursor: "grab" }}>
+        <Header />
+        <div data-read-only>
+          <PersonalStatusPill summary={summary} />
+        </div>
+      </div>,
+    );
+    const header = screen.container.querySelector("[data-personal-group-header]")!;
+    for (const element of [
+      ...header.querySelectorAll("button"),
+      header.querySelector(".line-clamp-2")!,
+    ])
+      expect(getComputedStyle(element).cursor).toBe("pointer");
+    const group = pill(header);
+    expect(getComputedStyle(group).cursor).toBe("default");
+    const separator = [...group.querySelectorAll("span")].find(
+      (element) => element.textContent === "·",
+    )!;
+    const rect = separator.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)!;
+    expect(getComputedStyle(hit).cursor).toBe("default");
+    for (const element of screen.container.querySelectorAll("[data-read-only] span"))
+      expect(getComputedStyle(element).cursor).toBe("default");
+  });
+
+  it.each([true, false])(
+    "shows grab only on a draggable title (draggable=%s)",
+    async (draggable) => {
+      await using screen = await render(
+        <div data-workstream-header draggable={draggable}>
+          <Header />
+        </div>,
+      );
+      const title = screen.container.querySelector<HTMLElement>(".line-clamp-2")!;
+      const rect = title.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + 2, rect.top + rect.height / 2)!;
+      expect(hit).toBe(title);
+      expect(getComputedStyle(hit).cursor).toBe(draggable ? "grab" : "pointer");
+      for (const button of screen.container.querySelectorAll("button"))
+        expect(getComputedStyle(button).cursor).toBe("pointer");
+      const options = screen.container.querySelector<HTMLElement>(
+        '[aria-label="Options for Alpha"]',
+      )!;
+      expect(options.getBoundingClientRect().width).toBe(12);
+      expect(options.getBoundingClientRect().height).toBe(12);
+    },
+  );
+
   it.each([
     ["Working", "working", 3],
     ["Needs input", "input", 2],
@@ -171,6 +224,30 @@ describe("personal Workstream header controls", () => {
       .toHaveTextContent("done");
     expect(counter(screen.container, "Working").getAttribute("aria-pressed")).toBe("false");
     expect(counter(screen.container, "Done").getAttribute("aria-label")).toContain("selected");
+  });
+
+  it("has no disclosure chevron, keeps the title flush left and toggles through the labelled overlay", async () => {
+    await using screen = await render(<Header />);
+    const header = screen.container.querySelector<HTMLElement>("[data-personal-group-header]")!;
+    expect(header.querySelectorAll("svg")).toHaveLength(1);
+    expect(header.querySelector("svg")!.closest("button")!.getAttribute("aria-label")).toBe(
+      "Options for Alpha",
+    );
+    const headerRect = header.getBoundingClientRect();
+    const title = header.querySelector<HTMLElement>(".line-clamp-2")!;
+    const paddingLeft = parseFloat(getComputedStyle(header).paddingLeft);
+    expect(title.getBoundingClientRect().left - headerRect.left).toBeCloseTo(paddingLeft, 1);
+    const count = [...header.querySelectorAll("span")].find(
+      (element) => element.textContent === "14 threads",
+    )!;
+    expect(count.getBoundingClientRect().left).toBeCloseTo(title.getBoundingClientRect().left, 1);
+    const toggle = page.getByRole("button", { name: "Collapse Alpha", exact: true });
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(page.getByText("Alpha", { exact: true }));
+    await expect
+      .element(page.getByRole("button", { name: "Expand Alpha", exact: true }))
+      .toHaveAttribute("aria-expanded", "false");
+    await expect.element(page.getByText("Member threads", { exact: true })).not.toBeInTheDocument();
   });
 
   it("matches the real top-bar pill's standard geometry when the title has room", async () => {
@@ -254,9 +331,13 @@ describe("personal Workstream header controls", () => {
     const minimum = minimumLayout(screen.container);
     const width = 260 + wordWidth * 1.6 - minimum.titleWidth;
     await screen.rerender(<Header width={width} name={"Workstream ".repeat(12)} />);
+    // The title is flush left, so at 260 px two words share a line and the counters stay
+    // compressed. A width-only rerender refits through ResizeObserver before the next paint.
+    await expect
+      .poll(() => pill(screen.container).getBoundingClientRect().width)
+      .toBeCloseTo(standardWidth, 1);
     expect(visibleTitleLines(screen.container)).toEqual(minimumLayout(screen.container).lines);
     expect(visibleTitleLines(screen.container)).toEqual(["Workstream", "Workstream"]);
-    expect(pill(screen.container).getBoundingClientRect().width).toBeCloseTo(standardWidth, 1);
   });
 
   it("refits live resize, count and font changes without hiding large counts or the name editor", async () => {
@@ -341,4 +422,18 @@ describe("personal Workstream header controls", () => {
       await expect.element(page.getByText("14 threads", { exact: true })).toBeVisible();
     },
   );
+});
+
+it("keeps the roster total visible when a status filter hides every member", async () => {
+  await using _screen = await render(
+    <PersonalSidebarGroupHeader
+      name="JC Sync"
+      collapsed={false}
+      onToggle={() => {}}
+      summary={{ total: 3, running: 0, attention: 0, done: 1, failed: 0 }}
+      visibleCount={0}
+    />,
+  );
+  await expect.element(page.getByText("3 threads", { exact: true })).toBeVisible();
+  expect(document.body.textContent).not.toContain("0 of 3");
 });

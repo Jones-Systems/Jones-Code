@@ -1,3 +1,4 @@
+import { syntheticReceiverAuth, syntheticReceiverLayers } from "./receiver.testkit.ts";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, type LinkedRequestContext } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -48,15 +49,16 @@ const headers = (title: string, context: LinkedRequestContext) => ({
   }),
   [LINKED_REQUEST_CONTEXT_HEADER]: encodeLinkedRequestContext(context),
 });
-const memory = Layer.effectDiscard(migrateCore.pipe(Effect.andThen(migrateIntegration))).pipe(
-  Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
-);
+const memory = Layer.effectDiscard(
+  migrateCore.pipe(Effect.andThen(migrateIntegration), Effect.andThen(syntheticReceiverAuth)),
+).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 it.effect(
   "B1-11: real linked MCP intake stores context and reuses bytes after title/time changes",
   () => {
     let evaluations = 0;
     const fixture = Intake.layer.pipe(
+      Layer.provide(syntheticReceiverLayers),
       Layer.provide(
         Admission.layerWithEvaluator(() =>
           Effect.sync(() => {

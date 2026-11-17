@@ -16,6 +16,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/web/src/components/settings/ProjectDefaultsSettings.tsx",
+      "to": "apps/web/src/jones/settings/modelSelectionCorrespondence.ts"
+    },
+    {
       "from": "apps/web/src/components/settings/useScopedSettings.ts",
       "to": "apps/web/src/jones/settings/modelSelectionCorrespondence.ts"
     },

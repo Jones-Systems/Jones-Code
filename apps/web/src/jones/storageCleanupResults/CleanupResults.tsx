@@ -34,17 +34,46 @@ export function CleanupResults({
 
 type CleanupEntry = StorageCleanupReport["entries"][number];
 
-function canRetire(entry: CleanupEntry) {
+/** The Retire confirmation lists every covered path, so one retirement covers a bounded number. */
+const MAX_RETIRE_COVERED_PATHS = 200;
+
+function retireEligibleExceptPathCount(entry: CleanupEntry) {
   return Boolean(
     entry.threadId &&
     entry.path &&
     entry.retirement?.fingerprint &&
-    entry.retirement.paths.length <= 200 &&
     entry.retirement.reasonCodes.every((reason) =>
-      ["unattested_ignored", "sensitive_ignored", "untracked"].includes(reason),
+      // An interrupted retirement whose checkout is gone is finished by Retire, which deletes nothing.
+      [
+        "unattested_ignored",
+        "sensitive_ignored",
+        "interrupted_retirement_checkout_absent",
+      ].includes(reason),
     ) &&
     entry.retirement.state !== "retired",
   );
+}
+
+function canRetire(entry: CleanupEntry) {
+  return (
+    retireEligibleExceptPathCount(entry) &&
+    (entry.retirement?.paths.length ?? 0) <= MAX_RETIRE_COVERED_PATHS
+  );
+}
+
+/** Why an entry has no Retire button, when the cause is something the owner can change. */
+function retireHoldNote(entry: CleanupEntry, retireOffered: boolean) {
+  if (entry.retirement?.state === "retired") return null;
+  // Disposal refuses untracked files unless "Edited tracked files" is the keep mode, so Retire cannot succeed.
+  if (entry.retirement?.reasonCodes.includes("untracked"))
+    return 'Held: this checkout has untracked files. To allow retirement, set "Keep worktrees with local changes" (Settings → Worktrees) to "Edited tracked files", then propose again.';
+  if (
+    retireOffered &&
+    retireEligibleExceptPathCount(entry) &&
+    (entry.retirement?.paths.length ?? 0) > MAX_RETIRE_COVERED_PATHS
+  )
+    return `Retire is unavailable: this checkout covers ${entry.retirement!.paths.length.toLocaleString()} paths, more than the ${MAX_RETIRE_COVERED_PATHS} one retirement can authorize. Remove local files you no longer need, then propose again.`;
+  return null;
 }
 
 const categories = ["Ready to retire", "Needs attention", "Kept", "Removed"] as const;
@@ -229,6 +258,7 @@ function CleanupReportRows({
   return (
     <>
       {entries.map((entry, index) => {
+        const holdNote = retireHoldNote(entry, Boolean(onRetire));
         const name =
           entry.kind === "worktree"
             ? ((entry.threadId === null
@@ -246,6 +276,7 @@ function CleanupReportRows({
                 <span className={`block ${entry.outcome === "failed" ? "text-destructive" : ""}`}>
                   {entry.reason}
                 </span>
+                {holdNote && <span className="block">{holdNote}</span>}
                 <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-border/60 pl-3">
                   <span>Machine</span>
                   <span className="text-foreground/80">{environmentLabel}</span>

@@ -1,4 +1,5 @@
 import { makeRemoteAdmissionHttpGroup } from "./remoteAdmissionHttp.ts";
+import { makeRemoteAdmissionReviewHttpGroup } from "./remoteAdmissionReview.ts";
 import {
   ImportedHistoryStart,
   ImportedHistoryReview,
@@ -588,6 +589,11 @@ export const makeJonesHttpGroups = ({
     ) {}
 
   return {
+    EnvironmentRemoteAdmissionReviewHttpApi: makeRemoteAdmissionReviewHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentInternalError,
+    }),
     EnvironmentRemoteAdmissionHttpApi: makeRemoteAdmissionHttpGroup({
       OptionalBearerHeaders,
       EnvironmentAuthenticatedAuth,

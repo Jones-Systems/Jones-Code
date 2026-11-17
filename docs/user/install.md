@@ -5,13 +5,33 @@ desktop, web, or mobile app. Set up the machine where the agents will work first
 
 > **Jones Code:** every installer on this page installs upstream T3 Code, not
 > Jones Code. That includes the `install.sh` and `install.ps1` scripts, `npx t3`,
-> GitHub Releases, package managers, and the mobile store apps. Jones Code Mac
-> builds are unsigned preview artifacts for Apple Silicon only. Jones Code supports
-> Apple Silicon Macs and Linux; Windows and Intel Macs are unsupported. See
-> [Mac desktop artifact](../operations/build-artifacts.md#mac-desktop-artifact)
-> for how they install and update. The upstream macOS app uses the same bundle
-> identifier as Jones Code. If both are installed, verify which app opens
-> `t3code://` links and app lookups before using them.
+> GitHub Releases, package managers, the Intel Mac source build, and the mobile
+> store apps. Jones Code supports Apple Silicon Macs and Linux; Windows and Intel
+> Macs are unsupported.
+>
+> - **Get Jones Code:** Mac builds are unsigned preview DMGs from the
+>   [Mac desktop artifact](../operations/build-artifacts.md#mac-desktop-artifact)
+>   workflow, kept for 7 days. Linux uses the
+>   [CLI artifacts](../operations/build-artifacts.md).
+> - **Update Jones Code:** use **Install status** in the app, as described in
+>   [Updating Jones Code](./updating.md#install-status). Do not drag a newer DMG
+>   over an installed copy; startup refuses it.
+> - **Run it in the background:** use `t3 jones host setup` from
+>   [Running in the background](./background-service.md), not `t3 service install`.
+>
+> On a Mac that has Jones Code, do not run the upstream commands on this page.
+> `install.sh` replaces a `~/.local/bin/t3` link that points at the Jones app's
+> launcher in `~/.t3/bin/t3`, so `t3` runs upstream T3 Code instead. `npx t3`
+> and the upstream Homebrew cask install upstream builds. `t3 update` and
+> `t3 uninstall` refuse a Jones runtime. Older Jones builds, including every
+> build made before November 17, 2026, lack the uninstall check: there,
+> `t3 uninstall` removes `~/.t3/runtime`, which holds the Jones install record
+> and update recovery data. Both apps share the default
+> `~/.t3` home.
+>
+> The preview DMG uses the same bundle identifier as upstream T3 Code. If both
+> apps are installed, verify which one opens `t3code://` links and app lookups
+> before using them.
 
 ## Requirements
 
@@ -145,8 +165,9 @@ on first launch; after an update, or any time, choose **Install** next to
 in `~/.local/bin` (or `~/bin`); on Windows it adds the app's command folder to
 your `PATH`. Open a new terminal afterwards. If the folder is not on your
 `PATH`, **Add to PATH** on the Welcome page or in **Settings → About** adds one
-line to your shell's startup file. **Remove** takes it off, and the app does not
-add it again. If you already have another `t3`, it stays as it is.
+line to your shell's startup file. **Remove** deletes the `t3` link, and the app
+does not add it again. On macOS and Linux it leaves the `PATH` line in place;
+delete the line marked `# Added by T3 Code` yourself if you no longer want it. If you already have another `t3`, it stays as it is.
 
 ### Windows Subsystem for Linux
 

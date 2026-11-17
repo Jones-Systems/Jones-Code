@@ -18,13 +18,35 @@ type Projection = {
   readonly runs: ReadonlyArray<
     Pick<
       RecordedThreadProjection["runs"][number],
-      "id" | "ordinal" | "status" | "rootNodeId" | "providerInstanceId" | "providerThreadId"
+      | "id"
+      | "ordinal"
+      | "status"
+      | "startedAt"
+      | "rootNodeId"
+      | "providerInstanceId"
+      | "providerThreadId"
     >
   >;
   readonly nodes: ReadonlyArray<Pick<OrchestrationV2ExecutionNode, "id" | "runId" | "kind">>;
   readonly turnItems: ReadonlyArray<Pick<OrchestrationV2TurnItem, "id">>;
   readonly runtimeRequests: ReadonlyArray<Pick<OrchestrationV2RuntimeRequest, "id">>;
 };
+
+const LIVE_RUN_STATUSES: ReadonlyArray<Projection["runs"][number]["status"]> = [
+  "starting",
+  "running",
+  "waiting",
+];
+
+/**
+ * A later run takes over the thread only once it is live or has actually run.
+ * `startedAt` is null until a run reaches `running` (it stays null while `starting`),
+ * so a later run that never started, such as a queued run steered into the active
+ * turn and recorded as `cancelled`, leaves ownership with the active run.
+ */
+function supersedes(candidate: Projection["runs"][number]): boolean {
+  return LIVE_RUN_STATUSES.includes(candidate.status) || candidate.startedAt !== null;
+}
 
 export function buildUserInputRequestRecord(input: {
   readonly command: UserInputRequestRecordCommand;
@@ -48,10 +70,7 @@ export function buildUserInputRequestRecord(input: {
     projection.thread.id !== command.threadId ||
     run === undefined ||
     !["starting", "running", "waiting"].includes(run.status) ||
-    projection.runs.some(
-      (candidate) =>
-        candidate.ordinal > run.ordinal && !["queued", "preparing"].includes(candidate.status),
-    ) ||
+    projection.runs.some((candidate) => candidate.ordinal > run.ordinal && supersedes(candidate)) ||
     run.rootNodeId !== command.rootNodeId ||
     run.providerInstanceId !== command.providerInstanceId ||
     root === undefined ||

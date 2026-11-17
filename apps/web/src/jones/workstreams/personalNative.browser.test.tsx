@@ -79,6 +79,8 @@ function fixture() {
       registry.dispose();
       localStorage.removeItem("jones:workstreams:collapsed:synthetic-work");
       localStorage.removeItem("jones:workstreams:unassigned-collapsed");
+      localStorage.removeItem("jones:workstreams:named-hidden");
+      localStorage.removeItem("jones:workstreams:shared-status-filter");
     },
   };
 }
@@ -286,6 +288,7 @@ describe("personal thread composer reference drags", () => {
     const neighbor = nativeRow(screen.container, member);
     const composer = screen.container.querySelector<HTMLElement>("[data-thread-context-drop]")!;
     const before = dragPoint(neighbor, 0.2);
+    const sourceHeight = source.getBoundingClientRect().height;
     await act(() => {
       dragPointer(source, "pointerdown", dragPoint(source));
       dragPointer(document, "pointermove", dragPoint(composer));
@@ -295,7 +298,8 @@ describe("personal thread composer reference drags", () => {
     expect(composer.hasAttribute("data-thread-context-over")).toBe(false);
     expect(document.querySelector<HTMLElement>("[data-personal-thread-drag]")?.hidden).toBe(false);
     const insertion = document.querySelector<HTMLElement>("[data-personal-thread-insertion]");
-    expect(insertion?.parentElement).toBe(neighbor);
+    expect(insertion?.nextElementSibling).toBe(neighbor);
+    expect(insertion?.getBoundingClientRect().height).toBe(sourceHeight);
     expect(insertion?.dataset.personalThreadInsertion).toBe("before");
     await act(() => dragPointer(document, "pointerup", before, 0));
     expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(

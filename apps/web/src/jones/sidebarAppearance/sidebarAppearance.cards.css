@@ -1,0 +1,83 @@
+/* Card-only scale and title colour slots. Original + boost 0 has no overrides. */
+[data-jones-card-scale="0.93"] {
+  --jones-sidebar-card-scale: 0.93;
+}
+[data-jones-card-scale="0.87"] {
+  --jones-sidebar-card-scale: 0.87;
+}
+:is([data-jones-card-scale="0.93"], [data-jones-card-scale="0.87"]) [data-jones-sidebar-card] {
+  --spacing: calc(0.25rem * var(--jones-sidebar-card-scale));
+  --text-xs: calc(0.75rem * var(--jones-sidebar-card-scale));
+  --text-sm: calc(0.875rem * var(--jones-sidebar-card-scale));
+  --sidebar-row-content-inset: calc(0.625rem * var(--jones-sidebar-card-scale));
+  --sidebar-content-inset: calc(0.5rem * var(--jones-sidebar-card-scale));
+  contain-intrinsic-size: auto calc(78px * var(--jones-sidebar-card-scale));
+}
+:is([data-jones-card-scale="0.93"], [data-jones-card-scale="0.87"])
+  [data-jones-sidebar-card-content] {
+  height: calc(4.875rem * var(--jones-sidebar-card-scale));
+}
+[data-jones-thread-title-boost]
+  [data-jones-thread-title-branch="card"][data-jones-thread-title="receded"] {
+  color: color-mix(
+    in oklab,
+    var(--color-foreground) var(--jones-thread-title-boost),
+    color-mix(in oklab, var(--color-foreground) 75%, transparent)
+  );
+}
+[data-jones-thread-title-boost]
+  [data-jones-thread-title-branch="card"][data-jones-thread-title="failed-read"] {
+  color: color-mix(
+    in oklab,
+    var(--color-foreground) var(--jones-thread-title-boost),
+    color-mix(in oklab, var(--color-foreground) 95%, transparent)
+  );
+}
+[data-jones-thread-title-boost]
+  [data-jones-thread-title-branch="card"][data-jones-thread-title="primary"] {
+  color: color-mix(
+    in oklab,
+    var(--color-foreground) var(--jones-thread-title-boost),
+    var(--color-foreground)
+  );
+}
+[data-jones-thread-title-boost]
+  [data-jones-thread-title-branch="slim"][data-jones-thread-title="receded"] {
+  color: color-mix(
+    in oklab,
+    var(--color-foreground) var(--jones-thread-title-boost),
+    var(--color-secondary-label)
+  );
+}
+[data-jones-thread-title-boost]
+  [data-jones-thread-title-branch="slim"][data-jones-thread-title="primary"] {
+  color: color-mix(
+    in oklab,
+    var(--color-foreground) var(--jones-thread-title-boost),
+    var(--color-foreground)
+  );
+}
+[data-jones-thread-title-boost]
+  [data-jones-thread-title-branch="slim"][data-jones-thread-title="unread"] {
+  color: color-mix(
+    in oklab,
+    var(--color-foreground) var(--jones-thread-title-boost),
+    var(--color-muted-foreground)
+  );
+}
+[data-jones-thread-title-boost]
+  [data-jones-thread-title-branch="slim"][data-jones-thread-title="idle"] {
+  color: color-mix(
+    in oklab,
+    var(--color-foreground) var(--jones-thread-title-boost),
+    color-mix(in oklab, var(--color-secondary-label) 70%, transparent)
+  );
+}
+[data-jones-thread-title-boost]
+  :is([data-sidebar-row], .group\/sidebar-row):is(:hover, :focus-visible)
+  [data-jones-thread-title-branch="card"],
+[data-jones-thread-title-boost]
+  :is([data-sidebar-row], .group\/sidebar-row):is(:hover, :focus-within)
+  [data-jones-thread-title-branch="slim"] {
+  color: var(--color-foreground);
+}

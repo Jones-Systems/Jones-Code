@@ -151,6 +151,14 @@ const readers: ReadonlyArray<Reader> = [
     proof: "none: needs the full provider fixture, reasoned from code",
   },
   {
+    file: "remoteAdmissionIntegration/EvidenceReader.ts",
+    classification: "unaffected",
+    after:
+      "Reads only exact thread.created events, which the pruner keeps; validates command, stream and accepted receipt sequence. Missing or contradictory project evidence still yields unknown and never establishes access.",
+    proof:
+      "remoteAdmissionIntegration/receiverP1.test.ts (scratch creation project, missing/unrelated/conflicting evidence; CI qualification pending)",
+  },
+  {
     file: "orchestration/deliveryEvidence.ts",
     classification: "tolerate",
     after:

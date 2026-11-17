@@ -9,12 +9,20 @@ import {
   type ServerSettingsPatch,
   type UnifiedSettings,
 } from "@t3tools/contracts";
+import type { ClientSettings } from "@t3tools/contracts/settings";
+import { resolveModelPreferences } from "@t3tools/shared/serverSettings";
 import * as Equal from "effect/Equal";
 
-import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import {
+  getCustomModelOptionsByInstance,
+  resolveEffectiveDefaultModelSelection,
+} from "../../modelSelection";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  providerInstanceEntriesFor,
+  resolveDefaultProviderModelSelection,
+  resolveProjectDefaultProviderModelSelection,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 
@@ -133,6 +141,64 @@ export function resolveProviderCorrespondence(
   return "failure" in reverse || reverse.entry.instanceId !== instanceId
     ? { failure: "id-conflict" }
     : result;
+}
+
+function defaultSelectionsMatch(
+  a: ModelSelection | null,
+  b: ModelSelection | null,
+  aEntries: readonly ProviderInstanceEntry[],
+  bEntries: readonly ProviderInstanceEntry[],
+): boolean {
+  if (a === null || b === null) return a === b;
+  const match = resolveProviderCorrespondence(aEntries, bEntries, a.instanceId);
+  return (
+    !("failure" in match) &&
+    Equal.equals({ ...a, instanceId: match.entry.instanceId }, b) &&
+    !("failure" in resolveProviderCorrespondence(bEntries, aEntries, b.instanceId))
+  );
+}
+
+export function defaultModelSelectionsAreMixed(
+  clientSettings: ClientSettings,
+  targets: ReadonlyArray<{
+    projectId: ProjectId | null;
+    settings: ServerSettings;
+    providers: readonly ServerProvider[];
+  }>,
+): boolean {
+  if (targets.length < 2) return false;
+  const selections = targets.map(({ projectId, settings, providers }) => {
+    const stored = settings.defaultModelSelection;
+    const selection =
+      stored === null
+        ? resolveProjectDefaultProviderModelSelection(providers, settings, projectId)
+        : resolveDefaultProviderModelSelection(providers, stored);
+    return {
+      entries: providerInstanceEntriesFor(providers, settings, projectId),
+      stored,
+      effective: selection
+        ? resolveEffectiveDefaultModelSelection(
+            {
+              ...clientSettings,
+              ...settings,
+              ...resolveModelPreferences(settings, clientSettings),
+            },
+            providers,
+            selection,
+          )
+        : null,
+    };
+  });
+  // Missing account metadata can match either side of a known conflict.
+  return selections.some((a, index) =>
+    selections
+      .slice(index + 1)
+      .some(
+        (b) =>
+          !defaultSelectionsMatch(a.stored, b.stored, a.entries, b.entries) ||
+          !defaultSelectionsMatch(a.effective, b.effective, a.entries, b.entries),
+      ),
+  );
 }
 
 export interface ModelSelectionDestination {

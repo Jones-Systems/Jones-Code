@@ -13,8 +13,13 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { act, render } from "../../../test/render";
 import { WorkstreamSidebarSection } from "../../components/workstreams/WorkstreamSidebarSection";
 import { ToastProvider, toastManager } from "../../components/ui/toast";
-import { personalGroupCollapsedKey } from "./personalSidebarOrder";
-import { personalStatusFilterKey, readPersonalStatusFilter } from "./personalStatusFilter";
+import { personalGroupCollapsedKey, personalNamedGroupsHiddenKey } from "./personalSidebarOrder";
+import {
+  personalSharedStatusFilterKey,
+  personalStatusFilterKey,
+  readPersonalStatusFilter,
+  readSharedPersonalStatusChoice,
+} from "./personalStatusFilter";
 import { personalThreadExpandedKey, personalThreadLimitKey } from "./personalThreadWindow";
 
 const dragType = "application/x-jones-workstream";
@@ -32,6 +37,8 @@ const groups = [group("Alpha"), group("Beta"), group("Gamma")];
 function fixture(put?: PersonalWorkstreamsTransport["put"], memberCount = 0) {
   const keys = [
     personalGroupCollapsedKey(null),
+    personalNamedGroupsHiddenKey,
+    personalSharedStatusFilterKey,
     ...groups.flatMap((entry) => [
       personalGroupCollapsedKey(entry.id),
       personalStatusFilterKey(entry.id),
@@ -250,6 +257,60 @@ function order(container: HTMLElement) {
 }
 
 describe("Workstream options and header ordering", () => {
+  it("centres a symmetric 12px menu hit area without overlapping counters or toggling the group", async () => {
+    using setup = fixture(undefined, 14);
+    await using screen = await render(setup.ui);
+    const group = section(screen.container, "Alpha");
+    const menu = group.querySelector<HTMLButtonElement>('[aria-label="Options for Alpha"]')!;
+    const bounds = menu.getBoundingClientRect();
+    const glyph = menu.querySelector("svg")!.getBoundingClientRect();
+    expect(bounds.width).toBe(12);
+    expect(bounds.height).toBe(12);
+    expect(glyph.left + glyph.width / 2).toBeCloseTo(bounds.left + 6, 1);
+    expect(glyph.top + glyph.height / 2).toBeCloseTo(bounds.top + 6, 1);
+    expect(
+      group.querySelector("[data-personal-status-pill]")!.getBoundingClientRect().right,
+    ).toBeLessThanOrEqual(bounds.left);
+    for (const offset of [-5, -3, 0, 3, 5]) {
+      expect(
+        document.elementFromPoint(bounds.left + 6 + offset, bounds.top + 6)?.closest("button"),
+      ).toBe(menu);
+      await userEvent.click(page.getByRole("button", { name: "Options for Alpha", exact: true }), {
+        position: { x: 6 + offset, y: 6 },
+      });
+      await expect
+        .element(page.getByRole("menuitem", { name: "Rename", exact: true }))
+        .toBeVisible();
+      expect(header(screen.container, "Alpha").getAttribute("aria-expanded")).toBe("true");
+      await userEvent.keyboard("{Escape}");
+    }
+    expect(getComputedStyle(header(screen.container, null)).cursor).toBe("pointer");
+    const draggable = group.querySelector<HTMLElement>("[data-workstream-header]")!;
+    expect(draggable.draggable).toBe(true);
+    expect(getComputedStyle(draggable).cursor).toBe("pointer");
+    const title = group.querySelector<HTMLElement>(".line-clamp-2")!;
+    expect(getComputedStyle(title).cursor).toBe("grab");
+    expect(menu.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 24 24");
+    expect(glyph.width).toBe(12);
+    expect(glyph.height).toBe(12);
+    for (const x of [bounds.left - 1, bounds.right + 1])
+      expect(document.elementFromPoint(x, bounds.top + 6)?.closest("button")).not.toBe(menu);
+    const transfer = await startDrag(screen.container, "Alpha");
+    const beta = section(screen.container, "Beta");
+    const rect = beta.querySelector("[data-workstream-header]")!.getBoundingClientRect();
+    await act(() => {
+      drag(beta, "dragover", transfer, rect.top + rect.height * 0.8);
+      drag(beta, "drop", transfer, rect.top + rect.height * 0.8);
+    });
+    expect(setup.controller.reorder).toHaveBeenCalled();
+    await act(() =>
+      setup.registry.set(setup.state, { ...setup.registry.get(setup.state), canCreate: false }),
+    );
+    expect(draggable.draggable).toBe(false);
+    expect(getComputedStyle(draggable).cursor).toBe("pointer");
+    expect(getComputedStyle(title).cursor).toBe("pointer");
+  });
+
   it("segments menu actions and display choices and supports inline rename and color editing", async () => {
     using setup = fixture();
     await using screen = await render(setup.ui);
@@ -358,6 +419,10 @@ describe("Workstream options and header ordering", () => {
       .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .toHaveAttribute("aria-expanded", "true");
     await expect.element(page.getByText("12 threads", { exact: true })).toBeVisible();
+    expect(alpha.textContent).not.toContain("5 of 12");
+    expect(alpha.textContent).toContain(
+      "12 threads, 3 working, 2 need attention, 6 done, 1 failed.",
+    );
     await options();
     await userEvent.click(
       page.getByRole("menuitem", { name: "Use global status filter", exact: true }),
@@ -371,6 +436,34 @@ describe("Workstream options and header ordering", () => {
     expect(alpha.querySelector("input")).toBeNull();
     expect(setup.controller.rename).not.toHaveBeenCalled();
     expect(setup.controller.reorder).not.toHaveBeenCalled();
+  });
+
+  it("sends one group to the global filter from its menu while the Workstreams pill selects a status", async () => {
+    using setup = fixture(undefined, 12);
+    await using screen = await render(setup.ui);
+    const bulk = screen.container.querySelector<HTMLElement>("[data-personal-workstreams-header]")!;
+    const working = (root: ParentNode) =>
+      root.querySelector<HTMLButtonElement>('button[aria-label^="Working:"]')!;
+    const alpha = working(section(screen.container, "Alpha"));
+    const beta = working(section(screen.container, "Beta"));
+    await userEvent.click(working(bulk));
+    expect(readSharedPersonalStatusChoice()).toEqual({ filter: "working", rev: 1 });
+    expect(alpha.getAttribute("aria-label")).toContain("selected");
+    expect(beta.getAttribute("aria-label")).toContain("selected");
+    await options();
+    await userEvent.click(
+      page.getByRole("menuitem", { name: "Use global status filter", exact: true }),
+    );
+    expect(readPersonalStatusFilter("menu-Alpha")).toBeNull();
+    expect(alpha.getAttribute("aria-label")).toContain("using global status filter");
+    expect(alpha.getAttribute("aria-pressed")).toBe("false");
+    // The shared choice and the other group keep their status.
+    expect(beta.getAttribute("aria-pressed")).toBe("true");
+    expect(working(bulk).getAttribute("aria-pressed")).toBe("true");
+    expect(readSharedPersonalStatusChoice()).toEqual({ filter: "working", rev: 1 });
+    await expect
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
+      .toHaveAttribute("aria-expanded", "true");
   });
 
   it("moves a group down and back up through the menu", async () => {

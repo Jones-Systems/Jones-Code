@@ -1,3 +1,5 @@
+import * as DateTime from "effect/DateTime";
+import "~/index.css";
 import { createMemoryHistory } from "@tanstack/react-router";
 import { Atom } from "effect/reactivity";
 import type * as Context from "effect/Context";
@@ -12,10 +14,12 @@ import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
 import { usePersonalWorkstreams } from "~/state/workstreamsPersonal";
 import { writeLocalStorageValue } from "~/hooks/useLocalStorage";
-import { personalStatusFilterKey } from "./personalStatusFilter";
+import { personalNamedGroupsHiddenKey } from "./personalSidebarOrder";
+import { personalSharedStatusFilterKey, personalStatusFilterKey } from "./personalStatusFilter";
 import {
   ENVIRONMENT_ID,
   installFakeEnvironment,
+  refreshFakeShell,
   threadWithHistory,
   type FakeDriver,
 } from "../../../test/fakeEnvironment";
@@ -67,6 +71,7 @@ async function withSidebar(
     step: (direction: "next" | "previous", expected: string) => Promise<void>;
     threadIds: readonly string[];
   }) => Promise<void>,
+  pinnedFixture = false,
 ) {
   const threadIds = [
     "a1",
@@ -78,6 +83,9 @@ async function withSidebar(
   ];
   const threads = threadIds.map((id) => ({
     ...threadWithHistory(id, 1),
+    ...(pinnedFixture && !id.startsWith("u")
+      ? { pinnedAt: DateTime.makeUnsafe("2026-11-17T12:00:00Z") }
+      : {}),
     runs: threadWithHistory(id, 1).runs.map((run) => ({
       ...run,
       status: "running" as const,
@@ -86,6 +94,14 @@ async function withSidebar(
   }));
   using _environment = installFakeEnvironment([
     ...threads,
+    ...(pinnedFixture
+      ? [
+          {
+            ...threadWithHistory("loose-pin", 1),
+            pinnedAt: DateTime.makeUnsafe("2026-11-17T12:00:00Z"),
+          },
+        ]
+      : []),
     { ...threadWithHistory("child", 1), sideChatOf: threads[2]!.id },
   ]);
   using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
@@ -151,6 +167,8 @@ async function withSidebar(
         "jones:workstreams:thread-expanded:beta",
         personalStatusFilterKey("alpha"),
         personalStatusFilterKey("beta"),
+        personalNamedGroupsHiddenKey,
+        personalSharedStatusFilterKey,
       ])
         localStorage.removeItem(key);
     },
@@ -164,6 +182,7 @@ async function withSidebar(
   const router = getRouter(createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/a1`] }));
   await router.load();
   await using screen = await render(<AppRoot router={router} />, { router: false });
+  await refreshFakeShell();
   await expect
     .element(page.getByRole("button", { name: "Collapse alpha", exact: true }))
     .toBeVisible();
@@ -205,7 +224,8 @@ it("traverses displayed Workstreams then Unassigned and skips collapsed groups",
     await visit(order[4]!);
     for (const id of order.slice(5)) await step("next", id);
     for (const id of order.slice(4, -1).reverse()) await step("previous", id);
-    await userEvent.click(page.getByRole("button", { name: "Collapse beta", exact: true }));
+    // Click the title's gesture layer rather than the background toggle beneath it.
+    await userEvent.click(page.getByText("beta", { exact: true }));
     await visit(order[4]!);
     await step("next", order[6]!);
     await step("previous", order[4]!);
@@ -217,7 +237,7 @@ it("traverses displayed Workstreams then Unassigned and skips collapsed groups",
     await step("next", order[6]!);
     await visit("b1");
     await step("previous", order[4]!);
-    await userEvent.click(page.getByRole("button", { name: "Expand beta", exact: true }));
+    await userEvent.click(page.getByText("beta", { exact: true }));
     await step("next", "b1");
     await userEvent.click(page.getByRole("button", { name: "Collapse Unassigned", exact: true }));
     await step("next", "b1");
@@ -225,6 +245,46 @@ it("traverses displayed Workstreams then Unassigned and skips collapsed groups",
     await vi.waitFor(() =>
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[0]}`),
     );
+  });
+});
+
+it("leaves hidden Workstream rows out of traversal and numeric jumps, keeping only the routed row as an anchor", async () => {
+  await withSidebar(async ({ router, rows, visit, step }) => {
+    const order = rows();
+    const pathname = () => router.history.location.pathname;
+    await userEvent.click(page.getByRole("button", { name: "Hide all Workstreams", exact: true }));
+    await vi.waitFor(() => expect([...rows()].sort()).toEqual(["u1", "u2"]));
+    const unassigned = rows();
+    // The route starts on a hidden Workstream row: it anchors the step but no other hidden row does.
+    await step("next", unassigned[0]!);
+    await step("next", unassigned[1]!);
+    await step("previous", unassigned[0]!);
+    await visit("b1");
+    await step("next", unassigned[0]!);
+    await userEvent.keyboard("{Meta>}1{/Meta}");
+    await vi.waitFor(() => expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${unassigned[0]}`));
+    await userEvent.keyboard("{Meta>}6{/Meta}");
+    expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${unassigned[0]}`);
+    await userEvent.click(page.getByRole("button", { name: "Show all Workstreams", exact: true }));
+    await vi.waitFor(() => expect(rows()).toEqual(order));
+    await userEvent.keyboard("{Meta>}1{/Meta}");
+    await vi.waitFor(() => expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${order[0]}`));
+  });
+});
+
+it("indents real Workstream thread rows by 8 px and leaves Unassigned rows flush", async () => {
+  await withSidebar(async () => {
+    const list = (label: string) =>
+      document.querySelector<HTMLElement>(`[data-personal-thread-list][aria-label="${label}"]`)!;
+    const offset = (label: string) =>
+      list(label).querySelector("[data-personal-thread]")!.getBoundingClientRect().left -
+      list(label).getBoundingClientRect().left;
+    for (const label of ["alpha threads", "beta threads"]) {
+      expect(getComputedStyle(list(label)).paddingLeft).toBe("8px");
+      expect(offset(label)).toBeCloseTo(8, 1);
+    }
+    expect(getComputedStyle(list("Unassigned threads")).paddingLeft).toBe("0px");
+    expect(offset("Unassigned threads")).toBeCloseTo(0, 1);
   });
 });
 
@@ -293,4 +353,28 @@ it("keeps next, previous and numeric jumps aligned with truncated and expanded r
     await userEvent.keyboard("{Meta>}6{/Meta}");
     await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
   });
+});
+
+it("shows assigned pinned members once inside Workstreams above the remaining pinned shelf", async () => {
+  await withSidebar(async ({ rows, visit, step, router }) => {
+    expect(rows()).toHaveLength(8);
+    const header = document.querySelector("[data-personal-workstreams-header]")!;
+    const findPin = () =>
+      [...document.querySelectorAll<HTMLElement>("li[data-thread-item]")].find((row) =>
+        row.dataset.threadItem?.includes("loose-pin"),
+      );
+    await vi.waitFor(() => expect(findPin()).toBeDefined());
+    const pinRow = findPin()!;
+    expect(header.compareDocumentPosition(pinRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.querySelectorAll("[data-personal-thread]")).toHaveLength(8);
+    await expect
+      .element(page.getByRole("button", { name: "Show all 7 threads in alpha", exact: true }))
+      .toBeVisible();
+    await visit(rows().at(-1)!);
+    await step("next", "loose-pin");
+    await userEvent.keyboard("{Meta>}1{/Meta}");
+    await vi.waitFor(() =>
+      expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${rows()[0]}`),
+    );
+  }, true);
 });

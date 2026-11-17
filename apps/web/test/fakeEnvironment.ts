@@ -194,6 +194,7 @@ function run(threadId: ThreadId, id: RunId, ordinal: number, userMessageId: stri
 }
 
 export interface FakeThread {
+  readonly pinnedAt?: OrchestrationV2ThreadShell["pinnedAt"];
   /** Makes this a side chat of that thread. */
   readonly sideChatOf?: ThreadId;
   readonly id: ThreadId;
@@ -228,6 +229,7 @@ export function threadWithHistory(name: string, turns: number): FakeThread {
 function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
   const latest = thread.runs.at(-1);
   return {
+    ...(thread.pinnedAt === undefined ? {} : { pinnedAt: thread.pinnedAt }),
     id: thread.id,
     projectId: PROJECT_ID,
     title: thread.title,
@@ -280,6 +282,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
   );
   return {
     thread: {
+      ...(shell.pinnedAt === undefined ? {} : { pinnedAt: shell.pinnedAt }),
       id: shell.id,
       projectId: shell.projectId,
       title: shell.title,
@@ -683,4 +686,23 @@ export function deferFakeSends(): {
       sendHandler = previous;
     },
   };
+}
+
+/** Refreshes a retained shell connection after a scenario replaces its fixture roster. */
+export async function refreshFakeShell(): Promise<void> {
+  sequence += 1;
+  for (const queue of shellSubscribers) {
+    await Effect.runPromise(
+      Queue.offer(queue, {
+        kind: "snapshot",
+        snapshot: {
+          schemaVersion: 1,
+          snapshotSequence: sequence,
+          projects: [project],
+          threads: threads.map(shellOf),
+          archivedThreads: [],
+        },
+      }),
+    );
+  }
 }

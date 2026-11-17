@@ -267,3 +267,21 @@ The [settings browser regressions](../../apps/web/src/jones/remoteAdmission/Remo
 name the focused checks; this documentation lane did not run them. Synthetic UI
 proof belongs to the primary verification owner. Runtime, live account acceptance,
 mobile and packaged notification delivery remain **unverified** here.
+
+### Sidebar title brightness
+
+Jones Code settings includes a device-local **Sidebar thread title brightness**
+slider, shared with the **Sidebar appearance** panel beside the thread list.
+It blends sidebar title colours toward the theme foreground while retaining
+existing semantic weights and row-state cues. Chat text, interface fonts, glass
+and window zoom use their existing settings. A value of zero keeps the current
+semantic title colours.
+
+The live panel also offers independent card sizing, Workstream typography and
+spacing, pill background, count presentation and sidebar device symbols.
+Selected and Original presets keep the brightness value; Compare with Original
+is temporary. Reset all removes only the sidebar appearance record and restores
+the Selected look at zero brightness. Preferences are local to this client and
+origin. Focused coverage lives beside
+[the implementation](../../apps/web/src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.tsx).
+Runtime qualification is recorded separately by the delivery owner.

@@ -1,4 +1,6 @@
 import {
+  DEFAULT_CLIENT_SETTINGS,
+  DEFAULT_SERVER_SETTINGS,
   DEFAULT_UNIFIED_SETTINGS,
   EnvironmentId,
   ProjectId,
@@ -6,10 +8,12 @@ import {
   ProviderDriverKind,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 import { describe, expect, it } from "vite-plus/test";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
+  defaultModelSelectionsAreMixed,
   modelSelectionFailureMessage,
   modelSelectionReadiness,
   resolveProviderCorrespondence,
@@ -407,5 +411,199 @@ describe("destination model readiness", () => {
     expect(modelSelectionReadiness(selection, destination, undefined, readySettings)).toBe(
       "not-loaded",
     );
+  });
+});
+
+function defaultProvider({
+  instanceId,
+  provider: driver = ProviderDriverKind.make("codex"),
+  models,
+}: {
+  instanceId: string;
+  provider?: ProviderDriverKind;
+  models: readonly string[];
+}): ServerProvider {
+  return provider(instanceId, {
+    driver,
+    displayName: undefined,
+    models: models.map((slug) => ({ slug, name: slug, isCustom: false, capabilities: {} })),
+  });
+}
+
+describe("scoped default model selections", () => {
+  // regression: #27997 equal automatic defaults can resolve to different providers
+  it("compares automatic defaults using each environment's models", () => {
+    const codex = {
+      projectId: null,
+      settings: DEFAULT_UNIFIED_SETTINGS,
+      providers: [defaultProvider({ instanceId: "codex", models: ["gpt-6-astra"] })],
+    };
+    const claude = {
+      projectId: null,
+      settings: DEFAULT_UNIFIED_SETTINGS,
+      providers: [
+        defaultProvider({
+          instanceId: "claudeAgent",
+          provider: ProviderDriverKind.make("claudeAgent"),
+          models: ["claude-sonnet-4-6"],
+        }),
+      ],
+    };
+
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [codex, claude])).toBe(true);
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [claude, codex])).toBe(true);
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [codex, codex])).toBe(false);
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [claude])).toBe(false);
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [])).toBe(false);
+    expect(
+      defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [codex, { ...codex, providers: [] }]),
+    ).toBe(true);
+    expect(
+      defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [
+        codex,
+        { ...codex, providers: [defaultProvider({ instanceId: "codex", models: ["gpt-6-sol"] })] },
+      ]),
+    ).toBe(true);
+
+    const projectId = ProjectId.make("claude-only");
+    const project = {
+      projectId,
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        projectSettingsOverrides: {
+          [projectId]: {
+            providerInstances: { [ProviderInstanceId.make("codex")]: { enabled: false } },
+          },
+        },
+      },
+      providers: [...codex.providers, ...claude.providers],
+    };
+    const remoteProject = { ...claude, projectId: ProjectId.make("remote-project") };
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [project, remoteProject])).toBe(
+      false,
+    );
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [remoteProject, project])).toBe(
+      false,
+    );
+    expect(
+      defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [
+        project,
+        { ...project, projectId: ProjectId.make("other-project") },
+      ]),
+    ).toBe(true);
+
+    const configured = {
+      projectId: null,
+      settings: {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerModelPreferences: {
+          [ProviderInstanceId.make("codex")]: {
+            hiddenModels: ["gpt-6-astra"],
+            modelOrder: [],
+          },
+        },
+      },
+      providers: [defaultProvider({ instanceId: "codex", models: ["gpt-6-astra", "gpt-6-sol"] })],
+    };
+    const inherited = { ...configured, settings: DEFAULT_SERVER_SETTINGS };
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [configured, inherited])).toBe(
+      true,
+    );
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [inherited, configured])).toBe(
+      true,
+    );
+    const clientSettings = {
+      ...DEFAULT_CLIENT_SETTINGS,
+      providerModelPreferences: configured.settings.providerModelPreferences,
+    };
+    expect(defaultModelSelectionsAreMixed(clientSettings, [configured, inherited])).toBe(false);
+    expect(defaultModelSelectionsAreMixed(clientSettings, [inherited, configured])).toBe(false);
+    expect(
+      defaultModelSelectionsAreMixed(clientSettings, [
+        { ...inherited, settings: { ...DEFAULT_SERVER_SETTINGS, providerModelPreferences: {} } },
+        inherited,
+      ]),
+    ).toBe(true);
+  });
+
+  it("recognizes matching Malcolm Codex defaults with different local provider IDs", () => {
+    const model = "gpt-6.2-sol";
+    const target = (id: string, effort = "high", auth?: ServerProvider["auth"]) => {
+      const instance = defaultProvider({ instanceId: id, models: [model] });
+      return {
+        projectId: null,
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          defaultModelSelection: createModelSelection(instance.instanceId, model, [
+            { id: "reasoningEffort", value: effort },
+          ]),
+        },
+        providers: [{ ...instance, displayName: "Malcolm Codex", auth: auth ?? instance.auth }],
+      };
+    };
+    const laptop = target("codex_malcolm_codex");
+    const testServer = target("codex_malcolm");
+
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [laptop, testServer])).toBe(
+      false,
+    );
+    expect(defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [testServer, laptop])).toBe(
+      false,
+    );
+    expect(
+      defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [
+        laptop,
+        target("codex_malcolm", "xhigh"),
+      ]),
+    ).toBe(true);
+    expect(
+      defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [
+        laptop,
+        target("codex_malcolm", "high", { status: "authenticated", email: "one@example.invalid" }),
+        target("third_registration", "high", {
+          status: "authenticated",
+          email: "two@example.invalid",
+        }),
+      ]),
+    ).toBe(true);
+  });
+
+  it("keeps automatic, explicit, and different saved options distinct", () => {
+    const providers = [defaultProvider({ instanceId: "codex", models: ["gpt-6-astra"] })];
+    const selected = {
+      projectId: null,
+      providers,
+      settings: {
+        ...DEFAULT_UNIFIED_SETTINGS,
+        defaultModelSelection: createModelSelection(
+          ProviderInstanceId.make("codex"),
+          "gpt-6-astra",
+        ),
+      },
+    };
+    expect(
+      defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [selected, { ...selected }]),
+    ).toBe(false);
+    expect(
+      defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [
+        selected,
+        { projectId: null, providers, settings: DEFAULT_UNIFIED_SETTINGS },
+      ]),
+    ).toBe(true);
+    expect(
+      defaultModelSelectionsAreMixed(DEFAULT_CLIENT_SETTINGS, [
+        selected,
+        {
+          ...selected,
+          settings: {
+            ...selected.settings,
+            defaultModelSelection: {
+              ...selected.settings.defaultModelSelection,
+              options: [{ id: "reasoningEffort", value: "xhigh" }],
+            },
+          },
+        },
+      ]),
+    ).toBe(true);
   });
 });
