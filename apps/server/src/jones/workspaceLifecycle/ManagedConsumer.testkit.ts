@@ -66,7 +66,11 @@ const decodeBinding = Schema.decodeEffect(Schema.fromJsonString(Binding));
 export const fixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const root = yield* fs.makeTempDirectoryScoped({ prefix: "managed-consumer-" });
+  // Canonical root: macOS temp paths traverse the /var -> /private/var symlink, while
+  // retirement binds the realpath. Symlinked spellings are exercised explicitly.
+  const root = yield* fs.realPath(
+    yield* fs.makeTempDirectoryScoped({ prefix: "managed-consumer-" }),
+  );
   const repo = path.join(root, "repo");
   const config = yield* Config.ServerConfig.pipe(
     Effect.provide(Config.layerTest(repo, path.join(root, "state"))),
@@ -436,7 +440,7 @@ export const fixture = Effect.gen(function* () {
       }),
     ),
   );
-  const seedThread = (selectedThreadId = threadId, branch = "work") =>
+  const seedThread = (selectedThreadId = threadId, branch = "work", worktreePath = linked) =>
     Effect.gen(function* () {
       const now = DateTime.formatIso(yield* DateTime.now);
       yield* (yield* ProjectStore.ProjectStoreV2).apply({
@@ -472,7 +476,7 @@ export const fixture = Effect.gen(function* () {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch,
-        worktreePath: linked,
+        worktreePath,
       });
     });
   const seed = seedThread();

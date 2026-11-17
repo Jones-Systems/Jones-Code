@@ -648,6 +648,12 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     if ((await outputObligations(current.path)).length) reasons.add("obligation");
     result.consumers = consumerDecision(current.path, input.consumers);
     result.consumers.holds.forEach((reason) => reasons.add(reason));
+    // Consumers are observed under the requested spelling, which may traverse a symlink
+    // (macOS /var, /tmp, or a linked T3 home) to the canonical binding path.
+    if (input.worktree !== current.path)
+      consumerDecision(input.worktree, input.consumers).holds.forEach((reason) =>
+        reasons.add(reason),
+      );
     result.consumers.unknown.forEach((reason) => unknown.add(reason));
     stage = "identity_recheck";
     if (canonical(await binding(current.path)) !== canonical(current))
