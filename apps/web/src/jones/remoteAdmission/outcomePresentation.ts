@@ -7,7 +7,8 @@ export function requestOutcomeLabel(item: Item) {
   const outcome = result?.outcome ?? item.outcome;
   switch (outcome) {
     case "created": {
-      if (result && result.stages.creation !== "confirmed") return "Outcome unknown · do not resend";
+      if (result && result.stages.creation !== "confirmed")
+        return "Outcome unknown · do not resend";
       const availability = result?.stages.availability ?? item.availability;
       return availability === "available"
         ? "Created"
@@ -25,7 +26,8 @@ export function requestOutcomeLabel(item: Item) {
     case "awaiting":
       return "Awaiting confirmation";
     default:
-      return item.record.envelope.operation === "t3_thread_launch" && item.record.status === "dispatched"
+      return item.record.envelope.operation === "t3_thread_launch" &&
+        item.record.status === "dispatched"
         ? "Dispatch recorded · creation unconfirmed"
         : admissionStatus(item.record);
   }

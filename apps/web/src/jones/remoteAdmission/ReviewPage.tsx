@@ -13,7 +13,11 @@ import {
 import { Button } from "../../components/ui/button";
 import { admissionPresentation } from "./presentation";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { requestOutcomeLabel, requestOutcomeReason, recoveryDetailsText } from "./outcomePresentation";
+import {
+  requestOutcomeLabel,
+  requestOutcomeReason,
+  recoveryDetailsText,
+} from "./outcomePresentation";
 import { RequestMarkdown } from "./RequestMarkdown";
 import { DurationSelect, ReviewControls } from "./ReviewControls";
 import { useFrozenRows, useReview } from "./reviewHooks";
@@ -382,7 +386,8 @@ export function ReviewPage({
               </div>
               {requestOutcomeReason(item) ? (
                 <p className="mb-4 text-xs text-muted-foreground">
-                  Reason: {item.launchResult
+                  Reason:{" "}
+                  {item.launchResult
                     ? requestOutcomeReason(item)?.replaceAll("_", " ")
                     : requestOutcomeReason(item)}
                 </p>
@@ -416,13 +421,18 @@ export function ReviewPage({
                   mutate={mutate}
                 />
               ) : (
-                <p className="text-xs text-muted-foreground">
-                  {requestOutcomeLabel(item)}
-                </p>
+                <p className="text-xs text-muted-foreground">{requestOutcomeLabel(item)}</p>
               )}
               <LaunchEvidence item={item} />
-              {item.launchResult || item.outcome || (item.record.envelope.operation === "t3_thread_launch" && item.record.status === "dispatched") ? (
-                <RecoveryDetails key={`${bindingKey(item.record)}:${item.attempt}`} receiver={environmentId} item={item} />
+              {item.launchResult ||
+              item.outcome ||
+              (item.record.envelope.operation === "t3_thread_launch" &&
+                item.record.status === "dispatched") ? (
+                <RecoveryDetails
+                  key={`${bindingKey(item.record)}:${item.attempt}`}
+                  receiver={environmentId}
+                  item={item}
+                />
               ) : null}
               <div className="mt-3 flex gap-2">
                 {item.canRecheck ? (
@@ -459,11 +469,15 @@ export function ReviewPage({
                   {admissionPresentation(item.record).thread?.label ?? "Not reported"}
                 </p>
                 <pre className="overflow-auto whitespace-pre-wrap wrap-anywhere">
-                  {JSON.stringify({
-                    record: item.record,
-                    launchResult: item.launchResult ?? null,
-                    originalLaunchResult: item.originalLaunchResult ?? null,
-                  }, null, 2)}
+                  {JSON.stringify(
+                    {
+                      record: item.record,
+                      launchResult: item.launchResult ?? null,
+                      originalLaunchResult: item.originalLaunchResult ?? null,
+                    },
+                    null,
+                    2,
+                  )}
                 </pre>
               </details>
             </>
@@ -513,9 +527,7 @@ function CompactRequest({
           {view.project ? ` · ${view.project.label}` : ""}
         </span>
         <span className="block text-xs text-muted-foreground">
-          {disabled
-            ? "Resolved · refresh for current state"
-            : requestOutcomeLabel(item)}
+          {disabled ? "Resolved · refresh for current state" : requestOutcomeLabel(item)}
         </span>
       </button>
       <div className="flex flex-wrap items-center justify-end gap-1">
@@ -843,7 +855,9 @@ function LaunchEvidence({ item }: { item: Item }) {
         <dt>Recorded at</dt>
         <dd className="wrap-anywhere">{result.recordedAt}</dd>
       </dl>
-      {result.outcome === "not_created" ? <p className="text-muted-foreground">Preparatory work may have occurred.</p> : null}
+      {result.outcome === "not_created" ? (
+        <p className="text-muted-foreground">Preparatory work may have occurred.</p>
+      ) : null}
     </div>
   );
 }
@@ -856,10 +870,20 @@ function RecoveryDetails({ receiver, item }: { receiver: EnvironmentId; item: It
   });
   return (
     <div className="mt-3 space-y-1">
-      <Button size="compact" variant="outline" onClick={() => copyToClipboard(recoveryDetailsText(receiver, item, window.location.href), undefined)}>
+      <Button
+        size="compact"
+        variant="outline"
+        onClick={() =>
+          copyToClipboard(recoveryDetailsText(receiver, item, window.location.href), undefined)
+        }
+      >
         {isCopied ? "Recovery details copied" : "Copy recovery details"}
       </Button>
-      {error ? <p role="alert" className="text-xs text-muted-foreground">{error}</p> : null}
+      {error ? (
+        <p role="alert" className="text-xs text-muted-foreground">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

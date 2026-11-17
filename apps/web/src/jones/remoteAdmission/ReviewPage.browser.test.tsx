@@ -316,33 +316,66 @@ it.each([
   ["created", "confirmed", "available", "Created"],
   ["created", "confirmed", "deleted", "Created then deleted"],
   ["created", "confirmed", "unknown", "Creation confirmed · availability unknown"],
-] as const)("shows canonical %s / %s / %s in both the compact card and detail", async (outcome, creation, availability, expected) => {
-  const f = setup(`review-browser-outcome-${outcome}-${availability}`);
-  f.item.record = { ...f.item.record, status: "dispatched" };
-  f.page.counts = { ...f.page.counts, currentHeldAdmissions: 0, heldAdmissions: 0 };
-  // Deliberately stale flattened state must not override retained canonical evidence.
-  f.item.outcome = "awaiting";
-  const initialMessage = outcome === "not_created" || outcome === "refused" ? "none" : "unconfirmed";
-  f.item.launchResult = {
-    outcome, stages: { creation, availability, initialMessage, preparation: "ready", providerProgress: "not_started" },
-    threadId: availability === "available" ? "created-thread" : null,
-    recordedAt: "2026-11-17T13:00:00Z", reasonCode: "synthetic_creation_evidence",
-  };
-  await using screen = await render(<TooltipProvider><ReviewPage environmentId={f.environmentId} label="Laptop" /></TooltipProvider>);
-  const card = [...screen.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Inspect synthetic project"))!;
-  expect(card.textContent).toContain(expected);
-  expect(card.textContent).not.toContain("Dispatched");
-  await act(() => card.click());
-  expect(screen.container.textContent!.split(expected).length).toBeGreaterThanOrEqual(3);
-  const stages = screen.container.querySelector('[aria-label="Recorded launch stages"]')!;
-  expect([...stages.querySelectorAll("dd")].map((node) => node.textContent)).toEqual([creation, availability, "ready", initialMessage, "not_started", "2026-11-17T13:00:00Z"]);
-  expect([...screen.container.querySelectorAll("p")].some((node) => node.textContent?.includes("Reason: synthetic creation evidence"))).toBe(true);
-  await act(() => [...screen.container.querySelectorAll("summary")].find((node) => node.textContent === "Bound request details")!.click());
-  const bound = JSON.parse(screen.container.querySelector("pre")!.textContent!);
-  expect(bound.record.status).toBe("dispatched");
-  expect(bound.launchResult).toEqual(f.item.launchResult);
-  expect(f.client.mutate).not.toHaveBeenCalled();
-});
+] as const)(
+  "shows canonical %s / %s / %s in both the compact card and detail",
+  async (outcome, creation, availability, expected) => {
+    const f = setup(`review-browser-outcome-${outcome}-${availability}`);
+    f.item.record = { ...f.item.record, status: "dispatched" };
+    f.page.counts = { ...f.page.counts, currentHeldAdmissions: 0, heldAdmissions: 0 };
+    // Deliberately stale flattened state must not override retained canonical evidence.
+    f.item.outcome = "awaiting";
+    const initialMessage =
+      outcome === "not_created" || outcome === "refused" ? "none" : "unconfirmed";
+    f.item.launchResult = {
+      outcome,
+      stages: {
+        creation,
+        availability,
+        initialMessage,
+        preparation: "ready",
+        providerProgress: "not_started",
+      },
+      threadId: availability === "available" ? "created-thread" : null,
+      recordedAt: "2026-11-17T13:00:00Z",
+      reasonCode: "synthetic_creation_evidence",
+    };
+    await using screen = await render(
+      <TooltipProvider>
+        <ReviewPage environmentId={f.environmentId} label="Laptop" />
+      </TooltipProvider>,
+    );
+    const card = [...screen.container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Inspect synthetic project"),
+    )!;
+    expect(card.textContent).toContain(expected);
+    expect(card.textContent).not.toContain("Dispatched");
+    await act(() => card.click());
+    expect(screen.container.textContent!.split(expected).length).toBeGreaterThanOrEqual(3);
+    const stages = screen.container.querySelector('[aria-label="Recorded launch stages"]')!;
+    expect([...stages.querySelectorAll("dd")].map((node) => node.textContent)).toEqual([
+      creation,
+      availability,
+      "ready",
+      initialMessage,
+      "not_started",
+      "2026-11-17T13:00:00Z",
+    ]);
+    expect(
+      [...screen.container.querySelectorAll("p")].some((node) =>
+        node.textContent?.includes("Reason: synthetic creation evidence"),
+      ),
+    ).toBe(true);
+    await act(() =>
+      [...screen.container.querySelectorAll("summary")]
+        .find((node) => node.textContent === "Bound request details")!
+        .click(),
+    );
+    const bound = JSON.parse(screen.container.querySelector("pre")!.textContent!);
+    expect(bound.record.status).toBe("dispatched");
+    expect(bound.launchResult).toEqual(f.item.launchResult);
+    expect(f.client.mutate).not.toHaveBeenCalled();
+  },
+);
 
 it("copies exact recovery details and stage evidence without executing recovery or inventing a locator", async () => {
   const f = setup("review-browser-copy-recovery");
@@ -350,18 +383,41 @@ it("copies exact recovery details and stage evidence without executing recovery 
   f.page.counts = { ...f.page.counts, currentHeldAdmissions: 0, heldAdmissions: 0 };
   f.item.outcome = "unknown";
   f.item.launchResult = {
-    outcome: "unknown", stages: { creation: "unknown", availability: "unknown", initialMessage: "unconfirmed", preparation: "ready", providerProgress: "unknown" },
-    threadId: null, recordedAt: "2026-11-17T13:00:00Z", reasonCode: "receipt_read_incomplete",
+    outcome: "unknown",
+    stages: {
+      creation: "unknown",
+      availability: "unknown",
+      initialMessage: "unconfirmed",
+      preparation: "ready",
+      providerProgress: "unknown",
+    },
+    threadId: null,
+    recordedAt: "2026-11-17T13:00:00Z",
+    reasonCode: "receipt_read_incomplete",
   };
   using write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
-  await using screen = await render(<TooltipProvider><ReviewPage environmentId={f.environmentId} label="Laptop" /></TooltipProvider>);
-  await act(() => [...screen.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Inspect synthetic project"))!.click());
-  await act(() => [...screen.container.querySelectorAll("button")].find((button) => button.textContent === "Copy recovery details")!.click());
+  await using screen = await render(
+    <TooltipProvider>
+      <ReviewPage environmentId={f.environmentId} label="Laptop" />
+    </TooltipProvider>,
+  );
+  await act(() =>
+    [...screen.container.querySelectorAll("button")]
+      .find((button) => button.textContent?.includes("Inspect synthetic project"))!
+      .click(),
+  );
+  await act(() =>
+    [...screen.container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Copy recovery details")!
+      .click(),
+  );
   expect(write).toHaveBeenCalledTimes(1);
   const copied = write.mock.calls[0]![0];
   expect(copied).toContain(`Receiver environment ID: ${f.environmentId}`);
   expect(copied).toContain(`Admission ID: ${f.item.record.id}`);
-  expect(copied).toContain(`${window.location.origin}/requests?receiver=${f.environmentId}&request=${f.item.record.id}&binding=${f.item.record.bindingDigest}`);
+  expect(copied).toContain(
+    `${window.location.origin}/requests?receiver=${f.environmentId}&request=${f.item.record.id}&binding=${f.item.record.bindingDigest}`,
+  );
   expect(copied).toContain("Outcome unknown · do not resend");
   expect(copied).toContain(JSON.stringify(f.item.launchResult));
   expect(copied).toContain("receipt_read_incomplete");
@@ -378,8 +434,14 @@ it("does not turn a legacy dispatched launch without result evidence into confir
   const f = setup("review-browser-dispatch-without-result");
   f.item.record = { ...f.item.record, status: "dispatched" };
   f.page.counts = { ...f.page.counts, currentHeldAdmissions: 0, heldAdmissions: 0 };
-  await using screen = await render(<TooltipProvider><ReviewPage environmentId={f.environmentId} label="Laptop" /></TooltipProvider>);
-  const card = [...screen.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Inspect synthetic project"))!;
+  await using screen = await render(
+    <TooltipProvider>
+      <ReviewPage environmentId={f.environmentId} label="Laptop" />
+    </TooltipProvider>,
+  );
+  const card = [...screen.container.querySelectorAll("button")].find((button) =>
+    button.textContent?.includes("Inspect synthetic project"),
+  )!;
   expect(card.textContent).toContain("Dispatch recorded · creation unconfirmed");
   await act(() => card.click());
   expect(screen.container.querySelector('[aria-label="Recorded launch stages"]')).toBeNull();
