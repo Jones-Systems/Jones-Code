@@ -77,7 +77,12 @@ const ports = (
         if (command.type !== "message.dispatch" || command.notification === undefined)
           return yield* Effect.die("Unexpected reactor dispatch");
         const wake = yield* DependencyWakeCommit;
-        const run = f.run(`processing:${command.messageId}`, command.threadId, "queued", ++wakeOrdinal);
+        const run = f.run(
+          `processing:${command.messageId}`,
+          command.threadId,
+          "queued",
+          ++wakeOrdinal,
+        );
         const message = {
           ...f.message(command.messageId, run),
           text: command.text,
@@ -191,8 +196,10 @@ it.effect(
       const awaitDelivered = (count: number) =>
         Stream.fromSubscription(subscription).pipe(
           Stream.mapEffect(() => f.store.dependencies(f.waiter.id)),
-          Stream.filter((dependencies) =>
-            dependencies.filter((dependency) => dependency.state === "delivered").length === count,
+          Stream.filter(
+            (dependencies) =>
+              dependencies.filter((dependency) => dependency.state === "delivered").length ===
+              count,
           ),
           Stream.runHead,
         );
@@ -225,14 +232,20 @@ it.effect(
         );
         assert.equal(peerObservations, 0);
         assert.isEmpty((yield* f.projection.getThreadRecords(f.waiter.id, ["messages"])).messages);
-        assert.lengthOf((yield* f.projection.getThreadShell(f.waiter.id))?.pendingBackgroundTasks ?? [], 5);
+        assert.lengthOf(
+          (yield* f.projection.getThreadShell(f.waiter.id))?.pendingBackgroundTasks ?? [],
+          5,
+        );
         yield* Deferred.succeed(activation, undefined);
         yield* awaitDelivered(4);
         assert.equal(peerObservations, 1);
         assert.equal((yield* f.store.get("recovered-remote"))?.result, "Done");
         const waiting = yield* f.projection.getThreadShell(f.waiter.id);
         assert.lengthOf(waiting?.pendingBackgroundTasks ?? [], 1);
-        assert.equal(waiting?.pendingBackgroundTasks?.[0]?.taskId, "jones-dependency:dependency:pending");
+        assert.equal(
+          waiting?.pendingBackgroundTasks?.[0]?.taskId,
+          "jones-dependency:dependency:pending",
+        );
         yield* commit(
           f.store.answer(
             f.receiver.id,
@@ -243,7 +256,10 @@ it.effect(
           ),
         );
         yield* awaitDelivered(5);
-        assert.deepEqual((yield* f.projection.getThreadShell(f.waiter.id))?.pendingBackgroundTasks, []);
+        assert.deepEqual(
+          (yield* f.projection.getThreadShell(f.waiter.id))?.pendingBackgroundTasks,
+          [],
+        );
       }).pipe(Effect.provide(worker));
       // A new worker acquisition recovers the same durable store after shutdown.
       yield* TestClock.adjust("1 second").pipe(Effect.provide(worker));

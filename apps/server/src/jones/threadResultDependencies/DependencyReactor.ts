@@ -271,7 +271,8 @@ const make = Effect.gen(function* () {
         let run = first;
         for (let attempt = 0; ; attempt++) {
           const exit = yield* Effect.exit(run);
-          if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)) return yield* Effect.interrupt;
+          if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause))
+            return yield* Effect.interrupt;
           const delayMs = retryDelayMs(attempt);
           yield* Effect.logWarning(`Dependency ${name} subscriber stopped; resubscribing`, {
             delayMs,
@@ -315,7 +316,9 @@ const make = Effect.gen(function* () {
             Effect.gen(function* () {
               if (event.type === "provider-turn.updated") {
                 for (const hold of yield* store.wakes.armedBy(event.id)) {
-                  const open = Option.isSome(probe) ? yield* probe.value.open(event.threadId) : false;
+                  const open = Option.isSome(probe)
+                    ? yield* probe.value.open(event.threadId)
+                    : false;
                   yield* mutate(store.wakes.finishArming(hold, open));
                 }
               }
@@ -340,7 +343,9 @@ const make = Effect.gen(function* () {
       yield* sql
         .withTransaction(store.prune)
         .pipe(
-          Effect.catchCause((cause) => Effect.logWarning("Dependency retention deferred", { cause })),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Dependency retention deferred", { cause }),
+          ),
         );
       yield* reconcile().pipe(
         Effect.catchCause((cause) => Effect.logWarning("Dependency recovery failed", { cause })),

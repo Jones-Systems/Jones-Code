@@ -9,7 +9,6 @@
     "apps/mobile/src/jones/threadResultDependencies/"
   ],
   "hookPaths": [
-    "apps/server/src/server.ts",
     "apps/server/src/orchestration-v2/IdleCompaction.ts",
     "apps/server/src/orchestration-v2/IdleCompactionService.ts",
     "apps/server/src/orchestration-v2/ProjectionStore.ts",
