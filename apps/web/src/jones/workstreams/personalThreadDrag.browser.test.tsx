@@ -10,7 +10,7 @@ import {
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { act, render } from "../../../test/render";
+import { act, render, fakeTimers } from "../../../test/render";
 import {
   WorkstreamNativeSidebar,
   type NativeThreadExternalDrop,
@@ -168,6 +168,30 @@ async function start(sourceRow: HTMLElement, destination: Point) {
 const insertion = () => document.querySelector<HTMLElement>("[data-personal-thread-insertion]");
 
 describe("personal thread pointer placement", () => {
+  it("scrolls while holding a card at the top edge and stops on Escape", async () => {
+    using setup = fixture();
+    const viewport = container();
+    viewport.dataset.slot = "scroll-area-viewport";
+    viewport.style.cssText =
+      "position:fixed;top:100px;left:0;width:360px;height:300px;overflow:auto";
+    await using screen = await render(setup.ui(), { container: viewport });
+    const spacer = document.createElement("div");
+    spacer.style.height = "2000px";
+    viewport.append(spacer);
+    viewport.scrollTop = 200;
+    using _timers = fakeTimers();
+    const edge = { x: 100, y: 105 };
+    await start(row(screen.container, source), edge);
+    await act(() => vi.advanceTimersByTime(200));
+    expect(viewport.scrollTop).toBeLessThan(150);
+    await act(() => document.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })));
+    const top = viewport.scrollTop;
+    await act(() => vi.advanceTimersByTime(200));
+    expect(viewport.scrollTop).toBe(top);
+    expect(document.querySelector("[data-personal-thread-drag]")).toBeNull();
+    expect(setup.placeThread).not.toHaveBeenCalled();
+  });
+
   it("lifts the existing card, preserves its source slot, and shows the exact cross-group insertion", async () => {
     using setup = fixture();
     await using screen = await render(setup.ui(), { container: container() });

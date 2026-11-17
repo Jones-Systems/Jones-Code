@@ -76,7 +76,9 @@
     "apps/web/src/jones/workstreams/personalStatusFilter.test.ts",
     "apps/web/src/jones/workstreams/personalStatusFilter.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx",
-    "apps/web/src/jones/workstreams/PersonalWorkstreamDisplayControls.tsx"
+    "apps/web/src/jones/workstreams/PersonalWorkstreamDisplayControls.tsx",
+    "apps/web/src/jones/workstreams/sidebarDragAutoScroll.ts",
+    "apps/web/src/jones/workstreams/sidebarDragAutoScroll.browser.test.ts"
   ],
   "hookPaths": [
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",

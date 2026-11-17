@@ -988,8 +988,8 @@ function checkThreadOperations(
   return false;
 }
 
-// dnd-kit's 20% edge zone at full speed runs the list away while the pointer rests near the bottom.
-const SIDEBAR_AUTO_SCROLL: AutoScrollOptions = { threshold: { x: 0, y: 0.05 }, acceleration: 3 };
+// Start before the pointer reaches the very edge, with gentle acceleration for precise placement.
+const SIDEBAR_AUTO_SCROLL: AutoScrollOptions = { threshold: { x: 0, y: 0.15 }, acceleration: 3 };
 
 const SIDEBAR_DRAG_LABEL_HEIGHT = 24;
 
