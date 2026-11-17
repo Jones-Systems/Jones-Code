@@ -361,3 +361,7 @@ const make = Effect.gen(function* () {
   return DependencyReactor.of({ start });
 });
 export const layer = Layer.effect(DependencyReactor, make);
+
+export const layerWorker = Layer.effectDiscard(
+  DependencyReactor.pipe(Effect.flatMap((reactor) => reactor.start())),
+).pipe(Layer.provide(layer));

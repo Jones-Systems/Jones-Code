@@ -139,6 +139,75 @@ const prepare = (f: Effect.Success<typeof Fixture.seed>) =>
   );
 
 it.effect(
+  "server worker delivers saved replies and follows new answers without an explicit start call",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* Fixture.seed;
+      const changes = yield* Changes.DependencyChanges;
+      const commit = makeCommit(f.sql, f.store, changes);
+      const saved = yield* Effect.forEach(["first", "second", "third"], (key) => f.send(key));
+      const pending = yield* f.send("pending");
+      for (const request of saved)
+        yield* commit(
+          f.store.answer(
+            f.receiver.id,
+            request.requestId,
+            "fulfilled",
+            `Saved answer: ${request.requestId}`,
+            f.receiverRun.id,
+          ),
+        );
+      const subscription = yield* changes.subscribe;
+      const worker = Reactor.layerWorker.pipe(
+        Layer.provide(Watch.layer),
+        Layer.provide(ports(f)),
+        Layer.provide(
+          Layer.mock(Forwarding.PeerForwarding)({
+            call: () => Effect.die("Local replies must not call a peer"),
+          }),
+        ),
+        Layer.provide(NodeCrypto.layer),
+      );
+      const awaitDelivered = (count: number) =>
+        Stream.fromSubscription(subscription).pipe(
+          Stream.mapEffect(() => f.store.dependencies(f.waiter.id)),
+          Stream.filter((dependencies) =>
+            dependencies.filter((dependency) => dependency.state === "delivered").length === count,
+          ),
+          Stream.runHead,
+        );
+      yield* Effect.gen(function* () {
+        yield* awaitDelivered(3);
+        const waiting = yield* f.projection.getThreadShell(f.waiter.id);
+        assert.lengthOf(waiting?.pendingBackgroundTasks ?? [], 1);
+        assert.equal(waiting?.pendingBackgroundTasks?.[0]?.taskId, "jones-dependency:dependency:pending");
+        yield* commit(
+          f.store.answer(
+            f.receiver.id,
+            pending.requestId,
+            "fulfilled",
+            "Answer received after startup",
+            f.receiverRun.id,
+          ),
+        );
+        yield* awaitDelivered(4);
+        assert.deepEqual((yield* f.projection.getThreadShell(f.waiter.id))?.pendingBackgroundTasks, []);
+      }).pipe(Effect.provide(worker));
+      // A new worker acquisition recovers the same durable store after shutdown.
+      yield* Effect.void.pipe(Effect.provide(worker));
+      const dependencies = yield* f.store.dependencies(f.waiter.id);
+      const messages = (yield* f.projection.getThreadRecords(f.waiter.id, ["messages"])).messages;
+      assert.lengthOf(messages, 4);
+      assert.equal(new Set(dependencies.map((dependency) => dependency.wakeMessageId)).size, 4);
+      for (const dependency of dependencies) {
+        assert.equal(dependency.state, "delivered");
+        const message = messages.find((message) => message.id === dependency.wakeMessageId);
+        assert.include(message?.text ?? "", dependency.result!);
+      }
+    }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect(
   "restart reconciles only by observation; revoked authority yields one unknown wake and no remote cancellation",
   () =>
     Effect.gen(function* () {
