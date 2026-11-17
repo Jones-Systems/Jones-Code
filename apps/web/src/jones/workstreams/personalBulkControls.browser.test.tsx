@@ -168,14 +168,16 @@ type Fixture = ReturnType<typeof fixture>;
 function Sidebar({
   setup,
   rows = setup.threads,
+  width = 320,
 }: {
   setup: Fixture;
   // Rows can be a status-filtered subset; summaries always come from every thread.
   rows?: Fixture["threads"];
+  width?: number;
 }) {
   return (
     <RegistryContext.Provider value={setup.registry}>
-      <div style={{ width: 320 }}>
+      <div style={{ width }}>
         <WorkstreamNativeSidebar
           controller={setup.controller}
           threads={rows}
@@ -483,6 +485,38 @@ describe("Workstreams bulk controls", () => {
     }
     expect(getComputedStyle(listIn(null)).paddingLeft).toBe("0px");
     expect(firstRowOffset(null)).toBeCloseTo(0, 1);
+  });
+
+  it("keeps the whole label at the default sidebar width by compressing the pill like a group header", async () => {
+    using setup = fixture();
+    // 239 px is the default sidebar's content width, where the standard pill leaves the label 10 px short.
+    await using screen = await render(<Sidebar setup={setup} width={239} />);
+    const row = header(screen.container);
+    const label = [...row.querySelectorAll("span")].find(
+      (entry) => entry.textContent === "Workstreams",
+    )!;
+    const shared = pill(row);
+    await expect.poll(() => label.scrollWidth - label.clientWidth).toBeLessThanOrEqual(0);
+    const spacing = Number(shared.style.getPropertyValue("--personal-status-spacing"));
+    expect(spacing).toBeGreaterThanOrEqual(0.25);
+    expect(spacing).toBeLessThan(1);
+    const padding = parseFloat(getComputedStyle(row).paddingRight);
+    expect(
+      Math.abs(
+        shared.getBoundingClientRect().right - (row.getBoundingClientRect().right - padding),
+      ),
+    ).toBeLessThan(1);
+  });
+
+  it("leaves the pill at standard spacing when the row has room", async () => {
+    using setup = fixture();
+    await using screen = await render(<Sidebar setup={setup} />);
+    const row = header(screen.container);
+    const label = [...row.querySelectorAll("span")].find(
+      (entry) => entry.textContent === "Workstreams",
+    )!;
+    expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
+    expect(pill(row).style.getPropertyValue("--personal-status-spacing")).toBe("1");
   });
 
   it("offers no bulk controls before any named group exists", async () => {
