@@ -124,6 +124,26 @@ const fixture = withNativeFixture;
 const held = (reason: RecreationHold["reason"]) => (cause: unknown) =>
   cause instanceof RecreationHold && cause.reason === reason;
 export const nativeCases: Record<string, () => Promise<void>> = {
+  "unverifiable retained source keeps recreation uncertainty instead of certifying source absence":
+    () =>
+      fixture(async ({ repo, checkout, source }) => {
+        await g(repo, ["worktree", "remove", checkout]);
+        await NodeAssert.rejects(missingSource(repo, checkout), held("source_unavailable"));
+        const directory = NodePath.join(
+          source.binding.git_common_dir,
+          "workspace-lifecycle/recreations",
+        );
+        await NodeFSP.mkdir(directory, { recursive: true });
+        const pointer = NodePath.join(directory, `target-${sha256(checkout)}.json`);
+        const retained = canonical({
+          ...source,
+          binding: { ...source.binding, path: "unverifiable" },
+        });
+        await NodeFSP.writeFile(pointer, retained);
+        await NodeAssert.rejects(missingSource(repo, checkout), held("unknown"));
+        NodeAssert.equal(await NodeFSP.readFile(pointer, "utf8"), retained);
+        NodeAssert.equal(await exists(checkout), false);
+      }),
   "acknowledged manual recreation permits amend in the same active incarnation": () =>
     fixture(async ({ repo, checkout, input }) => {
       await NodeFSP.rm(checkout, { recursive: true });

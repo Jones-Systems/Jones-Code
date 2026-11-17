@@ -4,6 +4,7 @@ import type { RefusalReason } from "../jones/startRefusal/model.ts";
 import { ContextHandoffDeliveryUncertainError } from "./ContextHandoffDelivery.ts";
 import { promptWasNotApplied } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import * as CheckoutRecreation from "../jones/workspaceRecreation/Runtime.ts";
+import * as PreSessionFailure from "../jones/workspaceRecreation/PreSessionFailure.ts";
 import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
@@ -1073,6 +1074,25 @@ export const layer: Layer.Layer<
           return;
         }
       }
+      const beforeSession = <A, E, R>(
+        operation: PreSessionFailure.Operation,
+        effect: Effect.Effect<A, E, R>,
+      ) =>
+        PreSessionFailure.protect(operation, effect, {
+          willRetry: input.willRetry === true,
+          nativeGuarded: input.nativeCreationGuard !== undefined,
+          settle: (notice) =>
+            Effect.flatMap(DateTime.now, (now) =>
+              settleRunBeforeStart({
+                signal: notice.signal,
+                status: "failed",
+                now,
+                providerInstanceId: run.providerInstanceId,
+                itemProviderThreadId: initialProviderThreadId,
+                item: { type: "error", title: notice.title, failure: notice.failure },
+              }),
+            ),
+        });
       let recreatedWorkspace = false;
       const { worktreePath } = projection.thread;
       if (worktreePath !== null) {
@@ -1081,21 +1101,26 @@ export const layer: Layer.Layer<
             runId,
             cause: "Native verified workspace disappeared; ordinary recreation is unavailable.",
           });
-        const project = yield* projects
-          .getById(projection.thread.projectId)
-          .pipe(Effect.map(Option.getOrUndefined));
+        const project = yield* beforeSession(
+          "preflight",
+          projects.getById(projection.thread.projectId).pipe(Effect.map(Option.getOrUndefined)),
+        );
         if (project !== undefined) {
-          const recreated = yield* CheckoutRecreation.prepareTurn({
-            threadId: input.threadId,
-            runId,
-            projectRoot: project.workspaceRoot,
-            worktree: worktreePath,
-            managed: yield* isManagedWorktreePath(worktreePath),
-            nativeGuarded: input.nativeCreationGuard !== undefined,
-            ...(message.context?.checkoutRecreation === undefined
-              ? {}
-              : { detached: message.context.checkoutRecreation }),
-          }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+          const managed = yield* beforeSession("preflight", isManagedWorktreePath(worktreePath));
+          const recreated = yield* beforeSession(
+            "recreation",
+            CheckoutRecreation.prepareTurn({
+              threadId: input.threadId,
+              runId,
+              projectRoot: project.workspaceRoot,
+              worktree: worktreePath,
+              managed,
+              nativeGuarded: input.nativeCreationGuard !== undefined,
+              ...(message.context?.checkoutRecreation === undefined
+                ? {}
+                : { detached: message.context.checkoutRecreation }),
+            }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause }))),
+          );
           if (recreated !== null) {
             const now = yield* DateTime.now;
             yield* eventSink.writeIfRunCurrent({
@@ -1119,15 +1144,23 @@ export const layer: Layer.Layer<
                 },
               ],
             });
-            projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+            projection = yield* beforeSession(
+              "preflight",
+              projectionStore.getTurnStartContext(input.threadId, runId),
+            );
             if (
               projection.thread.worktreePath !== recreated.path ||
               projection.thread.branch !== (recreated.branch?.replace(/^refs\/heads\//, "") ?? null)
             )
-              return yield* new ProviderTurnStartError({
-                runId,
-                cause: "Checkout recreation binding changed before use.",
-              });
+              return yield* beforeSession(
+                "preflight",
+                Effect.fail(
+                  new ProviderTurnStartError({
+                    runId,
+                    cause: "Checkout recreation binding changed before use.",
+                  }),
+                ),
+              );
             recreatedWorkspace = true;
           }
         }
@@ -1153,9 +1186,12 @@ export const layer: Layer.Layer<
           runs: current.runs,
           turnItems: current.turnItems,
         });
-      const inheritedBackgroundTurnItems = yield* projectionStore
-        .getRuntimeRecoveryProjection(projection.thread.id)
-        .pipe(Effect.map(selectInheritedBackgroundItems));
+      const inheritedBackgroundTurnItems = yield* beforeSession(
+        "preflight",
+        projectionStore
+          .getRuntimeRecoveryProjection(projection.thread.id)
+          .pipe(Effect.map(selectInheritedBackgroundItems)),
+      );
       const revalidateReplacement = Effect.gen(function* () {
         const current = yield* projectionStore
           .getRuntimeRecoveryProjection(run.threadId)
