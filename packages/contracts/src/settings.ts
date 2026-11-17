@@ -9,6 +9,10 @@ import {
 } from "./jones/threadActivitySettings.ts";
 import { AgentDecisionSnapshotAccessEnabled } from "./jones/decisionSnapshotAccess.ts";
 import { WorkModeEnabled } from "./jones/workMode.ts";
+import {
+  WorkstreamAutoRouteEnabled,
+  WorkstreamAutoRouteExcludedIds,
+} from "./jones/workstreamAutoRoute.ts";
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
 import {
   AuthOrchestrationOperateScope,
@@ -1407,6 +1411,8 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   workModeEnabled: WorkModeEnabled,
+  workstreamAutoRouteEnabled: WorkstreamAutoRouteEnabled,
+  workstreamAutoRouteExcludedIds: WorkstreamAutoRouteExcludedIds,
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
@@ -1863,6 +1869,8 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   workModeEnabled: Schema.optionalKey(Schema.Boolean),
+  workstreamAutoRouteEnabled: Schema.optionalKey(Schema.Boolean),
+  workstreamAutoRouteExcludedIds: Schema.optionalKey(Schema.Array(Schema.String)),
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(
       Schema.Union([

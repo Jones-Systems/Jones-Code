@@ -184,7 +184,7 @@ interface StartThreadBootstrap {
     readonly branch?: string;
     readonly startFromOrigin?: boolean;
   };
-  readonly conversation?: boolean;
+  readonly conversation?: { readonly baseRef?: string };
   readonly runSetupScript?: boolean;
 }
 
@@ -784,6 +784,7 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
     attachments,
   );
   const bootstrap = input.bootstrap?.createThread;
+  const conversation = input.bootstrap?.conversation;
   let prepareWorktree = input.bootstrap?.prepareWorktree;
   if (
     prepareWorktree !== undefined &&
@@ -803,15 +804,15 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
     }
     prepareWorktree = { ...prepareWorktree, baseBranch };
   }
-  if (bootstrap !== undefined || prepareWorktree !== undefined) {
+  if (bootstrap !== undefined || prepareWorktree !== undefined || conversation !== undefined) {
     const existingProjection =
       bootstrap === undefined ? yield* getProjection(input.threadId) : null;
     const thread = bootstrap ?? existingProjection!.thread;
     const workspaceStrategy =
-      input.bootstrap?.conversation === true
+      conversation !== undefined
         ? {
             type: "auto" as const,
-            ...(bootstrap?.branch == null ? {} : { baseRef: bootstrap.branch }),
+            ...conversation,
           }
         : prepareWorktree !== undefined
           ? {
@@ -991,7 +992,10 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
   input: StartThreadTurnInput,
 ) {
   const prepared = yield* prepareThreadTurn(input);
-  if (prepared.method === ORCHESTRATION_V2_WS_METHODS.dispatchCommand && prepared.payload.type === "message.dispatch") {
+  if (
+    prepared.method === ORCHESTRATION_V2_WS_METHODS.dispatchCommand &&
+    prepared.payload.type === "message.dispatch"
+  ) {
     return yield* dispatchMessage(prepared.payload, input.resendAfterSocketLoss ?? true);
   }
   return yield* dispatchPreparedThreadTurn(prepared);

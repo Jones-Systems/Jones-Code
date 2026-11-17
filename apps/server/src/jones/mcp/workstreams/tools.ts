@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
+import { AutoRouteState } from "../../workstreams/autoRoute/policy.ts";
 const target = { environmentId: OrchestratorMcpEnvironmentTarget };
 const definitionResult = Schema.Struct({
   outcome: Schema.Literals(["applied", "already_satisfied", "superseded"]),
@@ -20,6 +21,15 @@ export const assignmentResult = Schema.Struct({
   workstreamId: Schema.NullOr(P.PersonalWorkstreamId),
   workstreamName: Schema.NullOr(Schema.String),
   revision: Schema.Number,
+  // Only t3_thread_workstream_read sets it: the thread's latest automatic-routing decision.
+  autoRoute: Schema.optionalKey(
+    Schema.Struct({
+      state: AutoRouteState,
+      code: Schema.NullOr(Schema.String),
+      workstreamId: Schema.NullOr(P.PersonalWorkstreamId),
+      decidedAt: Schema.NullOr(Schema.String),
+    }),
+  ),
 });
 const dependencies = [McpInvocationContext, ThreadManagementService];
 const failure = Schema.Union([
@@ -84,7 +94,7 @@ export const WorkstreamToolkit = Toolkit.make(
   }).annotate(Tool.Readonly, false),
   Tool.make("t3_thread_workstream_read", {
     description:
-      "Read a local thread's personal assignment and revision. threadId defaults to the calling thread; environmentId alone selects the target server.",
+      "Read a local thread's personal assignment and revision, and autoRoute: its latest automatic-routing decision (state and code) when a queued prompt was classified. threadId defaults to the calling thread; environmentId alone selects the target server.",
     parameters: Schema.Struct({ ...target, threadId: Schema.optionalKey(ThreadId) }),
     success: assignmentResult,
     failure,

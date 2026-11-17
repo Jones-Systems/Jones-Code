@@ -1,10 +1,17 @@
 import { useRef, useState } from "react";
-import type {
-  PersonalThreadRef,
-  PersonalWorkstreamsController,
+import {
+  personalThreadKey,
+  type PersonalThreadRef,
+  type PersonalWorkstreamsController,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { useAtomValue } from "@effect/atom-react";
-import { Dialog, DialogPopup, DialogHeader, DialogTitle } from "../../components/ui/dialog";
+import {
+  Dialog,
+  DialogDescription,
+  DialogPopup,
+  DialogHeader,
+  DialogTitle,
+} from "../../components/ui/dialog";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { showPersonalFailure } from "./personalNotifications";
@@ -18,6 +25,12 @@ export function WorkstreamPicker({
   onClose: () => void;
 }) {
   const state = useAtomValue(controller.state);
+  const key = personalThreadKey(thread);
+  const automaticWorkstream = state.autoAssignedThreadKeys?.has(key)
+    ? state.workstreams.find(
+        (item) => item.id === state.assignmentsByThreadKey.get(key)?.workstreamId,
+      )
+    : undefined;
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
@@ -49,6 +62,12 @@ export function WorkstreamPicker({
       <DialogPopup>
         <DialogHeader>
           <DialogTitle>Move to Workstream</DialogTitle>
+          {automaticWorkstream && (
+            <DialogDescription>
+              Assigned automatically to {automaticWorkstream.name} from a queued prompt. Choose
+              another Workstream or remove it.
+            </DialogDescription>
+          )}
         </DialogHeader>
         <Input
           aria-label="Search Workstreams"

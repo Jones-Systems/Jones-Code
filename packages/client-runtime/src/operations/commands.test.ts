@@ -1491,6 +1491,28 @@ describe("v2 worktree start compatibility", () => {
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 
+  it.effect("launches an empty server thread in On write with its selected source ref", () =>
+    Effect.gen(function* () {
+      const commands: OrchestrationV2Command[] = [];
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const projection = { ...v2Projection, messages: [], runs: [] };
+      const supervisor = yield* makeSupervisor({ commands, launches, projects: [], projection });
+      yield* startThreadTurn({
+        ...automaticWorktreeTurn,
+        threadId: projection.thread.id,
+        bootstrap: { conversation: { baseRef: "upstream/release" } },
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(commands).toEqual([]);
+      expect(launches).toEqual([
+        expect.objectContaining({
+          threadId: projection.thread.id,
+          reuseExistingThread: true,
+          workspaceStrategy: { type: "auto", baseRef: "upstream/release" },
+        }),
+      ]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect("uses the current local branch when an older server reports no default", () =>
     Effect.gen(function* () {
       const launches: OrchestrationV2ThreadLaunchInput[] = [];

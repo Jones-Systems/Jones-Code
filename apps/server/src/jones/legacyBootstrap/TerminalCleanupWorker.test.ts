@@ -28,7 +28,7 @@ import {
   RecordedStoredLifecycleEvent,
 } from "../../orchestration-v2/RecordedTypes.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
-import migration from "../persistence/Migrations/158_JonesLegacyBootstrap.ts";
+import migration from "../persistence/Migrations/161_JonesLegacyBootstrap.ts";
 import * as M from "./RecordedMetadata.ts";
 import * as Storage from "./Storage.ts";
 import * as S from "./StorageSchema.ts";

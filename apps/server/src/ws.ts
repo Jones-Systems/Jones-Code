@@ -2079,7 +2079,8 @@ export const layerWsRpc = (
       const handlers = ServerWsRpcGroup.of({
         "workstreamsPersonal.subscribe": () => personalWorkstreams.changes,
         "workstreamsPersonal.put": ({ workstream }) => personalWorkstreams.put(workstream),
-        "workstreamsPersonal.assign": (input) => personalWorkstreams.assign(input),
+        "workstreamsPersonal.assign": (input) =>
+          personalWorkstreams.assign(input, { supersedeInitialAutoAssignment: true }),
         ...retainedHandlers,
         [WS_METHODS.pullRequestsCiStatus]: (input) => pullRequests.ciStatus(input),
         [WS_METHODS.serverReadTokenAccounting]: (_input) => tokenAccounting.read,

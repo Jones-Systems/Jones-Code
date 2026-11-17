@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { CommandReceiptV2 } from "../../orchestration-v2/CommandReceiptStore.ts";
+import { projectDomainEventForWire } from "../../orchestration-v2/WireProjection.ts";
 import {
   RecordedAppThreadJson,
   RecordedRunJson,
@@ -110,7 +111,10 @@ const encodeReceipt = Schema.encodeEffect(receiptJson);
 const decodeReceiptStatus = Schema.decodeUnknownEffect(Schema.Literals(["accepted", "rejected"]));
 const decodeReceipt = Schema.decodeEffect(receiptFields);
 
-const publicEvent = Schema.encodeEffect(OrchestrationV2DomainEventJson);
+const encodePublicEvent = Schema.encodeEffect(OrchestrationV2DomainEventJson);
+// Match the projection used by appendAgentEvents, including compact turn items.
+const publicEvent = (event: RecordedStoredLifecycleEvent["event"]) =>
+  encodePublicEvent(projectDomainEventForWire(event));
 const eventRunId = (stored: RecordedStoredLifecycleEvent) =>
   stored.event.type === "run.created" || stored.event.type === "run.updated"
     ? stored.event.payload.id

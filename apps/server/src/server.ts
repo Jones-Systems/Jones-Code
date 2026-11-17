@@ -70,6 +70,7 @@ import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import * as PersonalWorkstreams from "./jones/workstreams/personal/service.ts";
+import * as WorkstreamAutoRoute from "./jones/workstreams/autoRoute/WorkstreamAutoRoute.ts";
 import * as PersonalHttp from "./jones/workstreams/personal/http.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as SpawnWorker from "./process/SpawnWorker.ts";
@@ -1037,7 +1038,13 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(layerCommandReadiness),
     Layer.provide(ServerHttp.layerBrowserApiCors),
     Layer.provide(ServerHttp.layerHttpCompression),
-    Layer.provide(QueueCompatibility.layer.pipe(Layer.provide(layerProjectCloneTracker))),
+    Layer.provide(
+      QueueCompatibility.layer.pipe(
+        Layer.provide(layerProjectCloneTracker),
+        // Jones: routes queue-dispatched threads to a clearly matching Workstream.
+        Layer.provide(WorkstreamAutoRoute.layer),
+      ),
+    ),
   );
 
 const layerMakeServer = Layer.unwrap(

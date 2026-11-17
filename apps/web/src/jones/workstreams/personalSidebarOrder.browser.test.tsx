@@ -252,7 +252,16 @@ it("leaves hidden Workstream rows out of traversal and numeric jumps, keeping on
   await withSidebar(async ({ router, rows, visit, step }) => {
     const order = rows();
     const pathname = () => router.history.location.pathname;
-    await userEvent.click(page.getByRole("button", { name: "Hide all Workstreams", exact: true }));
+    const clickDisclosureArrow = async (name: string) => {
+      const disclosure = page.getByRole("button", { name, exact: true });
+      const button = disclosure.element();
+      const bounds = button.getBoundingClientRect();
+      const arrow = button.querySelector("svg")!.getBoundingClientRect();
+      await userEvent.click(disclosure, {
+        position: { x: arrow.left + arrow.width / 2 - bounds.left, y: bounds.height / 2 },
+      });
+    };
+    await clickDisclosureArrow("Hide all Workstreams");
     await vi.waitFor(() => expect([...rows()].sort()).toEqual(["u1", "u2"]));
     const unassigned = rows();
     // The route starts on a hidden Workstream row: it anchors the step but no other hidden row does.
@@ -265,7 +274,7 @@ it("leaves hidden Workstream rows out of traversal and numeric jumps, keeping on
     await vi.waitFor(() => expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${unassigned[0]}`));
     await userEvent.keyboard("{Meta>}6{/Meta}");
     expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${unassigned[0]}`);
-    await userEvent.click(page.getByRole("button", { name: "Show all Workstreams", exact: true }));
+    await clickDisclosureArrow("Show all Workstreams");
     await vi.waitFor(() => expect(rows()).toEqual(order));
     await userEvent.keyboard("{Meta>}1{/Meta}");
     await vi.waitFor(() => expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${order[0]}`));

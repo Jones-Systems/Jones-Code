@@ -53,6 +53,8 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import * as ProviderInstances from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
@@ -146,6 +148,8 @@ interface HarnessOptions {
   readonly generateTitle?: TextGeneration.TextGeneration["Service"]["generateThreadTitle"];
   readonly generateBranchName?: TextGeneration.TextGeneration["Service"]["generateBranchName"];
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
+  readonly conversationLayer?: Layer.Layer<ConversationPolicy.ConversationPolicy>;
+  readonly conversationDriver?: "cursor";
   readonly getLaunchSettings?: ServerSettings.ServerSettingsService["Service"]["getSettings"];
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
@@ -260,6 +264,14 @@ function makeHarness(options: HarnessOptions = {}) {
       }),
   );
   const layerLaunch = ThreadLaunch.layerRawForTests.pipe(
+    Layer.provide(options.conversationLayer ?? Layer.empty),
+    Layer.provide(
+      Layer.mock(ProviderInstances.ProviderInstanceRegistry)({
+        getCatalogSource: () => undefined,
+        getInstance: () =>
+          Effect.succeed({ driverKind: options.conversationDriver ?? "codex" } as never),
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         layerExternalServices,
@@ -3410,24 +3422,15 @@ it.effect(
           ...policy,
           runId: preparing.runs[0]!.id,
         });
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(base.commandId)));
         assert.isEmpty(yield* layerOutbox.listByCommandId(base.commandId));
         yield* Deferred.succeed(continueSetup, undefined);
-        yield* threads.streamStoredEventsFrom({ threadId: base.threadId, afterSequence: 0 }).pipe(
-          Stream.filter(
-            (stored) =>
-              stored.commandId === base.commandId &&
-              stored.event.type === "run.updated" &&
-              stored.event.payload.status === "starting",
-          ),
-          Stream.take(1),
-          Stream.runDrain,
-        );
         const launched = yield* Fiber.join(request);
+        assert.equal(launched.projection.runs[0]?.status, "starting");
         assert.equal(
           launched.legacyReleaseSequence,
-          (yield* (yield* CommandReceiptStore.CommandReceiptStoreV2).getByCommandId(
-            base.commandId,
-          )).pipe(
+          (yield* receipts.getByCommandId(base.commandId)).pipe(
             Option.map((receipt) => receipt.resultSequence),
             Option.getOrThrow,
           ),
@@ -3464,4 +3467,123 @@ it.effect(
         assert.lengthOf((yield* threads.getThreadProjection(base.threadId)).runs, 1);
       }).pipe(Effect.provide(harness.layer));
     }),
+);
+
+it.effect.each([
+  "message",
+  "empty",
+  "reuse-empty-with-message",
+  "eager",
+  "project-eager",
+  "project-on-write",
+  "capability-unavailable",
+  "explicit",
+  "unsupported",
+] as const)("conversation launch %s selects allocation without idle preparation", (kind) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "c9-launch-seam-" });
+    let allocated = 0;
+    let fallback = 0;
+    const bindings = new Map<string, ConversationPolicy.Binding>();
+    const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
+      ownsPath: (path) => path === cwd,
+      allocate: (input) =>
+        Effect.sync(() => {
+          allocated++;
+          const binding: ConversationPolicy.Binding = {
+            threadId: input.threadId,
+            projectId: input.projectId,
+            ownerThreadId: input.threadId,
+            path: cwd,
+            device: "fixture",
+            inode: "fixture",
+            state: "conversation",
+            commonDirectory: "/objects",
+            commit: "a".repeat(40),
+            baseRef: "main",
+          };
+          bindings.set(input.threadId, binding);
+          return binding;
+        }),
+      lookup: (threadId) => Effect.succeed(bindings.get(threadId) ?? null),
+      fallback: () =>
+        Effect.sync(() => {
+          fallback++;
+        }),
+    });
+    const projectSettings: HarnessOptions["serverSettings"] =
+      kind === "project-eager" || kind === "project-on-write"
+        ? {
+            worktreeAllocation: "eager",
+            projectSettingsOverrides: {
+              [projectId]: {
+                worktreeAllocation: kind === "project-eager" ? "eager" : "on-write",
+              },
+            },
+          }
+        : undefined;
+    const harness = makeHarness({
+      ...(kind === "capability-unavailable" ? {} : { conversationLayer }),
+      ...(projectSettings === undefined ? {} : { serverSettings: projectSettings }),
+      ...(kind === "eager" ? { serverSettings: { worktreeAllocation: "eager" } } : {}),
+      ...(kind === "unsupported" ? { conversationDriver: "cursor" } : {}),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = launchInput({
+        command: `command:c9:${kind}`,
+        thread: `thread:c9:${kind}`,
+        workspace: kind === "explicit" ? { type: "root" } : { type: "auto", baseRef: "main" },
+        ...(kind === "empty" ? {} : { message: "Inspect the source." }),
+      });
+      if (kind === "reuse-empty-with-message") {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("command:c9:empty-shell"),
+          threadId: input.threadId,
+          projectId,
+          title: input.title,
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          branch: "main",
+          worktreePath: null,
+          createdBy: input.createdBy,
+          creationSource: input.creationSource,
+        });
+      }
+      const result = yield* launches.launch({
+        ...input,
+        ...(kind === "reuse-empty-with-message" ? { reuseExistingThread: true } : {}),
+      });
+      if (kind !== "empty") yield* preparationSettled(result.threadId);
+      const isConversation =
+        kind === "empty" ||
+        kind === "message" ||
+        kind === "reuse-empty-with-message" ||
+        kind === "project-on-write";
+      assert.equal(allocated, isConversation ? 1 : 0);
+      assert.equal(fallback, 0);
+      assert.equal(
+        harness.createWorktree.mock.calls.length,
+        kind === "eager" ||
+          kind === "project-eager" ||
+          kind === "capability-unavailable" ||
+          kind === "unsupported"
+          ? 1
+          : 0,
+      );
+      if (isConversation) {
+        assert.equal(bindings.get(result.threadId)?.path, cwd);
+        assert.equal(harness.runSetup.mock.calls.length, 0);
+        const sql = yield* SqlClient.SqlClient;
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM jones_idle_worktree_admission WHERE thread_id=${result.threadId}`,
+          0,
+        );
+      }
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

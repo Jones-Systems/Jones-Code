@@ -91,6 +91,7 @@ const empty = (): PersonalWorkstreamsState => ({
   environments: [],
   assignmentsByThreadKey: new Map(),
   pendingThreadKeys: new Set(),
+  autoAssignedThreadKeys: new Set(),
   canCreate: false,
 });
 const compareString = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -186,29 +187,50 @@ export function createPersonalWorkstreamsController(options: {
     for (const [key, a] of assignments)
       if (a.workstreamId && merged.get(a.workstreamId)?.deletedAt !== null)
         assignments.set(key, { ...a, workstreamId: null });
+    const autoAssigned = new Set<string>();
+    for (const e of entries.values())
+      if (e.connection.capable)
+        for (const auto of e.snapshot?.autoAssignments ?? []) {
+          const key = personalThreadKey({
+            environmentId: e.connection.environmentId,
+            id: auto.threadId,
+          });
+          const effective = assignments.get(key);
+          if (
+            !pending.has(key) &&
+            effective?.workstreamId === auto.workstreamId &&
+            effective.revision === auto.revision
+          )
+            autoAssigned.add(key);
+        }
     options.registry.set(state, {
       workstreams: [...merged.values()]
         .filter((w) => w.deletedAt === null)
         .sort((a, b) => compareString(a.orderKey, b.orderKey) || compareString(a.id, b.id)),
       assignmentsByThreadKey: assignments,
       pendingThreadKeys: pending,
+      autoAssignedThreadKeys: autoAssigned,
       canCreate: [...entries.values()].some(writable),
-      environments: [...entries.values()].map((e): PersonalEnvironmentState => ({
-        environmentId: e.connection.environmentId,
-        status: !e.connection.capable
-          ? "update_required"
-          : !e.connection.connected
-            ? "offline"
-            : !e.connection.writable
-              ? "read_only"
-              : e.failed || e.snapshot?.importIssue
-                ? "sync_failed"
-                : "ready",
-        confirmed: e.confirmed,
-        workstreamCount: e.connection.capable
-          ? (e.snapshot?.workstreams.filter((w) => w.deletedAt === null).length ?? 0)
-          : 0,
-      })),
+      environments: [...entries.values()].map((e): PersonalEnvironmentState => {
+        const workstreams = e.connection.capable
+          ? (e.snapshot?.workstreams.filter((w) => w.deletedAt === null) ?? [])
+          : [];
+        return {
+          environmentId: e.connection.environmentId,
+          status: !e.connection.capable
+            ? "update_required"
+            : !e.connection.connected
+              ? "offline"
+              : !e.connection.writable
+                ? "read_only"
+                : e.failed || e.snapshot?.importIssue
+                  ? "sync_failed"
+                  : "ready",
+          confirmed: e.confirmed,
+          workstreamCount: workstreams.length,
+          workstreams,
+        };
+      }),
     });
   };
   // Mutation replies are partial observations, so do not advance the full-snapshot

@@ -181,8 +181,7 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
             if (
               !intent.launchStarted &&
               link.value.access !== "read-only" &&
-              envelope.launch.runtimeMode !== undefined &&
-              envelope.launch.runtimeMode !== "inherit"
+              envelope.launch.runtimeMode !== undefined
             ) {
               yield* resolveRuntimeMode(link.value.access, envelope.launch.runtimeMode);
             }

@@ -1108,7 +1108,6 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
               }
             }),
           ),
-          Effect.mapError(mapError(input, "provision-worktree", threadId)),
           Effect.catchCause((cause) =>
             Effect.logWarning("Thread worktree branch rename failed", {
               commandId: input.commandId,
@@ -1124,6 +1123,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
               Effect.andThen(operation === undefined ? Effect.void : Effect.failCause(cause)),
             ),
           ),
+          Effect.mapError(mapError(input, "provision-worktree", threadId)),
           Effect.forkIn(preparationScope),
         );
       }
@@ -1587,6 +1587,20 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
       }
 
       const launchReceipt = priorLaunchReceipt;
+      const claimType =
+        input.reuseExistingThread === true ? "thread.metadata.update" : "thread.create";
+      if (
+        Option.isSome(launchReceipt) &&
+        launchReceipt.value.status === "accepted" &&
+        (launchReceipt.value.commandType !== claimType ||
+          (input.threadId !== undefined && launchReceipt.value.threadId !== input.threadId))
+      ) {
+        return yield* mapError(
+          input,
+          input.reuseExistingThread === true ? "update-thread" : "create-thread",
+          input.threadId,
+        )("The accepted command cannot be replayed as this launch.");
+      }
       yield* threads.assertProviderInstanceEnabled({
         projectId: input.projectId,
         commandId: input.commandId,

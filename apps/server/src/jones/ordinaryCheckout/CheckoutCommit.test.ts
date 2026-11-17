@@ -30,7 +30,7 @@ import { CheckoutError, canonical } from "./CheckoutProtocol.ts";
 import * as Commit from "./CheckoutCommit.ts";
 import * as LegacyStorage from "../legacyBootstrap/Storage.ts";
 import type { CommandBinding } from "../legacyBootstrap/StorageSchema.ts";
-import legacyMigration from "../persistence/Migrations/158_JonesLegacyBootstrap.ts";
+import legacyMigration from "../persistence/Migrations/161_JonesLegacyBootstrap.ts";
 import { CheckoutCommitAuthority, type CommittedCheckoutOperation } from "./OrdinaryCheckout.ts";
 import * as Intent from "./CheckoutIntent.ts";
 import { makeCommitFixture } from "./CheckoutCommit.testkit.ts";
