@@ -17,8 +17,8 @@ import { parseServiceState } from "../../cloud/serviceProtocol.ts";
  */
 export type JonesRuntimeManagement = "unmanaged" | "managed" | "unreadable-service-state";
 
-export const JONES_ACTIVE_INSTALL_RECORD = "jones-active-install.json";
-export const JONES_RUNTIME_RECEIPT = ".jones-runtime-receipt.json";
+const JONES_ACTIVE_INSTALL_RECORD = "jones-active-install.json";
+const JONES_RUNTIME_RECEIPT = ".jones-runtime-receipt.json";
 
 /** Read-only: inspects `<baseDir>/runtime` and never creates, repairs or removes anything. */
 export const classifyJonesManagedRuntime = Effect.fn("jones.cli.classify_managed_runtime")(
