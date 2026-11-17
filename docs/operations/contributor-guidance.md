@@ -373,11 +373,13 @@ unrelated additions. Write the description in this order:
   Use one line for up to two contributors, a collapsed block for more, and
   list threads used only as sources separately.
 
-Keep each bullet to one short thought, usually a brief phrase on one visual
-line at desktop width. Narrow screens and essential qualifications may wrap.
-Use a short top-level bullet with supporting sub-bullets for related facts;
-never bundle several sentences into one bullet. Split or shorten long bullets
-and link supporting detail from the evidence comment. Bold key statuses,
+Open with a clear sentence or lead bullet explaining what changes and why.
+Keep top-level bullets to one clear point, usually one visual line and at most
+two where practical. Add one or more indented sub-bullets wherever a short lead
+would be ambiguous: explain what it means, why it matters or what remains
+unfinished. Supporting bullets may use short sentences and take more space
+when needed; clarity wins over rigid length limits or unexplained fragments.
+Link deeper reproducibility detail from the evidence comment. Bold key statuses,
 decisions or important words sparingly, rather than every line. Use descriptive
 Markdown hyperlinks for PRs, issues, documents, evidence and available thread
 references; avoid bare URLs and unlinked numbers. Preserve machine-consumed
