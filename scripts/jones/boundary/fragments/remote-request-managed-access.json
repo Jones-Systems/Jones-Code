@@ -3,7 +3,9 @@
   "feature": "remote-request-managed-access",
   "jonesOwnedPaths": [
     "apps/server/src/jones/remoteAdmissionOrigin/",
-    "apps/server/src/jones/mcp/remoteAdmissionFeatures.ts"
+    "apps/server/src/jones/mcp/remoteAdmissionFeatures.ts",
+    "apps/web/src/jones/remoteAdmission/outcomePresentation.ts",
+    "apps/web/src/jones/remoteAdmission/reviewOutcomeAdapter.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],

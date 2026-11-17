@@ -26,6 +26,8 @@ function reviewItem(item: Wire.RemoteAdmissionReviewItem): Item {
   const result = x.recoveredResult?.result ?? x.result;
   return {
     record: item.record,
+    launchResult: result,
+    originalLaunchResult: x.result,
     attempt: x.recoveredResult
       ? `recovered:${x.recoveredResult.revision}`
       : (x.attemptId ?? "original"),

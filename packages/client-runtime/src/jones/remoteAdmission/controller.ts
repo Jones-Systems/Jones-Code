@@ -1,4 +1,5 @@
 import type { RemoteAdmissionDecision, RemoteAdmissionRecord } from "@t3tools/contracts";
+import type { RemoteAdmissionLaunchResult } from "@t3tools/contracts/jones/remoteAdmissionReview";
 
 export type Duration = 3600 | 86400 | 172800 | 259200 | 604800;
 export type View = "current" | "blocked" | "done" | "unresolved" | "inflight" | "access";
@@ -34,6 +35,8 @@ export interface Item {
   reason: string | null;
   canRetry: boolean;
   canRecheck: boolean;
+  launchResult?: RemoteAdmissionLaunchResult | null;
+  originalLaunchResult?: RemoteAdmissionLaunchResult | null;
 }
 export interface Page {
   revision: string;
