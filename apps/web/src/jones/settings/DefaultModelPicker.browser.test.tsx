@@ -90,7 +90,7 @@ async function pickCodex() {
 
 it("keeps the Composer picker open and submits the whole default only on Done", async () => {
   const save = vi.fn();
-  await using screen = await render(picker(save));
+  await using _screen = await render(picker(save));
 
   await pickCodex();
   await page.getByRole("radio", { name: "High", exact: true }).click();
@@ -112,7 +112,7 @@ it("keeps the Composer picker open and submits the whole default only on Done", 
 
 it("discards a pending model and options on Escape", async () => {
   const save = vi.fn();
-  await using screen = await render(picker(save));
+  await using _screen = await render(picker(save));
 
   await pickCodex();
   await page.getByRole("radio", { name: "High", exact: true }).click();
