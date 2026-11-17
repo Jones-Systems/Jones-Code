@@ -3202,6 +3202,8 @@
     {
       "id": "conversation-workspace",
       "tests": [
+        "apps/web/src/components/ChatView.logic.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
         "apps/server/src/jones/conversationWorkspace/SourceBroker.test.ts",
         "apps/server/src/jones/conversationWorkspace/SourceBroker.node-test.mjs",
         "apps/server/src/jones/conversationWorkspace/ConversationPolicy.test.ts",
