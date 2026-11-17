@@ -60,7 +60,8 @@ export const processCoverageCases: Record<string, () => Promise<void>> = {
       has(probe, "process_probe_observation:stage=linux_cmdline,category=unavailable,count=1");
       has(probe, "process_probe_observation:stage=linux_cmdline,category=data_bound,count=2");
       has(probe, "process_probe_observation:stage=linux_maps,category=permission,count=1");
-      has(probe, "process_probe_observation:stage=linux_maps,category=data_bound,count=1");
+      has(probe, "process_probe_observation:stage=linux_maps,category=data_bound,count=2");
+      has(probe, "process_probe_observation:stage=linux_maps,category=unavailable,count=1");
       const clear: Probe = {
         observedAt: probe.observedAt,
         status: "complete",

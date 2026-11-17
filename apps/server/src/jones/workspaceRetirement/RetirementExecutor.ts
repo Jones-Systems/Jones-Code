@@ -218,7 +218,9 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
             canonical(remaining.containingRefs) !== canonical(final.result.containingRefs) ||
             canonical(remaining.ignored) !== canonical(final.result.ignored) ||
             canonical(remaining.capturedConfig) !== canonical(final.result.capturedConfig) ||
-            remaining.sparsePatterns !== final.result.sparsePatterns
+            remaining.sparsePatterns !== final.result.sparsePatterns ||
+            remaining.consumers?.coverage.process?.processPolicy?.basisDigest !==
+              final.result.consumers?.coverage.process?.processPolicy?.basisDigest
           )
             return yield* new RetirementError({
               reason: "remaining_fact_changed",

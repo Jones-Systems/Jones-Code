@@ -382,6 +382,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
         sparsePatterns: result.sparsePatterns,
         reasons: result.reasons,
         level: result.level,
+        processBasis: result.consumers?.coverage.process?.processPolicy?.basisDigest,
       }),
     );
     return result;
@@ -678,6 +679,7 @@ export async function finalCheck(input: QualificationInput, previous: Qualificat
       ignored: r.ignored,
       capturedConfig: r.capturedConfig,
       sparsePatterns: r.sparsePatterns,
+      processBasis: r.consumers?.coverage.process?.processPolicy?.basisDigest,
     });
   return {
     result: fresh,
