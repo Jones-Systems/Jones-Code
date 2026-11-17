@@ -30,6 +30,7 @@ import {
   personalThreadContextRefs,
 } from "../../jones/workstreams/personalThreadDrag";
 import { windowPersonalThreads } from "../../jones/workstreams/personalThreadWindow";
+import { createSidebarDragAutoScroll } from "../../jones/workstreams/sidebarDragAutoScroll";
 export interface NativeThreadAssignmentMenu {
   readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
   readonly onAction: (action: ThreadActionMenuId) => void;
@@ -356,6 +357,7 @@ export function WorkstreamNativeSidebar({
           : null;
     };
     sensor.current?.cancel();
+    let autoScroll: ReturnType<typeof createSidebarDragAutoScroll> | null = null;
     sensor.current = new SidebarPointerSensor({
       active: key,
       event: event.nativeEvent,
@@ -363,6 +365,7 @@ export function WorkstreamNativeSidebar({
         distance: SIDEBAR_DRAG_DISTANCE,
         onAttach: () => {},
         onFinish: () => {
+          autoScroll?.dispose();
           sensor.current = null;
           lifted.current?.dispose();
           lifted.current = null;
@@ -384,10 +387,13 @@ export function WorkstreamNativeSidebar({
       onPending: () => {},
       onAbort: () => {},
       onStart: (point) => {
-        if (canMove(thread) && !busy.current)
+        if (canMove(thread) && !busy.current) {
           lifted.current = liftPersonalThreadCard(source, point);
+          autoScroll = createSidebarDragAutoScroll(source, locateCurrent);
+        }
       },
       onMove: (point) => {
+        autoScroll?.move(point);
         const outside = outsideSidebar(point);
         lifted.current?.setVisible(!outside);
         if (outside) {
