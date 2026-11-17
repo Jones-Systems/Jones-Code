@@ -10,7 +10,7 @@ import {
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { act, render } from "../../../test/render";
+import { act, render, fakeTimers } from "../../../test/render";
 import {
   WorkstreamNativeSidebar,
   type NativeThreadExternalDrop,
@@ -179,14 +179,14 @@ describe("personal thread pointer placement", () => {
     spacer.style.height = "2000px";
     viewport.append(spacer);
     viewport.scrollTop = 200;
+    using _timers = fakeTimers();
     const edge = { x: 100, y: 105 };
     await start(row(screen.container, source), edge);
-    await vi.waitFor(() => expect(viewport.scrollTop).toBeLessThan(150));
+    await act(() => vi.advanceTimersByTime(200));
+    expect(viewport.scrollTop).toBeLessThan(150);
     await act(() => document.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })));
     const top = viewport.scrollTop;
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
+    await act(() => vi.advanceTimersByTime(200));
     expect(viewport.scrollTop).toBe(top);
     expect(document.querySelector("[data-personal-thread-drag]")).toBeNull();
     expect(setup.placeThread).not.toHaveBeenCalled();

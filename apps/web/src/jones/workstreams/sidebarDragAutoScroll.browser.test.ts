@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import { fakeTimers } from "../../../test/render";
 import { createSidebarDragAutoScroll } from "./sidebarDragAutoScroll";
 
 function fixture() {
@@ -24,41 +25,44 @@ function fixture() {
 }
 
 describe("sidebar drag edge scrolling", () => {
-  it("keeps scrolling beneath a stationary pointer and refreshes the insertion target", async () => {
+  it("keeps scrolling beneath a stationary pointer and refreshes the insertion target", () => {
+    using _timers = fakeTimers();
     using f = fixture();
     const point = { x: 120, y: 105 };
     f.scroll.move(point);
-    await vi.waitFor(() => expect(f.viewport.scrollTop).toBeLessThan(450));
+    vi.advanceTimersByTime(200);
+    expect(f.viewport.scrollTop).toBeLessThan(450);
     expect(f.onScroll).toHaveBeenCalledWith(point);
     const top = f.viewport.scrollTop;
-    await vi.waitFor(() => expect(f.viewport.scrollTop).toBeLessThan(top - 40));
+    vi.advanceTimersByTime(200);
+    expect(f.viewport.scrollTop).toBeLessThan(top - 40);
     f.scroll.move({ x: 120, y: 395 });
     const bottomStart = f.viewport.scrollTop;
-    await vi.waitFor(() => expect(f.viewport.scrollTop).toBeGreaterThan(bottomStart + 40));
+    vi.advanceTimersByTime(200);
+    expect(f.viewport.scrollTop).toBeGreaterThan(bottomStart + 40);
   });
 
   it.each([
     { name: "center", point: { x: 120, y: 250 } },
     { name: "composer", point: { x: 400, y: 105 } },
-  ])("stops immediately when the pointer moves to the $name", async ({ point }) => {
+  ])("stops immediately when the pointer moves to the $name", ({ point }) => {
+    using _timers = fakeTimers();
     using f = fixture();
     f.scroll.move({ x: 120, y: 105 });
-    await vi.waitFor(() => expect(f.viewport.scrollTop).toBeLessThan(480));
+    vi.advanceTimersByTime(200);
+    expect(f.viewport.scrollTop).toBeLessThan(480);
     f.scroll.move(point);
     const top = f.viewport.scrollTop;
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
+    vi.advanceTimersByTime(200);
     expect(f.viewport.scrollTop).toBe(top);
   });
 
-  it("cancels its pending frame on release or cancellation", async () => {
+  it("cancels its pending frame on release or cancellation", () => {
+    using _timers = fakeTimers();
     using f = fixture();
     f.scroll.move({ x: 120, y: 105 });
     f.scroll.dispose();
-    await new Promise<void>((resolve) =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
+    vi.advanceTimersByTime(200);
     expect(f.viewport.scrollTop).toBe(500);
     expect(f.onScroll).not.toHaveBeenCalled();
   });
