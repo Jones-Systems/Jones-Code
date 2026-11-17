@@ -171,6 +171,26 @@ export function SidebarAppearanceControls() {
         {field("deviceLabel")}
         {field("laptopSymbol")}
         {field("vpsSymbol")}
+        <div {...host.scopeProps} role="group" aria-label="Example VPS thread card">
+          <div data-jones-sidebar-card className="rounded-md bg-sidebar px-2 py-1.5">
+            <div
+              data-jones-thread-title="receded"
+              data-jones-thread-title-branch="card"
+              className="truncate text-sm text-foreground/75"
+            >
+              VPS example thread
+            </div>
+            <div className="mt-0.5 flex items-center gap-1.5 text-xs text-secondary-label">
+              <PersonalMachineSymbol
+                label="VPS"
+                kind="server"
+                fallback={BrainIcon}
+                className="size-3 shrink-0"
+              />
+              {host.presented.deviceLabel === "label" ? <span>VPS</span> : null}
+            </div>
+          </div>
+        </div>
       </section>
       <p className="text-xs text-muted-foreground">
         {!hasRecord

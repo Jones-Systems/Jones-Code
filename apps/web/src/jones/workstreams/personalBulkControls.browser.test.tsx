@@ -233,14 +233,15 @@ describe("Workstreams bulk controls", () => {
     const plus = control(row, "Expand all Workstreams");
     const minus = control(row, "Collapse all Workstreams");
     const chevron = control(row, "Hide all Workstreams");
+    const glyph = chevron.querySelector("svg")!;
     const rect = (element: Element) => element.getBoundingClientRect();
     expect(rect(label).right).toBeLessThanOrEqual(rect(plus).left);
     expect(rect(minus).left - rect(plus).right).toBeLessThanOrEqual(4);
     expect(rect(plus).right).toBeLessThanOrEqual(rect(minus).left);
     expect(rect(minus).right).toBeLessThanOrEqual(rect(pill(row)).left);
-    expect(rect(pill(row)).right).toBeLessThanOrEqual(rect(chevron).left);
+    expect(rect(pill(row)).right).toBeLessThanOrEqual(rect(glyph).left);
     const padding = parseFloat(getComputedStyle(row).paddingRight);
-    expect(Math.abs(rect(chevron).right - (rect(row).right - padding))).toBeLessThan(1);
+    expect(rect(row).right - padding - rect(glyph).right).toBeCloseTo(4);
     expect(rect(row).bottom).toBeLessThanOrEqual(rect(sectionFor(screen.container, alphaId)!).top);
     expect(sectionFor(screen.container, alphaId)!.compareDocumentPosition(row)).toBe(
       Node.DOCUMENT_POSITION_PRECEDING,
@@ -252,6 +253,39 @@ describe("Workstreams bulk controls", () => {
     expect(row.querySelectorAll("svg")).toHaveLength(3);
     expect(row.textContent).toBe(`Workstreams${pill(row).textContent}`);
     expect(chevron.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("toggles from the label, background and arrow while actions stay independently clickable", async () => {
+    using setup = fixture();
+    await using screen = await render(<Sidebar setup={setup} width={420} />);
+    const row = header(screen.container);
+    const disclosure = control(row, "Hide all Workstreams");
+    const arrow = disclosure.querySelector("svg")!.getBoundingClientRect();
+    const label = [...row.querySelectorAll("span")]
+      .find((entry) => entry.textContent === "Workstreams")!
+      .getBoundingClientRect();
+    const minus = control(row, "Collapse all Workstreams");
+    const rightControls = pill(row).getBoundingClientRect();
+    const gap = (minus.getBoundingClientRect().right + rightControls.left) / 2;
+    const hit = (x: number) =>
+      document.elementFromPoint(x, arrow.top + arrow.height / 2)?.closest("button");
+    for (const x of [label.left + 4, gap, arrow.left + arrow.width / 2, gap]) {
+      expect(hit(x)).toBe(disclosure);
+      expect(getComputedStyle(disclosure).cursor).toBe("pointer");
+      const wasExpanded = disclosure.getAttribute("aria-expanded") === "true";
+      await act(() => disclosure.click());
+      expect(disclosure.getAttribute("aria-expanded")).toBe(String(!wasExpanded));
+      expect(Boolean(sectionFor(screen.container, alphaId))).toBe(!wasExpanded);
+    }
+    const status = pill(row).querySelector("button")!;
+    for (const button of [minus, status]) {
+      const bounds = button.getBoundingClientRect();
+      expect(hit(bounds.left + bounds.width / 2)).toBe(button);
+      await act(() => button.click());
+      expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    }
+    expect(status.getAttribute("aria-pressed")).toBe("true");
+    expect(collapsedValues()).toEqual(["true", "true", null]);
   });
 
   it("totals the unfiltered counts of the named groups only", async () => {
@@ -503,15 +537,10 @@ describe("Workstreams bulk controls", () => {
     expect(spacing).toBeGreaterThanOrEqual(0.25);
     expect(spacing).toBeLessThan(1);
     const chevron = control(row, "Hide all Workstreams");
+    const glyph = chevron.querySelector("svg")!.getBoundingClientRect();
     const padding = parseFloat(getComputedStyle(row).paddingRight);
-    expect(shared.getBoundingClientRect().right).toBeLessThanOrEqual(
-      chevron.getBoundingClientRect().left,
-    );
-    expect(
-      Math.abs(
-        chevron.getBoundingClientRect().right - (row.getBoundingClientRect().right - padding),
-      ),
-    ).toBeLessThan(1);
+    expect(shared.getBoundingClientRect().right).toBeLessThanOrEqual(glyph.left);
+    expect(row.getBoundingClientRect().right - padding - glyph.right).toBeCloseTo(4);
   });
 
   it("leaves the pill at standard spacing when the row has room", async () => {

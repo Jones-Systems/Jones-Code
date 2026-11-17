@@ -279,17 +279,18 @@ it.each(["card", "slim", "folder", "folder-multiline"] as const)(
         if (boost === 100) {
           const expected = document.createElement("span");
           expected.style.color =
-            "color-mix(in oklab, var(--color-foreground) 100%, var(--color-foreground))";
+            "color-mix(in oklab, light-dark(var(--color-black), var(--color-white)) 100%, transparent)";
           screen.container.append(expected);
           expect(getComputedStyle(title()).color).toBe(getComputedStyle(expected).color);
           expected.remove();
         }
-        if (state.tone !== "primary") expect(getComputedStyle(title()).color).not.toBe(baseline);
+        expect(getComputedStyle(title()).color).not.toBe(baseline);
       }
       await userEvent.keyboard("{Tab}");
       await act(() => screen.container.querySelector<HTMLElement>("[data-sidebar-row]")!.focus());
       const probe = document.createElement("span");
-      probe.style.color = "var(--color-foreground)";
+      probe.style.color =
+        "color-mix(in oklab, light-dark(var(--color-black), var(--color-white)) 100%, transparent)";
       screen.container.append(probe);
       expect(getComputedStyle(title()).color).toBe(getComputedStyle(probe).color);
       probe.remove();

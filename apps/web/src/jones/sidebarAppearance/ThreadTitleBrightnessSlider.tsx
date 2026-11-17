@@ -28,14 +28,14 @@ export function ThreadTitleBrightnessSlider({
           value === 0
             ? "Current colours"
             : value === 100
-              ? "Brightest: receded titles at full foreground"
-              : `${value}% toward full foreground`
+              ? "Highest contrast"
+              : `${value}% toward highest contrast`
         }
         onChange={(event) => onChange(Number(event.target.value))}
       />
       <div className="flex justify-between text-xs text-muted-foreground">
         <span>Current</span>
-        <span>Brighter</span>
+        <span>Higher contrast</span>
       </div>
     </div>
   );

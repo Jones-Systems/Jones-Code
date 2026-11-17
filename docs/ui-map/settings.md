@@ -273,13 +273,14 @@ mobile and packaged notification delivery remain **unverified** here.
 
 Jones Code settings includes a device-local **Sidebar thread title brightness**
 slider, shared with the **Sidebar appearance** panel beside the thread list.
-It blends sidebar title colours toward the theme foreground while retaining
-existing semantic weights and row-state cues. Chat text, interface fonts, glass
-and window zoom use their existing settings. A value of zero keeps the current
-semantic title colours.
+It increases title contrast toward black in light themes and white in dark
+themes. Jones Code settings shows original and adjusted versions of the same
+read title. Chat text, interface fonts, glass and window zoom use their
+existing settings. A value of zero keeps the current semantic title colours.
 
 The live panel also offers independent card sizing, Workstream typography and
-spacing, pill background, count presentation and sidebar device symbols.
+spacing, pill background, count presentation and sidebar device symbols, with
+an example VPS card for comparing the brain variants.
 Selected and Original presets keep the brightness value; Compare with Original
 is temporary. Reset all removes only the sidebar appearance record and restores
 the Selected look at zero brightness. Preferences are local to this client and
