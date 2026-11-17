@@ -1412,6 +1412,8 @@
         "apps/server/src/serverRuntimeStartup.test.ts",
         "apps/server/src/cli/service.test.ts",
         "apps/server/src/cli/update.test.ts",
+        "apps/server/src/cli/uninstall.test.ts",
+        "apps/server/src/jones/cli/managedRuntime.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/cloud/qualifiedBackup.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts",
