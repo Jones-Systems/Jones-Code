@@ -2,7 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "check-changed-parity",
   "jonesOwnedPaths": [],
-  "hookPaths": ["scripts/check-changed.ts"],
+  "hookPaths": ["scripts/check-changed.ts", "scripts/check-changed.test.ts"],
   "tombstones": [],
   "allowedImports": [
     {

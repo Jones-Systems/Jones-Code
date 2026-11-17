@@ -338,6 +338,8 @@ function launcherFixture() {
     "scripts/check-changed.ts",
     "scripts/check-changed-command.ts",
     ".github/scripts/ci-changes.cjs",
+    "scripts/jones/ci/linux-changes.cjs",
+    "scripts/jones/ci/local-selection.cjs",
   ]) {
     write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));
   }
