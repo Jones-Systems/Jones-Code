@@ -274,12 +274,12 @@ describe("reasoning effort shortcuts", () => {
     const resolved = getComposerEffectiveTraitsOptions({
       provider: ProviderDriverKind.make("codex"),
       instanceId,
-      model: "gpt-6.1-sol",
+      model: "gpt-6.2-sol",
       models: familyModels,
       modelOptions: undefined,
       defaultModelSelection: {
         instanceId,
-        model: "gpt-6.1-sol",
+        model: "gpt-6.2-sol",
         options: [{ id: "reasoningEffort", value: "medium" }],
       },
       defaultDriverKind: ProviderDriverKind.make("codex"),
@@ -287,12 +287,12 @@ describe("reasoning effort shortcuts", () => {
     await render({
       ...resolved,
       provider: ProviderDriverKind.make("codex"),
-      model: "gpt-6.1-sol",
+      model: "gpt-6.2-sol",
       models: familyModels,
     });
     expect(selectedLabel()).toBe("Medium");
     expect(currentOptions()).toBeUndefined();
-    await act(() => familyButton("GPT-6.1 Sol, High reasoning").click());
+    await act(() => familyButton("GPT-6.2 Sol, High reasoning").click());
     expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "high" });
   });
 
@@ -459,14 +459,14 @@ const familyEffort = {
 };
 const familyModels = [
   {
-    slug: "gpt-6.1-sol",
-    name: "GPT-6.1 Sol",
+    slug: "gpt-6.2-sol",
+    name: "GPT-6.2 Sol",
     isCustom: false,
     capabilities: { optionDescriptors: [familyEffort, fast] },
   },
   {
-    slug: "gpt-6-astra",
-    name: "GPT-6 Astra",
+    slug: "gpt-6.2-astra",
+    name: "GPT-6.2 Astra",
     isCustom: false,
     capabilities: { optionDescriptors: [familyEffort, fast] },
   },
@@ -484,7 +484,7 @@ it("selects a model and effort together on the current account, retaining same-m
   const props = {
     provider: ProviderDriverKind.make("codex"),
     models: familyModels,
-    model: "gpt-6.1-sol",
+    model: "gpt-6.2-sol",
     onProviderModelSelect,
   };
   await render(props);
@@ -496,28 +496,28 @@ it("selects a model and effort together on the current account, retaining same-m
     "High",
     "Extra High",
   ]);
-  expect(familyButton("GPT-6.1 Sol, High reasoning").getAttribute("aria-pressed")).toBe("true");
-  expect(familyButton("GPT-6 Astra, High reasoning").getAttribute("aria-pressed")).toBe("false");
-  await act(() => familyButton("GPT-6.1 Sol, Medium reasoning").click());
+  expect(familyButton("GPT-6.2 Sol, High reasoning").getAttribute("aria-pressed")).toBe("true");
+  expect(familyButton("GPT-6.2 Astra, High reasoning").getAttribute("aria-pressed")).toBe("false");
+  await act(() => familyButton("GPT-6.2 Sol, Medium reasoning").click());
   expect(currentOptions()).toEqual([
     { id: "reasoningEffort", value: "medium" },
     { id: "fastMode", value: true },
   ]);
   expect(onProviderModelSelect).not.toHaveBeenCalled();
-  await act(() => familyButton("GPT-6 Astra, Extra High reasoning").click());
-  expect(onProviderModelSelect).toHaveBeenCalledExactlyOnceWith(instanceId, "gpt-6-astra", {
+  await act(() => familyButton("GPT-6.2 Astra, Extra High reasoning").click());
+  expect(onProviderModelSelect).toHaveBeenCalledExactlyOnceWith(instanceId, "gpt-6.2-astra", {
     effort: { id: "reasoningEffort", value: "xhigh" },
   });
   expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "medium" });
   await render({
     ...props,
-    model: "gpt-6-astra",
+    model: "gpt-6.2-astra",
     modelOptions: [{ id: "reasoningEffort", value: "xhigh" }],
   });
-  expect(familyButton("GPT-6 Astra, Extra High reasoning").getAttribute("aria-pressed")).toBe(
+  expect(familyButton("GPT-6.2 Astra, Extra High reasoning").getAttribute("aria-pressed")).toBe(
     "true",
   );
-  expect(familyButton("GPT-6.1 Sol, Extra High reasoning").getAttribute("aria-pressed")).toBe(
+  expect(familyButton("GPT-6.2 Sol, Extra High reasoning").getAttribute("aria-pressed")).toBe(
     "false",
   );
 });
@@ -532,15 +532,15 @@ it("keeps missing families and unsupported efforts disabled, and enforces model 
     onProviderModelSelect,
   };
   await render(props);
-  expect(familyButton("GPT-6 Astra, Medium reasoning").disabled).toBe(true);
-  expect(familyButton("GPT-6 Astra, Medium reasoning").title).toContain("isn't available");
-  expect(familyButton("GPT-6.1 Sol, Medium reasoning").disabled).toBe(false);
+  expect(familyButton("GPT-6.2 Astra, Medium reasoning").disabled).toBe(true);
+  expect(familyButton("GPT-6.2 Astra, Medium reasoning").title).toContain("isn't available");
+  expect(familyButton("GPT-6.2 Sol, Medium reasoning").disabled).toBe(false);
   await render({ ...props, getModelDisabledReason: () => "Session model is locked" });
   expect(buttons().every((button) => button.disabled)).toBe(true);
-  await act(() => familyButton("GPT-6.1 Sol, Medium reasoning").click());
+  await act(() => familyButton("GPT-6.2 Sol, Medium reasoning").click());
   expect(onProviderModelSelect).not.toHaveBeenCalled();
   await render({ ...props, visible: false });
-  const button = familyButton("GPT-6.1 Sol, Medium reasoning");
+  const button = familyButton("GPT-6.2 Sol, Medium reasoning");
   button.disabled = false;
   await act(() => button.click());
   expect(onProviderModelSelect).not.toHaveBeenCalled();
@@ -928,10 +928,10 @@ it.each(composerLayoutCases)(
       }
       expect(onAccountSelect).toHaveBeenLastCalledWith(
         ProviderInstanceId.make("account-9"),
-        codex ? "gpt-6.1-sol" : "test-model",
+        codex ? "gpt-6.2-sol" : "test-model",
       );
       if (codex) {
-        expect(onProviderModelSelect).toHaveBeenLastCalledWith(instanceId, "gpt-6-astra", {
+        expect(onProviderModelSelect).toHaveBeenLastCalledWith(instanceId, "gpt-6.2-astra", {
           effort: { id: "reasoningEffort", value: "xhigh" },
         });
       } else {

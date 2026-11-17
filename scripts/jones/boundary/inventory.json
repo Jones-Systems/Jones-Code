@@ -2279,6 +2279,7 @@
     "packages/contracts/src/jones/workstreamsNativeOwner.test.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamsNativeOwner.ts": "jones-owned",
     "packages/contracts/src/legacyOrchestrationCompatibility.ts": "jones-owned",
+    "packages/contracts/src/model.ts": "accepted-shared",
     "packages/contracts/src/nativeCreation.test.ts": "jones-owned",
     "packages/contracts/src/nativeCreation.ts": "jones-owned",
     "packages/contracts/src/orchestrationDispatch.ts": "accepted-shared",
