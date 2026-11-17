@@ -141,6 +141,32 @@ const processPolicy = Schema.Struct({
           value.nonExemptErrors === 0)),
   ),
 );
+// Both fields are optional so a receipt written before preservation planning still decodes.
+const preservePlan = Schema.Struct({
+  schema: Schema.Literal("workspace-preserve-plan/v1"),
+  selected: strings,
+  deletions: strings,
+  excluded: Schema.mutable(
+    Schema.Array(
+      Schema.Struct({
+        path: Schema.String,
+        reason: Schema.String,
+        origin: Schema.Literals(["tracked", "untracked"]),
+      }),
+    ),
+  ),
+  selectedBytes: count,
+  excludedBytes: count,
+});
+const recoverability = Schema.Struct({
+  schema: Schema.Literal("workspace-recoverability/v1"),
+  verdict: Schema.Literals(["recreatable", "retirable_after_preserve", "held", "unknown"]),
+  reasons: Schema.Record(
+    Schema.String,
+    Schema.Literals(["preservable", "unrecreatable", "liveness", "unobserved"]),
+  ),
+  regenerable: strings,
+});
 const qualification = Schema.Struct({
   schema: Schema.Literal("workspace-qualification/v1"),
   authority_effect: Schema.Literal("none"),
@@ -170,6 +196,8 @@ const qualification = Schema.Struct({
       ),
     ),
   ),
+  recoverability: Schema.optionalKey(recoverability),
+  preservePlan: Schema.optionalKey(preservePlan),
   consumers: Schema.optionalKey(
     Schema.Struct({
       holds: strings,
