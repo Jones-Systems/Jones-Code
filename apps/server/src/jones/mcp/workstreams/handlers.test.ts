@@ -42,6 +42,12 @@ const workstream = P.newPersonalWorkstream({
 });
 const threadId = ThreadId.make("thread");
 const assignment = { threadId, workstreamId: null, revision: 0, updatedAt: null };
+const autoRoute = {
+  state: "abstained" as const,
+  code: "ambiguous",
+  workstreamId: null,
+  decidedAt: "2026-01-01T00:00:00.000Z",
+};
 const backend = (calls: unknown[]) =>
   Layer.mergeAll(
     Layer.mock(Personal.PersonalWorkstreams)({
@@ -60,7 +66,7 @@ const backend = (calls: unknown[]) =>
       readThread: (id) =>
         Effect.sync(() => {
           calls.push(["read", { threadId: id }]);
-          return { assignment: { ...assignment, threadId: id }, workstream: null };
+          return { assignment: { ...assignment, threadId: id }, workstream: null, autoRoute };
         }),
     }),
     Layer.mock(Agent.AgentWorkstreams)({
@@ -292,7 +298,14 @@ it.effect(
       const f = yield* routingFixture();
       for (const [name, args] of routedInputs) {
         const original = structuredClone(args);
-        yield* routedCall(f.sending, name, { ...args, environmentId: remoteEnvironment });
+        const results = yield* routedCall(f.sending, name, {
+          ...args,
+          environmentId: remoteEnvironment,
+        });
+        if (name === "t3_thread_workstream_read")
+          expect(results.at(-1)?.result).toMatchObject({ autoRoute });
+        if (name === "t3_thread_workstream_set")
+          expect(results.at(-1)?.result).not.toHaveProperty("autoRoute");
         expect(args).toEqual(original);
       }
       expect(f.localCalls).toEqual([]);

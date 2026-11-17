@@ -95,6 +95,24 @@ it("preserves boost in presets, removes the key on reset, and exposes denied wri
   );
 });
 
+it("shows the selected VPS symbol at the same size as a thread card", async () => {
+  using _storage = appearanceStorage();
+  await using screen = await render(<Fixture />);
+  await screen.getByRole("button", { name: "Sidebar appearance", exact: true }).click();
+  const sample = document.querySelector('[aria-label="Example VPS thread card"]')!;
+  const icon = () => sample.querySelector("svg")!;
+  const filledHalves = () => icon().querySelectorAll('path[fill="currentColor"][mask]').length;
+  expect(icon().getBoundingClientRect().width).toBeCloseTo(12 * 0.93, 1);
+  expect(filledHalves()).toBe(2);
+  await page.getByRole("radio", { name: "Left", exact: true }).click();
+  expect(filledHalves()).toBe(1);
+  await page
+    .getByRole("group", { name: "VPS symbol", exact: true })
+    .getByRole("radio", { name: "Outline (Original)", exact: true })
+    .click();
+  expect(icon().classList.contains("lucide-brain")).toBe(true);
+});
+
 it("falls back in flow when there is no room for a 280px panel", async () => {
   using _storage = appearanceStorage();
   await using screen = await render(<Fixture narrow />);

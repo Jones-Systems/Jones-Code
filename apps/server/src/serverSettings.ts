@@ -4,6 +4,7 @@ import {
   ModelSelection,
   ProjectScript,
   ProjectSettingsOverrides,
+  type ProjectId,
   type ProviderInstanceConfig,
   type ProviderInstanceMutation,
   defaultInstanceIdForDriver,
@@ -11,6 +12,8 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
+  resolveTextGenerationSelectionEnabled,
+  textGeneratorForSelection,
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
@@ -248,6 +251,11 @@ function ensureProviderInstanceMutationAllowed(
   return Effect.void;
 }
 
+interface ConfiguredTextGeneration {
+  readonly selection: ModelSelection;
+  readonly transport: "generator" | "provider";
+}
+
 export class ServerSettingsService extends Context.Service<
   ServerSettingsService,
   {
@@ -259,6 +267,11 @@ export class ServerSettingsService extends Context.Service<
     readonly managedPolicy?: ManagedPolicySummary | undefined;
 
     readonly getSettings: Effect.Effect<ServerSettings, ServerSettingsError>;
+
+    /** Policy-applied selection for callers that cannot send input to a fallback provider. */
+    readonly getConfiguredTextGeneration?: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ConfiguredTextGeneration | null, ServerSettingsError>;
 
     readonly updateSettings: (
       patch: ServerSettingsPatch,
@@ -326,6 +339,10 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     start: Effect.void,
     ready: Effect.void,
     getSettings,
+    getConfiguredTextGeneration: (projectId) =>
+      Ref.get(currentSettingsRef).pipe(
+        Effect.map((settings) => configuredTextGeneration(settings, projectId)),
+      ),
     updateSettings: (patch) =>
       updateTestSettings(
         (currentSettings) => Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
@@ -499,6 +516,24 @@ function validateExplicitTextGenerationSelection(
       ),
     }),
   );
+}
+
+function configuredTextGeneration(
+  settings: ServerSettings,
+  projectId: ProjectId,
+  isDriverAllowed: DriverAllowed = anyDriver,
+): ConfiguredTextGeneration | null {
+  const selection =
+    settings.projectSettingsOverrides[projectId]?.textGenerationModelSelection ??
+    settings.textGenerationModelSelection;
+  if (!resolveTextGenerationSelectionEnabled(settings, projectId, selection.instanceId))
+    return null;
+  if (textGeneratorForSelection(settings, selection.instanceId))
+    return { selection, transport: "generator" };
+  const driver =
+    settings.providerInstances[selection.instanceId]?.driver ??
+    ProviderDriverKind.make(selection.instanceId);
+  return isDriverAllowed(driver) ? { selection, transport: "provider" } : null;
 }
 
 function resolveTextGenerationProvider(
@@ -675,11 +710,10 @@ const make = Effect.gen(function* () {
     summary: managedPolicy,
   } = yield* ManagedPolicy.ManagedPolicy;
   // Locks are laid over every settings value that leaves this service, never persisted.
+  const applyPolicy = (settings: ServerSettings) =>
+    managedProviders.applyLimits(managed.applyLocks(settings));
   const toEffective = (settings: ServerSettings) =>
-    resolveTextGenerationProvider(
-      managedProviders.applyLimits(managed.applyLocks(settings)),
-      managedProviders.isDriverAllowed,
-    );
+    resolveTextGenerationProvider(applyPolicy(settings), managedProviders.isDriverAllowed);
   const writeSemaphore = yield* Semaphore.make(1);
   const cacheKey = "settings" as const;
   const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
@@ -1353,6 +1387,22 @@ const make = Effect.gen(function* () {
     start,
     ready: Deferred.await(startedDeferred),
     getSettings: getMaterializedSettings,
+    getConfiguredTextGeneration: (projectId) =>
+      Cache.get(settingsCache, cacheKey).pipe(
+        Effect.map(({ settings, parseFailure }) => {
+          if (Option.isSome(parseFailure)) return null;
+          const configured = configuredTextGeneration(
+            applyPolicy(settings),
+            projectId,
+            managedProviders.isDriverAllowed,
+          );
+          // A policy can remove generators. Do not reinterpret that ID as an agent provider.
+          return configured?.transport === "provider" &&
+            textGeneratorForSelection(settings, configured.selection.instanceId)
+            ? null
+            : configured;
+        }),
+      ),
     updateSettings: (patch) =>
       updateAndPersistSettings(patch, (current) =>
         ensureSecretProviderWritesAllowed(patch, settingsPath).pipe(

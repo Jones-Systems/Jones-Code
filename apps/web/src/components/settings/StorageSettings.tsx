@@ -817,6 +817,21 @@ export function WorktreeCleanupSection() {
                         </Select>
                       }
                     />
+                    <SettingsRow
+                      managedPaths={lockablePath("worktreeRegenerableDiscard")}
+                      title="Discard regenerable build output"
+                      description="Dependency installs, build output and caches such as node_modules, dist and build. A nested repository, or a .env or key file in build output, stays protected."
+                      serverScoped={!isProjectScope}
+                      control={
+                        <Switch
+                          aria-label="Discard regenerable build output"
+                          checked={settings.worktreeRegenerableDiscard}
+                          onCheckedChange={(worktreeRegenerableDiscard) =>
+                            updateWorktree({ worktreeRegenerableDiscard })
+                          }
+                        />
+                      }
+                    />
                     {(
                       ["declared_cache", "dependency_reproduction", "format_recognized"] as const
                     ).map((coverage) => (

@@ -19,58 +19,29 @@
 }
 [data-jones-thread-title-boost]
   [data-jones-thread-title-branch="card"][data-jones-thread-title="receded"] {
-  color: color-mix(
-    in oklab,
-    var(--color-foreground) var(--jones-thread-title-boost),
-    color-mix(in oklab, var(--color-foreground) 75%, transparent)
-  );
+  --jones-thread-title-base: color-mix(in oklab, var(--color-foreground) 75%, transparent);
 }
 [data-jones-thread-title-boost]
   [data-jones-thread-title-branch="card"][data-jones-thread-title="failed-read"] {
-  color: color-mix(
-    in oklab,
-    var(--color-foreground) var(--jones-thread-title-boost),
-    color-mix(in oklab, var(--color-foreground) 95%, transparent)
-  );
-}
-[data-jones-thread-title-boost]
-  [data-jones-thread-title-branch="card"][data-jones-thread-title="primary"] {
-  color: color-mix(
-    in oklab,
-    var(--color-foreground) var(--jones-thread-title-boost),
-    var(--color-foreground)
-  );
+  --jones-thread-title-base: color-mix(in oklab, var(--color-foreground) 95%, transparent);
 }
 [data-jones-thread-title-boost]
   [data-jones-thread-title-branch="slim"][data-jones-thread-title="receded"] {
-  color: color-mix(
-    in oklab,
-    var(--color-foreground) var(--jones-thread-title-boost),
-    var(--color-secondary-label)
-  );
-}
-[data-jones-thread-title-boost]
-  [data-jones-thread-title-branch="slim"][data-jones-thread-title="primary"] {
-  color: color-mix(
-    in oklab,
-    var(--color-foreground) var(--jones-thread-title-boost),
-    var(--color-foreground)
-  );
+  --jones-thread-title-base: var(--color-secondary-label);
 }
 [data-jones-thread-title-boost]
   [data-jones-thread-title-branch="slim"][data-jones-thread-title="unread"] {
-  color: color-mix(
-    in oklab,
-    var(--color-foreground) var(--jones-thread-title-boost),
-    var(--color-muted-foreground)
-  );
+  --jones-thread-title-base: var(--color-muted-foreground);
 }
 [data-jones-thread-title-boost]
   [data-jones-thread-title-branch="slim"][data-jones-thread-title="idle"] {
+  --jones-thread-title-base: color-mix(in oklab, var(--color-secondary-label) 70%, transparent);
+}
+[data-jones-thread-title-boost] [data-jones-thread-title] {
   color: color-mix(
     in oklab,
-    var(--color-foreground) var(--jones-thread-title-boost),
-    color-mix(in oklab, var(--color-secondary-label) 70%, transparent)
+    light-dark(var(--color-black), var(--color-white)) var(--jones-thread-title-boost),
+    var(--jones-thread-title-base, var(--color-foreground))
   );
 }
 [data-jones-thread-title-boost]
@@ -79,5 +50,5 @@
 [data-jones-thread-title-boost]
   :is([data-sidebar-row], .group\/sidebar-row):is(:hover, :focus-within)
   [data-jones-thread-title-branch="slim"] {
-  color: var(--color-foreground);
+  --jones-thread-title-base: var(--color-foreground);
 }

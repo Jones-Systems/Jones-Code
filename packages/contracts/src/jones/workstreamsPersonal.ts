@@ -83,12 +83,23 @@ export const PersonalWorkstreamsImportIssue = Schema.Struct({
 });
 export type PersonalWorkstreamsImportIssue = typeof PersonalWorkstreamsImportIssue.Type;
 
+/** A current assignment the server made automatically; absent once anyone moves the thread. */
+export const PersonalWorkstreamAutoAssignment = Schema.Struct({
+  threadId: ThreadId,
+  workstreamId: PersonalWorkstreamId,
+  revision: NonNegativeInt,
+  decidedAt: PersonalTimestamp,
+});
+export type PersonalWorkstreamAutoAssignment = typeof PersonalWorkstreamAutoAssignment.Type;
+
 export const PersonalWorkstreamsSnapshot = Schema.Struct({
   environmentId: EnvironmentId,
   sequence: NonNegativeInt,
   workstreams: Schema.Array(PersonalWorkstream),
   assignments: Schema.Array(PersonalWorkstreamAssignment),
   importIssue: Schema.NullOr(PersonalWorkstreamsImportIssue),
+  // Optional: older servers omit it and older clients ignore it.
+  autoAssignments: Schema.optionalKey(Schema.Array(PersonalWorkstreamAutoAssignment)),
 });
 export type PersonalWorkstreamsSnapshot = typeof PersonalWorkstreamsSnapshot.Type;
 

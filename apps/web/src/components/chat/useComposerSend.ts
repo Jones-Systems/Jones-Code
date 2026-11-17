@@ -772,6 +772,7 @@ export function useComposerSend(input: ComposerSendInput) {
     const effectiveSendEnvMode =
       sendEnvMode === "auto" && !conversationAvailable ? "worktree" : sendEnvMode;
     const {
+      shouldStartConversation,
       missingWorktreeBaseBranch,
       compactBeforeSend,
       turnDispatchMode,
@@ -1470,10 +1471,13 @@ export function useComposerSend(input: ComposerSendInput) {
     let turnStartSucceeded = false;
     if (failure === null && turnAttachmentsResult._tag === "Success") {
       const bootstrap =
-        isLocalDraftThread || shouldCreateWorktree
+        isLocalDraftThread || shouldCreateWorktree || shouldStartConversation
           ? {
-              ...(isLocalDraftThread && effectiveSendEnvMode === "auto"
-                ? { conversation: true }
+              ...(shouldStartConversation
+                ? {
+                    conversation:
+                      activeThreadBranch === null ? {} : { baseRef: activeThreadBranch },
+                  }
                 : {}),
               ...(isLocalDraftThread
                 ? {

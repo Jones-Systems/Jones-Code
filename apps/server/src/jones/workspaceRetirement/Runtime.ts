@@ -23,6 +23,7 @@ import { canonical, exists, git, inside, readBounded } from "./Filesystem.ts";
 import { binding } from "./OutputAttestation.ts";
 import { outputObligations, resolveProductions } from "./ProducerFinalizer.ts";
 import { Receipts, layer, RetirementError, type RetirementReceipt } from "./Receipts.ts";
+import { coveredClasses } from "./IgnoredClassifier.ts";
 import { qualify, type QualificationInput } from "./Qualification.ts";
 import type { Probe } from "./ConsumerProbe.ts";
 import { NativeObservations } from "./NativeObservations.ts";
@@ -388,7 +389,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
       nativeRecreation: nativeGuard.length ? "unsupported" : "supported",
       coverage: {
         keepMode: request.rules.worktreeKeepWhen,
-        classes: request.rules.worktreeCoveredDiscard,
+        classes: coveredClasses(request.rules),
         exactRoots,
         sensitivePaths: ownerPaths,
       },

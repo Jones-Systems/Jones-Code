@@ -1,7 +1,13 @@
-import { act, render as renderScreen, type Screen } from "../../../test/render";
+import { act, fakeTimers, render as renderScreen, type Screen } from "../../../test/render";
 import { useEffect, useState, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import type { WorkQueueMetadataResult, VoiceReviewRecentList } from "@t3tools/contracts";
+import { page } from "vite-plus/test/browser";
+import "../../index.css";
+import {
+  EnvironmentId,
+  type WorkQueueMetadataResult,
+  type VoiceReviewRecentList,
+} from "@t3tools/contracts";
 
 const fixture = vi.hoisted(() => ({
   environments: [
@@ -21,6 +27,8 @@ const fixture = vi.hoisted(() => ({
     },
   ],
   voiceList: vi.fn(),
+  voiceGet: vi.fn(),
+  voiceMutation: vi.fn(),
   selfIdentity: vi.fn(),
   recent: null as VoiceReviewRecentList | null,
   mounts: new Map<string, number>(),
@@ -59,7 +67,21 @@ vi.mock("./useWorkQueueMetadata", async (importOriginal) => ({
 }));
 vi.mock("../../components/voiceReview/useVoiceReview", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../components/voiceReview/useVoiceReview")>()),
-  useVoiceReview: () => ({ fetchList: fixture.voiceList, fetchSelfIdentity: fixture.selfIdentity }),
+  useVoiceReview: () => ({
+    fetchList: fixture.voiceList,
+    fetchSelfIdentity: fixture.selfIdentity,
+    transport: { get: fixture.voiceGet, mutate: fixture.voiceMutation },
+    review: {
+      recent: async () => {
+        if (fixture.recent === null) throw new Error("Recent prompts unavailable");
+        return fixture.recent;
+      },
+      registry: async () => ({ threads: [], partial: false, unavailable: [] }),
+      workstreams: async () => ({ workstreams: [] }),
+      diagnostics: vi.fn(),
+      correctAssociation: vi.fn(),
+    },
+  }),
 }));
 vi.mock("../../components/voiceReview/VoiceReviewPage", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../components/voiceReview/VoiceReviewPage")>()),
@@ -68,19 +90,12 @@ vi.mock("../../components/voiceReview/VoiceReviewPage", async (importOriginal) =
     pane,
     unavailable,
     onDirtyChange,
-    onRecentChange,
-    queuedEntriesOverride,
   }: {
     environmentId: string;
     pane: string;
     unavailable: boolean;
     onDirtyChange: (dirty: boolean) => void;
-    onRecentChange?: (recent: VoiceReviewRecentList | null) => void;
-    queuedEntriesOverride?: readonly VoiceReviewRecentList["entries"][number][];
   }) => {
-    useEffect(() => {
-      onRecentChange?.(fixture.recent);
-    }, [onRecentChange]);
     const [text, setText] = useState("");
     const [uncertain, setUncertain] = useState(false);
     useEffect(() => {
@@ -91,12 +106,7 @@ vi.mock("../../components/voiceReview/VoiceReviewPage", async (importOriginal) =
       return () => onDirtyChange(false);
     }, [onDirtyChange, text, uncertain]);
     return (
-      <div hidden={pane === "sent"}>
-        {pane === "queued"
-          ? queuedEntriesOverride?.map((entry) => (
-              <p key={entry.draft.id}>Queued voice: {entry.text}</p>
-            ))
-          : null}
+      <div hidden={pane !== "pending"}>
         <textarea
           aria-label={`Edit ${environmentId}`}
           value={text}
@@ -139,6 +149,8 @@ describe("Prompts environment composition", () => {
       fixture.recent = null;
       fixture.selfIdentity.mockReset();
       fixture.voiceList.mockReset().mockResolvedValue({ drafts: [] });
+      fixture.voiceGet.mockReset();
+      fixture.voiceMutation.mockReset();
       fixture.blockerStatus = "idle";
       fixture.blockerOptions = null;
       fixture.load
@@ -184,8 +196,9 @@ describe("Prompts environment composition", () => {
     });
   }
   async function click(text: string) {
+    // Stage tabs gain a count suffix ("Queued · 1") once their sources report.
     const button = [...container.querySelectorAll("button")].find(
-      (item) => item.textContent === text,
+      (item) => item.textContent === text || item.textContent?.startsWith(`${text} · `),
     );
     if (!button) throw new Error(`Missing button: ${text}`);
     await act(async () => button.click());
@@ -416,12 +429,130 @@ describe("Prompts environment composition", () => {
     });
     await render();
     await click("Queued");
-    expect(container.textContent).not.toContain("Queued voice: Linked prompt text");
+    expect(container.querySelector('[aria-label="Queued prompts"] li')).toBeNull();
+    expect(container.textContent).not.toContain("Linked prompt text");
+    expect(container.querySelector("#queue-queued-tab")!.getAttribute("aria-label")).toBe(
+      "Queued, at least 0 prompts",
+    );
     await click("Sent");
-    expect(container.querySelectorAll('[aria-label="Sent prompts"] article')).toHaveLength(1);
-    expect(container.textContent).toContain("Linked prompt text");
-    expect(container.textContent).toContain("Provider turn: pending");
+    const rows = container.querySelectorAll('section[aria-label="Sent prompts"] li');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("Linked prompt text");
+    expect(rows[0]!.textContent).toContain("Handed off · Turn not started");
     expect(container.textContent).toContain("Coverage: partial");
+    expect(container.textContent).toContain(
+      "Handoff to a thread is confirmed. This does not mean the work is finished.",
+    );
+    await act(async () => rows[0]!.querySelector<HTMLButtonElement>("button")!.click());
+    const detail = container.querySelector('section[aria-label="Sent prompts"] section')!;
+    expect(detail.textContent).toContain("Handed to thread");
+    expect(detail.textContent).toContain("Not tracked");
+    expect(detail.textContent).toContain("workstream");
+    expect(detail.textContent).toContain("queue ID");
+    expect(container.querySelector("#queue-sent-tab")?.getAttribute("aria-label")).toBeNull();
+
+    const replace = vi.fn();
+    await act(() =>
+      root.rerender(
+        <UnifiedQueuePage
+          navigation={{
+            search: { source: "alpha", stage: "sent", prompt: "queue:missing" },
+            replace,
+          }}
+        />,
+      ),
+    );
+    expect(container.textContent).toContain("This prompt is not in the current sample.");
+    await act(() =>
+      root.rerender(
+        <UnifiedQueuePage
+          navigation={{
+            search: {
+              source: "alpha",
+              stage: "sent",
+              prompt: `voice:${fixture.recent?.entries[0]?.draft.id}`,
+            },
+            replace,
+          }}
+        />,
+      ),
+    );
+    expect(container.textContent).not.toContain("This prompt is not in the current sample.");
+    expect(
+      container.querySelector('[aria-label="Sent prompts list"] button[aria-current]')?.textContent,
+    ).toContain("Linked prompt text");
+
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Search prompts"]')!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        input,
+        "no-matching-text",
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("No prompts match.");
+    await click("Clear filters");
+    expect(input.value).toBe("");
+    expect(container.textContent).not.toContain("No prompts match.");
+  });
+
+  it("keeps an active edit and its guard when the draft drops out of a capped poll", async () => {
+    await using _fixture = await setupFixture1();
+    const { EnvironmentVoiceReview } = await vi.importActual<
+      typeof import("../../components/voiceReview/VoiceReviewPage")
+    >("../../components/voiceReview/VoiceReviewPage");
+    const draft = {
+      ...voiceReviewRecentFixture.entries[1]!.draft,
+      routing_target: "Review fixture",
+    };
+    const editing = { ...draft, state: "editing", revision: draft.revision + 1 } as const;
+    const onDirtyChange = vi.fn<(dirty: boolean) => void>();
+    fixture.voiceList.mockResolvedValue({ drafts: [draft] });
+    fixture.voiceMutation
+      .mockResolvedValueOnce({ draft: editing, edit_handle: "synthetic-edit" })
+      .mockResolvedValueOnce({
+        draft: { ...editing, state: "paused", revision: editing.revision + 1, text: "Local copy" },
+        edit_handle: null,
+      });
+    using _timers = fakeTimers();
+    await act(() =>
+      root.rerender(
+        <EnvironmentVoiceReview
+          environmentId={EnvironmentId.make("alpha")}
+          onDirtyChange={onDirtyChange}
+          linkedKey={`voice:${draft.id}`}
+        />,
+      ),
+    );
+    const action = (label: string) =>
+      container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+    await act(() => action("Edit prompt to Review fixture").click());
+    const textarea = () =>
+      container.querySelector<HTMLTextAreaElement>('[aria-label="Prompt text to Review fixture"]')!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        textarea(),
+        "Local copy",
+      );
+      textarea().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const others = Array.from({ length: 50 }, (_, i) => ({ ...draft, id: `new-${i}` }));
+    fixture.voiceList.mockResolvedValue({ drafts: others });
+    await act(() => vi.advanceTimersByTimeAsync(3_000));
+    expect(textarea().value).toBe("Local copy");
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expect(container.textContent).toContain("Outside the latest Pending sample");
+
+    fixture.voiceList.mockResolvedValue({ drafts: [editing, ...others.slice(1)] });
+    await act(() => vi.advanceTimersByTimeAsync(3_000));
+    expect(textarea().value).toBe("Local copy");
+    await act(() => action("Save prompt to Review fixture and stay paused").click());
+    expect(fixture.voiceMutation).toHaveBeenLastCalledWith(draft.id, "edit-save", {
+      expected_revision: editing.revision,
+      edit_handle: "synthetic-edit",
+      text: "Local copy",
+    });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
   });
 
   it("supports arrow, Home and End tab navigation with panel labelling and retained children", async () => {
@@ -462,6 +593,59 @@ describe("Prompts environment composition", () => {
       "This environment is disconnected",
     );
   });
+
+  it("keeps the breadcrumb and stage tabs separate at 320 pixels", async () => {
+    await using _fixture = await setupFixture1();
+    const { innerWidth, innerHeight } = window;
+    try {
+      await page.viewport(320, 740);
+      await render();
+      const breadcrumb = container.querySelector('[aria-label="Prompts breadcrumb"]')!;
+      const tabs = container.querySelector('[role="tablist"][aria-label="Prompt views"]')!;
+      expect(breadcrumb.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+        tabs.getBoundingClientRect().top,
+      );
+      expect(tabs.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
+    } finally {
+      await page.viewport(innerWidth, innerHeight);
+    }
+  });
+
+  it.each(["VoiceReviewForbiddenError", "VoiceReviewNotConfiguredError"])(
+    "qualifies the all-sources zero when an environment is offline and voice discovery reports %s",
+    async (_tag) => {
+      await using _fixture = await setupFixture1();
+      setConnection("beta", "disconnected");
+      fixture.voiceList.mockRejectedValue({ _tag });
+      fixture.load.mockResolvedValue({
+        status: "ready",
+        expires_at_ms: Date.now() + 60_000,
+        snapshot: {
+          schema: "codex.t3-work-queue-metadata/v2",
+          source: {
+            queue_id: "queue",
+            host_id: "host",
+            environment_ref: "alpha",
+            exporter_instance_id: "exporter",
+          },
+          observed_at_ms: Date.now(),
+          snapshot_token: "a".repeat(64),
+          coverage: "complete",
+          authority_effect: "none",
+          items: [],
+        },
+      });
+      await render();
+      await click("Queued");
+      expect(
+        container.querySelector('[aria-label="Queued, 0 prompts, some sources unknown"]'),
+      ).not.toBeNull();
+      if (_tag === "VoiceReviewForbiddenError") {
+        expect(container.textContent).toContain("No items in this sample.");
+        expect(container.textContent).not.toContain("Nothing in the queue.");
+      }
+    },
+  );
 
   it("retains read failures as unknown and allows retry to discover a configured source", async () => {
     await using _fixture = await setupFixture1();
