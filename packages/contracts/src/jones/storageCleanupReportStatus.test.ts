@@ -18,7 +18,8 @@ it("decodes retained legacy reports without inventing an operation", () => {
 
 it("keeps reports readable when a newer server supplies an unknown operation", () => {
   expect(
-    Schema.decodeUnknownSync(StorageCleanupReport)({ ...legacy, operation: "future-action" }).operation,
+    Schema.decodeUnknownSync(StorageCleanupReport)({ ...legacy, operation: "future-action" })
+      .operation,
   ).toBeUndefined();
 });
 

@@ -374,7 +374,9 @@ Live consumers, tracked edits, nested repositories and other protections still h
       await Promise.all(
         supported
           .filter((environment) =>
-            state.some((entry) => entry.environmentId === environment.environmentId && entry.allowed),
+            state.some(
+              (entry) => entry.environmentId === environment.environmentId && entry.allowed,
+            ),
           )
           .map(({ environmentId }) => execute(environmentId, "cleanup", {})),
       );
@@ -414,7 +416,8 @@ Live consumers, tracked edits, nested repositories and other protections still h
                         environment.serverConfig?.environment.capabilities
                           .settledWorktreeRetirement === true &&
                         state.some(
-                          (entry) => entry.environmentId === environment.environmentId && entry.allowed,
+                          (entry) =>
+                            entry.environmentId === environment.environmentId && entry.allowed,
                         ),
                     )
                   }
@@ -510,8 +513,8 @@ Live consumers, tracked edits, nested repositories and other protections still h
                     timestampFormat,
                     nowMs,
                     ...(!pending &&
-                    environment.serverConfig?.environment.capabilities
-                      .settledWorktreeRetirement === true &&
+                    environment.serverConfig?.environment.capabilities.settledWorktreeRetirement ===
+                      true &&
                     state.some((e) => e.environmentId === environment.environmentId && e.allowed)
                       ? {
                           onRetire: (entry: StorageCleanupReport["entries"][number]) =>

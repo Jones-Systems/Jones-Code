@@ -11,8 +11,7 @@
     "apps/web/src/jones/storageCleanupResults/runStatus.ts",
     "apps/web/src/jones/storageCleanupResults/runStatus.testkit.ts",
     "apps/web/src/jones/storageCleanupResults/runStatus.test.ts",
-    "apps/web/src/jones/storageCleanupResults/runStatus.node-test.mjs",
-    "packages/contracts/src/jones/storageCleanupReportStatus.test.ts"
+    "apps/web/src/jones/storageCleanupResults/runStatus.node-test.mjs"
   ],
   "hookPaths": [],
   "tombstones": [],

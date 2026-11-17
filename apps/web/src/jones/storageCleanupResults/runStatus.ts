@@ -39,7 +39,8 @@ export function cleanupReportSummary(report: StorageCleanupReport) {
     operation === "propose"
       ? `${report.counts.kept} reviewed, ${report.counts.failed} failed; no deletion requested`
       : `${report.counts.removed} removed, ${report.counts.kept} kept${report.counts.failed ? `, ${report.counts.failed} failed` : ""}`;
-  const label = report.trigger === "automatic" ? "Automatic cleanup" : cleanupOperationLabel(operation);
+  const label =
+    report.trigger === "automatic" ? "Automatic cleanup" : cleanupOperationLabel(operation);
   return `${label}: ${outcome} · ${counts}`;
 }
 

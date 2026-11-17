@@ -340,8 +340,12 @@ it("pages each device independently, adds ten and shows all", async () => {
   await using screen = await render(panel());
   await screen.getByRole("button", { name: /Last run/ }).click();
   expect(cleanupRows(screen.container)).toHaveLength(8);
-  expect(screen.container.textContent).toContain("env-a: Run (action unavailable): Completed · 0 removed, 10 kept");
-  expect(screen.container.textContent).toContain("env-b: Run (action unavailable): Completed · 0 removed, 20 kept");
+  expect(screen.container.textContent).toContain(
+    "env-a: Run (action unavailable): Completed · 0 removed, 10 kept",
+  );
+  expect(screen.container.textContent).toContain(
+    "env-b: Run (action unavailable): Completed · 0 removed, 20 kept",
+  );
   expect(screen.container.textContent).toContain(
     "env-a: 7 additional results omitted from this report. These were not classified here.",
   );
@@ -506,7 +510,6 @@ it("prioritizes actionable entries, preserves guarded actions and collapses cate
     .not.toBeInTheDocument();
 });
 
-
 it("keeps the last completion timestamp in the header when cleanup rules are off", async () => {
   setup();
   state.report = { ...cleanupReport("env-a", 0), operation: "propose" };
@@ -518,7 +521,9 @@ it("keeps the last completion timestamp in the header when cleanup rules are off
   expect(toggle.parentElement?.lastElementChild?.contains(timestamp!)).toBe(true);
   expect(deleteButton(screen.container).disabled).toBe(true);
   await screen.getByRole("button", { name: /Last run/ }).click();
-  expect(screen.container.textContent).toContain("No retirement candidates reported. No deletion requested.");
+  expect(screen.container.textContent).toContain(
+    "No retirement candidates reported. No deletion requested.",
+  );
   expect(screen.container.textContent).not.toContain("Nothing needed cleanup");
 });
 
@@ -540,9 +545,13 @@ it("shows per-machine times and a range instead of assigning the newest time to 
 it("distinguishes no retained report from a completed zero-count run", async () => {
   setup();
   await using screen = await render(panel());
-  expect(screen.container.querySelector('[aria-label^="Last completed run:"]')?.textContent).toBe("No report");
+  expect(screen.container.querySelector('[aria-label^="Last completed run:"]')?.textContent).toBe(
+    "No report",
+  );
   await screen.getByRole("button", { name: /Last run/ }).click();
-  expect(screen.container.textContent).toContain("No completed report available for this server session.");
+  expect(screen.container.textContent).toContain(
+    "No completed report available for this server session.",
+  );
   expect(screen.container.textContent).not.toContain("Completed · 0 removed");
 });
 
@@ -552,17 +561,31 @@ it("keeps proposal progress and an unconfirmed request visible beside the previo
   state.targets = state.targets.slice(0, 1);
   state.report = { ...cleanupReport("env-a", 0), operation: "cleanup" };
   let fail!: (error: Error) => void;
-  state.run.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+  state.run.mockImplementation(
+    () =>
+      new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+  );
   await using screen = await render(panel());
   await screen.getByRole("button", { name: /Last run/ }).click();
   await screen.getByRole("button", { name: "Propose retirements", exact: true }).click();
   expect(screen.container.textContent).toContain("Retirement proposal: Running…");
   expect(deleteButton(screen.container).textContent).toBe("Delete now");
   expect(screen.container.textContent).toContain("Previous completed report shown below.");
-  const previousTime = screen.container.querySelector('[aria-label^="Last completed run:"]')?.getAttribute("title");
+  const previousTime = screen.container
+    .querySelector('[aria-label^="Last completed run:"]')
+    ?.getAttribute("title");
   await act(() => fail(new Error("Synthetic connection failure")));
-  expect(screen.container.textContent).toContain("Could not confirm completion. Synthetic connection failure");
-  expect(screen.container.querySelector('[aria-label^="Last completed run:"]')?.getAttribute("title")).toBe(previousTime);
+  expect(screen.container.textContent).toContain(
+    "Could not confirm completion. Synthetic connection failure",
+  );
+  expect(
+    screen.container.querySelector('[aria-label^="Last completed run:"]')?.getAttribute("title"),
+  ).toBe(previousTime);
   expect(state.run).toHaveBeenCalledTimes(1);
-  expect(state.run).toHaveBeenCalledWith({ environmentId: "env-a", input: { retirement: { action: "propose" } } });
+  expect(state.run).toHaveBeenCalledWith({
+    environmentId: "env-a",
+    input: { retirement: { action: "propose" } },
+  });
 });

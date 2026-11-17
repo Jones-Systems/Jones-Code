@@ -50,31 +50,71 @@ export const runStatusCases = {
   },
   "legacy manual reports preserve unknown action instead of inferring delete": () => {
     assert.match(cleanupReportSummary(report()), /Run \(action unavailable\): Completed/);
-    assert.match(cleanupReportSummary(report({ trigger: "automatic" })), /Automatic cleanup: Completed/);
+    assert.match(
+      cleanupReportSummary(report({ trigger: "automatic" })),
+      /Automatic cleanup: Completed/,
+    );
   },
   "failed and partially successful reports keep distinct outcomes": () => {
-    assert.match(cleanupReportSummary(report({ counts: { removed: 0, kept: 0, failed: 2 } })), /: Failed/);
-    assert.match(cleanupReportSummary(report({ counts: { removed: 1, kept: 0, failed: 2 } })), /Completed with failures/);
+    assert.match(
+      cleanupReportSummary(report({ counts: { removed: 0, kept: 0, failed: 2 } })),
+      /: Failed/,
+    );
+    assert.match(
+      cleanupReportSummary(report({ counts: { removed: 1, kept: 0, failed: 2 } })),
+      /Completed with failures/,
+    );
     assert.match(cleanupReportSummary(report({ entries: [entry("partial")] })), /Partial result/);
-    assert.match(cleanupReportSummary(report({ entries: [entry("unknown")] })), /Completion unknown/);
+    assert.match(
+      cleanupReportSummary(report({ entries: [entry("unknown")] })),
+      /Completion unknown/,
+    );
   },
   "request progress and unconfirmed failures never claim completion": () => {
     assert.match(cleanupRequestSummary({ operation: "propose", status: "queued" }), /Waiting/);
     assert.match(cleanupRequestSummary({ operation: "propose", status: "running" }), /Running/);
-    assert.match(cleanupRequestSummary({ operation: "propose", status: "unconfirmed", detail: "Connection lost" }), /Could not confirm completion. Connection lost/);
-    assert.match(cleanupRequestSummary({ operation: "propose", status: "completed", report: report({ operation: "propose" }) }), /Retirement proposal: Completed/);
+    assert.match(
+      cleanupRequestSummary({
+        operation: "propose",
+        status: "unconfirmed",
+        detail: "Connection lost",
+      }),
+      /Could not confirm completion. Connection lost/,
+    );
+    assert.match(
+      cleanupRequestSummary({
+        operation: "propose",
+        status: "completed",
+        report: report({ operation: "propose" }),
+      }),
+      /Retirement proposal: Completed/,
+    );
   },
   "no retained reports do not invent a last run": () => {
-    assert.equal(cleanupFleetTimestamp([{ label: "Mini", report: null }], "locale", now).label, "No report");
+    assert.equal(
+      cleanupFleetTimestamp([{ label: "Mini", report: null }], "locale", now).label,
+      "No report",
+    );
     assert.equal(cleanupTimestamp("invalid", "locale", now), null);
-    assert.equal(cleanupFleetTimestamp([{ label: "Mini", report: report({ finishedAt: "invalid" }) }], "locale", now).label, "Time unavailable");
+    assert.equal(
+      cleanupFleetTimestamp(
+        [{ label: "Mini", report: report({ finishedAt: "invalid" }) }],
+        "locale",
+        now,
+      ).label,
+      "Time unavailable",
+    );
   },
   "a common finish instant has a localized timestamp and exact per-machine tooltip": () => {
     const time = cleanupTimestamp(finishedAt, "24-hour", now)!;
-    const fleet = cleanupFleetTimestamp([
-      { label: "Mini", report: report() },
-      { label: "VPS", report: report({ finishedAt: "2026-11-16T18:00:00-05:00" }) },
-    ], "24-hour", now);
+    const fleet = cleanupFleetTimestamp(
+      [
+        { label: "Mini", report: report() },
+        { label: "VPS", report: report({ finishedAt: "2026-11-16T18:00:00-05:00" }) },
+      ],
+      "24-hour",
+      now,
+    );
     assert.equal(fleet.label, time.label);
     assert.match(fleet.exact, /Mini:/);
     assert.match(fleet.exact, /VPS:/);
@@ -83,11 +123,18 @@ export const runStatusCases = {
   },
   "mixed fleet times display a range and preserve each completion instant": () => {
     const earlier = "2026-11-15T22:00:00.000Z";
-    const fleet = cleanupFleetTimestamp([
-      { label: "Mini", report: report() },
-      { label: "VPS", report: report({ finishedAt: earlier }) },
-    ], "12-hour", now);
-    assert.equal(fleet.label, `${cleanupTimestamp(earlier, "12-hour", now)!.label} – ${cleanupTimestamp(finishedAt, "12-hour", now)!.label}`);
+    const fleet = cleanupFleetTimestamp(
+      [
+        { label: "Mini", report: report() },
+        { label: "VPS", report: report({ finishedAt: earlier }) },
+      ],
+      "12-hour",
+      now,
+    );
+    assert.equal(
+      fleet.label,
+      `${cleanupTimestamp(earlier, "12-hour", now)!.label} – ${cleanupTimestamp(finishedAt, "12-hour", now)!.label}`,
+    );
     assert.ok(fleet.exact.includes(cleanupTimestamp(earlier, "12-hour", now)!.exact));
     assert.ok(fleet.exact.includes(cleanupTimestamp(finishedAt, "12-hour", now)!.exact));
   },
@@ -105,7 +152,14 @@ export const runStatusCases = {
     assert.ok(summer.exact.includes(zone(summerDate)));
   },
   "missing fleet reports cannot inherit a different machine's fresh timestamp": () => {
-    const fleet = cleanupFleetTimestamp([{ label: "Mini", report: report() }, { label: "VPS", report: null }], "locale", now);
+    const fleet = cleanupFleetTimestamp(
+      [
+        { label: "Mini", report: report() },
+        { label: "VPS", report: null },
+      ],
+      "locale",
+      now,
+    );
     assert.equal(fleet.label, "Time unavailable");
     assert.match(fleet.exact, /VPS: No completion time available/);
   },
