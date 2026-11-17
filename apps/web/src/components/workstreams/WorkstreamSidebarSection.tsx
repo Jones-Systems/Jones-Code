@@ -181,6 +181,7 @@ function Group({
   const [editing, setEditing] = useState<"name" | "color" | null>(null);
   const threadWindow = usePersonalThreadWindow(item.id);
   const { filter: statusFilter, setFilter: setStatusFilter } = usePersonalStatusFilter(item.id);
+  const overflowCount = memberCount - threadWindow.limit;
   const shownCount = threadWindow.expanded
     ? memberCount
     : Math.min(memberCount, threadWindow.limit);
@@ -420,29 +421,25 @@ function Group({
       {!collapsed ? (
         <>
           {children(threadWindow)}
-          {memberCount > threadWindow.limit ? (
-            <div data-workstream-window-footer className="flex items-center gap-2 px-2 py-1">
-              <span aria-hidden className="h-px min-w-0 flex-1 bg-sidebar-border/70" />
-              <Button
-                type="button"
-                variant="ghost-muted"
-                size="sm-pill"
-                aria-expanded={threadWindow.expanded}
-                aria-label={
-                  threadWindow.expanded
-                    ? `Show only ${threadWindow.limit} threads in ${item.name}`
-                    : `Show all ${memberCount} threads in ${item.name}`
-                }
-                onClick={() => threadWindow.setExpanded((value) => !value)}
-              >
-                <ChevronDownIcon
-                  aria-hidden
-                  className={`size-3.5 ${threadWindow.expanded ? "rotate-180" : ""}`}
-                />
-                {threadWindow.expanded ? "Show fewer" : `Show all ${memberCount}`}
-              </Button>
-              <span aria-hidden className="h-px min-w-0 flex-1 bg-sidebar-border/70" />
-            </div>
+          {overflowCount > 0 ? (
+            <button
+              data-workstream-window-footer
+              type="button"
+              className="flex h-4 w-full cursor-pointer items-center justify-center gap-1 rounded-sm text-2xs leading-none font-normal whitespace-nowrap text-sidebar-muted-foreground outline-hidden hover:text-sidebar-foreground focus-visible:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring pointer-coarse:min-h-6"
+              aria-expanded={threadWindow.expanded}
+              aria-label={
+                threadWindow.expanded
+                  ? `Show only ${threadWindow.limit} threads in ${item.name}`
+                  : `Show ${overflowCount} more ${overflowCount === 1 ? "thread" : "threads"} in ${item.name}`
+              }
+              onClick={() => threadWindow.setExpanded((value) => !value)}
+            >
+              <ChevronDownIcon
+                aria-hidden
+                className={`size-2.5 shrink-0 ${threadWindow.expanded ? "rotate-180" : ""}`}
+              />
+              {threadWindow.expanded ? "Show fewer" : `Show ${overflowCount} more`}
+            </button>
           ) : null}
         </>
       ) : null}
