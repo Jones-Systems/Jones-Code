@@ -231,38 +231,41 @@ try {
     sourceManifest,
   ]);
   const manifests = [{ form: "source", path: sourceManifest }];
-  const requireDesktop = NodeModule.createRequire(NodePath.join(root, "apps/desktop/package.json"));
-  let electron;
-  try {
-    electron = requireDesktop("electron");
-  } catch {
-    /* The attempted manifest below records missing runtime as a failure. */
-  }
-  const roots = await NodeFSP.readdir(installedRoot).catch(() => []);
-  const sea =
-    roots.length === 1
-      ? NodePath.join(installedRoot, roots[0], "t3")
-      : NodePath.join(installedRoot, "MISSING-INSTALLED-LAYOUT");
-  for (const [form, executable, entry] of scope === "full"
-    ? [
-        ["bundle", process.execPath, NodePath.join(root, "apps/server/dist/bin.mjs")],
-        [
-          "electron",
-          electron ?? NodePath.join(output, "MISSING-ELECTRON"),
-          NodePath.join(root, "apps/server/dist/bin.mjs"),
-        ],
-        ["sea", sea, "-"],
-      ]
-    : []) {
-    const path = NodePath.join(output, `${form}-command.json`);
-    await node(`manifest-${form}`, [
-      "scripts/jones/serverParallelism/artifact-command.mjs",
-      form,
-      executable,
-      entry,
-      path,
-    ]);
-    manifests.push({ form, path });
+  if (scope === "full") {
+    // Loading Electron can download its runtime, which only the full matrix measures.
+    const requireDesktop = NodeModule.createRequire(
+      NodePath.join(root, "apps/desktop/package.json"),
+    );
+    let electron;
+    try {
+      electron = requireDesktop("electron");
+    } catch {
+      /* The attempted manifest below records missing runtime as a failure. */
+    }
+    const roots = await NodeFSP.readdir(installedRoot).catch(() => []);
+    const sea =
+      roots.length === 1
+        ? NodePath.join(installedRoot, roots[0], "t3")
+        : NodePath.join(installedRoot, "MISSING-INSTALLED-LAYOUT");
+    for (const [form, executable, entry] of [
+      ["bundle", process.execPath, NodePath.join(root, "apps/server/dist/bin.mjs")],
+      [
+        "electron",
+        electron ?? NodePath.join(output, "MISSING-ELECTRON"),
+        NodePath.join(root, "apps/server/dist/bin.mjs"),
+      ],
+      ["sea", sea, "-"],
+    ]) {
+      const path = NodePath.join(output, `${form}-command.json`);
+      await node(`manifest-${form}`, [
+        "scripts/jones/serverParallelism/artifact-command.mjs",
+        form,
+        executable,
+        entry,
+        path,
+      ]);
+      manifests.push({ form, path });
+    }
   }
   if (diagnosticScope) {
     const mode = scope === "observer-control" ? "cpu-stat-only" : "full";
