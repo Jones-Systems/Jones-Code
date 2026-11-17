@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useLayoutEffect,
   useRef,
   useState,
@@ -93,7 +94,13 @@ export function WorkstreamNativeSidebar({
   const summaryGrouping = groupPersonalThreads(state, summaryThreads);
   const [picker, setPicker] = useState<EnvironmentThreadShell | null>(null);
   const [drop, setDrop] = useState<string | null | undefined>();
-  const [dropRow, setDropRow] = useState<{ key: string; after: boolean } | null>(null);
+  const [dropRow, setDropRow] = useState<{
+    id: string | null;
+    key: string | null;
+    after: boolean;
+    height: number;
+  } | null>(null);
+  const draggedHeight = useRef(0);
   const root = useRef<HTMLDivElement | null>(null);
   const sensor = useRef<SidebarPointerSensor | null>(null);
   const busy = useRef(false);
@@ -185,15 +192,32 @@ export function WorkstreamNativeSidebar({
     thread: EnvironmentThreadShell,
     external = false,
   ): Target | null => {
-    setDropRow(null);
-    setDrop(undefined);
+    const reject = () => {
+      setDropRow(null);
+      setDrop(undefined);
+      return null;
+    };
     const element = document.elementFromPoint(point.x, point.y);
     const section = element?.closest<HTMLElement>("[data-native-workstream]");
-    if (!section || !root.current?.contains(section) || !canMove(thread)) return null;
+    if (!section || !root.current?.contains(section) || !canMove(thread)) return reject();
     const id = JSON.parse(section.dataset.nativeWorkstream!) as string | null;
     const list = section.querySelector<HTMLElement>("[data-personal-thread-list]");
-    if (id !== null && !state.workstreams.some((item) => item.id === id)) return null;
+    if (id !== null && !state.workstreams.some((item) => item.id === id)) return reject();
     const key = personalThreadKey(thread);
+    const gap = element?.closest<HTMLElement>("[data-personal-thread-insertion]");
+    if (gap) {
+      // The placeholder displaced its neighbor; keep its captured slot rather than re-hit-testing shifted rows.
+      const target = JSON.parse(gap.dataset.personalThreadSlot!) as Target;
+      const neighbor = threads.find((entry) => personalThreadKey(entry) === target.neighborKey);
+      if (
+        !validTarget(target) ||
+        !(external || canReorder(thread)) ||
+        (neighbor && !canReorder(neighbor))
+      )
+        return reject();
+      setDrop(id);
+      return target;
+    }
     const row = element?.closest<HTMLElement>("[data-personal-thread]");
     let neighbor = threads.find(
       (entry) => personalThreadKey(entry) === row?.dataset.personalThread,
@@ -204,15 +228,16 @@ export function WorkstreamNativeSidebar({
     if (placeThread && !row && list?.contains(element ?? null)) {
       const rows = [...list.querySelectorAll<HTMLElement>("[data-personal-thread]")];
       const last = rows.findLast((entry) => entry.dataset.personalThread !== key);
-      if (!last && rows.length > 0) return null;
+      if (!last && rows.length > 0) return reject();
       neighbor = threads.find((entry) => personalThreadKey(entry) === last?.dataset.personalThread);
       after = true;
     }
-    if (neighbor && (groupId(neighbor) !== id || personalThreadKey(neighbor) === key)) return null;
+    if (neighbor && (groupId(neighbor) !== id || personalThreadKey(neighbor) === key))
+      return reject();
     const canPosition = (external || canReorder(thread)) && (!neighbor || canReorder(neighbor));
     const ordinal =
       neighbor !== undefined && canPosition && (Boolean(placeThread) || groupId(thread) === id);
-    if ((!ordinal || !neighbor) && !external && groupId(thread) === id) return null;
+    if ((!ordinal || !neighbor) && !external && groupId(thread) === id) return reject();
     const members =
       id === null
         ? grouping.ungrouped
@@ -223,7 +248,7 @@ export function WorkstreamNativeSidebar({
         (entry) => personalThreadKey(entry) === personalThreadKey(neighbor),
       );
       const slot = targetIndex + (after ? 1 : 0);
-      if (sourceIndex >= 0 && (slot === sourceIndex || slot === sourceIndex + 1)) return null;
+      if (sourceIndex >= 0 && (slot === sourceIndex || slot === sourceIndex + 1)) return reject();
     }
     const target = {
       id,
@@ -231,7 +256,14 @@ export function WorkstreamNativeSidebar({
       after,
     };
     setDrop(id);
-    if (neighbor && ordinal) setDropRow({ key: personalThreadKey(neighbor), after });
+    setDropRow(
+      list &&
+        canPosition &&
+        (ordinal || (members.length === 0 && placeThread)) &&
+        draggedHeight.current > 0
+        ? { id, key: target.neighborKey, after, height: draggedHeight.current }
+        : null,
+    );
     return target;
   };
   const place = async (thread: EnvironmentThreadShell, target: Target, external = false) => {
@@ -296,6 +328,14 @@ export function WorkstreamNativeSidebar({
     if (externalDropRef)
       externalDropRef.current = {
         locateExternal: (point, thread) => {
+          const source = [
+            ...document.querySelectorAll<HTMLElement>("[data-thread-item], [data-personal-thread]"),
+          ].find(
+            (row) =>
+              row.dataset.threadItem === personalThreadKey(thread) ||
+              row.dataset.personalThread === personalThreadKey(thread),
+          );
+          draggedHeight.current = source?.getBoundingClientRect().height ?? 0;
           const target = locate(point, thread, true);
           const previous = externalTarget.current;
           externalTarget.current = target
@@ -311,13 +351,14 @@ export function WorkstreamNativeSidebar({
         dropExternal: (point, thread) => {
           const captured = externalTarget.current;
           externalTarget.current = null;
-          clearDrop();
           if (
             captured &&
             captured.key === personalThreadKey(thread) &&
             (captured.sourceId !== groupId(thread) || !validTarget(captured.target))
-          )
+          ) {
+            clearDrop();
             return Promise.resolve(false);
+          }
           const target = locate(point, thread, true);
           clearDrop();
           return target ? place(thread, target, true) : null;
@@ -398,6 +439,7 @@ export function WorkstreamNativeSidebar({
       onAbort: () => {},
       onStart: (point) => {
         if (canMove(thread) && !busy.current) {
+          draggedHeight.current = source.getBoundingClientRect().height;
           lifted.current = liftPersonalThreadCard(source, point);
           autoScroll = createSidebarDragAutoScroll(source, locateCurrent);
         }
@@ -434,6 +476,19 @@ export function WorkstreamNativeSidebar({
       },
     });
   };
+  const renderGap = () =>
+    dropRow ? (
+      <li
+        aria-hidden
+        data-personal-thread-insertion={dropRow.after ? "after" : "before"}
+        data-personal-thread-slot={JSON.stringify({
+          id: dropRow.id,
+          neighborKey: dropRow.key,
+          after: dropRow.after,
+        })}
+        style={{ height: dropRow.height }}
+      />
+    ) : null;
   return (
     <div ref={root}>
       {picker ? (
@@ -441,6 +496,7 @@ export function WorkstreamNativeSidebar({
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        dropTargetId={drop}
         memberCounts={
           new Map(grouping.groups.map((group) => [group.workstream.id, group.threads.length]))
         }
@@ -471,7 +527,6 @@ export function WorkstreamNativeSidebar({
               }
               // Named members sit a fixed 8 CSS px in, independent of the root font size; Unassigned stays flush.
               {...(id === null ? {} : { style: { paddingLeft: "8px" } })}
-              className={drop === id ? "rounded ring-1 ring-primary" : ""}
             >
               {members.length === 0 ? (
                 <li className="relative px-3 pb-3 text-xs text-sidebar-muted-foreground">
@@ -479,22 +534,23 @@ export function WorkstreamNativeSidebar({
                 </li>
               ) : null}
               {members.map((thread) => (
-                <li
-                  key={personalThreadKey(thread)}
-                  data-personal-thread={personalThreadKey(thread)}
-                  className="relative cursor-grab active:cursor-grabbing"
-                  onPointerDown={(event) => pointerDown(event, thread)}
-                >
-                  {dropRow?.key === personalThreadKey(thread) ? (
-                    <div
-                      aria-hidden
-                      data-personal-thread-insertion={dropRow.after ? "after" : "before"}
-                      className={`pointer-events-none absolute inset-x-1 z-20 h-0.5 bg-primary ${dropRow.after ? "bottom-0" : "top-0"}`}
-                    />
-                  ) : null}
-                  <ul>{renderThread(thread, menu(thread))}</ul>
-                </li>
+                <Fragment key={personalThreadKey(thread)}>
+                  {dropRow?.id === id && dropRow.key === personalThreadKey(thread) && !dropRow.after
+                    ? renderGap()
+                    : null}
+                  <li
+                    data-personal-thread={personalThreadKey(thread)}
+                    className="relative cursor-grab active:cursor-grabbing"
+                    onPointerDown={(event) => pointerDown(event, thread)}
+                  >
+                    <ul>{renderThread(thread, menu(thread))}</ul>
+                  </li>
+                  {dropRow?.id === id && dropRow.key === personalThreadKey(thread) && dropRow.after
+                    ? renderGap()
+                    : null}
+                </Fragment>
               ))}
+              {dropRow?.id === id && dropRow.key === null ? renderGap() : null}
             </ul>
           );
         }}

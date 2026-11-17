@@ -6,7 +6,9 @@ The sidebar and mobile thread navigation use the shared [personal Workstreams co
 | ------------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------- |
 | Create, rename, color, lifecycle, reorder, delete | Sidebar group menu; mobile group controls          | Personal browser and mobile presentation/control tests                |
 | Assign, unassign, create and assign               | Thread picker, sidebar drag, mobile thread menu    | Personal browser tests and shared controller command tests            |
-| Move a pinned thread                              | Sidebar drag; confirm assignment before unpin      | Personal browser tests                                                |
+| Move a pinned thread                              | Sidebar drag; assigned members keep their pin      | Personal browser tests                                                |
+| Find a thread drop target                         | Collapsed tint; expanded ring and insertion gap    | Drag browser tests, including the pinned external bridge              |
+| Open group options and choose status filters      | Centered 12×12 menu; title grab, controls pointer  | Header geometry, menu hit-testing and status-filter browser tests     |
 | Expand, collapse, hide and filter all Workstreams | Sidebar Workstreams row above the named groups     | Bulk-controls, status-filter and header browser tests                 |
 | Inspect connection availability                   | Jones Code settings; ordinary per-environment rows | Personal settings browser tests and mobile presentation tests         |
 | Observe changes on another client                 | Subscription to the thread’s environment           | Shared controller tests; isolated two-client verification             |

@@ -106,7 +106,7 @@ export function PersonalSidebarGroupHeader({
                 undoTitleClickRef.current = null;
                 onToggle();
               }}
-              className="absolute inset-0 rounded-md focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+              className="absolute inset-0 cursor-pointer rounded-md focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             />
           }
         />
@@ -154,7 +154,7 @@ export function PersonalSidebarGroupHeader({
                     }
                   : undefined
               }
-              className="pointer-events-auto line-clamp-2 min-w-0 break-words text-sm font-semibold leading-5"
+              className="pointer-events-auto line-clamp-2 cursor-pointer [[data-workstream-header][draggable=true]_&]:cursor-grab [[data-workstream-header][draggable=true]_&]:active:cursor-grabbing min-w-0 break-words text-sm font-semibold leading-5"
             >
               {name}
             </span>
