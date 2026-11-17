@@ -104,6 +104,22 @@ pnpm versions above and run an authorized `vp install --frozen-lockfile` before
 verification. Apply the same storage admission described above when installing
 without the setup helper.
 
+The development host's pnpm configuration sets `minimumReleaseAge: 30240`
+(21 days). A frozen install refuses a locked version published more recently
+(`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`, which lists only the first few)
+unless `pnpm-workspace.yaml` lists that exact `name@version` under
+`minimumReleaseAgeExclude`. CI has no such policy, so its Lint job runs
+`scripts/jones/ci/release-age.mjs`. It fails a pull request that locks an
+unexcluded young version or leaves a stale, wildcard or versionless exclusion,
+and reads the npm registry only when the lock gained entries. After an upgrade,
+or when an install fails this way, run
+`node scripts/jones/ci/release-age.mjs --all --write` and commit the
+regenerated block; it adds young versions, drops aged-out and stale ones, and
+refreshes the `pnpm-workspace.yaml` hashes in
+`scripts/jones/boundary/resolutions.json` that the boundary check binds.
+Exclusions expire on their own once a version is old enough. Do not lower the
+host policy, even for one command.
+
 From the repository root, verify the actual installed Vitest cleanup behavior:
 
 ```sh
