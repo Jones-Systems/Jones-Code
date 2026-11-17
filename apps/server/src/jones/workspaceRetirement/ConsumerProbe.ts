@@ -102,9 +102,45 @@ function command(file: string, args: string[], timeout = 1500): Promise<string> 
       file,
       args,
       { timeout, maxBuffer: 2 * 1024 * 1024, encoding: "utf8" },
-      (error, stdout) => (error ? reject(error) : resolve(stdout)),
+      // A rejection keeps its stdout so a plain nonzero exit can be classified by its output.
+      (error, stdout) => (error ? reject(Object.assign(error, { stdout })) : resolve(stdout)),
     ),
   );
+}
+// Only a plain exit status 1 qualifies: never a timeout, signal, buffer bound or other status.
+function plainExitOne(cause: unknown): string | undefined {
+  const error = cause as
+    | { code?: unknown; killed?: unknown; signal?: unknown; stdout?: unknown }
+    | null
+    | undefined;
+  return error?.code === 1 &&
+    error.killed !== true &&
+    (error.signal === null || error.signal === undefined) &&
+    typeof error.stdout === "string"
+    ? error.stdout
+    : undefined;
+}
+// Returns the listed PIDs that are still running. An absent PID or a zombie (state Z) has
+// exited and holds no cwd, text or open files. A reused PID reads as running and stays a gap.
+async function runningPids(pids: readonly string[]): Promise<ReadonlySet<string>> {
+  if (!pids.length || pids.some((pid) => !/^[1-9]\d*$/.test(pid)))
+    throw new Error("process_identity_invalid");
+  let output: string;
+  try {
+    output = await command("/bin/ps", ["-o", "pid=,stat=", "-p", pids.join(",")]);
+  } catch (cause) {
+    // ps exits 1 with no output only when no listed PID exists.
+    if (plainExitOne(cause) !== "") throw cause;
+    output = "";
+  }
+  const running = new Set<string>();
+  for (const row of output.split("\n")) {
+    if (!row.trim()) continue;
+    const [pid, state] = row.trim().split(/\s+/);
+    if (!pid || !state || !pids.includes(pid)) throw new Error("process_state_malformed");
+    if (!state.startsWith("Z")) running.add(pid);
+  }
+  return running;
 }
 function argvUses(bytes: string, target: string) {
   return bytes
@@ -142,7 +178,10 @@ export interface ProcessProbeIO {
     uid: number,
     remainingMs: number,
   ) => Promise<InfrastructureResult>;
+  // A rejection may carry the command's `stdout`; only a plain exit 1 is ever read from it.
   command: (file: string, args: string[]) => Promise<string>;
+  // The listed PIDs still running. Absent or failed readback keeps each unreported PID a gap.
+  running?: (pids: readonly string[]) => Promise<ReadonlySet<string>>;
   list: (path: string) => Promise<string[]>;
   uid: () => number | undefined;
   statUid: (path: string) => Promise<number>;
@@ -151,6 +190,7 @@ export interface ProcessProbeIO {
 }
 export const nativeProcessIO: ProcessProbeIO = {
   command,
+  running: runningPids,
   list: (path) => NodeFSP.readdir(path),
   uid: () => process.getuid?.(),
   statUid: async (path) => (await NodeFSP.stat(path)).uid,
@@ -393,26 +433,70 @@ export async function processProbe(
         attempted += selected.length;
         sameUser += selected.length;
         const batch = selected.join(",");
+        // lsof exits 1 when any listed PID has exited; its output for the live PIDs is complete.
+        // Like Linux, an exited process cannot be a consumer. Every other gap stays partial.
+        const vanished = async (at: ProcessStage, candidates: readonly string[]) => {
+          let running: ReadonlySet<string> | undefined;
+          try {
+            running = await io.running?.(candidates);
+          } catch {
+            /* Failed readback leaves every unreported PID a gap. */
+          }
+          for (const pid of candidates)
+            if (running && !running.has(pid)) record(at, "disappeared");
+            else {
+              record(at, "unavailable");
+              complete = false;
+            }
+        };
         stage = "darwin_lsof";
         try {
-          const output = await io.command("/usr/sbin/lsof", [
-            "-a",
-            "-p",
-            batch,
-            "-d",
-            "cwd,txt",
-            "-Fn",
-          ]);
+          let output: string;
+          let exitOne = false;
+          try {
+            output = await io.command("/usr/sbin/lsof", [
+              "-a",
+              "-p",
+              batch,
+              "-d",
+              "cwd,txt",
+              "-Fpn",
+            ]);
+          } catch (cause) {
+            const stdout = plainExitOne(cause);
+            if (stdout === undefined) throw cause;
+            output = stdout;
+            exitOne = true;
+          }
+          const reported = new Set<string>();
           for (const line of output.split("\n"))
-            if (line.startsWith("n") && inside(line.slice(1), target)) paths.add(line.slice(1));
+            if (line.startsWith("p")) reported.add(line.slice(1));
+            else if (line.startsWith("n") && inside(line.slice(1), target))
+              paths.add(line.slice(1));
+          if (exitOne) {
+            const unreported = selected.filter((pid) => !reported.has(pid));
+            if (!unreported.length) {
+              // An unexplained exit status is not coverage.
+              record(stage, "unavailable");
+              complete = false;
+            } else await vanished(stage, unreported);
+          }
         } catch (cause) {
           record(stage, processErrorCategory(cause));
           complete = false;
         }
         stage = "darwin_argv";
         try {
-          if (argvUses(await io.command("/bin/ps", ["-ww", "-p", batch, "-o", "command="]), target))
-            paths.add(target);
+          let output: string;
+          try {
+            output = await io.command("/bin/ps", ["-ww", "-p", batch, "-o", "command="]);
+          } catch (cause) {
+            // ps exits 1 only when no listed PID matched; every PID must then be gone.
+            if (plainExitOne(cause) !== "") throw cause;
+            await vanished(stage, selected);
+            output = "";
+          }
+          if (argvUses(output, target)) paths.add(target);
         } catch (cause) {
           record(stage, processErrorCategory(cause));
           complete = false;

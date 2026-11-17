@@ -7,7 +7,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import { processProbe, nativeProcessIO, type Probe, type ProcessProbeIO } from "./ConsumerProbe.ts";
 import { captureLinuxProcess, verifyLinuxInfrastructure } from "./LinuxInfrastructureEvidence.ts";
 import { nativePlatform } from "./Filesystem.ts";
-import { nativeServices, nativeWorkloads } from "./NativeConsumers.ts";
+import { sharedNativeServices, nativeWorkloads } from "./NativeConsumers.ts";
 
 export function nativeProcesses(
   target: string,
@@ -28,7 +28,7 @@ export class NativeObservations extends Context.Reference<{
   readonly temporaryRoots: readonly string[];
 }>("jones/workspaceRetirement/NativeObservations", {
   defaultValue: () => ({
-    services: nativeServices,
+    services: sharedNativeServices,
     processes: nativeProcesses,
     workloads: nativeWorkloads,
     temporaryRoots: [NodeOS.tmpdir(), "/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"],
