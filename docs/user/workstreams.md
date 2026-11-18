@@ -14,7 +14,7 @@ The **Workstreams** row above the groups totals the Working, Needs input and Don
 
 Use **+** and **−** beside the Workstreams label to expand or collapse every group’s thread list. Each group’s title, counts and failures stay visible. Click **Workstreams**, the space between controls or the chevron at the far right to hide or show the named groups. Unassigned stays visible, and showing the Workstreams again restores each group as you left it.
 
-Drag a thread from a Workstream or Unassigned into a chat composer to reference it, just as with a pinned thread. Referencing a thread leaves its assignment and order unchanged.
+Drag a thread card or the active thread’s title in the chat header into the composer to add a thread mention. When you drag the header title into the sidebar, the preview becomes a card. Drop it where the sidebar shows an insertion point, or on a Workstream to move it. Sidebar drops use the same ordering rules as dragging a card.
 
 Assignments are saved on the environment that owns each thread. Clients connected to that environment see confirmed changes. Group names, colors and other details reach another environment when a client that can write to it connects to both copies. A group created through an agent or the CLI on a server stays there until such a client connects. Disconnected environments can therefore show different details temporarily. When edits conflict, one complete edit wins; changes to different fields can overwrite each other.
 

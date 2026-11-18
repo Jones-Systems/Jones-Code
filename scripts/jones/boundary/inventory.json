@@ -1454,6 +1454,8 @@
     "apps/web/src/components/auth/ConnectAgentSurface.tsx": "accepted-shared",
     "apps/web/src/components/chat/ChatComposer.tsx": "accepted-shared",
     "apps/web/src/components/chat/ChatHeader.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ThreadContextDragGhost.tsx": "accepted-shared",
+    "apps/web/src/components/chat/threadContextDrag.ts": "accepted-shared",
     "apps/web/src/components/chat/ChatMarkdownMedia.tsx": "accepted-shared",
     "apps/web/src/components/chat/ChildThreadApprovals.tsx": "hook",
     "apps/web/src/components/chat/ComposerControlsBar.tsx": "accepted-shared",

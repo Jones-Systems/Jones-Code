@@ -1831,6 +1831,14 @@ code {
   --pele-critical: var(--destructive);
 }
 
+[data-thread-title-insertion="before"] {
+  box-shadow: 0 -2px 0 var(--primary);
+}
+
+[data-thread-title-insertion="after"] {
+  box-shadow: 0 2px 0 var(--primary);
+}
+
 /* Window drag region (frameless titlebar) */
 .drag-region {
   -webkit-app-region: drag;

@@ -1,0 +1,21 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-title-drag",
+  "jonesOwnedPaths": ["apps/web/src/jones/threadTitleDrag/"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/ChatHeader.tsx",
+      "to": "apps/web/src/jones/threadTitleDrag/threadTitleDrag.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/threadTitleDrag/threadTitleDrag.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/threadTitleDrag/sidebarTitlePlacement.ts"
+    }
+  ]
+}
