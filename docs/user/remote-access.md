@@ -312,26 +312,6 @@ ends, as for any delegated task. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 
-### Jones Code: files on a linked machine
-
-An agent can read a text file, list a folder, or write a text file on a linked
-machine by its full path there, without starting a thread on it. Ask for the
-file and name the machine, for example "read `~/notes/plan.md` on the VPS".
-
-- Both sides need full access: the agent's thread here, and the link. A plan-mode
-  agent can read but not write. A link paired below full access cannot use
-  files at all.
-- Paths belong to the other machine. The same repository can sit in a different
-  folder there, so give the path as it is on that machine.
-- It handles text: long files come back in parts, and binary files, files over
-  8 MiB, and writes over 1 MiB are refused. Replacing an existing file is an
-  explicit choice the agent makes; it is not the default.
-- Both machines need a Jones Code version with this feature.
-
-File links in a conversation still open on the machine that conversation runs
-on. To look at a file from another machine yourself, ask the agent to read it
-or copy it here.
-
 ### Jones Code: evaluate and review incoming requests
 
 On the receiving machine, open **Settings → Connections → Background remote
