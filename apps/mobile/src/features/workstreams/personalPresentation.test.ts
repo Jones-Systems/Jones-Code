@@ -101,6 +101,17 @@ describe("personal mobile compatibility", () => {
         "Laptop",
       ),
     ).toBe("Couldn't create the Workstream. You have read-only access to Laptop.");
+    expect(
+      personalWorkstreamFailureText(
+        {
+          action: "nameIcon",
+          reason: "changed_elsewhere",
+          environmentId: null,
+          dedupeKey: "nameIcon:group:changed_elsewhere",
+        },
+        "Laptop",
+      ),
+    ).toBe("This Workstream changed elsewhere. Try again.");
     expect(personalEnvironmentStatusText.sync_failed).toBe("Couldn't sync");
   });
 });
