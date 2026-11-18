@@ -15,11 +15,11 @@ import { makeThreadFixture } from "../../test-fixtures";
 import { summarizePersonalThreads } from "./personalPresentation";
 import { act, render } from "../../../test/render";
 import { WorkstreamPicker } from "./WorkstreamPicker";
+import { personalThreadAssignmentMenu } from "./personalThreadAssignmentMenu";
 import { PersonalSidebarGroupHeader } from "./PersonalSidebarGroupHeader";
 import {
   WorkstreamNativeSidebar,
   type NativeThreadExternalDrop,
-  type NativeThreadAssignmentMenu,
 } from "../../components/workstreams/WorkstreamNativeSidebar";
 import { WorkstreamCreateForm } from "../../components/workstreams/WorkstreamSidebarSection";
 import { dropPinnedThreadOnWorkstream } from "./sidebarThreadDrop";
@@ -828,7 +828,8 @@ describe("personal Workstreams native presentation", () => {
     "saves consecutive menu assignments with pinned=%s while the first save is pending",
     async (pinned) => {
       using setup = fixture();
-      const { registry, controller } = setup;
+      const { controller } = setup;
+      let state = setup.initial;
       const entry = { ...thread, pinnedAt: pinned ? thread.pinnedAt : null };
       let finish!: (value: { ok: true; value: undefined }) => void;
       vi.mocked(controller.assign).mockImplementationOnce(
@@ -837,53 +838,36 @@ describe("personal Workstreams native presentation", () => {
             finish = resolve;
           }),
       );
-      const assignmentMenuRef: {
-        current: ((entry: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null;
-      } = { current: null };
-      await using _screen = await render(
-        <RegistryContext.Provider value={registry}>
-          <WorkstreamNativeSidebar
-            controller={controller}
-            threads={[entry]}
-            assignmentMenuRef={assignmentMenuRef}
-            renderThread={(row) => <li>{row.title}</li>}
-            canOperate={() => true}
-            canReorder={() => false}
-            reorder={async () => {}}
-          />
-        </RegistryContext.Provider>,
+      const menu = () =>
+        personalThreadAssignmentMenu({
+          controller,
+          state,
+          thread: entry,
+          canOperate: () => true,
+          openPicker: () => {},
+        });
+      expect(menu().items.find((item) => item.id === "assign-workstream:remove")?.checked).toBe(
+        true,
       );
+      state = {
+        ...setup.initial,
+        assignmentsByThreadKey: new Map([
+          [
+            personalThreadKey(entry),
+            { threadId: entry.id, workstreamId: workstream.id, revision: 1, updatedAt: null },
+          ],
+        ]),
+      };
       expect(
-        assignmentMenuRef.current!(entry).items.find(
-          (item) => item.id === "assign-workstream:remove",
-        )?.checked,
+        menu().items.find((item) => item.id === `assign-workstream:group:${workstream.id}`)
+          ?.checked,
       ).toBe(true);
-      await act(() =>
-        registry.set(setup.state, {
-          ...setup.initial,
-          assignmentsByThreadKey: new Map([
-            [
-              personalThreadKey(entry),
-              { threadId: entry.id, workstreamId: workstream.id, revision: 1, updatedAt: null },
-            ],
-          ]),
-        }),
+      expect(menu().items.find((item) => item.id === "assign-workstream:remove")?.checked).toBe(
+        false,
       );
-      expect(
-        assignmentMenuRef.current!(entry).items.find(
-          (item) => item.id === `assign-workstream:group:${workstream.id}`,
-        )?.checked,
-      ).toBe(true);
-      expect(
-        assignmentMenuRef.current!(entry).items.find(
-          (item) => item.id === "assign-workstream:remove",
-        )?.checked,
-      ).toBe(false);
       try {
-        await act(() =>
-          assignmentMenuRef.current!(entry).onAction(`assign-workstream:group:${workstream.id}`),
-        );
-        await act(() => assignmentMenuRef.current!(entry).onAction("assign-workstream:remove"));
+        await act(() => menu().onAction(`assign-workstream:group:${workstream.id}`));
+        await act(() => menu().onAction("assign-workstream:remove"));
         expect(controller.assign).toHaveBeenCalledTimes(2);
         expect(controller.assign).toHaveBeenLastCalledWith(entry, null);
       } finally {
@@ -894,16 +878,12 @@ describe("personal Workstreams native presentation", () => {
   it("context unassign and external pinned drop confirm assignment before unpin; unpin failure keeps the assignment", async () => {
     using setup = fixture();
     const { registry, controller } = setup;
-    const assignmentMenuRef: {
-      current: ((entry: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null;
-    } = { current: null };
     const externalDropRef: { current: NativeThreadExternalDrop | null } = { current: null };
     await using _screen = await render(
       <RegistryContext.Provider value={registry}>
         <WorkstreamNativeSidebar
           controller={controller}
           threads={[thread]}
-          assignmentMenuRef={assignmentMenuRef}
           externalDropRef={externalDropRef}
           renderThread={(entry) => <li>{entry.title}</li>}
           canOperate={() => true}
@@ -912,7 +892,15 @@ describe("personal Workstreams native presentation", () => {
         />
       </RegistryContext.Provider>,
     );
-    await act(() => assignmentMenuRef.current!(thread).onAction("assign-workstream:remove"));
+    await act(() =>
+      personalThreadAssignmentMenu({
+        controller,
+        state: registry.get(setup.state),
+        thread,
+        canOperate: () => true,
+        openPicker: () => {},
+      }).onAction("assign-workstream:remove"),
+    );
     expect(controller.assign).toHaveBeenLastCalledWith(thread, null);
     const section = document.querySelector<HTMLElement>(
       '[data-native-workstream]:not([data-native-workstream="null"])',

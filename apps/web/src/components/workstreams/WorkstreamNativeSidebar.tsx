@@ -17,9 +17,7 @@ import {
   type PersonalThreadRef,
   type PersonalWorkstreamView,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
-import type { ContextMenuItem } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { ThreadActionMenuId } from "../threadActionMenu.logic";
 import { SIDEBAR_DRAG_DISTANCE, SidebarPointerSensor } from "../Sidebar.pointer";
 import {
   dropThreadContext,
@@ -28,11 +26,8 @@ import {
 } from "../chat/threadContextDrag";
 import { WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
 import type { WorkstreamNameIconProject } from "../../jones/workstreams/WorkstreamNameIconPicker";
-import { WorkstreamPicker } from "../../jones/workstreams/WorkstreamPicker";
-import {
-  showPersonalAssignment,
-  showPersonalFailure,
-} from "../../jones/workstreams/personalNotifications";
+import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
+import { assignPersonalThread } from "../../jones/workstreams/personalThreadAssignmentMenu";
 import {
   personalSidebarRosterTotals,
   summarizePersonalThreads,
@@ -43,11 +38,6 @@ import {
 } from "../../jones/workstreams/personalThreadDrag";
 import { windowPersonalThreads } from "../../jones/workstreams/personalThreadWindow";
 import { createSidebarDragAutoScroll } from "../../jones/workstreams/sidebarDragAutoScroll";
-export interface NativeThreadAssignmentMenu {
-  readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
-  readonly onAction: (action: ThreadActionMenuId) => void;
-}
-
 export interface NativeThreadExternalDrop {
   readonly locateExternal: (
     point: { x: number; y: number },
@@ -71,7 +61,6 @@ export function WorkstreamNativeSidebar({
   snoozedWorkstreams = [],
   renderThread,
   onOpenHistoryThread,
-  assignmentMenuRef,
   externalDropRef,
   canOperate,
   canReorder,
@@ -85,13 +74,7 @@ export function WorkstreamNativeSidebar({
   rosterThreads?: readonly EnvironmentThreadShell[];
   snoozedWorkstreams?: readonly PersonalWorkstreamView[];
   onOpenHistoryThread?: (thread: PersonalThreadRef) => void;
-  renderThread: (
-    thread: EnvironmentThreadShell,
-    assignment: NativeThreadAssignmentMenu,
-  ) => ReactNode;
-  assignmentMenuRef?: RefObject<
-    ((thread: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
-  >;
+  renderThread: (thread: EnvironmentThreadShell) => ReactNode;
   externalDropRef?: RefObject<NativeThreadExternalDrop | null>;
   canOperate: (thread: EnvironmentThreadShell) => boolean;
   canReorder: (thread: EnvironmentThreadShell) => boolean;
@@ -119,7 +102,6 @@ export function WorkstreamNativeSidebar({
   const openWorkstreams = openPersonalWorkstreams(state);
   const grouping = groupPersonalThreads(state, threads);
   const summaryGrouping = groupPersonalThreads(state, summaryThreads);
-  const [picker, setPicker] = useState<EnvironmentThreadShell | null>(null);
   const [drop, setDrop] = useState<string | null | undefined>();
   const [dropRow, setDropRow] = useState<{
     id: string | null;
@@ -141,67 +123,10 @@ export function WorkstreamNativeSidebar({
     canOperate(thread) && controller.canAssign(thread);
   const move = async (thread: EnvironmentThreadShell, id: string | null) => {
     if (!canMove(thread)) return false;
-    // The controller serializes each thread's intents; a pending drag must not discard a menu choice.
-    return controller
-      .assign(thread, id)
-      .then((result) => {
-        if (!result.ok) showPersonalFailure(result.failure);
-        else
-          showPersonalAssignment(
-            id === null
-              ? null
-              : (state.workstreams.find((item) => item.id === id)?.name ?? "Workstream"),
-            thread.pinnedAt != null,
-          );
-        return result.ok;
-      })
-      .catch(() => {
-        showPersonalFailure({
-          action: id === null ? "unassign" : "assign",
-          reason: "failed",
-          environmentId: thread.environmentId,
-          dedupeKey: `assign:${personalThreadKey(thread)}:failed`,
-        });
-        return false;
-      });
+    const name =
+      id === null ? null : (state.workstreams.find((item) => item.id === id)?.name ?? "Workstream");
+    return assignPersonalThread(controller, thread, id, name);
   };
-  const menu = (thread: EnvironmentThreadShell): NativeThreadAssignmentMenu => ({
-    items: [
-      {
-        id: "assign-workstream:picker",
-        label: "Search or create Workstream…",
-        disabled: !canMove(thread),
-      },
-      ...openWorkstreams.map((item) => ({
-        id: `assign-workstream:group:${item.id}` as ThreadActionMenuId,
-        label: item.name,
-        checked: visiblePersonalWorkstreamId(state, thread) === item.id,
-        disabled: !canMove(thread),
-      })),
-      {
-        id: "assign-workstream:remove",
-        label:
-          visiblePersonalWorkstreamId(state, thread) === null &&
-          state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId != null
-            ? "Remove saved Workstream"
-            : "Unassigned",
-        checked: state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId == null,
-        disabled: !canMove(thread),
-        separatorBefore: true,
-      },
-    ],
-    onAction: (action) => {
-      if (!canMove(thread)) return;
-      if (action === "assign-workstream:picker") setPicker(thread);
-      else if (action === "assign-workstream:remove") void move(thread, null);
-      else {
-        const item = openWorkstreams.find(
-          (entry) => action === `assign-workstream:group:${entry.id}`,
-        );
-        if (item) void move(thread, item.id);
-      }
-    },
-  });
   type Target = { id: string | null; neighborKey: string | null; after: boolean };
   const groupId = (thread: EnvironmentThreadShell) => visiblePersonalWorkstreamId(state, thread);
   const validTarget = (target: Target) => {
@@ -348,9 +273,8 @@ export function WorkstreamNativeSidebar({
     setDrop(undefined);
     setDropRow(null);
   };
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed menu and drop handles for Sidebar's single pointer gesture owner.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed drop handles for Sidebar's single pointer gesture owner.
   useLayoutEffect(() => {
-    if (assignmentMenuRef) assignmentMenuRef.current = menu;
     if (externalDropRef)
       externalDropRef.current = {
         locateExternal: (point, thread, options) => {
@@ -395,7 +319,6 @@ export function WorkstreamNativeSidebar({
         },
       };
     return () => {
-      if (assignmentMenuRef) assignmentMenuRef.current = null;
       if (externalDropRef) externalDropRef.current = null;
     };
   });
@@ -517,9 +440,6 @@ export function WorkstreamNativeSidebar({
     ) : null;
   return (
     <div ref={root}>
-      {picker ? (
-        <WorkstreamPicker controller={controller} thread={picker} onClose={() => setPicker(null)} />
-      ) : null}
       <WorkstreamSidebarSection
         controller={controller}
         nameIconProjects={nameIconProjects}
@@ -573,7 +493,7 @@ export function WorkstreamNativeSidebar({
                     className="relative cursor-grab active:cursor-grabbing"
                     onPointerDown={(event) => pointerDown(event, thread)}
                   >
-                    <ul>{renderThread(thread, menu(thread))}</ul>
+                    <ul>{renderThread(thread)}</ul>
                   </li>
                   {dropRow?.id === id && dropRow.key === personalThreadKey(thread) && dropRow.after
                     ? renderGap()
