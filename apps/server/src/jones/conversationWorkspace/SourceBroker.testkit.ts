@@ -175,4 +175,25 @@ export const sourceCases = {
         await NodeAssert.rejects(createConversationDirectory(inRepo, []), /Git checkout/);
         await NodeAssert.rejects(createConversationDirectory(state, [root]), /excluded root/);
       }),
+
+  "conversation state accepts an empty .git directory and refuses gitfile checkouts": () =>
+    fixture(async (root) => {
+      // Git ignores an empty .git directory, such as a stray one in a home directory.
+      const strayParent = NodePath.join(root, "stray");
+      await NodeFSP.mkdir(NodePath.join(strayParent, ".git"), { recursive: true });
+      await NodeFSP.mkdir(NodePath.join(strayParent, "state"));
+      const identity = await createConversationDirectory(NodePath.join(strayParent, "state"), [
+        NodePath.join(root, "missing-checkout"),
+        NodePath.join(root, "missing-checkout"),
+      ]);
+      NodeAssert.equal(await disposeConversationDirectory(identity), "disposed");
+      // A linked worktree marks itself with a gitfile rather than a directory.
+      const linked = NodePath.join(root, "linked");
+      await NodeFSP.mkdir(NodePath.join(linked, "state"), { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(linked, ".git"), "gitdir: /elsewhere\n");
+      await NodeAssert.rejects(
+        createConversationDirectory(NodePath.join(linked, "state"), []),
+        /Git checkout/,
+      );
+    }),
 };

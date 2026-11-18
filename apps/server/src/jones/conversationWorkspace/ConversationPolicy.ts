@@ -284,15 +284,14 @@ const make = Effect.gen(function* () {
     const projectRoots = yield* sql<{
       root: string;
     }>`SELECT workspace_root AS root FROM projection_projects WHERE deleted_at IS NULL`;
-    const checkoutRoots = yield* sql<{
-      root: string | null;
-    }>`SELECT json_extract(payload_json, '$.worktreePath') AS root FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL`;
+    // Thread checkouts are Git checkouts, so the ancestor Git check in
+    // createConversationDirectory already refuses state inside one. Listing
+    // every thread's worktree here cost a full projection scan per launch.
     const excluded = [
       input.projectRoot,
       snapshot.commonDirectory,
       config.worktreesDir,
       ...projectRoots.map((row) => row.root),
-      ...checkoutRoots.flatMap((row) => (row.root === null ? [] : [row.root])),
       ...(input.excluded ?? []),
     ];
     const directory = yield* io(input.threadId, "storage", () =>

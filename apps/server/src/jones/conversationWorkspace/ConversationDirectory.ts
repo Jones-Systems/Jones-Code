@@ -18,6 +18,19 @@ const within = (parent: string, target: string) => {
       !NodePath.isAbsolute(relative))
   );
 };
+const lstatOrNull = (target: string) =>
+  NodeFSP.lstat(target).catch((cause: unknown) => {
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return null;
+    throw cause;
+  });
+// Mirrors Git discovery: a gitfile or a `.git` directory holding HEAD marks a
+// checkout. Git ignores an empty `.git` directory, such as a stray one in $HOME.
+async function isGitCheckoutMarker(directory: string): Promise<boolean> {
+  const marker = await lstatOrNull(NodePath.join(directory, ".git"));
+  if (marker === null) return false;
+  if (!marker.isDirectory()) return true;
+  return (await lstatOrNull(NodePath.join(directory, ".git", "HEAD"))) !== null;
+}
 export async function createConversationDirectory(
   stateDirectory: string,
   excluded: readonly string[],
@@ -26,23 +39,24 @@ export async function createConversationDirectory(
   // Production state cannot live in scratch. Synthetic tests explicitly supply
   // a state root outside the system temporary directory too.
   const root = NodePath.join(state, "conversation-workspaces");
-  for (const candidate of [...excluded, NodeOS.tmpdir()]) {
-    const canonical = await NodeFSP.realpath(candidate).catch((cause: unknown) => {
-      if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
-        return NodePath.resolve(candidate);
-      throw cause;
-    });
-    if (within(canonical, root))
-      throw new Error("Conversation directory overlaps an excluded root");
-  }
-  for (let ancestor = state; ; ancestor = NodePath.dirname(ancestor)) {
-    const git = await NodeFSP.lstat(NodePath.join(ancestor, ".git")).catch((cause: unknown) => {
-      if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return null;
-      throw cause;
-    });
-    if (git !== null) throw new Error("Conversation state lies inside a Git checkout");
-    if (NodePath.dirname(ancestor) === ancestor) break;
-  }
+  // Canonicalize concurrently: each serial await waits a full event-loop turn,
+  // which took tens of milliseconds per path on busy servers.
+  const canonicalRoots = await Promise.all(
+    [...new Set([...excluded, NodeOS.tmpdir()])].map((candidate) =>
+      NodeFSP.realpath(candidate).catch((cause: unknown) => {
+        if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
+          return NodePath.resolve(candidate);
+        throw cause;
+      }),
+    ),
+  );
+  if (canonicalRoots.some((canonical) => within(canonical, root)))
+    throw new Error("Conversation directory overlaps an excluded root");
+  const ancestors = [state];
+  for (let ancestor = state; NodePath.dirname(ancestor) !== ancestor;)
+    ancestors.push((ancestor = NodePath.dirname(ancestor)));
+  if ((await Promise.all(ancestors.map(isGitCheckoutMarker))).some(Boolean))
+    throw new Error("Conversation state lies inside a Git checkout");
   await NodeFSP.mkdir(root, { recursive: true, mode: 0o700 });
   const rootStat = await NodeFSP.lstat(root);
   if (
