@@ -2122,6 +2122,7 @@ export const layer: Layer.Layer<
                     turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId),
                 ),
                 targetThreadId: projection.thread.id,
+                targetProviderThread: providerThread,
                 modelSelection: run.modelSelection,
                 runtimePolicy: resolvedRuntimePolicy,
                 ...(sourceProviderTurn === undefined
@@ -2130,7 +2131,11 @@ export const layer: Layer.Layer<
               }),
             );
             if (forked._tag === "Success") return forked.success;
-            if (input.willRetry === true) return yield* forked.failure;
+            if (
+              input.willRetry === true ||
+              ProviderAdapter.hasUnknownRuntimeBinding(forked.failure)
+            )
+              return yield* forked.failure;
             if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
             // Retries are spent (e.g. the source's native session is gone): start fresh with portable history.
             yield* Effect.logWarning("Starting a native fork in a fresh native session", {

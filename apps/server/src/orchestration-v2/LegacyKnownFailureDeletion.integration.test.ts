@@ -42,6 +42,7 @@ import * as TerminalManager from "../terminal/Manager.ts";
 import { makeGitVcsDriverCore } from "../vcs/GitVcsDriverCore.ts";
 
 import * as Orchestrator from "./Orchestrator.ts";
+import * as LegacyStorage from "../jones/legacyBootstrap/Storage.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as CommandReceipts from "./CommandReceiptStore.ts";
@@ -131,7 +132,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
       (scenario) =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const root = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-known-failure-" });
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({
+            prefix: "legacy-known-failure-",
+          });
+          const root = yield* fs.realPath(temporaryRoot);
           const cwd = `${root}/repo`;
           const common = `${cwd}/.git`;
           const target = `${root}/owned`;
@@ -172,7 +176,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             ProjectionStore.layer,
           ).pipe(Layer.provide(database));
           const management = Management.layer.pipe(
-            Layer.provide(Layer.mergeAll(runtime, stores)),
+            Layer.provide(Layer.mergeAll(runtime, stores, database)),
             Layer.provide(ServerSettings.layerTest()),
           );
           const maintenance = ProjectionMaintenance.layer.pipe(
@@ -573,6 +577,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                 legacyBootstrap: receivingPolicy,
                 legacyNoControl: control,
               }).pipe(
+                Effect.tapError((error) => (positive ? Effect.die(error) : Effect.void)),
                 Effect.filterOrFail(
                   () => scenario !== "lost_reply",
                   () =>
@@ -603,7 +608,14 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                 commands.some((args) => args.includes("add")),
                 scenario === "entered_partial",
               );
-              const deletionReceipt = yield* receipts.getByCommandId(commandId);
+              const ordinaryReceipt = yield* receipts.getByCommandId(commandId);
+              if (positive) assert.isTrue(Option.isNone(ordinaryReceipt));
+              else if (Option.isSome(ordinaryReceipt))
+                assert.equal(ordinaryReceipt.value.status, "rejected");
+              const storedDeletion = yield* LegacyStorage.make(sql).readLegacyReceipt(commandId);
+              if (storedDeletion !== undefined)
+                assert.equal(storedDeletion.domain, "legacy-delete");
+              const deletionReceipt = Option.fromNullishOr(storedDeletion?.receipt);
               assert.equal(
                 Option.isSome(deletionReceipt) && deletionReceipt.value.status === "accepted",
                 positive,
@@ -709,6 +721,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                       subscribeOrchestrationV2Thread({
                         threadId,
                         afterSequence: failed.sequence,
+                        acceptCompactThreadVisits: true,
                         requestCompletionMarker: true,
                       }),
                     ).pipe(Stream.take(3), Stream.runCollect, Effect.timeout("5 seconds")),
@@ -740,6 +753,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
                     subscribeOrchestrationV2Thread({
                       threadId,
                       afterSequence: deletionEvents[1]!.sequence,
+                      acceptCompactThreadVisits: true,
                       requestCompletionMarker: true,
                     }),
                   ).pipe(

@@ -1194,6 +1194,11 @@ const withWorkers = <A, E, R>(
       }),
   );
 
+const awaitLastWorkerRetirement = () =>
+  Effect.promise(() => workerExits.get(startedWorkers.at(-1)!)!).pipe(
+    Effect.andThen(eventLoopTurn),
+  );
+
 const unavailableWarning = "SQLite reader worker unavailable; reads use the writer";
 
 const notWal = "database uses journal_mode delete, not wal";
@@ -1233,6 +1238,7 @@ it.effect.each([
           assert.equal(startedWorkers.length, startedBefore);
           assert.deepEqual(yield* Queue.take(lines), ["Warn", unavailableWarning, { reason }]);
 
+          yield* awaitLastWorkerRetirement();
           yield* TestClock.adjust("1 second");
           assert.equal(startedWorkers.length, startedBefore + 1);
           assert.deepEqual(yield* Queue.take(lines), [
@@ -1258,7 +1264,16 @@ it.effect("backs off a reader that never starts without logging each retry", () 
 
           const startedBefore = startedWorkers.length;
           // Each retry waits 10 s for startup; the gaps between them double from 1 s up to a minute.
-          yield* TestClock.adjust("10 minutes");
+          // Advance virtual time only after the previous native worker really exited.
+          for (const delay of [1, 2, 4, 8, 16, 32, 60, 60, 60, 60, 60, 60]) {
+            yield* awaitLastWorkerRetirement();
+            const beforeRetry = startedWorkers.length;
+            yield* TestClock.adjust(Duration.seconds(delay));
+            assert.equal(startedWorkers.length, beforeRetry + 1);
+            yield* TestClock.adjust("10 seconds");
+          }
+          yield* awaitLastWorkerRetirement();
+          yield* TestClock.adjust("57 seconds");
           assert.equal(startedWorkers.length - startedBefore, 12);
           assert.equal(Queue.sizeUnsafe(lines), 1);
         }),
@@ -1281,6 +1296,7 @@ it.effect.each([
           assert.deepEqual(yield* Fiber.join(read), { count: 1, connection: ["writer"] });
 
           const startedBefore = startedWorkers.length;
+          yield* awaitLastWorkerRetirement();
           yield* TestClock.adjust(beforeClose);
           assert.equal(startedWorkers.length - startedBefore, retries);
           return startedWorkers.length;
@@ -1744,6 +1760,8 @@ it.effect.each([false, true])(
             0,
             "unavailable coverage: real checkpoint-worker APIs are required",
           );
+          // Start with an empty WAL so the next insert is the write that crosses the limit.
+          yield* sql`PRAGMA wal_checkpoint(TRUNCATE)`;
           const release = yield* Deferred.make<void>();
           const pinned = yield* Deferred.make<void>();
           const reader = yield* Effect.forkChild(

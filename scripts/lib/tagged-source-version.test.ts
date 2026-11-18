@@ -58,7 +58,6 @@ it("keeps the manifest version in a source archive without Git metadata", () => 
   expect(resolveTaggedSourceVersion(repo.root, "0.1.5")).toBe("0.1.5");
 });
 
-
 it("retains a committed Jones preview stamp on a stably tagged source", () => {
   using repo = makeRoot();
   const version = "0.1.8-preview.20261116.123.1";

@@ -316,7 +316,9 @@ export default defineConfig(({ command }) => {
       ? readJonesBuildStartedAt(serverPackage)
       : undefined;
   const configuredSource =
-    serverPackage.version === configuredAppVersion ? readJonesBuildSource(serverPackage)?.sha : undefined;
+    serverPackage.version === configuredAppVersion
+      ? readJonesBuildSource(serverPackage)?.sha
+      : undefined;
   return {
     run: {
       tasks: {

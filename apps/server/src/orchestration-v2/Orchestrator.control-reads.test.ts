@@ -57,6 +57,7 @@ declare module "node:sqlite" {
 
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "gpt-5.1-codex" };
+const otherInstanceId = ProviderInstanceId.make("codex-other");
 const adapter = {
   instanceId,
   driver: ProviderDriverKind.make("codex"),
@@ -203,8 +204,7 @@ it.effect.each(
     const sequence = yield* orchestrator.getThreadEventSequence(threadId);
     const commandId = CommandId.make("switch-instance");
     const target = {
-      instanceId:
-        selectionChange === "instance" ? ProviderInstanceId.make("codex-other") : instanceId,
+      instanceId: selectionChange === "instance" ? otherInstanceId : instanceId,
       model: selectionChange === "instance" ? modelSelection.model : "gpt-6",
     };
     const outcome = yield* orchestrator
@@ -245,18 +245,42 @@ it.effect.each(
         EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
         ProviderReplayHarness.layerWithRegistry(
           { name: "instance-switch" },
-          ProviderAdapterRegistry.layerFromAdapters([
-            {
-              ...adapter,
-              planSelectionTransition: () =>
-                Effect.succeed(
-                  selectionChange === "restart"
-                    ? { type: "restart_session" as const }
-                    : { type: "apply_on_next_turn" as const },
-                ),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            get: (id) => {
+              if (id === otherInstanceId) return Effect.succeed({ ...adapter, instanceId: id });
+              if (id !== instanceId) {
+                return Effect.fail(
+                  new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({
+                    instanceId: id,
+                  }),
+                );
+              }
+              return Effect.succeed({
+                ...adapter,
+                planSelectionTransition: () =>
+                  Effect.succeed(
+                    selectionChange === "restart"
+                      ? { type: "restart_session" as const }
+                      : { type: "apply_on_next_turn" as const },
+                  ),
+              });
             },
-            { ...adapter, instanceId: ProviderInstanceId.make("codex-other") },
-          ]),
+            list: () => Effect.succeed([instanceId, otherInstanceId]),
+            // Both accounts can resume the same saved Codex conversation.
+            getMetadata: (id) =>
+              id === instanceId || id === otherInstanceId
+                ? Effect.succeed({
+                    driver: adapter.driver,
+                    continuationKey: "codex:test:shared-sessions",
+                    enabled: true,
+                    capabilities: CodexProviderCapabilitiesV2,
+                  })
+                : Effect.fail(
+                    new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({
+                      instanceId: id,
+                    }),
+                  ),
+          }),
           { databaseLayer: layerDatabase, runEffectWorker: false },
         ),
       ),

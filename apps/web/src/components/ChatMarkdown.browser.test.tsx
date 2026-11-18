@@ -679,7 +679,7 @@ describe("ChatMarkdown streaming", () => {
     const details = container.querySelector<HTMLElement>("[data-markdown-details]")!;
     expect(details.dataset.markdownDetailsOpen).toBe("true");
     expect(container.textContent).toContain("Details content");
-    expect(writeText).toHaveBeenCalledWith("First code block\n");
+    expect(writeText).toHaveBeenCalledWith("First code block");
     expect(highlight).toHaveBeenCalledTimes(1);
 
     for (let index = 0; index < 10; index += 1) {
@@ -703,7 +703,7 @@ describe("ChatMarkdown streaming", () => {
       ...buttonsLabelled(container, "Copy code"),
     ][0]!;
     await act(async () => copy.click());
-    expect(writeText).toHaveBeenLastCalledWith("Updated code block\n");
+    expect(writeText).toHaveBeenLastCalledWith("Updated code block");
     expect(highlight).toHaveBeenCalledTimes(2);
   });
 
@@ -1239,13 +1239,14 @@ describe("ChatMarkdown file citations", () => {
 
   it("leaves an unfinished streaming citation visible until it is complete", async () => {
     using _fixture = setup();
-    await using screen = await renderText(
-      'Created :codex-file-citation{path="/tmp/project/outputs/report.xlsx"',
-      { isStreaming: true },
-    );
+    const incomplete = 'Created :codex-file-citation{path="/tmp/project/outputs/report.xlsx"';
+    await using screen = await renderText(incomplete, { isStreaming: true });
     const { container } = screen;
-    expect(container.textContent).toContain(":codex-file-citation");
+    expect(container.textContent).toContain(incomplete);
     expect(fileOptions(container)).toEqual([]);
+
+    await screen.rerender(<ChatMarkdown cwd="/tmp/project" text={incomplete + "}"} isStreaming />);
+    expect(fileOptions(container)).toEqual(["File options for report.xlsx"]);
   });
 
   it.each([

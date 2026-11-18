@@ -195,7 +195,8 @@ it("rejects an unwritable frame before waiting on exhausted credits and leaves n
 });
 
 it("preserves wrapped probe oversize and fatal protocol categories", async () => {
-  const pipe = new NodeStream.PassThrough(), decoded: Reply[] = [];
+  const pipe = new NodeStream.PassThrough(),
+    decoded: Reply[] = [];
   const replies = new WorkerReplies(request, pipe);
   const read = (async () => {
     for await (const frame of frames(pipe, LIMITS.batchBytes)) {
@@ -204,15 +205,26 @@ it("preserves wrapped probe oversize and fatal protocol categories", async () =>
     }
   })();
   try {
-    await replies.failure({ _tag: "WorkspaceSearchIndexSearchFailed",
-      cause: { _tag: "SearchGitProbeFailure", reason: "oversize" } }, new AbortController().signal);
+    await replies.failure(
+      {
+        _tag: "WorkspaceSearchIndexSearchFailed",
+        cause: { _tag: "SearchGitProbeFailure", reason: "oversize" },
+      },
+      new AbortController().signal,
+    );
     await replies.settle();
     pipe.end();
     await read;
     expect(decoded[0]?.body).toMatchObject({ type: "failure", reason: "oversize" });
-    await expect(new WorkerReplies(request, new NodeStream.PassThrough()).failure({
-      _tag: "WorkspaceSearchIndexSearchFailed", cause: { _tag: "SearchGitProbeFailure", reason: "protocol" },
-    }, new AbortController().signal)).rejects.toMatchObject({ reason: "protocol" });
+    await expect(
+      new WorkerReplies(request, new NodeStream.PassThrough()).failure(
+        {
+          _tag: "WorkspaceSearchIndexSearchFailed",
+          cause: { _tag: "SearchGitProbeFailure", reason: "protocol" },
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ reason: "protocol" });
   } finally {
     pipe.destroy();
     await read.catch(() => {});

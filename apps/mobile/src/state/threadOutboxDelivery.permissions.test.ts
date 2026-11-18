@@ -622,8 +622,9 @@ describe("queued task whose launch reply is lost", () => {
     // The resend reuses the launch's command and message ids, so the server replays it.
     const [first, resent] = state.start.mock.calls.map(([call]) => call.input);
     expect(state.start).toHaveBeenCalledTimes(2);
-    expect(resent.commandId).toBe(first.commandId);
-    expect(resent.message.messageId).toBe(first.message.messageId);
+    expect(resent).toBe(first);
+    expect(resent.payload.commandId).toBe(first.payload.commandId);
+    expect(resent.payload.initialMessage.messageId).toBe(first.payload.initialMessage.messageId);
     expect(remaining()).toEqual([]);
   });
 
@@ -632,7 +633,11 @@ describe("queued task whose launch reply is lost", () => {
     await fireRetry();
 
     expect(state.draftText).toBe("Keep this draft separate\nEdited idea");
-    expect(state.start).toHaveBeenCalledOnce();
+    expect(state.prepareTurn).toHaveBeenCalledOnce();
+    const [first, replay] = state.start.mock.calls.map(([call]) => call.input);
+    expect(state.start).toHaveBeenCalledTimes(2);
+    expect(replay).toBe(first);
+    expect(replay.payload.initialMessage.text).toBe("My dictated idea");
     expect(remaining()).toEqual([]);
   });
 
@@ -670,8 +675,9 @@ describe("queued task whose launch reply is lost", () => {
 
     expect(state.checkout).toHaveBeenCalledOnce();
     const [first, resent] = state.start.mock.calls.map(([call]) => call.input);
-    expect(resent.bootstrap.createThread.worktreePath).toBe("/repo/.t3/worktrees/pr-123");
-    expect(resent.bootstrap).toEqual(first.bootstrap);
+    expect(resent.payload.workspaceStrategy.worktreePath).toBe("/repo/.t3/worktrees/pr-123");
+    expect(resent.payload.workspaceStrategy).toEqual(first.payload.workspaceStrategy);
+    expect(resent).toBe(first);
     expect(remaining()).toEqual([]);
   });
 });

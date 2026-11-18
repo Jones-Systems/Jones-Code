@@ -4841,6 +4841,138 @@ describe("AcpAdapterV2", () => {
       }).pipe(Effect.provide(layerTest)),
   );
 
+  it.live(
+    "publishes the durable ACP row from its admitted native producer and retires that generation",
+    () =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("thread-acp-binding");
+        const providerSessionId = ProviderSessionId.make("acp-binding-session");
+        const instanceId = ProviderInstanceId.make("acp-binding");
+        const modelSelection = { instanceId, model: "default" };
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const calls: string[] = [];
+        const abandoned = yield* Deferred.make<string>();
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+              mockAgentPath: yield* bundledMockAgentPath,
+              wrapRuntime: (native) => ({
+                ...native,
+                start: () =>
+                  Effect.sync(() => calls.push("start")).pipe(Effect.andThen(native.start())),
+              }),
+            }),
+          },
+          selfInvocation: yield* resolveSelfInvocation(),
+        });
+        const now = yield* DateTime.now;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const existing: OrchestrationV2ProviderThread = {
+          id: idAllocator.derive.providerThread({
+            driver: ACP_TEST_DRIVER,
+            providerInstanceId: instanceId,
+            nativeThreadId: "stored-row",
+          }),
+          driver: ACP_TEST_DRIVER,
+          providerInstanceId: instanceId,
+          providerSessionId,
+          appThreadId: threadId,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: null,
+          lastRunOrdinal: null,
+          handoffIds: [],
+          forkedFrom: null,
+          contextUsage: null,
+          nativeMetadata: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const runtime = yield* adapter.openSession({
+              threadId,
+              providerSessionId,
+              modelSelection,
+              runtimePolicy,
+              runtimeLifecycle: {
+                reserve: () =>
+                  Effect.sync(() => {
+                    calls.push("reserve");
+                    return "captured";
+                  }),
+                admit: ({ runtimeGeneration }) =>
+                  Effect.sync(() => {
+                    assert.equal(runtimeGeneration, "captured");
+                    calls.push("admit");
+                  }),
+                prepareBindingPublication: (value) =>
+                  Effect.sync(() => {
+                    calls.push("prepare");
+                    assert.equal(value.providerThread.id, existing.id);
+                    assert.equal(value.producerOrigin?.runtimeGeneration, "captured");
+                    assert.deepEqual(value.observed, ProviderAdapter.unobservedRuntimeIdentity());
+                    return {
+                      binding: ProviderAdapter.runtimeBinding(
+                        value.providerThread,
+                        value.runtimeGeneration,
+                      )!,
+                      complete: Effect.succeed({
+                        ...value.providerThread,
+                        runtimeIdentity: {
+                          runtimeGeneration: value.runtimeGeneration,
+                          requested: value.requested,
+                          observed: value.observed,
+                        },
+                      }),
+                    };
+                  }),
+                bind: () => Effect.die("Unexpected legacy binding"),
+                abandon: (generation) =>
+                  Deferred.succeed(abandoned, generation).pipe(Effect.asVoid),
+                invalidate: () => Effect.void,
+              },
+            });
+            const loaded = yield* runtime.ensureThread({
+              threadId,
+              modelSelection,
+              runtimePolicy,
+              existingProviderThread: existing,
+            });
+            assert.equal(loaded.id, existing.id);
+            assert.isString(loaded.nativeThreadRef?.nativeId);
+            assert.equal(loaded.runtimeIdentity?.runtimeGeneration, "captured");
+            const reused = yield* runtime.resumeThread({
+              providerThread: loaded,
+              modelSelection,
+              runtimePolicy,
+            });
+            assert.equal(reused.runtimeIdentity?.runtimeGeneration, "captured");
+            assert.deepEqual(
+              calls.filter((call) => call !== "admit"),
+              ["reserve", "start", "prepare", "prepare"],
+            );
+            assert.equal(calls[calls.indexOf("start") - 1], "admit");
+            assert.isFalse(yield* Deferred.isDone(abandoned));
+          }),
+        );
+        assert.equal(
+          yield* Deferred.await(abandoned).pipe(Effect.timeout("5 seconds")),
+          "captured",
+        );
+      }).pipe(Effect.provide(layerTest)),
+  );
+
   it.live("creates a fresh ACP identity when recovering an exhausted target", () =>
     Effect.gen(function* () {
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;

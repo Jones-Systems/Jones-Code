@@ -1613,16 +1613,18 @@ describe("DesktopBrowserHost", () => {
 
       yield* raw({ id: 1, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
       expect(yield* Queue.take(replies)).toBe(1);
-      // The start waits on focus emulation while the viewer closes.
+      // Chromium received the start, but has not answered when the viewer closes.
       yield* raw({ id: 2, method: "Page.startScreencast", sessionId: "t3-preview-page-1" });
+      debuggee.settleFocus();
+      yield* settle;
+      expect(debuggee.methods).toEqual(["Page.startScreencast"]);
       yield* raw({
         id: 3,
         method: "Target.detachFromTarget",
         params: { sessionId: "t3-preview-page-1" },
       });
       expect(yield* Queue.take(replies)).toBe(3);
-      debuggee.settleFocus();
-      yield* settle;
+      expect(debuggee.methods.at(-1)).toBe("Page.stopScreencast");
       debuggee.release();
       expect(yield* Queue.take(replies)).toBe(2);
       yield* settle;

@@ -990,7 +990,9 @@ export const make = Effect.gen(function* () {
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
       case "thread.settled":
-        return cleanUpSettledThread({ threadId: event.threadId }).pipe(Effect.andThen(enqueueFullSweep()));
+        return cleanUpSettledThread({ threadId: event.threadId }).pipe(
+          Effect.andThen(enqueueFullSweep()),
+        );
       case "thread.archived":
       case "thread.deleted":
         return enqueueFullSweep();

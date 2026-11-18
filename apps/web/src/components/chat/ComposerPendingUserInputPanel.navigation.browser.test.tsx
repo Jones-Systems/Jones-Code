@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   NodeId,
+  ProviderSessionId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
@@ -50,7 +51,10 @@ function questionProjection(threadId: ThreadId, requestIds = ["first", "second"]
       nativeRequestRef: null,
       kind: "user_input" as const,
       status: "pending" as const,
-      responseCapability: { type: "message" as const },
+      responseCapability: {
+        type: "live" as const,
+        providerSessionId: ProviderSessionId.make("question-navigation-session"),
+      },
       createdAt: projection.updatedAt,
       resolvedAt: null,
     })),

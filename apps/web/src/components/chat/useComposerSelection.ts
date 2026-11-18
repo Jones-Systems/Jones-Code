@@ -6,6 +6,7 @@ import { matchesProviderModelLock } from "../../jones/composer/ProviderInstanceS
 import { type ProviderInstanceEntry, isProviderInstancePickerReady } from "../../providerInstances";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { UnifiedSettings } from "@t3tools/contracts";
+import { resolveSelectableModel } from "@t3tools/shared/model";
 import type { Dispatch } from "react";
 import type { ComposerThreadTarget, DraftSessionState } from "../../composerDraftStore";
 import { useStableCallback } from "../../hooks/useStableCallback";
@@ -23,7 +24,10 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { type SetStateAction } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { toastManager } from "../ui/toast";
-import { resolveAppModelSelectionForInstance } from "../../modelSelection";
+import {
+  getAppModelOptionsForInstance,
+  resolveAppModelSelectionForInstance,
+} from "../../modelSelection";
 import {
   draftModelSelectionApplies,
   resolveNewDraftStartFromOrigin,
@@ -205,7 +209,8 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       draft?.modelSelectionByProvider[shownInstanceId] ?? activeThread.modelSelection;
     if (
       !resolvedModel ||
-      (instanceId === shownInstanceId &&
+      (!options?.effort &&
+        instanceId === shownInstanceId &&
         shownSelection.instanceId === instanceId &&
         shownSelection.model === resolvedModel)
     ) {
@@ -221,12 +226,26 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     const currentInstance = pickerDraft?.activeProvider ?? activeThread.modelSelection.instanceId;
     const currentSelection =
       pickerDraft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
-    const pickerSelection = resolveComposerPickerModelSelection({
-      instanceId,
-      model: resolvedModel,
-      currentSelection,
-      rememberedOptions: store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel],
-    });
+    const rememberedOptions = store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel];
+    const selection = { instanceId, model: resolvedModel };
+    const storedSelection = activeThread.modelSelection;
+    const returnsToStoredModel =
+      storedSelection.instanceId === instanceId &&
+      (shownInstanceId !== instanceId || storedSelection.model !== resolvedModel) &&
+      (storedSelection.model === resolvedModel ||
+        resolveSelectableModel(
+          resolvedDriverKind,
+          storedSelection.model,
+          getAppModelOptionsForInstance(settings, configuredEntry, storedSelection.model),
+        ) === resolvedModel);
+    const pickerSelection =
+      returnsToStoredModel && storedSelection.options?.length
+        ? { ...selection, options: storedSelection.options }
+        : resolveComposerPickerModelSelection({
+            ...selection,
+            currentSelection,
+            rememberedOptions,
+          });
     const nextModelSelection = options?.effort
       ? withShortcutEffort(pickerSelection, resolvedModel, entry.models, options.effort)
       : pickerSelection;

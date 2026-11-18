@@ -88,7 +88,11 @@ export function MarkdownTableExpansion({
                 />
               }
             >
-              {expanded ? <Minimize2Icon className="size-3" /> : <Maximize2Icon className="size-3" />}
+              {expanded ? (
+                <Minimize2Icon className="size-3" />
+              ) : (
+                <Maximize2Icon className="size-3" />
+              )}
             </TooltipTrigger>
             <TooltipPopup side="top">{expandLabel}</TooltipPopup>
           </Tooltip>

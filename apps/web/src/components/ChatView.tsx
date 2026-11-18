@@ -878,7 +878,9 @@ export default function ChatView(props: ChatViewProps) {
         (draftFallback ? draftFallback.selection : draftDefaultModelSelection) ??
           NO_PROVIDER_MODEL_SELECTION,
       )
-    : undefined;
+    : pendingSendEntries.find(
+        (entry) => entry.environmentId === environmentId && entry.threadId === threadId,
+      )?.sidebarThread;
   const isServerThread = serverThread !== null;
   const activeThread = isServerThread ? serverThread : localDraftThread;
   const serverLatestRun =
@@ -3780,7 +3782,7 @@ export default function ChatView(props: ChatViewProps) {
                                         ? "Rewinding conversation"
                                         : feedbackUploading
                                           ? "Sending feedback"
-                                          : threadDetailLoading
+                                          : sendBlockedByThreadDetail
                                             ? "Messages loading"
                                             : worktreeSetupBlocksSend
                                               ? "Preparing worktree"

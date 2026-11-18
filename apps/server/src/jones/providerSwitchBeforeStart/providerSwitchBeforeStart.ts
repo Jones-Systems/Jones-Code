@@ -49,7 +49,8 @@ function pristinePendingProviderThread(
     const node = evidence.nodes.find((candidate) => candidate.id === run.rootNodeId);
     const pristine = preparing && (run.status === "preparing" || run.status === "queued");
     return (
-      run.activeAttemptId !== null && certifiedUnsent.has(run.activeAttemptId) &&
+      run.activeAttemptId !== null &&
+      certifiedUnsent.has(run.activeAttemptId) &&
       run.threadId === projection.thread.id &&
       run.providerInstanceId === pending.providerInstanceId &&
       run.providerThreadId === pending.id &&

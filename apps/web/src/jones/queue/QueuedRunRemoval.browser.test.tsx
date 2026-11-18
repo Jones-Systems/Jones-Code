@@ -13,7 +13,9 @@ vi.mock(import("@t3tools/client-runtime/state/thread-workflows"), async (origina
 }));
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
-  useThreadProjection: (() => ({ projection: { messages: [] } })) as never,
+  useQuietThreadProjection: (() => ({
+    projection: { messages: [], runtimeRequests: [] },
+  })) as never,
   useServerConfigs: (() => new Map()) as never,
 }));
 vi.mock(import("../../state/server"), async (original) => {

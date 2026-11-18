@@ -275,7 +275,16 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
             journal: recovered,
             start: (boot, register, onExit) => {
               replacementAdmissions++;
-              return ProcessSlot.start(command, boot, register, onExit, undefined, undefined, undefined, probes);
+              return ProcessSlot.start(
+                command,
+                boot,
+                register,
+                onExit,
+                undefined,
+                undefined,
+                undefined,
+                probes,
+              );
             },
           });
           try {

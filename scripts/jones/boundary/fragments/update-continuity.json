@@ -27,6 +27,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/desktop/src/backend/DesktopBackendPool.test.ts",
+      "to": "packages/shared/src/jones/shutdownBudget.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
       "to": "apps/server/src/jones/updates/continuationPrompt.ts"
     },

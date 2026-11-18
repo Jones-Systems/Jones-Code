@@ -130,6 +130,8 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const random = yield* SecureRandom.SecureRandom;
   const serverEpoch = yield* random.uuidV4();
   const stateRef = yield* SynchronizedRef.make<ManagerState>(initialState);
+  // Event subscribers may run before the publishing mutation commits its new state.
+  const readCommitted = stateRef.semaphore.withPermit(SynchronizedRef.get(stateRef));
   const eventsPubSub = yield* PubSub.unbounded<PreviewEvent>();
   const events: Stream.Stream<PreviewEvent> = Stream.fromPubSub(eventsPubSub);
   const beforeClose = new Set<
@@ -408,7 +410,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const close: PreviewManager["Service"]["close"] = Effect.fn("PreviewManager.close")(
     function* (input) {
       // Unload runs outside the state lock; tabs opened meanwhile belong to a later close.
-      const current = yield* SynchronizedRef.get(stateRef);
+      const current = yield* readCommitted;
       const targets = input.tabId
         ? [current.sessions.get(compositeKey(input.threadId, input.tabId))].filter(
             (entry): entry is PreviewSessionState => entry !== undefined,
@@ -451,7 +453,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
 
   const list: PreviewManager["Service"]["list"] = Effect.fn("PreviewManager.list")(
     function* (input) {
-      return yield* SynchronizedRef.get(stateRef).pipe(
+      return yield* readCommitted.pipe(
         Effect.map((state): PreviewListResult => ({
           sessions: sessionsForThread(state, input.threadId)
             .map((s) => s.snapshot)

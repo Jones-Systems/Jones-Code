@@ -747,7 +747,9 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       ]);
       const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
       yield* runtime.startTurn(turnInput(thread));
-      assert.equal((yield* Fiber.join(terminal))?.status, "interrupted");
+      const ended = yield* Fiber.join(terminal);
+      assert.equal(ended?.status, "interrupted");
+      assert.equal(ended?.evidenceKind, "attributed_abort");
     }),
   );
 
@@ -3766,7 +3768,9 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         yield* TestClock.adjust("2 seconds");
       }
       yield* Queue.take(attempts);
-      assert.equal((yield* Fiber.join(terminal))?.status, "failed");
+      const ended = yield* Fiber.join(terminal);
+      assert.equal(ended?.status, "failed");
+      assert.equal(ended?.evidenceKind, "local_failure");
     }),
   );
 
@@ -6952,11 +6956,12 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         assert.deepEqual(
           threads.map(({ providerThread }) => [providerThread.id, providerThread.status]),
           [
+            [source.id, "idle"],
             [expectedId, "active"],
             [expectedId, "idle"],
           ],
         );
-        for (const { providerThread } of threads) {
+        for (const { providerThread } of threads.slice(1)) {
           assert.deepEqual(providerThread.nativeThreadRef, forked.nativeThreadRef);
           assert.equal(providerThread.providerSessionId, forked.providerSessionId);
           assert.deepEqual(providerThread.forkedFrom, { providerThreadId: source.id });

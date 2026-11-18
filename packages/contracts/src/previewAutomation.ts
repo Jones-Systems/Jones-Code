@@ -845,7 +845,9 @@ export class PreviewAutomationTimeoutError extends Schema.TaggedError<PreviewAut
     if (this.unreconciled)
       return "This browser tab has an earlier action with an unknown outcome. This action was not started. A snapshot reconciles only earlier click, type, press, scroll, or evaluate actions; other earlier actions require their exact late reply. Recording state in preview_status, when reported, and preview_recording_operation, if available, clear no fence.";
     const summary = `Preview automation ${this.operation} timed out after ${this.timeoutMs}ms.`;
-    const stages = this.pendingStages?.length ? ` Waiting for: ${this.pendingStages.join(", ")}.` : "";
+    const stages = this.pendingStages?.length
+      ? ` Waiting for: ${this.pendingStages.join(", ")}.`
+      : "";
     const detailed = `${summary}${stages}${this.reason === undefined ? "" : ` ${this.reason}`}`;
     if (
       this.outcome === "unknown" &&

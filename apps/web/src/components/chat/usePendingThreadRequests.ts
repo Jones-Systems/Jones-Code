@@ -64,8 +64,6 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { toastManager } from "../ui/toast";
 
-
-
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const NO_PENDING_REQUESTS = { approvals: [], userInputs: [] } as const;
 const NO_PENDING_APPROVALS: ReturnType<typeof derivePendingApprovals> = [];
@@ -176,7 +174,9 @@ function deriveActivePendingDraft(
       )
     : null;
   const activePendingResolvedAnswers = activePendingUserInput
-    ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingDraftAnswers, { notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) })
+    ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingDraftAnswers, {
+        notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability),
+      })
     : null;
   return {
     activePendingDraftAnswers,
@@ -517,24 +517,39 @@ export function usePendingThreadRequests(input: {
     }
     setPendingUserInputQuestionIndexByRequestId((existing) => ({
       ...existing,
-      [activePendingRequestKey]: Math.max(0, Math.min(nextQuestionIndex, activePendingUserInput.questions.length - 1)),
+      [activePendingRequestKey]: Math.max(
+        0,
+        Math.min(nextQuestionIndex, activePendingUserInput.questions.length - 1),
+      ),
     }));
   };
 
   const onSelectActivePendingUserInputOption = (questionId: string, optionValue: string) => {
     if (!activePendingUserInput || activePendingIsResponding) return;
     const question = activePendingUserInput.questions.find((entry) => entry.id === questionId);
-    if (!question || !question.options.some((option) => (option.value ?? option.label) === optionValue)) return;
+    if (
+      !question ||
+      !question.options.some((option) => (option.value ?? option.label) === optionValue)
+    )
+      return;
     const fresh = readPendingUserInputDraft(draftScope);
     const currentAnswers = fresh.activePendingDraftAnswers;
-    const notes = supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) && !question.multiSelect;
+    const notes =
+      supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) &&
+      !question.multiSelect;
     const displacedAnswer = notes ? undefined : currentAnswers[questionId]?.customAnswer;
     const currentPrompt =
       useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
     const nextPrompt = carryDisplacedCustomAnswerIntoPrompt(currentPrompt, displacedAnswer);
     if (nextPrompt !== currentPrompt) {
       setComposerDraftPrompt(composerDraftTarget, nextPrompt);
-      displacedAnswers.current.record(displacedDraftKey, `${activePendingRequestKey}:${questionId}`, displacedAnswer ?? "", currentPrompt, nextPrompt);
+      displacedAnswers.current.record(
+        displacedDraftKey,
+        `${activePendingRequestKey}:${questionId}`,
+        displacedAnswer ?? "",
+        currentPrompt,
+        nextPrompt,
+      );
       toastManager.add({
         type: "info",
         title: "Your typed text was set aside",
@@ -559,15 +574,33 @@ export function usePendingThreadRequests(input: {
         );
       }
     }
-    const nextAnswer = togglePendingUserInputOptionSelection(question,
-      question.multiSelect ? currentAnswers[questionId] : { ...currentAnswers[questionId], selectedOptionValues: [] },
-      optionValue, { notes });
+    const nextAnswer = togglePendingUserInputOptionSelection(
+      question,
+      question.multiSelect
+        ? currentAnswers[questionId]
+        : { ...currentAnswers[questionId], selectedOptionValues: [] },
+      optionValue,
+      { notes },
+    );
     const drafts = { ...currentAnswers, [questionId]: nextAnswer };
-    setPendingUserInputAnswersByRequestId((existing) => ({ ...existing, [activePendingRequestKey]: drafts }));
+    setPendingUserInputAnswersByRequestId((existing) => ({
+      ...existing,
+      [activePendingRequestKey]: drafts,
+    }));
     if (question.multiSelect) return;
-    const answers = buildPendingUserInputAnswers(activePendingUserInput.questions, drafts, { notes });
+    const answers = buildPendingUserInputAnswers(activePendingUserInput.questions, drafts, {
+      notes,
+    });
     if (answers) void onRespondToUserInput(activePendingUserInput.requestId, answers);
-    else setActivePendingUserInputQuestionIndex(derivePendingUserInputProgress(activePendingUserInput.questions, drafts, fresh.activePendingQuestionIndex, { notes }).firstUnansweredIndex);
+    else
+      setActivePendingUserInputQuestionIndex(
+        derivePendingUserInputProgress(
+          activePendingUserInput.questions,
+          drafts,
+          fresh.activePendingQuestionIndex,
+          { notes },
+        ).firstUnansweredIndex,
+      );
   };
   const onSelectActivePendingUserInputOptionStable = useStableCallback(
     onSelectActivePendingUserInputOption,
@@ -576,8 +609,14 @@ export function usePendingThreadRequests(input: {
   // Undo can put set-aside text back into the answer; left in the draft too, it is sent twice.
   const withdrawRestoredAnswer = useStableCallback((questionId: string, value: string) => {
     const key = `${activePendingRequestKey}:${questionId}`;
-    const currentPrompt = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
-    const nextPrompt = displacedAnswers.current.withdraw(displacedDraftKey, key, value, currentPrompt);
+    const currentPrompt =
+      useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
+    const nextPrompt = displacedAnswers.current.withdraw(
+      displacedDraftKey,
+      key,
+      value,
+      currentPrompt,
+    );
     if (nextPrompt !== currentPrompt) setComposerDraftPrompt(composerDraftTarget, nextPrompt);
   });
   const changeAnswer = makePendingCustomAnswerSetter({
@@ -587,10 +626,19 @@ export function usePendingThreadRequests(input: {
     setPendingUserInputAnswersByRequestId,
   });
 
-  const onChangeActivePendingUserInputCustomAnswer = useStableCallback((questionId: string, value: string) => {
-    if (!activePendingUserInput || activePendingIsResponding || userInputResponsesInFlight.current.has(JSON.stringify([environmentId, activeThreadId, activePendingUserInput.requestId]))) return;
-    changeAnswer(questionId, value);
-  });
+  const onChangeActivePendingUserInputCustomAnswer = useStableCallback(
+    (questionId: string, value: string) => {
+      if (
+        !activePendingUserInput ||
+        activePendingIsResponding ||
+        userInputResponsesInFlight.current.has(
+          JSON.stringify([environmentId, activeThreadId, activePendingUserInput.requestId]),
+        )
+      )
+        return;
+      changeAnswer(questionId, value);
+    },
+  );
 
   const onAdvanceActivePendingUserInput = () => {
     if (!activePendingUserInput || activePendingUserInput.responseCapability === "not_resumable") {

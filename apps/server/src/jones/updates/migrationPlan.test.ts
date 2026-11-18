@@ -805,32 +805,47 @@ it.effect(
 it("rejects an upstream gap even when the highest recorded ID matches the candidate", () => {
   withDatabase((databasePath) => {
     const db = new NodeSqlite.DatabaseSync(databasePath);
-    try { db.exec("DELETE FROM effect_sql_migrations; INSERT INTO effect_sql_migrations VALUES (2, 'UpstreamNext')"); }
-    finally { db.close(); }
+    try {
+      db.exec(
+        "DELETE FROM effect_sql_migrations; INSERT INTO effect_sql_migrations VALUES (2, 'UpstreamNext')",
+      );
+    } finally {
+      db.close();
+    }
     const before = NodeFS.readFileSync(databasePath);
     expect(readMigrationPlan({ databasePath, ...manifest })).toMatchObject({ status: "blocked" });
     expect(NodeFS.readFileSync(databasePath)).toEqual(before);
   });
 });
 
-it.each([53, 54])("predicts the exact preview-%i reconciliation effects without rewriting history", (preview) => {
-  withDatabase((databasePath) => {
-    const db = new NodeSqlite.DatabaseSync(databasePath);
-    try {
-      db.exec("DELETE FROM effect_sql_migrations");
-      const insert = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
-      for (const [id, name] of migrationManifest.filter(([id]) => id < 53)) insert.run(id, name);
-      if (preview === 54) insert.run(53, "PullRequestFilesViewed");
-      insert.run(preview, "OrchestrationV2");
-    } finally { db.close(); }
-    const before = NodeFS.readFileSync(databasePath);
-    expect(readMigrationPlan({ databasePath, upstream: migrationManifest, jones: manifest.jones })).toEqual({
-      status: "ready",
-      migrationPlan: { pendingUpstream: [...(preview === 53 ? [53, 54] : [54]), ...upstreamFrom(56)], pendingJones: [105] },
+it.each([53, 54])(
+  "predicts the exact preview-%i reconciliation effects without rewriting history",
+  (preview) => {
+    withDatabase((databasePath) => {
+      const db = new NodeSqlite.DatabaseSync(databasePath);
+      try {
+        db.exec("DELETE FROM effect_sql_migrations");
+        const insert = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
+        for (const [id, name] of migrationManifest.filter(([id]) => id < 53)) insert.run(id, name);
+        if (preview === 54) insert.run(53, "PullRequestFilesViewed");
+        insert.run(preview, "OrchestrationV2");
+      } finally {
+        db.close();
+      }
+      const before = NodeFS.readFileSync(databasePath);
+      expect(
+        readMigrationPlan({ databasePath, upstream: migrationManifest, jones: manifest.jones }),
+      ).toEqual({
+        status: "ready",
+        migrationPlan: {
+          pendingUpstream: [...(preview === 53 ? [53, 54] : [54]), ...upstreamFrom(56)],
+          pendingJones: [105],
+        },
+      });
+      expect(NodeFS.readFileSync(databasePath)).toEqual(before);
     });
-    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
-  });
-});
+  },
+);
 
 it("candidate registration predicts only Jones156 pending after the published155 ledger", () => {
   withDatabase((databasePath) => {
@@ -840,13 +855,19 @@ it("candidate registration predicts only Jones156 pending after the published155
       const upstream = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
       for (const [id, name] of migrationManifest) upstream.run(id, name);
       const jones = db.prepare("INSERT INTO jones_sql_migrations VALUES (?, ?)");
-      for (const [id, name] of jonesMigrationEntries.filter(([id]) => id <= 155)) jones.run(id, name);
-    } finally { db.close(); }
+      for (const [id, name] of jonesMigrationEntries.filter(([id]) => id <= 155))
+        jones.run(id, name);
+    } finally {
+      db.close();
+    }
     const before = NodeFS.readFileSync(databasePath);
-    expect(readMigrationPlan({
-      databasePath, upstream: migrationManifest,
-      jones: jonesMigrationEntries.map(([id, name]) => [id, name] as const),
-    })).toEqual({ status: "ready", migrationPlan: { pendingUpstream: [], pendingJones: [156] } });
+    expect(
+      readMigrationPlan({
+        databasePath,
+        upstream: migrationManifest,
+        jones: jonesMigrationEntries.map(([id, name]) => [id, name] as const),
+      }),
+    ).toEqual({ status: "ready", migrationPlan: { pendingUpstream: [], pendingJones: [156] } });
     expect(NodeFS.readFileSync(databasePath)).toEqual(before);
   });
 });

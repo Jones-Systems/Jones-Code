@@ -1222,7 +1222,12 @@ export function resolveWorkingStartedAt(
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
 }): ThreadStatusPill | null {
-  return resolveNavigationAttentionPill(input);
+  const pill = resolveNavigationAttentionPill(input);
+  const latestStatus = input.thread.latestRun?.status;
+  return pill?.label === "Completed" &&
+    (latestStatus === "interrupted" || latestStatus === "cancelled")
+    ? null
+    : pill;
 }
 
 export function getFallbackThreadIdAfterDelete<

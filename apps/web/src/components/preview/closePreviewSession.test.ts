@@ -28,6 +28,11 @@ vi.mock("~/state/primaryEnvironment", async (importOriginal) => ({
   primaryEnvironmentIdAtom: Atom.make<EnvironmentId | null>(null),
 }));
 
+vi.mock("~/jones/previewCompanion/state", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/jones/previewCompanion/state")>()),
+  readBindingResult: () => ({ status: "unsupported" }),
+}));
+
 const threadRef = {
   environmentId: "local" as ScopedThreadRef["environmentId"],
   threadId: "thread-1" as ScopedThreadRef["threadId"],

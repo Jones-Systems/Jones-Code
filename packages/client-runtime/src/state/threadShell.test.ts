@@ -119,43 +119,64 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
-
   it.each([
     { kind: "user_input" as const, userOnly: undefined, attention: "user_input" },
     { kind: "user_input" as const, userOnly: false, attention: "user_input" },
     { kind: "user_input" as const, userOnly: true, attention: "user_input" },
     { kind: "command" as const, userOnly: undefined, attention: "approval" },
-  ])("preserves own request identity while propagating live child $kind/$userOnly", ({ kind, userOnly, attention }) => {
-    const { registry, threads, snapshotAtom } = makeHarness();
-    const own = { id: RuntimeRequestId.make("parent-own"), kind: "user_input" as const, createdAt: v2Now };
-    const root = { ...v2ThreadShell, pendingRuntimeRequest: own };
-    const child = {
-      ...v2ThreadShell,
-      id: ThreadId.make("attention-matrix-child"),
-      creationSource: "mcp" as const,
-      status: "running" as const,
-      activityRunStatus: "running" as const,
-      lineage: { ...v2ThreadShell.lineage, parentThreadId: root.id, relationshipToParent: "subagent" as const },
-      pendingRuntimeRequest: { id: RuntimeRequestId.make("child-own"), kind, createdAt: v2Now, ...(userOnly === undefined ? {} : { userOnly }) },
-    };
-    const ref = { environmentId, threadId: root.id };
-    const dispose = registry.mount(threads.threadShellAtom(ref));
-    registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [root, child] });
-    expect(registry.get(threads.threadShellAtom(ref))?.pendingSubagentRequest).toBe(attention);
-    expect(registry.get(threads.threadShellAtom(ref))?.hasPendingUserInput).toBe(true);
-    expect(registry.get(threads.environmentThreadIndexAtom(environmentId)).get(root.id)?.pendingRuntimeRequest?.id).toBe(own.id);
-    for (const inactive of [
-      { ...child, pendingRuntimeRequest: null },
-      { ...child, status: "completed" as const, activityRunStatus: null },
-      { ...child, archivedAt: v2Now, status: "completed" as const, activityRunStatus: null },
-    ]) {
-      registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [root, inactive] });
-      expect(registry.get(threads.threadShellAtom(ref))?.pendingSubagentRequest).toBeNull();
+  ])(
+    "preserves own request identity while propagating live child $kind/$userOnly",
+    ({ kind, userOnly, attention }) => {
+      const { registry, threads, snapshotAtom } = makeHarness();
+      const own = {
+        id: RuntimeRequestId.make("parent-own"),
+        kind: "user_input" as const,
+        createdAt: v2Now,
+      };
+      const root = { ...v2ThreadShell, pendingRuntimeRequest: own };
+      const child = {
+        ...v2ThreadShell,
+        id: ThreadId.make("attention-matrix-child"),
+        creationSource: "mcp" as const,
+        status: "running" as const,
+        activityRunStatus: "running" as const,
+        lineage: {
+          ...v2ThreadShell.lineage,
+          parentThreadId: root.id,
+          relationshipToParent: "subagent" as const,
+        },
+        pendingRuntimeRequest: {
+          id: RuntimeRequestId.make("child-own"),
+          kind,
+          createdAt: v2Now,
+          ...(userOnly === undefined ? {} : { userOnly }),
+        },
+      };
+      const ref = { environmentId, threadId: root.id };
+      const dispose = registry.mount(threads.threadShellAtom(ref));
+      registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [root, child] });
+      expect(registry.get(threads.threadShellAtom(ref))?.pendingSubagentRequest).toBe(attention);
       expect(registry.get(threads.threadShellAtom(ref))?.hasPendingUserInput).toBe(true);
-    }
-    dispose();
-    registry.dispose();
-  });
+      expect(
+        registry.get(threads.environmentThreadIndexAtom(environmentId)).get(root.id)
+          ?.pendingRuntimeRequest?.id,
+      ).toBe(own.id);
+      for (const inactive of [
+        { ...child, pendingRuntimeRequest: null },
+        { ...child, status: "completed" as const, activityRunStatus: null },
+        { ...child, archivedAt: v2Now, status: "completed" as const, activityRunStatus: null },
+      ]) {
+        registry.set(snapshotAtom(environmentId), {
+          ...v2ShellSnapshot,
+          threads: [root, inactive],
+        });
+        expect(registry.get(threads.threadShellAtom(ref))?.pendingSubagentRequest).toBeNull();
+        expect(registry.get(threads.threadShellAtom(ref))?.hasPendingUserInput).toBe(true);
+      }
+      dispose();
+      registry.dispose();
+    },
+  );
 
   it("keeps a live subagent question inside the parent with Jones input attention", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
@@ -473,7 +494,10 @@ describe("v2 thread shell lists", () => {
     );
 
     // Resolving the remote child's own card clears its propagated attention.
-    registry.set(snapshotAtom(remoteEnvironmentId), { ...v2ShellSnapshot, threads: [task, helper] });
+    registry.set(snapshotAtom(remoteEnvironmentId), {
+      ...v2ShellSnapshot,
+      threads: [task, helper],
+    });
     expect(registry.get(threads.threadShellAtom(parentRef))?.pendingSubagentRequest).toBeNull();
     registry.set(snapshotAtom(remoteEnvironmentId), {
       ...v2ShellSnapshot,

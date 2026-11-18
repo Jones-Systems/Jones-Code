@@ -2565,7 +2565,6 @@ it("round-trips the historical stage explicitly and refuses legacy or malformed 
   assert.isUndefined(decodeServiceLauncherChildMessage({ ...request, stagedHandle: undefined }));
 });
 
-
 it.layer(NodeServices.layer)("selection lease admission", (it) => {
   it.effect("refuses a stale launcher selection after a concurrent installer publishes", () =>
     Effect.gen(function* () {
@@ -2577,24 +2576,31 @@ it.layer(NodeServices.layer)("selection lease admission", (it) => {
       yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
       yield* fs.writeFileString(databasePath, "unchanged database");
       for (const version of ["1.0.0", "1.1.0"]) {
-        yield* writeFakeRuntime(fs, path, path.join(root, "runtime", "versions", version), `
+        yield* writeFakeRuntime(
+          fs,
+          path,
+          path.join(root, "runtime", "versions", version),
+          `
 process.on("message", message => {
   if (message === "request") process.send({type:"request-update", targetVersion:"1.1.0", dbPath:${JSON.stringify(databasePath)}});
   else if (message.type === "update-rejected") process.send({testRefused:message.reason});
 });
 process.send("testReady");
 setInterval(() => {}, 1000);
-`);
+`,
+        );
       }
-      yield* Effect.promise(() => writeServiceState(statePath, { protocol: 4, activeVersion: "1.0.0" }));
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, { protocol: 4, activeVersion: "1.0.0" }),
+      );
       yield* Effect.promise(async () => {
         const ready = Promise.withResolvers<void>();
         const refused = Promise.withResolvers<string>();
         let captured: NodeChildProcess.ChildProcess | undefined;
         const previousHook = spawnHook.current;
-        spawnHook.current = child => {
+        spawnHook.current = (child) => {
           captured = child;
-          child.on("message", message => {
+          child.on("message", (message) => {
             if (message === "testReady") ready.resolve();
             if (typeof message === "object" && message !== null && "testRefused" in message)
               refused.resolve(String(message.testRefused));

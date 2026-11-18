@@ -1,8 +1,11 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Cross-process launcher contention uses real filesystem leases and IPC barriers.
 import * as NodeChildProcess from "node:child_process";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Synthetic provenance binds the exact fixture executable bytes.
+import * as NodeCrypto from "node:crypto";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import { cliArchiveFileName, cliArchivePlatformKey } from "@t3tools/shared/cliRelease";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -12,11 +15,16 @@ import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import { CliError } from "effect/cli";
 import { HttpClient } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { vi } from "vite-plus/test";
 
+import {
+  JonesRuntimeProvenance,
+  JONES_RUNTIME_PROVENANCE_FILE,
+} from "../jones/hostService/artifactVerification.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { serviceLauncherLockPath } from "../serviceLauncher.ts";
 import * as BootService from "./bootService.ts";
@@ -31,6 +39,10 @@ import {
   serviceStateHasPendingUpdate,
   serviceUnitLogPathOf,
 } from "./serviceProtocol.ts";
+
+const encodeJonesRuntimeProvenance = Schema.encodeEffect(
+  Schema.fromJsonString(JonesRuntimeProvenance),
+);
 
 const leaseObserver = vi.hoisted(() => ({ contended: (_destination: string) => {} }));
 vi.mock("node:fs", async (importOriginal) => {
@@ -199,9 +211,8 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
   const baseDir = path.join(home, ".t3");
   const statePath = path.join(baseDir, "runtime", "service-state.json");
   const runtime = pinnedRuntimePaths(path, baseDir, "1.2.3", platform);
-  yield* fs.makeDirectory(path.dirname(runtime.entryPath), { recursive: true });
-  yield* fs.writeFileString(runtime.entryPath, "#!/bin/sh\n");
-  yield* fs.writeFileString(runtime.sentinelPath, "1.2.3\n");
+  const arch = platform === "darwin" ? "arm64" : "x64";
+  const platformKey = cliArchivePlatformKey(platform, arch)!;
 
   const commands: string[] = [];
   const invocations: ProcessRunner.ProcessRunInput[] = [];
@@ -344,8 +355,23 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
     Effect.gen(function* () {
       const paths = pinnedRuntimePaths(path, serviceBaseDir, cliVersion, platform);
       yield* fs.makeDirectory(path.dirname(paths.entryPath), { recursive: true });
-      yield* fs.writeFileString(paths.entryPath, "#!/bin/sh\n");
+      const entry = "#!/bin/sh\n";
+      yield* fs.writeFileString(paths.entryPath, entry);
       yield* fs.writeFileString(paths.sentinelPath, `${cliVersion}\n`);
+      yield* fs.writeFileString(
+        path.join(paths.versionDir, JONES_RUNTIME_PROVENANCE_FILE),
+        yield* encodeJonesRuntimeProvenance({
+          schema: 1,
+          repository: "Jones-Systems/Jones-Code",
+          source: "a".repeat(40),
+          version: cliVersion,
+          platform,
+          architecture: arch,
+          artifact: cliArchiveFileName(cliVersion, platformKey),
+          sha256: "b".repeat(64),
+          entrySha256: NodeCrypto.createHash("sha256").update(entry).digest("hex"),
+        }),
+      );
       return yield* BootService.make({
         // These fixtures assert the upstream unit and launchd names.
         identity: BootService.UPSTREAM_BOOT_SERVICE_IDENTITY,
@@ -359,6 +385,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       Effect.provide(
         Layer.mergeAll(
           Layer.succeed(HostProcess.Platform, platform),
+          Layer.succeed(HostProcess.Architecture, arch),
           Layer.succeed(HostProcess.UserId, underSudo ? 0 : 501),
           Layer.succeed(HostProcess.ExecutablePath, hostExecPath),
           Layer.succeed(
@@ -986,7 +1013,8 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
           }),
         );
         const rejection = path.join(plan.baseDir, "rejected-update");
-        const databasePath = path.join(plan.baseDir, "state.sqlite");
+        const databasePath = path.join(plan.baseDir, "userdata", "statev2.sqlite");
+        yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
         yield* fs.writeFileString(databasePath, "database");
         yield* fs.writeFileString(
           runtime.entryPath,

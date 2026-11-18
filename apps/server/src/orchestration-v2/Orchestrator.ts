@@ -1911,7 +1911,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ),
           )
         : null;
-      const current = yield* projectionStore.getThreadShell(checkpointThreadId).pipe(
+      if (binding === null || binding.state === "attached")
+        return yield* baseCheckpointService.prepareRootRunScope(input);
+      const current = yield* projectionStore.getThread(checkpointThreadId).pipe(
+        Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
         Effect.mapError(
           (cause) =>
             new CheckpointRootScopePrepareError({
@@ -1922,9 +1925,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
       return yield* baseCheckpointService.prepareRootRunScope(
-        binding === null || binding.state === "attached" || current?.worktreePath !== null
-          ? input
-          : { ...input, cwd: binding.path },
+        current?.deletedAt === null && current.worktreePath === null
+          ? { ...input, cwd: binding.path }
+          : input,
       );
     }),
   };
@@ -3022,7 +3025,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const ordinal = startedAhead ? nextRunOrdinal(projection) : queuedRun.ordinal;
       const commandId =
         options?.reviewed?.commandId ??
-        CommandId.make(`command:system:start-queued:${queuedRun.id}`);
+        CommandId.make(
+          `command:system:start-queued:${queuedRun.id}:${yield* idAllocator.allocate.event({ threadId })}`,
+        );
       const rootNodeId = queuedRun.rootNodeId;
       const attemptId = queuedRun.activeAttemptId;
       const providerThreadId = queuedRun.providerThreadId;
@@ -3603,17 +3608,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? FRESH_CONTEXT_DETACH_REASON
         : "Provider or model selection changed.";
       const reviewed = options?.reviewed;
-      const recordStart =
-        reviewed === undefined
-          ? writeSystemEvents
-          : Effect.fn("Orchestrator.recordReviewedQueuedStart")(function* (
-              events: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>,
-              effects: ReadonlyArray<PendingOrchestrationEffectV2> = [],
-            ) {
-              const withIds = yield* Effect.forEach(events, (event) => makeSystemEvent(event));
-              yield* Ref.update(reviewed.events, (pending) => [...pending, ...withIds]);
-              yield* Ref.update(reviewed.effects, (pending) => [...pending, ...effects]);
-            });
+      const recordStart = Effect.fn("Orchestrator.recordQueuedStart")(function* (
+        events: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>,
+        effects: ReadonlyArray<PendingOrchestrationEffectV2>,
+      ) {
+        const withIds = yield* Effect.forEach(events, (event) => makeSystemEvent(event));
+        if (reviewed !== undefined) {
+          yield* Ref.update(reviewed.events, (pending) => [...pending, ...withIds]);
+          yield* Ref.update(reviewed.effects, (pending) => [...pending, ...effects]);
+          return;
+        }
+        // The worker checks the durable acceptance of this exact promotion.
+        yield* eventSink.writeWithEffects({
+          commandId,
+          queuePromotion: { commandId, threadId, runId: queuedRun.id },
+          events: withIds,
+          effects,
+        });
+      });
       yield* recordStart(
         [
           ...(selectionChanged &&
@@ -3761,8 +3773,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             },
           })),
           {
-            // A restart can return this run to the queue after its previous start effect was cancelled.
-            id: `effect:${commandId}:provider-turn.start:${queuedRun.id}:${yield* idAllocator.allocate.event({ threadId, commandId })}`,
+            // Each promotion has its own command ID. Reviewed starts use the caller's identity.
+            id:
+              reviewed === undefined
+                ? `effect:${commandId}:provider-turn.start:${queuedRun.id}`
+                : `effect:${commandId}:provider-turn.start:${queuedRun.id}:${yield* idAllocator.allocate.event({ threadId, commandId })}`,
             commandId,
             threadId,
             request: { type: "provider-turn.start", runId: queuedRun.id },
@@ -5474,6 +5489,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ? {}
               : { legacyBootstrapClaim: command.legacyBootstrap }),
             ...(command.title === undefined ? {} : { title: command.title }),
+            ...(command.threadMessagesBlocked === undefined
+              ? {}
+              : { threadMessagesBlocked: command.threadMessagesBlocked }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
@@ -7987,14 +8005,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               requested: modelSelection,
               active,
             }).modelSelection
-          : modelSelection,
+          : command.modelSelection === undefined
+            ? active
+            : modelSelection,
       goalCommand !== null || isNativeMaintenanceCommand(command),
     );
     if (
-      deferredSteer !== undefined &&
+      deferredSteer?.status === "waiting" &&
       !(yield* stopReachedRun(command, command.threadId, deferredSteer.id))
     ) {
       dispatchMode = { type: "queue_after_active" };
+      modelSelection = deferredSteer.modelSelection;
     }
     // Stop leaves the run reading as running until its provider stops. A plain
     // send in that window queues behind the stopped queue instead of steering
@@ -8300,6 +8321,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           .pipe(mapDispatchError(command));
         yield* ensureSteeringMessage(command, command);
         steerWhenReadyRunId = target.id;
+        if (
+          ownerMessage ||
+          command.modelSelection === undefined ||
+          command.modelSelectionExplicit === false
+        )
+          modelSelection = target.modelSelection;
         dispatchMode = { type: "queue_after_active" };
       }
     }
@@ -8381,6 +8408,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (
       shouldQueue &&
       steerWhenReadyRunId === undefined &&
+      deferredSteer?.status !== "waiting" &&
       command.modelSelection === undefined &&
       queuedRunStop === undefined &&
       !followsCurrentConversation(incomingMessage) &&

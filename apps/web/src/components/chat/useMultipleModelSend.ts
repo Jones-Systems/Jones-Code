@@ -228,7 +228,9 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                     ...withMessageContext({
                       text: target.text,
                       context,
-                      supportsInlineMessageContext: appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities.inlineMessageContext === true,
+                      supportsInlineMessageContext:
+                        appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)
+                          ?.environment.capabilities.inlineMessageContext === true,
                     }),
                   },
                   modelSelection: target.selection,

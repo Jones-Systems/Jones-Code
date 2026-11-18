@@ -3516,6 +3516,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           {
             readonly producer: CodexRuntimeProducer;
             readonly targetThreadId: ThreadId;
+            readonly durableTargetId: ProviderThreadId | undefined;
             readonly selection: ModelSelection;
             readonly observed: ReturnType<typeof codexObservedRuntimeIdentity>;
           }
@@ -11827,7 +11828,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const issuer = (yield* CodexProducerContext) ?? currentProducer;
               const source = threadInput.sourceProviderThread;
               const sourceBinding = issuer.bindings.get(threadId);
+              const target = threadInput.targetProviderThread;
               const selection = threadInput.modelSelection ?? input.modelSelection;
+              if (
+                target !== undefined &&
+                (target.id === source.id ||
+                  target.appThreadId !== threadInput.targetThreadId ||
+                  target.driver !== CODEX_PROVIDER ||
+                  target.providerInstanceId !== adapterOptions.instanceId ||
+                  target.providerSessionId !== input.providerSessionId ||
+                  target.nativeThreadRef !== null ||
+                  (threadInput.ownerNodeId !== undefined &&
+                    threadInput.ownerNodeId !== target.ownerNodeId) ||
+                  pendingPublications.has(threadInput.targetThreadId) ||
+                  [...pendingForkBindings.values()].some(
+                    (pending) => pending.targetThreadId === threadInput.targetThreadId,
+                  ) ||
+                  [...issuer.bindings.values()].some((bound) => bound.id === target.id))
+              )
+                return yield* toProtocolError("Codex fork needs its original unbound destination.");
               if (
                 source.driver !== CODEX_PROVIDER ||
                 source.providerInstanceId !== adapterOptions.instanceId ||
@@ -11981,16 +12000,34 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     : { providerTurnId: threadInput.providerTurnId }),
                 },
               });
-              return yield* startup.completeWith(() => {
+              const observed = codexObservedRuntimeIdentity(response);
+              const retainFork = () => {
                 pendingForkBindings.set(forkedThread.id, {
                   producer: issuer,
                   targetThreadId: threadInput.targetThreadId,
+                  durableTargetId: target?.id,
                   selection,
-                  observed: codexObservedRuntimeIdentity(response),
+                  observed,
                 });
                 nativeStartUnknown = false;
                 return forked;
-              });
+              };
+              if (target === undefined) return yield* startup.completeWith(retainFork);
+              // First-prompt admission reads the durable target. Publish while the
+              // original fork still holds its startup permit and load authority.
+              retainFork();
+              return yield* bindRuntimeThread(
+                issuer,
+                {
+                  ...target,
+                  nativeThreadRef: forked.nativeThreadRef,
+                  forkedFrom: forked.forkedFrom,
+                  status: forked.status,
+                  updatedAt: forked.updatedAt,
+                },
+                selection,
+                observed,
+              );
             },
             (effect, threadInput) =>
               effect.pipe(
@@ -12050,12 +12087,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 "The native fork's runtime revision changed before its first turn.",
               );
             }
-            yield* bindRuntimeThread(
-              pending.producer,
-              turnInput.providerThread,
-              pending.selection,
-              pending.observed,
-            );
+            if (pending.durableTargetId === undefined) {
+              yield* bindRuntimeThread(
+                pending.producer,
+                turnInput.providerThread,
+                pending.selection,
+                pending.observed,
+              );
+            } else if (
+              turnInput.providerThread.id !== pending.durableTargetId ||
+              pending.producer.bindings.get(nativeId)?.id !== pending.durableTargetId ||
+              pending.producer.unloadedThreads.has(nativeId)
+            ) {
+              return yield* toProtocolError("The published Codex fork lost its original binding.");
+            }
             pendingForkBindings.delete(nativeId);
           }
           if (adapterOptions.resolveRuntime !== undefined) {

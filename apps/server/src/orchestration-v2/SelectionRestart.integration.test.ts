@@ -17,6 +17,7 @@ import {
   type RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -25,6 +26,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import { withOwnerSelectionIngress } from "../jones/threadConfiguration/ownerIngress.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
@@ -181,7 +183,7 @@ function makeRestartAdapter(
             });
           });
 
-        return {
+        return yield* ProviderReplayHarness.withReplayThreadPublication(sessionInput, {
           instanceId: providerInstanceId,
           driver,
           providerSessionId: sessionInput.providerSessionId,
@@ -279,7 +281,7 @@ function makeRestartAdapter(
           readThreadSnapshot: () => Effect.die("unused readThreadSnapshot"),
           rollbackThread: () => Effect.die("unused rollbackThread"),
           forkThread: () => Effect.die("unused forkThread"),
-        };
+        });
       }),
   };
 }
@@ -342,8 +344,8 @@ it.live("retries a failed selection restart session open before completing", () 
         modelSelection: initialSelection,
         dispatchMode: { type: "start_immediately" },
       });
-      yield* Fiber.join(running);
       yield* worker.drain();
+      yield* Fiber.join(running);
       const activeProjection = yield* orchestrator.getThreadProjection(threadId);
       assert.isTrue(activeProjection.providerTurns.some((turn) => turn.status === "running"));
       const activeRunId = activeProjection.runs[0]?.id;
@@ -351,7 +353,7 @@ it.live("retries a failed selection restart session open before completing", () 
         return yield* Effect.die("active restart test run is missing");
       }
 
-      const completed = yield* eventSink
+      const terminal = yield* eventSink
         .stream({
           threadId,
           afterSequence: yield* eventSink.latestSequence({ threadId }),
@@ -359,25 +361,30 @@ it.live("retries a failed selection restart session open before completing", () 
         .pipe(
           Stream.map((stored) => stored.event),
           Stream.filter(
-            (event) => event.type === "run.updated" && event.payload.status === "completed",
+            (event) =>
+              event.type === "run.updated" &&
+              (event.payload.status === "completed" || event.payload.status === "failed"),
           ),
           Stream.take(1),
           Stream.runDrain,
           Effect.forkScoped,
         );
-      yield* orchestrator.dispatch({
-        type: "message.dispatch",
-        createdBy: "user",
-        creationSource: "web",
-        commandId: CommandId.make("command:selection-restart:second"),
-        threadId,
-        messageId: MessageId.make("message:selection-restart:second"),
-        text: "second",
-        attachments: [],
-        modelSelection: replacementSelection,
-        dispatchMode: { type: "restart_active", targetRunId: activeRunId },
-      });
-      yield* Fiber.join(completed);
+      yield* orchestrator
+        .dispatch({
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("command:selection-restart:second"),
+          threadId,
+          messageId: MessageId.make("message:selection-restart:second"),
+          text: "second",
+          attachments: [],
+          modelSelection: replacementSelection,
+          dispatchMode: { type: "restart_active", targetRunId: activeRunId },
+        })
+        .pipe(withOwnerSelectionIngress);
+      yield* worker.drain();
+      yield* Fiber.join(terminal);
       yield* worker.drain();
       return {
         projection: yield* orchestrator.getThreadProjection(threadId),
@@ -945,19 +952,9 @@ it.live.each(["active", "idle", "selection-command", "pooled", "separate-home"] 
           createdBy: "user",
           creationSource: "web",
         });
-        const dispatch = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
-          Effect.gen(function* () {
-            const terminal = yield* orchestrator.streamDomainEvents.pipe(
-              Stream.filter((event) =>
-                mode === "active" && step === "first"
-                  ? event.type === "provider-turn.updated" && event.payload.status === "running"
-                  : event.type === "run.updated" && event.payload.status === "completed",
-              ),
-              Stream.take(1),
-              Stream.runDrain,
-              Effect.forkScoped,
-            );
-            yield* orchestrator.dispatch({
+        const send = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
+          orchestrator
+            .dispatch({
               type: "message.dispatch",
               commandId: CommandId.make(`${name}:${step}`),
               threadId,
@@ -971,24 +968,65 @@ it.live.each(["active", "idle", "selection-command", "pooled", "separate-home"] 
                   : { type: "restart_active", targetRunId },
               createdBy: "user",
               creationSource: "web",
-            });
+            })
+            .pipe(withOwnerSelectionIngress);
+        const dispatch = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
+          Effect.gen(function* () {
+            const terminal = yield* orchestrator.streamDomainEvents.pipe(
+              Stream.filter((event) =>
+                mode === "active" && step === "first"
+                  ? event.type === "provider-turn.updated" && event.payload.status === "running"
+                  : event.type === "run.updated" &&
+                    (event.payload.status === "completed" || event.payload.status === "failed"),
+              ),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            );
+            yield* send(step, modelSelection, targetRunId);
             yield* worker.drain();
             yield* Fiber.join(terminal);
             yield* worker.drain();
-            return yield* orchestrator.getThreadProjection(threadId);
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            if (mode !== "active" || step !== "first") {
+              assert.equal(
+                projection.runs.at(-1)?.status,
+                "completed",
+                JSON.stringify(projection.turnItems.filter((item) => item.type === "error")),
+              );
+            }
+            return projection;
           });
         const first = yield* dispatch("first", selection);
         const originalThread = first.providerThreads.find(
           (thread) => thread.id === first.thread.activeProviderThreadId,
         )!;
         const targetSelection = { instanceId: targetId, model: "complete" };
+        if (mode === "separate-home") {
+          const error = yield* send("second", targetSelection).pipe(Effect.flip);
+          assert.include(
+            Cause.pretty(Cause.fail(error)),
+            "the saved conversation is not compatible with the target account",
+          );
+          const rejected = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(rejected.thread.activeProviderThreadId, originalThread.id);
+          assert.deepEqual(rejected.thread.modelSelection, selection);
+          assert.lengthOf(rejected.runs, 1);
+          assert.isEmpty(rejected.contextHandoffs);
+          assert.isEmpty(rejected.contextTransfers);
+          assert.isEmpty(resumes);
+          assert.deepEqual(messages, ["first"]);
+          return;
+        }
         if (mode === "selection-command") {
-          yield* orchestrator.dispatch({
-            type: "provider.switch",
-            commandId: CommandId.make(`${name}:switch`),
-            threadId,
-            modelSelection: targetSelection,
-          });
+          yield* orchestrator
+            .dispatch({
+              type: "provider.switch",
+              commandId: CommandId.make(`${name}:switch`),
+              threadId,
+              modelSelection: targetSelection,
+            })
+            .pipe(withOwnerSelectionIngress);
           yield* worker.drain();
         }
         const second = yield* dispatch(
@@ -999,15 +1037,13 @@ it.live.each(["active", "idle", "selection-command", "pooled", "separate-home"] 
         const targetThread = second.providerThreads.find(
           (thread) => thread.id === second.thread.activeProviderThreadId,
         )!;
-        if (mode === "separate-home") {
-          assert.notEqual(targetThread.id, originalThread.id);
-          assert.lengthOf(second.contextHandoffs, 1);
-          assert.lengthOf(second.contextTransfers, 1);
-          assert.isEmpty(resumes);
-          assert.notEqual(messages[1], "second");
-          return;
-        }
-        assert.equal(targetThread.id, originalThread.id);
+        // Each account owns its runtime binding to the shared native conversation.
+        assert.notEqual(targetThread.id, originalThread.id);
+        assert.equal(
+          second.providerThreads.find((thread) => thread.id === originalThread.id)
+            ?.providerInstanceId,
+          providerInstanceId,
+        );
         assert.deepEqual(targetThread.nativeThreadRef, originalThread.nativeThreadRef);
         assert.equal(targetThread.providerInstanceId, targetId);
         assert.notEqual(targetThread.providerSessionId, originalThread.providerSessionId);

@@ -263,14 +263,17 @@ it.effect("validates selectors and enforces caller access before the broker read
     ]) {
       expect(yield* call(args).pipe(Effect.flip)).toMatchObject({ _tag: "InvalidParams" });
     }
-    for (const scope of [
+    const denied = yield* call(
+      { tabId },
       { ...invocation, capabilities: new Set<McpInvocationContext.McpCapability>() },
-      { ...invocation, thread: undefined },
-    ]) {
-      const result = yield* call({ tabId }, scope);
-      expect(result.isError).toBe(true);
-      expect(JSON.stringify(result)).not.toContain("not_retained");
-    }
+    );
+    expect(denied.isError).toBe(true);
+    expect(JSON.stringify(denied)).not.toContain("not_retained");
+    const hidden = yield* call({ tabId }, { ...invocation, thread: undefined }).pipe(Effect.flip);
+    expect(hidden).toMatchObject({
+      _tag: "InvalidParams",
+      message: "Tool 'preview_recording_operation' not found",
+    });
     const readonly = yield* call(
       { tabId },
       {

@@ -41,7 +41,10 @@ vi.mock(import("../../state/entities"), async (original) => ({
 }));
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
-  useEnvironment: (() => ({ label: "Linked" })) as never,
+  useEnvironment: ((id: EnvironmentId | null) =>
+    id === parentEnvironmentId
+      ? { label: "Linked", connection: { phase: "connected" } }
+      : null) as never,
 }));
 vi.mock(import("../ui/toast"), async (original) => {
   const actual = await original();
@@ -57,11 +60,11 @@ const live = { _tag: "Success", value: { "parent-thread": "Parent" } };
 const deleted = { _tag: "Success", value: {} };
 
 // Renders the child's panel; each read of its parent answers with the next of `replies`.
-function renderChild(...replies: ReadonlyArray<unknown>) {
+async function renderChild(...replies: ReadonlyArray<unknown>) {
   read.mockReset();
   for (const reply of replies) read.mockImplementationOnce(async () => reply);
   toast.mockReset();
-  return render(
+  const screen = await render(
     <ThreadRelationshipsPanel
       environmentId={childEnvironmentId}
       threadId={childThreadId}
@@ -70,9 +73,12 @@ function renderChild(...replies: ReadonlyArray<unknown>) {
     />,
     { router: childPath },
   );
+  await screen.getByRole("button", { name: "Linked threads" }).click();
+  return screen;
 }
 
-const parentRow = (screen: Screen) => screen.getByRole("button", { name: /Parent/ });
+const parentRow = (screen: Screen) =>
+  screen.getByRole("button", { name: "Parent agent: Parent", exact: true });
 
 it.each([
   {
@@ -113,6 +119,7 @@ it("leaves the user where they went when the parent read answers late", async ()
   });
   await using screen = await renderChild(late, deleted);
   await parentRow(screen).click();
+  await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
   await screen.router?.navigate({ to: "/new" });
   await act(async () => {
     answerLate(live);

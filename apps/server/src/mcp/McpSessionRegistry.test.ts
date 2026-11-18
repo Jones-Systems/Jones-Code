@@ -380,7 +380,10 @@ it.effect("credential lookup follows both clocks and cannot revive an observed e
     const registry = yield* makeRegistry(undefined);
     const threadId = ThreadId.make("lookup-dual-clock");
     yield* TestClock.setTime(10_000);
-    const issued = yield* registry.issue({threadId, providerInstanceId: ProviderInstanceId.make("codex")});
+    const issued = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
     const id = issued.config.providerSessionId;
     const original = yield* registry.lookupByCredentialId(id);
     yield* TestClock.setTime(1_000);
@@ -393,19 +396,25 @@ it.effect("credential lookup follows both clocks and cannot revive an observed e
   }),
 );
 
-it.effect("a token expired by authentication stays unavailable to non-renewing credential lookup", () =>
-  Effect.gen(function* () {
-    let timestamp = 1_000;
-    const registry = yield* makeRegistry(() => timestamp);
-    const issued = yield* registry.issue({threadId: ThreadId.make("lookup-after-expiry"),
-      providerInstanceId: ProviderInstanceId.make("codex")});
-    const id = issued.config.providerSessionId;
-    timestamp += 101;
-    expect(yield* registry.resolve(issued.config.authorizationHeader.replace(/^Bearer\s+/, ""))).toBeUndefined();
-    timestamp = 1_000;
-    expect(yield* registry.lookupByCredentialId(id)).toBeUndefined();
-    yield* registry.revokeProviderSession(id);
-    yield* registry.touch(issued.config.threadId);
-    expect(yield* registry.lookupByCredentialId(id)).toBeUndefined();
-  }),
+it.effect(
+  "a token expired by authentication stays unavailable to non-renewing credential lookup",
+  () =>
+    Effect.gen(function* () {
+      let timestamp = 1_000;
+      const registry = yield* makeRegistry(() => timestamp);
+      const issued = yield* registry.issue({
+        threadId: ThreadId.make("lookup-after-expiry"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      });
+      const id = issued.config.providerSessionId;
+      timestamp += 101;
+      expect(
+        yield* registry.resolve(issued.config.authorizationHeader.replace(/^Bearer\s+/, "")),
+      ).toBeUndefined();
+      timestamp = 1_000;
+      expect(yield* registry.lookupByCredentialId(id)).toBeUndefined();
+      yield* registry.revokeProviderSession(id);
+      yield* registry.touch(issued.config.threadId);
+      expect(yield* registry.lookupByCredentialId(id)).toBeUndefined();
+    }),
 );

@@ -2,7 +2,10 @@
 import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 
-import { inspectMigrationHistory, reconciledV2PreviewHistory } from "../persistence/migrationHistory.ts";
+import {
+  inspectMigrationHistory,
+  reconciledV2PreviewHistory,
+} from "../persistence/migrationHistory.ts";
 
 type MigrationIdentity = readonly [id: number, name: string];
 export interface MigrationPlan {
@@ -61,9 +64,13 @@ export function readMigrationPlan(input: {
       [upstream, input.upstream, "upstream"],
       [jones, input.jones, "Jones"],
     ] as const) {
-      const recorded = rows.map((row) => ({ id: Number(row.migration_id), name: String(row.name) }));
+      const recorded = rows.map((row) => ({
+        id: Number(row.migration_id),
+        name: String(row.name),
+      }));
       const reconciled = owner === "upstream" ? reconciledV2PreviewHistory(recorded) : recorded;
-      if (reconciled === null) return { status: "blocked", reason: "Unexpected V2 preview migration history." };
+      if (reconciled === null)
+        return { status: "blocked", reason: "Unexpected V2 preview migration history." };
       const result = inspectMigrationHistory(manifest, reconciled, owner);
       if (result.error !== undefined) return { status: "blocked", reason: result.error };
     }
@@ -71,11 +78,23 @@ export function readMigrationPlan(input: {
       status: "ready",
       migrationPlan: {
         pendingUpstream: [
-          ...upstream.flatMap((row) => row.name === "OrchestrationV2" && Number(row.migration_id) === 53
-            ? [53, 54] : row.name === "OrchestrationV2" && Number(row.migration_id) === 54 ? [54] : []),
-          ...pending(input.upstream, new Set((reconciledV2PreviewHistory(
-            upstream.map((row) => ({ id: Number(row.migration_id), name: String(row.name) })),
-          ) ?? []).map(({ id }) => id))),
+          ...upstream.flatMap((row) =>
+            row.name === "OrchestrationV2" && Number(row.migration_id) === 53
+              ? [53, 54]
+              : row.name === "OrchestrationV2" && Number(row.migration_id) === 54
+                ? [54]
+                : [],
+          ),
+          ...pending(
+            input.upstream,
+            new Set(
+              (
+                reconciledV2PreviewHistory(
+                  upstream.map((row) => ({ id: Number(row.migration_id), name: String(row.name) })),
+                ) ?? []
+              ).map(({ id }) => id),
+            ),
+          ),
         ],
         pendingJones: pending(input.jones, new Set(jones.map((row) => Number(row.migration_id)))),
       },
@@ -96,7 +115,11 @@ export function decodeMigrationPlan(value: unknown): MigrationPlan | undefined {
   const ids = (values: unknown): values is number[] => {
     if (!Array.isArray(values)) return false;
     for (let index = 0; index < values.length; index++) {
-      if (!Object.hasOwn(values, index) || !Number.isSafeInteger(values[index]) || values[index] <= 0) {
+      if (
+        !Object.hasOwn(values, index) ||
+        !Number.isSafeInteger(values[index]) ||
+        values[index] <= 0
+      ) {
         return false;
       }
     }

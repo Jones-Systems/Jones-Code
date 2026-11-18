@@ -156,22 +156,23 @@ export function useUpdateScopedSettings() {
   ) =>
     run(
       environments,
-      (current) => planScopedSettingsPatch(
-        scope,
-        current,
-        patch,
-        { deviceOnly },
-        createModelSelectionResolver(
-          {
-            representative: target,
-            targets,
-            providersByEnvironment,
-            settingsForDestination: (destination) =>
-              mergeEnvironmentSettings(destination.settings, settings),
-          },
-          options,
+      (current) =>
+        planScopedSettingsPatch(
+          scope,
+          current,
+          patch,
+          { deviceOnly },
+          createModelSelectionResolver(
+            {
+              representative: target,
+              targets,
+              providersByEnvironment,
+              settingsForDestination: (destination) =>
+                mergeEnvironmentSettings(destination.settings, settings),
+            },
+            options,
+          ),
         ),
-      ),
       options?.onFailed,
     );
 }

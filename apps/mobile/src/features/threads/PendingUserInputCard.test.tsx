@@ -143,7 +143,6 @@ it("opens a workspace file link in a question in the thread's file viewer", asyn
   ]);
 });
 
-
 it("advances after the request owner selects the literal option value and keeps preview links scoped", async () => {
   const select = vi.fn(() => 1);
   using screen = setup("", {
@@ -151,9 +150,26 @@ it("advances after the request owner selects the literal option value and keeps 
       requestId: "request-sequential" as RuntimeRequestId,
       responseCapability: "resumable",
       questions: [
-        { id: "first", header: "First", question: "Choose", allowCustomAnswer: false,
-          options: [{ label: "Friendly label", value: "native-value", preview: "[preview](docs/preview.md)" }] },
-        { id: "second", header: "Second", question: "[next](docs/next.md)", allowCustomAnswer: false, options: [] },
+        {
+          id: "first",
+          header: "First",
+          question: "Choose",
+          allowCustomAnswer: false,
+          options: [
+            {
+              label: "Friendly label",
+              value: "native-value",
+              preview: "[preview](docs/preview.md)",
+            },
+          ],
+        },
+        {
+          id: "second",
+          header: "Second",
+          question: "[next](docs/next.md)",
+          allowCustomAnswer: false,
+          options: [],
+        },
       ],
     } as unknown as PendingUserInput,
     onSelectOption: select,
@@ -161,13 +177,19 @@ it("advances after the request owner selects the literal option value and keeps 
   await screen.pressLink("preview");
   expect(select).not.toHaveBeenCalled();
   const option = [...screen.container.querySelectorAll("div")].find(
-    (node) => node.textContent === "Friendly label" && node.parentElement?.textContent === "Friendly label",
+    (node) =>
+      node.textContent === "Friendly label" && node.parentElement?.textContent === "Friendly label",
   );
   if (!option) throw new Error("Missing option");
   await act(async () => option.click());
-  expect(select).toHaveBeenCalledWith("request-sequential", expect.objectContaining({ id: "first" }), "native-value");
+  expect(select).toHaveBeenCalledWith(
+    "request-sequential",
+    expect.objectContaining({ id: "first" }),
+    "native-value",
+  );
   await screen.pressLink("next");
   expect(harness.navigate.at(-1)).toEqual([
-    "ThreadFile", { environmentId: "env-1", threadId: "thread-1", path: ["docs", "next.md"] },
+    "ThreadFile",
+    { environmentId: "env-1", threadId: "thread-1", path: ["docs", "next.md"] },
   ]);
 });

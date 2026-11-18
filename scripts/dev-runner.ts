@@ -614,9 +614,9 @@ const runRepoScript = Effect.fn("dev-runner.runRepoScript")(function* (
 });
 
 /**
- * The first start in a worktree seeds its empty database from a small live database,
- * builds the native resource monitor, and warms the web dependency cache. Each step
- * checks for its own output, so later starts skip it.
+ * The first start builds the native resource monitor and warms the web dependency
+ * cache. Seeding an empty worktree database from the live install requires
+ * explicit opt-in. Each step checks for its own output, so later starts skip it.
  */
 const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (input: {
   readonly mode: DevMode;
@@ -639,7 +639,6 @@ const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (i
         );
       }
     }
-    const source = path.join(yield* HostProcess.HomeDirectory, ".t3", "userdata", "statev2.sqlite");
     // A V1 state.sqlite counts as data too: the server imports it only while
     // statev2.sqlite is missing, so seeding would hide it.
     if (
@@ -647,6 +646,12 @@ const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (i
       !(yield* exists(path.join(stateDir, "statev2.sqlite"))) &&
       !(yield* exists(path.join(stateDir, "state.sqlite")))
     ) {
+      const source = path.join(
+        yield* HostProcess.HomeDirectory,
+        ".t3",
+        "userdata",
+        "statev2.sqlite",
+      );
       const info = yield* fs.stat(source).pipe(Effect.option);
       if (Option.isSome(info)) {
         if (Number(info.value.size) > LARGE_DEV_DATABASE_BYTES) {
@@ -900,7 +905,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   // After sharing, so the warm step sees the same bundled-dev env as Vite.
   yield* prepareFirstStart({
     mode: input.mode,
-    seed: input.seed !== false,
+    seed: input.seed === true,
     worktreeHome: baseDir === worktreeHome ? worktreeHome : undefined,
     env,
   });
@@ -960,7 +965,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
 
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
-const devRunnerCli = Command.make("dev-runner", {
+export const devRunnerCli = Command.make("dev-runner", {
   mode: Argument.Literals("mode", DEV_RUNNER_MODES).pipe(
     Argument.withDescription("Development mode to run."),
   ),
@@ -1021,7 +1026,7 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   seed: Flag.Boolean("seed").pipe(
     Flag.withDescription(
-      "Seed an empty worktree database from ~/.t3 on first start (read-only, via migrate-dev-db) if the source is at most 500 MiB. On by default; --no-seed or T3CODE_DEV_SEED=0 skips it.",
+      "Opt in to seed an empty worktree database from ~/.t3 (read-only, via migrate-dev-db) if the source is at most 500 MiB. Off by default; --seed or T3CODE_DEV_SEED=1 enables it. --no-seed overrides the environment.",
     ),
     Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_DEV_SEED")),
   ),

@@ -1117,8 +1117,11 @@ export const layer: Layer.Layer<
             events: finalization.events,
             effects: finalization.effects,
           } satisfies Parameters<typeof eventSink.writeIfRunCurrent>[0];
-          const publicationStage = input.publicationStage ??
-            (input.writeIfRunCurrent.unlessInterruptRequested ? "handoff-finalization" : "finalization");
+          const publicationStage =
+            input.publicationStage ??
+            (input.writeIfRunCurrent.unlessInterruptRequested
+              ? "handoff-finalization"
+              : "finalization");
           const result = yield* input.publicationTerminal === undefined
             ? eventSink.writeIfRunCurrent(finalWrite)
             : publishTerminal(input.publicationTerminal, publicationStage, {
@@ -1133,7 +1136,9 @@ export const layer: Layer.Layer<
             const lostEvidenceWrite = {
               runtimeEvidence,
               settleRunOnLostRuntimeEvidence: true as const,
-              ...(finalWrite.unlessInterruptRequested === undefined ? {} : { unlessInterruptRequested: finalWrite.unlessInterruptRequested }),
+              ...(finalWrite.unlessInterruptRequested === undefined
+                ? {}
+                : { unlessInterruptRequested: finalWrite.unlessInterruptRequested }),
               threadId: input.run.threadId,
               runId: input.run.id,
               activeAttemptId: input.writeIfRunCurrent.activeAttemptId,
@@ -1170,10 +1175,14 @@ export const layer: Layer.Layer<
         } else if (input.publicationTerminal === undefined) {
           yield* eventSink.writeWithEffects(finalization);
         } else {
-          yield* publishTerminal(input.publicationTerminal, input.publicationStage ?? "finalization", {
-            type: "unconditional",
-            input: finalization,
-          });
+          yield* publishTerminal(
+            input.publicationTerminal,
+            input.publicationStage ?? "finalization",
+            {
+              type: "unconditional",
+              input: finalization,
+            },
+          );
         }
         yield* turnAnalytics.runSettled({
           runId: input.run.id,
@@ -1203,9 +1212,9 @@ export const layer: Layer.Layer<
               : findEffectClaimLost(cause) !== undefined
                 ? Effect.die(Cause.squash(cause))
                 : Effect.logWarning(
-                  "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
-                  { runId: input.run.id },
-                ),
+                    "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
+                    { runId: input.run.id },
+                  ),
           ),
         );
     });
@@ -1997,9 +2006,10 @@ export const layer: Layer.Layer<
                   }
               : {}),
           } satisfies ProviderEventIngestor.ProviderEventPublishInput;
-          const ingest = deliveredEvent.type === "turn.terminal"
-            ? (yield* providerEventIngestor.captureTerminal(ingestInput)).publish
-            : providerEventIngestor.ingestNormalized(ingestInput);
+          const ingest =
+            deliveredEvent.type === "turn.terminal"
+              ? (yield* providerEventIngestor.captureTerminal(ingestInput)).publish
+              : providerEventIngestor.ingestNormalized(ingestInput);
           if (deliveredEvent.type === "turn.terminal") {
             yield* Ref.set(acceptedRootTerminal, {
               event: deliveredEvent,
@@ -2284,7 +2294,6 @@ export const layer: Layer.Layer<
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) =>
                 Effect.gen(function* () {
-                  if (yield* Ref.get(rootRunFinalized)) return;
                   const accepted = yield* Ref.get(acceptedRootTerminal);
                   const acceptedTerminal =
                     accepted === null ? null : yield* rootTerminalSnapshot(accepted.event);
@@ -2400,9 +2409,13 @@ export const layer: Layer.Layer<
                   const failureTerminal = makeFailedTerminalEvent(
                     makeProviderFailure({
                       cause: squashed,
-                      code: acceptedTerminal === null
-                        ? appFailureCodeFromCause(failureCause) : "terminal_finalization_failed",
-                      message: knownProviderFailureMessage(squashed) ?? userFacingDatabaseErrorMessage(squashed),
+                      code:
+                        acceptedTerminal === null
+                          ? appFailureCodeFromCause(failureCause)
+                          : "terminal_finalization_failed",
+                      message:
+                        knownProviderFailureMessage(squashed) ??
+                        userFacingDatabaseErrorMessage(squashed),
                       class: "unknown",
                     }),
                     latestItemOrdinal + 1,
@@ -2579,7 +2592,10 @@ export const layer: Layer.Layer<
                   }),
                 ))
               : input.session.startTurn(turnInput);
-        yield* Effect.andThen(shouldStart, Effect.andThen(input.checkContinuity?.() ?? Effect.void, startTurn)).pipe(
+        yield* Effect.andThen(
+          shouldStart,
+          Effect.andThen(input.checkContinuity?.() ?? Effect.void, startTurn),
+        ).pipe(
           guardClaim,
           // Wait for acceptance so abandoned startup cannot leave a refresher
           // on the already-detached ingestion fiber.

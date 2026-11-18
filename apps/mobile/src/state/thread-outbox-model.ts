@@ -135,7 +135,10 @@ export function resolveQueuedThreadSettings(
     }
   > = [],
 ): ThreadSettingsSnapshot {
-  const modelSelection = withImplicitFastModeSelection(resolveQueuedModelSelection(message, thread.modelSelection), providers);
+  const modelSelection = withImplicitFastModeSelection(
+    resolveQueuedModelSelection(message, thread.modelSelection),
+    providers,
+  );
   const provider = providers.find(
     (candidate) => candidate.instanceId === modelSelection.instanceId,
   );

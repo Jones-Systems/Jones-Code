@@ -2579,6 +2579,155 @@ describe("PiAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );
 
+  it.effect.each(["ensure", "fork"] as const)(
+    "publishes the exact managed Pi row for %s before the first prompt",
+    (operation) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakePi;
+        const forkFake = yield* makeFakePi;
+        const expectedFile =
+          operation === "ensure" ? FAKE_SESSION_FILE : "/fake/managed-fork.jsonl";
+        forkFake.queueState({ sessionFile: expectedFile });
+        const order: string[] = [];
+        const generation = "pi-test-runtime-generation";
+        const publicationStarted =
+          yield* Deferred.make<ProviderAdapter.RuntimeBindingPublicationInput>();
+        const publicationAllowed = yield* Deferred.make<void>();
+        const lifecycle: ProviderAdapter.ProviderRuntimeLifecycle = {
+          reserve: (threadId) =>
+            Effect.sync(() => {
+              assert.equal(threadId, THREAD_ID);
+              order.push("reserve");
+              return generation;
+            }),
+          admit: (value) =>
+            Effect.sync(() => {
+              assert.deepEqual(value, { threadId: THREAD_ID, runtimeGeneration: generation });
+              order.push("admit");
+            }),
+          bind: () => Effect.die("Expected retained publication"),
+          prepareBindingPublication: (value) =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(publicationStarted, value);
+              const binding = ProviderAdapter.runtimeBinding(
+                value.providerThread,
+                value.runtimeGeneration,
+              );
+              assert.isDefined(binding);
+              return {
+                binding: binding!,
+                complete: Deferred.await(publicationAllowed).pipe(
+                  Effect.as({
+                    ...value.providerThread,
+                    runtimeIdentity: {
+                      runtimeGeneration: value.runtimeGeneration,
+                      requested: value.requested,
+                      observed: value.observed,
+                    },
+                  }),
+                ),
+              };
+            }),
+          abandon: () => Effect.void,
+          invalidate: () => Effect.void,
+        };
+        const adapter = yield* makeAdapter(
+          {
+            ...fake,
+            spawner: ChildProcessSpawner.make((command) =>
+              Effect.sync(() => void order.push("spawn")).pipe(
+                Effect.andThen(fake.spawner.spawn(command)),
+              ),
+            ),
+          },
+          "",
+          forkFake,
+        );
+        const selection = modelSelection("default");
+        const runtime = yield* adapter.openSession({
+          threadId: THREAD_ID,
+          providerSessionId: SESSION_ID,
+          modelSelection: selection,
+          runtimePolicy,
+          runtimeLifecycle: lifecycle,
+        });
+        assert.deepEqual(order, ["reserve", "admit", "spawn"]);
+        const now = yield* DateTime.now;
+        const destination: OrchestrationV2ProviderThread = {
+          id: ProviderThreadId.make("pi-claimed-provider-row"),
+          driver: PI_PROVIDER,
+          providerInstanceId: PI_INSTANCE_ID,
+          providerSessionId: SESSION_ID,
+          appThreadId: THREAD_ID,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "not_loaded",
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const registered = yield* (
+          operation === "ensure"
+            ? runtime.ensureThread({
+                threadId: THREAD_ID,
+                modelSelection: selection,
+                runtimePolicy,
+                existingProviderThread: destination,
+              })
+            : runtime.forkThread({
+                sourceProviderThread: {
+                  ...destination,
+                  id: ProviderThreadId.make("pi-fork-source-provider-row"),
+                  appThreadId: ThreadId.make("pi-fork-source-thread"),
+                  nativeThreadRef: {
+                    driver: PI_PROVIDER,
+                    nativeId: FAKE_SESSION_FILE,
+                    strength: "strong",
+                  },
+                },
+                targetThreadId: THREAD_ID,
+                targetProviderThread: destination,
+                modelSelection: selection,
+              })
+        ).pipe(Effect.forkScoped);
+        const publication = yield* Deferred.await(publicationStarted);
+        assert.equal(publication.providerThread.id, destination.id);
+        assert.equal(publication.providerThread.nativeThreadRef?.nativeId, expectedFile);
+        assert.equal(publication.runtimeGeneration, generation);
+        assert.deepEqual(
+          publication.requested,
+          ProviderAdapter.requestedRuntimeIdentity(selection, PI_PROVIDER),
+        );
+        assert.deepEqual(publication.observed, ProviderAdapter.unobservedRuntimeIdentity());
+        assert.equal(order.filter((event) => event === "reserve").length, 1);
+        assert.isFalse(fake.allRequests().some((request) => request.type === "prompt"));
+        const premature = yield* startTurn(runtime, publication.providerThread).pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(premature));
+
+        yield* Deferred.succeed(publicationAllowed, undefined);
+        const bound = yield* Fiber.join(registered);
+        assert.equal(bound.id, destination.id);
+        assert.equal(bound.runtimeIdentity?.runtimeGeneration, generation);
+        yield* startTurn(runtime, bound);
+        assert.equal((yield* fake.takeRequest("prompt")).message, "Hello pi");
+        const firstUpdate = yield* runtime.events.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "provider_thread.updated" || event.type === "provider_turn.updated",
+          ),
+          Stream.runHead,
+        );
+        assert.equal(
+          firstUpdate._tag === "Some" && firstUpdate.value.type,
+          "provider_turn.updated",
+        );
+      }).pipe(Effect.scoped, Effect.provide(layerTest)),
+  );
+
   it.effect("adopts the run's provider thread identity instead of minting a second row", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakePi;

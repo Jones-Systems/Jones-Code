@@ -15,27 +15,48 @@ import {
 import { serverEnvironment } from "../../state/server";
 
 const scans = Atom.family((key: string) => {
-  const [environmentId, instanceId, cwd] = JSON.parse(key) as [EnvironmentId, ProviderInstanceId, string];
+  const [environmentId, instanceId, cwd] = JSON.parse(key) as [
+    EnvironmentId,
+    ProviderInstanceId,
+    string,
+  ];
   const policy = createProviderWorkspaceRefresh();
   return Atom.make((get) => {
     const providers = serverEnvironment.providersValueAtom(environmentId);
     const update = () => {
-      const provider = get.registry.get(providers)?.find((entry) => entry.instanceId === instanceId);
-      if (!provider) { policy.update(null); return; }
+      const provider = get.registry
+        .get(providers)
+        ?.find((entry) => entry.instanceId === instanceId);
+      if (!provider) {
+        policy.update(null);
+        return;
+      }
       const snapshot = provider.workspaceSnapshots?.find((entry) => entry.cwd === cwd);
       policy.update({
         key,
         hasSnapshot: hasCompleteProviderWorkspaceSnapshot(provider, cwd),
-        isCurrent: Boolean(snapshot && !isProviderWorkspaceSnapshotPending(snapshot) &&
-          isProviderWorkspaceSnapshotCurrent(snapshot, Date.now())),
+        isCurrent: Boolean(
+          snapshot &&
+          !isProviderWorkspaceSnapshotPending(snapshot) &&
+          isProviderWorkspaceSnapshotCurrent(snapshot, Date.now()),
+        ),
         retryPending: Boolean(snapshot && isProviderWorkspaceSnapshotPending(snapshot)),
         onRetry: update,
         refresh: async () => {
-          const result = await runAtomCommand(get.registry, serverEnvironment.refreshProviders,
-            { environmentId, input: { instanceId, cwd } }, { reportFailure: false });
+          const result = await runAtomCommand(
+            get.registry,
+            serverEnvironment.refreshProviders,
+            { environmentId, input: { instanceId, cwd } },
+            { reportFailure: false },
+          );
           // Digest negotiation may intentionally omit the provider array in the reply.
-          return result._tag === "Success" && hasCompleteProviderWorkspaceSnapshot(
-            get.registry.get(providers)?.find((entry) => entry.instanceId === instanceId), cwd);
+          return (
+            result._tag === "Success" &&
+            hasCompleteProviderWorkspaceSnapshot(
+              get.registry.get(providers)?.find((entry) => entry.instanceId === instanceId),
+              cwd,
+            )
+          );
         },
       });
     };

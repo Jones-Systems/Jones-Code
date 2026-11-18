@@ -202,7 +202,7 @@ function FileDocument(props: { readonly src: string; readonly title: string }) {
       title={props.title}
       className="min-h-0 flex-1 border-0"
       style={{ backgroundColor: "Canvas" }}
-      sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+      sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"
     />
   );
 }

@@ -638,20 +638,36 @@ it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail)
         },
       ]),
     });
-    yield* outbox.enqueue(
-      threads.map((threadId, i) => ({
-        id: `shutdown-effect:${i}`,
-        commandId: CommandId.make(`shutdown-command:${i}`),
-        threadId,
-        request: { type: "provider-turn.start" as const, runId: RunId.make(`shutdown-run:${i}`) },
-      })),
-    );
+    const enqueueStarts = (phase: "original" | "group") =>
+      outbox.enqueue(
+        threads.map((threadId, i) => ({
+          id: `shutdown-effect:${phase}:${i}`,
+          commandId: CommandId.make(`shutdown-command:${phase}:${i}`),
+          threadId,
+          request: { type: "provider-turn.start" as const, runId: RunId.make(`shutdown-run:${i}`) },
+        })),
+      );
+    yield* enqueueStarts("original");
+    let firstFence = true;
     let eventlessNotifications = 0;
     let armed = fail;
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(ServerSettings.layerTest()),
       Effect.provideService(EffectOutbox.EffectOutboxV2, {
         ...outbox,
+        reconcileAfterProcessLoss: outbox.reconcileAfterProcessLoss.pipe(
+          Effect.tap((result) =>
+            Effect.gen(function* () {
+              if (!firstFence) return;
+              firstFence = false;
+              assert.equal(result.cancelled, threads.length);
+              // Exercise the group's own cancellation, rollback, and notification boundary with
+              // work enqueued after the process-loss fence has committed its cancellations.
+              yield* enqueueStarts("group");
+              commits = 0;
+            }),
+          ),
+        ),
         signalCancellations: (ids) =>
           Effect.gen(function* () {
             assert.isTrue(Option.isNone(yield* Effect.serviceOption(sql.transactionService)));
@@ -698,7 +714,7 @@ it.effect.each([false, true])("groups shutdown commits with rollback=%s", (fail)
     );
     assert.equal(eventlessNotifications, fail ? 1 : 2);
     for (const [i] of threads.entries()) {
-      const effect = Option.getOrThrow(yield* outbox.get(`shutdown-effect:${i}`));
+      const effect = Option.getOrThrow(yield* outbox.get(`shutdown-effect:group:${i}`));
       assert.equal(effect.status, !fail || i < 32 ? "cancelled" : "pending");
     }
     assert.equal(

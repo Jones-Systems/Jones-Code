@@ -1027,8 +1027,7 @@ function ThreadDetailBody(
   } | null>(null);
   const activeUserInputRequestId = props.activePendingUserInput?.requestId ?? null;
   const questionInFlow = Platform.OS === "android" && activeUserInputRequestId !== null;
-  const composerSlotHidden =
-    props.creationState?.kind === "failed";
+  const composerSlotHidden = props.creationState?.kind === "failed";
   const pendingMessageEditBlocked =
     queuedRunEditBlockedReason({ openQuestionCount: activeUserInputRequestId === null ? 0 : 1 }) !==
     null;

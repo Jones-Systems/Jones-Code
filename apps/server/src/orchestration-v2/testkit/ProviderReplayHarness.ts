@@ -16,15 +16,26 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
   ManagedPolicyDocument,
+  ModelSelection,
+  OrchestrationV2ProviderThread,
   ProviderDriverKind,
   ProviderReplayTranscript,
+  ThreadId,
 } from "@t3tools/contracts";
+import { ProviderRuntimeBinding } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import type * as SqlClient from "effect/sql/SqlClient";
 import type { MigrationError } from "effect/sql/Migrator";
 import type { SqlError } from "effect/sql/SqlError";
@@ -55,6 +66,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Orchestrator from "../Orchestrator.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
 import * as ProjectStore from "../ProjectStore.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import * as ProviderAuthService from "../../provider/ProviderAuthService.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -89,6 +101,213 @@ import {
   makeProviderReplayGate,
   type ProviderReplayGate,
 } from "@t3tools/provider-testing/replayGate";
+
+interface ReplayWriter {
+  readonly binding: typeof ProviderRuntimeBinding.Type;
+  readonly pending: Set<Fiber.Fiber<void, ProviderAdapter.ProviderAdapterV2Error>>;
+  retirement?: Deferred.Deferred<ProviderAdapter.RuntimeRetirementReceipt>;
+}
+
+const sameReplayBinding = Schema.toEquivalence(ProviderRuntimeBinding);
+
+/** Let an in-memory adapter load synthetic native threads through the managed binding boundary. */
+export const withReplayThreadPublication = Effect.fn(
+  "ProviderReplayHarness.withReplayThreadPublication",
+)(function* (
+  input: ProviderAdapter.ProviderAdapterV2OpenSessionInput,
+  runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+) {
+  const lifecycle = input.runtimeLifecycle;
+  if (lifecycle === undefined) {
+    return yield* Effect.die("The replay adapter requires a managed runtime lifecycle.");
+  }
+  const runtimeGeneration = yield* lifecycle.reserve(input.threadId);
+  yield* Effect.addFinalizer(() => lifecycle.abandon(runtimeGeneration).pipe(Effect.orDie));
+  const ownsRetirement = runtime.retireThreadForTransfer === undefined;
+  const writers = new Map<ReplayWriter["binding"]["providerThreadId"], ReplayWriter>();
+  const producerStopped = yield* Deferred.make<void>();
+  let producerStopping = false;
+  const bindingError = (detail: string) =>
+    new ProviderAdapter.ProviderRuntimeBindingError({ driver: runtime.driver, detail });
+  const getWriter = (providerThread: OrchestrationV2ProviderThread) => {
+    const writer = writers.get(providerThread.id);
+    const binding = ProviderAdapter.runtimeBinding(providerThread, runtimeGeneration);
+    return writer !== undefined &&
+      binding !== undefined &&
+      providerThread.runtimeIdentity?.runtimeGeneration === runtimeGeneration &&
+      sameReplayBinding(writer.binding, binding)
+      ? writer
+      : undefined;
+  };
+  const admit = (threadId: ThreadId) =>
+    Effect.suspend(() =>
+      producerStopping
+        ? bindingError("The synthetic producer has stopped.")
+        : lifecycle.admit({ runtimeGeneration, threadId }),
+    );
+  const publish = (providerThread: OrchestrationV2ProviderThread, selection: ModelSelection) =>
+    lifecycle
+      .bind({
+        providerThread,
+        runtimeGeneration,
+        requested: ProviderAdapter.requestedRuntimeIdentity(selection, runtime.driver),
+        observed: ProviderAdapter.unobservedRuntimeIdentity(),
+      })
+      .pipe(
+        Effect.tap((thread) =>
+          Effect.sync(() => {
+            if (!ownsRetirement) return;
+            const binding = ProviderAdapter.runtimeBinding(thread, runtimeGeneration);
+            if (binding !== undefined && getWriter(thread) === undefined) {
+              writers.set(thread.id, {
+                binding,
+                pending: new Set(),
+              });
+            }
+          }),
+        ),
+      );
+  const withWriter = (
+    thread: OrchestrationV2ProviderThread,
+    action: Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>,
+  ) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const writer = getWriter(thread);
+        if (producerStopping || writer === undefined || writer.retirement !== undefined)
+          return yield* bindingError("The synthetic writer is no longer attached.");
+        const ready = Deferred.makeUnsafe<void>();
+        const operation = yield* Effect.forkChild(
+          Deferred.await(ready).pipe(Effect.andThen(action), Effect.interruptible),
+        );
+        writer.pending.add(operation);
+        return yield* Effect.gen(function* () {
+          if (writer.retirement === undefined) yield* Deferred.succeed(ready, undefined);
+          else yield* Fiber.interrupt(operation);
+          const result = yield* restore(Fiber.await(operation));
+          if (
+            writer.retirement !== undefined &&
+            Exit.isFailure(result) &&
+            Cause.hasInterruptsOnly(result.cause)
+          )
+            return;
+          return yield* result;
+        }).pipe(
+          Effect.ensuring(
+            Fiber.interrupt(operation).pipe(
+              Effect.andThen(Effect.sync(() => writer.pending.delete(operation))),
+            ),
+          ),
+        );
+      }),
+    );
+  const retireThreadForTransfer: NonNullable<
+    ProviderAdapter.ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]
+  > = ({ providerThread, allowProducerRetirement }) =>
+    Effect.gen(function* () {
+      const writer = getWriter(providerThread);
+      if (writer === undefined)
+        return yield* bindingError("The captured synthetic writer binding changed.");
+      if (writer.retirement !== undefined) return yield* Deferred.await(writer.retirement);
+      const receipt = Deferred.makeUnsafe<ProviderAdapter.RuntimeRetirementReceipt>();
+      writer.retirement = receipt;
+      const exits =
+        allowProducerRetirement &&
+        !runtime.providerSession.capabilities.sessions.supportsMultipleProviderThreadsPerSession &&
+        [...writers.values()].every((candidate) => candidate.retirement !== undefined);
+      if (exits) producerStopping = true;
+      yield* Fiber.interruptAll([...writer.pending]);
+      if (exits) {
+        yield* Effect.forEach(
+          [...writers.values()].filter((candidate) => candidate !== writer),
+          (candidate) => Deferred.await(candidate.retirement!),
+          { discard: true },
+        );
+        yield* Deferred.succeed(producerStopped, undefined);
+      }
+      const result = {
+        binding: writer.binding,
+        evidence: exits ? "producer_exited" : "thread_closed",
+      } satisfies ProviderAdapter.RuntimeRetirementReceipt;
+      yield* Deferred.succeed(receipt, result);
+      return result;
+    }).pipe(Effect.uninterruptible);
+  const stoppedEvent = Stream.unwrap(
+    Effect.gen(function* () {
+      if (!(yield* Deferred.isDone(producerStopped))) return Stream.empty;
+      const updatedAt = yield* DateTime.now;
+      return Stream.make({
+        type: "provider_session.updated",
+        driver: runtime.driver,
+        providerSession: { ...runtime.providerSession, status: "stopped", updatedAt },
+      } satisfies ProviderAdapter.ProviderAdapterV2Event);
+    }),
+  );
+  return {
+    ...runtime,
+    ...(ownsRetirement
+      ? {
+          // A stopped marker lets the manager drain an exclusive synthetic producer gracefully.
+          events: runtime.events.pipe(
+            Stream.interruptWhen(Deferred.await(producerStopped)),
+            Stream.concat(stoppedEvent),
+          ),
+          retireThreadForTransfer,
+          startTurn: (turn: ProviderAdapter.ProviderAdapterV2TurnInput) =>
+            withWriter(turn.providerThread, runtime.startTurn(turn)),
+          ...(runtime.resumeTurn === undefined
+            ? {}
+            : {
+                resumeTurn: (turn: ProviderAdapter.ProviderAdapterV2ResumeTurnInput) =>
+                  withWriter(turn.providerThread, runtime.resumeTurn!(turn)),
+              }),
+          ...(runtime.compactThread === undefined
+            ? {}
+            : {
+                compactThread: (turn: ProviderAdapter.ProviderAdapterV2TurnInput) =>
+                  withWriter(turn.providerThread, runtime.compactThread!(turn)),
+              }),
+        }
+      : {}),
+    ensureThread: (load) =>
+      admit(load.threadId).pipe(
+        Effect.andThen(runtime.ensureThread(load)),
+        Effect.flatMap((thread) =>
+          publish(
+            load.existingProviderThread === undefined
+              ? thread
+              : {
+                  ...thread,
+                  id: load.existingProviderThread.id,
+                  ownerNodeId: load.existingProviderThread.ownerNodeId,
+                  createdAt: load.existingProviderThread.createdAt,
+                },
+            load.modelSelection,
+          ),
+        ),
+      ),
+    resumeThread: (load) => {
+      const threadId = load.threadId ?? load.providerThread.appThreadId;
+      if (threadId === null) {
+        return Effect.fail(
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: runtime.driver,
+            detail: "The replay adapter requires an owning thread for a managed resume.",
+          }),
+        );
+      }
+      return admit(threadId).pipe(
+        Effect.andThen(runtime.resumeThread(load)),
+        Effect.flatMap((thread) =>
+          publish(
+            { ...thread, appThreadId: threadId, providerSessionId: runtime.providerSessionId },
+            load.modelSelection ?? input.modelSelection,
+          ),
+        ),
+      );
+    },
+  } satisfies ProviderAdapter.ProviderAdapterV2SessionRuntime;
+});
 
 /** A supplied database may be the real persistence open graph, including managed-open admission. */
 type ReplayDatabaseError = Layer.Error<ReturnType<typeof SqlitePersistence.layerFromPath>>;

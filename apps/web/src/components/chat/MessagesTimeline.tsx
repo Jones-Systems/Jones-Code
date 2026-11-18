@@ -736,6 +736,11 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const pendingApprovalRequestIds = new Set(
     pendingApprovals.filter(isVisiblePendingApproval).map((approval) => approval.requestId),
   );
+  const activityLabel = threadActivityLabel(
+    latestRun?.status,
+    runlessWorkActive,
+    latestRun?.providerActivityStarted,
+  );
   const rawRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
     timelineEntries,
     pendingApprovalRequestIds,
@@ -745,6 +750,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     expandedAttemptIds: visibleExpandedAttemptIds,
     expandedWorkGroupIds,
     isWorking,
+    waitingForProviderActivity: activityLabel !== "Thinking",
     runlessWorkActive,
     activeTurnStartedAt,
     turnDiffSummaries,
@@ -1185,11 +1191,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       ? worktreeSetup
       : null;
   const activityState: TimelineRowActivityState = {
-    activityLabel: threadActivityLabel(
-      latestRun?.status,
-      runlessWorkActive,
-      latestRun?.providerActivityStarted,
-    ),
+    activityLabel,
     isWorking,
     isCompacting: compactionAwaitingRow,
     isRevertingCheckpoint,

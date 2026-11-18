@@ -143,6 +143,8 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 
 export const ACP_PROTOCOL = "acp.ndjson-jsonrpc" as const;
 
+const isAcpError = Schema.is(EffectAcpErrors.AcpError);
+
 // Grok summaries can trail hydrated tools by over two seconds; shorter waits split the wake.
 const ACP_DEFERRED_FINALIZE_DEBOUNCE: Duration.Input = "3000 millis";
 const ACP_BUSY_PROMPT_RETRY_INTERVAL: Duration.Input = "1 second";
@@ -2143,10 +2145,26 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           providerSessionId: input.providerSessionId,
         });
         const callbackProducers = new Map<number, ProviderEventOrigin.ProviderEventProducer>();
+        const runtimeLifecycle = input.runtimeLifecycle;
+        const reservations = new Map<number, { generation: string; exited: boolean }>();
+        const pendingPublications = new Map<
+          ThreadId,
+          {
+            readonly input: ProviderAdapter.RuntimeBindingPublicationInput;
+            readonly complete: Effect.Effect<
+              OrchestrationV2ProviderThread,
+              ProviderAdapter.ProviderAdapterV2Error
+            >;
+          }
+        >();
+        const bindingFailure = (detail: string) =>
+          new ProviderAdapter.ProviderRuntimeBindingError({ driver, detail });
         const producerAtGeneration = (generation: number) => {
           let producer = callbackProducers.get(generation);
           if (producer === undefined) {
+            const reserved = reservations.get(generation);
             producer = ProviderEventOrigin.makeProviderEventProducer({
+              ...(reserved === undefined ? {} : { runtimeGeneration: reserved.generation }),
               driver,
               instanceId: options.instanceId,
               providerSessionId: input.providerSessionId,
@@ -2177,6 +2195,60 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         );
         const runtimeCallbackPermit = yield* Semaphore.make(1);
         const runtimeTransitionPermit = yield* Semaphore.make(1);
+        const reserveProducer = Effect.fnUntraced(function* (
+          generation: number,
+          threadId: ThreadId | null,
+        ) {
+          if (runtimeLifecycle === undefined) return;
+          if (threadId === null)
+            return yield* bindingFailure("ACP producer requires its app thread.");
+          const reserved = yield* runtimeLifecycle.reserve(threadId);
+          reservations.set(generation, { generation: reserved, exited: false });
+        });
+        const admitProducer = Effect.fnUntraced(function* (
+          generation: number,
+          threadId: ThreadId | null,
+        ) {
+          if (runtimeLifecycle === undefined) return;
+          const reserved = reservations.get(generation);
+          if (reserved === undefined || reserved.exited || threadId === null)
+            return yield* bindingFailure("The captured ACP producer is unavailable.");
+          yield* runtimeLifecycle.admit({ threadId, runtimeGeneration: reserved.generation });
+        });
+        const observeProducerExit = (
+          generation: number,
+          target: AcpSessionRuntime.AcpSessionRuntime["Service"],
+        ) => {
+          const reserved = reservations.get(generation);
+          const confirmed = target.processExitConfirmed;
+          if (runtimeLifecycle === undefined || reserved === undefined || confirmed === undefined)
+            return Effect.void;
+          return confirmed.pipe(
+            Effect.flatMap((exited) => {
+              if (!exited) return Effect.void;
+              reserved.exited = true;
+              return runtimeTransitionPermit.withPermit(
+                runtimeLifecycle.abandon(reserved.generation).pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      reservations.delete(generation);
+                      for (const [threadId, pending] of pendingPublications) {
+                        if (pending.input.runtimeGeneration === reserved.generation)
+                          pendingPublications.delete(threadId);
+                      }
+                    }),
+                  ),
+                ),
+              );
+            }),
+            Effect.catchCause((cause) =>
+              Effect.logError("Failed to retire the captured ACP binding", { cause }),
+            ),
+            Effect.forkDetach,
+            Effect.asVoid,
+          );
+        };
+
         const nativeResponseAcknowledgements = yield* Ref.make(
           new Map<
             string,
@@ -7329,15 +7401,21 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           threadId: ThreadId | null,
           resumeSessionId?: string,
         ) {
+          const runtimeScopeFirstOpen = runtimeScope === undefined;
           if (runtimeScope !== undefined) {
             yield* Scope.close(runtimeScope, Exit.void);
           }
           runtimeScope = yield* Scope.make();
           const mcpContext = yield* readMcpContext(threadId);
           runtimeMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, runtimeScope);
-          const runtimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
+          const runtimeGeneration =
+            runtimeLifecycle === undefined || runtimeScopeFirstOpen
+              ? yield* Ref.get(runtimeCallbackGeneration)
+              : yield* advanceRuntimeCallbackGeneration;
+          yield* reserveProducer(runtimeGeneration, threadId);
           producerAtGeneration(runtimeGeneration);
           openAgentRequests = new Set();
+          yield* admitProducer(runtimeGeneration, threadId);
           runtime = yield* flavor
             .makeRuntime(
               makeRuntimeInput(runtimeGeneration, openAgentRequests, mcpContext, resumeSessionId),
@@ -7349,6 +7427,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               Effect.provideService(AgentScope, agentScope),
               Effect.provideService(AgentScopeThreadId, threadId ?? undefined),
             );
+          yield* observeProducerExit(runtimeGeneration, runtime);
           commitCallbackProducer(runtimeGeneration);
         });
 
@@ -7360,6 +7439,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const startup = Effect.gen(function* () {
             yield* spawnAcpRuntime(threadId, resumeSessionId);
             yield* wireAcpRuntimeHandlers(runtime, yield* Ref.get(runtimeCallbackGeneration));
+            yield* admitProducer(yield* Ref.get(runtimeCallbackGeneration), threadId);
             return yield* runtime.start();
           });
           return yield* (flavor.withRuntimeStartup?.(startup) ?? startup).pipe(
@@ -7417,6 +7497,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const startup = Effect.gen(function* () {
             const mcpContext = yield* readMcpContext(threadId);
             replacementMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, replacementScope);
+            yield* reserveProducer(replacementGeneration, threadId);
+            yield* admitProducer(replacementGeneration, threadId);
             const replacementRuntime = yield* flavor
               .makeRuntime(
                 makeRuntimeInput(
@@ -7434,10 +7516,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 Effect.provideService(AgentScope, agentScope),
                 Effect.provideService(AgentScopeThreadId, threadId ?? undefined),
               );
+            yield* observeProducerExit(replacementGeneration, replacementRuntime);
             yield* replacementRuntime.handleSessionUpdate((notification) =>
               Effect.suspend(() => handleCandidateSessionUpdate(notification)),
             );
             yield* wireAcpRuntimeMcpHandlers(replacementRuntime, replacementMcpBridge);
+            yield* admitProducer(replacementGeneration, threadId);
             const started = yield* replacementRuntime.start();
             return { replacementRuntime, started };
           });
@@ -7600,6 +7684,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 "method" in initialStart.failure ? initialStart.failure.method : undefined;
               if (
                 input.initialNativeThreadId === undefined ||
+                !isAcpError(initialStart.failure) ||
                 (failedMethod !== "session/load" && failedMethod !== "session/resume")
               ) {
                 return yield* initialStart.failure;
@@ -7648,6 +7733,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           prepareTerminalEnvironment(mcpContext, sessionId);
           yield* Ref.set(loadingSessionId, sessionId);
           const activated = yield* Effect.gen(function* () {
+            yield* admitProducer(yield* Ref.get(runtimeCallbackGeneration), threadId);
             return canLoadSession
               ? yield* runtime.loadSession(sessionId, activationOptions)
               : canResumeSession
@@ -8576,6 +8662,115 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           return true;
         });
 
+        const validateTarget = (thread: OrchestrationV2ProviderThread, threadId: ThreadId) =>
+          thread.appThreadId === threadId &&
+          thread.driver === driver &&
+          thread.providerInstanceId === options.instanceId &&
+          (thread.providerSessionId === null ||
+            thread.providerSessionId === input.providerSessionId)
+            ? Effect.void
+            : bindingFailure("The stored ACP provider row belongs to a different session.");
+        const publishThread = Effect.fn("AcpAdapterV2.publishThread")(function* (
+          thread: OrchestrationV2ProviderThread,
+          selection: ModelSelection,
+        ) {
+          if (runtimeLifecycle === undefined) return thread;
+          const callbackGeneration = yield* Ref.get(runtimeCallbackGeneration);
+          const reserved = reservations.get(callbackGeneration);
+          const producer = callbackProducers.get(callbackGeneration);
+          const threadId = thread.appThreadId;
+          const sessionId = thread.nativeThreadRef?.nativeId;
+          if (
+            reserved === undefined ||
+            reserved.exited ||
+            producer === undefined ||
+            !producer.accepting ||
+            threadId === null ||
+            sessionId == null ||
+            thread.nativeThreadRef?.driver !== driver ||
+            thread.providerInstanceId !== options.instanceId ||
+            thread.providerSessionId !== input.providerSessionId ||
+            thread.driver !== driver ||
+            sessionId !== (yield* Ref.get(activeSessionId))
+          )
+            return yield* bindingFailure(
+              "The observed ACP session does not match its producer and thread.",
+            );
+          const requested = ProviderAdapter.requestedRuntimeIdentity(selection, driver);
+          const retained = pendingPublications.get(threadId);
+          if (retained !== undefined) {
+            if (
+              retained.input.providerThread.id !== thread.id ||
+              retained.input.providerThread.nativeThreadRef?.nativeId !== sessionId ||
+              retained.input.runtimeGeneration !== reserved.generation
+            )
+              return yield* bindingFailure("An earlier ACP binding still awaits publication.");
+            return yield* retained.complete;
+          }
+          const publicationInput: ProviderAdapter.RuntimeBindingPublicationInput = {
+            providerThread: thread,
+            runtimeGeneration: reserved.generation,
+            requested,
+            observed: ProviderAdapter.unobservedRuntimeIdentity(),
+            producerOrigin: producer.origin,
+          };
+          let handle: ProviderAdapter.CapturedRuntimeBindingPublication | undefined;
+          let legacyAttempted = false;
+          const stillCurrent = Effect.gen(function* () {
+            if (
+              reserved.exited ||
+              !producer.accepting ||
+              callbackGeneration !== (yield* Ref.get(runtimeCallbackGeneration)) ||
+              sessionId !== (yield* Ref.get(activeSessionId))
+            )
+              return yield* bindingFailure("The original ACP producer changed before publication.");
+          });
+          const complete = Effect.gen(function* () {
+            yield* stillCurrent;
+            let published: OrchestrationV2ProviderThread;
+            if (runtimeLifecycle.prepareBindingPublication !== undefined) {
+              handle ??= yield* runtimeLifecycle.prepareBindingPublication(publicationInput);
+              if (
+                handle.binding.threadId !== threadId ||
+                handle.binding.providerThreadId !== thread.id ||
+                handle.binding.nativeThreadId !== sessionId ||
+                handle.binding.runtimeGeneration !== reserved.generation ||
+                handle.binding.providerSessionId !== input.providerSessionId ||
+                handle.binding.providerInstanceId !== options.instanceId ||
+                handle.binding.driver !== driver
+              )
+                return yield* bindingFailure("Prepared ACP publication names a different binding.");
+              published = yield* handle.complete;
+            } else {
+              if (legacyAttempted)
+                return yield* bindingFailure("The original ACP publication is unresolved.");
+              legacyAttempted = true;
+              published = yield* runtimeLifecycle.bind(publicationInput);
+            }
+            yield* stillCurrent;
+            if (
+              published.id !== thread.id ||
+              published.appThreadId !== threadId ||
+              published.providerInstanceId !== options.instanceId ||
+              published.driver !== driver ||
+              published.providerSessionId !== input.providerSessionId ||
+              published.nativeThreadRef?.driver !== driver ||
+              published.nativeThreadRef.nativeId !== sessionId ||
+              published.runtimeIdentity?.runtimeGeneration !== reserved.generation
+            )
+              return yield* bindingFailure(
+                "Published ACP thread does not match its captured runtime binding.",
+              );
+            yield* Ref.update(providerThreadByNativeSessionId, (current) =>
+              new Map(current).set(sessionId, published),
+            );
+            pendingPublications.delete(threadId);
+            return published;
+          });
+          pendingPublications.set(threadId, { input: publicationInput, complete });
+          return yield* complete;
+        });
+
         const startTurnUnlocked = Effect.fn("AcpAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
             yield* awaitRuntimeTeardown();
@@ -8627,6 +8822,24 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 yield* Ref.set(activeSelection, turnInput.modelSelection);
                 yield* Ref.set(activeInteractionMode, turnInput.runtimePolicy.interactionMode);
               }
+            }
+            if (runtimeLifecycle !== undefined) {
+              const current = reservations.get(yield* Ref.get(runtimeCallbackGeneration));
+              if (current === undefined || current.exited)
+                return yield* bindingFailure("The ACP turn lost its captured native producer.");
+              if (
+                turnInput.providerThread.runtimeIdentity?.runtimeGeneration !==
+                  current.generation ||
+                needsSessionActivation
+              )
+                turnInput = {
+                  ...turnInput,
+                  providerThread: yield* publishThread(
+                    turnInput.providerThread,
+                    turnInput.modelSelection,
+                  ),
+                };
+              yield* turnInput.revalidateStartAdmission ?? Effect.void;
             }
             // Checked after activation: a loaded session advertises its own commands.
             const compactionSetup = yield* Ref.get(activeSessionSetup);
@@ -9176,6 +9389,26 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           providerSession,
           canResumeAfterRestart: canLoadSession || canResumeSession,
           eventOriginMode: "captured",
+          ...(runtimeLifecycle === undefined
+            ? {}
+            : {
+                reconcileBindingPublication: (value) =>
+                  runtimeTransitionPermit.withPermit(
+                    Effect.gen(function* () {
+                      const retained = pendingPublications.get(value.threadId);
+                      if (
+                        retained === undefined ||
+                        retained.input.providerThread.id !== value.providerThreadId ||
+                        (value.nativeThreadId !== null &&
+                          retained.input.providerThread.nativeThreadRef?.nativeId !==
+                            value.nativeThreadId)
+                      )
+                        return null;
+                      yield* value.revalidate;
+                      return yield* retained.complete;
+                    }),
+                  ),
+              }),
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ...(flavor.getModelContextWindow === undefined
             ? {}
@@ -9230,6 +9463,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {
               return yield* runtimeTransitionPermit.withPermit(
                 Effect.gen(function* () {
+                  const target = threadInput.existingProviderThread;
+                  if (target !== undefined && runtimeLifecycle !== undefined)
+                    yield* validateTarget(target, threadInput.threadId);
                   if (threadInput.forceNewNativeThread) {
                     const currentTurn = yield* Ref.get(activeTurn);
                     const pendingWork = yield* (
@@ -9273,10 +9509,35 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     ...(itemIdentityVersion === undefined ? {} : { itemIdentityVersion }),
                     now,
                   });
-                  const providerThread =
-                    threadInput.forceNewNativeThread && threadInput.existingProviderThread
-                      ? { ...created, id: threadInput.existingProviderThread.id }
-                      : created;
+                  if (
+                    runtimeLifecycle !== undefined &&
+                    !threadInput.forceNewNativeThread &&
+                    target?.nativeThreadRef?.nativeId != null &&
+                    target.nativeThreadRef.nativeId !== sessionId
+                  )
+                    return yield* bindingFailure(
+                      "The stored ACP provider row names a different conversation.",
+                    );
+                  let providerThread = created;
+                  if (target !== undefined && runtimeLifecycle !== undefined) {
+                    providerThread = {
+                      ...target,
+                      providerSessionId: input.providerSessionId,
+                      nativeThreadRef: created.nativeThreadRef,
+                      nativeConversationHeadRef: threadInput.forceNewNativeThread
+                        ? null
+                        : target.nativeConversationHeadRef,
+                      nativeMetadata:
+                        created.nativeMetadata === null
+                          ? target.nativeMetadata
+                          : { ...target.nativeMetadata, ...created.nativeMetadata },
+                      status: created.status,
+                      updatedAt: now,
+                    };
+                  } else if (threadInput.forceNewNativeThread && target !== undefined) {
+                    providerThread = { ...created, id: target.id };
+                  }
+                  providerThread = yield* publishThread(providerThread, threadInput.modelSelection);
                   yield* Ref.update(providerThreadByNativeSessionId, (current) =>
                     new Map(current).set(sessionId, providerThread),
                   );
@@ -9330,12 +9591,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     yield* Ref.set(activeInteractionMode, nextRuntimePolicy.interactionMode);
                   }
                   const now = yield* DateTime.now;
-                  return {
-                    ...threadInput.providerThread,
-                    providerSessionId: input.providerSessionId,
-                    status: "idle" as const,
-                    updatedAt: now,
-                  };
+                  return yield* publishThread(
+                    {
+                      ...threadInput.providerThread,
+                      providerSessionId: input.providerSessionId,
+                      status: "idle",
+                      updatedAt: now,
+                    },
+                    threadInput.modelSelection ?? input.modelSelection,
+                  );
                 }),
               );
             },
@@ -9835,6 +10099,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     );
                     prepareTerminalEnvironment(mcpContext, sessionId);
                     yield* Ref.set(loadingSessionId, sessionId);
+                    yield* admitProducer(
+                      yield* Ref.get(runtimeCallbackGeneration),
+                      snapshotInput.providerThread.appThreadId,
+                    );
                     const activated = yield* runtime
                       .loadSession(sessionId, acpMcpActivation(mcpContext))
                       .pipe(Effect.onError(() => Ref.set(loadingSessionId, null)));
@@ -9971,8 +10239,20 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     driver,
                     forkInput.sourceProviderThread,
                   );
+                  const target = forkInput.targetProviderThread;
+                  if (target !== undefined) {
+                    yield* validateTarget(target, forkInput.targetThreadId);
+                    if (target.nativeThreadRef?.nativeId != null)
+                      return yield* bindingFailure(
+                        "The ACP fork destination already has a native conversation.",
+                      );
+                  }
                   const mcpContext = yield* readMcpContext(forkInput.targetThreadId);
                   prepareTerminalEnvironment(mcpContext);
+                  yield* admitProducer(
+                    yield* Ref.get(runtimeCallbackGeneration),
+                    forkInput.targetThreadId,
+                  );
                   const forked = yield* runtime.forkSession(
                     sourceSessionId,
                     acpMcpActivation(mcpContext),
@@ -9988,7 +10268,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   yield* Ref.set(activeInteractionMode, null);
                   itemIdentityVersion = 2;
                   const now = yield* DateTime.now;
-                  const providerThread = makeProviderThread({
+                  const created = makeProviderThread({
                     driver,
                     providerInstanceId: options.instanceId,
                     idAllocator,
@@ -10007,6 +10287,21 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     },
                     now,
                   });
+                  const providerThread = yield* publishThread(
+                    target === undefined
+                      ? created
+                      : {
+                          ...target,
+                          providerSessionId: input.providerSessionId,
+                          nativeThreadRef: created.nativeThreadRef,
+                          nativeConversationHeadRef: null,
+                          nativeMetadata: { ...target.nativeMetadata, ...created.nativeMetadata },
+                          forkedFrom: created.forkedFrom,
+                          status: created.status,
+                          updatedAt: now,
+                        },
+                    forkInput.modelSelection ?? input.modelSelection,
+                  );
                   yield* Ref.update(providerThreadByNativeSessionId, (current) =>
                     new Map(current).set(forked.sessionId, providerThread),
                   );

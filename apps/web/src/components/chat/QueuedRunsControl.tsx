@@ -131,7 +131,11 @@ export function QueuedRunsControl({
     reportFailure: false,
   });
   const importedEligible = importedHistoryContinuationEligible(projection);
-  const liveQuestion = projection ? pendingQuestionBlocksSteering(derivePendingUserInputs(derivePendingThreadRequests(projection).userInputs)) : false;
+  const liveQuestion = projection
+    ? pendingQuestionBlocksSteering(
+        derivePendingUserInputs(derivePendingThreadRequests(projection).userInputs),
+      )
+    : false;
   const [dragState, setDragState] = useState<{
     readonly runId: RunId;
     readonly insertIndex: number | null;

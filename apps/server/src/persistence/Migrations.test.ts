@@ -232,17 +232,35 @@ it.effect("rolls back late migration 85 effects while retaining 82–84", () =>
     yield* sql`CREATE TRIGGER orchestration_v2_turn_item_counts_delete
       AFTER DELETE ON orchestration_v2_projection_turn_items BEGIN SELECT 1; END`;
     const logs: unknown[] = [];
-    const logger = Logger.make<unknown, void>(({ message }) => { logs.push(...(Array.isArray(message) ? message : [message])); });
-    assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations().pipe(Effect.provide(Logger.layer([logger]))))));
+    const logger = Logger.make<unknown, void>(({ message }) => {
+      logs.push(...(Array.isArray(message) ? message : [message]));
+    });
+    assert.isTrue(
+      Exit.isFailure(
+        yield* Effect.exit(runMigrations().pipe(Effect.provide(Logger.layer([logger])))),
+      ),
+    );
     assert.notInclude(logs, DATABASE_MIGRATIONS_FINISHED_MESSAGE);
-    assert.deepStrictEqual(yield* history, migrationManifest.filter(([id]) => id <= 84));
-    assert.deepStrictEqual(yield* sql`SELECT name FROM sqlite_master WHERE name IN (
+    assert.deepStrictEqual(
+      yield* history,
+      migrationManifest.filter(([id]) => id <= 84),
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM sqlite_master WHERE name IN (
       'orchestration_v2_projection_turn_item_counts', 'orchestration_v2_turn_item_counts_insert',
-      'orchestration_v2_turn_item_counts_update')`, []);
-    assert.deepStrictEqual(yield* sql`SELECT turn_item_id FROM orchestration_v2_projection_turn_items`, [{ turn_item_id: "s1-backfill" }]);
+      'orchestration_v2_turn_item_counts_update')`,
+      [],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT turn_item_id FROM orchestration_v2_projection_turn_items`,
+      [{ turn_item_id: "s1-backfill" }],
+    );
     yield* sql`DROP TRIGGER orchestration_v2_turn_item_counts_delete`;
     yield* runMigrations();
-    assert.deepStrictEqual(yield* sql`SELECT item_count FROM orchestration_v2_projection_turn_item_counts`, [{ item_count: 1 }]);
+    assert.deepStrictEqual(
+      yield* sql`SELECT item_count FROM orchestration_v2_projection_turn_item_counts`,
+      [{ item_count: 1 }],
+    );
     assert.deepStrictEqual(yield* history, migrationManifest);
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
@@ -255,7 +273,9 @@ it.effect("bounded replay at this build's head leaves an unknown Jones ledger un
     yield* sql`INSERT INTO jones_sql_migrations VALUES (999, 'UnknownJones')`;
     yield* sql`PRAGMA query_only = ON`;
     assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 96 }), []);
-    assert.deepStrictEqual(yield* sql`SELECT * FROM jones_sql_migrations`, [{ migration_id: 999, name: "UnknownJones" }]);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM jones_sql_migrations`, [
+      { migration_id: 999, name: "UnknownJones" },
+    ]);
     assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );

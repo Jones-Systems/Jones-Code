@@ -11,6 +11,7 @@ import * as DateTime from "effect/DateTime";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
+import "~/index.css";
 import { AppRoot } from "~/AppRoot";
 // The route loads ChatView lazily, and its first transform (React Compiler over ~4k lines)
 // takes 6-11s; importing it here keeps that out of the test's timeout.
@@ -78,6 +79,7 @@ function coldClaudeThread() {
 }
 
 it("sends a Codex follow-up on a cold Claude thread without compacting first", async () => {
+  await page.viewport(1400, 900);
   const thread = coldClaudeThread();
   using _environment = installFakeEnvironment([thread], {
     acceptCommands: true,

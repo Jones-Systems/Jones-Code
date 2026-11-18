@@ -819,6 +819,8 @@ export interface ProviderAdapterV2ForkThreadInput {
   readonly sourceProviderTurns?: ReadonlyArray<OrchestrationV2ProviderTurn>;
   readonly providerTurnId?: ProviderTurnId;
   readonly targetThreadId: ThreadId;
+  /** The durable destination when a provider start owns the fork. */
+  readonly targetProviderThread?: OrchestrationV2ProviderThread;
   readonly ownerNodeId?: NodeId;
   readonly modelSelection?: ModelSelection;
   readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;

@@ -21,19 +21,22 @@ export interface AttemptKey {
   readonly attemptId: RunAttemptId;
 }
 /** Scoped ledger fact only; ordinary starts have no evidence in migration 154. */
-export type PrefixEvidence = { readonly state: "unknown" } | {
-  readonly state: "eligible" | "crossed";
-  readonly scope: AttemptScope;
-  readonly commandId: CommandId;
-  readonly createdSequence: number;
-} | {
-  readonly state: "refused";
-  readonly scope: AttemptScope;
-  readonly commandId: CommandId;
-  readonly createdSequence: number;
-  readonly reason: RefusalReason;
-  readonly settlementEventId: string;
-};
+export type PrefixEvidence =
+  | { readonly state: "unknown" }
+  | {
+      readonly state: "eligible" | "crossed";
+      readonly scope: AttemptScope;
+      readonly commandId: CommandId;
+      readonly createdSequence: number;
+    }
+  | {
+      readonly state: "refused";
+      readonly scope: AttemptScope;
+      readonly commandId: CommandId;
+      readonly createdSequence: number;
+      readonly reason: RefusalReason;
+      readonly settlementEventId: string;
+    };
 
 export interface HoldKey {
   readonly threadId: ThreadId;

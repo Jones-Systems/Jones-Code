@@ -43,7 +43,16 @@ await withNativeSearchProbePort(async (probes) => {
     build: command.build,
     journal,
     start: async (boot, register, onExit) => {
-      const child = await ProcessSlot.start(command, boot, register, onExit, undefined, undefined, undefined, probes);
+      const child = await ProcessSlot.start(
+        command,
+        boot,
+        register,
+        onExit,
+        undefined,
+        undefined,
+        undefined,
+        probes,
+      );
       runtimeGenerations.push({
         pid: child.pid,
         bootstrap: child.bootstrap,
@@ -81,14 +90,18 @@ await withNativeSearchProbePort(async (probes) => {
           NodePath.join(cwd, `file-${file}.txt`),
           "needle Ελληνικά\n".repeat(256),
         );
-      handles.push(supervisor.register({ cwd, variant: "content" }));
+      handles.push({
+        paths: supervisor.register({ cwd, variant: "paths" }),
+        content: supervisor.register({ cwd, variant: "content" }),
+      });
     }
-    await Promise.all(handles.map((handle) => supervisor.ensure(handle)));
+    await Promise.all(handles.map(({ paths }) => supervisor.ensure(paths)));
+    await Promise.all(handles.map(({ content }) => supervisor.ensure(content)));
     const useful = await Promise.all(
-      handles.map(async (handle) => {
-        const listing = await supervisor.run(handle, "list", undefined);
-        const search = await supervisor.run(handle, "search", { query: "file", limit: 32 });
-        const content = await supervisor.run(handle, "searchContents", {
+      handles.map(async ({ paths, content }) => {
+        const listing = await supervisor.run(paths, "list", undefined);
+        const search = await supervisor.run(paths, "search", { query: "file", limit: 32 });
+        const contents = await supervisor.run(content, "searchContents", {
           query: "Ελληνικά",
           limit: 32,
           caseSensitive: true,
@@ -96,7 +109,7 @@ await withNativeSearchProbePort(async (probes) => {
           useRegex: false,
         });
         return (
-          listing.entries.length === 128 && search.entries.length > 0 && content.matches.length > 0
+          listing.entries.length === 128 && search.entries.length > 0 && contents.matches.length > 0
         );
       }),
     );
@@ -104,7 +117,7 @@ await withNativeSearchProbePort(async (probes) => {
     let cancelled = false;
     try {
       await supervisor.run(
-        handles[0],
+        handles[0].content,
         "searchContents",
         { query: "absent", limit: 32, caseSensitive: true, wholeWord: false, useRegex: false },
         cancellation.signal,

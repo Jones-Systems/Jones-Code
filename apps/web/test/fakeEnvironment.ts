@@ -677,6 +677,13 @@ export async function rejectPendingCommand(message: string): Promise<void> {
         commandId: pending.command.commandId,
         commandType: pending.command.type,
         message,
+        deliveryEvidence: {
+          kind: "dispatch",
+          commandId: pending.command.commandId,
+          commandType: pending.command.type,
+          threadId: "threadId" in pending.command ? (pending.command.threadId ?? null) : null,
+          status: "rejected",
+        },
       }),
     ),
   );

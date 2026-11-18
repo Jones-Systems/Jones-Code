@@ -82,6 +82,7 @@ export function useComposerStash(input: {
   readonly routeThreadRef: ChatComposerProps["routeThreadRef"];
   readonly projectSelectionRequired: boolean;
   readonly pendingUserInputs: ReadonlyArray<PendingUserInput>;
+  readonly hasPendingQuestion: boolean;
   readonly activePendingProgress: PendingUserInputProgress | null;
   readonly prompt: string;
   readonly composerMenuOpen: boolean;
@@ -111,6 +112,7 @@ export function useComposerStash(input: {
     routeThreadRef,
     projectSelectionRequired,
     pendingUserInputs,
+    hasPendingQuestion,
     activePendingProgress,
     prompt,
     composerMenuOpen,
@@ -165,10 +167,7 @@ export function useComposerStash(input: {
   // Stable, so the check after the verify await sees a question that opened during it.
   const refuseMachinesInAnswer = useStableCallback((menuEntry: PromptStashEntry) => {
     // An answer to an agent's question carries no machines, so restoring here would drop them.
-    if (
-      pendingUserInputs.length > 0 &&
-      menuEntry.records?.some((record) => record.kind === "environment")
-    ) {
+    if (hasPendingQuestion && menuEntry.records?.some((record) => record.kind === "environment")) {
       toastManager.add({
         type: "error",
         title: "Stashed machines can't go in an answer",

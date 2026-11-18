@@ -5,6 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import * as Exit from "effect/Exit";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -18,6 +19,8 @@ import {
   qualificationFixtureId,
 } from "../../../apps/server/src/jones/serverParallelism/qualificationFixture.ts";
 import { make } from "../../../apps/server/src/jones/workspace/nativeSearchRuntime.ts";
+import { nativeSearchProbeTestLayer } from "../../../apps/server/src/jones/serverParallelism/nativeWorkspace.testkit.ts";
+import * as VcsProcess from "../../../apps/server/src/vcs/VcsProcess.ts";
 import { percentiles } from "../../../apps/server/src/jones/serverParallelism/combinedQualification.ts";
 const [output, profile] = process.argv.slice(2);
 if (!NodePath.isAbsolute(output ?? "") || !["laptop", "vps"].includes(profile))
@@ -44,7 +47,13 @@ const runtime = async (key) => {
   if (!runtimes.has(key))
     runtimes.set(
       key,
-      await execute(make(key.cwd, key.variant).pipe(Effect.provideService(Scope.Scope, scope))),
+      await execute(
+        make(key.cwd, key.variant).pipe(
+          Effect.provide(nativeSearchProbeTestLayer(key.cwd).pipe(Layer.provide(VcsProcess.layer))),
+          Effect.provide(NodeServices.layer),
+          Effect.provideService(Scope.Scope, scope),
+        ),
+      ),
     );
   return runtimes.get(key);
 };

@@ -608,7 +608,7 @@ const make = Effect.gen(function* () {
           payload: thread,
         },
       ];
-      yield* sql.withTransaction(
+      yield* eventSink.withProviderBatch(
         Effect.gen(function* () {
           yield* Effect.forEach(
             previews,

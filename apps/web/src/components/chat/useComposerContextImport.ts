@@ -8,11 +8,10 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import type { RefObject } from "react";
 import type { ChatComposerProps } from "./ChatComposer";
-import {
-  type ComposerContextClipboardFragment,
-  type ComposerContextRecord,
-  type EnvironmentId,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+import type {
+  ComposerContextClipboardFragment,
+  ComposerContextRecord,
+  EnvironmentId,
 } from "@t3tools/contracts";
 import {
   type ComposerFileAttachment,
@@ -113,7 +112,10 @@ export function useComposerContextImport(input: {
   const addComposerDraftPreviewAnnotation = useComposerDraftStore(
     (store) => store.addPreviewAnnotation,
   );
-  const captureThreadContexts = useThreadReferenceCapture(attachmentDraftTarget, questionAttachmentTarget);
+  const captureThreadContexts = useThreadReferenceCapture(
+    attachmentDraftTarget,
+    questionAttachmentTarget,
+  );
   const captureComposerThreadContexts = useThreadReferenceCapture(composerDraftTarget);
   const addComposerDraftEnvironmentContexts = useComposerDraftStore(
     (store) => store.addEnvironmentContexts,
@@ -374,7 +376,10 @@ export function useComposerContextImport(input: {
             (threads.some((thread) => thread.contextId === record.contextId)
               ? { ...record, contextId: toKindScopedComposerContextId("thread", randomUUID()) }
               : record);
-          const capture = threadDraftTarget === attachmentDraftTarget ? captureThreadContexts : captureComposerThreadContexts;
+          const capture =
+            threadDraftTarget === attachmentDraftTarget
+              ? captureThreadContexts
+              : captureComposerThreadContexts;
           capture([imported], {
             appendReference: false,
           });

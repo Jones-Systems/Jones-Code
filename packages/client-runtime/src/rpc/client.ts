@@ -533,7 +533,9 @@ function subscribeDynamicMapped<TTag extends EnvironmentSubscriptionRpcTag, A>(
                     }),
                     Stream.concat(
                       Stream.suspend(() =>
-                        completed && resubscriber !== undefined && tag !== ORCHESTRATION_V2_WS_METHODS.searchThreadStream
+                        completed &&
+                        resubscriber !== undefined &&
+                        tag !== ORCHESTRATION_V2_WS_METHODS.searchThreadStream
                           ? resubscriber.after("completed", subscribeToSession)
                           : Stream.empty,
                       ),

@@ -521,7 +521,9 @@ jobs:
             apps/server/src/jones/workspaceRecreation/*.node-test.mjs \
             apps/server/src/jones/conversationWorkspace/*.node-test.mjs \
             apps/web/src/jones/storageCleanupResults/*.node-test.mjs \
+            .github/scripts/mobile-ios-preview-record.test.cjs \
             .github/scripts/mobile-preview-comment.test.cjs \
+            .github/scripts/test-delta.test.cjs \
             .github/scripts/thread-transfer-report.test.cjs
 
       - name: Test process placement build custody

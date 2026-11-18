@@ -34,14 +34,19 @@ vi.mock(import("../../components/files/PdfPreview"), async () => {
   const { useEffect } = await import("react");
   return {
     default: (props: Parameters<typeof import("../../components/files/PdfPreview").default>[0]) => {
-      const position = typeof props.initialPosition === "function"
-        ? props.initialPosition()
-        : props.initialPosition;
+      const position =
+        typeof props.initialPosition === "function"
+          ? props.initialPosition()
+          : props.initialPosition;
       useEffect(() => {
         loads.push(props.src);
       }, [props.src]);
       return (
-        <button onClick={() => props.onPositionChange?.({ page: 2, offset: 90, left: 40, zoomPercent: 150 })}>
+        <button
+          onClick={() =>
+            props.onPositionChange?.({ page: 2, offset: 90, left: 40, zoomPercent: 150 })
+          }
+        >
           {JSON.stringify(position)}
         </button>
       );

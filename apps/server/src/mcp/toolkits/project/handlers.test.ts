@@ -56,6 +56,24 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
 
+function launchProjectLayer(projectId: ProjectId) {
+  return Layer.mock(Project.ProjectService)({
+    getById: (id) =>
+      id === projectId
+        ? Effect.succeedSome({
+            id,
+            title: id,
+            workspaceRoot: "/projects/test",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            deletedAt: null,
+          })
+        : Effect.succeedNone,
+  });
+}
+
 it.effect("attributes a launched thread's first message to the calling thread", () =>
   Effect.gen(function* () {
     const sourceThreadId = ThreadId.make("source-thread");
@@ -111,7 +129,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
           } as unknown as ThreadLaunch.ThreadLaunchResult);
         },
       }),
-      Layer.mock(Project.ProjectService)({}),
+      launchProjectLayer(projectId),
       Layer.mock(PeerForwarding.PeerForwarding)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
@@ -196,7 +214,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
           } as unknown as ThreadLaunch.ThreadLaunchResult);
         },
       }),
-      Layer.mock(Project.ProjectService)({}),
+      launchProjectLayer(scratchProjectId),
       Layer.mock(PeerForwarding.PeerForwarding)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
@@ -370,6 +388,7 @@ const clientLaunchHarness = Effect.fn("test.clientLaunchHarness")(function* (inp
   readonly receiptReadFails?: boolean;
   readonly narrowedTo?: McpInvocationContext.ClientModes;
   readonly workspaceRoot?: string;
+  readonly hasCommit?: NonNullable<Parameters<typeof makeClientLaunchHarness>[0]>["hasCommit"];
   readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
   readonly hostedAppUrl?: string;
   /** The orchestrator refuses the new thread's mode, as under a managed ceiling. */
@@ -418,13 +437,11 @@ const clientLaunchHarness = Effect.fn("test.clientLaunchHarness")(function* (inp
         }),
   };
   const setupEntered = yield* Deferred.make<void>();
-  const config = yield* ServerConfig.ServerConfig.pipe(
-    Effect.provide(
-      ServerConfig.layerTest(process.cwd(), { prefix: "t3-client-launch-" }).pipe(
-        Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-      ),
-    ),
+  const scopedConfig = ServerConfig.layerTest(process.cwd(), { prefix: "t3-client-launch-" }).pipe(
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );
+  // The harness owns the scoped directory through its last launch.
+  const config = Context.get(yield* Layer.build(scopedConfig), ServerConfig.ServerConfig);
   const configLayer = ServerConfig.layer(config);
   const gitDriver = yield* GitVcsDriver.GitVcsDriver.pipe(
     Effect.provide(
@@ -440,6 +457,7 @@ const clientLaunchHarness = Effect.fn("test.clientLaunchHarness")(function* (inp
     readProject,
     gitDriver,
     serverConfigLayer: configLayer,
+    ...(input.hasCommit === undefined ? {} : { hasCommit: input.hasCommit }),
     serverSettings: settings,
     ...(input.providers === undefined ? {} : { providers: input.providers }),
     adapters: ["claudeAgent", "codex"].map((driver) => ({
@@ -1195,6 +1213,7 @@ it.effect("a retried worktree launch replays after its base ref is gone", () =>
     } = yield* clientLaunchHarness({
       runtimeModeCeiling: "auto",
       launched,
+      hasCommit: ({ refName }) => Effect.succeed(base.exists && refName === "feature"),
       checkWorktreeBase: ({ projectId, workspaceStrategy }) =>
         base.exists || workspaceStrategy.type !== "worktree"
           ? Effect.void

@@ -114,14 +114,24 @@ export const layer = Layer.effectDiscard(
                 ThreadManagementService.isTerminalRunStatus(event.payload.status),
             ),
             Stream.runHead,
-            Effect.flatMap((ended) => Effect.gen(function* () {
-              if (Option.isNone(ended) || ended.value.event.type !== "run.updated" ||
-                  ended.value.event.payload.activeAttemptId === null || Option.isNone(refusalProof)) return;
-              const terminal = ended.value.event.payload;
-              const proof = yield* refusalProof.value.readPrefix({ threadId: request.threadId,
-                runId: terminal.id, attemptId: terminal.activeAttemptId! });
-              if (proof.state === "refused") yield* onRunEndedWithoutStarting();
-            })),
+            Effect.flatMap((ended) =>
+              Effect.gen(function* () {
+                if (
+                  Option.isNone(ended) ||
+                  ended.value.event.type !== "run.updated" ||
+                  ended.value.event.payload.activeAttemptId === null ||
+                  Option.isNone(refusalProof)
+                )
+                  return;
+                const terminal = ended.value.event.payload;
+                const proof = yield* refusalProof.value.readPrefix({
+                  threadId: request.threadId,
+                  runId: terminal.id,
+                  attemptId: terminal.activeAttemptId!,
+                });
+                if (proof.state === "refused") yield* onRunEndedWithoutStarting();
+              }),
+            ),
             Effect.catchCause((cause) =>
               Effect.logWarning("orchestration-v2.provider-continuation.run-watch-failed", {
                 threadId: request.threadId,

@@ -73,6 +73,7 @@ const adapter = {
 } as ProviderAdapterV2Shape;
 
 interface ClientLaunchHarnessOptions {
+  readonly hasCommit?: GitWorkflow.GitWorkflowService["Service"]["hasCommit"];
   readonly gitDriver?: GitDriver.GitVcsDriver["Service"];
   readonly isGitRepository?: CheckpointStore.CheckpointStore["Service"]["isGitRepository"];
   readonly projectRecord?: import("@t3tools/contracts").Project;
@@ -197,7 +198,8 @@ export function makeClientLaunchHarness(options: ClientLaunchHarnessOptions = {}
       resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: "main" }),
       fetchWorktreeBaseCommit: () =>
         Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
-      hasCommit: () => Effect.succeed(false),
+      currentBranch: () => Effect.succeed("main"),
+      hasCommit: options.hasCommit ?? (({ refName }) => Effect.succeed(refName === "main")),
       renameBranch,
       fetchRemote: options.fetchRemote ?? (() => Effect.void),
       listRefs:

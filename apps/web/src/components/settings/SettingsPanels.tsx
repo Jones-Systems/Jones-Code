@@ -145,7 +145,6 @@ const RESPONSE_STREAMING_MODE_DESCRIPTIONS: Record<ResponseStreamingMode, string
   paragraph: "Each paragraph or code block appears as soon as it is complete.",
 };
 
-
 const TIMESTAMP_FORMAT_LABELS = {
   locale: msg("System default"),
   "12-hour": msg("12-hour"),

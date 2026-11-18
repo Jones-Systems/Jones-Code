@@ -19,13 +19,21 @@ vi.mock("~/state/use-atom-query-runner", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/state/use-atom-query-runner")>()),
   useAtomQueryRunner: () => async () => ({ _tag: "Success", value: { relativeUrl: "/file" } }),
 }));
-const capture = vi.hoisted(() => vi.fn(async ({ input }: { input: { threadId: string } }) => ({
-  _tag: "Success" as const,
-  value: { threadId: input.threadId, excerpt: {
-    status: "captured" as const, capturedAt: "2026-10-21T00:00:00.000Z",
-    sourceSnapshotSequence: 12, earlierHistory: "omitted" as const, text: "Bounded source context",
-  } },
-})));
+const capture = vi.hoisted(() =>
+  vi.fn(async ({ input }: { input: { threadId: string } }) => ({
+    _tag: "Success" as const,
+    value: {
+      threadId: input.threadId,
+      excerpt: {
+        status: "captured" as const,
+        capturedAt: "2026-10-21T00:00:00.000Z",
+        sourceSnapshotSequence: 12,
+        earlierHistory: "omitted" as const,
+        text: "Bounded source context",
+      },
+    },
+  })),
+);
 vi.mock("../../state/use-atom-command", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../state/use-atom-command")>()),
   useAtomCommand: () => capture,
@@ -269,13 +277,23 @@ it.each(["same", "other-environment"] as const)(
 
 function referenceInput(target: DraftId): ImportInput {
   return {
-    environmentId: EnvironmentId.make("destination"), linkedEnvironments: new Map(),
-    activeThread: undefined, activeThreadId: null, composerDraftTarget: target,
-    attachmentDraftTarget: target, attachmentTargetKey: target,
-    attachmentTargetKeyRef: { current: target }, questionAttachmentTarget: null,
-    pendingUserInputs: [], composerContextRecords: new Map(), composerImages: [],
-    composerFilesRef: { current: [] }, promptRef: { current: "ordinary draft" },
-    addComposerFilesToDraft: () => { throw new Error("A thread reference must not become a file"); },
+    environmentId: EnvironmentId.make("destination"),
+    linkedEnvironments: new Map(),
+    activeThread: undefined,
+    activeThreadId: null,
+    composerDraftTarget: target,
+    attachmentDraftTarget: target,
+    attachmentTargetKey: target,
+    attachmentTargetKeyRef: { current: target },
+    questionAttachmentTarget: null,
+    pendingUserInputs: [],
+    composerContextRecords: new Map(),
+    composerImages: [],
+    composerFilesRef: { current: [] },
+    promptRef: { current: "ordinary draft" },
+    addComposerFilesToDraft: () => {
+      throw new Error("A thread reference must not become a file");
+    },
   };
 }
 
@@ -285,15 +303,37 @@ it("captures unlinked ordinary thread references from their source without trans
   using _draft = { [Symbol.dispose]: () => store.clearComposerContent(target) };
   store.setPrompt(target, "ordinary draft");
   let importer!: Importer;
-  await using _screen = await render(<Harness input={referenceInput(target)} ready={(value) => { importer = value; }} />);
-  const record = threadContextRecord({ environmentId: EnvironmentId.make("unlinked-source"), threadId: ThreadId.make("source-thread") }, "Remote work");
+  await using _screen = await render(
+    <Harness
+      input={referenceInput(target)}
+      ready={(value) => {
+        importer = value;
+      }}
+    />,
+  );
+  const record = threadContextRecord(
+    {
+      environmentId: EnvironmentId.make("unlinked-source"),
+      threadId: ThreadId.make("source-thread"),
+    },
+    "Remote work",
+  );
   const callsBefore = capture.mock.calls.length;
-  const fetch = vi.fn(() => { throw new Error("No transcript download"); });
+  const fetch = vi.fn(() => {
+    throw new Error("No transcript download");
+  });
   using _fetch = stubGlobal("fetch", fetch);
-  await act(async () => { importer.importContextRecords([record], record.environmentId); });
-  expect(capture.mock.calls.slice(callsBefore)).toEqual([{ environmentId: record.environmentId, input: { threadId: record.threadId } }].map((call) => [call]));
+  await act(async () => {
+    importer.importContextRecords([record], record.environmentId);
+  });
+  expect(capture.mock.calls.slice(callsBefore)).toEqual(
+    [{ environmentId: record.environmentId, input: { threadId: record.threadId } }].map((call) => [
+      call,
+    ]),
+  );
   expect(store.getComposerDraft(target)?.threadContexts[0]).toMatchObject({
-    environmentId: record.environmentId, threadId: record.threadId,
+    environmentId: record.environmentId,
+    threadId: record.threadId,
     excerpt: { status: "captured", text: "Bounded source context" },
   });
   expect(store.getComposerDraft(target)?.prompt).toBe("ordinary draft");
@@ -305,17 +345,43 @@ it("does not apply an ordinary reference capture after changing composer routes"
   const target = DraftId.make("ordinary-capture-old-route");
   const replacement = DraftId.make("ordinary-capture-new-route");
   const store = useComposerDraftStore.getState();
-  using _drafts = { [Symbol.dispose]: () => { store.clearComposerContent(target); store.clearComposerContent(replacement); } };
+  using _drafts = {
+    [Symbol.dispose]: () => {
+      store.clearComposerContent(target);
+      store.clearComposerContent(replacement);
+    },
+  };
   const result = deferred<Awaited<ReturnType<typeof capture>>>();
   capture.mockImplementationOnce(() => result.promise);
   let importer!: Importer;
-  const ready = (value: Importer) => { importer = value; };
+  const ready = (value: Importer) => {
+    importer = value;
+  };
   await using screen = await render(<Harness input={referenceInput(target)} ready={ready} />);
-  const record = threadContextRecord({ environmentId: EnvironmentId.make("source"), threadId: ThreadId.make("route-bound-thread") }, "Remote work");
-  await act(() => { importer.importContextRecords([record], record.environmentId); });
+  const record = threadContextRecord(
+    { environmentId: EnvironmentId.make("source"), threadId: ThreadId.make("route-bound-thread") },
+    "Remote work",
+  );
+  await act(() => {
+    importer.importContextRecords([record], record.environmentId);
+  });
   expect(pendingDraftWork.has(target)).toBe(true);
   await screen.rerender(<Harness input={referenceInput(replacement)} ready={ready} />);
-  await act(async () => result.resolve({ _tag: "Success", value: { threadId: record.threadId, excerpt: { status: "captured", capturedAt: "2026-10-21T00:00:00.000Z", sourceSnapshotSequence: 12, earlierHistory: "omitted", text: "Late context" } } }));
+  await act(async () =>
+    result.resolve({
+      _tag: "Success",
+      value: {
+        threadId: record.threadId,
+        excerpt: {
+          status: "captured",
+          capturedAt: "2026-10-21T00:00:00.000Z",
+          sourceSnapshotSequence: 12,
+          earlierHistory: "omitted",
+          text: "Late context",
+        },
+      },
+    }),
+  );
   expect(store.getComposerDraft(target)?.threadContexts[0]?.excerpt).toBeUndefined();
   expect(store.getComposerDraft(replacement)?.threadContexts ?? []).toEqual([]);
   expect(pendingDraftWork.has(target)).toBe(false);

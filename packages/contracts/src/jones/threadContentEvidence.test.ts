@@ -53,8 +53,15 @@ describe("thread content evidence wire contract", () => {
       afterPosition: 1,
     });
     assert.equal(decode({ threadId: "thread", maxCharsPerItem: 99_999 }).maxCharsPerItem, 20_000);
-    assert.equal(decode({ threadId: "thread", contentEvidence: optIn, maxCharsPerItem: 99_999 }).maxCharsPerItem, 50_000);
-    assert.deepEqual<unknown>(decode({ threadId: "thread", contentEvidence: optIn, beforePosition: 8 }), { threadId: "thread", contentEvidence: optIn, beforePosition: 8 });
+    assert.equal(
+      decode({ threadId: "thread", contentEvidence: optIn, maxCharsPerItem: 99_999 })
+        .maxCharsPerItem,
+      50_000,
+    );
+    assert.deepEqual<unknown>(
+      decode({ threadId: "thread", contentEvidence: optIn, beforePosition: 8 }),
+      { threadId: "thread", contentEvidence: optIn, beforePosition: 8 },
+    );
     const item = {
       position: 0,
       visibility: "local",

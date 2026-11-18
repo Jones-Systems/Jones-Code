@@ -33,6 +33,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
@@ -618,6 +619,7 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
   const summaryRecovery = yield* Ref.make<ReadonlyArray<boolean | undefined>>([]);
   const invalidatedCwds = yield* Ref.make<ReadonlyArray<string>>([]);
   const domainEvents = yield* PubSub.unbounded<OrchestrationV2DomainEvent>();
+  const scope = yield* Effect.scope;
   const observedEvents = yield* Queue.unbounded<EventId>();
   const closedIdle = yield* Queue.unbounded<{ readonly threadId: string }>();
   const scriptRuns =
@@ -715,8 +717,13 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
       ...unusedCorePorts(),
-      streamDomainEvents: Stream.fromPubSub(domainEvents).pipe(
-        Stream.tap((event) => Queue.offer(observedEvents, event.id)),
+      acquireDomainEvents: PubSub.subscribe(domainEvents).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.map((subscription) =>
+          Stream.fromSubscription(subscription).pipe(
+            Stream.tap((event) => Queue.offer(observedEvents, event.id)),
+          ),
+        ),
       ),
       dispatch,
     }),

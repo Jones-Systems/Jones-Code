@@ -45,12 +45,19 @@ export const writeFileStringAtomically = (input: {
 
       const contents = input.contents;
       if (typeof contents === "string") {
-        yield* fs.writeFileString(tempPath, contents, input.mode === undefined ? undefined : { mode: input.mode });
+        yield* fs.writeFileString(
+          tempPath,
+          contents,
+          input.mode === undefined ? undefined : { mode: input.mode },
+        );
       } else {
         // Closed before the rename, which Windows refuses for open files.
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const file = yield* fs.open(tempPath, { flag: "w", ...(input.mode === undefined ? {} : { mode: input.mode }) });
+            const file = yield* fs.open(tempPath, {
+              flag: "w",
+              ...(input.mode === undefined ? {} : { mode: input.mode }),
+            });
             const encoder = new TextEncoder();
             let batch: string[] = [];
             let batchLength = 0;

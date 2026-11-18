@@ -1,4 +1,3 @@
-import { providerInstanceEntriesFor } from "../../providerInstances";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -38,6 +37,7 @@ vi.mock(import("../../state/threads"), async (original) => {
 
 import { render } from "../../../test/render";
 import { deriveEffectiveComposerModelState, useComposerDraftStore } from "../../composerDraftStore";
+import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../../rpc/atomRegistry";
 import { useComposerSelection } from "./useComposerSelection";
 
@@ -72,7 +72,14 @@ const providers: ReadonlyArray<ServerProvider> = [
 
 // The hook reads only the thread's identity and stored selection.
 function cursorThread(id: string) {
-  return { environmentId, id: ThreadId.make(id), modelSelection: stored } as EnvironmentThreadShell;
+  return {
+    environmentId,
+    id: ThreadId.make(id),
+    modelSelection: stored,
+    itemCount: 1,
+    latestRun: null,
+    runtime: null,
+  } as EnvironmentThreadShell;
 }
 
 function Picker(props: {
@@ -81,7 +88,7 @@ function Picker(props: {
   model?: string;
 }) {
   const { onProviderModelSelectStable } = useComposerSelection({
-    providerInstanceEntries: providerInstanceEntriesFor(providers, DEFAULT_UNIFIED_SETTINGS, null),
+    providerInstanceEntries: deriveProviderInstanceEntries(providers),
     lockedContinuationGroupKey: null,
     isEnvironmentChanging: false,
     activeEnvironmentUnavailable: false,

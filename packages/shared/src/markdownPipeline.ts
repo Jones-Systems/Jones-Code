@@ -670,7 +670,7 @@ function remarkLinkAbsoluteFilePaths(): Transformer<Root> {
     let rawAnchorDepth = 0;
     const visit = (node: Root | RootContent) => {
       if (!("children" in node) || node.type === "link" || node.type === "linkReference") return;
-      node.children = node.children.flatMap((child): typeof node.children => {
+      node.children = node.children.flatMap((child, childIndex, siblings): typeof node.children => {
         if (child.type === "html") {
           for (const [tag] of child.value.matchAll(RAW_HTML_TAG_PATTERN)) {
             if (/^<a[\s/>]/i.test(tag)) rawAnchorDepth += 1;
@@ -683,7 +683,26 @@ function remarkLinkAbsoluteFilePaths(): Transformer<Root> {
         }
         const parts: PhrasingContent[] = [];
         let offset = 0;
+        // Incomplete, escaped, or unknown citation syntax remains literal Markdown.
+        // With incomplete attributes, micromark emits the directive name as a separate node.
+        const preceding = siblings[childIndex - 1];
+        const unfinishedAttributesLength =
+          preceding?.type === "textDirective" &&
+          preceding.name === "codex-file-citation" &&
+          Object.keys(preceding.attributes ?? {}).length === 0
+            ? (/^\{[^}\n]*/.exec(child.value)?.[0].length ?? 0)
+            : 0;
+        const literalCitations = child.value.includes(":codex-file-citation")
+          ? Array.from(child.value.matchAll(/:codex-file-citation[\w-]*\{[^}\n]*/g))
+          : [];
         for (const { index, path } of absoluteFilePathMatches(child.value)) {
+          if (
+            index < unfinishedAttributesLength ||
+            literalCitations.some(
+              (citation) => index >= citation.index && index < citation.index + citation[0].length,
+            )
+          )
+            continue;
           if (index > offset) parts.push({ type: "text", value: child.value.slice(offset, index) });
           parts.push({ type: "link", url: path, children: [{ type: "text", value: path }] });
           offset = index + path.length;

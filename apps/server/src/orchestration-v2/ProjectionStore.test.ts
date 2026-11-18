@@ -4389,10 +4389,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         const pagePath = "file:/history-page-steps?vfs=memdb";
         using copy = new NodeSqlite.DatabaseSync(pagePath);
         yield* sql`VACUUM INTO ${pagePath}`;
-        // Only statements that count positions may grow with the history, and those read an
-        // index alone. Every other statement costs the same when the rows below the page are gone.
+        // A raw position count scans a covering index. The hidden-row correction counts a
+        // filtered CTE, so include that query in the VM-step comparison with other row reads.
         const countsPositions = ([query]: readonly [string, ReadonlyArray<unknown>]) =>
-          /COUNT\(\*\)|OFFSET/.test(query);
+          /COUNT\(\*\)|OFFSET/.test(query) && !query.includes("SELECT COUNT(*) FROM hidden");
         for (const [query, params] of pageStatements.filter(countsPositions)) {
           const plan = copy
             .prepare(`EXPLAIN QUERY PLAN ${query}`)

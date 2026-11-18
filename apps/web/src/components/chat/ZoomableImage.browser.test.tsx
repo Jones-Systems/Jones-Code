@@ -355,6 +355,8 @@ describe("image zoom interactions", () => {
     expect(image().style.width).toBe("1600px");
     await edit("9999");
     expect(input().value).toBe("800");
+    // Focusing the zoom input can scroll the image all the way to the right.
+    region().scrollLeft = 0;
     const beforePan = region().scrollLeft;
     await key(region(), "ArrowRight");
     expect(region().scrollLeft).toBe(beforePan + 40);

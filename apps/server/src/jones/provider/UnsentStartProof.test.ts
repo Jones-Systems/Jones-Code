@@ -39,6 +39,7 @@ function fixture(
     readonly missing?: boolean;
     readonly receiptMismatch?: boolean;
     readonly changedBeforeReadback?: boolean;
+    readonly queuePromotion?: boolean;
   } = {},
 ) {
   const original = {
@@ -55,7 +56,7 @@ function fixture(
   const event = (sequence: number, type: string, payload: unknown) => ({
     sequence,
     commandId,
-    event: { type, threadId, payload },
+    event: { type, threadId, runId, payload },
   });
   return {
     outbox: {
@@ -69,16 +70,18 @@ function fixture(
       getByCommandId: () =>
         Effect.succeedSome({
           status: "accepted",
+          commandType: change.queuePromotion ? "queue.start" : "message.dispatch",
           threadId,
           resultSequence: change.receiptMismatch ? 3 : 2,
         }),
     },
     sink: {
       readByCommandId: () =>
-        Stream.fromIterable([
-          event(1, "run.created", run),
-          event(2, "run-attempt.created", attempt),
-        ]),
+        Stream.fromIterable(
+          change.queuePromotion
+            ? [event(2, "run.updated", { ...run, status: "starting" })]
+            : [event(1, "run.created", run), event(2, "run-attempt.created", attempt)],
+        ),
     },
     refusals: {
       readPrefix: () => Effect.succeed({ state: change.crossed ? "crossed" : "unknown" }),
@@ -115,4 +118,18 @@ it.effect(
         ]),
       );
     }),
+);
+
+it.effect("certifies a queued promotion only with its accepted zero-claim start", () =>
+  Effect.gen(function* () {
+    assert.isTrue(yield* makeUnsentStartProof(fixture({ queuePromotion: true }))(run, [attempt]));
+    assert.isFalse(
+      yield* makeUnsentStartProof(fixture({ queuePromotion: true, claimed: true }))(run, [attempt]),
+    );
+    assert.isFalse(
+      yield* makeUnsentStartProof(fixture({ queuePromotion: true, receiptMismatch: true }))(run, [
+        attempt,
+      ]),
+    );
+  }),
 );

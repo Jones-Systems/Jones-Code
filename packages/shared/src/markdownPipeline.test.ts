@@ -405,6 +405,29 @@ it("preserves footnotes and original code positions across a callout", () => {
   expect(markdown.slice(block?.position?.start.offset, block?.position?.end.offset)).toBe(code);
 });
 
+it.each([
+  ':codex-file-citation{path="/tmp/project/report.xlsx"',
+  ':codex-file-citation-extra{path="/tmp/project/report.xlsx"}',
+  '\\:codex-file-citation{path="/tmp/project/report.xlsx"}',
+])("preserves a literal citation and links separate prose paths (%s)", (citation) => {
+  const processor = unified().use(remarkParse).use(CHAT_MARKDOWN_REMARK_PLUGINS);
+  const path = "/tmp/project/summary.md";
+  const markdown = path + " " + citation;
+  const tree = processor.runSync(processor.parse(markdown), markdown);
+  const paragraph = tree.children[0];
+  expect(paragraph?.type).toBe("paragraph");
+  if (paragraph?.type !== "paragraph") throw new Error("Expected a paragraph");
+  expect(paragraph.children.filter((child) => child.type === "link")).toMatchObject([
+    { url: path },
+  ]);
+  expect(
+    paragraph.children
+      .filter((child) => child.type === "text")
+      .map((child) => child.value)
+      .join(""),
+  ).toBe(" " + citation.replace(/^\\/, ""));
+});
+
 it("preserves in-app thread links through the shared Markdown sanitizer", () => {
   const processor = unified()
     .use(remarkParse)

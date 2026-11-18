@@ -1,7 +1,15 @@
 import * as JonesRemoteRuntime from "../jones/remoteDelegation/Runtime.ts";
-import type { EnvironmentId, NodeId, OrchestratorMcpFailure, OrchestratorMcpDelegateTaskInput,
-  OrchestratorMcpThreadSendInput, OrchestratorMcpThreadSendResult, OrchestratorMcpThreadRun,
-  OrchestrationV2Subagent, OrchestratorMcpTaskCancelResult } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  NodeId,
+  OrchestratorMcpFailure,
+  OrchestratorMcpDelegateTaskInput,
+  OrchestratorMcpThreadSendInput,
+  OrchestratorMcpThreadSendResult,
+  OrchestratorMcpThreadRun,
+  OrchestrationV2Subagent,
+  OrchestratorMcpTaskCancelResult,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -71,20 +79,5 @@ export class RemoteDelegation extends Context.Service<
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/peer/RemoteDelegation") {}
-
-/** The other side refused because the thread there runs above this caller's modes. */
-const isModeRefusal = (error: OrchestratorMcpFailure) =>
-  error.code === "runtime_mode_escalation_denied" ||
-  error.code === "interaction_mode_escalation_denied";
-
-/**
- * Refusals that following again cannot change: the link was revoked, expired
- * or forgotten, or the thread or run there is gone. Anything else (the other
- * machine asleep, a dropped route) is worth retrying.
- */
-const isFinal = (error: OrchestratorMcpFailure) =>
-  error.code === "capability_denied" ||
-  error.code === "thread_not_found" ||
-  error.code === "run_not_found";
 
 export const layer = Layer.effect(RemoteDelegation, JonesRemoteRuntime.make);

@@ -168,7 +168,10 @@ export function admitThreadEvidencePage(input: {
   readonly maxChars: number;
   readonly budgetBytes: number;
   readonly newestFirst: boolean;
-}): Result.Result<{ readonly items: ReadonlyArray<OrchestratorMcpThreadTimelineItem>; readonly start: number }, OrchestratorMcpFailure> {
+}): Result.Result<
+  { readonly items: ReadonlyArray<OrchestratorMcpThreadTimelineItem>; readonly start: number },
+  OrchestratorMcpFailure
+> {
   const admitted: Array<OrchestratorMcpThreadTimelineItem> = [];
   let bytes = 0;
   for (const item of input.newestFirst ? input.items.toReversed() : input.items) {
@@ -177,14 +180,21 @@ export function admitThreadEvidencePage(input: {
     const preview = { ...item, text: item.text?.slice(0, input.maxChars) ?? null };
     const size = Buffer.byteLength(JSON.stringify(preview), "utf8") + 2048;
     if (bytes + size > input.budgetBytes) {
-      if (admitted.length === 0) return Result.fail(new OrchestratorMcpFailure({
-        code: "invalid_request", message: "Content evidence item exceeds the response budget; request a smaller text page.",
-      }));
+      if (admitted.length === 0)
+        return Result.fail(
+          new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Content evidence item exceeds the response budget; request a smaller text page.",
+          }),
+        );
       break;
     }
     admitted.push(item);
     bytes += size;
   }
-  return Result.succeed({ items: input.newestFirst ? admitted.toReversed() : admitted,
-    start: input.newestFirst ? input.items.length - admitted.length : 0 });
+  return Result.succeed({
+    items: input.newestFirst ? admitted.toReversed() : admitted,
+    start: input.newestFirst ? input.items.length - admitted.length : 0,
+  });
 }

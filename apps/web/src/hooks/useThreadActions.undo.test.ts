@@ -76,6 +76,7 @@ vi.mock("../state/entities", async (original) => ({
   readEnvironmentServerConfigLoaded: () => true,
   readEnvironmentSupportsPinning: () => true,
   readEnvironmentSupportsPinReorder: () => true,
+  readEnvironmentSupportsActiveReorder: () => true,
   readEnvironmentSupportsSettlement: () => true,
   readEnvironmentSupportsSnooze: () => true,
   readEnvironmentSupportsVisitedTracking: () => true,

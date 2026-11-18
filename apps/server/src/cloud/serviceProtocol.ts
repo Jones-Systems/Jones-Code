@@ -406,7 +406,9 @@ export function decodeServiceState(value: unknown): ServiceState | undefined {
   const update = value.update === undefined ? undefined : decodeServiceUpdate(value.update);
   if (
     !isSupportedLauncherProtocol(value.protocol) ||
-    (update !== undefined && update.qualified !== undefined && value.protocol !== SERVICE_LAUNCHER_PROTOCOL) ||
+    (update !== undefined &&
+      update.qualified !== undefined &&
+      value.protocol !== SERVICE_LAUNCHER_PROTOCOL) ||
     typeof value.activeVersion !== "string" ||
     !isExactServiceVersion(value.activeVersion) ||
     (value.update !== undefined && update === undefined) ||

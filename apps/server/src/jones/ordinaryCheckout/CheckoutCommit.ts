@@ -184,10 +184,11 @@ export const reserveLegacyDeleteCommand = Effect.fn("CheckoutCommit.reserveLegac
     sql: SqlClient.SqlClient,
     binding: CommandBinding,
     receipt: CommandReceiptV2,
-    prepared: PreparedIntent,
+    command: IntentPlan["command"],
+    prepared: PreparedIntent | undefined,
     committed: CommittedEffects,
   ) {
-    const decoded = yield* decodedCommand(prepared.plan.command);
+    const decoded = yield* decodedCommand(command);
     if (
       binding.kind !== "delete" ||
       binding.commandId !== receipt.commandId ||
@@ -195,10 +196,12 @@ export const reserveLegacyDeleteCommand = Effect.fn("CheckoutCommit.reserveLegac
       binding.bindingJson !== canonical(decoded.command) ||
       (decoded.command.type !== "legacy-bootstrap.guard-rejection-delete" &&
         decoded.command.type !== "legacy-bootstrap.failure-delete") ||
-      prepared.preparation !== null ||
-      prepared.origins.length !== 0 ||
-      prepared.candidates.length !== 0 ||
-      prepared.preflight.length !== 0 ||
+      (prepared !== undefined &&
+        (prepared.plan.command !== command ||
+          prepared.preparation !== null ||
+          prepared.origins.length !== 0 ||
+          prepared.candidates.length !== 0 ||
+          prepared.preflight.length !== 0)) ||
       committed.effects.some(
         (effect) =>
           effect.nativeCreationExecutionReference !== undefined ||
@@ -217,7 +220,7 @@ export const reserveLegacyDeleteCommand = Effect.fn("CheckoutCommit.reserveLegac
       )
     )
       return yield* refused();
-    yield* validatePlan(prepared, prepared.plan);
+    if (prepared !== undefined) yield* validatePlan(prepared, prepared.plan);
     const writer = yield* LegacyStorage.make(sql).forTransaction;
     return yield* reserve(
       sql,

@@ -12,15 +12,19 @@ export function useProviderWorkspaceRefresh(input: {
   readonly provider: ServerProvider | null;
   readonly draftMessage: string;
 }) {
-  const scan = input.environmentId && input.projectCwd && input.provider
-    ? mobileProviderWorkspaceSnapshotRefresh({
-        environmentId: input.environmentId,
-        instanceId: input.provider.instanceId,
-        cwd: input.projectCwd,
-      })
-    : idle;
+  const scan =
+    input.environmentId && input.projectCwd && input.provider
+      ? mobileProviderWorkspaceSnapshotRefresh({
+          environmentId: input.environmentId,
+          instanceId: input.provider.instanceId,
+          cwd: input.projectCwd,
+        })
+      : idle;
   useAtomMount(scan);
   const refresh = useAtomRefresh(scan);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Draft edits recheck snapshot expiry through the same keyed budget as the picker.
-  useEffect(() => { refresh(); }, [input.draftMessage, refresh]);
+  useEffect(() => {
+    refresh();
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Every draft edit triggers an expiry check, including clearing the text.
+  }, [input.draftMessage, refresh]);
 }

@@ -312,8 +312,11 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     const sourceMessage = (yield* threads.getThreadRecords(input.threadId, ["messages"], {
       messageIds: [source.userMessageId],
     })).messages.find((message) => message.id === source.userMessageId);
-    if (sourceMessage !== undefined &&
-        (isNativeMaintenanceCommand(sourceMessage) || isWorkModeKeepWarm(sourceMessage))) return;
+    if (
+      sourceMessage !== undefined &&
+      (isNativeMaintenanceCommand(sourceMessage) || isWorkModeKeepWarm(sourceMessage))
+    )
+      return;
     const note = restartContinuationNote(
       source,
       projection.runs,

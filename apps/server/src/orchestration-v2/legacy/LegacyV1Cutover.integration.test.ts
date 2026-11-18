@@ -30,14 +30,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { runMigrations } from "../../persistence/Migrations.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
-import Migration0042 from "../../persistence/Migrations/042_ProjectionThreadLinkedPullRequest.ts";
-import Migration0043 from "../../persistence/Migrations/043_ProjectionThreadsUnsettledAt.ts";
-import Migration0044 from "../../persistence/Migrations/044_ClearAutomaticProjectModelDefaults.ts";
-import Migration0045 from "../../persistence/Migrations/045_ProjectionProjectsAutoPull.ts";
-import Migration0046 from "../../persistence/Migrations/046_RepairAutomaticSettlementTimestamps.ts";
-import Migration0047 from "../../persistence/Migrations/047_ProjectionProjectIcon.ts";
-import Migration0048 from "../../persistence/Migrations/048_ProjectionThreadBranchPullRequest.ts";
-import Migration0049 from "../../persistence/Migrations/049_ProjectionThreadsActiveOrderKey.ts";
 import { CodexProviderCapabilitiesV2 } from "../Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "../EffectWorker.ts";
 import * as EventSink from "../EventSink.ts";
@@ -82,7 +74,7 @@ const codexModelSelection = {
   model: "gpt-5.4",
 };
 
-/** Slot 41 models site-local migrations sharing production ids; the V2 runner applies only ids above the recorded maximum. */
+/** Seed the released V1 schema and copy it before opening the V2 application. */
 const seedV1Database = (fixturePath: string, workspace: string) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -90,35 +82,7 @@ const seedV1Database = (fixturePath: string, workspace: string) =>
       yield* sql`PRAGMA busy_timeout = 5000;`;
       yield* sql`PRAGMA foreign_keys = ON;`;
       yield* sql`PRAGMA journal_mode = WAL;`;
-      yield* runMigrations({ toMigrationInclusive: 40 });
-      yield* sql`
-        INSERT INTO effect_sql_migrations (migration_id, name)
-        VALUES (41, 'ThreadSummaryTimeline')
-      `;
-      yield* sql`
-        CREATE TABLE thread_summary_timeline_entries (
-          entry_id TEXT PRIMARY KEY,
-          thread_id TEXT NOT NULL,
-          payload_json TEXT NOT NULL
-        )
-      `;
-      const tailMigrations = [
-        [42, "ProjectionThreadLinkedPullRequest", Migration0042],
-        [43, "ProjectionThreadsUnsettledAt", Migration0043],
-        [44, "ClearAutomaticProjectModelDefaults", Migration0044],
-        [45, "ProjectionProjectsAutoPull", Migration0045],
-        [46, "RepairAutomaticSettlementTimestamps", Migration0046],
-        [47, "ProjectionProjectIcon", Migration0047],
-        [48, "ProjectionThreadBranchPullRequest", Migration0048],
-        [49, "ProjectionThreadsActiveOrderKey", Migration0049],
-      ] as const;
-      for (const [id, name, migration] of tailMigrations) {
-        yield* migration;
-        yield* sql`
-          INSERT INTO effect_sql_migrations (migration_id, name)
-          VALUES (${id}, ${name})
-        `;
-      }
+      yield* runMigrations({ toMigrationInclusive: 49 });
 
       yield* sql`
         INSERT INTO projection_projects (
@@ -467,7 +431,7 @@ const makeCodexAdapter = (capturedTurns: Ref.Ref<ReadonlyArray<CapturedTurn>>) =
           updatedAt: now,
           lastError: null,
         };
-        return {
+        return yield* ProviderReplayHarness.withReplayThreadPublication(sessionInput, {
           instanceId,
           driver,
           providerSessionId: sessionInput.providerSessionId,
@@ -580,7 +544,7 @@ const makeCodexAdapter = (capturedTurns: Ref.Ref<ReadonlyArray<CapturedTurn>>) =
           readThreadSnapshot: () => unimplemented("readThreadSnapshot unused in cutover test"),
           rollbackThread: () => unimplemented("rollbackThread unused in cutover test"),
           forkThread: () => unimplemented("forkThread unused in cutover test"),
-        };
+        });
       }),
   }) satisfies ProviderAdapter.ProviderAdapterV2["Service"];
 
@@ -997,13 +961,10 @@ describe("orchestration v2 legacy v1 cutover", () => {
         const divergenceLog = boot1Logs.find((log) =>
           String(log.message).includes("migration history diverges"),
         );
-        assert.deepStrictEqual(divergenceLog?.annotations.divergent, [
-          "41:ThreadSummaryTimeline (this build: AuthSessionClientConnection)",
-        ]);
-        assert.equal(firstBoot.migration41Name, "ThreadSummaryTimeline");
-
-        assert.notInclude(firstBoot.authSessionColumnNames, "client_surface");
-        assert.notInclude(firstBoot.authSessionColumnNames, "client_app_version");
+        assert.isUndefined(divergenceLog);
+        assert.equal(firstBoot.migration41Name, "AuthSessionClientConnection");
+        assert.include(firstBoot.authSessionColumnNames, "client_surface");
+        assert.include(firstBoot.authSessionColumnNames, "client_app_version");
 
         // Full row contents of the legacy recovery tables survive migration
         // and continuation unchanged, not just their counts.

@@ -1318,7 +1318,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const addComposerDraftPreviewAnnotation = useComposerDraftStore(
     (store) => store.addPreviewAnnotation,
   );
-  const addCapturedThreadContexts = useThreadReferenceCapture(attachmentDraftTarget, questionAttachmentTarget);
+  const addCapturedThreadContexts = useThreadReferenceCapture(
+    attachmentDraftTarget,
+    questionAttachmentTarget,
+  );
   const setComposerDraftThreadContexts = useComposerDraftStore((store) => store.setThreadContexts);
   const addComposerDraftEnvironmentContexts = useComposerDraftStore(
     (store) => store.addEnvironmentContexts,
@@ -2210,7 +2213,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               running: phase === "running" || phase === "connecting",
               alternateModifier: false,
               activeTurnDefault: followUpBehavior,
-canSteer: canSteer && !steeringBlockedByQuestion,
+              canSteer: canSteer && !steeringBlockedByQuestion,
             }),
           submissionIntent,
         );
@@ -2269,7 +2272,7 @@ canSteer: canSteer && !steeringBlockedByQuestion,
         running,
         alternateModifier,
         activeTurnDefault: followUpBehavior,
-canSteer: canSteer && !steeringBlockedByQuestion,
+        canSteer: canSteer && !steeringBlockedByQuestion,
       }),
       running && alternateModifier ? "alternate" : undefined,
     );
@@ -2282,7 +2285,7 @@ canSteer: canSteer && !steeringBlockedByQuestion,
         running: phase === "running" || phase === "connecting",
         alternateModifier: false,
         activeTurnDefault: followUpBehavior,
-canSteer: canSteer && !steeringBlockedByQuestion,
+        canSteer: canSteer && !steeringBlockedByQuestion,
       }),
     );
   };
@@ -2445,6 +2448,7 @@ canSteer: canSteer && !steeringBlockedByQuestion,
     routeThreadRef,
     projectSelectionRequired,
     pendingUserInputs,
+    hasPendingQuestion: Boolean(questionCard) || incomingPendingUserInputs.length > 0,
     activePendingProgress,
     prompt,
     composerMenuOpen,
@@ -3884,7 +3888,7 @@ canSteer: canSteer && !steeringBlockedByQuestion,
                     canInterrupt={canInterrupt}
                     runId={activeThread?.runtime?.activeRunId ?? null}
                     followUpBehavior={followUpBehavior}
-canSteer={canSteer && !steeringBlockedByQuestion}
+                    canSteer={canSteer && !steeringBlockedByQuestion}
                     alternateShortcutLabel={shortcutLabelForCommand(
                       keybindings,
                       "composer.sendAlternate",

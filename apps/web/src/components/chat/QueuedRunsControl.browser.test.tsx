@@ -350,7 +350,7 @@ it("shows who sent a queued message and folds automation and agent prompts", asy
   const onOpenThread = vi.fn();
   await using _screen = await renderQueue({ onOpenThread });
   // Four rows collapse the queue.
-  await page.getByRole("button", { name: "Show all 4 queued" }).click();
+  await page.getByRole("button", { name: "Expand queued messages" }).click();
 
   const automation = page.getByRole("button", { name: /PR dispatcher/ });
   await expect.element(automation).toHaveAttribute("aria-expanded", "false");
@@ -673,7 +673,7 @@ describe("QueuedRunsControl empty composer Enter", () => {
         finishSend!();
       });
       state.workflow = { ...workflow, queuedRuns: [first] };
-      await screen.rerender(control());
+      await act(() => thread.write({ ...nativeThread, runs: [first.run] }));
       await act(async () => {
         expect(enter(true)).toBe(true);
       });
@@ -690,7 +690,7 @@ describe("QueuedRunsControl empty composer Enter", () => {
         finishSend!();
       });
       state.workflow = { ...workflow, queuedRuns: [] };
-      await screen.rerender(control());
+      await act(() => thread.write({ ...nativeThread, runs: [] }));
       expect(enter()).toBe(true);
       expect(onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
       expect(state.promote).toHaveBeenCalledTimes(2);

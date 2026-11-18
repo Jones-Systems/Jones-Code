@@ -701,6 +701,7 @@ it.effect.each([
               g.sql,
               binding,
               receipt,
+              g.command,
               g.prepared,
               committed,
             );
@@ -720,6 +721,7 @@ it.effect.each([
                 g.sql,
                 g.binding,
                 receipt,
+                g.command,
                 g.prepared,
                 committed,
               ),

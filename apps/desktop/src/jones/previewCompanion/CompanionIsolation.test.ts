@@ -151,9 +151,7 @@ describe("companion isolation", () => {
       expect(yield* readEvents(host.eventsMatching(host.isCompanionAssigned), 1)).toEqual([
         { type: "attached", ...remote },
       ]);
-      expect(yield* readEvents(localHost.events, 1)).toEqual([
-        { type: "attached", ...local },
-      ]);
+      expect(yield* readEvents(localHost.events, 1)).toEqual([{ type: "attached", ...local }]);
       yield* localHost.handleCommandLine(line(remote, 1));
       yield* host.handleCommandLine(line(local, 2), host.isCompanionAssigned);
       expect(companion.sendCommand).not.toHaveBeenCalled();

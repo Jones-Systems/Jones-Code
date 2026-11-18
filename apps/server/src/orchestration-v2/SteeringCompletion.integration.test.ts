@@ -35,6 +35,7 @@ import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { withOwnerSelectionIngress } from "../jones/threadConfiguration/ownerIngress.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
@@ -88,7 +89,7 @@ it.effect.each(
       openSession: (input) =>
         Effect.gen(function* () {
           const now = yield* DateTime.now;
-          return {
+          return yield* ProviderReplayHarness.withReplayThreadPublication(input, {
             instanceId,
             driver,
             providerSessionId: input.providerSessionId,
@@ -165,7 +166,7 @@ it.effect.each(
             readThreadSnapshot: () => Effect.die("unused"),
             rollbackThread: () => Effect.die("unused"),
             forkThread: () => Effect.die("unused"),
-          };
+          });
         }),
     };
     yield* Effect.gen(function* () {
@@ -568,7 +569,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
             started.push(turn);
             yield* turnUpdated(turn, "running");
           });
-        return {
+        return yield* ProviderReplayHarness.withReplayThreadPublication(input, {
           instanceId,
           driver,
           providerSessionId: input.providerSessionId,
@@ -645,7 +646,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
           readThreadSnapshot: () => Effect.die("unused"),
           rollbackThread: () => Effect.die("unused"),
           forkThread: () => Effect.die("unused"),
-        };
+        });
       }),
   };
   const layer = ProviderReplayHarness.layerWithRegistry(
@@ -2428,28 +2429,33 @@ it.effect("marks the model switch on a promoted message that restarts the turn",
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       const threadId = yield* startFirstTurn;
-      yield* orchestrator.dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make("queued"),
-        threadId,
-        messageId: MessageId.make("message:queued"),
-        text: "queued",
-        attachments: [],
-        modelSelection: otherSelection,
-        dispatchMode: { type: "queue_after_active" },
-        createdBy: "user",
-        creationSource: "web",
-      });
+      yield* orchestrator
+        .dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("queued"),
+          threadId,
+          messageId: MessageId.make("message:queued"),
+          text: "queued",
+          attachments: [],
+          modelSelection: otherSelection,
+          modelSelectionExplicit: true,
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        })
+        .pipe(withOwnerSelectionIngress);
       const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
         (run) => run.status === "queued",
       )!;
-      yield* orchestrator.dispatch({
-        type: "queued-message.promote-to-steer",
-        commandId: CommandId.make("promote"),
-        threadId,
-        queuedRunId: queuedRun.id,
-        targetRunId: started[0]!.runId,
-      });
+      yield* orchestrator
+        .dispatch({
+          type: "queued-message.promote-to-steer",
+          commandId: CommandId.make("promote"),
+          threadId,
+          queuedRunId: queuedRun.id,
+          targetRunId: started[0]!.runId,
+        })
+        .pipe(withOwnerSelectionIngress);
       yield* worker.drain();
 
       const promoted = (yield* orchestrator.getThreadProjection(threadId)).turnItems.find(

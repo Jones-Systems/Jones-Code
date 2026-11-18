@@ -12,6 +12,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
+  ProviderThreadId,
   RunAttemptId,
   RunId,
   ThreadId,
@@ -83,6 +84,141 @@ const fixtureNativeExit = (runId: string) =>
   });
 
 describe("CursorAdapterV2", () => {
+  it.effect("publishes the observed Cursor agent on the reserved provider row", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-publication-" });
+      const driver = CursorAgentSdk.CURSOR_PROVIDER;
+      const instanceId = ProviderInstanceId.make("cursor");
+      const threadId = ThreadId.make("cursor-publication-thread");
+      const providerSessionId = ProviderSessionId.make("cursor-publication-session");
+      const providerThreadId = ProviderThreadId.make("cursor-preallocated-row");
+      const modelSelection = { instanceId, model: "composer-2.5" };
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd,
+      });
+      const now = yield* DateTime.now;
+      const existingProviderThread = {
+        id: providerThreadId,
+        driver,
+        providerInstanceId: instanceId,
+        providerSessionId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "idle" as const,
+        firstRunOrdinal: null,
+        lastRunOrdinal: null,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const calls: string[] = [];
+      let reservation = 0;
+      let opened = 0;
+      const adapter = yield* makeCursorAdapterV2({ instanceId, environment: { HOME: cwd } }).pipe(
+        Effect.provide(TestProviderHost.layer({ cwd })),
+        Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
+          assertComplete: Effect.void,
+          open: ({ operation }) =>
+            Effect.sync(() => {
+              const agentId = `sdk-agent-${++opened}`;
+              calls.push(`open:${operation}:${agentId}`);
+              return {
+                agentId,
+                listMessages: Effect.succeed([]),
+                send: () => Effect.die("This test only opens native conversations."),
+                close: Effect.sync(() => void calls.push(`close:${agentId}`)),
+              };
+            }),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+          runtimeLifecycle: {
+            reserve: (owner) =>
+              Effect.sync(() => {
+                assert.equal(owner, threadId);
+                const generation = `generation-${++reservation}`;
+                calls.push(`reserve:${generation}`);
+                return generation;
+              }),
+            admit: ({ runtimeGeneration, threadId: owner }) =>
+              Effect.sync(() => {
+                assert.equal(owner, threadId);
+                calls.push(`admit:${runtimeGeneration}`);
+              }),
+            bind: ({ providerThread, runtimeGeneration, requested, observed, producerOrigin }) =>
+              Effect.sync(() => {
+                assert.equal(providerThread.id, providerThreadId);
+                assert.equal(providerThread.providerSessionId, providerSessionId);
+                assert.equal(producerOrigin?.runtimeGeneration, runtimeGeneration);
+                assert.equal(producerOrigin?.providerSessionId, providerSessionId);
+                assert.deepEqual(
+                  requested,
+                  ProviderAdapter.requestedRuntimeIdentity(modelSelection, driver),
+                );
+                assert.deepEqual(observed, ProviderAdapter.unobservedRuntimeIdentity());
+                calls.push(`bind:${runtimeGeneration}:${providerThread.nativeThreadRef?.nativeId}`);
+                return {
+                  ...providerThread,
+                  runtimeIdentity: { runtimeGeneration, requested, observed },
+                };
+              }),
+            abandon: (generation) => Effect.sync(() => void calls.push(`abandon:${generation}`)),
+            invalidate: () => Effect.void,
+          },
+        });
+        const first = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+          existingProviderThread,
+        });
+        assert.equal(first.nativeThreadRef?.nativeId, "sdk-agent-1");
+        assert.equal(first.runtimeIdentity?.runtimeGeneration, "generation-1");
+
+        const reused = yield* runtime.resumeThread({ providerThread: first });
+        assert.equal(reused.runtimeIdentity?.runtimeGeneration, "generation-1");
+        const next = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+          existingProviderThread: { ...reused, nativeThreadRef: null },
+          forceNewNativeThread: true,
+        });
+        assert.equal(next.nativeThreadRef?.nativeId, "sdk-agent-2");
+        assert.equal(next.runtimeIdentity?.runtimeGeneration, "generation-2");
+      }).pipe(Effect.scoped);
+      assert.deepEqual(calls, [
+        "reserve:generation-1",
+        "admit:generation-1",
+        "open:create:sdk-agent-1",
+        "bind:generation-1:sdk-agent-1",
+        "close:sdk-agent-1",
+        "reserve:generation-2",
+        "admit:generation-2",
+        "open:create:sdk-agent-2",
+        "bind:generation-2:sdk-agent-2",
+        "abandon:generation-1",
+        "close:sdk-agent-2",
+        "abandon:generation-2",
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+      ),
+    ),
+  );
+
   it.effect.each([
     "cancel rejection",
     "silent cancel",

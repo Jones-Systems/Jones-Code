@@ -909,9 +909,10 @@ function threadSnooze(
   };
 }
 
-// Provider-internal links (parentTaskId, providerInstanceId) stay out of agent results.
 /**
- * The shell's authoritative background roster. An absent roster is unknown, so
+ * Jones exposes the shell's declared task fields, including parent and provider links,
+ * to authorized roster readers. Other provider metadata stays internal.
+ * An absent roster is unknown, so
  * its fields stay absent; a capped list roster still reports the full roster's hold.
  */
 function threadBackgroundWork(
@@ -930,7 +931,23 @@ function threadBackgroundWork(
   const pendingBackgroundTasks = limit === undefined ? tasks : tasks.slice(0, limit);
   return {
     blockedOnThreadWait,
-    pendingBackgroundTasks,
+    pendingBackgroundTasks: pendingBackgroundTasks.map((task) => ({
+      taskId: task.taskId,
+      kind: task.kind,
+      ...(task.description === undefined ? {} : { description: task.description }),
+      ...(task.command === undefined ? {} : { command: task.command }),
+      ...(task.itemId === undefined ? {} : { itemId: task.itemId }),
+      ...(task.sourceThreadId === undefined ? {} : { sourceThreadId: task.sourceThreadId }),
+      ...(task.parentTaskId === undefined ? {} : { parentTaskId: task.parentTaskId }),
+      ...(task.nativeItemId === undefined ? {} : { nativeItemId: task.nativeItemId }),
+      ...(task.kind === "subagent" && task.providerInstanceId !== undefined
+        ? { providerInstanceId: task.providerInstanceId }
+        : {}),
+      ...(task.awaited === undefined ? {} : { awaited: task.awaited }),
+      ...(task.kind === "subagent" && task.childThreadId !== undefined
+        ? { childThreadId: task.childThreadId }
+        : {}),
+    })),
     backgroundHoldsCompletion: backgroundWorkHoldsCompletion(tasks),
     pendingBackgroundTasksTruncated: pendingBackgroundTasks.length < tasks.length,
   };

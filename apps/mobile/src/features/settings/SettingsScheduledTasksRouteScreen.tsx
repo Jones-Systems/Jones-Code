@@ -805,7 +805,10 @@ function TaskForm({
     if (payload === null) return;
     const input: ScheduledTaskUpsertInput = {
       ...payload,
-      modelSelection: withImplicitFastModeSelection(payload.modelSelection, config?.providers ?? []),
+      modelSelection: withImplicitFastModeSelection(
+        payload.modelSelection,
+        config?.providers ?? [],
+      ),
       ...(offersThreadModes ? { threadMode: draft.threadMode } : {}),
       // Tasks have no mode picker; a mode above the administrator's ceiling is refused.
       runtimeMode:

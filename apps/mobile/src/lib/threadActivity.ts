@@ -1855,7 +1855,9 @@ export function deriveThreadFeedPresentation(
         waitingOn > 0
           ? waitingOnSubagentsLabel(waitingOn)
           : activityLabel === "Thinking"
-            ? (zen ? liveAnswerPreview(feed) : null)
+            ? zen
+              ? liveAnswerPreview(feed)
+              : null
             : activityLabel,
         latestRun?.providerStartingLabel,
       ),

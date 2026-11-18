@@ -1,4 +1,10 @@
-import { CommandId, MessageId, RunId, ThreadId, type OrchestrationV2StoredEvent } from "@t3tools/contracts";
+import {
+  CommandId,
+  MessageId,
+  RunId,
+  ThreadId,
+  type OrchestrationV2StoredEvent,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -56,10 +62,18 @@ const make = Effect.gen(function* () {
   const observer = yield* Effect.serviceOption(CertificationObserver);
   const attemptsPresent = present("jones_start_refusal_attempts");
   const holdsPresent = present("jones_start_refusal_holds");
-  const readPrefix = Effect.fn("StartRefusal.readPrefix")(function* (key: AttemptKey): Effect.fn.Return<PrefixEvidence, SqlError> {
+  const readPrefix = Effect.fn("StartRefusal.readPrefix")(function* (
+    key: AttemptKey,
+  ): Effect.fn.Return<PrefixEvidence, SqlError> {
     if (!(yield* attemptsPresent)) return { state: "unknown" };
-    const rows = yield* sql<{ scope: AttemptScope; state: string; reason: RefusalReason | null;
-      settlement_event_id: string | null; created_sequence: number; command_id: string }>`
+    const rows = yield* sql<{
+      scope: AttemptScope;
+      state: string;
+      reason: RefusalReason | null;
+      settlement_event_id: string | null;
+      created_sequence: number;
+      command_id: string;
+    }>`
       SELECT proof.scope, proof.state, proof.reason, proof.settlement_event_id, proof.created_sequence, event.command_id
       FROM jones_start_refusal_attempts proof
       JOIN orchestration_events event ON event.sequence = proof.created_sequence
@@ -73,18 +87,35 @@ const make = Effect.gen(function* () {
           OR (event.event_type = 'run-attempt.created' AND json_extract(event.payload_json, '$.id') = ${key.attemptId}
             AND json_extract(event.payload_json, '$.runId') = ${key.runId}))`;
     const row = rows[0];
-    if (row === undefined || rows.length !== 1 || !["delegated_completion", "dependency_wake"].includes(row.scope))
+    if (
+      row === undefined ||
+      rows.length !== 1 ||
+      !["delegated_completion", "dependency_wake"].includes(row.scope)
+    )
       return { state: "unknown" };
-    const original = { scope: row.scope, commandId: CommandId.make(row.command_id), createdSequence: row.created_sequence };
-    if (row.state === "eligible" || row.state === "crossed") return { ...original, state: row.state };
-    if (row.state !== "refused" || row.reason === null || row.settlement_event_id === null) return { state: "unknown" };
-    const terminal = yield* sql`SELECT 1 FROM orchestration_events WHERE event_id = ${row.settlement_event_id}
+    const original = {
+      scope: row.scope,
+      commandId: CommandId.make(row.command_id),
+      createdSequence: row.created_sequence,
+    };
+    if (row.state === "eligible" || row.state === "crossed")
+      return { ...original, state: row.state };
+    if (row.state !== "refused" || row.reason === null || row.settlement_event_id === null)
+      return { state: "unknown" };
+    const terminal =
+      yield* sql`SELECT 1 FROM orchestration_events WHERE event_id = ${row.settlement_event_id}
       AND stream_id = ${key.threadId} AND application_event_version = 2 AND aggregate_kind = 'thread'
       AND event_type = 'run.updated' AND json_extract(payload_json, '$.id') = ${key.runId}
       AND json_extract(payload_json, '$.activeAttemptId') = ${key.attemptId}
       AND json_extract(payload_json, '$.status') = 'failed' AND json_type(payload_json, '$.startedAt') = 'null'`;
-    return terminal.length !== 1 ? { state: "unknown" } : { ...original, state: "refused", reason: row.reason,
-      settlementEventId: row.settlement_event_id };
+    return terminal.length !== 1
+      ? { state: "unknown" }
+      : {
+          ...original,
+          state: "refused",
+          reason: row.reason,
+          settlementEventId: row.settlement_event_id,
+        };
   });
 
   const establish = Effect.fn("StartRefusal.establish")(function* (

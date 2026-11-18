@@ -92,6 +92,8 @@ interface AttachedTab {
   focusReleasing: boolean;
   /** The sessions sharing the guest's one Chromium screencast; it stops with the last of them. */
   readonly screencasts: Map<string | undefined, { started: boolean; pending: number }>;
+  /** A start reached Chromium, so its shared screencast may need a native stop. */
+  screencastStartSent: boolean;
   readonly onMessage: (
     event: Electron.Event,
     method: string,
@@ -369,7 +371,10 @@ export const make = Effect.gen(function* () {
 
   /** An owner that leaves without stopping would otherwise keep the screencast running unseen. */
   const leaveScreencast = (tab: AttachedTab, owner: string | undefined) => {
-    if (!tab.screencasts.delete(owner) || tab.screencasts.size > 0) return;
+    if (!tab.screencasts.delete(owner) || tab.screencasts.size > 0 || !tab.screencastStartSent) {
+      return;
+    }
+    tab.screencastStartSent = false;
     void tab.debuggee.debugger.sendCommand("Page.stopScreencast").catch(() => {});
   };
 
@@ -420,7 +425,14 @@ export const make = Effect.gen(function* () {
       sessionId: string | undefined,
       assertCurrent: () => void,
     ) => {
-      const result = await sendPageCommand(webContents, debuggee, method, params, sessionId, assertCurrent);
+      const result = await sendPageCommand(
+        webContents,
+        debuggee,
+        method,
+        params,
+        sessionId,
+        assertCurrent,
+      );
       if (method === "Network.clearBrowserCookies") await cookiesCleared?.();
       return result;
     };
@@ -471,11 +483,14 @@ export const make = Effect.gen(function* () {
               assertCurrent();
               if (current !== undefined && !current())
                 return Promise.reject(new Error("The page this screenshot was for has moved on."));
+              if (stream) tab.screencastStartSent = true;
+              else if (sessionId === undefined && method === "Page.stopScreencast") {
+                tab.screencastStartSent = false;
+              }
               return send(method, params, sessionId, assertCurrent);
             };
-            const run = () => current === undefined
-              ? sendUnlessStale()
-              : paintUntilAnswered(tab, sendUnlessStale);
+            const run = () =>
+              current === undefined ? sendUnlessStale() : paintUntilAnswered(tab, sendUnlessStale);
             return change === null ? run() : change.then(run);
           };
           return method === "Page.captureScreenshot"
@@ -492,7 +507,7 @@ export const make = Effect.gen(function* () {
                     if (stream) {
                       stream.pending -= 1;
                       stream.started = true;
-                      // A detach's stop can overtake a start still waiting on focus; nobody owns it now.
+                      // A dispatched start can complete after its owner detached and stopped it.
                       if (tab.screencasts.get(owner) !== stream && tab.screencasts.size === 0) {
                         void debuggee.sendCommand("Page.stopScreencast").catch(() => {});
                       }
@@ -646,6 +661,7 @@ export const make = Effect.gen(function* () {
       agentUsed: false,
       focusReleasing: false,
       screencasts: new Map(),
+      screencastStartSent: false,
       onMessage: (_event, method, params, sessionId) => {
         if (method === "Page.downloadWillBegin") {
           const guid = (params as { guid?: unknown } | undefined)?.guid;

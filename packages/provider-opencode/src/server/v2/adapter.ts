@@ -274,7 +274,7 @@ interface ActiveTurn {
   readonly settledInbox: Set<string>;
   // Reconnects replay finished tools, so each nested html_render takes a page only once.
   readonly takenPages: Set<string>;
-  heldEnd: TurnTerminal | undefined;
+  heldEnd: (TurnTerminal & { readonly evidenceKind: ExecutionEndEvidence }) | undefined;
   awaitingStart: boolean;
   /** Scope child tool IDs because model-generated IDs can repeat parent IDs. */
   readonly scope: string;
@@ -386,6 +386,8 @@ interface ThreadState {
     | undefined;
   instructions: string | undefined;
 }
+
+type ExecutionEndEvidence = "provider_result" | "local_failure";
 
 type TurnTerminal =
   | { readonly status: "completed" | "interrupted" }
@@ -2319,6 +2321,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       state: ThreadState,
       terminal: TurnTerminal,
       threadDisposition: "reusable" | "broken" = "reusable",
+      evidenceKind: ExecutionEndEvidence = "local_failure",
     ) {
       const turn = state.active;
       if (turn === undefined) return;
@@ -2384,7 +2387,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       );
       const window = windowOf(turn.input.runtimePolicy.cwd, turn.input.modelSelection.model);
       const lastStep = turn.lastStep;
-      yield* emitProviderTurn(state, turn, {
+      const finalizedTurn: OrchestrationV2ProviderTurn = {
         ...turn.providerTurn,
         status: terminal.status,
         completedAt,
@@ -2403,7 +2406,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                 updatedAt: DateTime.formatIso(completedAt),
               },
             }),
-      });
+      };
+      yield* emitProviderTurn(state, turn, finalizedTurn);
       // Subagent turns are runless; their calls own settlement.
       if (state.subagent !== undefined) {
         const call = state.subagent.call;
@@ -2435,6 +2439,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       yield* setSessionStatus(pending.size > 0 ? "waiting" : anyActive ? "running" : "ready", null);
       const base = {
         type: "turn.terminal" as const,
+        providerTurn: finalizedTurn,
+        evidenceKind:
+          terminal.status === "interrupted" && evidenceKind === "provider_result"
+            ? ("attributed_abort" as const)
+            : evidenceKind,
         driver,
         // Native forks change thread IDs; terminal events must retain the recorded start identity.
         providerThreadId: turn.providerTurn.providerThreadId,
@@ -3236,17 +3245,18 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       state: ThreadState,
       turn: ActiveTurn,
       end: TurnTerminal,
+      evidenceKind: ExecutionEndEvidence = "provider_result",
     ) {
       if (end.status === "completed" && (turn.steers.size > 0 || goalHoldsTurn(state))) {
-        turn.heldEnd = end;
+        turn.heldEnd = { ...end, evidenceKind };
         return;
       }
-      yield* finishTurn(state, end);
+      yield* finishTurn(state, end, "reusable", evidenceKind);
     });
 
     const endIfSettled = (state: ThreadState, turn: ActiveTurn) =>
       turn.heldEnd !== undefined && turn.steers.size === 0 && !goalHoldsTurn(state)
-        ? finishTurn(state, turn.heldEnd)
+        ? finishTurn(state, turn.heldEnd, "reusable", turn.heldEnd.evidenceKind)
         : Effect.void;
 
     const handleEvent = Effect.fnUntraced(function* (event: OpenCode2Client.OpenCode2StreamEvent) {
@@ -3732,7 +3742,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                       }),
                     }
                   : { status: "interrupted" };
-            yield* endExecution(state, turn, terminal);
+            // Reconciliation can infer an end from missing activity after a lost stream.
+            yield* endExecution(state, turn, terminal, "local_failure");
           }),
         );
       }
@@ -4938,6 +4949,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                   reason: "previous_turn_active",
                 });
               }
+              // Orchestration can assign the fork a different ID after its native session is registered.
+              state.providerThread = { ...state.providerThread, id: turnInput.providerThread.id };
               if (isContinuation(turnInput)) return yield* runWake(state, turnInput);
               const afterUnsettled = state.unsettled;
               let stillStopping = false;
@@ -5108,7 +5121,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                 state.strandedSteers.delete(inboxID);
                 if (state.active === turn) {
                   if (turn.interrupted && turn.heldEnd !== undefined) {
-                    turn.heldEnd = { status: "interrupted" };
+                    turn.heldEnd = { ...turn.heldEnd, status: "interrupted" };
                   }
                   yield* endIfSettled(state, turn);
                 }

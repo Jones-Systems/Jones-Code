@@ -316,7 +316,8 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
     if (bootstrapped === undefined) return {} satisfies AutoBootstrapWelcomeTargets;
     const { project } = bootstrapped;
     const existingThread = (yield* metadata.list({
-      projectId: project.id, location: "active",
+      projectId: project.id,
+      location: "active",
     })).threads.find((thread) => isListedThreadLineage(thread.lineage));
     if (existingThread === undefined) {
       const serverSettings = yield* ServerSettings.ServerSettingsService;

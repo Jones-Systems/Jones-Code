@@ -51,6 +51,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -1014,6 +1015,7 @@ const addCursorTurnUsage = (
 };
 
 interface CursorLiveAgent {
+  readonly runtimeGeneration?: string;
   readonly eventProducer: ProviderEventOrigin.ProviderEventProducer;
   readonly terminalDrain: ProviderControlTerminalDrain;
   readonly nativeThreadId: string;
@@ -1099,8 +1101,19 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         const resumedAgent = yield* Ref.make<string | null>(null);
         const warnedUnsupportedSandbox = yield* Ref.make(false);
         const activeTurn = yield* Ref.make<ActiveCursorTurn | null>(null);
-        const awaitTerminalPersistence = input.runtimeLifecycle !== undefined;
+        const lifecycle = input.runtimeLifecycle;
+        const awaitTerminalPersistence = lifecycle !== undefined;
+        const openLock = yield* Semaphore.make(1);
         let retirementUnknown: ProviderControlOutcomeUnknown | undefined;
+        let openUnknown: ProviderAdapter.ProviderRuntimeBindingError | undefined;
+        const retiredGenerations = new Set<string>();
+        const releaseRetiredGenerations = Effect.gen(function* () {
+          if (lifecycle === undefined) return;
+          for (const generation of retiredGenerations) {
+            yield* lifecycle.abandon(generation);
+            retiredGenerations.delete(generation);
+          }
+        });
         const planIds = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact["id"]>());
 
         const emitProviderEvent = Effect.fn("CursorAdapterV2.emitProviderEvent")(
@@ -2635,6 +2648,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                   Effect.andThen(
                     Effect.gen(function* () {
                       agent.eventProducer.retire();
+                      if (agent.runtimeGeneration !== undefined) {
+                        retiredGenerations.add(agent.runtimeGeneration);
+                      }
                       yield* Ref.update(liveAgent, (current) =>
                         current === agent ? null : current,
                       );
@@ -2716,92 +2732,203 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             ),
         );
 
-        const openAgent = Effect.fnUntraced(function* (openInput: {
-          readonly operation: "create" | "resume";
-          readonly threadId: ThreadId;
-          readonly modelSelection: ModelSelection;
-          readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
-          readonly agentId?: string;
-          readonly storeCwd?: string | undefined;
-        }) {
-          if (retirementUnknown !== undefined) return yield* retirementUnknown;
-          const existing = yield* Ref.get(liveAgent);
-          if (existing?.pendingSend) {
-            retirementUnknown = new ProviderControlOutcomeUnknown({
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              providerSessionId: input.providerSessionId,
-              nativeThreadId: existing.nativeThreadId,
-              operation: "retire",
-            });
-            return yield* retirementUnknown;
-          }
-          const cwd = openInput.runtimePolicy.cwd ?? process.cwd();
-          const storeCwd =
-            openInput.storeCwd ??
-            (openInput.operation === "resume"
-              ? existing !== null && existing.nativeThreadId === openInput.agentId
-                ? existing.storeCwd
-                : input.resumeFromSession?.cwd
-              : undefined) ??
-            cwd;
-          if (
-            existing !== null &&
-            openInput.operation === "resume" &&
-            existing.nativeThreadId === openInput.agentId &&
-            existing.retirement === undefined
-          ) {
-            return existing;
-          }
-          if (existing !== null) {
-            yield* retireAgent(existing);
-          }
-          const options = makeCursorAgentOptions({
-            ...(apiKey === undefined ? {} : { apiKey }),
-            modelSelection: openInput.modelSelection,
-            models: adapterOptions.getModels?.() ?? [],
-            runtimePolicy: openInput.runtimePolicy,
-            platform,
-            threadId: openInput.threadId,
-            mcpSession: yield* mcpSessions.read(openInput.threadId),
-          });
-          if (
-            platform === "win32" &&
-            openInput.runtimePolicy.sandboxPolicy === undefined &&
-            openInput.runtimePolicy.runtimeMode !== "full-access" &&
-            options.local?.sandboxOptions?.enabled === false &&
-            !(yield* Ref.getAndSet(warnedUnsupportedSandbox, true))
-          ) {
-            yield* Effect.logWarning(
-              "Cursor cannot sandbox the filesystem on Windows; this thread runs without filesystem isolation.",
-            );
-          }
-          const sdkSession = yield* runner
-            .open({
-              operation: openInput.operation,
-              ...(openInput.agentId === undefined ? {} : { agentId: openInput.agentId }),
-              storeCwd,
-              options,
+        const openAgent = Effect.fnUntraced(
+          function* (openInput: {
+            readonly operation: "create" | "resume";
+            readonly threadId: ThreadId;
+            readonly modelSelection: ModelSelection;
+            readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+            readonly agentId?: string;
+            readonly storeCwd?: string | undefined;
+            readonly providerThread?: OrchestrationV2ProviderThread | undefined;
+          }) {
+            if (retirementUnknown !== undefined) return yield* retirementUnknown;
+            if (openUnknown !== undefined) return yield* openUnknown;
+            const existing = yield* Ref.get(liveAgent);
+            if (existing?.pendingSend) {
+              retirementUnknown = new ProviderControlOutcomeUnknown({
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                providerSessionId: input.providerSessionId,
+                nativeThreadId: existing.nativeThreadId,
+                operation: "retire",
+              });
+              return yield* retirementUnknown;
+            }
+            const cwd = openInput.runtimePolicy.cwd ?? process.cwd();
+            const storeCwd =
+              openInput.storeCwd ??
+              (openInput.operation === "resume"
+                ? existing !== null && existing.nativeThreadId === openInput.agentId
+                  ? existing.storeCwd
+                  : input.resumeFromSession?.cwd
+                : undefined) ??
+              cwd;
+            if (
+              existing !== null &&
+              openInput.operation === "resume" &&
+              existing.nativeThreadId === openInput.agentId &&
+              existing.retirement === undefined
+            ) {
+              const providerThread = openInput.providerThread!;
+              if (
+                existing.runtimeGeneration !== undefined &&
+                providerThread.runtimeIdentity?.runtimeGeneration !== existing.runtimeGeneration
+              ) {
+                return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                  driver: CursorAgentSdk.CURSOR_PROVIDER,
+                  detail: "The captured Cursor producer has no matching published runtime binding.",
+                });
+              }
+              return { agent: existing, providerThread };
+            }
+            if (existing !== null) {
+              yield* retireAgent(existing);
+            }
+            const options = makeCursorAgentOptions({
+              ...(apiKey === undefined ? {} : { apiKey }),
+              modelSelection: openInput.modelSelection,
+              models: adapterOptions.getModels?.() ?? [],
+              runtimePolicy: openInput.runtimePolicy,
+              platform,
               threadId: openInput.threadId,
-              providerSessionId: input.providerSessionId,
-            })
-            .pipe(Effect.mapError(classifyCursorModelRejection(openInput.modelSelection)));
-          const next: CursorLiveAgent = {
-            eventProducer: ProviderEventOrigin.makeProviderEventProducer({
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              instanceId: adapterOptions.instanceId,
-              providerSessionId: input.providerSessionId,
-            }),
-            terminalDrain: makeProviderControlTerminalDrain(),
-            openedForResume: openInput.operation === "resume",
-            lastTurn: null,
-            pendingSend: false,
-            nativeThreadId: sdkSession.agentId,
-            storeCwd,
-            session: sdkSession,
-          };
-          yield* Ref.set(liveAgent, next);
-          return next;
-        });
+              mcpSession: yield* mcpSessions.read(openInput.threadId),
+            });
+            if (
+              platform === "win32" &&
+              openInput.runtimePolicy.sandboxPolicy === undefined &&
+              openInput.runtimePolicy.runtimeMode !== "full-access" &&
+              options.local?.sandboxOptions?.enabled === false &&
+              !(yield* Ref.getAndSet(warnedUnsupportedSandbox, true))
+            ) {
+              yield* Effect.logWarning(
+                "Cursor cannot sandbox the filesystem on Windows; this thread runs without filesystem isolation.",
+              );
+            }
+            const nativeOpen = runner
+              .open({
+                operation: openInput.operation,
+                ...(openInput.agentId === undefined ? {} : { agentId: openInput.agentId }),
+                storeCwd,
+                options,
+                threadId: openInput.threadId,
+                providerSessionId: input.providerSessionId,
+              })
+              .pipe(Effect.mapError(classifyCursorModelRejection(openInput.modelSelection)));
+            const captureAgent = Effect.fn("CursorAdapterV2.captureAgent")(function* (
+              sdkSession: CursorAgentSdk.CursorAgentSdkSession,
+              runtimeGeneration?: string,
+            ) {
+              const agent: CursorLiveAgent = {
+                ...(runtimeGeneration === undefined ? {} : { runtimeGeneration }),
+                eventProducer: ProviderEventOrigin.makeProviderEventProducer({
+                  driver: CursorAgentSdk.CURSOR_PROVIDER,
+                  instanceId: adapterOptions.instanceId,
+                  providerSessionId: input.providerSessionId,
+                  ...(runtimeGeneration === undefined ? {} : { runtimeGeneration }),
+                }),
+                terminalDrain: makeProviderControlTerminalDrain(),
+                openedForResume: openInput.operation === "resume",
+                lastTurn: null,
+                pendingSend: false,
+                nativeThreadId: sdkSession.agentId,
+                storeCwd,
+                session: sdkSession,
+              };
+              yield* Ref.set(liveAgent, agent);
+              return agent;
+            });
+            const agent =
+              lifecycle === undefined
+                ? yield* nativeOpen.pipe(Effect.flatMap((session) => captureAgent(session)))
+                : yield* Effect.uninterruptibleMask((restore) =>
+                    Effect.gen(function* () {
+                      const runtimeGeneration = yield* lifecycle.reserve(openInput.threadId);
+                      const admission = yield* restore(
+                        lifecycle.admit({ runtimeGeneration, threadId: openInput.threadId }),
+                      ).pipe(Effect.exit);
+                      if (Exit.isFailure(admission)) {
+                        yield* lifecycle.abandon(runtimeGeneration);
+                        return yield* Effect.failCause(admission.cause);
+                      }
+                      const opened = yield* restore(nativeOpen).pipe(Effect.exit);
+                      if (Exit.isSuccess(opened)) {
+                        return yield* captureAgent(opened.value, runtimeGeneration);
+                      }
+                      const cause = Cause.squash(opened.cause);
+                      if (cause instanceof CursorModelUnavailableError) {
+                        yield* lifecycle.abandon(runtimeGeneration);
+                        return yield* cause;
+                      }
+                      openUnknown = new ProviderAdapter.ProviderRuntimeBindingError({
+                        driver: CursorAgentSdk.CURSOR_PROVIDER,
+                        detail: "The admitted Cursor SDK open did not return a native agent.",
+                        cause,
+                      });
+                      if (Cause.hasInterruptsOnly(opened.cause)) {
+                        return yield* Effect.failCause(opened.cause);
+                      }
+                      return yield* openUnknown;
+                    }),
+                  );
+            if (
+              agent.nativeThreadId.length === 0 ||
+              (openInput.operation === "resume" && agent.nativeThreadId !== openInput.agentId)
+            ) {
+              openUnknown = new ProviderAdapter.ProviderRuntimeBindingError({
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                detail: "The Cursor SDK returned an unexpected native agent ID.",
+              });
+              return yield* openUnknown;
+            }
+            const now = yield* DateTime.now;
+            const providerThread: OrchestrationV2ProviderThread =
+              openInput.providerThread === undefined
+                ? makeProviderThread({
+                    idAllocator,
+                    providerInstanceId: adapterOptions.instanceId,
+                    appThreadId: openInput.threadId,
+                    providerSessionId: input.providerSessionId,
+                    nativeThreadId: agent.nativeThreadId,
+                    storeCwd,
+                    now,
+                  })
+                : {
+                    ...openInput.providerThread,
+                    providerSessionId: input.providerSessionId,
+                    nativeThreadRef: {
+                      driver: CursorAgentSdk.CURSOR_PROVIDER,
+                      nativeId: agent.nativeThreadId,
+                      strength: "strong",
+                    },
+                    ...(openInput.operation === "create"
+                      ? { nativeConversationHeadRef: null }
+                      : {}),
+                    nativeMetadata: {
+                      ...openInput.providerThread.nativeMetadata,
+                      cursorStoreCwd: storeCwd,
+                    },
+                    status: "idle",
+                    updatedAt: now,
+                  };
+            if (lifecycle === undefined || agent.runtimeGeneration === undefined) {
+              return { agent, providerThread };
+            }
+            const bound = yield* lifecycle.bind({
+              providerThread,
+              runtimeGeneration: agent.runtimeGeneration,
+              requested: ProviderAdapter.requestedRuntimeIdentity(
+                openInput.modelSelection,
+                CursorAgentSdk.CURSOR_PROVIDER,
+              ),
+              observed: ProviderAdapter.unobservedRuntimeIdentity(),
+              producerOrigin: agent.eventProducer.origin,
+            });
+            // Keep the retired generation as the predecessor until the successor is published.
+            yield* releaseRetiredGenerations;
+            return { agent, providerThread: bound };
+          },
+          (effect) => openLock.withPermits(1)(effect),
+        );
 
         let cursorSkills: ReadonlyMap<string, ServerProviderSkill> | undefined;
         const resolveCursorSkillText = Effect.fn("CursorAdapterV2.resolveCursorSkillText")(
@@ -2912,7 +3039,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         });
 
         const startTurn = Effect.fn("CursorAdapterV2.startTurn")(
-          function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+          function* (requestedTurn: ProviderAdapter.ProviderAdapterV2TurnInput) {
             const current = yield* Ref.get(activeTurn);
             if (current !== null) {
               return yield* new ProviderAdapter.ProviderAdapterProtocolError({
@@ -2921,15 +3048,17 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 reason: "previous_turn_active",
               });
             }
-            const agentId = nativeThreadId(turnInput.providerThread);
-            const agent = yield* openAgent({
+            const agentId = nativeThreadId(requestedTurn.providerThread);
+            const { agent, providerThread } = yield* openAgent({
               operation: "resume",
               agentId,
-              storeCwd: turnInput.providerThread.nativeMetadata?.cursorStoreCwd,
-              threadId: turnInput.threadId,
-              modelSelection: turnInput.modelSelection,
-              runtimePolicy: turnInput.runtimePolicy,
+              storeCwd: requestedTurn.providerThread.nativeMetadata?.cursorStoreCwd,
+              threadId: requestedTurn.threadId,
+              modelSelection: requestedTurn.modelSelection,
+              runtimePolicy: requestedTurn.runtimePolicy,
+              providerThread: requestedTurn.providerThread,
             });
+            const turnInput = { ...requestedTurn, providerThread };
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
             const mcpServers = cursorMcpServers(mcpSession);
             const hasDeviceTools =
@@ -2987,6 +3116,13 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               ...(yield* resolveWorkspaceMcpServers(turnInput.runtimePolicy.cwd)),
               ...mcpServers,
             };
+            yield* turnInput.revalidateStartAdmission ?? Effect.void;
+            if (agent.retirement !== undefined) {
+              return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                detail: "The captured Cursor producer began retirement before dispatch.",
+              });
+            }
             agent.pendingSend = true;
             const sdkRun = yield* agent.session
               .send({
@@ -3219,6 +3355,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             yield* retireAgent(existing).pipe(Effect.orDie);
           }
           if (retirementUnknown !== undefined) return yield* Effect.die(retirementUnknown);
+          if (openUnknown !== undefined) return yield* Effect.die(openUnknown);
+          yield* releaseRetiredGenerations.pipe(Effect.orDie);
           sessionEventProducer.drain();
           yield* runner.assertComplete.pipe(
             Effect.catchCause((cause) =>
@@ -3246,22 +3384,14 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ensureThread: Effect.fn("CursorAdapterV2.ensureThread")(
             function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {
-              const opened = yield* openAgent({
+              const { providerThread } = yield* openAgent({
                 operation: "create",
                 threadId: threadInput.threadId,
                 modelSelection: threadInput.modelSelection,
                 runtimePolicy: threadInput.runtimePolicy,
+                providerThread: threadInput.existingProviderThread,
               });
-              const now = yield* DateTime.now;
-              return makeProviderThread({
-                idAllocator,
-                providerInstanceId: adapterOptions.instanceId,
-                appThreadId: threadInput.threadId,
-                providerSessionId: input.providerSessionId,
-                nativeThreadId: opened.nativeThreadId,
-                storeCwd: opened.storeCwd,
-                now,
-              });
+              return providerThread;
             },
             (effect, threadInput) =>
               effect.pipe(
@@ -3276,26 +3406,31 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               ),
           ),
           resumeThread: Effect.fn("CursorAdapterV2.resumeThread")(
-            function* (threadInput: { readonly providerThread: OrchestrationV2ProviderThread }) {
+            function* (
+              threadInput: Parameters<
+                ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeThread"]
+              >[0],
+            ) {
               const agentId = nativeThreadId(threadInput.providerThread);
-              const opened = yield* openAgent({
+              const { agent, providerThread } = yield* openAgent({
                 operation: "resume",
                 agentId,
                 storeCwd: threadInput.providerThread.nativeMetadata?.cursorStoreCwd,
-                threadId: threadInput.providerThread.appThreadId ?? input.threadId,
-                modelSelection: input.modelSelection,
-                runtimePolicy: input.runtimePolicy,
+                threadId:
+                  threadInput.threadId ?? threadInput.providerThread.appThreadId ?? input.threadId,
+                modelSelection: threadInput.modelSelection ?? input.modelSelection,
+                runtimePolicy: threadInput.runtimePolicy ?? input.runtimePolicy,
+                providerThread: threadInput.providerThread,
               });
-              const now = yield* DateTime.now;
               return {
-                ...threadInput.providerThread,
+                ...providerThread,
                 nativeMetadata: {
-                  ...threadInput.providerThread.nativeMetadata,
-                  cursorStoreCwd: opened.storeCwd,
+                  ...providerThread.nativeMetadata,
+                  cursorStoreCwd: agent.storeCwd,
                 },
                 providerSessionId: input.providerSessionId,
                 status: "idle" as const,
-                updatedAt: now,
+                updatedAt: yield* DateTime.now,
               };
             },
             (effect, threadInput) =>
@@ -3459,13 +3594,14 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           readThreadSnapshot: Effect.fn("CursorAdapterV2.readThreadSnapshot")(
             function* (snapshotInput) {
               const requestedAgentId = nativeThreadId(snapshotInput.providerThread);
-              const agent = yield* openAgent({
+              const { agent } = yield* openAgent({
                 operation: "resume",
                 agentId: requestedAgentId,
                 storeCwd: snapshotInput.providerThread.nativeMetadata?.cursorStoreCwd,
                 threadId: snapshotInput.providerThread.appThreadId ?? input.threadId,
                 modelSelection: input.modelSelection,
                 runtimePolicy: input.runtimePolicy,
+                providerThread: snapshotInput.providerThread,
               });
               const messages = yield* agent.session.listMessages;
               const now = yield* DateTime.now;

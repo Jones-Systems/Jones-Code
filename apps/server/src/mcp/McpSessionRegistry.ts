@@ -191,18 +191,20 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     id: string,
   ) {
     const alive = yield* currentAliveMark;
-    return yield* SynchronizedRef.modify(state, ({records}) => {
-      const matching = [...records.entries()].filter(([, record]) => record.scope.thread.providerSessionId === id);
-      if (matching.length !== 1) return [undefined, {records}] as const;
+    return yield* SynchronizedRef.modify(state, ({ records }) => {
+      const matching = [...records.entries()].filter(
+        ([, record]) => record.scope.thread.providerSessionId === id,
+      );
+      if (matching.length !== 1) return [undefined, { records }] as const;
       const [tokenHash, record] = matching[0]!;
-      if (record.expired) return [undefined, {records}] as const;
+      if (record.expired) return [undefined, { records }] as const;
       if (idleMs(record.lastAlive, alive) > livenessWindowMs) {
         const next = new Map(records);
-        next.set(tokenHash, {...record, expired: true});
-        return [undefined, {records: next}] as const;
+        next.set(tokenHash, { ...record, expired: true });
+        return [undefined, { records: next }] as const;
       }
       // Read-only validity lookup: never renew lastAlive or disclose tokenHash.
-      return [record.scope, {records}] as const;
+      return [record.scope, { records }] as const;
     });
   });
   const touch: McpSessionRegistryShape["touch"] = Effect.fn("McpSessionRegistry.touch")(

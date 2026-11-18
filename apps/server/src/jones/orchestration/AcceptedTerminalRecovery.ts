@@ -23,7 +23,9 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 
 type Terminal = Extract<ProviderAdapter.ProviderAdapterV2Event, { readonly type: "turn.terminal" }>;
 type CurrentWrite = Parameters<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>[0];
-type ProviderOwnerWrite = Parameters<EventSink.EventSinkV2["Service"]["writeIfProviderThreadOwner"]>[0];
+type ProviderOwnerWrite = Parameters<
+  EventSink.EventSinkV2["Service"]["writeIfProviderThreadOwner"]
+>[0];
 type UnconditionalWrite = Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0];
 type Publication =
   | { readonly type: "current"; readonly input: CurrentWrite }
@@ -302,8 +304,8 @@ export const makeTerminalPublisher = Effect.gen(function* () {
         : request.type === "provider-owner"
           ? sink.writeIfProviderThreadOwner({ ...request.input, commandId: entry.commandId })
           : sink
-            .writeWithEffects({ ...request.input, commandId: entry.commandId })
-            .pipe(Effect.map((storedEvents) => ({ committed: true, storedEvents })));
+              .writeWithEffects({ ...request.input, commandId: entry.commandId })
+              .pipe(Effect.map((storedEvents) => ({ committed: true, storedEvents })));
     entry.uncertain = true;
     const result = yield* write;
     entry.uncertain = false;

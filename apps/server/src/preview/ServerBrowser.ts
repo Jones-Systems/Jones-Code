@@ -785,9 +785,13 @@ const make = Effect.gen(function* () {
           threadId: tab.threadId,
           tabId: tab.tabId,
           serverControlled: true,
-          navStatus: navStatus._tag === "Idle" ? navStatus : {
-            ...navStatus, url: ServerBrowserPage.withoutDataPayload(navStatus.url),
-          },
+          navStatus:
+            navStatus._tag === "Idle"
+              ? navStatus
+              : {
+                  ...navStatus,
+                  url: ServerBrowserPage.withoutDataPayload(navStatus.url),
+                },
           canGoBack: index > 0,
           canGoForward: index < count - 1,
         };
@@ -1023,7 +1027,7 @@ const make = Effect.gen(function* () {
           const tab = tabs.get(key);
           if (!tab) {
             const opening = pendingTabs.get(key);
-            if (!opening) return;
+            if (!opening || admissions.get(key)?.failed) return;
             closedPendingTabs.add(key);
             if (!opening.promise) return;
             const settled = Promise.withResolvers<void>();
@@ -1846,15 +1850,14 @@ const make = Effect.gen(function* () {
         if (placement && (admission.closed || !admission.established)) {
           // Fence queued opens before release can let them bind to a different default.
           admission.failed = true;
+          await runPromise(placement.release(snapshot));
           if (!admission.closed)
             await runPromise(
-              manager
-                .close({
-                  threadId: ThreadId.make(snapshot.threadId),
-                  tabId: snapshot.tabId,
-                }),
+              manager.close({
+                threadId: ThreadId.make(snapshot.threadId),
+                tabId: snapshot.tabId,
+              }),
             );
-          await runPromise(placement.release(snapshot));
         }
         runFork(
           Effect.logWarning(
@@ -2230,54 +2233,72 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const withinStatusDeadline = <A>(read: Promise<A>, late: () => A, deadlineMs?: number): Promise<A> => {
+  const withinStatusDeadline = <A>(
+    read: Promise<A>,
+    late: () => A,
+    deadlineMs?: number,
+  ): Promise<A> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<A>((resolve) => {
-      timer = setTimeout(() => resolve(late()), Math.max(0, Math.min(STATUS_READ_MS, (deadlineMs ?? Infinity) - Date.now())));
+      timer = setTimeout(
+        () => resolve(late()),
+        Math.max(0, Math.min(STATUS_READ_MS, (deadlineMs ?? Infinity) - Date.now())),
+      );
     });
     return Promise.race([read, deadline]).finally(() => clearTimeout(timer));
   };
 
+  const unavailableStatus = (): PreviewAutomationStatus => ({
+    available: false,
+    visible: false,
+    tabId: null,
+    url: null,
+    title: null,
+    loading: false,
+    ...profileStatus(),
+  });
+
   const statusWithTitle = async (
-    tab: ServerTab | undefined,
+    initialTab: ServerTab | undefined,
     agentSessionId?: string,
-    deadlineMs?: number,
-    onStart?: () => void,
+    read?: { readonly deadlineMs: number; readonly onStart: () => void },
   ): Promise<PreviewAutomationStatus> => {
-    if (!tab) {
-      return {
-        available: false,
-        visible: false,
-        tabId: null,
-        url: null,
-        title: null,
-        loading: false,
-        ...profileStatus(),
-      };
-    }
-    onStart?.();
+    if (!initialTab) return unavailableStatus();
+    read?.onStart();
+    const [measuredViewport, title] = await Promise.all([
+      // A late measurement still lands in desktopViewport for the next status.
+      initialTab.desktop
+        ? withinStatusDeadline(
+            desktopStatusViewport(initialTab),
+            () => initialTab.desktopViewport,
+            read?.deadlineMs,
+          )
+        : initialTab.page.viewportSize(),
+      initialTab.page.url() === "about:blank" || initialTab.dialog
+        ? null
+        : withinStatusDeadline(
+            initialTab.page.title().catch(() => ""),
+            () => "",
+            read?.deadlineMs,
+          ).then((title) => title || null),
+    ]);
+    const tab = tabs.get(tabKey(initialTab.threadId, initialTab.tabId));
+    const replaced = tab !== initialTab;
+    // A mutation cannot confirm its result from a replacement tab.
+    if (replaced && !read)
+      throw new BrowserControlInterrupted({
+        message: "The preview tab changed while its status was being read.",
+        reason: "closed",
+      });
+    if (!tab) return unavailableStatus();
     const url = ServerBrowserPage.withoutDataPayload(tab.page.url());
     const loadError = loadErrorOf(tab);
     const statusUrl = loadError?.url ?? (url === "about:blank" ? null : url);
-    const [viewport, title] = await Promise.all([
-      // A late measurement still lands in desktopViewport for the next status.
-      tab.desktop
-        ? withinStatusDeadline(desktopStatusViewport(tab), () => tab.desktopViewport, deadlineMs)
-        : tab.page.viewportSize(),
-      statusUrl === null || tab.dialog
-        ? null
-        : withinStatusDeadline(
-            tab.page.title().catch(() => ""),
-            () => "",
-            deadlineMs,
-          ).then((title) => title || null),
-    ]);
-    const current = tabs.get(tabKey(tab.threadId, tab.tabId));
-    const replaced = current !== tab;
-    if (replaced) throw new BrowserControlInterrupted({
-      message: "The preview tab changed while its status was being read.",
-      reason: "closed",
-    });
+    const viewport = replaced
+      ? tab.desktop
+        ? tab.desktopViewport
+        : tab.page.viewportSize()
+      : measuredViewport;
     const status = {
       available: true,
       visible: isVisible(tab),
@@ -2285,7 +2306,9 @@ const make = Effect.gen(function* () {
       url: statusUrl,
       title: replaced ? null : title,
       recording: recordingAttempts.project(
-        tabKey(tab.threadId, tab.tabId), tab, !replaced,
+        tabKey(tab.threadId, tab.tabId),
+        tab,
+        !replaced,
         tab.desktop !== null && tab.desktop.origin !== "local",
       ),
       loading: tab.loading,
@@ -2496,14 +2519,17 @@ const make = Effect.gen(function* () {
                   while (pendingFrame && attempt.frames && current()) {
                     const next = pendingFrame;
                     pendingFrame = null;
-                    const accepted = await ownEncoder.evaluate(
-                      ([data, width]) =>
-                        (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
-                      next,
-                    ).catch(() => true);
+                    const accepted = await ownEncoder
+                      .evaluate(
+                        ([data, width]) =>
+                          (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
+                        next,
+                      )
+                      .catch(() => true);
                     if (!accepted && attempt.frames && current()) {
                       pendingFrame = null;
-                      await recordingCommand(tab, attempt, opened, () =>
+                      // The command log drains the native stop independently of encoder writes.
+                      void recordingCommand(tab, attempt, opened, () =>
                         opened.send("Page.stopScreencast"),
                       ).catch(constVoid);
                     }
@@ -2517,7 +2543,9 @@ const make = Effect.gen(function* () {
                   const cssWidth = tab.page.viewportSize()?.width ?? frame.metadata.deviceWidth;
                   pendingFrame = [frame.data, cssWidth];
                   if (framesInFlight.size > 0) return;
-                  const delivered = deliverPending().finally(() => framesInFlight.delete(delivered));
+                  const delivered = deliverPending().finally(() =>
+                    framesInFlight.delete(delivered),
+                  );
                   framesInFlight.add(delivered);
                 });
                 check();
@@ -2632,9 +2660,8 @@ const make = Effect.gen(function* () {
       let bytes = 0;
       let encoderError: unknown;
       try {
-        await stoppedNative;
-        if (!attempt.stopConfirmed && (tab.desktop || !tab.page.isClosed()))
-          throw new RecordingAttemptUnresolved();
+        // Save the encoder's bytes even when the native stop has no answer yet.
+        // The stop and all submitted commands still gate success and the next recording.
         await Promise.all(recording.framesInFlight);
 
         // A screencast can miss the last paint when the page goes idle.
@@ -2876,8 +2903,7 @@ const make = Effect.gen(function* () {
             ? latestThreadTab(request.threadId, request.agentSessionId)
             : tabs.get(tabKey(request.threadId, request.tabId)),
           request.agentSessionId,
-          deadlineMs,
-          onStart,
+          { deadlineMs, onStart },
         );
       case "open": {
         if (!request.agentSessionId)
@@ -3013,10 +3039,7 @@ const make = Effect.gen(function* () {
               );
               // Only an explicit show is sure to reach a client; desktop tabs are visible without a viewer.
               if (reveal === true && tab.viewers.size === 0 && tab.desktop === null)
-                shown = awaitViewer(
-                  tab,
-                  Math.min(REVEAL_VIEWER_WAIT_MS, deadlineMs - Date.now()),
-                );
+                shown = awaitViewer(tab, Math.min(REVEAL_VIEWER_WAIT_MS, deadlineMs - Date.now()));
             }
             await shown;
             return statusWithTitle(tab, request.agentSessionId);
@@ -3588,7 +3611,8 @@ const make = Effect.gen(function* () {
         }
         const command = editingCommand(key, modifiers);
         const copying =
-          (!tab.desktop || tab.desktop.origin !== "local") && (command?.commands[0] === "copy" || command?.commands[0] === "cut");
+          (!tab.desktop || tab.desktop.origin !== "local") &&
+          (command?.commands[0] === "copy" || command?.commands[0] === "cut");
 
         // Copy keys get disjoint millisecond windows so each frame's copy belongs to one key.
         if (copying)
@@ -3948,7 +3972,12 @@ const make = Effect.gen(function* () {
     } satisfies ServerBrowserViewer;
   });
 
-  yield* manager.events.pipe(Stream.runForEach(mirrorManagerEvent), Effect.forkScoped);
+  // Buffer opens before exposing the service, even if the mirror fiber has not run yet.
+  const managerEvents = yield* manager.subscribeEvents;
+  yield* Stream.fromSubscription(managerEvents).pipe(
+    Stream.runForEach(mirrorManagerEvent),
+    Effect.forkScoped,
+  );
   if (
     !PreviewBrowserHost.sandboxDisabled(yield* HostProcess.Environment) &&
     (yield* PreviewBrowserHost.sandboxBlocked)

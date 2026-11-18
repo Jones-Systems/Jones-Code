@@ -413,10 +413,6 @@ function makeEncoderPage() {
     ...makeContext().page,
     evaluate: vi.fn(async (script: string | ((arg: unknown) => unknown), arg?: unknown) => {
       await encoderGate?.(script);
-      if (typeof script === "function" && script.toString().includes("__t3Recorder.stop"))
-        return { mimeType: "video/webm", count: 1, bytes: 6 };
-      if (typeof script === "function" && script.toString().includes("__t3Recorder.chunk"))
-        return "dmlkZW8h";
       return typeof script === "string"
         ? NodeVM.runInContext(script, context)
         : NodeVM.runInContext(`(${script.toString()})`, context)(arg);
@@ -1076,7 +1072,9 @@ it.live("preview_snapshot reports the page budget after an ARIA timeout", () =>
         timeoutMs: 10_000,
         outcome: "reported",
       });
-      expect(error.message).toBe("Preview automation snapshot timed out after 10000ms.");
+      expect(error.message).toBe(
+        "Preview automation snapshot timed out after 10000ms. Waiting for: accessibility tree, screenshot.",
+      );
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -4812,6 +4810,8 @@ it.live(
           selectedClient: { runtimeIdentity: desktopRuntimeIdentity },
         });
         const page = desktopConnections[0]!.context.page;
+        // The desktop relay cannot install its unload listener; logical removal still completes.
+        page.exposeFunction.mockRejectedValueOnce(new Error("Desktop page unavailable"));
         yield* manager.close({ threadId: scope.thread.threadId, tabId });
         yield* Effect.promise(() => desktopReleased.promise);
         const missing = yield* broker
@@ -5115,7 +5115,7 @@ it.live.each(["error", "ontime", "late-success", "late-error", "closed"] as cons
             );
           yield* Effect.promise(() => submitted.promise);
           const pendingPath = yield* Effect.promise(() => written.promise);
-          expect(yield* Effect.promise(() => NodeFSP.readFile(pendingPath, "utf8"))).toBe("video!");
+          expect(yield* Effect.promise(() => NodeFSP.readFile(pendingPath, "utf8"))).toBe("frame");
           expect(call.pollUnsafe() === undefined).toBe(true);
           expect(yield* broker.readRecordingOperation({ scope, input: { tabId } })).toMatchObject({
             result: { status: "pending" },
@@ -5179,7 +5179,7 @@ it.live.each(["error", "ontime", "late-success", "late-error", "closed"] as cons
               expect(JSON.stringify(result)).not.toContain(pendingPath);
             }
             expect(yield* Effect.promise(() => NodeFSP.readFile(pendingPath, "utf8"))).toBe(
-              "video!",
+              "frame",
             );
             expect(yield* Effect.promise(() => NodeFSP.readdir(config.attachmentsDir))).toEqual([
               pendingPath.split("/").at(-1),
@@ -5526,9 +5526,11 @@ it.live(
         let end = yield* Queue.take(viewer.output);
         while (end._tag !== "reconnect" && end._tag !== "gone")
           end = yield* Queue.take(viewer.output);
+        desktopPageUrl = "http://localhost/replacement";
         yield* browser.attachViewer(viewerInput(tabId, false));
         title.resolve("stale");
         const result = yield* Fiber.join(status);
+        expect(result.url).toBe(desktopPageUrl);
         expect(result.title).toBeNull();
         expect(result.recording).toEqual({ state: "unknown" });
       }),
@@ -5568,6 +5570,9 @@ it.live(
             Effect.forkScoped,
           );
           yield* Effect.promise(() => submitted.promise);
+          desktopConnections[0]!.context.page.exposeFunction.mockRejectedValueOnce(
+            new Error("Desktop page unavailable"),
+          );
           yield* manager.close({ threadId: scope.thread.threadId, tabId });
           yield* Effect.promise(() => desktopReleased.promise);
           expect(desktopConnections[0]!.context.page.isClosed()).toBe(false);
@@ -5746,6 +5751,9 @@ it.live.each(
           else {
             yield* Effect.promise(() => desktopDetachSubscribed.promise);
             if (retirement === "drop") {
+              owner.page.exposeFunction.mockRejectedValueOnce(
+                new Error("Desktop page unavailable"),
+              );
               yield* manager.close({ threadId: scope.thread.threadId, tabId });
               yield* Effect.promise(() => desktopReleased.promise);
             } else desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId });
@@ -6176,7 +6184,7 @@ it.live("drives the desktop's own page for a tab the desktop renders", () =>
       yield* manager.close({ threadId: scope.thread.threadId, tabId: opened.tabId });
       yield* Effect.promise(() => desktopReleased.promise);
       expect(releasedDesktopTabs).toEqual([opened.tabId]);
-      expect(page.close).not.toHaveBeenCalled();
+      expect(page.close).toHaveBeenCalledExactlyOnceWith({ runBeforeUnload: true });
     }),
   ).pipe(Effect.provide(layer)),
 );

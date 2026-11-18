@@ -13,6 +13,7 @@ type NativeProps = {
   accessibilityLabel?: string;
   onPress?: () => void;
 };
+vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
   View: ({ children, className, style }: NativeProps) => (

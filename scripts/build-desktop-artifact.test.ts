@@ -814,9 +814,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         patchedDependencies: input.workspace.patchedDependencies ?? {},
         lockfile: input.lockfile,
       });
-      assert.deepStrictEqual(planned.dependencies, { ...merged, "node-pty": "1.2.0-beta.15" });
+      assert.deepStrictEqual(planned.dependencies, {
+        ...merged,
+        "node-pty": "1.2.0-beta.15",
+        zod: "4.6.7",
+      });
       assert.deepStrictEqual(planned.patchedDependencies, {
         "node-pty@1.2.0-beta.15": "patches/node-pty@1.2.0-beta.15.patch",
+        "@cursor/sdk@1.3.1": "patches/@cursor__sdk@1.3.1.patch",
         "@ff-labs/fff-node@0.11.0": "patches/@ff-labs__fff-node@0.11.0.patch",
       });
       for (const [name, spec] of Object.entries(input.desktopDependencies)) {
@@ -831,8 +836,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }
       assert.notProperty(planned.dependencies, "effect");
       assert.equal(
-        input.workspace.patchedDependencies?.["effect@4.1.2"],
-        "patches/effect@4.1.2.patch",
+        input.workspace.patchedDependencies?.["effect@4.1.3"],
+        "patches/effect@4.1.3.patch",
       );
       const overrides = resolveCatalogDependencies(
         input.workspace.overrides ?? {},
@@ -1900,13 +1905,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
-  it.effect("packages the macOS preview's PR bundle as untrusted", () =>
+  it.effect("marks a pull request's unsigned macOS payload as untrusted", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const workflow = yield* fs.readFileString(
         yield* path.fromFileUrl(
-          new URL("../.github/workflows/desktop-macos-preview-publish.yml", import.meta.url),
+          new URL("../.github/workflows/artifact-desktop-mac.yml", import.meta.url),
         ),
       );
       const { jobs } = yield* Schema.decodeEffect(
@@ -1915,18 +1920,25 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             jobs: Schema.Record(
               Schema.String,
               Schema.Struct({
-                uses: Schema.optional(Schema.String),
-                with: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+                steps: Schema.Array(
+                  Schema.Struct({
+                    name: Schema.optional(Schema.String),
+                    env: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+                  }),
+                ),
               }),
             ),
           }),
         ),
       )(workflow);
-      const packaging = Object.values(jobs).filter(
-        (job) => job.uses === "./.github/workflows/release-desktop.yml",
+      const packaging = Object.values(jobs)
+        .flatMap((job) => job.steps)
+        .find((step) => step.name === "Build unsigned preview DMG");
+      assert.isDefined(packaging);
+      assert.strictEqual(
+        packaging.env?.T3CODE_DESKTOP_UNTRUSTED_BUNDLE,
+        "${{ github.event_name == 'pull_request' && 'true' || 'false' }}",
       );
-      assert.isNotEmpty(packaging);
-      for (const job of packaging) assert.strictEqual(job.with?.untrusted_bundle, true);
     }),
   );
 

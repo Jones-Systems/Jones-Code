@@ -1,3 +1,4 @@
+import { CommandId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -52,18 +53,71 @@ export const layer = Layer.effect(
         )
           return yield* refused();
         const nativeCreationGuard = Option.getOrUndefined(native);
+        const recoveryResend = captured.commandId === `command:restart-resend:${input.run.id}`;
+        let receiptCommandId = captured.commandId;
+        if (recoveryResend) {
+          // Recovery uses a stable outbox key to cap retries. Its authority comes from the
+          // exact reconciliation commit that retained this attempt, identified by the effect ID.
+          const effectPrefix = `effect:restart-resend:${input.run.id}:`;
+          if (
+            nativeCreationGuard !== undefined ||
+            captured.request.type !== "provider-turn.start" ||
+            !captured.id.startsWith(effectPrefix)
+          )
+            return yield* refused();
+          const reconciliation = captured.id.slice(effectPrefix.length);
+          if (
+            !reconciliation.startsWith(`command:runtime-reconcile:startup:${input.threadId}:`) &&
+            !reconciliation.startsWith(`command:runtime-reconcile:shutdown:${input.threadId}:`)
+          )
+            return yield* refused();
+          receiptCommandId = CommandId.make(reconciliation);
+        }
         const receipt = yield* receipts
-          .getByCommandId(captured.commandId)
+          .getByCommandId(receiptCommandId)
           .pipe(Effect.mapError(refused));
         if (
           Option.isNone(receipt) ||
           receipt.value.status !== "accepted" ||
+          receipt.value.commandId !== receiptCommandId ||
           receipt.value.resultSequence < 1
         )
           return yield* refused();
         const originalReceipt = receipt.value;
         const validateReceiptTarget = Effect.fn("NativeStartAdmission.validateReceiptTarget")(
           function* () {
+            if (recoveryResend) {
+              if (
+                originalReceipt.threadId !== input.threadId ||
+                originalReceipt.commandType !== "provider-runtime.reconcile"
+              )
+                return yield* refused();
+              const rows = yield* sink
+                .readByCommandId({ commandId: receiptCommandId })
+                .pipe(Stream.runCollect, Effect.mapError(refused));
+              if (
+                rows.at(-1)?.sequence !== originalReceipt.resultSequence ||
+                rows.some(
+                  (row) =>
+                    row.commandId !== receiptCommandId || row.event.threadId !== input.threadId,
+                ) ||
+                !rows.some(
+                  ({ event }) =>
+                    event.type === "run.updated" &&
+                    event.runId === input.run.id &&
+                    event.payload.id === input.run.id &&
+                    event.payload.threadId === input.threadId &&
+                    event.payload.activeAttemptId === input.attemptId &&
+                    event.payload.userMessageId === input.run.userMessageId &&
+                    event.payload.startedAt === null &&
+                    event.payload.providerThreadId === input.providerThread.id &&
+                    event.payload.providerInstanceId === input.run.providerInstanceId &&
+                    sameOperationRequest(event.payload.modelSelection, input.run.modelSelection),
+                )
+              )
+                return yield* refused();
+              return;
+            }
             if (originalReceipt.threadId === input.threadId) return;
             if (
               originalReceipt.commandType !== "delegated_task.request" ||
@@ -159,7 +213,7 @@ export const layer = Layer.effect(
             return yield* refused();
           const settledClaim = continuation !== undefined && (yield* readSettledClaim());
           if (!settledClaim) yield* validateLiveClaim;
-          const accepted = yield* receipts.getByCommandId(captured.commandId);
+          const accepted = yield* receipts.getByCommandId(receiptCommandId);
           if (Option.isNone(accepted) || !sameOperationRequest(accepted.value, originalReceipt))
             return yield* refused();
           yield* validateReceiptTarget();

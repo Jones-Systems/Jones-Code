@@ -142,21 +142,36 @@ export class WorkerReplies {
   }
   async failure(cause: unknown, signal: AbortSignal): Promise<void> {
     this.replyStartedMs ??= this.now();
-    const scanTimedOut = typeof cause === "object" && cause !== null &&
-      "_tag" in cause && cause._tag === "WorkspaceSearchIndexScanTimedOut";
+    const scanTimedOut =
+      typeof cause === "object" &&
+      cause !== null &&
+      "_tag" in cause &&
+      cause._tag === "WorkspaceSearchIndexScanTimedOut";
     // Workspace error wrappers retain probe failures at the native boundary.
     // Fatal protocol and oversize categories must keep the existing compute ABI.
-    for (let depth = 0; depth < 3 && typeof cause === "object" && cause !== null &&
-      "cause" in cause && "_tag" in cause && String(cause._tag).startsWith("WorkspaceSearchIndex"); depth++) {
+    for (
+      let depth = 0;
+      depth < 3 &&
+      typeof cause === "object" &&
+      cause !== null &&
+      "cause" in cause &&
+      "_tag" in cause &&
+      String(cause._tag).startsWith("WorkspaceSearchIndex");
+      depth++
+    ) {
       cause = cause.cause;
     }
     const tag =
       typeof cause === "object" && cause !== null && "_tag" in cause ? cause._tag : undefined;
     // Protocol/ownership uncertainty is fatal: the parent must prove process exit before reuse.
-    if ((tag === "ComputeFailure" || tag === "SearchGitProbeFailure") && (cause as { reason?: string }).reason === "protocol")
+    if (
+      (tag === "ComputeFailure" || tag === "SearchGitProbeFailure") &&
+      (cause as { reason?: string }).reason === "protocol"
+    )
       throw cause;
     const oversize =
-      (tag === "ComputeFailure" || tag === "SearchGitProbeFailure") && (cause as { reason?: string }).reason === "oversize";
+      (tag === "ComputeFailure" || tag === "SearchGitProbeFailure") &&
+      (cause as { reason?: string }).reason === "oversize";
     // Keep the same aggregate counter; reserved terminal bytes make a partial result an explicit failure.
     await this.send({
       type: "failure",
@@ -309,8 +324,11 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
     if (result._tag === "Failure") throw result.failure;
     return result.success;
   };
-  const probeClient = new SearchProbeClient(boot, new NodeNet.Socket({ fd: 4, readable: true, writable: true }),
-    () => process.kill(process.pid, "SIGKILL"));
+  const probeClient = new SearchProbeClient(
+    boot,
+    new NodeNet.Socket({ fd: 4, readable: true, writable: true }),
+    () => process.kill(process.pid, "SIGKILL"),
+  );
   type Native = EffectTypes.Success<ReturnType<typeof make>>;
   // Scope carries native destruction. No parent-side native instance exists.
   const residents = new Map<
@@ -356,7 +374,15 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
       pendingCancellation = undefined;
     }
     const executeRequest = <A, E>(effect: EffectTypes.Effect<A, E>) =>
-      execute(effect.pipe(Effect.provideService(CurrentProbeOwner, { kind: "foreground", requestId: request.requestId })), job.controller.signal);
+      execute(
+        effect.pipe(
+          Effect.provideService(CurrentProbeOwner, {
+            kind: "foreground",
+            requestId: request.requestId,
+          }),
+        ),
+        job.controller.signal,
+      );
     try {
       const { output, status } = await job.replies.execute(async () => {
         job.controller.signal.throwIfAborted();

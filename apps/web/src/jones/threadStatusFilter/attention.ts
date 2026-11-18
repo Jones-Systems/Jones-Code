@@ -58,12 +58,13 @@ export function resolveNavigationAttentionPill(
     !thread.hasPendingApprovals &&
     !thread.hasPendingUserInput &&
     thread.pendingSubagentRequest == null
-  ) return {
-    label: "Guest Request",
-    colorClass: "text-guest-foreground",
-    dotClass: "bg-guest",
-    pulse: false,
-  };
+  )
+    return {
+      label: "Guest Request",
+      colorClass: "text-guest-foreground",
+      dotClass: "bg-guest",
+      pulse: false,
+    };
   const attention = resolveThreadAttentionPill(input);
   const label =
     attention === "Working" &&

@@ -270,24 +270,43 @@ const inspectPendingMigrations = Effect.fn("inspectPendingMigrations")(function*
   throughId?: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const tables = yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'`;
-  const rows = tables.length === 0 ? [] : yield* sql<{
-    readonly migration_id: number; readonly name: string;
-  }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
-  const recorded = rows.filter(({ migration_id }) => throughId === undefined || migration_id <= throughId)
+  const tables =
+    yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'`;
+  const rows =
+    tables.length === 0
+      ? []
+      : yield* sql<{
+          readonly migration_id: number;
+          readonly name: string;
+        }>`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`;
+  const recorded = rows
+    .filter(({ migration_id }) => throughId === undefined || migration_id <= throughId)
     .map(({ migration_id: id, name }) => ({ id, name }));
   const reconciled = reconciledV2PreviewHistory(recorded);
-  if (reconciled === null) return yield* new Migrator.MigrationError({
-    kind: "BadState", message: "Unexpected V2 preview migration history",
-  });
-  const result = inspectMigrationHistory(migrationManifest.filter(([id]) => throughId === undefined || id <= throughId), reconciled, "upstream");
+  if (reconciled === null)
+    return yield* new Migrator.MigrationError({
+      kind: "BadState",
+      message: "Unexpected V2 preview migration history",
+    });
+  const result = inspectMigrationHistory(
+    migrationManifest.filter(([id]) => throughId === undefined || id <= throughId),
+    reconciled,
+    "upstream",
+  );
   if (result.error !== undefined) {
     yield* assertV2MigrationsCanRun(throughId);
     return yield* new Migrator.MigrationError({ kind: "BadState", message: result.error });
   }
-  const pendingJones = upstreamOnly ? [] : yield* inspectJonesMigrations(JonesMigrations.jonesMigrationEntries);
-  return { pendingUpstream: result.pending, pendingJones,
-    preview: recorded.some(({ id, name }) => (id === 53 || id === 54) && name === "OrchestrationV2") };
+  const pendingJones = upstreamOnly
+    ? []
+    : yield* inspectJonesMigrations(JonesMigrations.jonesMigrationEntries);
+  return {
+    pendingUpstream: result.pending,
+    pendingJones,
+    preview: recorded.some(
+      ({ id, name }) => (id === 53 || id === 54) && name === "OrchestrationV2",
+    ),
+  };
 });
 
 export const hasPendingMigrations = Effect.fn("hasPendingMigrations")(function* () {
@@ -310,8 +329,16 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
   // The desktop waits past its readiness budget until the finished line follows this one.
-  const plan = yield* inspectPendingMigrations(toMigrationInclusive !== undefined, toMigrationInclusive);
-  const hasPending = plan.preview || plan.pendingUpstream.some((id) => toMigrationInclusive === undefined || id <= toMigrationInclusive) || plan.pendingJones.length > 0;
+  const plan = yield* inspectPendingMigrations(
+    toMigrationInclusive !== undefined,
+    toMigrationInclusive,
+  );
+  const hasPending =
+    plan.preview ||
+    plan.pendingUpstream.some(
+      (id) => toMigrationInclusive === undefined || id <= toMigrationInclusive,
+    ) ||
+    plan.pendingJones.length > 0;
   if (hasPending) yield* Effect.log(DATABASE_MIGRATIONS_STARTED_MESSAGE);
   const includesV2 =
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
@@ -354,7 +381,9 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   }
   const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
   if (hasPending) {
-    yield* Effect.log(DATABASE_MIGRATIONS_FINISHED_MESSAGE).pipe(Effect.annotateLogs({ migrations }));
+    yield* Effect.log(DATABASE_MIGRATIONS_FINISHED_MESSAGE).pipe(
+      Effect.annotateLogs({ migrations }),
+    );
   } else {
     yield* Effect.logDebug("Database schema is current");
   }

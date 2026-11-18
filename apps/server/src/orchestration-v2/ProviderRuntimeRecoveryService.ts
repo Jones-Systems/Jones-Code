@@ -126,9 +126,12 @@ function isAppOwnedDelegation(task: {
   readonly origin: OrchestrationV2Subagent["origin"];
   readonly childThreadId: ThreadId | null;
   readonly remoteChild?: OrchestrationV2Subagent["remoteChild"];
+  readonly driver: OrchestrationV2Subagent["driver"];
 }): boolean {
+  // A remote reservation belongs to the app before a child receipt is available.
   return (
-    task.origin === "app_owned" && (task.childThreadId !== null || task.remoteChild !== undefined)
+    task.origin === "app_owned" &&
+    (task.childThreadId !== null || task.remoteChild !== undefined || task.driver === "remote")
   );
 }
 

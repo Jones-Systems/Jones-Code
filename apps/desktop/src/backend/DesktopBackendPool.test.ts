@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { DESKTOP_UPDATE_IN_PROGRESS_TTL_MS } from "@t3tools/contracts";
+import { SERVER_CHILD_SHUTDOWN_GRACE_MS } from "@t3tools/shared/jones/shutdownBudget";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -432,9 +433,11 @@ describe("DesktopBackendPool", () => {
         yield* instance.start;
         yield* backend.started;
         yield* Deferred.await(ready);
+        const stopTimeout = Duration.seconds(5);
+        const terminateGrace = Duration.millis(SERVER_CHILD_SHUTDOWN_GRACE_MS);
         const quitFiber = yield* Effect.all(
           [
-            instance.stop({ timeout: Duration.seconds(5) }),
+            instance.stop({ timeout: stopTimeout }),
             Deferred.succeed(siblingStarted, undefined).pipe(
               Effect.andThen(Deferred.await(finishSibling)),
               Effect.andThen(
@@ -449,7 +452,12 @@ describe("DesktopBackendPool", () => {
         yield* Deferred.await(siblingStarted);
         assert.equal(yield* Queue.take(backend.signals), "SIGTERM");
         const unregisterFiber = yield* pool.unregister(id).pipe(Effect.forkChild);
-        yield* TestClock.adjust(Duration.seconds(5));
+        yield* TestClock.adjust(stopTimeout);
+        assert.isTrue(Option.isNone(yield* Queue.poll(backend.signals)));
+        assert.isUndefined(quitFiber.pollUnsafe());
+        assert.isUndefined(unregisterFiber.pollUnsafe());
+
+        yield* TestClock.adjust(Duration.subtract(terminateGrace, stopTimeout));
         assert.equal(yield* Queue.take(backend.signals), "SIGKILL");
         assert.isUndefined(quitFiber.pollUnsafe());
         assert.isUndefined(unregisterFiber.pollUnsafe());

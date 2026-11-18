@@ -750,7 +750,7 @@ it.effect.each([
     const nodeEvent = command.events.find((event) => event.type === "node.updated");
     assert.deepInclude(runEvent?.type === "run.updated" ? runEvent.payload : null, {
       status: terminalized ? "cancelled" : resent ? "starting" : "queued",
-      startedAt: scenario === "starting-steered" ? startedAt : null,
+      startedAt,
     });
     assert.isEmpty(command.effects);
     assert.deepEqual(

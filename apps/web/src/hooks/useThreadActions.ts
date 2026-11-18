@@ -270,6 +270,10 @@ function threadOperationFailure(target: ScopedThreadRef) {
       );
 }
 
+function readThreadWokeAt(thread: Parameters<typeof threadWokeAt>[0]) {
+  return threadWokeAt(thread, { now: new Date().toISOString() });
+}
+
 export function useThreadActions() {
   const archiveThreadMutation = useOrchestrationCommand(threadEnvironment.archive, {
     reportFailure: false,
@@ -407,7 +411,7 @@ export function useThreadActions() {
       return archiveResult;
     }
     expireThreadUndos(threadRef, LIST_PLACEMENT_UNDO_KINDS);
-    const wokeAt = threadWokeAt(thread, { now: new Date().toISOString() });
+    const wokeAt = readThreadWokeAt(thread);
     if (wokeAt !== null) {
       markThreadVisited(scopedThreadKey(threadRef), wokeAt);
     }
@@ -817,11 +821,9 @@ export function useThreadActions() {
       );
     }
     const resolved = resolveThreadTarget(target);
-    const nowIso = new Date().toISOString();
-    const wokeAt = resolved ? threadWokeAt(resolved.thread, { now: nowIso }) : null;
-    const pinOrderKey = resolved?.thread.pinnedAt != null ? resolved.thread.pinOrderKey : null;
+    const wokeAt = resolved ? readThreadWokeAt(resolved.thread) : null;
     const wasPinned = resolved?.thread.pinnedAt != null;
-    const snoozedUntil = resolved?.thread.snoozedUntil ?? null;
+    const undoPlan = ThreadUndo.planThreadUndo("settle", resolved?.thread);
     // Jones: a server with native restore undoes exactly this settle command.
     const settleCommandId = newSettleCommandId();
     const nativeRestore = readEnvironmentSupportsSettlementRestore(target.environmentId);
@@ -853,22 +855,7 @@ export function useThreadActions() {
         if (nativeRestore && readEnvironmentSupportsSettlementRestore(target.environmentId)) {
           return restoreObservedSettlement(target, settleCommandId, { settleWasNoop });
         }
-        const unsettled = await unsettleThread(target);
-        if (unsettled._tag !== "Success") return unsettled;
-        if (wasPinned) {
-          const pinned = await sendPin(
-            target,
-            pinOrderKey == null ? {} : { orderKey: pinOrderKey },
-          );
-          if (pinned._tag !== "Success") return pinned;
-        }
-        if (snoozedUntil !== null) {
-          return snoozeThreadMutation({
-            environmentId: target.environmentId,
-            input: { threadId: target.threadId, snoozedUntil },
-          });
-        }
-        return unsettled;
+        return runUndoPlan(target, undoPlan);
       },
       failureTitle: "Failed to undo settle",
     });

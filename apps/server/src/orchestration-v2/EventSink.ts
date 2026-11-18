@@ -316,6 +316,12 @@ export interface EventSinkV2Shape {
     input: RuntimeWriteContext & {
       readonly startRefusalHold?: HoldReservation;
       readonly queueHold?: QueueHoldIntent;
+      /** Record acceptance of an internal queue promotion in its event and outbox transaction. */
+      readonly queuePromotion?: {
+        readonly commandId: CommandId;
+        readonly threadId: ThreadId;
+        readonly runId: RunId;
+      };
       /**
        * Rebuilds each run.updated from the stored row with only its delegatedCompletion replaced.
        * The batch must not also change that run's lifecycle.
@@ -1132,6 +1138,19 @@ const layerBase: Layer.Layer<
               !(yield* startRefusals.value.validateReservation(input.startRefusalHold)))
           )
             return { accepted: false, committed: [], outcomes: [] };
+          if (input.queuePromotion !== undefined) {
+            const { commandId, threadId, runId } = input.queuePromotion;
+            const current = yield* projectionStore.getRun(threadId, runId);
+            if (
+              current?.status !== "queued" ||
+              Option.isSome(yield* commandReceipts.getByCommandId(commandId))
+            )
+              return yield* new EventSinkWriteError({
+                commandId,
+                eventCount: input.events.length,
+                cause: "The queue promotion no longer owns the queued run.",
+              });
+          }
           // Check ownership in the same transaction that claims the native session.
           const imported = input.unlessNativeThreadOwned;
           if (imported?.nativeThreadRef != null) {
@@ -1180,6 +1199,39 @@ const layerBase: Layer.Layer<
               { storedEvents: committed, effects: input.effects },
               checkoutIntent.value.linkEffects({ storedEvents: committed, effects: input.effects }),
             );
+          if (input.queuePromotion !== undefined) {
+            const { commandId, threadId, runId } = input.queuePromotion;
+            const last = committed.at(-1);
+            if (
+              last === undefined ||
+              last.commandId !== commandId ||
+              last.event.type !== "run.updated" ||
+              last.event.threadId !== threadId ||
+              last.event.payload.id !== runId ||
+              last.event.payload.status !== "starting" ||
+              !input.effects.some(
+                (effect) =>
+                  effect.commandId === commandId &&
+                  effect.threadId === threadId &&
+                  effect.request.type === "provider-turn.start" &&
+                  effect.request.runId === runId,
+              )
+            )
+              return yield* new EventSinkWriteError({
+                commandId,
+                eventCount: input.events.length,
+                cause: "The queue promotion did not record its exact start.",
+              });
+            yield* commandReceipts.upsert({
+              commandId,
+              threadId,
+              commandType: "queue.start",
+              acceptedAt: last.event.occurredAt,
+              resultSequence: last.sequence,
+              status: "accepted",
+              error: null,
+            });
+          }
           return { accepted: true, committed, outcomes };
         }).pipe(Effect.withTracerEnabled(false)),
         ({ accepted, committed, outcomes }) =>
@@ -1937,7 +1989,11 @@ const layerBase: Layer.Layer<
             status: "accepted",
             error: null,
           };
-          if (privateDelete && ordinary === undefined)
+          if (
+            privateDelete &&
+            (input.nativeCreation !== undefined ||
+              (Option.isSome(checkoutIntent) && ordinary === undefined))
+          )
             return yield* new CheckoutError({ reason: "unavailable" });
           const acceptance =
             legacy?.mutation.kind === "delete"
@@ -1945,7 +2001,8 @@ const layerBase: Layer.Layer<
                   sql,
                   legacy.binding,
                   receipt,
-                  ordinary!,
+                  legacy.mutation.command,
+                  ordinary,
                   { storedEvents, effects: input.effects },
                 )
               : reservation;

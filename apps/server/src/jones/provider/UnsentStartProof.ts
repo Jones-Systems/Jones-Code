@@ -18,35 +18,92 @@ export function makeUnsentStartProof(ports: {
 }) {
   return (run: OrchestrationV2Run, attempts: ReadonlyArray<OrchestrationV2RunAttempt>) =>
     Effect.gen(function* () {
-      const attempt = attempts.find((row) => row.id === run.activeAttemptId && row.runId === run.id);
+      const attempt = attempts.find(
+        (row) => row.id === run.activeAttemptId && row.runId === run.id,
+      );
       if (attempt === undefined || run.manualContinuationOfRunId !== undefined) return false;
-      const rows = (yield* ports.outbox.listByThreadId(run.threadId)).filter((row) =>
-        (row.request.type === "provider-turn.start" || row.request.type === "provider-turn.restart") &&
-        row.request.runId === run.id);
-      if (rows.length === 0 || rows.some((row) => row.nativeCreationExecutionReference !== undefined)) return false;
-      const prefix = yield* ports.refusals.readPrefix({ threadId: run.threadId,
-        runId: run.id, attemptId: attempt.id });
+      const rows = (yield* ports.outbox.listByThreadId(run.threadId)).filter(
+        (row) =>
+          (row.request.type === "provider-turn.start" ||
+            row.request.type === "provider-turn.restart") &&
+          row.request.runId === run.id,
+      );
+      if (
+        rows.length === 0 ||
+        rows.some((row) => row.nativeCreationExecutionReference !== undefined)
+      )
+        return false;
+      const prefix = yield* ports.refusals.readPrefix({
+        threadId: run.threadId,
+        runId: run.id,
+        attemptId: attempt.id,
+      });
       if (prefix.state === "refused") return rows.some((row) => row.commandId === prefix.commandId);
 
-      if (prefix.state !== "unknown" || run.startedAt !== null || attempt.reason !== "initial" ||
-          attempt.attemptOrdinal !== 1 || attempts.filter((row) => row.runId === run.id).length !== 1 ||
-          rows.length !== 1) return false;
+      if (
+        prefix.state !== "unknown" ||
+        run.startedAt !== null ||
+        attempt.reason !== "initial" ||
+        attempt.attemptOrdinal !== 1 ||
+        attempts.filter((row) => row.runId === run.id).length !== 1 ||
+        rows.length !== 1
+      )
+        return false;
       const original = rows[0]!;
-      if (original.request.type !== "provider-turn.start" ||
-          original.id !== `effect:${original.commandId}:provider-turn.start:${run.id}` || original.status !== "cancelled" ||
-          original.attemptCount !== 0 || original.leaseOwner !== null || original.payloadIdentity === undefined) return false;
+      if (
+        original.request.type !== "provider-turn.start" ||
+        original.id !== `effect:${original.commandId}:provider-turn.start:${run.id}` ||
+        original.status !== "cancelled" ||
+        original.attemptCount !== 0 ||
+        original.leaseOwner !== null ||
+        original.payloadIdentity === undefined
+      )
+        return false;
       const receipt = yield* ports.receipts.getByCommandId(original.commandId);
-      const events = yield* ports.sink.readByCommandId({ commandId: original.commandId }).pipe(Stream.runCollect);
-      const bornRun = events.find(({ event }) => event.type === "run.created" && event.payload.id === run.id);
-      const bornAttempt = events.find(({ event }) => event.type === "run-attempt.created" && event.payload.id === attempt.id);
+      const events = yield* ports.sink
+        .readByCommandId({ commandId: original.commandId })
+        .pipe(Stream.runCollect);
+      const bornRun = events.find(
+        ({ event }) => event.type === "run.created" && event.payload.id === run.id,
+      );
+      const bornAttempt = events.find(
+        ({ event }) => event.type === "run-attempt.created" && event.payload.id === attempt.id,
+      );
       const current = yield* ports.outbox.get(original.id);
-      return Option.isSome(receipt) && receipt.value.status === "accepted" &&
-        receipt.value.threadId === run.threadId && receipt.value.resultSequence === events.at(-1)?.sequence &&
-        events.every((row) => row.commandId === original.commandId && row.event.threadId === run.threadId) &&
-        bornRun?.event.type === "run.created" && bornRun.event.payload.userMessageId === run.userMessageId &&
-        bornRun.event.payload.activeAttemptId === attempt.id && bornRun.event.payload.startedAt === null &&
-        bornAttempt?.event.type === "run-attempt.created" && bornAttempt.event.payload.runId === run.id &&
-        bornAttempt.event.payload.attemptOrdinal === 1 && bornAttempt.event.payload.startedAt === null &&
-        Option.isSome(current) && sameOperationRequest(current.value, original);
+      if (
+        Option.isNone(receipt) ||
+        receipt.value.status !== "accepted" ||
+        receipt.value.threadId !== run.threadId ||
+        receipt.value.resultSequence !== events.at(-1)?.sequence ||
+        events.some(
+          (row) => row.commandId !== original.commandId || row.event.threadId !== run.threadId,
+        ) ||
+        Option.isNone(current) ||
+        !sameOperationRequest(current.value, original)
+      )
+        return false;
+      if (receipt.value.commandType === "queue.start") {
+        const promotion = events.at(-1)?.event;
+        return (
+          promotion?.type === "run.updated" &&
+          promotion.runId === run.id &&
+          promotion.payload.id === run.id &&
+          promotion.payload.status === "starting" &&
+          promotion.payload.activeAttemptId === attempt.id &&
+          promotion.payload.userMessageId === run.userMessageId &&
+          promotion.payload.startedAt === null &&
+          attempt.startedAt === null
+        );
+      }
+      return (
+        bornRun?.event.type === "run.created" &&
+        bornRun.event.payload.userMessageId === run.userMessageId &&
+        bornRun.event.payload.activeAttemptId === attempt.id &&
+        bornRun.event.payload.startedAt === null &&
+        bornAttempt?.event.type === "run-attempt.created" &&
+        bornAttempt.event.payload.runId === run.id &&
+        bornAttempt.event.payload.attemptOrdinal === 1 &&
+        bornAttempt.event.payload.startedAt === null
+      );
     }).pipe(Effect.catchCause(() => Effect.succeed(false)));
 }

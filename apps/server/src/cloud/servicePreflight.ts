@@ -6,10 +6,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
 import { skippedV2Migrations } from "../persistence/Migrations.ts";
 import { reconciledV2PreviewHistory } from "../persistence/reconcileV2PreviewMigration.ts";
-import {
-  isSupportedLauncherProtocol,
-  SERVICE_LAUNCHER_PROTOCOL,
-} from "./serviceProtocol.ts";
+import { isSupportedLauncherProtocol, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 // The launcher decodes output without importing this module's migration graph.
 export {

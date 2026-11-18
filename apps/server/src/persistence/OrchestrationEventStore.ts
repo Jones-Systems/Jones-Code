@@ -28,10 +28,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import {
-  isPublicApplicationEvent,
-  projectDomainEventForWire,
-} from "../orchestration-v2/WireProjection.ts";
+import { isPublicApplicationEvent } from "../orchestration-v2/WireProjection.ts";
 import { replayAndBufferProjectedLiveEvents } from "../orchestration-v2/LiveStreamBudget.ts";
 
 import {
@@ -475,7 +472,8 @@ const makeEventStore = Effect.gen(function* () {
             return yield* toPersistenceSqlError(
               "OrchestrationEventStore.appendAgentEvents:private-preflight",
             )(new Error("Fresh preflight events require Jones private storage."));
-          const encoded = yield* encodeV2EventJson(projectDomainEventForWire(event));
+          // The public storage schema omits private thread and run fields while retaining full event bodies.
+          const encoded = yield* encodeV2EventJson(event);
           const subagent =
             encoded.type === "subagent.updated"
               ? encoded.payload

@@ -1134,6 +1134,113 @@ const makeJonesReader = Effect.fnUntraced(function* (
 
 const CHECKPOINT_FRAMES = 1000;
 const CHECKPOINT_IDLE_MS = 100;
+// If checkpoints fall behind constant writes, the writer checkpoints itself, delaying writes only.
+const WRITER_BACKSTOP_FRAMES = 10_000;
+
+const checkpointWorkerSource = `
+const { parentPort, workerData } = require("node:worker_threads");
+const { DatabaseSync } = require("node:sqlite");
+let db;
+let frames;
+let passive;
+let idle;
+const check = (force) => {
+  if (db === undefined) {
+    db = new DatabaseSync(workerData.filename);
+    db.exec("PRAGMA busy_timeout = 5000;");
+    // macOS requires F_FULLFSYNC to flush the drive cache.
+    db.exec("PRAGMA checkpoint_fullfsync = ON;");
+    frames = db.prepare("PRAGMA wal_checkpoint(NOOP)");
+    passive = db.prepare("PRAGMA wal_checkpoint(PASSIVE)");
+  }
+  const before = frames.get();
+  let state = before;
+  if (state.log - state.checkpointed >= workerData.frames || (force && state.log > state.checkpointed)) {
+    passive.get();
+    state = frames.get();
+  }
+  // The WAL restarts only once every frame is checkpointed, so catch up when writes pause.
+  // A reader pinning the WAL stops progress; the next write retries instead of a timer loop.
+  const progressed = !force || state.checkpointed > before.checkpointed;
+  if (state.log > state.checkpointed && progressed) {
+    idle = setTimeout(() => run(true), workerData.idleMs);
+  }
+  parentPort.postMessage({ type: "checked", log: state.log, checkpointed: state.checkpointed });
+};
+const run = (force) => {
+  clearTimeout(idle);
+  try {
+    check(force);
+  } catch (error) {
+    parentPort.postMessage({ type: "failed", message: String(error && error.message ? error.message : error) });
+  }
+};
+parentPort.on("message", () => run(false));
+`;
+
+// Returns the writer's per-statement notification, or undefined when the writer checkpoints alone.
+const startCheckpointWorker = Effect.fnUntraced(function* (filename: string, writer: Connection) {
+  const warn = (reason: string) =>
+    Effect.logWarning("SQLite checkpoint worker unavailable; the writer checkpoints its own WAL", {
+      reason,
+    });
+  const [row] = yield* writer.executeUnprepared(
+    "SELECT sqlite_version() AS version",
+    [],
+    undefined,
+  );
+  const version = String(row?.version);
+  const [major = 0, minor = 0] = version.split(".").map(Number);
+  // Older SQLite treats NOOP as PASSIVE, so counting frames would checkpoint on every write.
+  if (major < 3 || (major === 3 && minor < 51)) {
+    yield* warn(`SQLite ${version} has no NOOP checkpoint`);
+    return undefined;
+  }
+  const started = Result.try(
+    () =>
+      new NodeWorkerThreads.Worker(checkpointWorkerSource, {
+        eval: true,
+        workerData: { filename, frames: CHECKPOINT_FRAMES, idleMs: CHECKPOINT_IDLE_MS },
+      }),
+  );
+  if (Result.isFailure(started)) {
+    yield* warn(String(started.failure));
+    return undefined;
+  }
+  const worker = started.success;
+  worker.unref();
+  const runFork = Effect.runForkWith(yield* Effect.context<never>());
+  let stopped = false;
+  const stop = (reason: string) => {
+    if (stopped) return;
+    stopped = true;
+    void worker.terminate();
+    runFork(warn(reason));
+  };
+  worker.on("message", (message: { readonly type?: unknown; readonly message?: unknown }) => {
+    if (message?.type === "failed") stop(String(message.message));
+  });
+  worker.on("error", (cause) => stop(cause.message));
+  worker.on("exit", (code) => stop(`exited with code ${code}`));
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(() => {
+      stopped = true;
+      return worker.terminate();
+    }),
+  );
+  let scheduled = false;
+  return () => {
+    if (stopped || scheduled) return;
+    scheduled = true;
+    // One check per event-loop turn is enough, however many statements finished in it.
+    setImmediate(() => {
+      scheduled = false;
+      // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Node workers do not accept a target origin.
+      if (!stopped) worker.postMessage(0);
+    });
+  };
+});
+
 const CHECKPOINT_BUSY_TIMEOUT_MS = 1000;
 const CHECKPOINT_BACKPRESSURE_FRAMES = 32_768;
 
@@ -2049,6 +2156,7 @@ const make = Effect.fn("makeWithDatabase")(function* (
 
   const semaphore = yield* Semaphore.make(1);
   const writerWorker = options.writerWorker === true && isFileDatabase;
+  let checkpointAfterWrite: (() => void) | undefined;
   let writerInTransaction = false;
   let writerTransactionStateAvailable = false;
   const writerConnection: Effect.Effect<Connection, SqlError> = writerWorker
@@ -2059,15 +2167,32 @@ const make = Effect.fn("makeWithDatabase")(function* (
         onReply: (transaction) => {
           writerTransactionStateAvailable = transaction !== undefined;
           writerInTransaction = transaction === true;
+          checkpointAfterWrite?.();
         },
         canClose: () => !readerRetirementUncertain,
       })
     : Effect.succeed(yield* makeConnection);
   // Opening now fails the layer for a file that is not a database, not its first query.
   const opened = yield* writerConnection;
-  // One checkpoint authority per writer. Wrap every operation through completion, including COMMIT.
+  // The server opts into coordinated admission. Other worker writers keep moving when an external reader pins the WAL.
+  const coordinatedCheckpoint = options.checkpointWorker ?? options.readerPool !== undefined;
+  if (
+    writerWorker &&
+    options.readonly !== true &&
+    options.checkpointWorker !== false &&
+    !coordinatedCheckpoint
+  ) {
+    checkpointAfterWrite = yield* startCheckpointWorker(options.filename, opened);
+    if (checkpointAfterWrite !== undefined) {
+      yield* opened.executeUnprepared(
+        `PRAGMA wal_autocheckpoint = ${WRITER_BACKSTOP_FRAMES}`,
+        [],
+        undefined,
+      );
+    }
+  }
   const asyncCheckpoint =
-    writerWorker && options.readonly !== true
+    writerWorker && options.readonly !== true && coordinatedCheckpoint
       ? yield* startJonesAsyncCheckpointWorker(
           options.filename,
           opened,
@@ -2116,12 +2241,14 @@ const make = Effect.fn("makeWithDatabase")(function* (
         })
       : undefined;
   const readerPool = { unavailable: false };
+  const configuredReader =
+    options.readerStartupTimeout !== undefined || options.readerFailureMode !== undefined;
   const readers =
     options.readerWorker && isFileDatabase && pool === undefined
-      ? yield* Effect.forEach(Array.from({ length: READER_POOL_SIZE }), () =>
+      ? yield* Effect.forEach(Array.from({ length: configuredReader ? 1 : READER_POOL_SIZE }), () =>
           Effect.map(
             Effect.all([
-              options.readerStartupTimeout !== undefined || options.readerFailureMode !== undefined
+              configuredReader
                 ? Effect.map(
                     makeJonesReader(options, 0, undefined, () => {
                       readerRetirementUncertain = true;
@@ -2351,6 +2478,17 @@ const make = Effect.fn("makeWithDatabase")(function* (
     transactionAcquirer,
     // BEGIN IMMEDIATE avoids read-then-write SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot resolve.
     beginTransaction: options.readonly === true ? "BEGIN" : "BEGIN IMMEDIATE",
+    // SQLite can leave the transaction open after a deferred constraint rejects COMMIT.
+    onCommitFailure: (connection) =>
+      connection.executeUnprepared("ROLLBACK", [], undefined).pipe(
+        Effect.catchIf(
+          (error) =>
+            error.reason.cause instanceof Error &&
+            error.reason.cause.message === "cannot rollback - no transaction is active",
+          () => Effect.void,
+        ),
+        Effect.asVoid,
+      ),
     spanAttributes: [
       ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
       [ATTR_DB_SYSTEM_NAME, "sqlite"],

@@ -208,9 +208,18 @@ it("next admission uses an unstarted starting run, then saved defaults; queued, 
 
 it("the latest captured starting selection owns account retirement ahead of saved defaults", () => {
   const frozen = ProviderInstanceId.make("captured-destination");
-  const run = (ordinal: number, instanceId: ProviderInstanceId) => ({ ordinal, status: "starting",
-    startedAt: null, modelSelection: { instanceId } }) as OrchestrationV2ThreadProjection["runs"][number];
-  assert.equal(accountTransferDestination({ ...projection,
-    runs: [run(1, source), run(2, frozen), { ...run(3, target), status: "queued" }],
-  }), frozen);
+  const run = (ordinal: number, instanceId: ProviderInstanceId) =>
+    ({
+      ordinal,
+      status: "starting",
+      startedAt: null,
+      modelSelection: { instanceId },
+    }) as OrchestrationV2ThreadProjection["runs"][number];
+  assert.equal(
+    accountTransferDestination({
+      ...projection,
+      runs: [run(1, source), run(2, frozen), { ...run(3, target), status: "queued" }],
+    }),
+    frozen,
+  );
 });

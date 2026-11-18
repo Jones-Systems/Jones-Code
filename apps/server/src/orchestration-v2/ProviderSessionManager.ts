@@ -3841,10 +3841,20 @@ export const layerWithOptions = (
                     "fork",
                     input.targetThreadId,
                     input.sourceProviderThread,
+                    input.targetProviderThread,
                     input.modelSelection,
                     input.runtimePolicy,
                   ]),
                   runtime.forkThread(input),
+                  input.targetProviderThread,
+                  {
+                    ...(input.modelSelection === undefined
+                      ? {}
+                      : { modelSelection: input.modelSelection }),
+                    ...(input.runtimePolicy === undefined
+                      ? {}
+                      : { runtimePolicy: input.runtimePolicy }),
+                  },
                 ),
               ),
               Effect.tap(({ loaded: providerThread, linkedEnvironments }) =>

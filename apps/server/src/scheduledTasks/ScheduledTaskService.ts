@@ -1017,10 +1017,18 @@ export const layer = Layer.effect(
           return { task: active, threadId: null, dispatchFailed: false };
         }
         // An unreadable queue fails closed, including for one-shot schedules.
-        if (trigger === "scheduled" && (yield* hasQueuedWake(active).pipe(
-          Effect.provideService(ThreadManagementService.ThreadManagementService, threadManagement),
-          Effect.mapError((cause) => taskError("Could not check queued schedule task runs.", { taskId: active.id, cause })),
-        ))) {
+        if (
+          trigger === "scheduled" &&
+          (yield* hasQueuedWake(active).pipe(
+            Effect.provideService(
+              ThreadManagementService.ThreadManagementService,
+              threadManagement,
+            ),
+            Effect.mapError((cause) =>
+              taskError("Could not check queued schedule task runs.", { taskId: active.id, cause }),
+            ),
+          ))
+        ) {
           yield* rescheduleMissedRun(active, startedAt, queuedWakeSkipReason);
           return { task: active, threadId: null, dispatchFailed: false };
         }
@@ -1039,12 +1047,22 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
-        yield* sql.withTransaction(Effect.gen(function* () {
-          yield* assertScheduledTarget(sql, active);
-          yield* markRunning(active.id, startedAtIso, webhook?.deliveryId);
-          if (webhook !== undefined)
-            yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
-        })).pipe(Effect.mapError((cause) => isScheduledTaskError(cause) ? cause : taskError("Could not start scheduled run.", {taskId: active.id, cause})));
+        yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* assertScheduledTarget(sql, active);
+              yield* markRunning(active.id, startedAtIso, webhook?.deliveryId);
+              if (webhook !== undefined)
+                yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
+            }),
+          )
+          .pipe(
+            Effect.mapError((cause) =>
+              isScheduledTaskError(cause)
+                ? cause
+                : taskError("Could not start scheduled run.", { taskId: active.id, cause }),
+            ),
+          );
 
         yield* notifyChanged;
 

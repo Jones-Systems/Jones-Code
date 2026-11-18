@@ -1,3 +1,4 @@
+import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { withMessageContext } from "../../jones/composer/messageContext";
 import { resolveFirstSendWorktreePreparation } from "../../jones/composer/firstSendWorktree";
 import type { EnvironmentContextRecord } from "@t3tools/contracts";
@@ -1425,7 +1426,39 @@ export function useComposerSend(input: ComposerSendInput) {
       const draftInForeground =
         !backgroundDraftOpened && currentRouteThreadKeyRef.current === routeThreadKey;
       const recoverInForeground = draftInForeground && isCurrentComposerSend();
-      composerRecovery.rejected();
+      const restored = composerRecovery.rejected();
+      if (
+        !restored &&
+        recoverInForeground &&
+        !isLocalDraftThread &&
+        entry.deliveryEvidence?.kind === "dispatch" &&
+        entry.deliveryEvidence.status === "rejected" &&
+        !entry.message.attachments?.length &&
+        !entry.message.context &&
+        sendSnapshot.draftText.trim().length > 0 &&
+        composerDraftHasUserContent(
+          useComposerDraftStore.getState().getComposerDraft(recoveryTarget()),
+        )
+      ) {
+        pendingSends.dismiss(entry.key);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Message not sent",
+            description: "Your new draft was kept. Copy the failed message to send it again.",
+            timeout: 0,
+            data: { hideCopyButton: true },
+            actionProps: {
+              children: "Copy message",
+              onClick: () => {
+                void writeTextToClipboard(sendSnapshot.draftText, "failed message").catch(
+                  () => undefined,
+                );
+              },
+            },
+          }),
+        );
+      }
       if (
         isLocalDraftThread &&
         entry.deliveryEvidence?.kind === "launch" &&
@@ -1724,13 +1757,9 @@ export function useComposerSend(input: ComposerSendInput) {
 
     if (failure !== null && !turnStartSucceeded) {
       pendingSends.failBeforeDispatch(environmentId, threadIdForSend, messageIdForSend);
-      const definitelyUnsent =
-        pendingSends.get(environmentId, threadIdForSend, messageIdForSend)?.delivery === "failed";
-      const evidence = pendingSends.get(
-        environmentId,
-        threadIdForSend,
-        messageIdForSend,
-      )?.deliveryEvidence;
+      const pending = pendingSends.get(environmentId, threadIdForSend, messageIdForSend);
+      const definitelyUnsent = pending?.delivery === "failed";
+      const evidence = pending?.deliveryEvidence;
       const creationAccepted =
         evidence?.kind === "launch" && evidence.creation.status === "accepted";
       if (
@@ -1751,6 +1780,23 @@ export function useComposerSend(input: ComposerSendInput) {
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
       if (definitelyUnsent) composerRecovery.rejected();
+      if (
+        isAtomCommandInterrupted(failure) &&
+        pending?.delivery === "uncertain" &&
+        isCurrentComposerSend() &&
+        currentRouteThreadKeyRef.current === routeThreadKey &&
+        composerDraftHasUserContent(
+          useComposerDraftStore.getState().getComposerDraft(recoveryTarget()),
+        )
+      ) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "warning",
+            title: "Message may not have been sent",
+            description: "Your new draft was kept.",
+          }),
+        );
+      }
       if (!isAtomCommandInterrupted(failure)) {
         const error = squashAtomCommandFailure(failure);
         setThreadError(

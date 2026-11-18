@@ -959,7 +959,10 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           Stream.map(threadStreamEventItem),
           Stream.mapEffect((item) =>
             Effect.try({
-              try: () => ({ ...item, event: visits.project(item.event) }),
+              try: () => {
+                const event = visits.project(item.event);
+                return event === item.event ? item : { ...item, event };
+              },
               catch: (cause) =>
                 new OrchestrationV2GetThreadProjectionError({
                   threadId: input.threadId,

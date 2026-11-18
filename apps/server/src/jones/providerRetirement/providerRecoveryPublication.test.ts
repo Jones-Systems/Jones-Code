@@ -128,12 +128,13 @@ it.effect(
               return [row];
             }),
         },
-        revalidateGuard: (_threadId, proof) => Effect.sync(() => {
-          assert.equal(proof.previousGeneration, null);
-          assert.equal(proof.binding.threadId, threadId);
-          assert.equal(proof.binding.providerThreadId, providerThread.id);
-          guardedGenerations.push(current?.runtimeIdentity?.runtimeGeneration ?? null);
-        }),
+        revalidateGuard: (_threadId, proof) =>
+          Effect.sync(() => {
+            assert.equal(proof.previousGeneration, null);
+            assert.equal(proof.binding.threadId, threadId);
+            assert.equal(proof.binding.providerThreadId, providerThread.id);
+            guardedGenerations.push(current?.runtimeIdentity?.runtimeGeneration ?? null);
+          }),
         forgetTransfers: () => Effect.void,
         bindGuard: () =>
           Effect.gen(function* () {

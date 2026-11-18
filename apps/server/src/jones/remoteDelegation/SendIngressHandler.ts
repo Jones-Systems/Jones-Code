@@ -7,8 +7,10 @@ import type { ReceiptLookupInput } from "./SendIngress.ts";
 /** Read-only declaration; registered with F's shared strict receipt schema.
  * Namespace and origin authority come only from the authenticated invocation.
  */
-export const lookupSendReceiptHandler = McpToolAccess.reads((input: ReceiptLookupInput) => Effect.gen(function* () {
-  const scope = yield* Invocation.McpInvocationContext;
-  const service = yield* Service.OrchestratorMcpService;
-  return yield* service.lookupSendReceipt(scope, input);
-}));
+export const lookupSendReceiptHandler = McpToolAccess.reads((input: ReceiptLookupInput) =>
+  Effect.gen(function* () {
+    const scope = yield* Invocation.McpInvocationContext;
+    const service = yield* Service.OrchestratorMcpService;
+    return yield* service.lookupSendReceipt(scope, input);
+  }),
+);

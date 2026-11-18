@@ -82,7 +82,16 @@ const make = Effect.gen(function* () {
           journal,
           ...(observe === undefined ? {} : { observe }),
           start: (boot, register, onExit) =>
-            ProcessSlot.start(commands[boot.slotId]!, boot, register, onExit, observe, undefined, undefined, probes),
+            ProcessSlot.start(
+              commands[boot.slotId]!,
+              boot,
+              register,
+              onExit,
+              observe,
+              undefined,
+              undefined,
+              probes,
+            ),
         });
       },
       catch: failure,

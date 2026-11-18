@@ -36,6 +36,7 @@ import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { withOwnerSelectionIngress } from "../../jones/threadConfiguration/ownerIngress.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { CommandPolicyCapabilityUnsupportedError } from "../CommandPolicy.ts";
 import {
@@ -453,7 +454,7 @@ function makeTestAdapter(input: {
           forkThread: () =>
             unimplemented(input.driver, "forkThread unused in provider switch test"),
         };
-        return runtime;
+        return yield* ProviderReplayHarness.withReplayThreadPublication(sessionInput, runtime);
       }),
   };
 }
@@ -2114,18 +2115,21 @@ describe("orchestration v2 provider switching", () => {
           });
           yield* Deferred.await(started);
           yield* worker.drain();
-          const queue = orchestrator.dispatch({
-            type: "message.dispatch",
-            createdBy: "user",
-            creationSource: "web",
-            commandId: CommandId.make(`command:queued-capability:claude:${key}`),
-            threadId: scenarioThreadId,
-            messageId: MessageId.make(`message:queued-capability:claude:${key}`),
-            text: "Queued Claude turn",
-            attachments: [],
-            modelSelection: CLAUDE_MODEL_SELECTION,
-            dispatchMode: { type: "queue_after_active" },
-          });
+          const queue = orchestrator
+            .dispatch({
+              type: "message.dispatch",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: CommandId.make(`command:queued-capability:claude:${key}`),
+              threadId: scenarioThreadId,
+              messageId: MessageId.make(`message:queued-capability:claude:${key}`),
+              text: "Queued Claude turn",
+              attachments: [],
+              modelSelection: CLAUDE_MODEL_SELECTION,
+              modelSelectionExplicit: true,
+              dispatchMode: { type: "queue_after_active" },
+            })
+            .pipe(withOwnerSelectionIngress);
           if (scenario.selectedSupportsQueue) {
             yield* queue;
           } else {
@@ -2139,7 +2143,15 @@ describe("orchestration v2 provider switching", () => {
             projection.runs.map((run) => run.status),
             scenario.selectedSupportsQueue ? ["running", "queued"] : ["running"],
           );
-          assert.deepEqual(projection.thread.modelSelection, CODEX_MODEL_SELECTION);
+          assert.deepEqual(projection.runs[0]?.modelSelection, CODEX_MODEL_SELECTION);
+          assert.equal(
+            projection.thread.activeProviderThreadId,
+            projection.runs[0]?.providerThreadId,
+          );
+          assert.deepEqual(
+            projection.thread.modelSelection,
+            scenario.selectedSupportsQueue ? CLAUDE_MODEL_SELECTION : CODEX_MODEL_SELECTION,
+          );
         }).pipe(
           Effect.provide(
             ProviderReplayHarness.layerWithRegistry(
@@ -2207,11 +2219,12 @@ describe("orchestration v2 provider switching", () => {
             OrchestrationV2Command,
             { readonly type: "message.dispatch" }
           >["dispatchMode"],
-        ) =>
-          orchestrator.dispatch({
+          creationSource: "web" | "server" | "mcp",
+        ) => {
+          const command = orchestrator.dispatch({
             type: "message.dispatch",
-            createdBy: "user",
-            creationSource: "web",
+            createdBy: creationSource === "web" ? "user" : "agent",
+            creationSource,
             commandId: CommandId.make(`command:queued-steer-provider-switch:${key}`),
             threadId: queuedThreadId,
             messageId: MessageId.make(`message:queued-steer-provider-switch:${key}`),
@@ -2220,6 +2233,8 @@ describe("orchestration v2 provider switching", () => {
             modelSelection,
             dispatchMode,
           });
+          return creationSource === "web" ? command.pipe(withOwnerSelectionIngress) : command;
+        };
         yield* orchestrator.dispatch({
           type: "thread.create",
           createdBy: "user",
@@ -2234,11 +2249,22 @@ describe("orchestration v2 provider switching", () => {
           branch: null,
           worktreePath: cwd,
         });
-        yield* dispatch("first", CODEX_MODEL_SELECTION, { type: "start_immediately" });
+        yield* dispatch("first", CODEX_MODEL_SELECTION, { type: "start_immediately" }, "web");
         yield* Deferred.await(started);
         yield* worker.drain();
-        yield* dispatch("codex-queued", CODEX_MODEL_SELECTION, { type: "queue_after_active" });
-        yield* dispatch("claude-queued", CLAUDE_MODEL_SELECTION, { type: "queue_after_active" });
+        // The server's queued selections remain pinned while an agent steers the running turn.
+        yield* dispatch(
+          "codex-queued",
+          CODEX_MODEL_SELECTION,
+          { type: "queue_after_active" },
+          "server",
+        );
+        yield* dispatch(
+          "claude-queued",
+          CLAUDE_MODEL_SELECTION,
+          { type: "queue_after_active" },
+          "server",
+        );
         const beforeSteer = yield* orchestrator.getThreadProjection(queuedThreadId);
         assert.deepEqual(
           beforeSteer.runs.map((run) => run.status),
@@ -2282,10 +2308,12 @@ describe("orchestration v2 provider switching", () => {
           Stream.runHead,
           Effect.forkScoped,
         );
-        yield* dispatch("grok-steer", GROK_MODEL_SELECTION, {
-          type: "steer_active",
-          targetRunId: beforeSteer.runs[0]!.id,
-        });
+        yield* dispatch(
+          "grok-steer",
+          GROK_MODEL_SELECTION,
+          { type: "steer_active", targetRunId: beforeSteer.runs[0]!.id },
+          "mcp",
+        );
         const afterSteer = yield* orchestrator.getThreadProjection(queuedThreadId);
         assert.deepEqual(afterSteer.thread.modelSelection, GROK_MODEL_SELECTION);
         const interruptedTurn = afterSteer.providerTurns.find(
@@ -2467,24 +2495,29 @@ describe("orchestration v2 provider switching", () => {
           dispatchMode: { type: "start_immediately" },
         });
         yield* Deferred.await(started);
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          createdBy: "user",
-          creationSource: "web",
-          commandId: CommandId.make("command:queued-account-switch:second"),
-          threadId: queuedThreadId,
-          messageId: MessageId.make("message:queued-account-switch:second"),
-          text: "Alternate account turn",
-          attachments: [],
-          modelSelection: alternateSelection,
-          dispatchMode: { type: "queue_after_active" },
-        });
+        yield* orchestrator
+          .dispatch({
+            type: "message.dispatch",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make("command:queued-account-switch:second"),
+            threadId: queuedThreadId,
+            messageId: MessageId.make("message:queued-account-switch:second"),
+            text: "Alternate account turn",
+            attachments: [],
+            modelSelection: alternateSelection,
+            modelSelectionExplicit: true,
+            dispatchMode: { type: "queue_after_active" },
+          })
+          .pipe(withOwnerSelectionIngress);
         const queued = yield* orchestrator.getThreadProjection(queuedThreadId);
         assert.deepEqual(
           queued.runs.map((run) => run.status),
           ["running", "queued"],
         );
-        assert.equal(queued.thread.providerInstanceId, CODEX_MODEL_SELECTION.instanceId);
+        assert.deepEqual(queued.thread.modelSelection, alternateSelection);
+        assert.deepEqual(queued.runs[0]?.modelSelection, CODEX_MODEL_SELECTION);
+        assert.equal(queued.thread.activeProviderThreadId, queued.runs[0]?.providerThreadId);
         const sourceNativeRef = queued.providerThreads.find(
           (providerThread) => providerThread.id === queued.runs[0]?.providerThreadId,
         )?.nativeThreadRef;
@@ -2590,11 +2623,12 @@ describe("orchestration v2 provider switching", () => {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const eventSink = yield* EventSink.EventSinkV2;
         const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
-        const dispatch = (ordinal: number, modelSelection: ModelSelection) =>
-          orchestrator.dispatch({
+        const dispatch = (ordinal: number, modelSelection: ModelSelection) => {
+          const first = ordinal === 1;
+          const command = orchestrator.dispatch({
             type: "message.dispatch",
-            createdBy: "user",
-            creationSource: "web",
+            createdBy: first ? "user" : "agent",
+            creationSource: first ? "web" : "server",
             commandId: CommandId.make(`command:queued-provider-switch:${ordinal}`),
             threadId: queuedThreadId,
             messageId: MessageId.make(`message:queued-provider-switch:${ordinal}`),
@@ -2602,9 +2636,11 @@ describe("orchestration v2 provider switching", () => {
             attachments: [],
             modelSelection,
             dispatchMode: {
-              type: ordinal === 1 ? "start_immediately" : "queue_after_active",
+              type: first ? "start_immediately" : "queue_after_active",
             },
           });
+          return first ? command.pipe(withOwnerSelectionIngress) : command;
+        };
         yield* orchestrator.dispatch({
           type: "thread.create",
           createdBy: "user",
@@ -2713,9 +2749,16 @@ describe("orchestration v2 provider switching", () => {
             : null,
           activeSession?.id,
         );
-        const startCommandId = CommandId.make(`command:system:start-queued:${queued.runs[3]!.id}`);
-        const detachEffects = (yield* effectOutbox.listByCommandId(startCommandId)).filter(
-          (effect) => effect.request.type === "provider-session.detach",
+        const effects = yield* effectOutbox.listByThreadId(queuedThreadId);
+        const promotedStart = effects.find(
+          ({ request }) =>
+            request.type === "provider-turn.start" && request.runId === queued.runs[3]?.id,
+        );
+        assert.isDefined(promotedStart);
+        const detachEffects = effects.filter(
+          (effect) =>
+            effect.commandId === promotedStart!.commandId &&
+            effect.request.type === "provider-session.detach",
         );
         assert.deepEqual(
           detachEffects.map((effect) =>

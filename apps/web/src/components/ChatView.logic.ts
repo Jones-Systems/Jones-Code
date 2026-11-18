@@ -1583,6 +1583,7 @@ export function deriveThreadPendingBackgroundTasks(
       shell,
       ...freshness,
       latestRun: null,
+      hasActiveRun: latestRun === null && liveRunIds.size > 0,
       providerThreads: [],
       turnItems: projection.turnItems,
     }).filter((task) => !taskIds.has(task.taskId)),

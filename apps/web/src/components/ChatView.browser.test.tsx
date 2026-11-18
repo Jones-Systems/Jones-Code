@@ -5,7 +5,9 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
   ThreadId,
+  T3_PROJECT_FILE_NAME,
   WS_METHODS,
+  type ProjectReadFileInput,
 } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import {
@@ -17,6 +19,7 @@ import * as Effect from "effect/Effect";
 import { expect, it, vi } from "vite-plus/test";
 import { cdp, page, userEvent } from "vite-plus/test/browser";
 
+import "~/index.css";
 import { AppRoot } from "~/AppRoot";
 // The route loads ChatView lazily, and its first transform (React Compiler over ~4k lines)
 // takes 6-11s; importing it here keeps that out of the test's timeout.
@@ -47,6 +50,19 @@ import {
   type FakeDriver,
 } from "../../test/fakeEnvironment";
 import { act, fakeTimers, render } from "../../test/render";
+
+async function chatViewport(width = 1400, height = 900) {
+  const previous = { width: window.innerWidth, height: window.innerHeight };
+  await page.viewport(width, height);
+  return { [Symbol.asyncDispose]: () => page.viewport(previous.width, previous.height) };
+}
+
+const rightPanelKeybindings = mergeWithDefaultKeybindings(
+  compileResolvedKeybindingsConfig([
+    { key: "ctrl+t", command: "rightPanel.new", when: "rightPanelOpen && !terminalFocus" },
+    { key: "ctrl+t", command: "rightPanel.toggle", when: "!rightPanelOpen" },
+  ]),
+);
 
 const PNG = Uint8Array.from(
   atob(
@@ -110,9 +126,13 @@ vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
 }));
 
 it("a machine chip stashed in one thread restores with its machine in another", async () => {
+  await using _viewport = await chatViewport();
   const other = threadWithHistory("thread-stash-restore", 1);
   const asking = threadWithQuestion("thread-stash-question", "Which file should change?");
-  using _environment = installFakeEnvironment([other, asking]);
+  // The shared shell connection keeps its first configuration between mounts.
+  using _environment = installFakeEnvironment([other, asking], {
+    keybindings: rightPanelKeybindings,
+  });
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
@@ -167,6 +187,7 @@ it("a machine chip stashed in one thread restores with its machine in another", 
 });
 
 it("a question that opens while a stashed file is checked keeps a machine stash", async () => {
+  await using _viewport = await chatViewport();
   const thread = threadWithHistory("thread-stash-late-question", 1);
   const asking = threadWithQuestion("thread-stash-late-question", "Which file should change?");
   const [request] = asking.runtimeRequests ?? [];
@@ -177,6 +198,9 @@ it("a question that opens while a stashed file is checked keeps a machine stash"
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
   });
+  using _stash = {
+    [Symbol.dispose]: () => usePromptStashStore.getState().takeEntry("stash-late-question"),
+  };
   usePromptStashStore.getState().stashEntry({
     id: "stash-late-question",
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -218,10 +242,10 @@ it("a question that opens while a stashed file is checked keeps a machine stash"
     expect(document.body.textContent).toContain("Stashed machines can't go in an answer"),
   );
   expect(usePromptStashStore.getState().entries).toHaveLength(1);
-  usePromptStashStore.getState().takeEntry("stash-late-question");
 });
 
 it("a new draft does not load its reserved thread before the server lists it", async () => {
+  await using _viewport = await chatViewport();
   using _environment = installFakeEnvironment([]);
   using fetchSpy = vi.spyOn(globalThis, "fetch");
   __setClientSettingsForTests({
@@ -252,6 +276,7 @@ it("a new draft does not load its reserved thread before the server lists it", a
 });
 
 it("an interrupted image-only first send of a new thread says it may not have been sent", async () => {
+  await using _viewport = await chatViewport();
   using _environment = installFakeEnvironment([]);
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
@@ -262,7 +287,20 @@ it("an interrupted image-only first send of a new thread says it may not have be
     .getState()
     .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
       threadId: ThreadId.make("thread-image-only-interrupted"),
+      envMode: "local",
+      environmentSelection: "manual",
     });
+  using _projectDefaults = answerRpc(WS_METHODS.projectsReadFile, (input: ProjectReadFileInput) =>
+    input.relativePath === T3_PROJECT_FILE_NAME && input.allowMissing === true
+      ? Effect.succeed({
+          relativePath: input.relativePath,
+          contents: "",
+          byteLength: 0,
+          truncated: false,
+          exists: false,
+        })
+      : Effect.never,
+  );
   // A dropped connection interrupts a new thread's launch, which is not resent.
   using launch = holdRpc(ORCHESTRATION_V2_WS_METHODS.launchThread, Effect.interrupt);
   const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
@@ -297,6 +335,7 @@ it("an interrupted image-only first send of a new thread says it may not have be
 });
 
 it("opens the thread actions menu for an older settled thread the shell leaves out", async () => {
+  await using _viewport = await chatViewport();
   const thread = { ...threadWithHistory("older-settled", 1), olderSettled: true as const };
   using _environment = installFakeEnvironment([thread]);
   __setClientSettingsForTests({
@@ -322,6 +361,7 @@ it("opens the thread actions menu for an older settled thread the shell leaves o
 });
 
 it("retains each thread's diff selection when returning from another thread or Settings", async () => {
+  await using _viewport = await chatViewport();
   const a = threadWithHistory("diff-selection-a", 1);
   const b = threadWithHistory("diff-selection-b", 1);
   using _environment = installFakeEnvironment([a, b]);
@@ -386,6 +426,7 @@ it("retains each thread's diff selection when returning from another thread or S
 });
 
 it("a stashed prompt ending in a file chip restores with the chip", async () => {
+  await using _viewport = await chatViewport();
   using _environment = installFakeEnvironment([]);
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
@@ -420,6 +461,7 @@ it("a stashed prompt ending in a file chip restores with the chip", async () => 
 });
 
 it("a rejected send leaves the timeline when a new draft was typed meanwhile", async () => {
+  await using _viewport = await chatViewport();
   const thread = threadWithHistory("rejected-send", 1);
   using _environment = installFakeEnvironment([thread], {
     acceptCommands: true,
@@ -456,6 +498,7 @@ it("a rejected send leaves the timeline when a new draft was typed meanwhile", a
 });
 
 it("Enter on an empty prompt resumes an interrupted thread", async () => {
+  await using _viewport = await chatViewport();
   const history = threadWithHistory("interrupted", 1);
   const interruptedRun = { ...history.runs[0]!, status: "interrupted" as const };
   const thread = { ...history, runs: [interruptedRun] };
@@ -485,6 +528,7 @@ it("Enter on an empty prompt resumes an interrupted thread", async () => {
 });
 
 it("opening a thread or returning to the window on a touch tablet does not focus the composer", async () => {
+  await using _viewport = await chatViewport(1194, 834);
   const realMatchMedia = window.matchMedia.bind(window);
   using _touch = vi
     .spyOn(window, "matchMedia")
@@ -492,8 +536,6 @@ it("opening a thread or returning to the window on a touch tablet does not focus
   const first = threadWithHistory("thread-29469-a", 1);
   const second = threadWithHistory("thread-29469-b", 1);
   using _environment = installFakeEnvironment([first, second]);
-  // iPad Pro 11 in landscape: the desktop layout, above max-sm.
-  await page.viewport(1194, 834);
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
@@ -530,6 +572,7 @@ it("opening a thread or returning to the window on a touch tablet does not focus
 });
 
 it("a mounted thread view lets go of the thread structures it has replaced", async () => {
+  await using _viewport = await chatViewport();
   // Items are shared with the fixture, so a reopen's snapshot also carries the earlier updates.
   const history = threadWithHistory("updated", 3);
   const items = [...history.items];
@@ -582,15 +625,10 @@ it("a mounted thread view lets go of the thread structures it has replaced", asy
 });
 
 it("a shortcut conditioned on rightPanelOpen sees the thread's open right panel", async () => {
-  await page.viewport(1280, 800);
+  await using _viewport = await chatViewport(1280, 800);
   const thread = threadWithHistory("thread-panel-shortcut", 1);
   using _environment = installFakeEnvironment([thread], {
-    keybindings: mergeWithDefaultKeybindings(
-      compileResolvedKeybindingsConfig([
-        { key: "ctrl+t", command: "rightPanel.new", when: "rightPanelOpen && !terminalFocus" },
-        { key: "ctrl+t", command: "rightPanel.toggle", when: "!rightPanelOpen" },
-      ]),
-    ),
+    keybindings: rightPanelKeybindings,
   });
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
@@ -616,6 +654,7 @@ it("a shortcut conditioned on rightPanelOpen sees the thread's open right panel"
 });
 
 it("selecting a side-chat tab focuses that side chat's composer", async () => {
+  await using _viewport = await chatViewport();
   const parent = threadWithHistory("focus-parent", 1);
   // The shell loaded by the file's first test stays; a family read serves side chats added later.
   const sideChat = (name: string) => ({
@@ -625,7 +664,6 @@ it("selecting a side-chat tab focuses that side chat's composer", async () => {
   });
   const side = sideChat("focus-side");
   const otherSide = sideChat("focus-other-side");
-  await page.viewport(1400, 900);
   using _environment = installFakeEnvironment([parent, side, otherSide]);
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,

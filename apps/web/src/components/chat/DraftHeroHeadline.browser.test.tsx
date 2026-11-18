@@ -40,6 +40,11 @@ vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
 }));
 
 it("the new-thread project picker follows the manual sidebar project order", async () => {
+  const viewport = { width: window.innerWidth, height: window.innerHeight };
+  await page.viewport(1280, 800);
+  await using _viewport = {
+    [Symbol.asyncDispose]: () => page.viewport(viewport.width, viewport.height),
+  };
   using _environment = installFakeEnvironment([], {
     extraProjects: [
       { id: ProjectId.make("project-alpha"), title: "alpha" },

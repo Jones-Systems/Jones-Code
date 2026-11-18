@@ -25,6 +25,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "packages/provider-muse/src/server/adapter.ts",
+      "to": "packages/provider-core/src/server/jones/ProviderEventOrigin.ts"
+    },
+    {
       "from": "packages/provider-acp/src/server/adapter.ts",
       "to": "packages/provider-core/src/server/jones/ProviderEventOrigin.ts"
     },

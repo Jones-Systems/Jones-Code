@@ -2,6 +2,7 @@ import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -12,6 +13,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import { BACKEND_QUIT_STOP_TIMEOUT } from "./DesktopBackendManager.ts";
 import * as DesktopHomeOwner from "./DesktopHomeOwner.ts";
 
 const withTempHome = <A, E>(
@@ -106,6 +108,7 @@ describe("DesktopHomeOwner.awaitHomeOwnershipRelease", () => {
         lock.exec("BEGIN EXCLUSIVE;");
         const released = yield* Effect.forkChild(DesktopHomeOwner.awaitHomeOwnershipRelease());
         yield* TestClock.adjust("5 seconds");
+        assert.isUndefined(released.pollUnsafe());
         lock.close();
         yield* TestClock.adjust("1 second");
         assert.isTrue(yield* Fiber.join(released));
@@ -113,7 +116,7 @@ describe("DesktopHomeOwner.awaitHomeOwnershipRelease", () => {
         const held = new NodeSqlite.DatabaseSync(`${userdata}/server-owner.sqlite`);
         held.exec("BEGIN EXCLUSIVE;");
         const owned = yield* Effect.forkChild(DesktopHomeOwner.awaitHomeOwnershipRelease());
-        yield* TestClock.adjust("1 minute");
+        yield* TestClock.adjust(Duration.sum(BACKEND_QUIT_STOP_TIMEOUT, Duration.seconds(4)));
         assert.isFalse(yield* Fiber.join(owned));
         held.close();
       }),

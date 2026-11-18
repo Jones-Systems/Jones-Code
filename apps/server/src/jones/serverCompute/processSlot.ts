@@ -172,8 +172,12 @@ export class ProcessSlot implements ComputeChild {
     this.control = child.stdio[3] as NodeStream.Duplex;
     if (probePort) {
       if (!child.stdio[4]) throw computeFailure("unavailable");
-      this.probes = new SearchProbeBinding(bootstrap, child.stdio[4] as NodeStream.Duplex,
-        probePort, (cause) => this.fail(computeFailure("protocol", cause)));
+      this.probes = new SearchProbeBinding(
+        bootstrap,
+        child.stdio[4] as NodeStream.Duplex,
+        probePort,
+        (cause) => this.fail(computeFailure("protocol", cause)),
+      );
     }
     this.exited = new Promise<void>((resolve) => {
       child.once("exit", () => {

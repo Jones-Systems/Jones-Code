@@ -211,6 +211,7 @@ const makeHarness = Effect.fnUntraced(function* (
     MuseAdapterV2Options,
     "createHost" | "nativeEventLogger" | "modelCatalog" | "continuationRequests" | "onUsageLimits"
   > = {},
+  runtimeLifecycle?: ProviderAdapter.ProviderRuntimeLifecycle,
 ) {
   let hostCount = 0;
   const adapter = yield* makeMuseAdapterV2({
@@ -229,6 +230,7 @@ const makeHarness = Effect.fnUntraced(function* (
     providerSessionId: ProviderSessionId.make(`session-${instanceId}`),
     modelSelection: modelSelection(instanceId),
     runtimePolicy: policy,
+    ...(runtimeLifecycle ? { runtimeLifecycle } : {}),
     ...(initialNativeThreadId ? { initialNativeThreadId } : {}),
   });
   const emitted = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
@@ -457,6 +459,166 @@ describe("MuseAdapterV2", () => {
       const outcome = yield* makeHarness(fake).pipe(Effect.result);
       assert.strictEqual(outcome._tag, "Failure");
       assert.isFalse(fake.calls.some((call) => call.method === "session/start"));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("publishes the native reply on the admitted host and retires only its generation", () =>
+    Effect.gen(function* () {
+      const first = yield* makeFakeMuse("first");
+      const second = yield* makeFakeMuse("second");
+      const allocated = yield* preallocatedProviderThread();
+      const timeline: string[] = [];
+      let generation = 0;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const lifecycle: ProviderAdapter.ProviderRuntimeLifecycle = {
+            reserve: (id) =>
+              Effect.sync(() => {
+                assert.strictEqual(id, THREAD_ID);
+                const reserved = String(++generation);
+                timeline.push(`reserve-${reserved}`);
+                return reserved;
+              }),
+            admit: ({ runtimeGeneration, threadId }) =>
+              Effect.sync(() => {
+                assert.strictEqual(threadId, THREAD_ID);
+                const fake = runtimeGeneration === "1" ? first : second;
+                assert.isEmpty(fake.calls);
+                timeline.push(`admit-${runtimeGeneration}`);
+              }),
+            bind: (publication) =>
+              Effect.gen(function* () {
+                const { providerThread, runtimeGeneration, requested, observed } = publication;
+                const fake = runtimeGeneration === "1" ? first : second;
+                const method = runtimeGeneration === "1" ? "session/start" : "session/resume";
+                assert.strictEqual(fake.calls[0]?.method, method);
+                assert.strictEqual(providerThread.nativeThreadRef?.nativeId, "first-1");
+                assert.strictEqual(providerThread.id, allocated.id);
+                assert.deepStrictEqual(
+                  requested,
+                  ProviderAdapter.requestedRuntimeIdentity(modelSelection(), MUSE_PROVIDER),
+                );
+                assert.deepStrictEqual(observed, ProviderAdapter.unobservedRuntimeIdentity());
+                assert.strictEqual(
+                  publication.producerOrigin?.runtimeGeneration,
+                  runtimeGeneration,
+                );
+                yield* publication.producerOrigin!.revalidateCurrent.pipe(Effect.orDie);
+                timeline.push(`bind-${runtimeGeneration}`);
+                return {
+                  ...providerThread,
+                  runtimeIdentity: { runtimeGeneration, requested, observed },
+                };
+              }),
+            abandon: (id) =>
+              Effect.sync(() => {
+                timeline.push(`abandon-${id}`);
+              }),
+            invalidate: () => Effect.die("Unexpected binding invalidation"),
+          };
+          const h = yield* makeHarness(
+            first,
+            INSTANCE_ID,
+            undefined,
+            second,
+            allocated,
+            runtimePolicy,
+            {},
+            lifecycle,
+          );
+          const updated = yield* h.takeEvent("provider_thread.updated");
+          assert.strictEqual(updated.providerThread.runtimeIdentity?.runtimeGeneration, "1");
+          const ensure = (existingProviderThread: OrchestrationV2ProviderThread) =>
+            h.runtime.ensureThread({
+              threadId: THREAD_ID,
+              existingProviderThread,
+              modelSelection: modelSelection(),
+              runtimePolicy,
+            });
+          assert.strictEqual(yield* ensure(h.providerThread), h.providerThread);
+          yield* first.disconnect();
+          yield* h.takeEvent(
+            "provider_session.updated",
+            (event) => event.providerSession.status === "error",
+          );
+          const replacement = yield* ensure(h.providerThread);
+          assert.strictEqual(replacement.runtimeIdentity?.runtimeGeneration, "2");
+        }),
+      );
+      assert.deepStrictEqual(timeline, [
+        "reserve-1",
+        "admit-1",
+        "bind-1",
+        "abandon-1",
+        "reserve-2",
+        "admit-2",
+        "bind-2",
+        "abandon-2",
+      ]);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("recovers a failed local binding without repeating native session creation", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const allocated = yield* preallocatedProviderThread();
+      const adapter = yield* makeMuseAdapterV2({
+        instanceId: INSTANCE_ID,
+        settings: museSettings,
+        environment: { PATH: "/fake/bin" },
+        createHost: async () => fake.host,
+      });
+      const attempts: ProviderAdapter.RuntimeBindingPublicationInput[] = [];
+      const runtime = yield* adapter.openSession({
+        threadId: THREAD_ID,
+        providerSessionId: allocated.providerSessionId,
+        modelSelection: modelSelection(),
+        runtimePolicy,
+        runtimeLifecycle: {
+          reserve: () => Effect.succeed("generation"),
+          admit: () => Effect.void,
+          bind: (publication) =>
+            Effect.gen(function* () {
+              attempts.push(publication);
+              if (attempts.length === 1)
+                return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                  driver: MUSE_PROVIDER,
+                  detail: "Synthetic publication failure",
+                });
+              return {
+                ...publication.providerThread,
+                runtimeIdentity: {
+                  runtimeGeneration: publication.runtimeGeneration,
+                  requested: publication.requested,
+                  observed: publication.observed,
+                },
+              };
+            }),
+          abandon: () => Effect.void,
+          invalidate: () => Effect.die("Unexpected binding invalidation"),
+        },
+      });
+      const args = {
+        threadId: THREAD_ID,
+        existingProviderThread: allocated,
+        modelSelection: modelSelection(),
+        runtimePolicy,
+      };
+      assert.strictEqual((yield* runtime.ensureThread(args).pipe(Effect.result))._tag, "Failure");
+      const recovered = yield* runtime.reconcileBindingPublication!({
+        threadId: THREAD_ID,
+        providerThreadId: allocated.id,
+        nativeThreadId: "native-1",
+        revalidate: Effect.void,
+      });
+      assert.strictEqual(recovered?.runtimeIdentity?.runtimeGeneration, "generation");
+      assert.strictEqual(yield* runtime.ensureThread(args), recovered);
+      assert.lengthOf(attempts, 2);
+      assert.strictEqual(attempts[0], attempts[1]);
+      assert.deepStrictEqual(
+        fake.calls.map((call) => call.method),
+        ["session/start"],
+      );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

@@ -1194,6 +1194,8 @@ export class AcpSessionRuntime extends Context.Service<
       | "process-group"
       | "none";
     readonly terminateProcessGroup?: Effect.Effect<void, AcpProcessGroupTerminationError>;
+    /** Observes the captured child even when its protocol stream closed first. */
+    readonly processExitConfirmed?: Effect.Effect<boolean>;
     readonly setMode: (
       modeId: string,
     ) => Effect.Effect<EffectAcpSchema.SetSessionModeResponse, EffectAcpErrors.AcpError>;
@@ -2524,6 +2526,15 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
   );
 
   return {
+    processExitConfirmed: Effect.match(child.exitCode, {
+      onSuccess: () => true,
+      // Node reports a signal exit through the platform error channel.
+      onFailure: ({ reason }) =>
+        reason.module === "ChildProcess" &&
+        reason.method === "exitCode" &&
+        reason.cause instanceof Error &&
+        /^Process interrupted due to receipt of signal: 'SIG[A-Z0-9]+'$/.test(reason.cause.message),
+    }),
     processContainment:
       linuxCgroupLease !== undefined
         ? "cgroup-v2"

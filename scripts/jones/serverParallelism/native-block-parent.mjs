@@ -76,26 +76,35 @@ await withNativeSearchProbePort(async (probes) => {
     build: command.build,
     journal,
     start: async (boot, register, onExit) => {
-      const child = await ProcessSlot.start(command, boot, register, onExit, (event) => {
-        if (
-          event.phase !== "resources" ||
-          !pending ||
-          !witnessFinished ||
-          guardianSent ||
-          event.slotId !== pending.subject.slotId ||
-          event.generation !== pending.subject.generation ||
-          Date.now() <= witnessFinished
-        )
-          return;
-        guardianSent = true;
-        emit({
-          type: "guardian-after-witness",
-          subject: pending.subject,
-          at: Date.now(),
-          outstanding: true,
-          rssBytes: event.rssBytes,
-        });
-      }, undefined, undefined, probes);
+      const child = await ProcessSlot.start(
+        command,
+        boot,
+        register,
+        onExit,
+        (event) => {
+          if (
+            event.phase !== "resources" ||
+            !pending ||
+            !witnessFinished ||
+            guardianSent ||
+            event.slotId !== pending.subject.slotId ||
+            event.generation !== pending.subject.generation ||
+            Date.now() <= witnessFinished
+          )
+            return;
+          guardianSent = true;
+          emit({
+            type: "guardian-after-witness",
+            subject: pending.subject,
+            at: Date.now(),
+            outstanding: true,
+            rssBytes: event.rssBytes,
+          });
+        },
+        undefined,
+        undefined,
+        probes,
+      );
       captured.set(child.pid, child);
       return {
         pid: child.pid,

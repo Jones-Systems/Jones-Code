@@ -27,11 +27,10 @@ export { shouldBundleCliDependency };
 
 const repoEnv = loadRepoEnv();
 const serverManifestPath = NodePath.join(import.meta.dirname, "package.json");
-const buildVersion = process.env.APP_VERSION?.trim() ||
+const buildVersion =
+  process.env.APP_VERSION?.trim() ||
   resolveTaggedSourceVersion(NodePath.join(import.meta.dirname, "../.."), packageJson.version);
-const cliBuildChannel = /^[^-+]+-(?:nightly|preview)\./.test(buildVersion)
-  ? "nightly"
-  : "latest";
+const cliBuildChannel = /^[^-+]+-(?:nightly|preview)\./.test(buildVersion) ? "nightly" : "latest";
 // Official release workflows set the telemetry channel; local builds and forks use "dev".
 const TELEMETRY_CHANNELS = ["stable", "nightly", "preview", "dev"];
 const telemetryChannel = process.env.T3CODE_TELEMETRY_CHANNEL?.trim() || "dev";
@@ -105,7 +104,10 @@ export default mergeConfig(
           name: "t3code:source-build-version",
           load(id) {
             if (NodePath.resolve(id) !== serverManifestPath) return;
-            return { code: JSON.stringify({ ...packageJson, version: buildVersion }), moduleType: "json" };
+            return {
+              code: JSON.stringify({ ...packageJson, version: buildVersion }),
+              moduleType: "json",
+            };
           },
         },
         serverComputeBuildIdentity(NodeURL.fileURLToPath(new URL("../../", import.meta.url)), {

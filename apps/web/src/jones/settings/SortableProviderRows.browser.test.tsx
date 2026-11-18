@@ -22,13 +22,22 @@ const state = vi.hoisted(() => ({
   persist: vi.fn(),
   toast: vi.fn(),
 }));
-vi.mock("~/hooks/useSettings", () => ({
+vi.mock("~/hooks/useSettings", async (original) => ({
+  ...(await original<typeof import("~/hooks/useSettings")>()),
   useEnvironmentSettings: () => ({ providerInstances: state.instances }),
 }));
-vi.mock("~/state/session", () => ({ useEnvironmentScope: () => state.canManage }));
-vi.mock("~/state/server", () => ({ serverEnvironment: { updateSettings: {} } }));
-vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => state.persist }));
-vi.mock("~/components/ui/toast", () => ({ toastManager: { add: state.toast } }));
+vi.mock("~/state/session", async (original) => ({
+  ...(await original<typeof import("~/state/session")>()),
+  useEnvironmentScope: () => state.canManage,
+}));
+vi.mock("~/state/use-atom-command", async (original) => ({
+  ...(await original<typeof import("~/state/use-atom-command")>()),
+  useAtomCommand: () => state.persist,
+}));
+vi.mock("~/components/ui/toast", async (original) => ({
+  ...(await original<typeof import("~/components/ui/toast")>()),
+  toastManager: { add: state.toast },
+}));
 
 const driver = ProviderDriverKind.make("codex");
 const defaultId = defaultInstanceIdForDriver(driver);

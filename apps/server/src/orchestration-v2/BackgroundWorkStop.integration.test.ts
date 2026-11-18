@@ -67,7 +67,7 @@ const stopEarlierBackgroundWork = ({
       openSession: (input) =>
         Effect.gen(function* () {
           const now = yield* DateTime.now;
-          return {
+          return yield* ProviderReplayHarness.withReplayThreadPublication(input, {
             instanceId,
             driver,
             providerSessionId: input.providerSessionId,
@@ -151,7 +151,7 @@ const stopEarlierBackgroundWork = ({
             readThreadSnapshot: () => Effect.die("unused"),
             rollbackThread: () => Effect.die("unused"),
             forkThread: () => Effect.die("unused"),
-          };
+          });
         }),
     };
     yield* Effect.gen(function* () {

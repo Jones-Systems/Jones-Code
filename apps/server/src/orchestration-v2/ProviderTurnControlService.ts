@@ -525,7 +525,11 @@ export const layer: Layer.Layer<
             (message.notification !== undefined &&
               (message.createdBy !== "agent" ||
                 message.creationSource !== "server" ||
-                fresh.providerThread?.goal?.status !== "active" ||
+                (!(
+                  message.notification.source.kind === "delegated_task" &&
+                  message.notification.outcome === "updated"
+                ) &&
+                  fresh.providerThread?.goal?.status !== "active") ||
                 (stopped?.turnItems.length ?? 0) > 0)) ||
             fresh.run?.id !== run.id ||
             fresh.run.activeAttemptId !== run.activeAttemptId ||

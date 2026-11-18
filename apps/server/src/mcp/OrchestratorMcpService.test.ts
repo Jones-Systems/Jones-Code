@@ -5596,12 +5596,33 @@ describe("OrchestratorMcpService background work reads", () => {
             getTimelinePage: () =>
               Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
             listProjectThreads: () => Effect.succeed(shells),
+            getShellSnapshot: (options) =>
+              Effect.succeed({
+                schemaVersion: 1,
+                snapshotSequence: 0,
+                threads: shells.filter((shell) => options?.threadIds?.includes(shell.id) ?? true),
+                archivedThreads: [],
+              }),
           }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
           Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
             list: () => Effect.succeed([]),
           }),
-          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: (id) =>
+              shells.some((thread) => thread.projectId === id)
+                ? Effect.succeedSome({
+                    id,
+                    title: id,
+                    workspaceRoot: `/projects/${id}`,
+                    defaultModelSelection: null,
+                    scripts: [],
+                    createdAt: "2026-10-18T00:00:00.000Z",
+                    updatedAt: "2026-10-18T00:00:00.000Z",
+                    deletedAt: null,
+                  })
+                : Effect.succeedNone,
+          }),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(RemoteDelegation.RemoteDelegation)({}),
           Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -6025,6 +6046,7 @@ describe("OrchestratorMcpService thread list", () => {
     pendingBackgroundTasks: waiting
       ? [
           {
+            providerPrivateState: "internal-only",
             taskId: "task-subagent",
             kind: "subagent" as const,
             description: "Review the diff",
@@ -6127,6 +6149,8 @@ describe("OrchestratorMcpService thread list", () => {
                 taskId: "task-subagent",
                 kind: "subagent",
                 description: "Review the diff",
+                parentTaskId: "task-parent",
+                providerInstanceId: ProviderInstanceId.make("codex"),
                 childThreadId: ThreadId.make("thread:b-child"),
               },
               { taskId: "task-tests", kind: "command", awaited: true },

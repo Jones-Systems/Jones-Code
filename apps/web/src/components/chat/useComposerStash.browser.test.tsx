@@ -25,6 +25,7 @@ function Harness({ input }: { input: StashInput }) {
 }
 
 it("keeps the draft when stashing while a pasted image is still compressing", async () => {
+  writePromptStashStorageForTest("");
   const target = DraftId.make("stash-preparing-image");
   using _draft = {
     [Symbol.dispose]: () => useComposerDraftStore.getState().clearComposerContent(target),
@@ -57,6 +58,7 @@ it("keeps the draft when stashing while a pasted image is still compressing", as
     routeThreadRef: { environmentId, threadId: ThreadId.make("stash-thread") },
     projectSelectionRequired: false,
     pendingUserInputs: [],
+    hasPendingQuestion: false,
     activePendingProgress: null,
     prompt: promptRef.current,
     composerMenuOpen: false,
@@ -77,12 +79,17 @@ it("keeps the draft when stashing while a pasted image is still compressing", as
   await using _screen = await render(<Harness input={input} />);
 
   const mod = isMacPlatform(navigator.platform) ? { metaKey: true } : { ctrlKey: true };
+  const shortcut = new KeyboardEvent("keydown", {
+    key: "s",
+    ...mod,
+    bubbles: true,
+    cancelable: true,
+  });
   await act(() => {
-    window.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "s", ...mod, bubbles: true, cancelable: true }),
-    );
+    window.dispatchEvent(shortcut);
   });
 
+  expect(shortcut.defaultPrevented).toBe(true);
   expect(usePromptStashStore.getState().entries).toEqual([]);
   expect(promptRef.current).toBe("Describe this screenshot");
   expect(countPreparingComposerImages(target)).toBe(1);

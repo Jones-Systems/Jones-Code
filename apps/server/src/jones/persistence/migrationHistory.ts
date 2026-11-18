@@ -1,10 +1,17 @@
 type MigrationIdentity = readonly [id: number, name: string];
-interface RecordedMigration { readonly id: number; readonly name: string }
+interface RecordedMigration {
+  readonly id: number;
+  readonly name: string;
+}
 
 // Released foreign chains are preservation allowlists, never feature adoption.
 const foreignNames = [
-  "V2NativeAcceptance", "DeletionWorktreeAdmission", "OrdinaryCheckoutOwnership",
-  "AttachmentCleanup", "OrdinaryCheckoutExecutionLifetime", "ImportedApplicationAttachments",
+  "V2NativeAcceptance",
+  "DeletionWorktreeAdmission",
+  "OrdinaryCheckoutOwnership",
+  "AttachmentCleanup",
+  "OrdinaryCheckoutExecutionLifetime",
+  "ImportedApplicationAttachments",
   "CommandNormalizationWitness",
 ];
 
@@ -13,32 +20,46 @@ export function inspectMigrationHistory(
   manifest: ReadonlyArray<MigrationIdentity>,
   recorded: ReadonlyArray<RecordedMigration>,
   owner: "upstream" | "Jones",
-): { readonly pending: readonly number[]; readonly error?: undefined } | { readonly error: string } {
+):
+  | { readonly pending: readonly number[]; readonly error?: undefined }
+  | { readonly error: string } {
   const names = new Map(manifest);
   const ids = new Set(recorded.map(({ id }) => id));
-  if (names.size !== manifest.length || ids.size !== recorded.length ||
-      manifest.some(([id]) => !Number.isSafeInteger(id) || id < 1 ||
-        (owner === "Jones" && id > 6 && id < 100))) {
+  if (
+    names.size !== manifest.length ||
+    ids.size !== recorded.length ||
+    manifest.some(
+      ([id]) => !Number.isSafeInteger(id) || id < 1 || (owner === "Jones" && id > 6 && id < 100),
+    )
+  ) {
     return { error: `Invalid ${owner} migration manifest or duplicate history.` };
   }
   const foreign = recorded.filter(({ id }) => id >= 7 && id < 100).sort((a, b) => a.id - b.id);
   for (const { id, name } of recorded) {
-    if ((owner === "upstream" || id >= 100) && id > Math.max(0, ...names.keys())) return { error: `Candidate older than this database (${owner} migration ${id}).` };
-    const expected = owner === "Jones" && id >= 7 && id < 100
-      ? id === 7 && foreign.length === 1 && name === "ThreadCreationLookupIndex"
-        ? name : foreignNames[id - 7]
-      : names.get(id);
+    if ((owner === "upstream" || id >= 100) && id > Math.max(0, ...names.keys()))
+      return { error: `Candidate older than this database (${owner} migration ${id}).` };
+    const expected =
+      owner === "Jones" && id >= 7 && id < 100
+        ? id === 7 && foreign.length === 1 && name === "ThreadCreationLookupIndex"
+          ? name
+          : foreignNames[id - 7]
+        : names.get(id);
     if (!Number.isSafeInteger(id) || expected === undefined || expected !== name) {
       return { error: `Unrecognized ${owner} migration history at ${id}_${name}.` };
     }
-    if ((owner === "upstream" || id <= 6 || id >= 100) &&
-        manifest.some(([prior]) => prior < id && !ids.has(prior))) {
+    if (
+      (owner === "upstream" || id <= 6 || id >= 100) &&
+      manifest.some(([prior]) => prior < id && !ids.has(prior))
+    ) {
       return { error: `${owner} migration history has a missing prefix.` };
     }
   }
-  if (owner === "Jones" && foreign.length > 0 &&
-      ([1, 2, 3, 4, 5, 6].some((id) => !ids.has(id)) ||
-       foreign.some(({ id }, index) => id !== index + 7))) {
+  if (
+    owner === "Jones" &&
+    foreign.length > 0 &&
+    ([1, 2, 3, 4, 5, 6].some((id) => !ids.has(id)) ||
+      foreign.some(({ id }, index) => id !== index + 7))
+  ) {
     return { error: "Jones migration history has a missing foreign prefix." };
   }
   return { pending: manifest.filter(([id]) => !ids.has(id)).map(([id]) => id) };

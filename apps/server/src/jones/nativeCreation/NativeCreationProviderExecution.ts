@@ -82,10 +82,14 @@ export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffec
         ),
   );
   const sink = yield* Effect.serviceOption(EventSink.EventSinkV2);
-  if (Option.isNone(sink)) return yield* new NativeCreationProviderExecutionError({
-    message: "Durable native Stop admission is unavailable",
+  if (Option.isNone(sink))
+    return yield* new NativeCreationProviderExecutionError({
+      message: "Durable native Stop admission is unavailable",
+    });
+  yield* sink.value.assertRuntimeStopStartAllowed({
+    threadId: effect.threadId,
+    runId: requestRunId,
   });
-  yield* sink.value.assertRuntimeStopStartAllowed({ threadId: effect.threadId, runId: requestRunId });
   yield* Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
       const context = yield* issue({

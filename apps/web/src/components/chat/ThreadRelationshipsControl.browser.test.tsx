@@ -1,4 +1,3 @@
-import "~/index.css";
 import * as DateTime from "effect/DateTime";
 import { EnvironmentId, NodeId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -29,7 +28,10 @@ vi.mock(import("@effect/atom-react"), async (original) => ({
   useAtomValue: (() => false) as never,
 }));
 
-vi.mock(import("../../state/entities"), () => ({
+vi.mock(import("../../state/entities"), async (original) => ({
+  ...(await original()),
+  useThreadProjection: ((ref: unknown) =>
+    ref === null ? null : { projection: state.projection }) as never,
   useQuietThreadShell: (() => null) as never,
   useQuietThreadProjection: ((ref: unknown) =>
     ref === null ? null : { projection: state.projection }) as never,
@@ -396,7 +398,8 @@ it("explains why Merge back is unavailable before the fork completes a run", asy
   );
 
   const mergeBack = screen.getByRole("button", { name: "Merge back to source conversation" });
-  await userEvent.hover(mergeBack);
+  await expect.element(mergeBack).toBeDisabled();
+  await userEvent.hover(mergeBack.element().closest('[data-slot="tooltip-trigger"]')!);
   await vi.waitFor(() =>
     expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toBe(
       "Complete a run in this fork before merging it back",

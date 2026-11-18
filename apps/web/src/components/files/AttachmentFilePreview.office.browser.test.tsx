@@ -1087,197 +1087,203 @@ it("keeps spreadsheet dates on their calendar day west of UTC", async () => {
   }
 });
 
-it.each([60, 100])("prepares all %i pages of a table-heavy Word report", async (pages) => {
-  // These retained pagination/worker cases exercise the actual engine, unlike fetch/remount fixtures.
-  const previousEngine = wordEngineFixture.actual;
-  wordEngineFixture.actual = true;
-  using _engine = {
-    [Symbol.dispose]() {
-      wordEngineFixture.actual = previousEngine;
-    },
-  };
-  const capture: WordWorkerEvidence = { marks: [], disposed: false, capped: false };
-  if (pages === 100) {
-    onTestFinished(async (context) => {
-      Object.assign(context.task.meta, {
-        jonesWordCiTrace: await commands.wordCiTrace("finish", capture),
+// oxlint-disable-next-line t3code/no-test-timeout-or-unreasoned-skip -- Real worker pagination of 60–100 pages has a 30s end-to-end budget, including its 15s visible-prefix budget.
+it.each([60, 100])(
+  "prepares all %i pages of a table-heavy Word report",
+  async (pages) => {
+    // These retained pagination/worker cases exercise the actual engine, unlike fetch/remount fixtures.
+    const previousEngine = wordEngineFixture.actual;
+    wordEngineFixture.actual = true;
+    using _engine = {
+      [Symbol.dispose]() {
+        wordEngineFixture.actual = previousEngine;
+      },
+    };
+    const capture: WordWorkerEvidence = { marks: [], disposed: false, capped: false };
+    if (pages === 100) {
+      onTestFinished(async (context) => {
+        Object.assign(context.task.meta, {
+          jonesWordCiTrace: await commands.wordCiTrace("finish", capture),
+        });
       });
-    });
-    await commands.wordCiTrace("start");
-  }
-  // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only clock origin; does not control pass/fail or waits.
-  const testStartedAt = performance.now();
-  // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only timestamps correlate browser and worker events; assertions and timeouts remain unchanged.
-  const mainElapsedMs = () => Math.round(performance.now() - testStartedAt);
-  const workerTrace: unknown[] = [];
-  const record = (entry: Record<string, unknown>) => {
-    workerTrace.push({ mainElapsedMs: mainElapsedMs(), ...entry });
-    if (workerTrace.length > 128) workerTrace.shift();
-  };
-  using _trace = {
-    [Symbol.dispose]() {
-      capture.disposed = true;
-      console.info("Word CI timing", JSON.stringify({ pages, workerTrace }));
-    },
-  };
-  record({ event: "fixture-start" });
-  const workerNames = new WeakMap<Worker, string>();
-  let workerCount = 0;
-  const NativeWorker = Worker;
-  using _workers = stubGlobal(
-    "Worker",
-    class extends NativeWorker {
-      constructor(url: string | URL, options?: WorkerOptions) {
-        super(url, options);
-        const name = String(++workerCount) + ":" + String(url).split("/").pop();
-        workerNames.set(this, name);
-        record({ worker: name, event: "started" });
-        this.addEventListener("message", (event) => {
-          const data = event.data;
-          if (pages === 100 && data?.type === "jones-word-open-phase") {
-            if (capture.marks.length < 128) {
-              capture.marks.push({
-                worker: name,
-                traceId: data.traceId,
-                mark: data.mark,
-                phase: data.phase,
-              });
-            } else capture.capped = true;
-          }
-          record({
-            worker: name,
-            event: "reply",
-            type: data?.type,
-            phase: data?.phase,
-            traceId: data?.traceId,
-            phaseId: data?.phaseId,
-            mark: data?.mark,
-            workerPerformanceNowMs: data?.elapsedMs,
-            openElapsedMs: data?.openElapsedMs,
-            id: data?.id,
-            ok: data?.ok,
-            pages: data?.value?.pages?.length,
-            loading: data?.value?.loading,
+      await commands.wordCiTrace("start");
+    }
+    // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only clock origin; does not control pass/fail or waits.
+    const testStartedAt = performance.now();
+    // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only timestamps correlate browser and worker events; assertions and timeouts remain unchanged.
+    const mainElapsedMs = () => Math.round(performance.now() - testStartedAt);
+    const workerTrace: unknown[] = [];
+    const record = (entry: Record<string, unknown>) => {
+      workerTrace.push({ mainElapsedMs: mainElapsedMs(), ...entry });
+      if (workerTrace.length > 128) workerTrace.shift();
+    };
+    using _trace = {
+      [Symbol.dispose]() {
+        capture.disposed = true;
+        console.info("Word CI timing", JSON.stringify({ pages, workerTrace }));
+      },
+    };
+    record({ event: "fixture-start" });
+    const workerNames = new WeakMap<Worker, string>();
+    let workerCount = 0;
+    const NativeWorker = Worker;
+    using _workers = stubGlobal(
+      "Worker",
+      class extends NativeWorker {
+        constructor(url: string | URL, options?: WorkerOptions) {
+          super(url, options);
+          const name = String(++workerCount) + ":" + String(url).split("/").pop();
+          workerNames.set(this, name);
+          record({ worker: name, event: "started" });
+          this.addEventListener("message", (event) => {
+            const data = event.data;
+            if (pages === 100 && data?.type === "jones-word-open-phase") {
+              if (capture.marks.length < 128) {
+                capture.marks.push({
+                  worker: name,
+                  traceId: data.traceId,
+                  mark: data.mark,
+                  phase: data.phase,
+                });
+              } else capture.capped = true;
+            }
+            record({
+              worker: name,
+              event: "reply",
+              type: data?.type,
+              phase: data?.phase,
+              traceId: data?.traceId,
+              phaseId: data?.phaseId,
+              mark: data?.mark,
+              workerPerformanceNowMs: data?.elapsedMs,
+              openElapsedMs: data?.openElapsedMs,
+              id: data?.id,
+              ok: data?.ok,
+              pages: data?.value?.pages?.length,
+              loading: data?.value?.loading,
+            });
           });
-        });
-        this.addEventListener("error", (event) =>
-          record({ worker: name, event: "error", message: event.message }),
-        );
-        this.addEventListener("messageerror", () =>
-          record({ worker: name, event: "messageerror" }),
-        );
-      }
-      override terminate() {
-        record({ worker: workerNames.get(this), event: "terminated" });
-        super.terminate();
-      }
-      override postMessage(
-        message: unknown,
-        options: Transferable[] | StructuredSerializeOptions = [],
-      ) {
-        const data = message as {
-          method?: string;
-          type?: string;
-          id?: number;
-          input?: { bytes: ArrayBuffer };
-        };
-        if (data.method === "open" && data.input)
-          message = { ...data, input: { ...data.input, traceOpen: true } };
-        record({
-          worker: workerNames.get(this),
-          event: "request",
-          method: data.method,
-          type: data.type,
-          id: data.id,
-        });
-        if (Array.isArray(options)) super.postMessage(message, options);
-        else super.postMessage(message, options);
-      }
-    },
-  );
+          this.addEventListener("error", (event) =>
+            record({ worker: name, event: "error", message: event.message }),
+          );
+          this.addEventListener("messageerror", () =>
+            record({ worker: name, event: "messageerror" }),
+          );
+        }
+        override terminate() {
+          record({ worker: workerNames.get(this), event: "terminated" });
+          super.terminate();
+        }
+        override postMessage(
+          message: unknown,
+          options: Transferable[] | StructuredSerializeOptions = [],
+        ) {
+          const data = message as {
+            method?: string;
+            type?: string;
+            id?: number;
+            input?: { bytes: ArrayBuffer };
+          };
+          if (data.method === "open" && data.input)
+            message = { ...data, input: { ...data.input, traceOpen: true } };
+          record({
+            worker: workerNames.get(this),
+            event: "request",
+            method: data.method,
+            type: data.type,
+            id: data.id,
+          });
+          if (Array.isArray(options)) super.postMessage(message, options);
+          else super.postMessage(message, options);
+        }
+      },
+    );
 
-  const { default: JSZip } = await import("jszip");
-  const archive = new JSZip();
-  const paragraph = (text: string) =>
-    `<w:p><w:pPr><w:spacing w:after="120"/><w:jc w:val="left"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Calibri"/><w:sz w:val="22"/></w:rPr><w:t>${text}</w:t></w:r></w:p>`;
-  archive.file(
-    "word/document.xml",
-    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${Array.from({ length: pages }, (_, page) => paragraph(`page ${page + 1}`) + `<w:tbl>${Array.from({ length: 10 }, () => `<w:tr>${Array.from({ length: 5 }, () => `<w:tc><w:tcPr><w:tcW w:w="1800"/></w:tcPr>${paragraph("report entry")}</w:tc>`).join("")}</w:tr>`).join("")}</w:tbl>`).join("")}</w:body></w:document>`,
-  );
-  archive.file(
-    "_rels/.rels",
-    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-  );
-  archive.file(
-    "[Content_Types].xml",
-    '<Types><Default Extension="png" ContentType="image/png"/></Types>',
-  );
-  // Binary media must not consume the document's markup budget.
-  archive.file("word/media/image.png", new Uint8Array(2_500_000));
-  const file = await archive.generateAsync({ type: "blob", compression: "DEFLATE" });
-  record({ event: "fixture-ready", bytes: file.size });
-  record({ event: "render-start" });
-  await using screen = await render(
-    <div style={{ display: "flex", height: 400, width: 600 }}>
-      <AttachmentFilePreview
-        name="report.docx"
-        mimeType="application/octet-stream"
-        file={file}
-        sizeBytes={file.size}
-      />
-    </div>,
-  );
-  record({ event: "render-ready" });
-  const prefixDeadlineMainElapsedMs = mainElapsedMs() + 10_000;
-  record({ event: "prefix-wait-start", deadlineMainElapsedMs: prefixDeadlineMainElapsedMs });
-  // Wait for the visible prefix before awaiting full pagination, so engine and
-  // font startup belong to opening. The project timeout still caps the whole test.
-  await vi.waitFor(
-    () =>
-      expect(
-        screen.container.querySelector("[data-office-pages]"),
-        JSON.stringify({
-          viewer: officePreviewState(screen),
-          mainElapsedMs: mainElapsedMs(),
-          prefixDeadlineMainElapsedMs,
-          workerTrace,
-        }),
-      ).not.toBeNull(),
-    { timeout: 10_000 },
-  );
-  record({ event: "visible-prefix-observed" });
-  await vi.waitFor(
-    () =>
-      expect(
-        screen.container.textContent,
-        JSON.stringify({ viewer: officePreviewState(screen), workerTrace }),
-      ).toMatch(/\d+ pages/),
-    {
+    const { default: JSZip } = await import("jszip");
+    const archive = new JSZip();
+    const paragraph = (text: string) =>
+      `<w:p><w:pPr><w:spacing w:after="120"/><w:jc w:val="left"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Calibri"/><w:sz w:val="22"/></w:rPr><w:t>${text}</w:t></w:r></w:p>`;
+    archive.file(
+      "word/document.xml",
+      `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${Array.from({ length: pages }, (_, page) => paragraph(`page ${page + 1}`) + `<w:tbl>${Array.from({ length: 10 }, () => `<w:tr>${Array.from({ length: 5 }, () => `<w:tc><w:tcPr><w:tcW w:w="1800"/></w:tcPr>${paragraph("report entry")}</w:tc>`).join("")}</w:tr>`).join("")}</w:tbl>`).join("")}</w:body></w:document>`,
+    );
+    archive.file(
+      "_rels/.rels",
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    );
+    archive.file(
+      "[Content_Types].xml",
+      '<Types><Default Extension="png" ContentType="image/png"/></Types>',
+    );
+    // Binary media must not consume the document's markup budget.
+    archive.file("word/media/image.png", new Uint8Array(2_500_000));
+    const file = await archive.generateAsync({ type: "blob", compression: "DEFLATE" });
+    record({ event: "fixture-ready", bytes: file.size });
+    record({ event: "render-start" });
+    await using screen = await render(
+      <div style={{ display: "flex", height: 400, width: 600 }}>
+        <AttachmentFilePreview
+          name="report.docx"
+          mimeType="application/octet-stream"
+          file={file}
+          sizeBytes={file.size}
+        />
+      </div>,
+    );
+    record({ event: "render-ready" });
+    const prefixTimeoutMs = 15_000;
+    const prefixDeadlineMainElapsedMs = mainElapsedMs() + prefixTimeoutMs;
+    record({ event: "prefix-wait-start", deadlineMainElapsedMs: prefixDeadlineMainElapsedMs });
+    // Wait for the visible prefix before awaiting full pagination, so engine and
+    // font startup belong to opening. The per-test timeout still caps the whole run.
+    await vi.waitFor(
+      () =>
+        expect(
+          screen.container.querySelector("[data-office-pages]"),
+          JSON.stringify({
+            viewer: officePreviewState(screen),
+            mainElapsedMs: mainElapsedMs(),
+            prefixDeadlineMainElapsedMs,
+            workerTrace,
+          }),
+        ).not.toBeNull(),
+      { timeout: prefixTimeoutMs },
+    );
+    record({ event: "visible-prefix-observed" });
+    await vi.waitFor(
+      () =>
+        expect(
+          screen.container.textContent,
+          JSON.stringify({ viewer: officePreviewState(screen), workerTrace }),
+        ).toMatch(/\d+ pages/),
+      {
+        timeout: 10_000,
+      },
+    );
+    // All laid-out page shells must mount before selecting the last viewport;
+    // pagination and the incremental page-mount timer are independent.
+    const completedPageCount = Number(screen.container.textContent?.match(/(\d+) pages/)?.[1]);
+    await vi.waitFor(() =>
+      expect(screen.container.querySelectorAll('[data-office-pages] [role="group"]')).toHaveLength(
+        completedPageCount,
+      ),
+    );
+    // The actual engine renders text overlays only near the viewport. Visit the final page
+    // after pagination completes so the original final-document-text assertion reads it.
+    await act(() => {
+      const viewport = screen.container.querySelector<HTMLElement>("[data-office-pages]")!;
+      const finalPage = viewport
+        .querySelectorAll<HTMLElement>('[role="group"]')
+        .item(completedPageCount - 1);
+      viewport.scrollTop = finalPage.offsetTop;
+      viewport.dispatchEvent(new Event("scroll"));
+    });
+    // The first Office preview in the file loads the lazy viewer chain and the preparation worker.
+    await vi.waitFor(() => expect(screen.container.textContent).toContain("page " + pages), {
       timeout: 10_000,
-    },
-  );
-  // All laid-out page shells must mount before selecting the last viewport;
-  // pagination and the incremental page-mount timer are independent.
-  const completedPageCount = Number(screen.container.textContent?.match(/(\d+) pages/)?.[1]);
-  await vi.waitFor(() =>
-    expect(screen.container.querySelectorAll('[data-office-pages] [role="group"]')).toHaveLength(
-      completedPageCount,
-    ),
-  );
-  // The actual engine renders text overlays only near the viewport. Visit the final page
-  // after pagination completes so the original final-document-text assertion reads it.
-  await act(() => {
-    const viewport = screen.container.querySelector<HTMLElement>("[data-office-pages]")!;
-    const finalPage = viewport
-      .querySelectorAll<HTMLElement>('[role="group"]')
-      .item(completedPageCount - 1);
-    viewport.scrollTop = finalPage.offsetTop;
-    viewport.dispatchEvent(new Event("scroll"));
-  });
-  // The first Office preview in the file loads the lazy viewer chain and the preparation worker.
-  await vi.waitFor(() => expect(screen.container.textContent).toContain("page " + pages), {
-    timeout: 10_000,
-  });
-  expect(screen.container.textContent).not.toContain("Preview limited");
-  expect(screen.container.querySelector('[role="alert"]')).toBeNull();
-});
+    });
+    expect(screen.container.textContent).not.toContain("Preview limited");
+    expect(screen.container.querySelector('[role="alert"]')).toBeNull();
+  },
+  30_000,
+);

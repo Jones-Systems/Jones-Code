@@ -1093,6 +1093,7 @@ it.live.each([
         Layer.mock(SessionStore.SessionStore)({
           cookieName: "compression-test",
           legacyCookieName: undefined,
+          recordClientConnection: () => Effect.void,
           markConnected: () => Effect.void,
           markDisconnected: () => Effect.void,
           awaitInvalidation: () => Effect.never,
@@ -2190,6 +2191,9 @@ it.effect.each([true, false, undefined] as const)(
             Stream.tap(() => Queue.offer(pulled, undefined)),
           ),
           refreshWorkspaceSnapshot: () => Effect.succeed(providers),
+        }),
+        Layer.mock(ProjectService.ProjectService)({
+          workspaceScanDirectory: (cwd) => Effect.succeed(cwd),
         }),
         Layer.mock(UsageLimitSources.UsageLimitSources)({
           current: Effect.succeed([]),

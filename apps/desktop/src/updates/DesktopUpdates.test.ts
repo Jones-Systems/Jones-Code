@@ -18,6 +18,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
+import { BACKEND_QUIT_STOP_TIMEOUT } from "../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -829,7 +830,8 @@ describe("DesktopUpdates", () => {
   it.effect("waits for every backend exit before invoking the installer", () =>
     Effect.gen(function* () {
       const releases = [yield* Deferred.make<void>(), yield* Deferred.make<void>()];
-      const stopping = [yield* Deferred.make<void>(), yield* Deferred.make<void>()];
+      type StopOptions = Parameters<DesktopBackendPool.DesktopBackendInstance["stop"]>[0];
+      const stopping = [yield* Deferred.make<StopOptions>(), yield* Deferred.make<StopOptions>()];
       const instances = releases.map(
         (release, index) =>
           ({
@@ -837,12 +839,10 @@ describe("DesktopUpdates", () => {
             label: Effect.succeed(`backend-${index}`),
             currentConfig: Effect.succeedNone,
             start: Effect.void,
-            stop: (options) => {
-              assert.isUndefined(options);
-              return Deferred.succeed(stopping[index]!, undefined).pipe(
+            stop: (options) =>
+              Deferred.succeed(stopping[index]!, options).pipe(
                 Effect.andThen(Deferred.await(release)),
-              );
-            },
+              ),
             snapshot: Effect.succeed({
               desiredRunning: true,
               ready: false,
@@ -862,8 +862,12 @@ describe("DesktopUpdates", () => {
           harness.emit("update-downloaded", { version: "1.2.4" });
           yield* flushCallbacks;
           const install = yield* updates.install.pipe(Effect.forkScoped);
-          for (const started of stopping) yield* Deferred.await(started);
-          yield* TestClock.adjust("6 seconds");
+          for (const started of stopping) {
+            assert.deepEqual(yield* Deferred.await(started), {
+              timeout: BACKEND_QUIT_STOP_TIMEOUT,
+            });
+          }
+          yield* TestClock.adjust(Duration.sum(BACKEND_QUIT_STOP_TIMEOUT, Duration.seconds(1)));
           assert.equal(harness.quitAndInstalls(), 0);
           assert.isUndefined(install.pollUnsafe());
           yield* Deferred.succeed(releases[0]!, undefined);

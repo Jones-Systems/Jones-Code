@@ -1,7 +1,11 @@
 // Decodes a candidate's `service-preflight` output. The service launcher reads this, so it must not
 // import the preflight itself: that pulls the migration manifest, Effect and the contracts into the
 // executable bootstrap, which `scripts/cli.ts` holds under 1 MiB.
-import { SERVICE_LAUNCHER_PROTOCOL, isSupportedLauncherProtocol, type SupportedLauncherProtocol } from "../../cloud/serviceProtocol.ts";
+import {
+  SERVICE_LAUNCHER_PROTOCOL,
+  isSupportedLauncherProtocol,
+  type SupportedLauncherProtocol,
+} from "../../cloud/serviceProtocol.ts";
 import { decodeMigrationPlan, type MigrationPlan } from "../updates/migrationPlan.ts";
 
 export type ServicePreflightResult =
@@ -29,8 +33,11 @@ export function decodeServicePreflightResult(
   }
   const record = value as Record<string, unknown>;
   // Protocol-3 ordinary IPC compatibility does not establish a qualified startup gate.
-  if (launcherProtocol !== SERVICE_LAUNCHER_PROTOCOL &&
-      ("startupGateProtocol" in record || "qualifiedRecoveryProtocol" in record)) return undefined;
+  if (
+    launcherProtocol !== SERVICE_LAUNCHER_PROTOCOL &&
+    ("startupGateProtocol" in record || "qualifiedRecoveryProtocol" in record)
+  )
+    return undefined;
   const migrationPlan =
     "migrationPlan" in record ? decodeMigrationPlan(record.migrationPlan) : undefined;
   if ("migrationPlan" in record && migrationPlan === undefined) return undefined;

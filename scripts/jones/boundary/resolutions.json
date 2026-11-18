@@ -66,7 +66,7 @@
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "6a358f8b117591e56f30a110852881d2147f6f487521bb95aab3b13e560722a7"
+          "sha256": "8784ca359ca349fefbeb1324384962ff892a9e7303791ff13d494d7f9d4a6fe9"
         }
       ],
       "targets": []
@@ -116,7 +116,7 @@
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "a6d6d25c14d32d135070ce85b9cce183dad53acfbabdc59ac19c95cb898cf68e"
+          "sha256": "b48289c337dbda208449a16dc9534f037d089a20dbd49c570405ed37ec84daac"
         },
         {
           "path": "apps/mobile/metro.config.js",
@@ -150,24 +150,24 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "08f4c723efd860bf57ed44a15539816e1e15ba39838786da4a12394653cfecb0"
+          "sha256": "8137fa0980ff48411165807642adb8896475cfc840f05f8e2cff1914dcd8b289"
         },
         {
           "path": "scripts/package.json",
-          "sha256": "e0cd4c098984331070c5592393a5deb718e27e69becfb4af2b893b19d6d086e3"
+          "sha256": "437bf930b78d19b4cb18fcd82af4b2e288435483b9d166d426ec8d0f5b311643"
         }
       ],
       "targets": []
     },
     {
       "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
-      "sourceSha256": "b72c5dca321e9f16d3289640f5ba6720bc5ad7e2fc9bc266e9cd6f27c1c77192",
+      "sourceSha256": "af4484db30e3ed054034f92338d6629b560cb76be3f3db3451dbcbc2676e8b2c",
       "expression": "\"../../../node_modules/@betteroffice/fonts/assets/Carlito-Regular.ttf?url\"",
       "reason": "Upstream document-rendering fixture loads a real installed external font through a relative node_modules URL. Dependency asset bytes are outside the source boundary; exact test and manifest/catalog hashes bind this unsupported loader, not generated or runtime verification.",
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "08f4c723efd860bf57ed44a15539816e1e15ba39838786da4a12394653cfecb0"
+          "sha256": "8137fa0980ff48411165807642adb8896475cfc840f05f8e2cff1914dcd8b289"
         },
         {
           "path": "pnpm-workspace.yaml",
@@ -184,7 +184,7 @@
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "a6d6d25c14d32d135070ce85b9cce183dad53acfbabdc59ac19c95cb898cf68e"
+          "sha256": "b48289c337dbda208449a16dc9534f037d089a20dbd49c570405ed37ec84daac"
         },
         {
           "path": "pnpm-workspace.yaml",
@@ -201,7 +201,7 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "4af89773352ce89ab1d9e1ef218f07fc659fb2734376987d4f32a92839e5a0f3"
+          "sha256": "96c340b3ef261f0052b155a337a448f297d127789492985fd7f3e70e61970820"
         },
         {
           "path": "apps/server/src/binCli.ts",
@@ -238,7 +238,7 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "4af89773352ce89ab1d9e1ef218f07fc659fb2734376987d4f32a92839e5a0f3"
+          "sha256": "96c340b3ef261f0052b155a337a448f297d127789492985fd7f3e70e61970820"
         },
         {
           "path": "apps/server/src/server.ts",
@@ -259,7 +259,7 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "4af89773352ce89ab1d9e1ef218f07fc659fb2734376987d4f32a92839e5a0f3"
+          "sha256": "96c340b3ef261f0052b155a337a448f297d127789492985fd7f3e70e61970820"
         }
       ],
       "targets": ["apps/server/src/binMain.ts"]
@@ -272,7 +272,7 @@
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "a6d6d25c14d32d135070ce85b9cce183dad53acfbabdc59ac19c95cb898cf68e"
+          "sha256": "b48289c337dbda208449a16dc9534f037d089a20dbd49c570405ed37ec84daac"
         },
         {
           "path": "apps/mobile/modules/t3-highlights/package.json",

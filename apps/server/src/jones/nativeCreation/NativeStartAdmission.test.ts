@@ -68,6 +68,7 @@ function fixture(
     pruned?: boolean;
     generation?: string;
     chained?: boolean;
+    recovery?: "exact" | "wrong-anchor" | "wrong-attempt";
     delegation?:
       | "exact"
       | "wrong-type"
@@ -91,12 +92,21 @@ function fixture(
   } as OrchestrationV2ProviderThread;
   let currentProvider = initialProvider;
   const now = DateTime.makeUnsafe("2026-11-16T20:00:00Z");
+  const reconciliation = CommandId.make(
+    `command:runtime-reconcile:startup:${threadId}:${DateTime.formatIso(now)}`,
+  );
+  const ordinaryCommandId = CommandId.make("command:admission");
   const effect: Outbox.OrchestrationEffectV2 = {
     id:
-      options.delegation === undefined
-        ? "effect:admission"
-        : `effect:command:admission:provider-turn.start:${runId}`,
-    commandId: CommandId.make("command:admission"),
+      options.recovery !== undefined
+        ? `effect:restart-resend:${runId}:${options.recovery === "wrong-anchor" ? ordinaryCommandId : reconciliation}`
+        : options.delegation === undefined
+          ? "effect:admission"
+          : `effect:command:admission:provider-turn.start:${runId}`,
+    commandId:
+      options.recovery === undefined
+        ? ordinaryCommandId
+        : CommandId.make(`command:restart-resend:${runId}`),
     threadId,
     request: { type: "provider-turn.start", runId },
     status: "running",
@@ -229,9 +239,11 @@ function fixture(
           commandId,
           threadId: options.delegation === undefined ? threadId : parentThreadId,
           commandType:
-            options.delegation === undefined || options.delegation === "wrong-type"
-              ? "message.dispatch"
-              : "delegated_task.request",
+            commandId === reconciliation
+              ? "provider-runtime.reconcile"
+              : options.delegation === undefined || options.delegation === "wrong-type"
+                ? "message.dispatch"
+                : "delegated_task.request",
           acceptedAt: now,
           resultSequence:
             commandId === sourceCommandId
@@ -253,13 +265,33 @@ function fixture(
         ),
       readByCommandId: ({ commandId }) =>
         Stream.fromArray(
-          commandId === effect.commandId && options.delegation !== undefined
-            ? delegationPruned
-              ? []
-              : delegationEvents
-            : options.pruned
-              ? []
-              : sourceEvents,
+          commandId === reconciliation
+            ? [
+                {
+                  sequence: 1,
+                  commandId,
+                  event: {
+                    id: EventId.make("event:reconciled-run"),
+                    type: "run.updated",
+                    threadId,
+                    runId,
+                    occurredAt: now,
+                    payload: {
+                      ...run,
+                      startedAt: null,
+                      activeAttemptId:
+                        options.recovery === "wrong-attempt" ? sourceAttemptId : attemptId,
+                    },
+                  },
+                },
+              ]
+            : commandId === effect.commandId && options.delegation !== undefined
+              ? delegationPruned
+                ? []
+                : delegationEvents
+              : options.pruned
+                ? []
+                : sourceEvents,
         ),
     }),
     Layer.mock(Projections.ProjectionStoreV2)({
@@ -456,3 +488,19 @@ it.effect.each([
     assert.equal(f.crosses(), 0);
   }).pipe(Effect.provide(f.layer));
 });
+
+it.effect.each(["exact", "wrong-anchor", "wrong-attempt"] as const)(
+  "a certified restart resend uses the accepted reconciliation for the exact run attempt: %s",
+  (recovery) => {
+    const f = fixture({ recovery });
+    return Effect.gen(function* () {
+      const owner = yield* StartAdmission.StartAdmission;
+      const captured = yield* owner
+        .capture({ threadId, run, attemptId, providerThread: f.provider })
+        .pipe(Effect.exit);
+      assert.equal(Exit.isSuccess(captured), recovery === "exact");
+      if (Exit.isSuccess(captured)) yield* captured.value.revalidate;
+      assert.equal(f.crosses(), 0);
+    }).pipe(Effect.provide(f.layer));
+  },
+);

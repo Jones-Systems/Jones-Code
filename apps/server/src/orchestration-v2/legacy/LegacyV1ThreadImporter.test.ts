@@ -102,7 +102,8 @@ it.effect("routes shell selectors to readers while imports stay writable", () =>
       importedThreadCount: 0,
       importedMessageCount: 0,
     });
-    yield* sql.withTransaction(
+    const sink = yield* EventSink.EventSinkV2;
+    yield* sink.withProviderBatch(
       Effect.gen(function* () {
         yield* sql`
         INSERT INTO projection_threads (
@@ -828,18 +829,36 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
       };
       delete previousRepairThread.branchPullRequest;
       delete previousRepairThread.activeOrderKey;
-      yield* eventSink.write({
+      const acceptedAt = DateTime.makeUnsafe("2026-01-03T00:00:00.000Z");
+      yield* eventSink.commitCommand({
+        commandId: previousRepairThread.legacyBootstrapClaim.createCommandId,
+        commandType: "thread.metadata.update",
+        threadId,
+        acceptedAt,
+        effects: [],
         events: [
           {
             id: previousRepairId,
             type: "thread.metadata-updated",
             threadId,
             providerInstanceId: previousRepairThread.providerInstanceId,
-            occurredAt: DateTime.makeUnsafe("2026-01-03T00:00:00.000Z"),
+            occurredAt: acceptedAt,
             payload: previousRepairThread,
           },
         ],
       });
+      // Restore the historical inline shape after creating its authenticated anchor.
+      const inlineClaim = JSON.stringify(previousRepairThread.legacyBootstrapClaim);
+      yield* sql`
+        UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_set(payload_json, '$.legacyBootstrapClaim', json(${inlineClaim}))
+        WHERE thread_id = ${threadId}
+      `;
+      yield* sql`
+        UPDATE orchestration_events
+        SET payload_json = json_set(payload_json, '$.legacyBootstrapClaim', json(${inlineClaim}))
+        WHERE event_id = ${previousRepairId}
+      `;
 
       assert.deepStrictEqual(yield* importer.reconcileShells, {
         importedThreadCount: 1,

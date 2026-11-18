@@ -2032,7 +2032,7 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
   );
 });
 
-it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
+it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerTest: true })(
   "subagent follow-ups",
   (it) => {
     it.effect("a late unobserved read wakes a pending result without restarting", () =>
@@ -3239,11 +3239,26 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
             attachments: [],
             dispatchMode: { type: "queue_after_active" },
           });
-          const followupRun = (yield* orchestrator.getThreadProjection(
-            child.childThreadId,
-          )).runs.find((run) => run.userMessageId === followupMessageId)!;
+          const childProjection = yield* orchestrator.getThreadProjection(child.childThreadId);
+          const followupRun = childProjection.runs.find(
+            (run) => run.userMessageId === followupMessageId,
+          )!;
           const followupTaskId = followupRun.delegatedTaskId!;
-          const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+          const boundThread = childProjection.providerThreads.find(
+            (thread) => thread.id === followupRun.providerThreadId,
+          );
+          assert.isDefined(boundThread);
+          const childProviderThread = {
+            ...boundThread!,
+            nativeThreadRef: {
+              driver,
+              nativeId: `native:${child.childThreadId}`,
+              strength: "strong" as const,
+            },
+          };
+          const pendingBackgroundTasks = [
+            { taskId: "sleep-90", kind: "command" as const, awaited: true as const },
+          ];
 
           // The child awaits a background command, replies with an interim note and ends its turn.
           yield* eventSink.write({
@@ -3257,12 +3272,8 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
                 providerInstanceId: modelSelection.instanceId,
                 occurredAt: now,
                 payload: {
-                  ...parent.providerThreads[0]!,
-                  id: ProviderThreadId.make(`provider-thread:followup-command-child-${ending}`),
-                  appThreadId: child.childThreadId,
-                  pendingBackgroundTasks: [
-                    { taskId: "sleep-90", kind: "command" as const, awaited: true as const },
-                  ],
+                  ...childProviderThread,
+                  pendingBackgroundTasks,
                 },
               },
               {
@@ -3296,6 +3307,19 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
               },
             ],
           });
+          const childAfterTurn = yield* orchestrator.getThreadRecords(
+            child.childThreadId,
+            ["runs", "messages", "subagents", "providerThreads", "providerTurns", "attempts"],
+            { messageRoles: ["user"] },
+          );
+          assert.deepEqual(
+            childAfterTurn.providerThreads.find((thread) => thread.id === childProviderThread.id)
+              ?.pendingBackgroundTasks,
+            pendingBackgroundTasks,
+          );
+          assert.isTrue(
+            yield* orchestrator.delegatedTaskResultPending(child.childThreadId, followupTaskId),
+          );
           yield* orchestrator.recoverDelegatedTasks;
 
           const held = (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
@@ -3330,9 +3354,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
                   providerInstanceId: modelSelection.instanceId,
                   occurredAt: now,
                   payload: {
-                    ...parent.providerThreads[0]!,
-                    id: ProviderThreadId.make(`provider-thread:followup-command-child-${ending}`),
-                    appThreadId: child.childThreadId,
+                    ...childProviderThread,
                     pendingBackgroundTasks: [],
                   },
                 },
@@ -3380,9 +3402,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
                 providerInstanceId: modelSelection.instanceId,
                 occurredAt: now,
                 payload: {
-                  ...parent.providerThreads[0]!,
-                  id: ProviderThreadId.make(`provider-thread:followup-command-child-${ending}`),
-                  appThreadId: child.childThreadId,
+                  ...childProviderThread,
                   pendingBackgroundTasks: [],
                 },
               },
