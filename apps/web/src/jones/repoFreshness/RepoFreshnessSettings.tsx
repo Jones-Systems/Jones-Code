@@ -55,31 +55,35 @@ function RepoFreshnessCadenceRow({
       return;
     savingRef.current = true;
     setSaving(true);
-    try {
-      const result = await update({
-        environmentId,
-        input: {
-          patch: {
-            projectSettingsOverrides: {
-              [projectId]: {
-                ...config.settings.projectSettingsOverrides[projectId],
-                repoFreshnessCadenceSeconds: next,
-              },
+    await update({
+      environmentId,
+      input: {
+        patch: {
+          projectSettingsOverrides: {
+            [projectId]: {
+              ...config.settings.projectSettingsOverrides[projectId],
+              repoFreshnessCadenceSeconds: next,
             },
           },
         },
-      });
-      if (
-        !isAtomCommandInterrupted(result) &&
-        (result._tag === "Failure" ||
-          result.value.projectSettingsOverrides[projectId]?.repoFreshnessCadenceSeconds !== next)
-      ) {
+      },
+    })
+      .then((result) => {
+        if (
+          !isAtomCommandInterrupted(result) &&
+          (result._tag === "Failure" ||
+            result.value.projectSettingsOverrides[projectId]?.repoFreshnessCadenceSeconds !== next)
+        ) {
+          toastManager.add({ type: "error", title: "Could not save repository freshness" });
+        }
+      })
+      .catch(() => {
         toastManager.add({ type: "error", title: "Could not save repository freshness" });
-      }
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
+      })
+      .finally(() => {
+        savingRef.current = false;
+        setSaving(false);
+      });
   };
 
   const checkout = member.environmentLabel

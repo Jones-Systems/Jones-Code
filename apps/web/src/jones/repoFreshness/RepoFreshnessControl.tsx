@@ -50,41 +50,45 @@ function useFetchLatest(project: ScopedProjectRef, canFetch: boolean) {
     if (fetching.current || !canFetch || !getDocumentActivity().visible) return;
     fetching.current = true;
     setPending(true);
-    try {
-      const result = await refresh(repoFreshnessTarget(project));
-      if (result._tag === "Failure") {
-        if (!isAtomCommandInterrupted(result)) {
-          toastManager.add({ type: "error", title: "Fetch result unavailable" });
+    await refresh(repoFreshnessTarget(project))
+      .then((result) => {
+        if (result._tag === "Failure") {
+          if (!isAtomCommandInterrupted(result)) {
+            toastManager.add({ type: "error", title: "Fetch result unavailable" });
+          }
+          return;
         }
-        return;
-      }
-      const verification = manualRepoFreshnessVerification(result.value);
-      if (verification === null) {
+        const verification = manualRepoFreshnessVerification(result.value);
+        if (verification === null) {
+          toastManager.add({
+            type: "error",
+            title:
+              result.value.status.target.status === "unavailable"
+                ? "Repository remote unavailable"
+                : "Latest fetch failed",
+          });
+          return;
+        }
+        const checkout = result.value.checkout;
+        const checkoutLabel =
+          checkout.status === "updated"
+            ? "Checkout updated."
+            : checkout.status === "already-current"
+              ? "Checkout already current."
+              : (checkoutSkipMessages.get(checkout.reason ?? "") ?? "Checkout update skipped.");
         toastManager.add({
-          type: "error",
-          title:
-            result.value.status.target.status === "unavailable"
-              ? "Repository remote unavailable"
-              : "Latest fetch failed",
+          type: "success",
+          title: "Fetched latest remote default",
+          description: `${verification.remoteName}/${verification.branchName} at ${verification.commitSha.slice(0, 12)}. ${checkoutLabel}`,
         });
-        return;
-      }
-      const checkout = result.value.checkout;
-      const checkoutLabel =
-        checkout.status === "updated"
-          ? "Checkout updated."
-          : checkout.status === "already-current"
-            ? "Checkout already current."
-            : (checkoutSkipMessages.get(checkout.reason ?? "") ?? "Checkout update skipped.");
-      toastManager.add({
-        type: "success",
-        title: "Fetched latest remote default",
-        description: `${verification.remoteName}/${verification.branchName} at ${verification.commitSha.slice(0, 12)}. ${checkoutLabel}`,
+      })
+      .catch(() => {
+        toastManager.add({ type: "error", title: "Fetch result unavailable" });
+      })
+      .finally(() => {
+        fetching.current = false;
+        setPending(false);
       });
-    } finally {
-      fetching.current = false;
-      setPending(false);
-    }
   };
   return { fetchLatest, pending };
 }
