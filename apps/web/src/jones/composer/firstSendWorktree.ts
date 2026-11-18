@@ -7,9 +7,9 @@ export function usesVerifiedDefault(
   projectId: ProjectId | null | undefined,
 ): boolean {
   if (!config || !projectId) return false;
-  const capabilities = config.environment.capabilities;
+  const capabilities = config.environment?.capabilities;
   return (
-    capabilities.repoFreshness === true &&
+    capabilities?.repoFreshness === true &&
     (config.settings.projectSettingsOverrides[projectId]?.repoFreshnessCadenceSeconds ?? 0) > 0
   );
 }

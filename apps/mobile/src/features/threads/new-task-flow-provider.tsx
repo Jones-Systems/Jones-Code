@@ -421,7 +421,7 @@ export function NewTaskFlowProvider(
   // only the explicit flag is ever written back to the draft, so the resolved
   // value keeps tracking the server setting when the config loads late.
   const draftStartFromOrigin = selectedProjectDraft.workspaceSelection?.startFromOrigin;
-  const capabilities = selectedEnvironmentServerConfig?.environment.capabilities;
+  const capabilities = selectedEnvironmentServerConfig?.environment?.capabilities;
   const cadence = selectedProject
     ? selectedEnvironmentServerConfig?.settings.projectSettingsOverrides[selectedProject.id]
         ?.repoFreshnessCadenceSeconds
