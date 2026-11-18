@@ -79,7 +79,7 @@ if (git("status", "--porcelain", "--untracked-files=normal")) {
 const entry = NodePath.join(webRoot, "src", "jones", "designReview", `${name}-entry.tsx`);
 const built = await build({
   configFile: false,
-  envFile: false,
+  envDir: false,
   envPrefix: [],
   root: webRoot,
   plugins: [react(), tailwind()],
