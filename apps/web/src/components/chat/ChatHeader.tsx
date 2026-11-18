@@ -23,7 +23,6 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
-import { Badge } from "../ui/badge";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
@@ -51,7 +50,6 @@ interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId;
   activeThreadTitle: string;
-  activeThreadLinkOrigin?: string | null | undefined;
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
   parentThreadLink: {
@@ -82,7 +80,6 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadEnvironmentId,
   activeThreadId,
   activeThreadTitle,
-  activeThreadLinkOrigin,
   isServerThread,
   activeProject,
   parentThreadLink,
@@ -412,16 +409,6 @@ export const ChatHeader = memo(function ChatHeader({
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
             </Tooltip>
           )}
-          {renamingTitle === null && activeThreadLinkOrigin ? (
-            <Tooltip>
-              <TooltipTrigger render={<Badge variant="info" size="sm" />}>
-                From {activeThreadLinkOrigin}
-              </TooltipTrigger>
-              <TooltipPopup side="top">
-                Started by an agent on {activeThreadLinkOrigin} through a linked environment.
-              </TooltipPopup>
-            </Tooltip>
-          ) : null}
           {renamingTitle === null ? (
             <MachineRouteBadge
               environmentId={activeThreadEnvironmentId}

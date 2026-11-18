@@ -1,3 +1,4 @@
+import { resolveMachineIdentity as resolveDeviceIdentity } from "@t3tools/contracts/jones/devicePresentation";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { ConnectionTarget } from "@t3tools/client-runtime/connection";
 import {
@@ -6,6 +7,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-relationships";
 import type {
   EnvironmentId,
+  EnvironmentMachineKind,
   ScopedThreadRef,
   OrchestrationV2Subagent,
   OrchestrationV2RemoteTaskChild,
@@ -26,7 +28,22 @@ export function isClientLocalMachine(
   );
 }
 
-export { resolveMachineIdentity } from "@t3tools/contracts/jones/devicePresentation";
+export function resolveMachineIdentity(
+  label: string | null | undefined,
+  kind?: EnvironmentMachineKind | null,
+) {
+  const machine = resolveDeviceIdentity(label, kind);
+  if (machine.identity !== "unknown") return machine;
+
+  // macOS can advertise a possessive hardware name and add a numeric collision suffix.
+  const hardwareName = machine.label
+    .toLowerCase()
+    .replace(/^.+['’]s /, "")
+    .replace(/ \(\d+\)$/, "");
+  if (hardwareName === "mac mini") return resolveDeviceIdentity(label, "mac-mini");
+  if (/^macbook(?: air| pro)?$/.test(hardwareName)) return resolveDeviceIdentity(label, "laptop");
+  return machine;
+}
 
 export type ParentSource = {
   readonly lineage: OrchestrationV2ThreadShell["lineage"];
