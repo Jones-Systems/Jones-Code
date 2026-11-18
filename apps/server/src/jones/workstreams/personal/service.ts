@@ -66,12 +66,23 @@ export class PersonalWorkstreams extends Context.Service<
   }
 >()("t3/jones/workstreams/personal/service/PersonalWorkstreams") {}
 
-const definitionColumns = `id, name, lifecycle, color, order_key AS orderKey, created_at AS createdAt, updated_at AS updatedAt, deleted_at AS deletedAt, rev, lifecycle_revision AS lifecycleRevision, origin`;
+const definitionColumns = `id, name, lifecycle, color, name_icon_project_key AS nameIconProjectKey, name_icon_updated_at AS nameIconUpdatedAt, order_key AS orderKey, created_at AS createdAt, updated_at AS updatedAt, deleted_at AS deletedAt, rev, lifecycle_revision AS lifecycleRevision, origin`;
+type DefinitionRow = P.PersonalWorkstream & {
+  nameIconProjectKey: string | null;
+  nameIconUpdatedAt: string | null;
+};
 const normalizeDefinition = ({
   lifecycleRevision,
+  nameIconProjectKey,
+  nameIconUpdatedAt,
   ...definition
-}: P.PersonalWorkstream): P.PersonalWorkstream =>
-  lifecycleRevision ? { ...definition, lifecycleRevision } : definition;
+}: DefinitionRow): P.PersonalWorkstream => ({
+  ...definition,
+  ...(lifecycleRevision ? { lifecycleRevision } : {}),
+  ...(nameIconUpdatedAt
+    ? { nameIcon: { projectKey: nameIconProjectKey, updatedAt: nameIconUpdatedAt } }
+    : {}),
+});
 const assignmentColumns = `a.thread_id AS threadId, a.workstream_id AS workstreamId, a.revision, a.updated_at AS updatedAt`;
 const ImportFile = Schema.Struct({
   schema: Schema.Literal("jones.workstreams-personal-import/v1"),
@@ -111,10 +122,10 @@ const make = Effect.gen(function* () {
   });
   const definitions = () =>
     sql
-      .unsafe<P.PersonalWorkstream>(`SELECT ${definitionColumns} FROM jones_personal_workstreams`)
+      .unsafe<DefinitionRow>(`SELECT ${definitionColumns} FROM jones_personal_workstreams`)
       .pipe(Effect.map((rows) => rows.map(normalizeDefinition)));
   const definition = Effect.fn("PersonalWorkstreams.definition")(function* (id: string) {
-    const rows = yield* sql.unsafe<P.PersonalWorkstream>(
+    const rows = yield* sql.unsafe<DefinitionRow>(
       `SELECT ${definitionColumns} FROM jones_personal_workstreams WHERE id=?`,
       [id],
     );
@@ -142,7 +153,7 @@ const make = Effect.gen(function* () {
     return next;
   });
   const store = Effect.fn("PersonalWorkstreams.store")(function* (w: P.PersonalWorkstream) {
-    yield* sql`INSERT INTO jones_personal_workstreams ${sql.insert({ id: w.id, name: w.name, lifecycle: w.lifecycle, color: w.color, order_key: w.orderKey, created_at: w.createdAt, updated_at: w.updatedAt, deleted_at: w.deletedAt, rev: w.rev, lifecycle_revision: w.lifecycleRevision ?? 0, origin: w.origin })} ON CONFLICT(id) DO UPDATE SET name=excluded.name,lifecycle=excluded.lifecycle,color=excluded.color,order_key=excluded.order_key,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,rev=excluded.rev,lifecycle_revision=excluded.lifecycle_revision,origin=excluded.origin`;
+    yield* sql`INSERT INTO jones_personal_workstreams ${sql.insert({ id: w.id, name: w.name, lifecycle: w.lifecycle, color: w.color, name_icon_project_key: w.nameIcon?.projectKey ?? null, name_icon_updated_at: w.nameIcon?.updatedAt ?? null, order_key: w.orderKey, created_at: w.createdAt, updated_at: w.updatedAt, deleted_at: w.deletedAt, rev: w.rev, lifecycle_revision: w.lifecycleRevision ?? 0, origin: w.origin })} ON CONFLICT(id) DO UPDATE SET name=excluded.name,lifecycle=excluded.lifecycle,color=excluded.color,name_icon_project_key=excluded.name_icon_project_key,name_icon_updated_at=excluded.name_icon_updated_at,order_key=excluded.order_key,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,rev=excluded.rev,lifecycle_revision=excluded.lifecycle_revision,origin=excluded.origin`;
   });
   const unsettledMember = (id: string) =>
     sql`SELECT 1
@@ -165,10 +176,11 @@ const make = Effect.gen(function* () {
     ),
   );
   const merge = Effect.fn("PersonalWorkstreams.merge")(function* (
-    w: P.PersonalWorkstream,
+    candidate: P.PersonalWorkstream,
     expected?: P.PersonalWorkstream,
   ): Effect.fn.Return<P.PutResult, SqlError | P.WorkstreamsPersonalError> {
-    const old = yield* definition(w.id);
+    const old = yield* definition(candidate.id);
+    const w = old ? P.preserveWorkstreamNameIcon(candidate, old) : candidate;
     const comparison = old === null ? 1 : P.comparePersonalWorkstreams(w, old);
     if (comparison <= 0)
       return {
@@ -190,7 +202,14 @@ const make = Effect.gen(function* () {
       (w.lifecycleRevision ?? 0) <= (old.lifecycleRevision ?? 0)
     )
       return yield* new P.WorkstreamsPersonalError({ code: "precondition_failed" });
-    if (expected && (!old || P.comparePersonalWorkstreams(old, expected) !== 0))
+    if (
+      expected &&
+      (!old ||
+        P.comparePersonalWorkstreams(
+          old,
+          expected.nameIcon === undefined ? P.preserveWorkstreamNameIcon(expected, old) : expected,
+        ) !== 0)
+    )
       return yield* new P.WorkstreamsPersonalError({ code: "precondition_failed" });
     yield* store(w);
     if (w.deletedAt !== null)
@@ -231,6 +250,7 @@ const make = Effect.gen(function* () {
               `SELECT ${assignmentColumns} FROM jones_personal_workstream_assignments a JOIN orchestration_v2_projection_threads t ON t.thread_id=a.thread_id WHERE t.deleted_at IS NULL`,
             ),
             importIssue,
+            supportsNameIcons: true as const,
             ...(autoAssignments === undefined ? {} : { autoAssignments }),
           };
         }),

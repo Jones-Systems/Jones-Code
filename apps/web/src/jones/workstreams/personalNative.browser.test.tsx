@@ -597,6 +597,52 @@ describe("personal Workstreams native presentation", () => {
     await userEvent.click(page.getByRole("button", { name: "Create “Second group” and move" }));
     expect(controller.createAndAssign).toHaveBeenCalledWith(thread, "Second group");
   });
+  it("keeps the Name icon picker within the name field and uses the supplied project order", async () => {
+    using setup = fixture();
+    const projects = ["Zulu", "Alpha"].map((name) => ({
+      projectKey: name,
+      displayName: name,
+      environmentId: env,
+      workspaceRoot: `/synthetic/${name}`,
+      title: name,
+      faviconPath: null,
+      projectIcon: { kind: "emoji" as const, emoji: "🟪" },
+    }));
+    await using screen = await render(
+      <div style={{ width: 320 }}>
+        <WorkstreamCreateForm
+          controller={setup.controller}
+          canSetNameIcon
+          nameIconProjects={projects}
+          open
+          onClose={() => {}}
+          onPendingChange={() => {}}
+        />
+      </div>,
+    );
+    const name = screen.getByRole("textbox", { name: "Workstream name" });
+    const picker = screen.getByRole("combobox", { name: "Name icon" });
+    const inputRect = name
+      .element()
+      .closest('[data-slot="input-control"]')!
+      .getBoundingClientRect();
+    const pickerRect = picker.element().getBoundingClientRect();
+    expect(pickerRect.top).toBeGreaterThanOrEqual(inputRect.bottom);
+    expect(pickerRect.right).toBeCloseTo(inputRect.right, 0);
+    expect(pickerRect.width).toBeLessThan(inputRect.width);
+    await userEvent.click(picker);
+    const options = page.getByRole("option");
+    await expect.element(options.nth(0)).toHaveTextContent("None");
+    await expect.element(options.nth(1)).toHaveAccessibleName("Zulu");
+    await expect.element(options.nth(2)).toHaveAccessibleName("Alpha");
+    await userEvent.click(options.nth(1));
+    await userEvent.fill(name, "New group");
+    await userEvent.click(screen.getByRole("button", { name: "Create", exact: true }));
+    expect(setup.controller.create).toHaveBeenCalledWith({
+      name: "New group",
+      nameIconProjectKey: "Zulu",
+    });
+  });
   it("renders a pushed controller update without refresh and keeps a cached group visible while offline", async () => {
     using setup = fixture();
     const { registry, controller, initial, state } = setup;

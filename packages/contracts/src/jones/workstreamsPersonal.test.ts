@@ -91,6 +91,34 @@ describe("personal Workstream convergence", () => {
     expect(() => mergePersonalWorkstreams([])).toThrow();
     expect(() => mergePersonalWorkstreams([original, { ...original, id: "other" }])).toThrow();
   });
+
+  it("keeps selections and clears through newer legacy definitions in either arrival order", () => {
+    const selected = editPersonalWorkstream(
+      original,
+      { nameIconProjectKey: "project:one" },
+      later,
+      "two",
+    );
+    const legacy = editPersonalWorkstream(
+      { ...original, rev: selected.rev },
+      { name: "Renamed" },
+      later,
+      "three",
+    );
+    expect(mergePersonalWorkstreams([selected, legacy])).toEqual({
+      ...legacy,
+      nameIcon: selected.nameIcon,
+    });
+    expect(mergePersonalWorkstreams([legacy, selected])).toEqual({
+      ...legacy,
+      nameIcon: selected.nameIcon,
+    });
+    const cleared = editPersonalWorkstream(selected, { nameIconProjectKey: null }, later, "two");
+    expect(comparePersonalWorkstreams({ ...cleared, nameIcon: selected.nameIcon! }, cleared)).toBe(
+      -1,
+    );
+    expect(mergePersonalWorkstreams([legacy, cleared, selected]).nameIcon?.projectKey).toBeNull();
+  });
 });
 
 describe("personal Workstream edits", () => {

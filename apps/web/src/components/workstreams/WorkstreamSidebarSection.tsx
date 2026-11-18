@@ -20,6 +20,7 @@ import {
   EllipsisVerticalIcon,
   ChevronDownIcon,
   PaletteIcon,
+  ImageIcon,
   PencilIcon,
   TrashIcon,
 } from "lucide-react";
@@ -65,6 +66,11 @@ import {
 } from "../../jones/workstreams/personalPresentation";
 import { personalWorkstreamGroupColors } from "../../jones/workstreams/personalRail";
 import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalWorkstreamTitleEditor";
+import {
+  WorkstreamNameIconPicker,
+  type WorkstreamNameIconProject,
+} from "../../jones/workstreams/WorkstreamNameIconPicker";
+import { ProjectFavicon } from "../ProjectFavicon";
 import { PersonalWorkstreamsHeader } from "../../jones/workstreams/PersonalWorkstreamsHeader";
 
 import {
@@ -95,32 +101,41 @@ const emptySummary: PersonalThreadSummary = {
 };
 export function WorkstreamCreateForm({
   controller,
+  nameIconProjects = [],
+  canSetNameIcon = false,
   open,
   onClose,
   onPendingChange,
 }: {
   controller: PersonalWorkstreamsController;
+  nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
+  canSetNameIcon?: boolean;
   open: boolean;
   onClose: () => void;
   onPendingChange: (pending: boolean) => void;
 }) {
   const [name, setName] = useState("");
+  const [nameIconProjectKey, setNameIconProjectKey] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
   if (!open) return null;
   return (
     <form
-      className="flex gap-1 p-2"
+      className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-start gap-1 p-2"
       onSubmit={async (event) => {
         event.preventDefault();
-        if (pendingRef.current || !name.trim()) return;
+        if (pendingRef.current || !name.trim() || (nameIconProjectKey && !canSetNameIcon)) return;
         pendingRef.current = true;
         setPending(true);
         onPendingChange(true);
         try {
-          const result = await controller.create({ name: name.trim() });
+          const result = await controller.create({
+            name: name.trim(),
+            ...(nameIconProjectKey ? { nameIconProjectKey } : {}),
+          });
           if (result.ok) {
             setName("");
+            setNameIconProjectKey(null);
             onClose();
           } else showPersonalFailure(result.failure);
         } catch (error) {
@@ -137,21 +152,44 @@ export function WorkstreamCreateForm({
       <Input
         autoFocus
         aria-label="Workstream name"
+        placeholder="Workstream name"
         maxLength={160}
         value={name}
         onChange={(event) => setName(event.target.value)}
       />
-      <Button type="submit" disabled={pending || !name.trim()}>
+      <Button
+        type="submit"
+        disabled={pending || !name.trim() || Boolean(nameIconProjectKey && !canSetNameIcon)}
+      >
         Create
       </Button>
-      <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
+      <Button
+        type="button"
+        variant="ghost"
+        disabled={pending}
+        onClick={() => {
+          setNameIconProjectKey(null);
+          onClose();
+        }}
+      >
         Cancel
       </Button>
+      {canSetNameIcon || nameIconProjectKey !== null ? (
+        <div className="col-start-1 row-start-2 min-w-0">
+          <WorkstreamNameIconPicker
+            projects={nameIconProjects}
+            value={nameIconProjectKey}
+            onChange={setNameIconProjectKey}
+            disabled={pending}
+          />
+        </div>
+      ) : null}
     </form>
   );
 }
 function Group({
   item,
+  nameIconProjects,
   controller,
   children,
   summary,
@@ -164,6 +202,7 @@ function Group({
   memberCount,
 }: {
   item: PersonalWorkstreamView;
+  nameIconProjects: readonly WorkstreamNameIconProject[];
   controller: PersonalWorkstreamsController;
   children: (window: { limit: PersonalThreadLimit; expanded: boolean }) => ReactNode;
   memberCount: number;
@@ -182,7 +221,7 @@ function Group({
     false,
     collapsedSchema,
   );
-  const [editing, setEditing] = useState<"name" | "color" | null>(null);
+  const [editing, setEditing] = useState<"name" | "color" | "nameIcon" | null>(null);
   const threadWindow = usePersonalThreadWindow(item.id);
   const { filter: statusFilter, setFilter: setStatusFilter } = usePersonalStatusFilter(item.id);
   const overflowCount = memberCount - threadWindow.limit;
@@ -190,6 +229,10 @@ function Group({
     ? memberCount
     : Math.min(memberCount, threadWindow.limit);
   const [draft, setDraft] = useState("");
+  const [draftNameIcon, setDraftNameIcon] = useState<string | null>(null);
+  const nameIconProject = nameIconProjects.find(
+    (project) => project.projectKey === item.nameIcon?.projectKey,
+  );
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
   const run = async (operation: () => ReturnType<typeof controller.remove>) => {
@@ -263,6 +306,7 @@ function Group({
       >
         <PersonalSidebarGroupHeader
           name={item.name}
+          nameIcon={nameIconProject ? <ProjectFavicon project={nameIconProject} /> : null}
           collapsed={collapsed}
           onToggle={() => {
             threadWindow.setExpanded(false);
@@ -324,6 +368,17 @@ function Group({
                   >
                     <PaletteIcon aria-hidden /> Change color
                   </MenuItem>
+                  {state.canSetNameIcon && controller.setNameIcon ? (
+                    <MenuItem
+                      disabled={pending}
+                      onClick={() => {
+                        setDraftNameIcon(item.nameIcon?.projectKey ?? null);
+                        setEditing("nameIcon");
+                      }}
+                    >
+                      <ImageIcon aria-hidden /> Change name icon
+                    </MenuItem>
+                  ) : null}
                   <MenuSeparator />
                   <MenuSub>
                     <MenuSubTrigger disabled={!state.canCreate || pending}>
@@ -421,6 +476,40 @@ function Group({
           }
         />
       </div>
+      {editing === "nameIcon" ? (
+        <form
+          className="grid gap-1 px-2 pb-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const change = controller.setNameIcon;
+            if (!change || !state.canSetNameIcon) return;
+            void run(() => change(item.id, draftNameIcon)).then((result) => {
+              if (result?.ok) setEditing(null);
+            });
+          }}
+        >
+          <WorkstreamNameIconPicker
+            projects={nameIconProjects}
+            value={draftNameIcon}
+            onChange={setDraftNameIcon}
+            disabled={pending}
+          />
+          <div className="flex justify-end gap-1">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={pending}
+              onClick={() => setEditing(null)}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" disabled={pending || !state.canSetNameIcon}>
+              Save
+            </Button>
+          </div>
+        </form>
+      ) : null}
       {!collapsed ? (
         <>
           {children(threadWindow)}
@@ -502,6 +591,7 @@ function Group({
 }
 export function WorkstreamSidebarSection({
   controller,
+  nameIconProjects = [],
   renderMembers,
   onOpenHistoryThread,
   summaries,
@@ -511,6 +601,7 @@ export function WorkstreamSidebarSection({
   dropTargetId,
 }: {
   controller: PersonalWorkstreamsController;
+  nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
   dropTargetId?: string | null | undefined;
   onOpenHistoryThread?: ((thread: PersonalThreadRef) => void) | undefined;
   renderMembers: (
@@ -753,6 +844,7 @@ export function WorkstreamSidebarSection({
                 {insertion?.afterId === item.id ? insertionLine : null}
                 <Group
                   item={item}
+                  nameIconProjects={nameIconProjects}
                   controller={controller}
                   summary={summaries?.get(item.id) ?? emptySummary}
                   rosterTotal={rosterTotals?.get(item.id) ?? summaries?.get(item.id)?.total ?? 0}

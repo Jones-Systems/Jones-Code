@@ -1215,6 +1215,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // loaded. The stored keys are left alone, so the scope returns with its project.
   // An archived project's scope reads as all projects, matching the menu.
   const scopeGroups = pickableProjectGroups(projectGroups);
+  const nameIconProjects = scopeGroups.filter((project) => !project.isScratch);
   const archivedProjectKeys = new Set(
     projectGroups.filter((project) => project.archived).map((project) => project.projectKey),
   );
@@ -3666,6 +3667,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             />
             <WorkstreamCreateForm
               controller={workstreamController.controller}
+              nameIconProjects={nameIconProjects}
+              canSetNameIcon={workstreamController.state.canSetNameIcon === true}
               open={workstreamCreateOpen}
               onClose={closeWorkstreamCreate}
               onPendingChange={setWorkstreamCreatePending}
@@ -3926,6 +3929,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           <li key="native-workstream-groups" className="list-none">
                             <WorkstreamNativeSidebar
                               controller={workstreamController.controller}
+                              nameIconProjects={nameIconProjects}
                               assignmentMenuRef={workstreamAssignmentMenuRef}
                               externalDropRef={workstreamExternalDropRef}
                               canOperate={(thread) =>

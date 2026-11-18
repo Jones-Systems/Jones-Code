@@ -13,6 +13,7 @@ export interface PersonalWorkstreamView {
   readonly name: string;
   readonly lifecycle: PersonalWorkstreamLifecycle;
   readonly color: string | null;
+  readonly nameIcon?: { readonly projectKey: string | null; readonly updatedAt: string };
   readonly orderKey: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -45,6 +46,7 @@ export interface PersonalWorkstreamsState {
    */
   readonly autoAssignedThreadKeys?: ReadonlySet<string>;
   readonly canCreate: boolean; // some environment is writable
+  readonly canSetNameIcon?: boolean;
 }
 
 export interface PersonalWorkstreamsGrouping<T extends PersonalThreadRef> {
@@ -67,6 +69,7 @@ export type PersonalWorkstreamsAction =
   | "create"
   | "rename"
   | "recolor"
+  | "nameIcon"
   | "lifecycle"
   | "reorder"
   | "delete"
@@ -98,9 +101,16 @@ export interface PersonalWorkstreamsController {
   readonly state: Atom.Atom<PersonalWorkstreamsState>;
   readHistory?(id: string): Promise<PersonalWorkstreamHistory>;
   canAssign(thread: PersonalThreadRef): boolean;
-  create(input: { name: string }): Promise<PersonalResult<PersonalWorkstreamView>>;
+  create(input: {
+    name: string;
+    nameIconProjectKey?: string;
+  }): Promise<PersonalResult<PersonalWorkstreamView>>;
   rename(id: string, name: string): Promise<PersonalResult<PersonalWorkstreamView>>;
   setColor(id: string, color: string | null): Promise<PersonalResult<PersonalWorkstreamView>>;
+  setNameIcon?(
+    id: string,
+    projectKey: string | null,
+  ): Promise<PersonalResult<PersonalWorkstreamView>>;
   setLifecycle(
     id: string,
     lifecycle: PersonalWorkstreamLifecycle,

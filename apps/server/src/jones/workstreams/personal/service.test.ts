@@ -25,6 +25,7 @@ import * as Config from "../../../config.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import migration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
 import lifecycleMigration from "../../persistence/Migrations/159_JonesWorkstreamLifecycleRevision.ts";
+import nameIconMigration from "../../persistence/Migrations/161_JonesWorkstreamNameIcons.ts";
 import * as Personal from "./service.ts";
 
 const environmentId = EnvironmentId.make("synthetic-personal-server");
@@ -44,6 +45,7 @@ const database = Layer.effectDiscard(
     yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
     yield* migration;
     yield* lifecycleMigration;
+    yield* nameIconMigration;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 const dependencies = Layer.mergeAll(
@@ -55,6 +57,39 @@ const dependencies = Layer.mergeAll(
 ).pipe(Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)));
 const fixture = Personal.layer.pipe(Layer.provideMerge(dependencies));
 const fresh = Personal.PersonalWorkstreams.pipe(Effect.provide(Personal.layer));
+
+it.effect("persists a name icon and its explicit clear across legacy writes", () =>
+  Effect.gen(function* () {
+    const service = yield* Personal.PersonalWorkstreams;
+    const legacy = w("icons");
+    const selected = P.editPersonalWorkstream(
+      legacy,
+      { nameIconProjectKey: "project:one" },
+      "2026-01-02T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(selected);
+    const legacyRename = { ...legacy, name: "Renamed", rev: 3 };
+    yield* service.put(legacyRename, {
+      ...legacy,
+      rev: selected.rev,
+      updatedAt: selected.updatedAt,
+    });
+    const reloaded = yield* fresh;
+    const [renamed] = (yield* reloaded.snapshot()).workstreams;
+    assert.equal(renamed?.name, "Renamed");
+    assert.deepEqual(renamed?.nameIcon, selected.nameIcon);
+    const cleared = P.editPersonalWorkstream(
+      renamed!,
+      { nameIconProjectKey: null },
+      "2026-01-03T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(cleared);
+    yield* service.put({ ...legacyRename, rev: cleared.rev + 1 });
+    assert.deepEqual((yield* reloaded.snapshot()).workstreams[0]?.nameIcon, cleared.nameIcon);
+  }).pipe(Effect.provide(fixture)),
+);
 
 it.effect("desired-first retries, ABA/CAS rollback, LWW and terminal deletion use real SQL", () =>
   Effect.gen(function* () {
@@ -388,6 +423,7 @@ it.effect(
         yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
         yield* migration;
         yield* lifecycleMigration;
+        yield* nameIconMigration;
         yield* stage();
         const s = yield* fresh;
         yield* s.assign({ threadId, workstream: null, expectedRevision: 1 });

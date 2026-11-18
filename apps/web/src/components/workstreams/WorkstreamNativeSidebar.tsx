@@ -26,6 +26,7 @@ import {
   moveThreadContextDrag as moveThreadContextDragGhost,
 } from "../chat/threadContextDrag";
 import { WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
+import type { WorkstreamNameIconProject } from "../../jones/workstreams/WorkstreamNameIconPicker";
 import { WorkstreamPicker } from "../../jones/workstreams/WorkstreamPicker";
 import {
   showPersonalAssignment,
@@ -62,6 +63,7 @@ export interface NativeThreadExternalDrop {
 
 export function WorkstreamNativeSidebar({
   controller,
+  nameIconProjects,
   threads,
   summaryThreads = threads,
   rosterThreads = summaryThreads,
@@ -75,6 +77,7 @@ export function WorkstreamNativeSidebar({
   placeThread,
 }: {
   controller: PersonalWorkstreamsController;
+  nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
   threads: readonly EnvironmentThreadShell[];
   summaryThreads?: readonly EnvironmentThreadShell[];
   rosterThreads?: readonly EnvironmentThreadShell[];
@@ -508,6 +511,7 @@ export function WorkstreamNativeSidebar({
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        nameIconProjects={nameIconProjects}
         onOpenHistoryThread={onOpenHistoryThread}
         rosterTotals={personalSidebarRosterTotals(state, rosterThreads)}
         dropTargetId={drop}

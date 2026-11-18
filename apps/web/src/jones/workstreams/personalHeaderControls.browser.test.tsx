@@ -19,6 +19,7 @@ function Header({
   onRename = () => {},
   counts = summary,
   nameEditor,
+  nameIcon,
   fontFamily,
 }: {
   width?: number;
@@ -26,6 +27,7 @@ function Header({
   onRename?: () => void;
   counts?: PersonalThreadSummary;
   nameEditor?: ReactNode;
+  nameIcon?: ReactNode;
   fontFamily?: string | undefined;
 }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -41,6 +43,7 @@ function Header({
         }}
         summary={counts}
         nameEditor={nameEditor}
+        nameIcon={nameIcon}
         statusFilter={filter}
         onStatusFilterChange={setFilter}
         onRenameRequested={onRename}
@@ -436,4 +439,23 @@ it("keeps the roster total visible when a status filter hides every member", asy
   );
   await expect.element(page.getByText("3 threads", { exact: true })).toBeVisible();
   expect(document.body.textContent).not.toContain("0 of 3");
+});
+
+it("aligns the icon to the first title line and wraps the next line under it", async () => {
+  await using screen = await render(
+    <Header width={260} name="Workstream title wrapping underneath its icon" nameIcon={<span />} />,
+  );
+  const title = screen.container.querySelector<HTMLElement>(".line-clamp-2")!;
+  const icon = title.querySelector<HTMLElement>('[aria-hidden="true"]')!;
+  const text = title.lastChild!;
+  const range = document.createRange();
+  range.selectNodeContents(text);
+  const [first, second] = Array.from(range.getClientRects());
+  const iconBox = icon.getBoundingClientRect();
+  expect(iconBox.width).toBeCloseTo(parseFloat(getComputedStyle(title).fontSize), 1);
+  expect(first!.left).toBeGreaterThan(iconBox.right);
+  expect(iconBox.top).toBeLessThan(first!.bottom);
+  expect(iconBox.bottom).toBeGreaterThan(first!.top);
+  expect(second!.left).toBeCloseTo(iconBox.left, 1);
+  expect(second!.top).toBeGreaterThan(first!.top);
 });
