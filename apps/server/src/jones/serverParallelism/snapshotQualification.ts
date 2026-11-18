@@ -68,10 +68,11 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           const compressedAt = performance.now(),
             compressed = NodeZlib.gzipSync(bytes);
           const compressionMs = performance.now() - compressedAt;
-          // Give the pending timer a chance to record the final synchronous phase.
+          // A later tick must close the interval that includes the final synchronous phase.
+          const loopWorkEndSampleCount = loop.count;
           yield* waitForLoopSamples;
-          const loopSampleCount =
-            loopWarmupSampleCount > 0 ? loop.count - loopWarmupSampleCount : 0;
+          const loopFinalSampleCount = loop.count;
+          const loopSampleCount = loopFinalSampleCount - loopWarmupSampleCount;
           samples.push({
             captureMs,
             decodeMs,
@@ -81,6 +82,9 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
             bytes: Buffer.byteLength(bytes),
             compressedBytes: compressed.byteLength,
             loopWarmupSampleCount,
+            loopWorkEndSampleCount,
+            loopFinalSampleCount,
+            loopExceededCount: loop.exceeds,
             loopSampleCount,
             loopP99Ms: loopSampleCount > 0 ? loop.percentile(99) / 1e6 : null,
             loopMaxMs: loopSampleCount > 0 ? loop.max / 1e6 : null,
@@ -95,7 +99,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
         snapshotOffloadActivated: false,
         // JSON.stringify is synchronous, so this is a demonstrated contiguous block.
         contiguousEncodeTrigger: samples.some((sample) => sample.encodeMs >= 50),
-        decodeProjectionAttributionRequired: samples.some(
+        decodeProjectionElapsedTrigger: samples.some(
           (sample) => sample.decodeMs >= 50 || sample.schemaProjectionMs >= 50,
         ),
         compressionReportedSeparately: true,

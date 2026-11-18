@@ -131,6 +131,15 @@ NodeTest.test("admits only the exact Linux source workload, build and unchanged 
   );
 });
 
+NodeTest.test("admits both cadence arms only on macOS with the same baseline", () => {
+  for (const mode of ["cadence-standard", "cadence-reduced"]) {
+    const mac = { ...admission, mode, platform: "darwin" };
+    NodeAssert.doesNotThrow(() => validateDiagnosticAdmission(mac));
+    NodeAssert.throws(() => validateDiagnosticAdmission({ ...mac, prior }));
+    NodeAssert.throws(() => validateDiagnosticAdmission({ ...mac, platform: "linux" }));
+  }
+});
+
 NodeTest.test(
   "requires a separately selected full receipt for the one control and never chooses favorable latency",
   () => {

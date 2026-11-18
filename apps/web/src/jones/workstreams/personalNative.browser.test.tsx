@@ -598,7 +598,7 @@ describe("personal Workstreams native presentation", () => {
     expect(controller.createAndAssign).toHaveBeenCalledWith(thread, "Second group");
   });
   it.each([240, 320])(
-    "keeps the Name icon picker within the name field and uses the supplied project order at %s px",
+    "keeps the Icon picker within the name field and uses the supplied project order at %s px",
     async (width) => {
       using setup = fixture();
       const projects = ["Zulu", "Alpha"].map((name) => ({
@@ -623,7 +623,7 @@ describe("personal Workstreams native presentation", () => {
         </div>,
       );
       const name = screen.getByRole("textbox", { name: "Workstream name" });
-      const picker = screen.getByRole("combobox", { name: "Name icon" });
+      const picker = screen.getByRole("combobox", { name: "Icon", exact: true });
       const inputRect = name
         .element()
         .closest('[data-slot="input-control"]')!
@@ -647,7 +647,7 @@ describe("personal Workstreams native presentation", () => {
       });
     },
   );
-  it("saves a different Name icon from the Workstream menu and closes the editor", async () => {
+  it("saves a different icon from the Workstream menu and closes the editor", async () => {
     using setup = fixture();
     const { registry, controller, initial, state } = setup;
     const project = {
@@ -687,7 +687,7 @@ describe("personal Workstreams native presentation", () => {
     ] as const) {
       await userEvent.click(page.getByRole("button", { name: "Options for Alpha", exact: true }));
       await userEvent.click(page.getByRole("menuitem", { name: "Change name icon" }));
-      const picker = page.getByRole("combobox", { name: "Name icon" });
+      const picker = page.getByRole("combobox", { name: "Icon", exact: true });
       await userEvent.click(picker);
       await userEvent.click(page.getByRole("option", { name: label, exact: true }));
       await userEvent.click(page.getByRole("button", { name: "Save", exact: true }));

@@ -30,6 +30,9 @@ import { NativeGenerationEvidence, type EvidenceGeneration } from "./nativeGener
 import { observeSafely } from "./observations.ts";
 import {
   diagnosticError,
+  observerModes,
+  periodicResourceGapMs,
+  type ObserverMode,
   type DiagnosticCpu,
   type DiagnosticEvent,
   type DiagnosticIdentity,
@@ -75,7 +78,7 @@ export interface NativeQualificationOptions {
     readonly latency: { readonly p99: number | null };
   }[];
   readonly diagnostic?: {
-    readonly mode: "full" | "cpu-stat-only";
+    readonly mode: ObserverMode;
     readonly sink: DiagnosticSink;
   };
   readonly sample?: typeof sampleProcesses;
@@ -116,14 +119,16 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
   const { windows, acquisitions, files } = workload;
   if (
     options.diagnostic &&
-    (HostProcess.Platform.defaultValue() !== "linux" ||
+    (observerModes[options.diagnostic.mode]?.platform !== HostProcess.Platform.defaultValue() ||
       count !== 2 ||
       windows !== 3 ||
       acquisitions !== 500 ||
-      files !== 512 ||
-      !["full", "cpu-stat-only"].includes(options.diagnostic.mode))
+      files !== 512)
   )
-    throw new Error("Diagnostic requires Linux source N2/W3/A500/F512");
+    throw new Error("Diagnostic requires its selected host platform and source N2/W3/A500/F512");
+  const resourceGapMs = options.diagnostic
+    ? observerModes[options.diagnostic.mode].resourceGapMs
+    : periodicResourceGapMs;
   await NodeFSP.mkdir(directory, { recursive: false, mode: 0o700 });
   const observationStream = qualificationStream<ComputeObservation>(
     workload.capacities.observations,
@@ -483,8 +488,8 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
   const samplingController = new AbortController();
   let previous: ResourceRow | undefined;
   let resourceTail = Promise.resolve();
-  const sampleResources = () => {
-    const work = resourceTail.then(collectResources);
+  const sampleResources = (periodic = false) => {
+    const work = resourceTail.then(() => collectResources(periodic));
     resourceTail = work;
     return work;
   };
@@ -507,7 +512,7 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
       emit("checkpoint-end");
     }
   };
-  async function collectResources() {
+  async function collectResources(periodic: boolean) {
     const before = new Set([...active].filter(([, jobs]) => jobs > 0).map(([pid]) => pid));
     const releases: Array<() => void> = [];
     const subjects = generations.filter((record) => {
@@ -549,6 +554,7 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
         kind: "resource",
         stage: "batch",
         edge: "begin",
+        periodic,
         readId,
         phase: sampledPhase,
         atMs: at,
@@ -639,9 +645,9 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
   }
   const sampler = (async () => {
     while (!stopped) {
-      await sampleResources();
+      await sampleResources(true);
       // Measurement cadence only. Progress assertions use jobs/CPU and captured exit, never this delay.
-      await NodeTimersPromises.setTimeout(10, undefined, {
+      await NodeTimersPromises.setTimeout(resourceGapMs, undefined, {
         signal: samplingController.signal,
       }).catch(() => {});
       if (samplingController.signal.aborted) return;
@@ -1035,7 +1041,7 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
               mode: options.diagnostic.mode,
               cpuResources: cpuResourceStream.rows,
               cpuRetention: cpuResourceStream.report(),
-              nominalSamplingGapMs: 10,
+              nominalSamplingGapMs: resourceGapMs,
               cpuMeaning:
                 "Read/phase wall spans overlap work; process CPU includes reader/checkpoint threads. Thread CPU includes interleaved parent work, not observer-exclusive CPU.",
             },

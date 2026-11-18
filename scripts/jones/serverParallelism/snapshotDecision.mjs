@@ -1,4 +1,5 @@
-// Elapsed Effect work is an attribution request, not evidence of a contiguous CPU block.
+// Node's delay histogram records intervals between callbacks. With ticks on both
+// sides of the workload, its maximum bounds any contiguous main-loop block.
 export function snapshotDecision(measurement) {
   const samples = measurement?.samples;
   const fields = [
@@ -14,8 +15,14 @@ export function snapshotDecision(measurement) {
     samples.length === 3 &&
     samples.every(
       (sample) =>
-        Number.isSafeInteger(sample?.loopSampleCount) &&
-        sample.loopSampleCount > 0 &&
+        Number.isSafeInteger(sample?.loopWarmupSampleCount) &&
+        sample.loopWarmupSampleCount > 0 &&
+        Number.isSafeInteger(sample.loopWorkEndSampleCount) &&
+        sample.loopWorkEndSampleCount >= sample.loopWarmupSampleCount &&
+        Number.isSafeInteger(sample.loopFinalSampleCount) &&
+        sample.loopFinalSampleCount > sample.loopWorkEndSampleCount &&
+        sample.loopExceededCount === 0 &&
+        sample.loopSampleCount === sample.loopFinalSampleCount - sample.loopWarmupSampleCount &&
         fields.every((field) => Number.isFinite(sample[field]) && sample[field] >= 0),
     );
   if (!complete)
@@ -39,12 +46,13 @@ export function snapshotDecision(measurement) {
       }));
   });
   const encodeTrigger = thresholdCrossings.some(({ field }) => field === "encodeMs");
-  const attributionRequired = thresholdCrossings.some(
+  const elapsedCrossings = thresholdCrossings.filter(
     ({ field }) => field === "decodeMs" || field === "schemaProjectionMs",
   );
+  const elapsedTrigger = elapsedCrossings.length > 0;
   if (
     measurement.contiguousEncodeTrigger !== encodeTrigger ||
-    measurement.decodeProjectionAttributionRequired !== attributionRequired
+    measurement.decodeProjectionElapsedTrigger !== elapsedTrigger
   )
     return {
       activationDecision: "unknown",
@@ -57,13 +65,13 @@ export function snapshotDecision(measurement) {
       activationReason: "synchronous-encode",
       thresholdCrossings,
     };
-  if (attributionRequired)
+  if (elapsedCrossings.some(({ window, limitMs }) => samples[window - 1].loopMaxMs >= limitMs))
     return {
       activationDecision: "unknown",
       activationReason: "decode-or-projection-attribution",
       thresholdCrossings,
     };
-  if (thresholdCrossings.length > 0)
+  if (thresholdCrossings.some(({ field }) => field === "loopMaxMs" || field === "loopP99Ms"))
     return {
       activationDecision: "unknown",
       activationReason: "loop-target-exceeded",
@@ -71,7 +79,7 @@ export function snapshotDecision(measurement) {
     };
   return {
     activationDecision: "not-activated",
-    activationReason: "within-thresholds",
+    activationReason: elapsedTrigger ? "elapsed-phases-bounded" : "within-thresholds",
     thresholdCrossings,
   };
 }

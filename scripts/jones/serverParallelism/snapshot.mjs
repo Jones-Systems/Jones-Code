@@ -16,6 +16,7 @@ const rootActions = {
   "decode-or-projection-attribution":
     "Measure contiguous blocking in the flagged decode or projection windows",
   "loop-target-exceeded": "Attribute the event-loop target breaches in the flagged windows",
+  "elapsed-phases-bounded": null,
   "within-thresholds": null,
 };
 let report;
