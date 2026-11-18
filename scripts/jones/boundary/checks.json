@@ -3270,9 +3270,12 @@
     },
     {
       "id": "jones-markdown-table-interactions",
-      "tests": ["apps/web/src/components/chat/MarkdownTable.browser.test.tsx"],
+      "tests": [
+        "apps/web/src/components/chat/MarkdownTable.browser.test.tsx",
+        "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx"
+      ],
       "commands": [
-        "vp test run --root apps/web --config vite.config.ts --project browser src/components/chat/MarkdownTable.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "cd apps/web && vp test run --project browser src/components/chat/MarkdownTable.browser.test.tsx src/components/chat/MessagesTimeline.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -5347,6 +5350,8 @@
     {
       "id": "jones-workstreams-personal",
       "tests": [
+        "apps/web/src/hooks/useHandleNewThread.test.ts",
+        "apps/web/src/jones/workstreams/useStartWorkstreamThread.test.ts",
         "apps/web/src/jones/composer/NewThreadWorkstreamPicker.browser.test.tsx",
         "apps/web/src/jones/composer/newThreadWorkstream.test.ts",
         "apps/web/src/jones/workstreams/personalSnooze.test.ts",
@@ -5382,7 +5387,7 @@
         "apps/web/src/components/threadActionMenu.logic.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/composer/NewThreadWorkstreamPicker.browser.test.tsx apps/web/src/jones/composer/newThreadWorkstream.test.ts apps/web/src/jones/workstreams/personalSnooze.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/hooks/useHandleNewThread.test.ts apps/web/src/jones/workstreams/useStartWorkstreamThread.test.ts apps/web/src/jones/composer/NewThreadWorkstreamPicker.browser.test.tsx apps/web/src/jones/composer/newThreadWorkstream.test.ts apps/web/src/jones/workstreams/personalSnooze.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/desktop/src/jones/workstreams/personalStartup.test.ts apps/mobile/src/features/workstreams/personalPresentation.test.ts apps/server/src/jones/workstreams/personal/service.test.ts apps/server/src/jones/workstreamsLegacyHttp.test.ts apps/web/src/jones/workstreams/personalNotifications.test.ts apps/web/src/jones/workstreams/personalPresentation.test.ts packages/client-runtime/src/jones/workstreams/personal/controller.test.ts packages/contracts/src/jones/workstreamsPersonal.test.ts packages/contracts/src/jones/workstreamsPersonalRpc.test.ts packages/contracts/src/jones/workstreamsPersonalHttp.test.ts apps/server/src/jones/workstreams/personal/bearerHttp.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --project browser apps/web/src/jones/workstreams/personalNative.browser.test.tsx apps/web/src/jones/workstreams/personalSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "cd apps/mobile && vp test run --project unit src/features/workstreams/personalStorage.test.ts --maxWorkers=1 --no-file-parallelism",

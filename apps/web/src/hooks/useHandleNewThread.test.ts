@@ -51,6 +51,7 @@ const testState = vi.hoisted(() => {
     setDraftThreadContext: vi.fn(),
     setLogicalProjectDraftThreadId: vi.fn(),
     setModelSelection: vi.fn(),
+    setNewThreadWorkstream: vi.fn(),
     setPrompt: vi.fn(),
   };
 
@@ -117,6 +118,7 @@ const testState = vi.hoisted(() => {
       router.navigate.mockClear();
       draftStore.setDraftThreadContext.mockClear();
       draftStore.setLogicalProjectDraftThreadId.mockClear();
+      draftStore.setNewThreadWorkstream.mockClear();
       draftStore.setPrompt.mockClear();
       projectFileRead = new Promise<null>((resolve) => {
         completeProjectFileRead = resolve;
@@ -330,6 +332,24 @@ describe.each([
       "Read the playbook. ",
     );
     expect(testState.draftStore.setPrompt.mock.invocationCallOrder[0]).toBeLessThan(
+      testState.router.navigate.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("sets the Workstream on a reused project draft before it opens", async () => {
+    testState.reset(draft);
+    const pendingOpen = useNewThreadHandler()(
+      { environmentId: "environment-ssh", projectId: "project-remote" } as never,
+      { workstreamId: "workstream-alpha" },
+    );
+    testState.completeProjectFileRead(null);
+    const opened = await pendingOpen;
+
+    expect(testState.draftStore.setNewThreadWorkstream).toHaveBeenCalledWith(
+      opened?.draftId,
+      "workstream-alpha",
+    );
+    expect(testState.draftStore.setNewThreadWorkstream.mock.invocationCallOrder[0]).toBeLessThan(
       testState.router.navigate.mock.invocationCallOrder[0] ?? 0,
     );
   });

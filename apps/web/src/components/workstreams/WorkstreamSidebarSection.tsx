@@ -27,6 +27,7 @@ import {
   PaletteIcon,
   ImageIcon,
   PencilIcon,
+  PlusIcon,
   TrashIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
@@ -77,6 +78,7 @@ import {
 } from "../../jones/workstreams/WorkstreamNameIconPicker";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { PersonalWorkstreamsHeader } from "../../jones/workstreams/PersonalWorkstreamsHeader";
+import type { WorkstreamThreadAction } from "../../jones/workstreams/useStartWorkstreamThread";
 
 import {
   usePersonalStatusFilter,
@@ -205,6 +207,7 @@ export function WorkstreamCreateForm({
 function Group({
   item,
   nameIconProjects,
+  newThreadAction,
   controller,
   children,
   summary,
@@ -219,6 +222,7 @@ function Group({
 }: {
   item: PersonalWorkstreamView;
   nameIconProjects: readonly WorkstreamNameIconProject[];
+  newThreadAction: WorkstreamThreadAction | undefined;
   controller: PersonalWorkstreamsController;
   children: (window: { limit: PersonalThreadLimit; expanded: boolean }) => ReactNode;
   memberCount: number;
@@ -430,6 +434,31 @@ function Group({
                       }
                     : {})}
                 >
+                  {newThreadAction ? (
+                    <>
+                      <MenuItem
+                        disabled={"disabledReason" in newThreadAction}
+                        onClick={"run" in newThreadAction ? newThreadAction.run : undefined}
+                        aria-label="New thread"
+                        aria-description={
+                          "disabledReason" in newThreadAction
+                            ? newThreadAction.disabledReason
+                            : undefined
+                        }
+                      >
+                        <PlusIcon aria-hidden />
+                        <span>
+                          New thread
+                          {"disabledReason" in newThreadAction ? (
+                            <span className="block max-w-48 text-xs text-muted-foreground">
+                              {newThreadAction.disabledReason}
+                            </span>
+                          ) : null}
+                        </span>
+                      </MenuItem>
+                      <MenuSeparator />
+                    </>
+                  ) : null}
                   <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
                     <PencilIcon aria-hidden /> Rename
                   </MenuItem>
@@ -676,6 +705,7 @@ function Group({
 export function WorkstreamSidebarSection({
   controller,
   nameIconProjects = [],
+  newThreadAction,
   renderMembers,
   onOpenHistoryThread,
   summaries,
@@ -687,6 +717,7 @@ export function WorkstreamSidebarSection({
 }: {
   controller: PersonalWorkstreamsController;
   nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
+  newThreadAction?: ((workstream: PersonalWorkstreamView) => WorkstreamThreadAction) | undefined;
   dropTargetId?: string | null | undefined;
   snoozedIds?: ReadonlySet<string>;
   onOpenHistoryThread?: ((thread: PersonalThreadRef) => void) | undefined;
@@ -960,6 +991,7 @@ export function WorkstreamSidebarSection({
                 <Group
                   item={item}
                   nameIconProjects={nameIconProjects}
+                  newThreadAction={newThreadAction?.(item)}
                   controller={controller}
                   summary={summaries?.get(item.id) ?? emptySummary}
                   rosterTotal={rosterTotals?.get(item.id) ?? summaries?.get(item.id)?.total ?? 0}

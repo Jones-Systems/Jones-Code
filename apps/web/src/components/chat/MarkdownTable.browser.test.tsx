@@ -37,3 +37,34 @@ it("keeps the labeled expand control and bounded scroll surface after markdown e
   await act(() => collapse.click());
   expect(table.dataset.expanded).toBe("false");
 });
+
+it("offers expansion when individually fitting cells overflow the scroll viewport together", async () => {
+  await using screen = await render(
+    <div className="chat-markdown" style={{ width: 360 }}>
+      <MarkdownTable>
+        <tbody>
+          <tr>
+            <td>Dependency installation</td>
+            <td>Observed physical allocation</td>
+            <td>Rebuildable project artifacts</td>
+          </tr>
+        </tbody>
+      </MarkdownTable>
+    </div>,
+  );
+  const viewport = screen.container.querySelector<HTMLElement>(
+    '[data-slot="scroll-area-viewport"]',
+  )!;
+  expect(viewport.scrollWidth).toBeGreaterThan(viewport.clientWidth);
+  for (const cell of viewport.querySelectorAll("td")) {
+    expect(cell.scrollWidth).toBe(cell.clientWidth);
+  }
+  expect(screen.container.querySelector('button[aria-label="Expand table"]')).not.toBeNull();
+
+  await act(() => {
+    viewport.closest<HTMLElement>(".chat-markdown")!.style.width = "700px";
+  });
+  await vi.waitFor(() => {
+    expect(screen.container.querySelector('button[aria-label="Expand table"]')).toBeNull();
+  });
+});
