@@ -59,7 +59,7 @@ export interface VoiceReviewTransport {
 }
 
 export function voiceReviewError(error: unknown): string {
-  const tag = typeof error === "object" && error !== null && "_tag" in error ? error._tag : null;
+  const tag = errorTag(error);
   switch (tag) {
     case "VoiceReviewNotConfiguredError":
       return "Voice review is not configured for this environment.";
@@ -74,114 +74,332 @@ export function voiceReviewError(error: unknown): string {
   }
 }
 
+export const VOICE_REVIEW_TEXT_LIMIT = 100_000;
+
+interface PendingComposition {
+  readonly text: string;
+  readonly instructions?: string;
+}
+
+interface LegacySave {
+  readonly revision: number;
+  readonly composition: PendingComposition;
+  readonly text: string;
+}
+
+export type PendingReviewAction = Exclude<VoiceReviewAction, "edit-begin">;
+
+const ended = new Set<VoiceReviewDraft["state"]>(["released", "deleted", "expired"]);
+
+function errorTag(error: unknown) {
+  return typeof error === "object" && error !== null && "_tag" in error ? error._tag : null;
+}
+
+function legacyPromptText({ text, instructions }: PendingComposition) {
+  return instructions === undefined ? text : `${text}\n\nAdditional instructions:\n${instructions}`;
+}
+
 export class VoiceReviewActions {
   draft: VoiceReviewDraft;
-  text: string;
   editHandle: string | null = null;
   busy = false;
+  acquiringEdit = false;
   error: string | null = null;
-  uncertain = false;
+  reviewRequired = false;
   observedAt = performance.now();
+  private localText: string | null = null;
+  private localInstructions: string | null = null;
+  private savedComposition: LegacySave | null = null;
+  private unconfirmedSave: LegacySave | null = null;
+  private unconfirmedRevision: number | null = null;
   private listeners = new Set<() => void>();
-  private version = 0;
+
   constructor(
     draft: VoiceReviewDraft,
     private transport: VoiceReviewTransport,
   ) {
     this.draft = draft;
-    this.observedAt = performance.now();
-    this.text = draft.text ?? "";
   }
+
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
     };
   };
-  snapshot = () => this.version;
+
+  private get observedComposition(): PendingComposition {
+    return this.savedComposition?.text === this.draft.text
+      ? this.savedComposition.composition
+      : { text: this.draft.text ?? "" };
+  }
+
+  get text() {
+    return this.localText ?? this.observedComposition.text;
+  }
+
+  get instructions() {
+    return this.localInstructions ?? this.observedComposition.instructions ?? "";
+  }
+
+  get composition(): PendingComposition {
+    const instructions = this.instructions.trim();
+    return {
+      text: this.text.trim() ? this.text : this.observedComposition.text,
+      ...(instructions ? { instructions } : {}),
+    };
+  }
+
+  get compositionError() {
+    const composition = this.composition;
+    if (!composition.text.trim()) return "Enter prompt text to continue.";
+    if (legacyPromptText(composition).length > VOICE_REVIEW_TEXT_LIMIT)
+      return "Prompt text and instructions together exceed the length limit.";
+    return null;
+  }
+
+  get hasChanges() {
+    return this.localText !== null || this.localInstructions !== null;
+  }
+
+  get needsSave() {
+    return legacyPromptText(this.composition) !== (this.draft.text ?? "");
+  }
+
+  get uncertain() {
+    return this.unconfirmedRevision !== null;
+  }
+
   get hasLocalWork() {
-    return this.editHandle !== null || this.busy || this.uncertain;
-  }
-  private notify() {
-    this.version++;
-    this.listeners.forEach((listener) => listener());
-  }
-  receive(draft: VoiceReviewDraft) {
-    if (draft.revision < this.draft.revision) return;
-    this.draft = draft;
-    this.observedAt = performance.now();
-    if (this.editHandle === null) this.text = draft.text ?? "";
-    this.notify();
-  }
-  setText(text: string) {
-    this.text = text;
-    this.notify();
-  }
-  discardTerminalEdit() {
-    if (
+    return (
+      this.hasChanges ||
+      this.editHandle !== null ||
       this.busy ||
       this.uncertain ||
-      !["released", "deleted", "expired"].includes(this.draft.state)
-    )
-      return;
-    this.editHandle = null;
-    this.text = this.draft.text ?? "";
+      this.reviewRequired
+    );
+  }
+
+  private notify() {
+    this.listeners.forEach((listener) => listener());
+  }
+
+  receive(draft: VoiceReviewDraft) {
+    if (draft.id !== this.draft.id || draft.revision < this.draft.revision) return;
+    const lostEdit =
+      this.editHandle !== null &&
+      (draft.revision !== this.draft.revision || draft.state !== "editing");
+    const changedText = this.hasChanges && draft.text !== this.draft.text;
+    if (lostEdit || changedText) {
+      this.editHandle = null;
+      this.reviewRequired = true;
+      if (!this.uncertain) this.error = voiceReviewError({ _tag: "VoiceReviewConflictError" });
+    }
+    this.draft = draft;
+    this.observedAt = performance.now();
     this.notify();
   }
-  async act(action: VoiceReviewAction, sendAfterSave = false) {
+
+  setText(text: string) {
+    if (!this.canType) return;
+    this.localText = text === this.observedComposition.text ? null : text;
+    this.onInput();
+  }
+
+  setInstructions(instructions: string) {
+    if (!this.canType) return;
+    const observed = this.observedComposition.instructions ?? "";
+    this.localInstructions = instructions.trim() === observed ? null : instructions;
+    this.onInput();
+  }
+
+  get canType() {
+    return !ended.has(this.draft.state) && !this.uncertain && (!this.busy || this.acquiringEdit);
+  }
+
+  private onInput() {
+    this.notify();
+    // Focus and empty fields leave the default release countdown running.
+    if (this.needsSave && !this.busy && !this.reviewRequired && this.draft.state !== "editing") {
+      this.acquiringEdit = true;
+      void this.perform(async () => {
+        try {
+          await this.beginEdit();
+        } finally {
+          this.acquiringEdit = false;
+        }
+      });
+    }
+  }
+
+  private async mutate(
+    action: VoiceReviewAction,
+    payload: VoiceReviewMutationPayload = { expected_revision: this.draft.revision },
+  ) {
+    const revision = payload.expected_revision;
+    const { id, source_id, text } = this.draft;
+    try {
+      const result = await this.transport.mutate(id, action, payload);
+      if (
+        result.draft.id !== id ||
+        result.draft.source_id !== source_id ||
+        result.draft.revision < revision ||
+        (action === "edit-begin" &&
+          (result.edit_handle === null ||
+            result.draft.state !== "editing" ||
+            result.draft.revision <= revision ||
+            result.draft.text !== text)) ||
+        (action !== "edit-begin" && result.edit_handle !== null)
+      ) {
+        throw new Error("Unmatched voice review acknowledgement");
+      }
+      if (result.draft.revision < this.draft.revision) {
+        throw Object.assign(new Error("Voice review acknowledgement was superseded"), {
+          _tag: "VoiceReviewConflictError",
+        });
+      }
+      this.draft = result.draft;
+      this.observedAt = performance.now();
+      this.editHandle = result.edit_handle;
+      this.reviewRequired = false;
+      this.error = null;
+      return result;
+    } catch (error) {
+      const tag = errorTag(error);
+      this.reviewRequired = tag === "VoiceReviewConflictError";
+      if (this.reviewRequired) this.editHandle = null;
+      if (
+        !this.reviewRequired &&
+        tag !== "VoiceReviewForbiddenError" &&
+        tag !== "VoiceReviewNotConfiguredError" &&
+        tag !== "VoiceReviewNotFoundError"
+      ) {
+        this.unconfirmedRevision = revision;
+      }
+      throw error;
+    }
+  }
+
+  private async beginEdit() {
+    await this.mutate("edit-begin");
+  }
+
+  private clearFields() {
+    this.localText = null;
+    this.localInstructions = null;
+  }
+
+  private recordSave(save: LegacySave) {
+    this.savedComposition = save;
+    this.unconfirmedSave = null;
+  }
+
+  private async save(composition: PendingComposition) {
+    if (this.editHandle === null) await this.beginEdit();
+    const save = {
+      revision: this.draft.revision,
+      composition,
+      text: legacyPromptText(composition),
+    };
+    const { draft } = await this.mutate("edit-save", {
+      expected_revision: save.revision,
+      text: save.text,
+      edit_handle: this.editHandle!,
+    }).catch((error: unknown) => {
+      if (this.uncertain) this.unconfirmedSave = save;
+      throw error;
+    });
+    if (draft.revision <= save.revision || draft.state !== "paused" || draft.text !== save.text) {
+      this.unconfirmedSave = save;
+      this.unconfirmedRevision = save.revision;
+      throw new Error("Unmatched voice review save acknowledgement");
+    }
+    this.recordSave(save);
+    return draft.revision;
+  }
+
+  async act(action: PendingReviewAction) {
     if (this.busy || this.uncertain) return;
-    if (["released", "deleted", "expired"].includes(this.draft.state)) return;
-    if (this.draft.state === "editing" && (action === "send-now" || action === "play")) return;
-    if ((action === "edit-save" || action === "edit-cancel") && this.editHandle === null) return;
+    if (action === "edit-cancel") {
+      if (this.editHandle !== null) {
+        await this.perform(async () => {
+          await this.mutate("edit-cancel", {
+            expected_revision: this.draft.revision,
+            edit_handle: this.editHandle!,
+          });
+          this.clearFields();
+        });
+      } else {
+        this.clearFields();
+        if (ended.has(this.draft.state)) {
+          this.reviewRequired = false;
+          this.error = null;
+        }
+        this.notify();
+      }
+      return;
+    }
+    if (ended.has(this.draft.state) || this.reviewRequired) return;
+    const editing = this.draft.state === "editing";
+    if (action === "play" && (editing || this.needsSave)) return;
+    if (action === "edit-save" || action === "send-now") {
+      if ((editing && this.editHandle === null) || this.compositionError) return;
+      const composition = this.composition;
+      await this.perform(async () => {
+        if (this.editHandle !== null || this.needsSave) {
+          const revision = await this.save(composition);
+          if (action === "send-now") await this.mutate("send-now", { expected_revision: revision });
+        } else if (action === "send-now") {
+          await this.mutate("send-now");
+        }
+        this.clearFields();
+      });
+      return;
+    }
+    await this.perform(async () => {
+      await this.mutate(action);
+      if (action === "delete" && this.draft.state === "deleted") this.clearFields();
+    });
+  }
+
+  private async perform(run: () => Promise<void>) {
     this.busy = true;
     this.error = null;
     this.notify();
     try {
-      const payload: VoiceReviewMutationPayload = {
-        expected_revision: this.draft.revision,
-        ...(action === "edit-save" ? { text: this.text, edit_handle: this.editHandle! } : {}),
-        ...(action === "edit-cancel" ? { edit_handle: this.editHandle! } : {}),
-      };
-      const result = await this.transport.mutate(this.draft.id, action, payload);
-      this.draft = result.draft;
-      this.observedAt = performance.now();
-      this.editHandle = result.edit_handle;
-      if (action === "edit-save" || action === "edit-cancel") this.text = result.draft.text ?? "";
-      if (sendAfterSave && action === "edit-save") {
-        const sent = await this.transport.mutate(this.draft.id, "send-now", {
-          expected_revision: result.draft.revision,
-        });
-        this.draft = sent.draft;
-        this.observedAt = performance.now();
-      }
+      await run();
     } catch (error) {
       this.error = voiceReviewError(error);
-      const tag =
-        typeof error === "object" && error !== null && "_tag" in error ? error._tag : null;
-      this.uncertain =
-        tag !== "VoiceReviewConflictError" &&
-        tag !== "VoiceReviewForbiddenError" &&
-        tag !== "VoiceReviewNotConfiguredError" &&
-        tag !== "VoiceReviewNotFoundError";
-      // A possibly effective mutation is observed by the same ID, never retried.
+      // Observe the same ID. A failed or unconfirmed save never advances to send.
       try {
-        this.draft = await this.transport.get(this.draft.id);
-        this.observedAt = performance.now();
+        this.receive(await this.transport.get(this.draft.id));
       } catch {
-        /* Keep the last acknowledged state until observation succeeds. */
+        // Retain the last acknowledged state when readback is unavailable.
       }
     } finally {
       this.busy = false;
       this.notify();
     }
   }
+
   async reconcile() {
     if (this.busy) return;
     this.busy = true;
     this.notify();
     try {
-      this.receive(await this.transport.get(this.draft.id));
-      this.uncertain = false;
+      const observation = await this.transport.get(this.draft.id);
+      this.receive(observation);
+      if (observation.revision < this.draft.revision) return;
+      if (this.unconfirmedRevision !== null && observation.revision <= this.unconfirmedRevision)
+        return;
+      const save = this.unconfirmedSave;
+      if (save && observation.revision > save.revision && observation.text === save.text) {
+        this.recordSave(save);
+        this.clearFields();
+      }
+      this.unconfirmedSave = null;
+      this.unconfirmedRevision = null;
+      this.reviewRequired = false;
       this.error = null;
     } catch (error) {
       this.error = voiceReviewError(error);
