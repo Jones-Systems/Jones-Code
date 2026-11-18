@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { VoiceReviewDraft, type VoiceReviewMutationResult } from "@t3tools/contracts";
+import {
+  VoiceReviewDraft,
+  type VoiceReviewMutationResult,
+  type VoiceReviewSendOptions,
+  type VoiceReviewSendReviewedResult,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import {
   remainingSeconds,
@@ -68,10 +73,23 @@ const released = {
   edit_handle: null,
 } as const;
 
+async function legacyActions(
+  draft: VoiceReviewDraft,
+  transport: Pick<VoiceReviewTransport, "mutate" | "get">,
+) {
+  const actions = new VoiceReviewActions(draft, {
+    ...transport,
+    sendOptions: vi.fn().mockResolvedValue(null),
+    sendReviewed: vi.fn(),
+  });
+  await actions.checkSendOptions();
+  return actions;
+}
+
 describe("voice review composition and actions", () => {
   it("leaves the release countdown running and sends the captured text for empty inputs", async () => {
     const mutate = vi.fn<VoiceReviewTransport["mutate"]>().mockResolvedValueOnce(released);
-    const actions = new VoiceReviewActions(held, { mutate, get: vi.fn() });
+    const actions = await legacyActions(held, { mutate, get: vi.fn() });
     actions.setText("");
     actions.setInstructions(" \n ");
     expect(actions.composition).toEqual({ text: held.text });
@@ -92,7 +110,7 @@ describe("voice review composition and actions", () => {
       .mockImplementationOnce(() => begin.promise)
       .mockResolvedValueOnce(saved(text))
       .mockResolvedValueOnce(released);
-    const actions = new VoiceReviewActions(held, { mutate, get: vi.fn() });
+    const actions = await legacyActions(held, { mutate, get: vi.fn() });
     actions.setText("first keystrokes");
     expect(actions.editHandle).toBeNull();
     expect(actions.canType).toBe(true);
@@ -121,7 +139,7 @@ describe("voice review composition and actions", () => {
       .mockResolvedValueOnce(lease)
       .mockResolvedValueOnce(saved(text))
       .mockResolvedValueOnce({ draft: draft({ revision: 4, text }), edit_handle: null });
-    const actions = new VoiceReviewActions(held, { mutate, get: vi.fn() });
+    const actions = await legacyActions(held, { mutate, get: vi.fn() });
     actions.setText("");
     actions.setInstructions("Use examples.");
     await idle(actions);
@@ -142,7 +160,7 @@ describe("voice review composition and actions", () => {
   it("updates clean fields from refresh and keeps both dirty fields across a lost lease", async () => {
     const remote = draft({ revision: 3, state: "paused", text: "remote update" });
     const mutate = vi.fn<VoiceReviewTransport["mutate"]>().mockResolvedValueOnce(lease);
-    const actions = new VoiceReviewActions(held, {
+    const actions = await legacyActions(held, {
       mutate,
       get: vi.fn().mockResolvedValue(remote),
     });
@@ -181,7 +199,7 @@ describe("voice review composition and actions", () => {
     const get = vi
       .fn()
       .mockResolvedValue(draft({ revision: 3, state: "editing", text: "remote text" }));
-    const actions = new VoiceReviewActions(held, { mutate, get });
+    const actions = await legacyActions(held, { mutate, get });
     actions.setText("local prompt");
     actions.setInstructions("local instructions");
     await idle(actions);
@@ -204,7 +222,7 @@ describe("voice review composition and actions", () => {
       .fn<VoiceReviewTransport["mutate"]>()
       .mockResolvedValueOnce(lease)
       .mockImplementationOnce(() => saving.promise);
-    const actions = new VoiceReviewActions(held, { mutate, get: vi.fn().mockResolvedValue(newer) });
+    const actions = await legacyActions(held, { mutate, get: vi.fn().mockResolvedValue(newer) });
     actions.setText("my text");
     await idle(actions);
     const pending = actions.act("send-now");
@@ -226,7 +244,7 @@ describe("voice review composition and actions", () => {
       .mockRejectedValueOnce(new Error("lost save reply"))
       .mockResolvedValueOnce(released);
     const get = vi.fn().mockResolvedValue(saved(text).draft);
-    const actions = new VoiceReviewActions(held, { mutate, get });
+    const actions = await legacyActions(held, { mutate, get });
     actions.setInstructions("Keep it short.");
     await idle(actions);
     await actions.act("send-now");
@@ -245,7 +263,7 @@ describe("voice review composition and actions", () => {
   it("does not replay an unconfirmed send even when readback initially shows the same revision", async () => {
     const mutate = vi.fn().mockRejectedValue(new Error("private upstream exception"));
     const get = vi.fn().mockResolvedValue(held);
-    const actions = new VoiceReviewActions(held, { mutate, get });
+    const actions = await legacyActions(held, { mutate, get });
     await actions.act("send-now");
     expect(actions.uncertain).toBe(true);
     expect(actions.error).not.toContain("private");
@@ -270,7 +288,7 @@ describe("voice review composition and actions", () => {
       .mockResolvedValueOnce(paused)
       .mockRejectedValueOnce(new Error("lost send reply"));
     const get = vi.fn().mockResolvedValue(paused.draft);
-    const actions = new VoiceReviewActions(held, { mutate, get });
+    const actions = await legacyActions(held, { mutate, get });
     actions.setText("New prompt");
     actions.setInstructions("Explain the result.");
     await idle(actions);
@@ -303,7 +321,7 @@ describe("voice review composition and actions", () => {
         edit_handle: null,
       })
       .mockResolvedValueOnce({ ...released, draft: { ...released.draft, revision: 6 } });
-    const actions = new VoiceReviewActions(editing, { mutate, get: vi.fn() });
+    const actions = await legacyActions(editing, { mutate, get: vi.fn() });
     actions.setText("mine");
     await actions.act("send-now");
     await actions.act("play");
@@ -320,12 +338,12 @@ describe("voice review composition and actions", () => {
 
   it("keeps another prompt actionable while the first response is delayed", async () => {
     const slow = deferred<VoiceReviewMutationResult>();
-    const first = new VoiceReviewActions(held, { mutate: () => slow.promise, get: vi.fn() });
+    const first = await legacyActions(held, { mutate: () => slow.promise, get: vi.fn() });
     const secondMutation = vi.fn().mockResolvedValue({
       draft: draft({ id: "capture-2", revision: 2, state: "deleted", text: null }),
       edit_handle: null,
     });
-    const second = new VoiceReviewActions(draft({ id: "capture-2" }), {
+    const second = await legacyActions(draft({ id: "capture-2" }), {
       mutate: secondMutation,
       get: vi.fn(),
     });
@@ -342,7 +360,7 @@ describe("voice review composition and actions", () => {
       .fn<VoiceReviewTransport["mutate"]>()
       .mockResolvedValueOnce(lease)
       .mockResolvedValueOnce(saved(held.text!));
-    const actions = new VoiceReviewActions(held, { mutate, get: vi.fn() });
+    const actions = await legacyActions(held, { mutate, get: vi.fn() });
     actions.setInstructions("discard this");
     await idle(actions);
     await actions.act("edit-cancel");
@@ -363,6 +381,147 @@ describe("voice review composition and actions", () => {
     expect(remainingSeconds(editing, 300000)).toBe(180);
     expect(voiceReviewError({ _tag: "VoiceReviewNotConfiguredError" })).toContain("not configured");
     expect(voiceReviewError({ _tag: "VoiceReviewNotFoundError" })).toContain("unavailable");
+  });
+});
+
+describe("versioned Pending send", () => {
+  const named = "design";
+  const catalog = new Set([named]);
+  const options = {
+    schema: "voice.reviewed-send/v1",
+    can_send_without_workstream: true,
+    workstream_ids: [named],
+  } satisfies VoiceReviewSendOptions;
+  const accepted: VoiceReviewSendReviewedResult = {
+    ...released,
+    draft: { ...released.draft, command_id: "fixture-command" },
+  };
+
+  function transport() {
+    return {
+      mutate: vi.fn<VoiceReviewTransport["mutate"]>().mockResolvedValueOnce(lease),
+      get: vi.fn<VoiceReviewTransport["get"]>().mockResolvedValue(held),
+      sendOptions: vi.fn<VoiceReviewTransport["sendOptions"]>().mockResolvedValue(options),
+      sendReviewed: vi.fn<VoiceReviewTransport["sendReviewed"]>().mockResolvedValue(accepted),
+    };
+  }
+
+  it("waits for an explicit capability result and keeps failure and zero options distinct from legacy", async () => {
+    const api = transport();
+    const result = deferred<VoiceReviewSendOptions | null>();
+    api.sendOptions
+      .mockImplementationOnce(() => result.promise)
+      .mockRejectedValueOnce(new Error("read failed"))
+      .mockResolvedValueOnce(null);
+    api.mutate.mockReset().mockResolvedValue(released);
+    const actions = new VoiceReviewActions(held, api);
+    const checking = actions.checkSendOptions();
+    await actions.act("send-now");
+    result.resolve({ ...options, workstream_ids: [], can_send_without_workstream: false });
+    await checking;
+    await actions.act("send-now");
+    expect(actions.sendOptions.kind).toBe("available");
+    await actions.checkSendOptions();
+    expect(actions.sendOptions.kind).toBe("failed");
+    await actions.act("send-now");
+    expect(api.mutate).not.toHaveBeenCalled();
+    expect(api.sendReviewed).not.toHaveBeenCalled();
+    await actions.checkSendOptions();
+    await actions.act("send-now");
+    expect(api.mutate).toHaveBeenCalledExactlyOnceWith(held.id, "send-now", {
+      expected_revision: held.revision,
+    });
+  });
+
+  it("sends the latest two fields and explicit inbox in one revision-guarded POST with the lease", async () => {
+    const api = transport();
+    const actions = new VoiceReviewActions(held, api);
+    await actions.checkSendOptions();
+    expect(actions.hasLocalWork).toBe(false);
+    actions.setWorkstream(named);
+    expect(actions.hasLocalWork).toBe(true);
+    actions.setText("Latest prompt");
+    actions.setInstructions("  Keep examples.  ");
+    await idle(actions);
+    await actions.act("send-now", catalog);
+    expect(api.sendReviewed).toHaveBeenCalledExactlyOnceWith(held.id, {
+      expected_revision: editing.revision,
+      workstream_id: named,
+      text: "Latest prompt",
+      additional_instructions: "Keep examples.",
+      edit_handle: "opaque",
+    });
+    expect(api.mutate).toHaveBeenCalledExactlyOnceWith(held.id, "edit-begin", {
+      expected_revision: held.revision,
+    });
+    expect(actions.hasLocalWork).toBe(false);
+  });
+
+  it("sends the original destination choice and captured text when the fields are blank", async () => {
+    const api = transport();
+    const actions = new VoiceReviewActions(held, api);
+    await actions.checkSendOptions();
+    actions.setText("  ");
+    actions.setInstructions("  \n ");
+    await actions.act("send-now");
+    expect(api.sendReviewed).toHaveBeenCalledExactlyOnceWith(held.id, {
+      expected_revision: held.revision,
+      workstream_id: null,
+    });
+    expect(api.mutate).not.toHaveBeenCalled();
+  });
+
+  it("saves locally without destination eligibility and leaves the selected inbox unsaved", async () => {
+    const api = transport();
+    const original = "Edited text";
+    const instructions = "Only once.";
+    const savedText = `${original}\n\nAdditional instructions:\n${instructions}`;
+    api.mutate.mockResolvedValueOnce(saved(savedText));
+    const actions = new VoiceReviewActions(held, api);
+    await actions.checkSendOptions();
+    actions.setWorkstream(named);
+    actions.setText(original);
+    actions.setInstructions(instructions);
+    await idle(actions);
+    await actions.act("edit-save");
+    expect(actions.draft.state).toBe("paused");
+    expect(actions.hasLocalWork).toBe(true);
+    expect(actions.workstreamId).toBe(named);
+    await actions.act("play");
+    await actions.act("send-now", new Set());
+    expect(api.sendReviewed).not.toHaveBeenCalled();
+    expect(api.mutate).toHaveBeenCalledTimes(2);
+    await actions.act("send-now", catalog);
+    expect(api.sendReviewed).toHaveBeenCalledExactlyOnceWith(held.id, {
+      expected_revision: 3,
+      workstream_id: named,
+      text: original,
+      additional_instructions: instructions,
+    });
+  });
+
+  it("reconciles only the same draft after an ambiguous reviewed POST and never falls back or retries", async () => {
+    const api = transport();
+    api.sendReviewed.mockRejectedValue(new Error("POST response lost"));
+    const actions = new VoiceReviewActions(held, api);
+    await actions.checkSendOptions();
+    await actions.act("send-now");
+    expect(api.get).toHaveBeenCalledExactlyOnceWith(held.id);
+    expect(actions.uncertain).toBe(true);
+    api.get.mockResolvedValueOnce({ ...accepted.draft, source_id: "other-source" });
+    await actions.reconcile();
+    api.get.mockResolvedValueOnce({ ...accepted.draft, id: "other-id" });
+    await actions.reconcile();
+    await actions.reconcile();
+    expect(actions.uncertain).toBe(true);
+    await actions.act("send-now");
+    api.get.mockResolvedValue(accepted.draft);
+    await actions.reconcile();
+    expect(actions.uncertain).toBe(false);
+    expect(actions.draft).toBe(accepted.draft);
+    expect(api.sendReviewed).toHaveBeenCalledTimes(1);
+    expect(api.mutate).not.toHaveBeenCalled();
+    expect(api.get.mock.calls).toEqual(Array.from({ length: 5 }, () => [held.id]));
   });
 });
 
