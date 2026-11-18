@@ -2239,6 +2239,7 @@ export const layer: Layer.Layer<
             runs: sourceProjection.runs,
             createdAt,
           });
+          const needsFreshDestination = nativeForkFailed || session.driver === "claudeAgent";
           const loaded = yield* loadFromProvider(
             session.ensureThread({
               threadId: projection.thread.id,
@@ -2246,11 +2247,11 @@ export const layer: Layer.Layer<
               modelSelection: run.modelSelection,
               runtimePolicy: resolvedRuntimePolicy,
               providerSessionId,
-              existingProviderThread: nativeForkFailed
+              existingProviderThread: needsFreshDestination
                 ? { ...providerThread, nativeThreadRef: null, forkedFrom: null }
                 : { ...providerThread, forkedFrom: null },
-              // A confirmed missing source needs a fresh native conversation.
-              ...(nativeForkFailed ? { forceNewNativeThread: true } : {}),
+              // Claude portable forks and confirmed missing sources need a fresh native conversation.
+              ...(needsFreshDestination ? { forceNewNativeThread: true } : {}),
             }),
           );
           if (loaded === undefined) return undefined;

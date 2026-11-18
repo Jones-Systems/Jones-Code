@@ -14950,9 +14950,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 appliedSessionTitles.set(nativeThreadId, threadInput.title);
               }
               const providerThread = makeProviderThread({
-                ...(threadInput.existingProviderThread === undefined
-                  ? {}
-                  : { existing: threadInput.existingProviderThread }),
+                ...(threadInput.forceNewNativeThread === true &&
+                threadInput.existingProviderThread !== undefined
+                  ? { existing: threadInput.existingProviderThread }
+                  : {}),
                 idAllocator,
                 providerInstanceId: adapterOptions.instanceId,
                 appThreadId: threadInput.threadId,
