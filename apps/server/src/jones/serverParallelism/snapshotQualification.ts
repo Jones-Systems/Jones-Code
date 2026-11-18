@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic snapshot codec qualification at an explicit runtime boundary.
 import * as NodeZlib from "node:zlib";
 import * as NodePerfHooks from "node:perf_hooks";
+import * as NodeTimers from "node:timers";
 import * as NodeTimersPromises from "node:timers/promises";
 import { ThreadId, OrchestrationV2ShellSnapshotJson } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -13,6 +14,7 @@ import * as Fixture from "../threadResultDependencies/testkit.ts";
  */
 const compiledEncodeEffect1 = Schema.encodeEffect(OrchestrationV2ShellSnapshotJson);
 const loopResolutionMs = 10;
+const maxPhaseLoopTicks = 4_096;
 const waitForLoopSamples = Effect.promise(() =>
   NodeTimersPromises.setTimeout(3 * loopResolutionMs),
 );
@@ -43,7 +45,13 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
       const samples = [];
       for (let window = 0; window < 3; window++) {
         const loop = NodePerfHooks.monitorEventLoopDelay({ resolution: loopResolutionMs });
+        const ticksMs: number[] = [];
+        let traceOverflow = false;
         loop.enable();
+        const phaseTimer = NodeTimers.setInterval(() => {
+          if (ticksMs.length < maxPhaseLoopTicks) ticksMs.push(performance.now());
+          else traceOverflow = true;
+        }, loopResolutionMs);
         try {
           // Arm the timer before the work. A new monitor can miss an entire synchronous block.
           yield* waitForLoopSamples;
@@ -54,13 +62,13 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           const captureMs = performance.now() - capturedAt;
           const decodedAt = performance.now(),
             shell = yield* decode;
-          const decodeMs = performance.now() - decodedAt;
+          const decodeFinishedAt = performance.now();
           const projectedAt = performance.now();
           const projected = yield* compiledEncodeEffect1({
             ...shell,
             projects: [],
           });
-          const schemaProjectionMs = performance.now() - projectedAt;
+          const projectionFinishedAt = performance.now();
           const encodedAt = performance.now();
           // @effect-diagnostics-next-line preferSchemaOverJson:off -- Measure the actual synchronous wire stringify separately from schema projection.
           const bytes = JSON.stringify(projected);
@@ -75,8 +83,14 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           const loopSampleCount = loopFinalSampleCount - loopWarmupSampleCount;
           samples.push({
             captureMs,
-            decodeMs,
-            schemaProjectionMs,
+            decodeMs: decodeFinishedAt - decodedAt,
+            schemaProjectionMs: projectionFinishedAt - projectedAt,
+            phaseLoopTrace: {
+              ticksMs,
+              overflow: traceOverflow,
+              decode: { startMs: decodedAt, endMs: decodeFinishedAt },
+              schemaProjection: { startMs: projectedAt, endMs: projectionFinishedAt },
+            },
             encodeMs,
             compressionMs,
             bytes: Buffer.byteLength(bytes),
@@ -91,6 +105,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
             watermark: shell.snapshotSequence,
           });
         } finally {
+          NodeTimers.clearInterval(phaseTimer);
           loop.disable();
         }
       }

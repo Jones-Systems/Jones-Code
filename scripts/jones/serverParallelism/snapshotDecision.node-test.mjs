@@ -1,6 +1,6 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeTest from "node:test";
-import { snapshotDecision } from "./snapshotDecision.mjs";
+import { snapshotDecision, snapshotPhaseLoopBounds } from "./snapshotDecision.mjs";
 
 const measurement = (...windows) => {
   const samples = Array.from({ length: 3 }, (_, index) => ({
@@ -25,6 +25,47 @@ const measurement = (...windows) => {
     ),
   };
 };
+
+const phaseTrace = {
+  ticksMs: [0, 85, 97, 109, 121, 133, 145, 157, 240],
+  overflow: false,
+  decode: { startMs: 90, endMs: 110 },
+  schemaProjection: { startMs: 110, endMs: 160 },
+};
+
+NodeTest.test("phase bounds use only the portion of each timer gap inside the phase", () => {
+  const report = measurement({
+    decodeMs: 20,
+    schemaProjectionMs: 50,
+    loopMaxMs: 85,
+    phaseLoopTrace: phaseTrace,
+  });
+  NodeAssert.deepEqual(snapshotPhaseLoopBounds(report), [
+    { window: 1, decodeMaxGapMs: 12, schemaProjectionMaxGapMs: 12 },
+    { window: 2, decodeMaxGapMs: null, schemaProjectionMaxGapMs: null },
+    { window: 3, decodeMaxGapMs: null, schemaProjectionMaxGapMs: null },
+  ]);
+  NodeAssert.equal(snapshotDecision(report).activationDecision, "unknown");
+});
+
+NodeTest.test("phase bounds require intact timer coverage and matching measurements", () => {
+  for (const trace of [
+    { ...phaseTrace, overflow: true },
+    { ...phaseTrace, ticksMs: [95, 109, 157, 240] },
+    { ...phaseTrace, ticksMs: [0, 160, 160, 240] },
+    { ...phaseTrace, ticksMs: [0, 97, 109] },
+    { ...phaseTrace, decode: { startMs: 90, endMs: 111 } },
+  ]) {
+    const [evidence] = snapshotPhaseLoopBounds(
+      measurement({ decodeMs: 20, phaseLoopTrace: trace }),
+    );
+    NodeAssert.deepEqual(evidence, {
+      window: 1,
+      decodeMaxGapMs: null,
+      schemaProjectionMaxGapMs: null,
+    });
+  }
+});
 
 NodeTest.test(
   "elapsed phases remain unknown when the covered window cannot exclude a contiguous block",
