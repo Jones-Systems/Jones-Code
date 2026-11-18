@@ -194,6 +194,13 @@ const make = Effect.gen(function* () {
     create: service.create,
     update: Effect.fn("AgentWorkstreams.update")(function* (input) {
       const old = yield* find(input.id);
+      if (
+        input.delete !== true &&
+        input.lifecycle !== undefined &&
+        input.lifecycle !== old.lifecycle &&
+        P.isClosedPersonalWorkstream(input.lifecycle)
+      )
+        return yield* new P.WorkstreamsPersonalError({ code: "closure_unavailable" });
       const s = yield* service.snapshot();
       const now = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
       const candidate = yield* Effect.try({

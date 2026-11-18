@@ -149,6 +149,30 @@ it.effect("closure checks settlement and retains membership when a thread wakes"
   }).pipe(Effect.provide(fixture)),
 );
 
+it.effect("the single-environment agent tool leaves closure to the connected app", () =>
+  Effect.gen(function* () {
+    const service = yield* Personal.PersonalWorkstreams;
+    const agent = yield* Agent.AgentWorkstreams;
+    const open = w("agent-scope");
+    yield* service.put(open);
+    for (const lifecycle of ["completed", "abandoned"] as const) {
+      const rejected = yield* agent.update({ id: open.id, lifecycle }).pipe(Effect.flip);
+      assert.equal(rejected.code, "closure_unavailable");
+    }
+    assert.deepEqual((yield* service.readDefinitions([open.id]))[0], open);
+
+    const closed = P.editPersonalWorkstream(
+      open,
+      { lifecycle: "completed" },
+      "2026-01-02T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(closed, open);
+    const reopened = yield* agent.update({ id: open.id, lifecycle: "active" });
+    assert.equal(reopened.workstream.lifecycle, "active");
+  }).pipe(Effect.provide(Agent.layer.pipe(Layer.provideMerge(fixture)))),
+);
+
 it.effect("two subscribers receive a consistent initial snapshot and committed invalidation", () =>
   Effect.gen(function* () {
     const s = yield* Personal.PersonalWorkstreams;

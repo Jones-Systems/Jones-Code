@@ -116,6 +116,7 @@ export class WorkstreamsPersonalError extends Schema.TaggedError<WorkstreamsPers
       "workstream_deleted",
       "workstream_closed",
       "unsettled_threads",
+      "closure_unavailable",
       "precondition_failed",
       "invalid_request",
       "storage_unavailable",
