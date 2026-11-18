@@ -762,6 +762,7 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
     baseRef: Schema.optional(TrimmedNonEmptyString),
     branch: Schema.optional(TrimmedNonEmptyString),
     startFromOrigin: Schema.optional(Schema.Boolean),
+    baseFreshness: Schema.optional(Schema.Literals(["verified", "fetch-now"])),
   }),
 ]);
 export type OrchestrationV2ThreadLaunchWorkspaceStrategy =

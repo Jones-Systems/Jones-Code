@@ -19,6 +19,7 @@ import {
   type NodeId,
   type OrchestrationV2Command,
   type OrchestrationV2CreationSource,
+  type OrchestrationV2ThreadLaunchWorkspaceStrategy,
   type PlanId,
   type ProjectId,
   type ProjectIconOverride,
@@ -183,6 +184,10 @@ interface StartThreadBootstrap {
     readonly baseBranch?: string;
     readonly branch?: string;
     readonly startFromOrigin?: boolean;
+    readonly baseFreshness?: Extract<
+      OrchestrationV2ThreadLaunchWorkspaceStrategy,
+      { type: "worktree" }
+    >["baseFreshness"];
   };
   readonly conversation?: { readonly baseRef?: string };
   readonly runSetupScript?: boolean;
@@ -789,6 +794,7 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
   if (
     prepareWorktree !== undefined &&
     prepareWorktree.baseBranch === undefined &&
+    prepareWorktree.baseFreshness === undefined &&
     input.serverResolvesWorktreeBase !== true
   ) {
     const result = yield* request(WS_METHODS.vcsListRefs, {
@@ -821,6 +827,9 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
                 ? {}
                 : { baseRef: prepareWorktree.baseBranch }),
               ...(prepareWorktree.branch === undefined ? {} : { branch: prepareWorktree.branch }),
+              ...(prepareWorktree.baseFreshness === undefined
+                ? {}
+                : { baseFreshness: prepareWorktree.baseFreshness }),
               ...(prepareWorktree.startFromOrigin === undefined
                 ? {}
                 : { startFromOrigin: prepareWorktree.startFromOrigin }),

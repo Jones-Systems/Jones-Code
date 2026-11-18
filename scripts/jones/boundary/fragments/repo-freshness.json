@@ -4,11 +4,17 @@
   "jonesOwnedPaths": [
     "apps/server/src/jones/git/RepoFreshness.ts",
     "apps/server/src/jones/git/RepoFreshness.test.ts",
-    "apps/server/src/jones/git/repoFreshnessGit.ts"
+    "apps/server/src/jones/git/repoFreshnessGit.ts",
+    "apps/server/src/jones/git/repoFreshnessLaunch.ts",
+    "apps/server/src/jones/git/repoFreshnessLaunch.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/git/repoFreshnessLaunch.ts"
+    },
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/jones/git/RepoFreshness.ts"

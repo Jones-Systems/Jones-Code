@@ -615,6 +615,8 @@
     "apps/server/src/jones/git/RepoFreshness.test.ts": "jones-owned",
     "apps/server/src/jones/git/RepoFreshness.ts": "jones-owned",
     "apps/server/src/jones/git/repoFreshnessGit.ts": "jones-owned",
+    "apps/server/src/jones/git/repoFreshnessLaunch.ts": "jones-owned",
+    "apps/server/src/jones/git/repoFreshnessLaunch.test.ts": "jones-owned",
     "apps/server/src/jones/goals/CodexGoalControl.test.ts": "jones-owned",
     "apps/server/src/jones/goals/CodexGoalControl.ts": "jones-owned",
     "apps/server/src/jones/goals/GoalControl.test.ts": "jones-owned",

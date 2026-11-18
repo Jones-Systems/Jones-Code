@@ -806,6 +806,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
+  Layer.provideMerge(RepoFreshness.layer),
   Layer.provideMerge(
     RuntimeLayer.layerEventInfrastructure.pipe(Layer.provide(DependencyChanges.layer)),
   ),
@@ -1482,7 +1483,6 @@ const layerMakeServer = Layer.unwrap(
       ).pipe(Effect.asVoid),
     }).pipe(
       Layer.provide(ThreadMetadataReads.layer),
-      Layer.provideMerge(RepoFreshness.layer),
       Layer.provideMerge(layerRuntimeDependencies),
       Layer.provide(layerLauncher),
     );

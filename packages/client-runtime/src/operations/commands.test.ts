@@ -1399,6 +1399,37 @@ describe("v2 worktree start compatibility", () => {
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 
+  it.effect("keeps the freshest-default request intact without an extra refs lookup", () =>
+    Effect.gen(function* () {
+      const launches: OrchestrationV2ThreadLaunchInput[] = [];
+      const supervisor = yield* makeSupervisor({
+        commands: [],
+        projects: [],
+        launches,
+        listRefs: () => Effect.die("freshness selects the default on the environment server"),
+      });
+      yield* startThreadTurn({
+        ...automaticWorktreeTurn,
+        bootstrap: {
+          ...automaticWorktreeTurn.bootstrap,
+          prepareWorktree: {
+            ...automaticWorktreeTurn.bootstrap.prepareWorktree,
+            baseFreshness: "fetch-now",
+          },
+        },
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      expect(launches).toEqual([
+        {
+          ...automaticWorktreeLaunch,
+          workspaceStrategy: {
+            ...automaticWorktreeLaunch.workspaceStrategy,
+            baseFreshness: "fetch-now",
+          },
+        },
+      ]);
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect(
     "keeps independent command and thread identities for automatic multi-model launches",
     () =>
