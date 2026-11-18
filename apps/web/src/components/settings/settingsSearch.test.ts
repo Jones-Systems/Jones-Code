@@ -97,6 +97,17 @@ describe("searchSettings", () => {
     });
   });
 
+  it("finds the Jones Code appearance controls with board terminology", () => {
+    expect(searchSettings("jones code card border")[0]).toMatchObject({
+      id: "thread-board-appearance",
+      to: "/settings/jones-code/appearance",
+    });
+    expect(searchSettings("sidebar thread title brightness")[0]).toMatchObject({
+      id: "sidebar-thread-title-brightness",
+      to: "/settings/jones-code/appearance",
+    });
+  });
+
   it("matches normalized title substrings", () => {
     expect(searchSettings("  WORD   WRAP  ", ITEMS).map((item) => item.id)).toEqual(["word-wrap"]);
     expect(searchSettings("glass").map((item) => item.id)).toEqual(["setting-glass-opacity"]);
@@ -435,6 +446,16 @@ describe("source control host search items", () => {
 });
 
 describe("movedSettingsPath", () => {
+  it("preserves Jones Code anchors when appearance controls move pages", () => {
+    expect(movedSettingsPath("/settings/jones-code", "show-work-button")).toBe(
+      "/settings/jones-code/appearance",
+    );
+    expect(movedSettingsPath("/settings/jones-code", "sidebar-thread-title-brightness")).toBe(
+      "/settings/jones-code/appearance",
+    );
+    expect(movedSettingsPath("/settings/jones-code", "project-order")).toBeNull();
+  });
+
   it("sends old links to the page their row moved to", () => {
     expect(movedSettingsPath("/settings/general", "text-generation-model")).toBe(
       "/settings/threads",

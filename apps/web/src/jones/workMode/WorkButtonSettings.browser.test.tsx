@@ -18,7 +18,7 @@ it("finds the appearance control, persists hiding, and restores visibility after
   try {
     expect(searchSettings("Show Work button")[0]).toMatchObject({
       id: "show-work-button",
-      to: "/settings/jones-code",
+      to: "/settings/jones-code/appearance",
     });
     writeBrowserClientSettings(DEFAULT_CLIENT_SETTINGS);
     __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);

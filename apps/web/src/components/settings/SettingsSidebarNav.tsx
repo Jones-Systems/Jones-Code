@@ -26,6 +26,7 @@ import {
   KeyboardIcon,
   KeyRoundIcon,
   MicIcon,
+  PaintbrushIcon,
   PaletteIcon,
   SearchIcon,
   ServerIcon,
@@ -57,6 +58,7 @@ import {
   revealSettingsSearchTarget,
   SETTINGS_NAV_GROUPS,
   SETTINGS_SECTION_LABELS,
+  settingsSectionCategoryLabel,
   type SettingsPath,
   type SettingsSearchItem,
 } from "./settingsSearch";
@@ -114,6 +116,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/about": InfoIcon,
   "/settings/archived": ArchiveIcon,
   "/settings/jones-code": Settings2Icon,
+  "/settings/jones-code/appearance": PaintbrushIcon,
 };
 
 // Detail pages without a nav entry highlight the page that links to them.
@@ -138,7 +141,8 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navArea = workspaceAreaProps("settings-nav", 0, gt("Settings sections"));
   const navigate = useNavigate();
   const currentHash = useLocation({ select: (location) => location.hash });
-  const activePath = SETTINGS_DETAIL_PAGE_PARENTS[pathname] ?? pathname;
+  const normalizedPathname = pathname.replace(/\/+$/, "") || "/";
+  const activePath = SETTINGS_DETAIL_PAGE_PARENTS[normalizedPathname] ?? normalizedPathname;
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   // Below md the nav is an icon rail; searching expands it over the page.
@@ -359,7 +363,10 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                           {m(item.title)}
                         </span>
                         <span className="block truncate text-2xs text-sidebar-muted-foreground/75">
-                          {m(SETTINGS_SECTION_LABELS[item.to])}
+                          {[settingsSectionCategoryLabel(item.to), SETTINGS_SECTION_LABELS[item.to]]
+                            .filter((label) => label !== undefined)
+                            .map((label) => m(label))
+                            .join(" / ")}
                         </span>
                       </span>
                     </SidebarMenuButton>
@@ -400,7 +407,7 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                         <SidebarMenu>
                           {group.paths.map((to) => {
                             const Icon = SETTINGS_SECTION_ICONS[to];
-                            const isActive = activePath === to || activePath.startsWith(`${to}/`);
+                            const isActive = activePath === to;
                             return (
                               <SidebarMenuItem key={to}>
                                 <SidebarMenuButton

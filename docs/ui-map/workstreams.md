@@ -8,21 +8,21 @@ In the shared web and desktop sidebar, **Unassigned** comes after the **Workstre
 header and before the named groups. Hiding named groups keeps Unassigned visible.
 Thread navigation shortcuts follow the displayed order.
 
-| Journey                                           | Surface                                                                                    | Coverage                                                              |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
-| Create, rename, color, lifecycle, reorder, delete | Sidebar group menu; mobile group controls                                                  | Personal browser and mobile presentation/control tests                |
-| Start a thread in a Workstream                    | Right-click or open options on a named group in the shared web and desktop sidebar         | Group menu activation and draft seeding tests                         |
-| Set, change or clear a name icon                  | Inline toolbar form and Workstream group menu on web and desktop                           | Picker alignment and order, wrapped title geometry, and sync tests    |
-| Assign, unassign, create and assign               | Thread picker, sidebar drag, mobile thread menu                                            | Personal browser tests and shared controller command tests            |
-| Move a pinned thread                              | Sidebar drag; assigned members keep their pin                                              | Personal browser tests                                                |
-| Find a thread drop target                         | Collapsed tint; expanded ring and insertion gap                                            | Drag browser tests, including the pinned external bridge              |
-| Open group options and choose status filters      | Centered 12×12 menu; title grab, controls pointer                                          | Header geometry, menu hit-testing and status-filter browser tests     |
-| Expand, collapse, hide and filter all Workstreams | Sidebar Workstreams row above the named groups                                             | Bulk-controls, status-filter and header browser tests                 |
-| Tune sidebar appearance                           | Sidebar appearance panel beside the live list; Jones Code settings title-brightness slider | Appearance model, card, header, launcher and settings browser tests   |
-| Inspect roster totals                             | Bottom-right non-settled total; attention pills retain snooze rules                        | Roster unit tests and filter/window/collapse browser coverage         |
-| Inspect connection availability                   | Jones Code settings; ordinary per-environment rows                                         | Personal settings browser tests and mobile presentation tests         |
-| Observe changes on another client                 | Subscription to the thread’s environment                                                   | Shared controller tests; isolated two-client verification             |
-| Synchronize definitions between environments      | Writable client connected to both copies                                                   | Shared controller convergence tests; isolated two-server verification |
+| Journey                                           | Surface                                                               | Coverage                                                              |
+| ------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Create, rename, color, lifecycle, reorder, delete | Sidebar group menu; mobile group controls                             | Personal browser and mobile presentation/control tests                |
+| Start a thread in a Workstream                    | Right-click a named group or focus its header and press Shift+F10     | Group menu activation and draft seeding tests                         |
+| Set, change or clear a name icon                  | Inline toolbar form and Workstream group menu on web and desktop      | Picker alignment and order, wrapped title geometry, and sync tests    |
+| Assign, unassign, create and assign               | Thread picker, sidebar drag, mobile thread menu                       | Personal browser tests and shared controller command tests            |
+| Move a pinned thread                              | Sidebar drag; assigned members keep their pin                         | Personal browser tests                                                |
+| Find a thread drop target                         | Collapsed tint; expanded ring and insertion gap                       | Drag browser tests, including the pinned external bridge              |
+| Open group options and choose status filters      | Header context menu and visible status filter controls                | Header geometry, menu hit-testing and status-filter browser tests     |
+| Expand, collapse, hide and filter all Workstreams | Sidebar Workstreams row above the named groups                        | Bulk-controls, status-filter and header browser tests                 |
+| Tune sidebar appearance                           | Settings → Jones Code → Appearance, plus the sidebar appearance panel | Appearance model, card, header, launcher and settings browser tests   |
+| Inspect roster totals                             | Bottom-right non-settled total; attention pills retain snooze rules   | Roster unit tests and filter/window/collapse browser coverage         |
+| Inspect connection availability                   | Jones Code settings; ordinary per-environment rows                    | Personal settings browser tests and mobile presentation tests         |
+| Observe changes on another client                 | Subscription to the thread’s environment                              | Shared controller tests; isolated two-client verification             |
+| Synchronize definitions between environments      | Writable client connected to both copies                              | Shared controller convergence tests; isolated two-server verification |
 
 Focused source coverage lives in [personalNative.browser.test.tsx](../../apps/web/src/jones/workstreams/personalNative.browser.test.tsx), [personalBulkControls.browser.test.tsx](../../apps/web/src/jones/workstreams/personalBulkControls.browser.test.tsx), [personalSettings.browser.test.tsx](../../apps/web/src/jones/workstreams/personalSettings.browser.test.tsx), [personalNotifications.test.ts](../../apps/web/src/jones/workstreams/personalNotifications.test.ts), [mobile controls](../../apps/mobile/src/features/workstreams/Controls.operations.test.tsx), [mobile presentation](../../apps/mobile/src/features/workstreams/personalPresentation.test.ts) and the shared controller’s adjacent tests. Source tests do not attest an installed client or a live cross-environment result.
 

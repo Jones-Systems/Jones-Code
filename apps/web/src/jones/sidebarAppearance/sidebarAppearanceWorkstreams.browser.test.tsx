@@ -1,4 +1,5 @@
 import "~/index.css";
+import "./sidebarAppearance.cards.css";
 import "./sidebarAppearance.workstreams.css";
 import { RegistryContext } from "@effect/atom-react";
 import { Atom, AtomRegistry } from "effect/reactivity";
@@ -7,8 +8,7 @@ import {
   type PersonalWorkstreamsController,
   type PersonalWorkstreamsState,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
-import { EllipsisVerticalIcon } from "lucide-react";
-import type { ComponentProps, ReactNode } from "react";
+import type { ComponentProps, CSSProperties, ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { act, render } from "../../../test/render";
 import { NonSortableThreadRow } from "../../components/sidebar/SidebarThreadRow";
@@ -16,7 +16,6 @@ import { WorkstreamSidebarSection } from "../../components/workstreams/Workstrea
 import { ToastProvider } from "../../components/ui/toast";
 import { makeThreadFixture } from "../../test-fixtures";
 import { PersonalSidebarGroupHeader } from "../workstreams/PersonalSidebarGroupHeader";
-import { PersonalWorkstreamOptionsButton } from "../workstreams/PersonalWorkstreamDisplayControls";
 import { PersonalWorkstreamsHeader } from "../workstreams/PersonalWorkstreamsHeader";
 import { ThreadStatusFilterPill } from "../threadStatusFilter/ThreadStatusFilterPill";
 import {
@@ -65,11 +64,6 @@ function Header() {
       onToggle={noop}
       summary={summary}
       rosterTotal={12}
-      actions={
-        <PersonalWorkstreamOptionsButton aria-label="Options">
-          <EllipsisVerticalIcon />
-        </PersonalWorkstreamOptionsButton>
-      }
     />
   );
 }
@@ -170,10 +164,6 @@ describe("Workstream appearance on real components", () => {
       const rect = card().getBoundingClientRect();
       expect(rect.width).toBe(before.width);
       expect(rect.height).toBe(before.height);
-      const kebab = query(header(), '[aria-label="Options"]');
-      expect(kebab.getBoundingClientRect().width).toBe(12);
-      expect(kebab.getBoundingClientRect().height).toBe(12);
-      expect(getComputedStyle(kebab).cursor).toBe("pointer");
     }
   });
 
@@ -377,12 +367,12 @@ it("keeps the tiny failed/roster footer aligned and invariant through real secti
       expect(footer().textContent).toBe(text);
       expect(footer().getAttribute("aria-hidden")).toBe("true");
       const style = getComputedStyle(footer());
-      expect(style.fontSize).toBe("6px");
-      expect(style.lineHeight).toBe("8px");
+      expect(style.fontSize).toBe("10px");
+      expect(parseFloat(style.lineHeight)).toBeGreaterThan(10);
       expect(style.whiteSpace).toBe("nowrap");
-      const options = query(header(), 'button[aria-label="Options for Appearance"]');
+      const pill = query(header(), "[data-personal-status-pill]");
       expect(
-        Math.abs(footer().getBoundingClientRect().right - options.getBoundingClientRect().right),
+        Math.abs(footer().getBoundingClientRect().right - pill.getBoundingClientRect().right),
       ).toBeLessThan(1);
       const parts = [...footer().children].map((child) => child.getBoundingClientRect());
       expect(new Set(parts.map((rect) => rect.bottom)).size).toBe(1);
@@ -425,4 +415,63 @@ it("keeps the tiny failed/roster footer aligned and invariant through real secti
       else localStorage.setItem(key, value);
     }
   }
+});
+
+it("keeps separate thread and section outlines in named and Unassigned groups as tint changes", async () => {
+  const ui = (tintOpacity: number, cardBorder: number, groupBorder: number) => (
+    <Scope value={DEFAULT_SIDEBAR_APPEARANCE}>
+      <div
+        data-jones-thread-board
+        style={
+          {
+            "--jones-board-tint-opacity": `${tintOpacity}%`,
+            "--jones-board-tint-brightness": "125%",
+            "--jones-board-card-border-width": `${cardBorder}px`,
+            "--jones-board-group-border-width": `${groupBorder}px`,
+            "--jones-board-unassigned-background": "#1F2937",
+          } as CSSProperties
+        }
+      >
+        <section
+          data-jones-board-section="workstream"
+          style={
+            {
+              "--jones-board-section-accent": "#14B8A6",
+              "--jones-board-section-rail": "#14B8A6",
+            } as CSSProperties
+          }
+        >
+          <ul>
+            <NonSortableThreadRow {...rowProps} />
+          </ul>
+        </section>
+        <section data-jones-board-section="unassigned">
+          <ul>
+            <NonSortableThreadRow {...rowProps} />
+          </ul>
+        </section>
+      </div>
+    </Scope>
+  );
+  await using screen = await render(ui(0, 2, 1));
+  const named = query(screen.container, '[data-jones-board-section="workstream"]');
+  const unassigned = query(screen.container, '[data-jones-board-section="unassigned"]');
+  const outline = (element: HTMLElement) => getComputedStyle(element, "::after");
+  const card = (section: HTMLElement) => query(section, "[data-jones-sidebar-card-surface]");
+  const readOutlines = () =>
+    [named, unassigned, card(named), card(unassigned)].map((element) => ({
+      color: outline(element).borderTopColor,
+      width: outline(element).borderTopWidth,
+    }));
+  const before = readOutlines();
+  expect(before.map(({ width }) => width)).toEqual(["1px", "1px", "2px", "2px"]);
+  expect(before.every(({ color }) => color !== "rgba(0, 0, 0, 0)")).toBe(true);
+  expect(getComputedStyle(unassigned).backgroundColor).toBe("rgb(31, 41, 55)");
+  const beforeTint = getComputedStyle(named, "::before").backgroundColor;
+  await screen.rerender(ui(40, 2, 1));
+  expect(getComputedStyle(named, "::before").backgroundColor).not.toBe(beforeTint);
+  expect(getComputedStyle(named, "::before").filter).toBe("brightness(1.25)");
+  expect(readOutlines()).toEqual(before);
+  await screen.rerender(ui(40, 0, 1));
+  expect(readOutlines().map(({ width }) => width)).toEqual(["1px", "1px", "0px", "0px"]);
 });

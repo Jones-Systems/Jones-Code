@@ -231,7 +231,9 @@ function deferredDelete() {
   return { put, resolve, reject };
 }
 async function options(name = "Alpha") {
-  await userEvent.click(page.getByRole("button", { name: `Options for ${name}`, exact: true }));
+  await page
+    .getByRole("button", { name: new RegExp(`^(?:Collapse|Expand) ${name}$`) })
+    .click({ button: "right" });
 }
 async function deletion(name = "Alpha") {
   await options(name);
@@ -274,44 +276,33 @@ function order(container: HTMLElement) {
 }
 
 describe("Workstream options and header ordering", () => {
-  it("centres a symmetric 12px menu hit area without overlapping counters or toggling the group", async () => {
+  it("leaves the old menu corner to disclosure and opens the context menu by keyboard", async () => {
     using setup = fixture(undefined, 14);
     await using screen = await render(setup.ui);
     const group = section(screen.container, "Alpha");
-    const menu = group.querySelector<HTMLButtonElement>('[aria-label="Options for Alpha"]')!;
-    const bounds = menu.getBoundingClientRect();
-    const glyph = menu.querySelector("svg")!.getBoundingClientRect();
-    expect(bounds.width).toBe(12);
-    expect(bounds.height).toBe(12);
-    expect(glyph.left + glyph.width / 2).toBeCloseTo(bounds.left + 6, 1);
-    expect(glyph.top + glyph.height / 2).toBeCloseTo(bounds.top + 6, 1);
-    expect(
-      group.querySelector("[data-personal-status-pill]")!.getBoundingClientRect().right,
-    ).toBeLessThanOrEqual(bounds.left);
-    for (const offset of [-5, -3, 0, 3, 5]) {
-      expect(
-        document.elementFromPoint(bounds.left + 6 + offset, bounds.top + 6)?.closest("button"),
-      ).toBe(menu);
-      await userEvent.click(page.getByRole("button", { name: "Options for Alpha", exact: true }), {
-        position: { x: 6 + offset, y: 6 },
-      });
-      await expect
-        .element(page.getByRole("menuitem", { name: "Rename", exact: true }))
-        .toBeVisible();
-      expect(header(screen.container, "Alpha").getAttribute("aria-expanded")).toBe("true");
-      await userEvent.keyboard("{Escape}");
-    }
+    const expanded = page.getByRole("button", { name: "Collapse Alpha", exact: true });
+    const collapsed = page.getByRole("button", { name: "Expand Alpha", exact: true });
+
+    await expect
+      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .not.toBeInTheDocument();
+    await expanded.click({
+      position: { x: header(screen.container, "Alpha").clientWidth - 3, y: 6 },
+    });
+    await expect.element(collapsed).toHaveAttribute("aria-expanded", "false");
+    await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
+    await userEvent.keyboard("{Shift>}{F10}{/Shift}");
+    await expect.element(page.getByRole("menuitem", { name: "Rename", exact: true })).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
+    await expect.element(collapsed).toHaveFocus();
+    await collapsed.click();
     expect(getComputedStyle(header(screen.container, null)).cursor).toBe("pointer");
     const draggable = group.querySelector<HTMLElement>("[data-workstream-header]")!;
     expect(draggable.draggable).toBe(true);
     expect(getComputedStyle(draggable).cursor).toBe("pointer");
     const title = group.querySelector<HTMLElement>(".line-clamp-2")!;
     expect(getComputedStyle(title).cursor).toBe("grab");
-    expect(menu.querySelector("svg")!.getAttribute("viewBox")).toBe("0 0 24 24");
-    expect(glyph.width).toBe(12);
-    expect(glyph.height).toBe(12);
-    for (const x of [bounds.left - 1, bounds.right + 1])
-      expect(document.elementFromPoint(x, bounds.top + 6)?.closest("button")).not.toBe(menu);
     const transfer = await startDrag(screen.container, "Alpha");
     const beta = section(screen.container, "Beta");
     const rect = beta.querySelector("[data-workstream-header]")!.getBoundingClientRect();
@@ -599,13 +590,13 @@ describe("Workstream options and header ordering", () => {
     await userEvent.click(page.getByRole("button", { name: "Cancel", exact: true }));
     await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
     await expect
-      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .toHaveFocus();
     await deletion();
     await userEvent.keyboard("{Escape}");
     await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
     await expect
-      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .toHaveFocus();
     await deletion();
     const viewport = document.querySelector('[data-slot="alert-dialog-viewport"]')!;
@@ -614,7 +605,7 @@ describe("Workstream options and header ordering", () => {
     });
     await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
     await expect
-      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .toHaveFocus();
     expect(setup.controller.remove).not.toHaveBeenCalled();
   });
@@ -630,7 +621,7 @@ describe("Workstream options and header ordering", () => {
     );
     expect(order(screen.container)).toEqual([null, "menu-Beta", "menu-Gamma"]);
     await expect
-      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .not.toBeInTheDocument();
     await expect
       .element(page.getByRole("button", { name: "Deleting…", exact: true }))
@@ -665,7 +656,7 @@ describe("Workstream options and header ordering", () => {
       .toBeVisible();
     await userEvent.click(page.getByRole("button", { name: "Cancel", exact: true }));
     await expect
-      .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
+      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .toHaveFocus();
     await deletion();
     request.put.mockImplementationOnce(async (_connection, workstream) => ({
@@ -839,11 +830,11 @@ describe("Workstream options and header ordering", () => {
       .toHaveAttribute("aria-disabled", "true");
   });
 
-  it("never starts header drag from options and keeps header clicks working", async () => {
+  it("never starts header drag from a filter and keeps header clicks working", async () => {
     using setup = fixture();
     await using screen = await render(setup.ui);
     const button = section(screen.container, "Alpha").querySelector(
-      '[aria-label="Options for Alpha"]',
+      'button[aria-label^="Working:"]',
     )!;
     const transfer = new DataTransfer();
     await act(() => {

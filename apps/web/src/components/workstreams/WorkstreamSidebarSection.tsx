@@ -1,4 +1,5 @@
 import { useClientSettings } from "../../hooks/useSettings";
+import "../../jones/sidebarAppearance/sidebarAppearance.workstreams.css";
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
 import { requestCustomSnooze } from "../CustomSnoozeDialog";
 import {
@@ -7,6 +8,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
   type ReactNode,
 } from "react";
@@ -22,7 +24,6 @@ import {
   AlarmClockIcon,
   ArrowDownIcon,
   ArrowUpIcon,
-  EllipsisVerticalIcon,
   ChevronDownIcon,
   PaletteIcon,
   ImageIcon,
@@ -37,7 +38,6 @@ import {
   MenuItem,
   MenuItemDetail,
   MenuPopup,
-  MenuTrigger,
   MenuSeparator,
   MenuSub,
   MenuSubTrigger,
@@ -56,21 +56,21 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
 } from "../ui/alert-dialog";
-import { Dialog, DialogPopup, DialogHeader, DialogTitle } from "../ui/dialog";
 import { ClosedWorkstreams } from "../../jones/workstreams/ClosedWorkstreams";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
-import {
-  PersonalWorkstreamOptionsButton,
-  PersonalWorkstreamVisibleThreads,
-} from "../../jones/workstreams/PersonalWorkstreamDisplayControls";
+import { PersonalWorkstreamVisibleThreads } from "../../jones/workstreams/PersonalWorkstreamDisplayControls";
 import { PersonalSidebarGroupHeader } from "../../jones/workstreams/PersonalSidebarGroupHeader";
 import {
   formatPersonalThreadCount,
   type PersonalThreadSummary,
 } from "../../jones/workstreams/personalPresentation";
-import { personalWorkstreamGroupColors } from "../../jones/workstreams/personalRail";
+import {
+  personalWorkstreamAutomaticColors,
+  personalWorkstreamGroupColors,
+} from "../../jones/workstreams/personalRail";
+import { PersonalWorkstreamColorDialog } from "../../jones/workstreams/PersonalWorkstreamColorDialog";
 import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalWorkstreamTitleEditor";
 import {
   WorkstreamNameIconPicker,
@@ -206,6 +206,7 @@ export function WorkstreamCreateForm({
 }
 function Group({
   item,
+  automaticColor,
   nameIconProjects,
   newThreadAction,
   controller,
@@ -221,6 +222,7 @@ function Group({
   snoozedIds,
 }: {
   item: PersonalWorkstreamView;
+  automaticColor: string | undefined;
   nameIconProjects: readonly WorkstreamNameIconProject[];
   newThreadAction: WorkstreamThreadAction | undefined;
   controller: PersonalWorkstreamsController;
@@ -236,7 +238,7 @@ function Group({
   onDeleteRequested: () => void;
 }) {
   const state = useAtomValue(controller.state);
-  const { rail, tint } = personalWorkstreamGroupColors(item);
+  const colors = personalWorkstreamGroupColors(item, automaticColor);
   const [collapsed, setCollapsed] = useLocalStorage(
     personalGroupCollapsedKey(item.id),
     false,
@@ -249,7 +251,6 @@ function Group({
   const shownCount = threadWindow.expanded
     ? memberCount
     : Math.min(memberCount, threadWindow.limit);
-  const [draft, setDraft] = useState("");
   const [draftNameIcon, setDraftNameIcon] = useState<string | null>(null);
   const nameIconProject = nameIconProjects.find(
     (project) => project.projectKey === item.nameIcon?.projectKey,
@@ -318,7 +319,6 @@ function Group({
   const [snoozePresets, setSnoozePresets] = useState<readonly SnoozePreset[]>([]);
   const openMenu = (open: boolean) => {
     setMenuOpen(open);
-    if (!open) setMenuPoint(null);
     if (open && snoozeEnvironmentId)
       setSnoozePresets(currentSnoozePresets(timestampFormat, snoozeEnvironmentId));
   };
@@ -339,13 +339,19 @@ function Group({
     <section
       ref={sectionRef}
       data-native-workstream={JSON.stringify(item.id)}
+      data-jones-board-section="workstream"
       data-thread-drop-target={dropTarget ? "" : undefined}
-      className={`min-w-0 rounded-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
-      style={{
-        borderLeftColor: rail,
-        backgroundColor:
-          dropTarget && collapsed ? "color-mix(in oklab, var(--primary) 3.25%, transparent)" : tint,
-      }}
+      className={`min-w-0 rounded-lg ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
+      style={
+        {
+          "--jones-board-section-rail": colors.rail,
+          "--jones-board-section-accent": dropTarget && collapsed ? "transparent" : colors.color,
+          backgroundColor:
+            dropTarget && collapsed
+              ? "color-mix(in oklab, var(--primary) 3.25%, transparent)"
+              : undefined,
+        } as CSSProperties
+      }
     >
       <div
         data-workstream-header
@@ -366,7 +372,9 @@ function Group({
         }}
         onKeyDown={(event) => {
           if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+          if (event.target instanceof Element && event.target.closest("input")) return;
           event.preventDefault();
+          event.stopPropagation();
           const bounds = event.currentTarget.getBoundingClientRect();
           setMenuPoint({ x: bounds.left, y: bounds.bottom });
           openMenu(true);
@@ -374,6 +382,7 @@ function Group({
       >
         <PersonalSidebarGroupHeader
           name={item.name}
+          hasContextMenu
           nameIcon={nameIconProject ? <ProjectFavicon project={nameIconProject} /> : null}
           collapsed={collapsed}
           onToggle={() => {
@@ -402,193 +411,159 @@ function Group({
               />
             ) : null
           }
-          actions={
-            <div
-              className="shrink-0"
-              data-workstream-menu
-              data-workstream-header-control
-              draggable={false}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => event.stopPropagation()}
-              onDoubleClick={(event) => event.stopPropagation()}
-              onDragStart={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-            >
-              <Menu open={menuOpen} onOpenChange={openMenu}>
-                <MenuTrigger
-                  aria-label={`Options for ${item.name}`}
-                  render={<PersonalWorkstreamOptionsButton />}
-                  className="opacity-0 focus-visible:opacity-100 pointer-coarse:opacity-100"
-                >
-                  <EllipsisVerticalIcon aria-hidden className="size-[12px]" />
-                </MenuTrigger>
-                <MenuPopup
-                  align={menuPoint ? "start" : "end"}
-                  {...(menuPoint
-                    ? {
-                        anchor: {
-                          getBoundingClientRect: () => new DOMRect(menuPoint.x, menuPoint.y, 0, 0),
-                        },
-                      }
-                    : {})}
-                >
-                  {newThreadAction ? (
-                    <>
-                      <MenuItem
-                        disabled={"disabledReason" in newThreadAction}
-                        onClick={"run" in newThreadAction ? newThreadAction.run : undefined}
-                        aria-label="New thread"
-                        aria-description={
-                          "disabledReason" in newThreadAction
-                            ? newThreadAction.disabledReason
-                            : undefined
-                        }
-                      >
-                        <PlusIcon aria-hidden />
-                        <span>
-                          New thread
-                          {"disabledReason" in newThreadAction ? (
-                            <span className="block max-w-48 text-xs text-muted-foreground">
-                              {newThreadAction.disabledReason}
-                            </span>
-                          ) : null}
-                        </span>
-                      </MenuItem>
-                      <MenuSeparator />
-                    </>
-                  ) : null}
-                  <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
-                    <PencilIcon aria-hidden /> Rename
-                  </MenuItem>
-                  <MenuItem
-                    disabled={!state.canCreate || pending}
-                    onClick={() => {
-                      setDraft(item.color ?? "");
-                      setEditing("color");
-                    }}
-                  >
-                    <PaletteIcon aria-hidden /> Change color
-                  </MenuItem>
-                  {state.canSetNameIcon && controller.setNameIcon ? (
-                    <MenuItem
-                      disabled={pending}
-                      onClick={() => {
-                        setDraftNameIcon(item.nameIcon?.projectKey ?? null);
-                        setEditing("nameIcon");
-                      }}
-                    >
-                      <ImageIcon aria-hidden /> Change name icon
-                    </MenuItem>
-                  ) : null}
-                  <MenuSub>
-                    <MenuSubTrigger disabled={!state.canSnooze || pending || !snoozeEnvironmentId}>
-                      <AlarmClockIcon aria-hidden /> Snooze
-                    </MenuSubTrigger>
-                    <MenuSubPopup>
-                      {snoozePresets.map((preset) => (
-                        <MenuItem key={preset.id} onClick={() => void snooze(preset)}>
-                          {preset.label} ({preset.whenLabel})
-                        </MenuItem>
-                      ))}
-                      <MenuSeparator />
-                      <MenuItem onClick={() => void snooze("custom")}>Custom…</MenuItem>
-                    </MenuSubPopup>
-                  </MenuSub>
-                  <MenuSeparator />
-                  <MenuSub>
-                    <MenuSubTrigger disabled={!state.canCreate || pending}>
-                      Workstream state{" "}
-                      <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
-                    </MenuSubTrigger>
-                    <MenuSubPopup>
-                      <MenuRadioGroup value={item.lifecycle} aria-label="Workstream state">
-                        {lifecycles.map((lifecycle) => (
-                          <MenuRadioItem
-                            key={lifecycle}
-                            value={lifecycle}
-                            disabled={!state.canCreate || pending}
-                            closeOnClick
-                            onClick={() => {
-                              if (item.lifecycle === lifecycle) return;
-                              void run(async () => {
-                                const result = await controller.setLifecycle(item.id, lifecycle);
-                                return result.ok ? { ok: true, value: undefined } : result;
-                              });
-                            }}
-                          >
-                            <span className="flex items-center justify-between gap-4">
-                              {lifecycleLabel(lifecycle)}
-                              <MenuRadioItemIndicator />
-                            </span>
-                          </MenuRadioItem>
-                        ))}
-                      </MenuRadioGroup>
-                    </MenuSubPopup>
-                  </MenuSub>
-                  <MenuSeparator />
-                  <MenuGroup className="flex items-center justify-between">
-                    <div className="flex min-w-0 flex-wrap items-baseline">
-                      <MenuGroupLabel>Visible threads</MenuGroupLabel>
-                      <span
-                        className="pr-2 text-xs text-muted-foreground tabular-nums"
-                        aria-live="polite"
-                      >
-                        {shownCount} of {memberCount} shown
-                      </span>
-                    </div>
-                    <PersonalWorkstreamVisibleThreads
-                      limit={threadWindow.limit}
-                      onChange={(limit) => {
-                        threadWindow.setLimit(limit);
-                        threadWindow.setExpanded(false);
-                      }}
-                    />
-                  </MenuGroup>
-                  <MenuSeparator />
-                  <MenuItem
-                    disabled={!state.canCreate || pending || index === 0}
-                    onClick={() =>
-                      void run(async () => {
-                        const result = await controller.reorder(item.id, {
-                          afterId: openWorkstreams[index - 1]!.id,
-                          beforeId: openWorkstreams[index - 2]?.id ?? null,
-                        });
-                        return result.ok ? { ok: true, value: undefined } : result;
-                      })
-                    }
-                  >
-                    <ArrowUpIcon aria-hidden /> Move up
-                  </MenuItem>
-                  <MenuItem
-                    disabled={!state.canCreate || pending || index === openWorkstreams.length - 1}
-                    onClick={() =>
-                      void run(async () => {
-                        const result = await controller.reorder(item.id, {
-                          beforeId: openWorkstreams[index + 1]!.id,
-                          afterId: openWorkstreams[index + 2]?.id ?? null,
-                        });
-                        return result.ok ? { ok: true, value: undefined } : result;
-                      })
-                    }
-                  >
-                    <ArrowDownIcon aria-hidden /> Move down
-                  </MenuItem>
-                  <MenuSeparator />
-                  <MenuItem
-                    variant="destructive"
-                    disabled={!state.canCreate || pending}
-                    onClick={onDeleteRequested}
-                  >
-                    <TrashIcon aria-hidden /> Delete Workstream…
-                  </MenuItem>
-                </MenuPopup>
-              </Menu>
-            </div>
-          }
         />
       </div>
+      <Menu open={menuOpen} onOpenChange={openMenu}>
+        <MenuPopup
+          aria-label={`Workstream actions for ${item.name}`}
+          align="start"
+          {...(menuPoint
+            ? {
+                anchor: {
+                  getBoundingClientRect: () => new DOMRect(menuPoint.x, menuPoint.y, 0, 0),
+                },
+              }
+            : {})}
+        >
+          {newThreadAction ? (
+            <>
+              <MenuItem
+                disabled={"disabledReason" in newThreadAction}
+                onClick={"run" in newThreadAction ? newThreadAction.run : undefined}
+                aria-label="New thread"
+                aria-description={
+                  "disabledReason" in newThreadAction ? newThreadAction.disabledReason : undefined
+                }
+              >
+                <PlusIcon aria-hidden />
+                <span>
+                  New thread
+                  {"disabledReason" in newThreadAction ? (
+                    <span className="block max-w-48 text-xs text-muted-foreground">
+                      {newThreadAction.disabledReason}
+                    </span>
+                  ) : null}
+                </span>
+              </MenuItem>
+              <MenuSeparator />
+            </>
+          ) : null}
+          <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
+            <PencilIcon aria-hidden /> Rename
+          </MenuItem>
+          <MenuItem disabled={!state.canCreate || pending} onClick={() => setEditing("color")}>
+            <PaletteIcon aria-hidden /> Change color
+          </MenuItem>
+          {state.canSetNameIcon && controller.setNameIcon ? (
+            <MenuItem
+              disabled={pending}
+              onClick={() => {
+                setDraftNameIcon(item.nameIcon?.projectKey ?? null);
+                setEditing("nameIcon");
+              }}
+            >
+              <ImageIcon aria-hidden /> Change name icon
+            </MenuItem>
+          ) : null}
+          <MenuSub>
+            <MenuSubTrigger disabled={!state.canSnooze || pending || !snoozeEnvironmentId}>
+              <AlarmClockIcon aria-hidden /> Snooze
+            </MenuSubTrigger>
+            <MenuSubPopup>
+              {snoozePresets.map((preset) => (
+                <MenuItem key={preset.id} onClick={() => void snooze(preset)}>
+                  {preset.label} ({preset.whenLabel})
+                </MenuItem>
+              ))}
+              <MenuSeparator />
+              <MenuItem onClick={() => void snooze("custom")}>Custom…</MenuItem>
+            </MenuSubPopup>
+          </MenuSub>
+          <MenuSeparator />
+          <MenuSub>
+            <MenuSubTrigger disabled={!state.canCreate || pending}>
+              Workstream state <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
+            </MenuSubTrigger>
+            <MenuSubPopup>
+              <MenuRadioGroup value={item.lifecycle} aria-label="Workstream state">
+                {lifecycles.map((lifecycle) => (
+                  <MenuRadioItem
+                    key={lifecycle}
+                    value={lifecycle}
+                    disabled={!state.canCreate || pending}
+                    closeOnClick
+                    onClick={() => {
+                      if (item.lifecycle === lifecycle) return;
+                      void run(async () => {
+                        const result = await controller.setLifecycle(item.id, lifecycle);
+                        return result.ok ? { ok: true, value: undefined } : result;
+                      });
+                    }}
+                  >
+                    <span className="flex items-center justify-between gap-4">
+                      {lifecycleLabel(lifecycle)}
+                      <MenuRadioItemIndicator />
+                    </span>
+                  </MenuRadioItem>
+                ))}
+              </MenuRadioGroup>
+            </MenuSubPopup>
+          </MenuSub>
+          <MenuSeparator />
+          <MenuGroup className="flex items-center justify-between">
+            <div className="flex min-w-0 flex-wrap items-baseline">
+              <MenuGroupLabel>Visible threads</MenuGroupLabel>
+              <span className="pr-2 text-xs text-muted-foreground tabular-nums" aria-live="polite">
+                {shownCount} of {memberCount} shown
+              </span>
+            </div>
+            <PersonalWorkstreamVisibleThreads
+              limit={threadWindow.limit}
+              onChange={(limit) => {
+                threadWindow.setLimit(limit);
+                threadWindow.setExpanded(false);
+              }}
+            />
+          </MenuGroup>
+          <MenuSeparator />
+          <MenuItem
+            disabled={!state.canCreate || pending || index === 0}
+            onClick={() =>
+              void run(async () => {
+                const result = await controller.reorder(item.id, {
+                  afterId: openWorkstreams[index - 1]!.id,
+                  beforeId: openWorkstreams[index - 2]?.id ?? null,
+                });
+                return result.ok ? { ok: true, value: undefined } : result;
+              })
+            }
+          >
+            <ArrowUpIcon aria-hidden /> Move up
+          </MenuItem>
+          <MenuItem
+            disabled={!state.canCreate || pending || index === openWorkstreams.length - 1}
+            onClick={() =>
+              void run(async () => {
+                const result = await controller.reorder(item.id, {
+                  beforeId: openWorkstreams[index + 1]!.id,
+                  afterId: openWorkstreams[index + 2]?.id ?? null,
+                });
+                return result.ok ? { ok: true, value: undefined } : result;
+              })
+            }
+          >
+            <ArrowDownIcon aria-hidden /> Move down
+          </MenuItem>
+          <MenuSeparator />
+          <MenuItem
+            variant="destructive"
+            disabled={!state.canCreate || pending}
+            onClick={onDeleteRequested}
+          >
+            <TrashIcon aria-hidden /> Delete Workstream…
+          </MenuItem>
+        </MenuPopup>
+      </Menu>
       {editing === "nameIcon" ? (
         <form
           className="grid gap-1 px-2 pb-2"
@@ -649,55 +624,18 @@ function Group({
         </>
       ) : null}
       {editing === "color" ? (
-        <Dialog
-          open
+        <PersonalWorkstreamColorDialog
+          color={item.color}
+          automaticColor={colors.automaticColor}
+          pending={pending}
           onOpenChange={(open) => {
-            if (!open && !pending) setEditing(null);
+            if (!open && !pendingRef.current) setEditing(null);
           }}
-        >
-          <DialogPopup>
-            <DialogHeader>
-              <DialogTitle>Workstream color</DialogTitle>
-            </DialogHeader>
-            <form
-              onSubmit={async (event) => {
-                event.preventDefault();
-                if (pending) return;
-                setPending(true);
-                try {
-                  const result = await controller.setColor(
-                    item.id,
-                    draft ? draft.toUpperCase() : null,
-                  );
-                  if (result.ok) setEditing(null);
-                  else showPersonalFailure(result.failure);
-                } catch (error) {
-                  setPending(false);
-                  throw error;
-                }
-                setPending(false);
-              }}
-            >
-              <Input
-                aria-label="Hex color"
-                maxLength={7}
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-              />
-              {editing === "color" ? (
-                <Button type="button" variant="ghost" onClick={() => setDraft("")}>
-                  Automatic
-                </Button>
-              ) : null}
-              <Button
-                type="submit"
-                disabled={pending || (draft !== "" && !/^#[0-9a-fA-F]{6}$/.test(draft))}
-              >
-                Save
-              </Button>
-            </form>
-          </DialogPopup>
-        </Dialog>
+          onSave={async (color) => {
+            const result = await run(() => controller.setColor(item.id, color));
+            if (result?.ok) setEditing(null);
+          }}
+        />
       ) : null}
     </section>
   );
@@ -743,9 +681,9 @@ export function WorkstreamSidebarSection({
     collapsedSchema,
   );
   const namedGroupsId = useId();
-  const openWorkstreams = openPersonalWorkstreams(state).filter(
-    (entry) => !snoozedIds.has(entry.id),
-  );
+  const allOpenWorkstreams = openPersonalWorkstreams(state);
+  const openWorkstreams = allOpenWorkstreams.filter((entry) => !snoozedIds.has(entry.id));
+  const automaticColors = personalWorkstreamAutomaticColors(allOpenWorkstreams);
   const namedIds = openWorkstreams.map((entry) => entry.id);
   const sharedStatus = useSharedPersonalStatusFilter(namedIds);
   const namedSummary = openWorkstreams.reduce(
@@ -906,6 +844,7 @@ export function WorkstreamSidebarSection({
     <div
       ref={containerRef}
       aria-label="Workstreams"
+      data-jones-thread-board
       onDragEnd={clearDrag}
       onDragOver={() => {
         if (draggedRef.current) setInsertion(null);
@@ -947,6 +886,7 @@ export function WorkstreamSidebarSection({
       <div data-workstream-group-slot className="relative py-1">
         <section
           data-native-workstream="null"
+          data-jones-board-section="unassigned"
           style={{
             backgroundColor:
               dropTargetId === null && unassignedCollapsed
@@ -958,6 +898,7 @@ export function WorkstreamSidebarSection({
         >
           <button
             type="button"
+            data-jones-board-unassigned-header
             aria-label={`${unassignedCollapsed ? "Expand" : "Collapse"} Unassigned`}
             aria-description={formatPersonalThreadCount(unassignedSummary.total)}
             aria-expanded={!unassignedCollapsed}
@@ -969,7 +910,7 @@ export function WorkstreamSidebarSection({
               className={`size-4 shrink-0 ${unassignedCollapsed ? "-rotate-90" : ""}`}
             />
             <span className="truncate">Unassigned</span>
-            <span className="ml-auto shrink-0 text-xs tabular-nums">
+            <span data-jones-board-count className="ml-auto shrink-0 text-xs tabular-nums">
               {formatPersonalThreadCount(unassignedSummary.total)}
             </span>
           </button>
@@ -990,6 +931,7 @@ export function WorkstreamSidebarSection({
                 {insertion?.afterId === item.id ? insertionLine() : null}
                 <Group
                   item={item}
+                  automaticColor={automaticColors.get(item.id)}
                   nameIconProjects={nameIconProjects}
                   newThreadAction={newThreadAction?.(item)}
                   controller={controller}
@@ -1047,11 +989,7 @@ export function WorkstreamSidebarSection({
                 containerRef.current?.querySelectorAll<HTMLElement>("[data-native-workstream]") ??
                   [],
               ).find((entry) => entry.dataset.nativeWorkstream === JSON.stringify(deleteTarget.id));
-              return (
-                section?.querySelector<HTMLButtonElement>("[data-workstream-menu] button") ??
-                section?.querySelector<HTMLButtonElement>("button") ??
-                false
-              );
+              return section?.querySelector<HTMLButtonElement>("button") ?? false;
             }}
           >
             <AlertDialogHeader>

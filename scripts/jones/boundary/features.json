@@ -3461,6 +3461,7 @@
         "apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
         "apps/web/src/jones/workstreams/personalRail.test.ts",
+        "apps/web/src/jones/workstreams/PersonalWorkstreamColorDialog.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalInlineRename.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadWindow.test.ts",
         "apps/web/src/jones/workstreams/personalThreadWindow.browser.test.tsx",
@@ -3627,9 +3628,10 @@
         "apps/web/src/jones/sidebarAppearance/SidebarAppearanceLauncher.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/sidebarAppearanceCards.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.browser.test.tsx",
+        "apps/web/src/jones/sidebarAppearance/ThreadBoardAppearanceSettings.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/sidebarAppearanceWorkstreams.browser.test.tsx"
       ],
-      "scope": "Device-local sidebar appearance preferences with Selected/Original presets, reversible live nonmodal trials, independent card-only scale and a permanent sidebar thread-title brightness slider in Jones Code settings. Existing chat/interface font, zoom, glass and semantic row cues are preserved. Nullable sidebar context scopes device symbols; known icon-only labels retain accessible names and focus/hover tooltips. Small accepted shared edits mount the host and launcher in Sidebar, expose existing semantic title/card/device slots in SidebarThreadRow, and mount the reusable brightness settings control in the Jones Code route. Lifted card scope copies only allowlisted attributes/variables. No server, wire, persisted event, mobile, installed runtime or existing appearance preference changes."
+      "scope": "Device-local sidebar appearance preferences with Selected/Original presets and a Jones Code Appearance settings page. Board-only controls adjust card and section outlines, tint, backgrounds, typography, sizing, and adaptive or fixed filter spacing. Shared sidebar hooks mount the host and launcher and expose semantic card slots. Lifted cards copy allowlisted attributes and variables. The renderer uses existing sidebar context, Workstream color persistence, and theme tokens."
     },
     {
       "id": "workstream-auto-route",

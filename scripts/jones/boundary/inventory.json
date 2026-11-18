@@ -1653,6 +1653,7 @@
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx": "accepted-shared",
     "apps/web/src/components/settings/SettingsPanels.tsx": "accepted-shared",
     "apps/web/src/components/settings/SettingsScopeSentence.tsx": "accepted-shared",
+    "apps/web/src/components/settings/SettingsBreadcrumb.tsx": "accepted-shared",
     "apps/web/src/components/settings/SettingsSidebarNav.tsx": "accepted-shared",
     "apps/web/src/components/settings/UpdateTrackSwitchDialog.tsx": "accepted-shared",
     "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts": "jones-tests-in-upstream",
@@ -2028,6 +2029,7 @@
     "apps/web/src/routes/_chat.conversations.tsx": "hook",
     "apps/web/src/routes/_chat.pull-requests.tsx": "hook",
     "apps/web/src/routes/_chat.settings.jones-code.tsx": "hook",
+    "apps/web/src/routes/_chat.settings.jones-code_.appearance.tsx": "hook",
     "apps/web/src/routes/design-requests.tsx": "hook",
     "apps/web/src/routes/settings.jones-code.tsx": "upstream-deleted",
     "apps/web/src/routes/voice-review.tsx": "hook",
@@ -4811,10 +4813,6 @@
     {
       "from": "apps/server/src/provider/AgentContextBudget.test.ts",
       "to": "apps/server/src/jones/remoteAdmissionIntegration/protocolTools.ts"
-    },
-    {
-      "from": "apps/web/src/routes/_chat.settings.jones-code.tsx",
-      "to": "apps/web/src/jones/workMode/WorkButtonSettings.tsx"
     },
     {
       "from": "apps/server/src/cli/config.ts",

@@ -52,3 +52,83 @@
   [data-jones-thread-title-branch="slim"] {
   --jones-thread-title-base: var(--color-foreground);
 }
+
+/* The card outline stays independent of selection, focus, and the Workstream tint. */
+:is([data-jones-thread-board], [data-personal-thread-drag]) [data-jones-sidebar-card] {
+  --jones-board-card-effective-scale: var(
+    --jones-board-card-scale,
+    var(--jones-sidebar-card-scale, 1)
+  );
+  --spacing: calc(0.25rem * var(--jones-board-card-effective-scale));
+  --text-xs: var(
+    --jones-board-card-meta-size,
+    calc(0.75rem * var(--jones-board-card-effective-scale))
+  );
+  --text-sm: var(
+    --jones-board-card-title-size,
+    calc(0.875rem * var(--jones-board-card-effective-scale))
+  );
+  --sidebar-row-content-inset: var(
+    --jones-board-card-padding,
+    calc(0.625rem * var(--jones-board-card-effective-scale))
+  );
+  --sidebar-content-inset: var(
+    --jones-board-card-padding,
+    calc(0.5rem * var(--jones-board-card-effective-scale))
+  );
+  --jones-board-card-top-height: max(
+    calc(1.25rem * var(--jones-board-card-effective-scale)),
+    calc(var(--text-xs) * 4 / 3)
+  );
+  --jones-board-card-content-height: max(
+    calc(4.875rem * var(--jones-board-card-effective-scale)),
+    calc(
+      var(--jones-board-card-top-height) + var(--text-sm) * 10 / 7 + var(--text-xs) * 4 / 3 +
+        var(--spacing) * 1.5 + var(--sidebar-content-inset) * 2
+    )
+  );
+  padding-block: calc(var(--jones-board-card-gap, var(--spacing)) / 2);
+  contain-intrinsic-size: auto var(--jones-board-card-content-height);
+}
+
+:is([data-jones-thread-board], [data-personal-thread-drag]) [data-jones-sidebar-card-content] {
+  height: auto;
+  min-height: var(--jones-board-card-content-height);
+  padding-inline: var(--sidebar-row-content-inset);
+  padding-block: var(--sidebar-content-inset);
+}
+
+:is([data-jones-thread-board], [data-personal-thread-drag]) [data-jones-sidebar-card-topline] {
+  height: auto;
+  min-height: var(--jones-board-card-top-height);
+}
+
+:is([data-jones-thread-board], [data-personal-thread-drag])
+  [data-jones-thread-title-branch="card"] {
+  font-weight: var(--jones-board-card-title-weight, 500);
+}
+
+:is([data-jones-thread-board], [data-personal-thread-drag])
+  [data-jones-thread-title-branch="card"][data-jones-thread-title="receded"] {
+  font-weight: var(--jones-board-card-title-weight, 400);
+}
+
+:is([data-jones-thread-board], [data-personal-thread-drag]) [data-jones-sidebar-card-surface] {
+  position: relative;
+}
+
+:is([data-jones-thread-board], [data-personal-thread-drag])
+  [data-jones-sidebar-card-surface]::after {
+  position: absolute;
+  z-index: 11;
+  inset: 0;
+  pointer-events: none;
+  border: var(--jones-board-card-border-width, 1px) solid
+    color-mix(
+      in oklab,
+      var(--sidebar-foreground) var(--jones-board-card-border-opacity, 17%),
+      transparent
+    );
+  border-radius: inherit;
+  content: "";
+}

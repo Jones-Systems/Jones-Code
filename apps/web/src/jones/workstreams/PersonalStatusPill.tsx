@@ -1,4 +1,5 @@
 import { useRef, type Ref } from "react";
+import { observeResize } from "../../lib/observeResize";
 import { cn } from "../../lib/utils";
 import type { PersonalThreadSummary } from "./personalPresentation";
 import type { PersonalStatusFilter } from "./personalStatusFilter";
@@ -26,6 +27,38 @@ const statuses = [
     selected: "bg-success-foreground/15",
   },
 ] as const;
+const filterSpacing = "var(--jones-board-filter-spacing-factor, var(--personal-status-spacing, 1))";
+const filterPadding = `calc(6px * ${filterSpacing})`;
+
+export function observePersonalStatusSpacing(
+  pill: HTMLElement,
+  elements: readonly Element[],
+  fit: () => void,
+): () => void {
+  const scope = pill.closest("[data-jones-board-filter-spacing]");
+  let disposed = false;
+  const update = () => {
+    if (!disposed && scope?.getAttribute("data-jones-board-filter-spacing") !== "fixed") fit();
+  };
+  update();
+  const stop = observeResize(elements, update);
+  // Switching from Fixed to Adaptive can keep the same width until a fresh fit.
+  const modeObserver = scope ? new MutationObserver(update) : null;
+  if (scope) {
+    modeObserver?.observe(scope, {
+      attributes: true,
+      attributeFilter: ["data-jones-board-filter-spacing"],
+    });
+  }
+  document.fonts.addEventListener("loadingdone", update);
+  void document.fonts.ready.then(update);
+  return () => {
+    disposed = true;
+    stop();
+    modeObserver?.disconnect();
+    document.fonts.removeEventListener("loadingdone", update);
+  };
+}
 
 /**
  * Status counters that double as filters, shared by each Workstream header and
@@ -53,7 +86,7 @@ export function PersonalStatusPill({
       data-workstream-header-control
       data-personal-status-pill
       style={{
-        gap: "calc(2px * var(--personal-status-spacing, 1))",
+        gap: `calc(var(--jones-board-filter-gap, 2px) * ${filterSpacing})`,
         backgroundColor:
           "color-mix(in oklab, var(--color-muted) var(--jones-pill-bg, 30%), transparent)",
       }}
@@ -95,7 +128,7 @@ export function PersonalStatusPill({
                   active && selected,
                   excluded && "line-through decoration-2",
                 )}
-                style={{ paddingInline: "calc(6px * var(--personal-status-spacing, 1))" }}
+                style={{ paddingInline: filterPadding }}
                 onClick={(event) => {
                   event.stopPropagation();
                   onInteract?.();
@@ -119,7 +152,7 @@ export function PersonalStatusPill({
             ) : (
               <span
                 className={cn("shrink-0 cursor-default rounded-sm", color)}
-                style={{ paddingInline: "calc(6px * var(--personal-status-spacing, 1))" }}
+                style={{ paddingInline: filterPadding }}
               >
                 {summary[count]}
               </span>
