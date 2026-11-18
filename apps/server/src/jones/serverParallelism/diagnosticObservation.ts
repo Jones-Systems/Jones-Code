@@ -6,6 +6,8 @@ export const periodicResourceGapMs = 10;
 export const observerModes = {
   full: { platform: "linux", resourceGapMs: periodicResourceGapMs },
   "writer-inline-readers": { platform: "linux", resourceGapMs: periodicResourceGapMs },
+  "writer-concurrent-compute": { platform: "linux", resourceGapMs: periodicResourceGapMs },
+  "writer-serial-compute": { platform: "linux", resourceGapMs: periodicResourceGapMs },
   "cpu-stat-only": { platform: "linux", resourceGapMs: periodicResourceGapMs },
   "cadence-standard": { platform: "darwin", resourceGapMs: periodicResourceGapMs },
   "cadence-reduced": { platform: "darwin", resourceGapMs: 250 },
@@ -123,6 +125,7 @@ export type DiagnosticEvent = DiagnosticIdentity & {
           | "control-end";
         readonly index?: number | undefined;
         readonly observation?: SqliteReaderObservation | undefined;
+        readonly writerThreadCpuUs?: number | undefined;
         readonly cpu?: DiagnosticCpu | undefined;
       }
   );

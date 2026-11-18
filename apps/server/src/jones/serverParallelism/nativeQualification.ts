@@ -102,6 +102,8 @@ export async function runNativeQualification(options: NativeQualificationOptions
     ? observerModes[options.diagnostic.mode].resourceGapMs
     : periodicResourceGapMs;
   const useReaderPool = options.diagnostic?.mode !== "writer-inline-readers";
+  const serialCompute = options.diagnostic?.mode === "writer-serial-compute";
+  const measureWriterCpu = serialCompute || options.diagnostic?.mode === "writer-concurrent-compute";
   await NodeFSP.mkdir(directory, { recursive: false, mode: 0o700 });
   const observationStream = qualificationStream<ComputeObservation>(
     workload.capacities.observations,
@@ -767,7 +769,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
           },
           () => observations.slice(observationStart),
           options.diagnostic ? (event) => diagnosticSink({ ...event, phase }) : undefined,
-          useReaderPool,
+          { useReaderPool, serialCompute, measureWriterCpu },
         );
         await phaseCheckpoint();
         windowsResult.push({
@@ -1016,6 +1018,10 @@ export async function runNativeQualification(options: NativeQualificationOptions
               cpuRetention: cpuResourceStream.report(),
               nominalSamplingGapMs: resourceGapMs,
               readerPlacement: useReaderPool ? "pool" : "writer-connection",
+              computePlacement: serialCompute ? "after-sql" : "concurrent",
+              writerCpuMeaning: measureWriterCpu
+                ? "Main-thread CPU during the transaction interval includes interleaved parent work."
+                : null,
               cpuMeaning:
                 "Read/phase wall spans overlap work; process CPU includes reader/checkpoint threads. Thread CPU includes interleaved parent work, not observer-exclusive CPU.",
             },

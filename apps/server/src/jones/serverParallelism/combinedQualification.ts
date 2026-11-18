@@ -60,13 +60,14 @@ export async function combinedReaderWriterWindow(
   compute: () => Promise<void>,
   computeObservations?: () => readonly ComputeObservation[],
   diagnostic?: DiagnosticSink,
-  useReaderPool = true,
+  options: { useReaderPool?: boolean; serialCompute?: boolean; measureWriterCpu?: boolean } = {},
 ) {
   const emit = (
     event: Extract<DiagnosticEvent, { kind: "combined" }>["event"],
     index?: number,
     cpu?: DiagnosticCpu,
     atMs?: number,
+    writerThreadCpuUs?: number,
   ) => {
     if (diagnostic)
       observeSafely(diagnostic)({
@@ -76,6 +77,7 @@ export async function combinedReaderWriterWindow(
         phase: "combined",
         ...(index === undefined ? {} : { index }),
         ...(cpu ? { cpu } : {}),
+        ...(writerThreadCpuUs === undefined ? {} : { writerThreadCpuUs }),
       });
   };
   const cpuStart = diagnostic
@@ -91,7 +93,7 @@ export async function combinedReaderWriterWindow(
     filename,
     checkpointWorker: true,
     readerFailureMode: "fail",
-    readerPool: useReaderPool
+    readerPool: options.useReaderPool !== false
       ? readerPoolOptions(count, (event) => {
           if (observations.length < 100_000) observations.push(event);
           if (diagnostic)
@@ -115,7 +117,7 @@ export async function combinedReaderWriterWindow(
         emit("sql-load-begin");
         yield* Effect.all(
           [
-            Effect.promise(compute),
+            options.serialCompute ? Effect.void : Effect.promise(compute),
             Effect.forEach(
               Array.from({ length: acquisitions }),
               (_, index) =>
@@ -142,6 +144,7 @@ export async function combinedReaderWriterWindow(
               Array.from({ length: acquisitions }),
               (_, index) =>
                 Effect.gen(function* () {
+                  const cpuStart = options.measureWriterCpu ? process.threadCpuUsage() : undefined;
                   const start = performance.now();
                   emit("writer-begin", index, undefined, start);
                   yield* sql.withTransaction(
@@ -149,7 +152,8 @@ export async function combinedReaderWriterWindow(
                   );
                   const end = performance.now();
                   writerMs.push(end - start);
-                  emit("writer-end", index, undefined, end);
+                  const cpu = cpuStart ? process.threadCpuUsage(cpuStart) : undefined;
+                  emit("writer-end", index, undefined, end, cpu ? cpu.user + cpu.system : undefined);
                   yield* Effect.yieldNow;
                 }),
               { discard: true },
@@ -172,6 +176,7 @@ export async function combinedReaderWriterWindow(
           { concurrency: "unbounded", discard: true },
         );
         emit("sql-load-end");
+        if (options.serialCompute) yield* Effect.promise(compute);
       }).pipe(Effect.provide(database.pipe(Layer.provide(NodeServices.layer)))),
     );
   } finally {

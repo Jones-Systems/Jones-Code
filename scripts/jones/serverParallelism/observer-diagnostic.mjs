@@ -191,6 +191,7 @@ export function summarizeDiagnostic(report, events) {
           startMs,
           endMs: row.atMs,
           durationMs: row.atMs - startMs,
+          ...(row.writerThreadCpuUs === undefined ? {} : { writerThreadCpuUs: row.writerThreadCpuUs }),
         };
         (row.event === "writer-end" ? writers : controls).push(interval);
         active.delete(key);

@@ -11,15 +11,17 @@ import * as NodeOS from "node:os";
 import { qualificationDecision, nativeBlockMatrixDecision } from "./qualificationResult.mjs";
 const [output, installedRoot, scope = "full", priorDirectory] = process.argv.slice(2);
 const diagnosticModes =
-  scope === "observer-cadence"
-    ? ["cadence-standard", "cadence-reduced"]
-    : scope === "observer-writer"
-      ? ["full", "writer-inline-readers"]
-      : scope === "observer-control"
-        ? ["cpu-stat-only"]
-        : scope === "observer-diagnostic" || scope === "observer-residency"
-          ? ["full"]
-          : [];
+  scope === "observer-writer-compute"
+    ? ["writer-concurrent-compute", "writer-serial-compute"]
+    : scope === "observer-cadence"
+      ? ["cadence-standard", "cadence-reduced"]
+      : scope === "observer-writer"
+        ? ["full", "writer-inline-readers"]
+        : scope === "observer-control"
+          ? ["cpu-stat-only"]
+          : scope === "observer-diagnostic" || scope === "observer-residency"
+            ? ["full"]
+            : [];
 const diagnosticScope = diagnosticModes.length > 0;
 if (
   diagnosticScope &&
