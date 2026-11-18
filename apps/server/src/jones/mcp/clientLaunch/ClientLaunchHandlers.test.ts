@@ -177,6 +177,27 @@ function harness(
         } as unknown as Launch.ThreadLaunchResult["projection"]),
     }),
     Layer.mock(Launch.ThreadLaunchService)({
+      getDeliveryEvidence: (input) =>
+        Effect.sync(() => {
+          assert.deepEqual(input, {
+            commandId: ids.commandId,
+            threadId: ids.threadId,
+            projectId,
+            initialMessage: { messageId: ids.messageId },
+          });
+          // This fixture records only the thread claim while the message is pending.
+          return {
+            kind: "launch",
+            commandId: ids.commandId,
+            projectId,
+            creation: { status: "accepted", threadId: ids.threadId },
+            initialMessage: {
+              status: "unknown",
+              commandId: CommandId.make(`${ids.commandId}:initial-message`),
+              messageId: ids.messageId,
+            },
+          } as const;
+        }),
       preparationActive: () => Effect.succeed(false),
       checkWorktreeBase: (input) =>
         Effect.gen(function* () {

@@ -2765,7 +2765,7 @@ it.effect("queues a restart sent into a provider turn that failed before its run
   }),
 );
 
-it.effect("queues a plain send behind the stopped queue and releases its hold", () =>
+it.effect("holds a plain send behind the stopped queue until explicit resume", () =>
   Effect.gen(function* () {
     const interruptReached = yield* Deferred.make<void>();
     const releaseInterrupt = yield* Deferred.make<void>();
@@ -2804,7 +2804,7 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
         runId: started[0]!.runId,
         holdQueue: true,
       });
-      // The provider has not stopped yet, so a plain send still resolves to a steer.
+      // Send while the provider is still stopping.
       yield* send("sent", "auto");
       // Once the stop settles, the run-update reactor promotes the queue on
       // its own fiber, so read the queue while the provider is still stopping.
@@ -2822,11 +2822,37 @@ it.effect("queues a plain send behind the stopped queue and releases its hold", 
         ),
         ["queued", "sent"],
       );
-      // The user sent it, so the queue they stopped runs again once the provider stops.
-      assert.isFalse(queued.some((run) => run.queueHeld === true));
+      assert.deepEqual(
+        queued.map((run) => run.queueHeld),
+        [true, true],
+      );
+      const heldRunIds = queued.map((run) => run.id);
       yield* Deferred.succeed(releaseInterrupt, undefined);
       yield* Fiber.join(draining);
       assert.deepEqual(steered, []);
+      assert.equal(started.length, 1);
+      const heldRuns = Effect.fn("readHeldRuns")(function* () {
+        const current = yield* orchestrator.getThreadProjection(threadId);
+        return heldRunIds.map((id) => current.runs.find((run) => run.id === id));
+      });
+      assert.deepEqual(
+        (yield* heldRuns()).map((run) => [run?.status, run?.queueHeld]),
+        [
+          ["queued", true],
+          ["queued", true],
+        ],
+      );
+      yield* orchestrator.dispatch({
+        type: "queue.resume",
+        commandId: CommandId.make("resume-after-plain-send"),
+        threadId,
+      });
+      const resumed = yield* heldRuns();
+      assert.deepEqual(
+        resumed.map((run) => run?.id),
+        heldRunIds,
+      );
+      assert.isFalse(resumed.some((run) => run?.queueHeld === true));
     }).pipe(Effect.provide(layer));
   }),
 );
