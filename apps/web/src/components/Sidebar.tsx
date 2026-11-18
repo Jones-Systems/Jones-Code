@@ -25,6 +25,11 @@ import {
 import { attachSidebarTree } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
+import { registerThreadTitleSidebar } from "../jones/threadTitleDrag/threadTitleDrag";
+import {
+  locateSidebarTitlePlacement,
+  showSidebarTitlePlacement,
+} from "../jones/threadTitleDrag/sidebarTitlePlacement";
 import {
   dropThreadContext,
   endThreadContextDrag,
@@ -1989,8 +1994,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     moveThreadContextDragGhost(point, { title, count: threads.length });
     return true;
   };
-  const dropPinnedWorkstreamThread = (point: { x: number; y: number }) => {
-    const activeKey = contextDragKeyRef.current;
+  const dropPinnedWorkstreamThread = (
+    point: { x: number; y: number },
+    activeKey: string | null,
+  ) => {
     if (activeKey === null) return false;
     const activeThread = threadByKeyRef.current.get(activeKey);
     return Boolean(
@@ -2018,7 +2025,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     );
   };
   const dropThreadContextDrag = (point: { x: number; y: number }) => {
-    if (!pointerOutsideThreadList(point)) return dropPinnedWorkstreamThread(point);
+    if (!pointerOutsideThreadList(point)) {
+      return dropPinnedWorkstreamThread(point, contextDragKeyRef.current);
+    }
     restoreDragScroll();
     dropThreadContext(point, contextDragThreads());
     return true;
@@ -2347,55 +2356,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       await placeWorkstreamThread(thread, destinationId, neighbor, after);
     },
   );
-  const draggedThreadKey = dragState?.activeKey;
-  const draggedFromSection = dragState?.activeSection;
-  const dragActivationY = dragState?.activationY;
-  const dndCollisionDetection = (() => {
-    if (draggedThreadKey === undefined || draggedFromSection === undefined)
-      return createSidebarCollisionDetection(() => true);
-    const source = threadByKey.get(draggedThreadKey);
-    if (source === undefined) return createSidebarCollisionDetection(() => false);
-    return createSidebarCollisionDetection(
-      (id) => {
-        const target = resolveSidebarDropTarget(sidebarListItems, draggedThreadKey, id);
-        if (target === null) return false;
-        return (
-          planSidebarThreadDrop({
-            activeKey: draggedThreadKey,
-            activeSection: draggedFromSection,
-            activePinned: source.pinnedAt != null,
-            activeSettled: source.settledOverride === "settled",
-            supportsSettlement: serverConfigs.has(source.environmentId),
-            target,
-            pinnedOrder: pinnedKeys,
-            pinnedKeysById,
-            reorderableKeys: draggableThreadKeys,
-            activeOrder: activeKeys,
-            activeKeysById,
-            activeReorderableKeys: activeReorderableThreadKeys,
-            activeTimeOrdered: workingShelfEnabled,
-          }).kind !== "none"
-        );
-      },
-      {
-        items: sidebarListItems,
-        activationY: dragActivationY ?? null,
-      },
-    );
-  })();
-  const handleThreadDragEnd = (event: DragEndEvent) => {
-    if (sidebarRowsAreHeld()) return;
-    if (projectFolders !== null) return;
-    const activeKey = String(event.active.id);
-    const activeSection = sectionByThreadKey.get(activeKey);
-    const target =
-      event.over === null
-        ? null
-        : resolveSidebarDropTarget(sidebarListItems, activeKey, String(event.over.id));
-    const activeThread = threadByKey.get(activeKey);
-    if (activeSection === undefined || target === null || activeThread === undefined) return;
-    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
-    const plan = planSidebarThreadDrop({
+  const planThreadDrop = (
+    activeKey: string,
+    activeSection: SidebarSection,
+    activeThread: EnvironmentThreadShell,
+    target: NonNullable<ReturnType<typeof resolveSidebarDropTarget>>,
+  ) => {
+    return planSidebarThreadDrop({
       activeKey,
       activeSection,
       activePinned: activeThread.pinnedAt != null,
@@ -2410,6 +2377,42 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       activeReorderableKeys: activeReorderableThreadKeys,
       activeTimeOrdered: workingShelfEnabled,
     });
+  };
+  const draggedThreadKey = dragState?.activeKey;
+  const draggedFromSection = dragState?.activeSection;
+  const dragActivationY = dragState?.activationY;
+  const dndCollisionDetection = (() => {
+    if (draggedThreadKey === undefined || draggedFromSection === undefined)
+      return createSidebarCollisionDetection(() => true);
+    const source = threadByKey.get(draggedThreadKey);
+    if (source === undefined) return createSidebarCollisionDetection(() => false);
+    return createSidebarCollisionDetection(
+      (id) => {
+        const target = resolveSidebarDropTarget(sidebarListItems, draggedThreadKey, id);
+        if (target === null) return false;
+        return planThreadDrop(draggedThreadKey, draggedFromSection, source, target).kind !== "none";
+      },
+      {
+        items: sidebarListItems,
+        activationY: dragActivationY ?? null,
+      },
+    );
+  })();
+  const handleThreadDragEnd = (event: DragEndEvent) => {
+    if (sidebarRowsAreHeld() || projectFolders !== null || event.over === null) return;
+    const activeKey = String(event.active.id);
+    const target = resolveSidebarDropTarget(sidebarListItems, activeKey, String(event.over.id));
+    if (target !== null) performThreadDrop(activeKey, target);
+  };
+  const performThreadDrop = (
+    activeKey: string,
+    target: NonNullable<ReturnType<typeof resolveSidebarDropTarget>>,
+  ) => {
+    const activeSection = sectionByThreadKey.get(activeKey);
+    const activeThread = threadByKey.get(activeKey);
+    if (activeSection === undefined || activeThread === undefined) return;
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    const plan = planThreadDrop(activeKey, activeSection, activeThread, target);
     if (plan.kind === "none") return;
     if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;
     const assignments =
@@ -2525,6 +2528,69 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       }
     })();
   };
+  const titleInsertionRow = useRef<HTMLElement | null>(null);
+  const clearTitleDrop = useStableCallback(() => {
+    titleInsertionRow.current = showSidebarTitlePlacement(titleInsertionRow.current, null);
+    workstreamExternalDropRef.current?.clear();
+  });
+  const handleTitleDrop = useStableCallback(
+    (point: { x: number; y: number }, ref: ScopedThreadRef, commit: boolean) => {
+      const list = threadListRef.current;
+      const key = scopedThreadKey(ref);
+      const thread = threadByKey.get(key);
+      const section = sectionByThreadKey.get(key);
+      if (
+        !list ||
+        sidebarRowsAreHeld() ||
+        isSearchingThreads ||
+        dragSensorRef.current !== null ||
+        optimisticDrop !== null ||
+        !thread ||
+        !section ||
+        !draggableThreadKeys.has(key) ||
+        !canOperateThreads([thread])
+      ) {
+        clearTitleDrop();
+        return;
+      }
+      const workstream = list.ownerDocument
+        .elementFromPoint(point.x, point.y)
+        ?.closest("[data-native-workstream]");
+      if (workstream && list.contains(workstream)) {
+        titleInsertionRow.current = showSidebarTitlePlacement(titleInsertionRow.current, null);
+        const bridge = workstreamExternalDropRef.current;
+        if (section === "active" || section === "pinned") {
+          if (!commit) bridge?.locateExternal(point, thread, { fromMember: section === "active" });
+          else if (section === "pinned") dropPinnedWorkstreamThread(point, key);
+          else void bridge?.dropExternal(point, thread, { fromMember: true });
+        } else bridge?.clear();
+        return;
+      }
+
+      workstreamExternalDropRef.current?.clear();
+      const position =
+        projectFolders === null
+          ? locateSidebarTitlePlacement(list, point, sidebarListItems, key, section)
+          : null;
+      const valid =
+        position && planThreadDrop(key, section, thread, position.target).kind !== "none";
+      titleInsertionRow.current = showSidebarTitlePlacement(
+        titleInsertionRow.current,
+        valid && !commit ? position : null,
+      );
+      if (valid && commit) performThreadDrop(key, position.target);
+    },
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Registers the mounted scroll content as a destination for the chat title's pointer gesture.
+  useLayoutEffect(() => {
+    const content = sidebarContentRef.current;
+    if (!content) return;
+    return registerThreadTitleSidebar(content, {
+      move: (point, ref) => handleTitleDrop(point, ref, false),
+      drop: (point, ref) => handleTitleDrop(point, ref, true),
+      clear: clearTitleDrop,
+    });
+  }, [clearTitleDrop, handleTitleDrop]);
   const performSnooze = async (
     threadRef: ScopedThreadRef,
     preset: Pick<SnoozePreset, "snoozedUntil">,
@@ -3333,6 +3399,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         />
         <SidebarContent
           ref={sidebarContentRef}
+          data-thread-title-sidebar=""
           className="min-h-full"
           fixedHeader={
             <SidebarGroup className="z-[1]">

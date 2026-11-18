@@ -265,7 +265,11 @@ much space was recovered. If the server stops part-way through a retirement, the
 of that checkout first confirms the earlier server process has ended, then retries a checkout that
 was left untouched; a partly removed checkout stays held. If that checkout was already fully
 removed, **Propose retirements** lists it under **Ready to retire**, and **Retire** records it as
-retired once its branch reads back, without deleting anything. A checkout with untracked files is held until **Keep worktrees with
+retired once its branch reads back, without deleting anything. If Git already dropped the checkout
+but its directory remains (read-only folders, such as a Go module cache, can stop a removal),
+**Retire** makes those regenerable folders writable and deletes the leftover, but only when it holds
+nothing else: tracked files that match the branch, folders the retirement already covered, and
+empty folders. Any other file keeps the checkout held and is named in the result. A checkout with untracked files is held until **Keep worktrees with
 local changes** is set to **Edited tracked files**; propose again afterwards. **Retire** is not
 offered for a checkout that covers more than 200 paths, and the result says so. The status line
 under **Delete now** shows the last run even when no cleanup rule is on.

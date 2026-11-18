@@ -1,3 +1,4 @@
+import { remoteFileName } from "../jones/remoteFileLinks/remoteFileLink";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -579,6 +580,8 @@ function surfaceTitle(
       return "Diff";
     case "files":
       return "Files";
+    case "remote-file":
+      return remoteFileName(surface.target.absolutePath);
     case "file":
       return surface.relativePath.slice(
         Math.max(surface.relativePath.lastIndexOf("/"), surface.relativePath.lastIndexOf("\\")) + 1,
@@ -663,10 +666,13 @@ function SurfaceIcon({
       return <FileDiff className="size-3 shrink-0" />;
     case "files":
       return <Files className="size-3 shrink-0" />;
+    case "remote-file":
     case "file":
       return (
         <PierreEntryIcon
-          pathValue={surface.relativePath}
+          pathValue={
+            surface.kind === "remote-file" ? surface.target.absolutePath : surface.relativePath
+          }
           kind="file"
           theme={theme}
           className="size-3"

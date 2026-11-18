@@ -7,6 +7,10 @@ import { EnvironmentId, RunId, ThreadId, type ScopedThreadRef } from "@t3tools/c
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import {
+  parseRemoteFileHref,
+  type RemoteFileReference,
+} from "./jones/remoteFileLinks/remoteFileLink";
 import { useClosedViewStore } from "./closedViewStore";
 import { resolveStorage } from "./lib/storage";
 import type { ThreadPanelPresentation } from "./rightPanelLayout";
@@ -77,6 +81,7 @@ export type RightPanelSurface =
       revealUrl?: string;
       detailTab?: PullRequestDetailTab;
     }
+  | { id: `remote-file:${string}`; kind: "remote-file"; href: string; target: RemoteFileReference }
   | { id: "pull-requests"; kind: "pull-requests" }
   | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId };
 
@@ -140,6 +145,7 @@ interface RightPanelStoreState {
     folderTrail: string,
     keepSource?: boolean,
   ) => void;
+  openRemoteFile: (ref: ScopedThreadRef, href: string) => void;
   openAttachment: (ref: ScopedThreadRef, attachment: ChatFileAttachment) => void;
   openPullRequest: (
     ref: ScopedThreadRef,
@@ -525,6 +531,10 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                           : 0;
                       return [{ ...surface, revealLine, revealRequestId }];
                     }
+                    if (surface.kind === "remote-file") {
+                      const target = parseRemoteFileHref(surface.href);
+                      return target ? [{ ...surface, target }] : [];
+                    }
                     if (surface.kind === "pull-request") {
                       if (
                         typeof surface.projectId !== "string" ||
@@ -844,6 +854,17 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             };
           }),
         ),
+      openRemoteFile: (ref, href) => {
+        const target = parseRemoteFileHref(href);
+        if (!target) return;
+        const id =
+          `remote-file:${JSON.stringify([target.environmentId, target.absolutePath])}` as const;
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) =>
+            upsertSurface(current, { id, kind: "remote-file", href, target }),
+          ),
+        );
+      },
       navigateFolder: (ref, surfaceId, relativePath, folderTrail, keepSource = false) =>
         set((state) =>
           userAction(state, scopedThreadKey(ref), (current) => {
@@ -1272,7 +1293,8 @@ export function selectActiveRightPanel(
 ): RightPanelKind | null {
   const state = selectThreadRightPanelState(byThreadKey, ref);
   if (!state.isOpen) return null;
-  return state.surfaces.find((surface) => surface.id === state.activeSurfaceId)?.kind ?? null;
+  const kind = state.surfaces.find((surface) => surface.id === state.activeSurfaceId)?.kind;
+  return kind === "remote-file" ? "file" : (kind ?? null);
 }
 
 export function selectActiveRightPanelSurface(

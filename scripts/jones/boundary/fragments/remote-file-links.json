@@ -1,0 +1,35 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "remote-file-links",
+  "jonesOwnedPaths": ["apps/web/src/jones/remoteFileLinks/"],
+  "hookPaths": [
+    "apps/web/src/components/chat/RightPanelSurfaceContent.tsx",
+    "apps/web/src/rightPanelStore.ts",
+    "apps/web/src/closedViewStore.ts",
+    "apps/web/src/reopenClosedView.ts",
+    "packages/shared/src/markdownPipeline.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatMarkdown.tsx",
+      "to": "apps/web/src/jones/remoteFileLinks/remoteFileLink.ts"
+    },
+    {
+      "from": "apps/web/src/components/RightPanelTabs.tsx",
+      "to": "apps/web/src/jones/remoteFileLinks/remoteFileLink.ts"
+    },
+    {
+      "from": "apps/web/src/rightPanelStore.ts",
+      "to": "apps/web/src/jones/remoteFileLinks/remoteFileLink.ts"
+    },
+    {
+      "from": "apps/web/src/closedViewStore.ts",
+      "to": "apps/web/src/jones/remoteFileLinks/remoteFileLink.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/RightPanelSurfaceContent.tsx",
+      "to": "apps/web/src/jones/remoteFileLinks/RemoteFilePreview.tsx"
+    }
+  ]
+}

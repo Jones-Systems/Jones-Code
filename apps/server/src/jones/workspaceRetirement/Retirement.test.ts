@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Config from "../../config.ts";
 import * as Projections from "../../orchestration-v2/ProjectionStore.ts";
+import * as Registry from "../workspaceLifecycle/RegistryCli.ts";
 import { NativeObservations } from "./NativeObservations.ts";
 import { evaluate } from "./Runtime.ts";
 import {
@@ -22,14 +23,20 @@ const probe = () => ({
   limits: ["synthetic native adapter"],
 });
 // Settings evaluation with no lifecycle registry, thread or native workload configured.
-const settingsEvaluation: EvaluateRetirement = (sql, request) =>
+const settingsEvaluation: EvaluateRetirement = (sql, { registry, admit, ...request }) =>
   evaluate({
     ...request,
     threadId: null,
     rules: resolveWorktreeCleanup(DEFAULT_SERVER_SETTINGS, ProjectId.make("synthetic-project")),
-    admit: Effect.void,
+    admit: admit ?? Effect.void,
     revalidate: Effect.void,
   }).pipe(
+    registry
+      ? Effect.provideService(
+          Registry.LifecycleRegistry,
+          registry as unknown as Registry.LifecycleRegistry["Service"],
+        )
+      : (effect) => effect,
     Effect.provideService(SqlClient.SqlClient, sql),
     Effect.provideService(Config.ServerConfig, {
       workspaceLifecycle: undefined,

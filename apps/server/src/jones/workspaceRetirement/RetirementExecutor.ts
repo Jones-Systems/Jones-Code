@@ -26,6 +26,8 @@ import {
 import { enumerateDisposal, disposePath, verifyClean } from "./Disposal.ts";
 import { CONSUMER_LIMITS } from "./ConsumerProbe.ts";
 import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
+import { makeRootsWritable, pathSpellings } from "./ReadOnlyRemoval.ts";
+import { finishUnregisteredCheckout, receiptRefsRead } from "./UnregisteredCheckout.ts";
 
 export interface RetirementRequest {
   cause: RetirementReceipt["cause"];
@@ -295,6 +297,21 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
               reason: "remaining_fact_changed",
               target: request.worktree,
             });
+          // Qualification already classified these ignored roots as discardable. Git can delete a read-only
+          // tree (a Go module cache is 0555 throughout) only once its directories are writable.
+          yield* Effect.tryPromise({
+            try: () =>
+              makeRootsWritable(
+                bound,
+                journal.filter((e) => e.kind === "ignored").map((e) => e.path),
+              ),
+            catch: (cause) =>
+              new RetirementError({
+                target: request.worktree,
+                reason: "readonly_tree_unwritable",
+                cause,
+              }),
+          });
           // The common-store row and Jones retiring state still exclude every participant here.
           effected = true;
           const removed = yield* restore(
@@ -400,7 +417,21 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
 type InterruptedRequest = Pick<
   RetirementRequest,
   "projectRoot" | "worktree" | "admit" | "finalizeOutputs"
->;
+> & {
+  // Only the owner's Retire on this exact receipt may delete the leftover of a deregistered checkout.
+  readonly finishResidue?: boolean;
+};
+// Records are keyed by the canonical checkout path; a request may name it by another spelling.
+const findInterrupted = Effect.fn("WorkspaceRetirement.findInterrupted")(function* (
+  worktree: string,
+) {
+  const store = yield* Receipts;
+  for (const spelling of yield* Effect.promise(() => pathSpellings(worktree))) {
+    const found = yield* store.interrupted(spelling);
+    if (found) return found;
+  }
+  return null;
+});
 // A restart after begin leaves an intent receipt and both exclusions; settle it before observing.
 // Returns null when no interrupted receipt holds the target or its checkout was left untouched.
 export const finishInterrupted = Effect.fn("WorkspaceRetirement.finishInterrupted")(function* (
@@ -415,11 +446,27 @@ export const finishInterrupted = Effect.fn("WorkspaceRetirement.finishInterrupte
 // Read-only: the interrupted intent receipt for a target whose checkout path is already gone.
 export const interruptedCheckoutAbsent = Effect.fn("WorkspaceRetirement.interruptedCheckoutAbsent")(
   function* (worktree: string) {
-    const stale = yield* (yield* Receipts).interrupted(worktree);
+    const stale = yield* findInterrupted(worktree);
     if (stale?.state !== "intent" || (yield* io(worktree, () => exists(worktree)))) return null;
     return stale;
   },
 );
+// Read-only: the interrupted intent receipt for a directory Git has already deregistered and whose
+// admin directory is gone, so it can no longer be bound. A registered checkout is never reported.
+export const interruptedCheckoutUnregistered = Effect.fn(
+  "WorkspaceRetirement.interruptedCheckoutUnregistered",
+)(function* (worktree: string, projectRoot: string) {
+  const stale = yield* findInterrupted(worktree);
+  if (stale?.state !== "intent") return null;
+  const path = stale.receipt.binding.path;
+  return yield* io(worktree, async () => {
+    if (!(await exists(path)) || (await exists(stale.receipt.binding.git_dir))) return null;
+    const listed = (await git(projectRoot, ["worktree", "list", "--porcelain", "-z"]))
+      .toString()
+      .split("\0");
+    return listed.includes("worktree " + path) ? null : stale;
+  });
+});
 const INTERRUPTED_NEXT_ACTION: Record<string, string> = {
   interrupted_removal_unregistered_checkout_present:
     "Git no longer registers this checkout but its directory remains. Inspect it by hand; do not force or prune.",
@@ -439,13 +486,21 @@ const INTERRUPTED_NEXT_ACTION: Record<string, string> = {
     "Preservation refs were already written. Verify them against this receipt by hand; do not delete them.",
   interrupted_tracked_deletions:
     "Tracked files are missing, so removal may have started. Restore or inspect the checkout by hand; do not force.",
+  interrupted_residue_admin_present:
+    "Git's admin directory for this checkout still exists but the checkout is not listed. Inspect it by hand; do not prune.",
+  interrupted_residue_unrecognized_content:
+    "Content remains that is neither a regenerable ignored root nor a tracked file matching the recorded HEAD. Inspect the named paths by hand and keep what you need; do not force or prune.",
+  interrupted_residue_unclassifiable:
+    "The leftover content could not be fully observed within bounds. Inspect it by hand.",
+  interrupted_residue_delete_failed:
+    "Removing the verified leftover failed. Inspect the directory by hand; do not force or prune.",
 };
 // Proves the interrupted executor is gone, then settles its receipt from what is actually on disk.
 const reconcileInterrupted = Effect.fn("WorkspaceRetirement.reconcileInterrupted")(function* (
   request: InterruptedRequest,
 ) {
   const store = yield* Receipts;
-  const stale = yield* store.interrupted(request.worktree);
+  const stale = yield* findInterrupted(request.worktree);
   if (!stale) return null;
   // Only an executor that never wrote a terminal state is reconciled; partial receipts keep holding.
   if (stale.state !== "intent")
@@ -489,7 +544,7 @@ const reconcileInterrupted = Effect.fn("WorkspaceRetirement.reconcileInterrupted
       }),
   });
   const outcome = yield* io(request.worktree, () =>
-    interruptedReadback(request.projectRoot, stale),
+    interruptedReadback(request.projectRoot, stale, request.finishResidue === true),
   );
   receipt.state = outcome.state;
   receipt.reasons = [outcome.reason];
@@ -503,10 +558,12 @@ const reconcileInterrupted = Effect.fn("WorkspaceRetirement.reconcileInterrupted
           target: request.worktree,
           root: bound.path,
           category: "unavailable_observation",
-          fact: outcome.reason,
+          fact: outcome.fact ?? outcome.reason,
           missingFact: outcome.reason,
           lineage: [],
-          nextAction: INTERRUPTED_NEXT_ACTION[outcome.reason]!,
+          nextAction:
+            INTERRUPTED_NEXT_ACTION[outcome.reason]! +
+            (outcome.paths?.length ? ` Paths: ${outcome.paths.join(", ")}.` : ""),
         },
       ],
     };
@@ -526,7 +583,13 @@ const reconcileInterrupted = Effect.fn("WorkspaceRetirement.reconcileInterrupted
 async function interruptedReadback(
   projectRoot: string,
   stale: InterruptedRetirement,
-): Promise<{ state: "retired" | "not_retired" | "partial"; reason: string }> {
+  finishResidue: boolean,
+): Promise<{
+  state: "retired" | "not_retired" | "partial";
+  reason: string;
+  paths?: readonly string[];
+  fact?: string;
+}> {
   const receipt = stale.receipt,
     path = receipt.binding.path;
   const partial = (reason: string) => ({ state: "partial" as const, reason });
@@ -537,6 +600,8 @@ async function interruptedReadback(
     .split("\0");
   const present = await exists(path),
     registered = listed.includes("worktree " + path);
+  if (present && !registered && finishResidue)
+    return await finishUnregisteredCheckout(projectRoot, stale);
   if (!present || !registered)
     return partial(
       present
@@ -583,18 +648,7 @@ async function removalReadback(
     const present = await exists(receipt.binding.path),
       registered = listed.includes("worktree " + receipt.binding.path);
     if (present || registered) return present && registered ? "present" : "unknown";
-    for (const ref of receipt.preservationRefs)
-      if ((await git(projectRoot, ["rev-parse", ref.ref])).toString().trim() !== ref.head)
-        return "unknown";
-    if (
-      receipt.qualification.branch &&
-      (await git(projectRoot, ["rev-parse", receipt.qualification.branch])).toString().trim() !==
-        receipt.qualification.head
-    )
-      return "unknown";
-    for (const ref of receipt.qualification.containingRefs ?? []) {
-      await git(projectRoot, ["merge-base", "--is-ancestor", receipt.qualification.head!, ref]);
-    }
+    if (!(await receiptRefsRead(projectRoot, receipt))) return "unknown";
     // No restore input is read from the removed admin directory.
     await NodeFSP.stat(receipt.binding.git_common_dir);
     return "retired";

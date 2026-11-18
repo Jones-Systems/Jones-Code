@@ -129,6 +129,9 @@ export async function reopenClosedView(
       if (surface.resourceId !== null) return false;
       panels.openBrowser(ref, null);
       break;
+    case "remote-file":
+      panels.openRemoteFile(ref, surface.href);
+      break;
     case "file":
       if (surface.attachment) panels.openAttachment(ref, surface.attachment);
       else {

@@ -47,10 +47,12 @@ export interface NativeThreadExternalDrop {
   readonly locateExternal: (
     point: { x: number; y: number },
     thread: EnvironmentThreadShell,
+    options?: { fromMember: boolean },
   ) => boolean;
   readonly dropExternal: (
     point: { x: number; y: number },
     thread: EnvironmentThreadShell,
+    options?: { fromMember: boolean },
   ) => Promise<boolean> | null;
   readonly clear: () => void;
 }
@@ -332,7 +334,7 @@ export function WorkstreamNativeSidebar({
     if (assignmentMenuRef) assignmentMenuRef.current = menu;
     if (externalDropRef)
       externalDropRef.current = {
-        locateExternal: (point, thread) => {
+        locateExternal: (point, thread, options) => {
           const source = [
             ...document.querySelectorAll<HTMLElement>("[data-thread-item], [data-personal-thread]"),
           ].find(
@@ -341,7 +343,7 @@ export function WorkstreamNativeSidebar({
               row.dataset.personalThread === personalThreadKey(thread),
           );
           draggedHeight.current = source?.getBoundingClientRect().height ?? 0;
-          const target = locate(point, thread, true);
+          const target = locate(point, thread, !options?.fromMember);
           const previous = externalTarget.current;
           externalTarget.current = target
             ? {
@@ -353,7 +355,7 @@ export function WorkstreamNativeSidebar({
             : null;
           return target !== null;
         },
-        dropExternal: (point, thread) => {
+        dropExternal: (point, thread, options) => {
           const captured = externalTarget.current;
           externalTarget.current = null;
           if (
@@ -364,9 +366,9 @@ export function WorkstreamNativeSidebar({
             clearDrop();
             return Promise.resolve(false);
           }
-          const target = locate(point, thread, true);
+          const target = locate(point, thread, !options?.fromMember);
           clearDrop();
-          return target ? place(thread, target, true) : null;
+          return target ? place(thread, target, !options?.fromMember) : null;
         },
         clear: () => {
           externalTarget.current = null;

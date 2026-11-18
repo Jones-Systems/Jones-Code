@@ -1,17 +1,20 @@
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import { ThreadId, type WorkspaceRetirementOutcome } from "@t3tools/contracts";
 import type * as Projections from "../../orchestration-v2/ProjectionStore.ts";
 import type * as Registry from "../workspaceLifecycle/RegistryCli.ts";
-import { inside } from "./Filesystem.ts";
 import { Receipts, layer, RetirementError, type RetirementReceipt } from "./Receipts.ts";
-import { finishInterrupted, interruptedCheckoutAbsent } from "./RetirementExecutor.ts";
+import { forgetWorktreeOutputs } from "./OutputFinalization.ts";
+import {
+  finishInterrupted,
+  interruptedCheckoutAbsent,
+  interruptedCheckoutUnregistered,
+} from "./RetirementExecutor.ts";
 
 /** Reason shown while an interrupted retirement whose checkout is gone waits for the owner's Retire. */
 const INTERRUPTED_CHECKOUT_ABSENT = "interrupted_retirement_checkout_absent";
-
-const isRetirementError = Schema.is(RetirementError);
+/** The directory remains but Git deregistered it, usually after read-only trees stopped the removal. */
+const INTERRUPTED_CHECKOUT_UNREGISTERED = "interrupted_retirement_checkout_unregistered";
 
 export interface InterruptedRetirementRequest {
   readonly worktree: string;
@@ -51,10 +54,16 @@ export const interruptedRetirement = Effect.fn("WorkspaceRetirement.interruptedR
     registry: Registry.LifecycleRegistry["Service"] | null,
     projections: Projections.ProjectionStoreV2["Service"],
   ) {
-    const stale = yield* interruptedCheckoutAbsent(request.worktree).pipe(
+    const absent = yield* interruptedCheckoutAbsent(request.worktree).pipe(
       Effect.provideService(Receipts, store),
     );
+    const stale =
+      absent ??
+      (yield* interruptedCheckoutUnregistered(request.worktree, request.projectRoot).pipe(
+        Effect.provideService(Receipts, store),
+      ));
     if (!stale) return null;
+    const heldReason = absent ? INTERRUPTED_CHECKOUT_ABSENT : INTERRUPTED_CHECKOUT_UNREGISTERED;
     // The receipt id is the proposal token, so Retire settles only the receipt the owner was shown.
     const owner =
       request.execute &&
@@ -62,9 +71,7 @@ export const interruptedRetirement = Effect.fn("WorkspaceRetirement.interruptedR
       request.ownerCoverage?.fingerprint === stale.receipt.id;
     if (!owner) {
       const reason =
-        request.execute && request.cause === "owner_action"
-          ? "proposal_changed"
-          : INTERRUPTED_CHECKOUT_ABSENT;
+        request.execute && request.cause === "owner_action" ? "proposal_changed" : heldReason;
       const outcome: WorkspaceRetirementOutcome = {
         state: "held",
         reasonCodes: [reason],
@@ -75,10 +82,14 @@ export const interruptedRetirement = Effect.fn("WorkspaceRetirement.interruptedR
           detail(
             request,
             reason,
-            "A retirement was interrupted by a restart, and this checkout's directory is already gone. Its receipt still marks the checkout as retiring.",
+            absent
+              ? "A retirement was interrupted by a restart, and this checkout's directory is already gone. Its receipt still marks the checkout as retiring."
+              : "A retirement was interrupted by a restart. Git no longer lists this checkout, but its directory remains, usually because read-only directories stopped the removal. Its receipt still marks the checkout as retiring.",
             reason === "proposal_changed"
               ? "Propose again, then run Retire on the new proposal."
-              : "Run Retire to finish. Retire deletes nothing: it reads back the branch and refs and records the retirement as retired, or as partial when they do not read back.",
+              : absent
+                ? "Run Retire to finish. Retire deletes nothing: it reads back the branch and refs and records the retirement as retired, or as partial when they do not read back."
+                : "Run Retire to finish. Retire reads back the branch and refs, makes the discardable ignored roots writable, then removes the directory only if it holds nothing else: ignored roots the retirement already covered, tracked files that match the recorded HEAD, and empty directories. Anything else stays held and is named.",
           ),
         ],
         outputObligations: [],
@@ -89,31 +100,8 @@ export const interruptedRetirement = Effect.fn("WorkspaceRetirement.interruptedR
       worktree: request.worktree,
       projectRoot: request.projectRoot,
       admit: request.admit,
-      finalizeOutputs: Effect.fn("WorkspaceRetirement.finalizeInterruptedOutputs")(
-        function* (settled: RetirementReceipt) {
-          if (!registry?.outputs) return;
-          const internal = (yield* registry.outputs(request.worktree)).filter(
-            (r) =>
-              inside(r.path, request.worktree) && r.state === "active" && r.class !== "evidence",
-          );
-          if (!internal.length) return;
-          if (!registry.forgetOutputs)
-            return yield* new RetirementError({
-              target: settled.binding.path,
-              reason: "output_finalization_unavailable",
-            });
-          yield* registry.forgetOutputs(internal);
-        },
-        Effect.mapError((cause) =>
-          isRetirementError(cause)
-            ? cause
-            : new RetirementError({
-                target: request.worktree,
-                reason: "observation_failed",
-                cause,
-              }),
-        ),
-      ),
+      finishResidue: true,
+      finalizeOutputs: (settled) => forgetWorktreeOutputs(registry, [request.worktree], settled),
     }).pipe(Effect.provideService(Receipts, store));
     // The path reappeared and read back untouched; its receipt is released, so a fresh proposal can run.
     const result = receipt ?? {
@@ -137,8 +125,10 @@ export const interruptedRetirement = Effect.fn("WorkspaceRetirement.interruptedR
               reason,
               reason === "interrupted_after_removal"
                 ? "The checkout was removed before the restart. Its branch and refs read back, so the interrupted retirement is recorded as retired."
-                : reason,
-              reason === "interrupted_after_removal"
+                : reason === "interrupted_residue_removed"
+                  ? "The leftover regenerable content and tracked files matching the recorded HEAD were removed. Its branch and refs read back, so the interrupted retirement is recorded as retired."
+                  : reason,
+              reason === "interrupted_after_removal" || reason === "interrupted_residue_removed"
                 ? "No further action is needed."
                 : "Propose again before any further retirement.",
             ),

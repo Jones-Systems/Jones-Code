@@ -18,7 +18,11 @@ export function personalThreadContextRefs(thread: EnvironmentThreadShell) {
   });
 }
 
-export function liftPersonalThreadCard(source: HTMLElement, origin: { x: number; y: number }) {
+export function liftPersonalThreadCard(
+  source: HTMLElement,
+  origin: { x: number; y: number },
+  { followPointer = false } = {},
+) {
   const rect = source.getBoundingClientRect();
   const view = document.createElement("div");
   view.dataset.personalThreadDrag = "";
@@ -33,15 +37,21 @@ export function liftPersonalThreadCard(source: HTMLElement, origin: { x: number;
   for (const node of [card, ...card.querySelectorAll<HTMLElement>("*")]) {
     node.removeAttribute("id");
     node.removeAttribute("data-personal-thread");
+    node.removeAttribute("data-thread-item");
+    node.removeAttribute("data-sidebar-row");
     node.style.setProperty("pointer-events", "none", "important");
   }
   view.append(card);
   document.body.append(view);
   const opacity = source.style.opacity;
-  source.style.opacity = "0.3";
-  source.dataset.personalThreadDragSource = "";
+  if (!followPointer) {
+    source.style.opacity = "0.3";
+    source.dataset.personalThreadDragSource = "";
+  }
   const move = (point: { x: number; y: number }) => {
-    view.style.transform = `translate3d(${rect.left}px, ${rect.top + point.y - origin.y}px, 0)`;
+    const x = followPointer ? point.x + 12 : rect.left;
+    const y = followPointer ? point.y + 12 : rect.top + point.y - origin.y;
+    view.style.transform = `translate3d(${x}px, ${y}px, 0)`;
   };
   move(origin);
   return {
@@ -51,8 +61,10 @@ export function liftPersonalThreadCard(source: HTMLElement, origin: { x: number;
     },
     dispose: () => {
       view.remove();
-      source.style.opacity = opacity;
-      delete source.dataset.personalThreadDragSource;
+      if (!followPointer) {
+        source.style.opacity = opacity;
+        delete source.dataset.personalThreadDragSource;
+      }
     },
   };
 }

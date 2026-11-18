@@ -25,7 +25,11 @@ export function buildRuntimeInstructions(runtime: {
     modelName && modelName !== model ? `${modelName} (model slug: ${model})` : model;
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
-  const runtimeInfo = `<runtime_info>In case you're asked: you are running ${runtime.appIdentity === undefined ? "" : `in ${toSingleLine(runtime.appIdentity.productName)} `}through the ${harness} harness${modelInfo}${effortInfo}. ${buildAppIdentityInstructions(runtime.appIdentity)} No need to mention this otherwise. You can embed images, video, and audio using Markdown image syntax with absolute file paths. Link every other file you cite or produce by its absolute path, as in [http.ts:42](/abs/path/http.ts:42), so the user can open it in the app files viewer.</runtime_info>`;
+  const remoteFileLinks =
+    runtime.appIdentity?.productId === "jones-code"
+      ? " For a file on another Jones Code computer, use Markdown `[name](t3-file://v1/<encoded environment ID>/<encoded absolute path>)`, percent-encoding each segment separately. Use the exact environment ID of the computer holding the file."
+      : "";
+  const runtimeInfo = `<runtime_info>In case you're asked: you are running ${runtime.appIdentity === undefined ? "" : `in ${toSingleLine(runtime.appIdentity.productName)} `}through the ${harness} harness${modelInfo}${effortInfo}. ${buildAppIdentityInstructions(runtime.appIdentity)} No need to mention this otherwise. You can embed images, video, and audio using Markdown image syntax with absolute file paths. Link every other file you cite or produce by its absolute path, as in [http.ts:42](/abs/path/http.ts:42), so the user can open it in the app files viewer.${remoteFileLinks}</runtime_info>`;
   return runtime.pullRequestLinking === false
     ? runtimeInfo
     : `${runtimeInfo}\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`;
