@@ -2603,6 +2603,7 @@
     "packages/source-control-testing/vite.config.ts": "hook",
     "packages/ssh/src/jones/hostRuntime.test.ts": "jones-owned",
     "packages/ssh/src/jones/hostRuntime.ts": "jones-owned",
+    "packages/ssh/src/launcherTestHarness.ts": "jones-tests-in-upstream",
     "packages/ssh/src/runnerProcess.test.ts": "upstream-deleted",
     "packages/ssh/src/tunnel.test.ts": "jones-tests-in-upstream",
     "packages/ssh/vite.config.ts": "hook",
