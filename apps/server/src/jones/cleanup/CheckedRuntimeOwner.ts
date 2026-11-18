@@ -19,7 +19,11 @@ const isCheckedRuntimeOwnerError = Schema.is(CheckedRuntimeOwnerError);
 
 const heldBrand: unique symbol = Symbol("held-server-owner");
 export type HeldRuntimeOwnerToken = { readonly [heldBrand]: true };
-export type CheckedDatabaseOwnerToken = Incarnation.CheckedDatabaseOwnerToken;
+const localDatabaseBrand: unique symbol = Symbol("local-database-owner");
+type LocalDatabaseOwnerToken = { readonly [localDatabaseBrand]: true };
+export type CheckedDatabaseOwnerToken =
+  | LocalDatabaseOwnerToken
+  | Incarnation.CheckedDatabaseOwnerToken;
 type Identity = Pick<NodeFS.BigIntStats, "dev" | "ino">;
 type DirectoryBinding = { readonly path: string; readonly identity: Identity };
 interface HeldState {
@@ -33,6 +37,15 @@ interface HeldState {
   active: boolean;
 }
 const heldOwners = new WeakMap<object, HeldState>();
+type LocalDatabaseBinding = {
+  readonly owner: HeldRuntimeOwnerToken;
+  readonly scope: Scope.Scope;
+  readonly path: string;
+  readonly identity: Pick<NodeFS.BigIntStats, "dev" | "ino" | "birthtimeNs">;
+  active: boolean;
+};
+const localDatabaseOwners = new WeakMap<object, LocalDatabaseBinding>();
+const localDatabaseClients = new WeakMap<SqlClient.SqlClient, LocalDatabaseOwnerToken>();
 const matches = (left: Identity, right: Identity) =>
   left.dev === right.dev && left.ino === right.ino;
 const objectKey = (value: unknown): object | undefined =>
@@ -152,7 +165,90 @@ export function inspectHeldDatabaseOwner(owner: HeldRuntimeOwnerToken) {
   });
 }
 
-/** Compatibility facade: only a client already certified at its open boundary can bind. */
+const databaseIdentity = (path: string) => {
+  const entry = NodeFS.lstatSync(path, { bigint: true });
+  if (!entry.isFile() || entry.nlink !== 1n || NodeFS.realpathSync(path) !== path)
+    return refuse("unsupported_database_alias");
+  return entry;
+};
+
+const bindingError = (cause: unknown) =>
+  isCheckedRuntimeOwnerError(cause)
+    ? cause
+    : new CheckedRuntimeOwnerError({ reason: "database_owner_binding_failed", cause });
+
+const currentLocalDatabase = (binding: LocalDatabaseBinding) => {
+  try {
+    currentOwner(binding.owner);
+    if (!binding.active) return refuse("database_binding_invalidated");
+    if (binding.scope.state._tag === "Closed") return refuse("database_open_scope_closed");
+    const identity = databaseIdentity(binding.path);
+    if (
+      !matches(identity, binding.identity) ||
+      identity.birthtimeNs !== binding.identity.birthtimeNs
+    )
+      return refuse("database_identity_changed");
+  } catch (cause) {
+    binding.active = false;
+    throw bindingError(cause);
+  }
+};
+
+const checkLocalDatabase = Effect.fn("CheckedRuntimeOwner.checkLocalDatabase")(function* (
+  binding: LocalDatabaseBinding,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const checkIdentity = Effect.try({
+    try: () => currentLocalDatabase(binding),
+    catch: bindingError,
+  });
+  yield* checkIdentity;
+  const rows = yield* sql<{ name: string; file: string }>`PRAGMA database_list`.pipe(
+    Effect.mapError(bindingError),
+  );
+  if (rows.find((row) => row.name === "main")?.file !== binding.path)
+    return yield* new CheckedRuntimeOwnerError({
+      reason: "application_sql_client_binding_mismatch",
+    });
+  yield* checkIdentity;
+});
+
+const reportUnavailableLocalOwner = ({ reason }: CheckedRuntimeOwnerError) =>
+  Effect.logWarning("Runtime database owner proof unavailable.", { reason });
+
+/** Capture before the managed worker opens. Only server persistence invokes the returned binder. */
+export const prepareLocalDatabaseOpen = Effect.fn("CheckedRuntimeOwner.prepareLocalDatabaseOpen")(
+  function* (owner: HeldRuntimeOwnerToken, dbPath: string) {
+    const scope = yield* Effect.scope;
+    const binding: LocalDatabaseBinding = yield* Effect.try({
+      try: () => {
+        const coordinates = inspectHeldDatabaseOwner(owner);
+        if (coordinates.dbPath !== dbPath) return refuse("configured_owner_binding_mismatch");
+        // SQLite creates this file on first open. Create it exclusively so we can pin
+        // its identity before opening the actual worker, without replacing an existing file.
+        try {
+          NodeFS.closeSync(NodeFS.openSync(dbPath, "wx", 0o600));
+        } catch (cause) {
+          if (!(cause instanceof Error && "code" in cause && cause.code === "EEXIST")) throw cause;
+        }
+        const identity = databaseIdentity(dbPath);
+        return { owner, scope, path: dbPath, identity, active: true };
+      },
+      catch: bindingError,
+    });
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* checkLocalDatabase(binding);
+      const token: LocalDatabaseOwnerToken = Object.freeze({ [localDatabaseBrand]: true });
+      localDatabaseOwners.set(token, binding);
+      localDatabaseClients.set(sql, token);
+    }).pipe(Effect.catch(reportUnavailableLocalOwner));
+  },
+  // Retain startup compatibility for unsupported aliases. Runtime use still requires proof.
+  Effect.catch((error) => reportUnavailableLocalOwner(error).pipe(Effect.as(Effect.void))),
+);
+
+/** Only clients certified by a server persistence open can bind. */
 export const bindCheckedDatabaseOwner = Effect.fn("CheckedRuntimeOwner.bindDatabase")(function* (
   owner: HeldRuntimeOwnerToken,
   paths: {
@@ -164,7 +260,7 @@ export const bindCheckedDatabaseOwner = Effect.fn("CheckedRuntimeOwner.bindDatab
   const sql = yield* SqlClient.SqlClient;
   if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
     return yield* new CheckedRuntimeOwnerError({ reason: "owner_binding_inside_sql_transaction" });
-  const token = yield* Effect.try({
+  yield* Effect.try({
     try: () => {
       const state = inspectHeldDatabaseOwner(owner);
       if (
@@ -173,12 +269,22 @@ export const bindCheckedDatabaseOwner = Effect.fn("CheckedRuntimeOwner.bindDatab
         paths.serverRuntimeStatePath !== NodePath.join(state.stateDir, "server-runtime.json")
       )
         return refuse("configured_owner_binding_mismatch");
-      return Incarnation.checkedForSql(owner, sql);
     },
-    catch: (cause) =>
-      isCheckedRuntimeOwnerError(cause)
-        ? cause
-        : new CheckedRuntimeOwnerError({ reason: "database_owner_binding_failed", cause }),
+    catch: bindingError,
+  });
+  const localToken = localDatabaseClients.get(sql);
+  if (localToken !== undefined) {
+    const binding = localDatabaseOwners.get(localToken);
+    if (binding?.owner !== owner)
+      return yield* new CheckedRuntimeOwnerError({
+        reason: "application_sql_client_binding_mismatch",
+      });
+    yield* checkLocalDatabase(binding);
+    return localToken;
+  }
+  const token = yield* Effect.try({
+    try: () => Incarnation.checkedForSql(owner, sql),
+    catch: bindingError,
   });
   yield* Incarnation.validateCheckedOwner(token).pipe(
     Effect.mapError(
@@ -190,7 +296,10 @@ export const bindCheckedDatabaseOwner = Effect.fn("CheckedRuntimeOwner.bindDatab
 
 /** Must run outside SQL at admission and immediately before the guarded effect. */
 export function assertCheckedDatabaseOwner(owner: unknown): void {
-  Incarnation.assertBoundDatabaseOwner(owner);
+  const key = objectKey(owner);
+  const local = key === undefined ? undefined : localDatabaseOwners.get(key);
+  if (local !== undefined) currentLocalDatabase(local);
+  else Incarnation.assertBoundDatabaseOwner(owner);
 }
 
 // No default: raw layers and serialized/PID/runtime-record claims provide none.

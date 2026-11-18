@@ -98,7 +98,10 @@ const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>, maintenance
 
 const layerSetup = makeLayerSetup(runMigrations());
 
-const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<never, E, R>) =>
+const makeLayerFromPath = <E, R>(
+  makeSetup: (dbPath: string) => Layer.Layer<never, E, R>,
+  managed = false,
+) =>
   Effect.fn("makeSqlitePersistenceLive")(function* (
     dbPath: string,
     readerPool?: SqliteReaderPoolOptions,
@@ -129,16 +132,22 @@ const makeLayerFromPath = <E, R>(makeSetup: (dbPath: string) => Layer.Layer<neve
           ).pipe(Effect.provideService(Incarnation.OpenInfrastructure, infrastructure.value));
         })
       : undefined;
-    const setup =
-      open === undefined
-        ? makeSetup(dbPath)
-        : Layer.effectDiscard(Incarnation.bindOpen(open)).pipe(
-            // Layer composition orders actual client certification before setup, then
-            // samples that same retained incarnation again after both migration sets.
-            (before) => Layer.provideMerge(makeSetup(dbPath), before),
-            (migrated) =>
-              Layer.provideMerge(Layer.effectDiscard(Incarnation.revalidateOpen(open)), migrated),
-          );
+    let setup: Layer.Layer<never, AdmissionError | E, SqlClient.SqlClient | R> = makeSetup(dbPath);
+    if (open !== undefined) {
+      // Certify the actual client before setup, then revalidate after both migration sets.
+      setup = Layer.effectDiscard(Incarnation.bindOpen(open)).pipe(
+        (before) => Layer.provideMerge(makeSetup(dbPath), before),
+        (migrated) =>
+          Layer.provideMerge(Layer.effectDiscard(Incarnation.revalidateOpen(open)), migrated),
+      );
+    } else if (managed) {
+      // Ordinary servers have a held runtime owner independently of shared enrollment.
+      const owner = yield* Effect.serviceOption(CheckedOwner.HeldRuntimeOwner);
+      if (Option.isSome(owner)) {
+        const bind = yield* CheckedOwner.prepareLocalDatabaseOpen(owner.value.token, dbPath);
+        setup = Layer.provideMerge(setup, Layer.effectDiscard(bind));
+      }
+    }
 
     return Layer.provideMerge(
       setup,
@@ -234,7 +243,7 @@ const makeLayerConfig = <E, R>(
     }),
   );
 
-export const layerConfig = makeLayerConfig(layerFromPath);
+export const layerConfig = makeLayerConfig(makeLayerFromPath(() => layerSetup, true));
 
 /** For CLI commands: pending migrations run only while no server owns the T3 home. */
 export const layerCliConfig = makeLayerConfig(

@@ -190,7 +190,7 @@ const ownT3Home = Effect.fn(function* () {
   const { serverRuntimeStatePath } = yield* ServerConfig.ServerConfig;
   // An empty home, so no boot service installed on this machine is read.
   const home = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped();
-  yield* ServerOwnership.acquireServerOwnership(serverRuntimeStatePath).pipe(
+  return yield* ServerOwnership.acquireServerOwnership(serverRuntimeStatePath).pipe(
     Effect.provide(ProcessRunner.layer),
     Effect.provideService(HostProcess.HomeDirectory, home),
     Effect.provideService(HostProcess.Environment, {}),
@@ -318,6 +318,38 @@ it.effect.each([2, 3] as const)(
   },
 );
 
+it.effect("a server without enrollment binds only its managed database client", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { heldRuntimeOwner } = yield* ownT3Home();
+      const { dbPath } = yield* ServerConfig.ServerConfig;
+      const localOwner = Layer.succeed(CheckedOwner.HeldRuntimeOwner, {
+        token: heldRuntimeOwner,
+      });
+      const token = yield* Effect.gen(function* () {
+        const token = yield* CheckedOwner.bindHeldDatabaseOwner(heldRuntimeOwner);
+        CheckedOwner.assertCheckedDatabaseOwner(token);
+        const rawBind = yield* CheckedOwner.bindHeldDatabaseOwner(heldRuntimeOwner).pipe(
+          Effect.provide(NodeSqliteClient.layer({ filename: dbPath })),
+          Effect.result,
+        );
+        assert.strictEqual(rawBind._tag, "Failure");
+        if (rawBind._tag === "Failure")
+          assert.strictEqual(rawBind.failure.reason, "application_sql_client_binding_mismatch");
+        return token;
+      }).pipe(Effect.provide(SqlitePersistence.layerConfig.pipe(Layer.provide(localOwner))));
+      assert.throws(
+        () => CheckedOwner.assertCheckedDatabaseOwner(token),
+        CheckedOwner.CheckedRuntimeOwnerError,
+      );
+    }),
+  ).pipe(
+    Effect.provide(
+      layerT3Home.pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
+  ),
+);
+
 // Jones integration seam: the actual worker-backed persistence layer consumes
 // root's infrastructure port before setup and retains its checked open binding.
 it.effect("participating persistence certifies the actual worker before and after migrations", () =>
@@ -328,7 +360,12 @@ it.effect("participating persistence certifies the actual worker before and afte
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const token = yield* CheckedOwner.bindHeldDatabaseOwner(f.owner);
-        assert.equal(Incarnation.bindingForSql(token, sql).database.inode, String(before.ino));
+        const sharedToken = Incarnation.checkedForSql(f.owner, sql);
+        assert.strictEqual(token, sharedToken);
+        assert.equal(
+          Incarnation.bindingForSql(sharedToken, sql).database.inode,
+          String(before.ino),
+        );
         CheckedOwner.assertCheckedDatabaseOwner(token);
         const migrations = yield* sql`SELECT migration_id FROM jones_sql_migrations`;
         assert.isAbove(migrations.length, 0);
