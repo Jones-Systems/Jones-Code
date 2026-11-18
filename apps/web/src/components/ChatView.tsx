@@ -3986,36 +3986,38 @@ export default function ChatView(props: ChatViewProps) {
                                       : undefined
                                   }
                                   availableEnvironments={logicalProjectEnvironments}
-                                  {...(isServerThread
-                                    ? {}
-                                    : {
-                                        trailing: (
-                                          <>
-                                            {draftId &&
-                                            isLocalDraftThread &&
-                                            !draftThread?.promotedTo ? (
-                                              <NewThreadWorkstreamPicker
-                                                environmentId={environmentId}
-                                                value={newThreadWorkstreamId}
-                                                onChange={(id) =>
-                                                  useComposerDraftStore
-                                                    .getState()
-                                                    .setNewThreadWorkstream(draftId, id)
-                                                }
-                                                disabled={isSendBusy || isEnvironmentChanging}
-                                              />
-                                            ) : null}
-                                            <ComposerContextPermissions
-                                              environmentId={environmentId}
-                                              runtimeMode={runtimeMode}
-                                              supportedRuntimeModes={
-                                                activeProviderStatus?.supportedRuntimeModes
-                                              }
-                                              onRuntimeModeChange={handleRuntimeModeChangeStable}
-                                            />
-                                          </>
-                                        ),
-                                      })}
+                                  renderWorkspaceTrailing={
+                                    !isServerThread &&
+                                    draftId &&
+                                    isLocalDraftThread &&
+                                    !draftThread?.promotedTo
+                                      ? (hasWorkspaceControls) => (
+                                          <NewThreadWorkstreamPicker
+                                            environmentId={environmentId}
+                                            value={newThreadWorkstreamId}
+                                            onChange={(id) =>
+                                              useComposerDraftStore
+                                                .getState()
+                                                .setNewThreadWorkstream(draftId, id)
+                                            }
+                                            disabled={isSendBusy || isEnvironmentChanging}
+                                            showContextDivider={hasWorkspaceControls}
+                                          />
+                                        )
+                                      : undefined
+                                  }
+                                  trailing={
+                                    !isServerThread ? (
+                                      <ComposerContextPermissions
+                                        environmentId={environmentId}
+                                        runtimeMode={runtimeMode}
+                                        supportedRuntimeModes={
+                                          activeProviderStatus?.supportedRuntimeModes
+                                        }
+                                        onRuntimeModeChange={handleRuntimeModeChangeStable}
+                                      />
+                                    ) : null
+                                  }
                                 />
                               </div>
                             )}
