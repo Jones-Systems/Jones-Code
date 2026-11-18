@@ -23,6 +23,7 @@ const QUALIFIED_PRODUCER_SOURCES = new Set([
   "47cad979dcb769e511581e6de9e1aa5be99fd461",
   "4608edef6a51733b275a6ccfb5d7bb5f028c78ed",
   "db27743d342b3b25c1e64bb5d2f85ca084d26a62",
+  "24a8fddb1adcc0eac2785394218253621bc26727",
 ]);
 const digest = (value: string | Buffer) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex");
