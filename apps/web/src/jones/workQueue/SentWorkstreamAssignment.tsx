@@ -122,10 +122,7 @@ function SentWorkstreamAssignment({
 }) {
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
-  const choose = async (id: string) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setBusy(true);
+  const assign = async (id: string) => {
     try {
       const action = startAssignment(destination, source, assignment, id);
       if (!action) {
@@ -158,10 +155,17 @@ function SentWorkstreamAssignment({
         type: "error",
         title: "Couldn’t confirm the assignment. Check the destination thread.",
       });
-    } finally {
+    }
+  };
+
+  const choose = (id: string) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    return assign(id).finally(() => {
       inFlight.current = false;
       setBusy(false);
-    }
+    });
   };
 
   const disabledReason =

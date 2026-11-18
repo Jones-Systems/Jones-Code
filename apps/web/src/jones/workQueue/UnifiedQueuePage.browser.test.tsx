@@ -19,6 +19,7 @@ import {
 } from "@t3tools/contracts/jones/workstreamsPersonal";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
+import { toastManager } from "../../components/ui/toast";
 import { appAtomRegistry, AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import {
   bindPersonalWorkstreams,
@@ -407,6 +408,34 @@ describe("Prompts environment composition", () => {
       .element(root.getByText("This prompt is assigned and has left Unassigned."))
       .toBeVisible();
     expect(root.getByText("Manual winner", { exact: true }).elements()).toHaveLength(1);
+    expect(workstreams.assign).toHaveBeenCalledOnce();
+  });
+
+  it("allows another explicit assignment after the controller throws before writing", async () => {
+    await using _fixture = await setupFixture1();
+    using workstreams = sentAssignmentFixture();
+    using toast = vi.spyOn(toastManager, "add");
+    using assign = vi.spyOn(personalWorkstreamsController, "assign").mockImplementationOnce(() => {
+      throw new Error("Assignment could not start");
+    });
+    await renderSent();
+    await root.getByRole("button", { name: "Unassigned", exact: true }).click();
+    await root.getByRole("button", { name: /unassigned-thread/ }).click();
+    const trigger = root.getByRole("button", { name: "Assign Workstream" });
+    await trigger.click();
+    await page.getByRole("menuitem", { name: "Local Workstream" }).click();
+    expect(assign).toHaveBeenCalledOnce();
+    expect(workstreams.assign).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith({
+      type: "error",
+      title: "Couldn’t confirm the assignment. Check the destination thread.",
+    });
+    await expect.element(trigger).not.toHaveAttribute("aria-disabled");
+    await trigger.click();
+    await page.getByRole("menuitem", { name: "Local Workstream" }).click();
+    await expect
+      .element(root.getByText("This prompt is assigned and has left Unassigned."))
+      .toBeVisible();
     expect(workstreams.assign).toHaveBeenCalledOnce();
   });
 
