@@ -269,6 +269,19 @@ jobs:
         if: env.JONES_SP_SCOPE == 'full'
         run: vp run --filter @t3tools/desktop ensure:electron
 
+      - name: Build the macOS native pool census
+        if: matrix.os == 'macos' && (env.JONES_SP_SCOPE == 'source-evidence' || env.JONES_SP_SCOPE == 'full')
+        run: |
+          set -euo pipefail
+          census="$TMPDIR/jones-macos-native-pool-census"
+          test ! -e "$census"
+          test ! -L "$census"
+          /usr/bin/xcrun --sdk macosx clang -O2 -Wall -Wextra -Werror \
+            scripts/jones/serverParallelism/macos-native-pool-census.c -o "$census"
+          shasum -a 256 scripts/jones/serverParallelism/macos-native-pool-census.c "$census" \
+            > "$JONES_SP_REPORTS/macos-native-pool-census.sha256"
+          printf '%s\n' JONES_SP_MAC_NATIVE_POOL_CENSUS=1 >> "$GITHUB_ENV"
+
       - name: Focused qualification regressions and control/checkpoint invariants
         if: env.JONES_SP_SCOPE != 'observer-control'
         run: >-

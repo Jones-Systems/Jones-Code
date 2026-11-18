@@ -129,7 +129,7 @@ export function parseLinuxThreadScheduling(
 }
 export interface NativePoolObservation {
   readonly pid: number;
-  readonly method: "linux-proc-task-comm" | "macos-sample";
+  readonly method: "linux-proc-task-comm" | "macos-sample" | "macos-proc-info";
   readonly status: "complete" | "unavailable";
   readonly threads: readonly {
     readonly tid: string;

@@ -47,6 +47,7 @@ import { ProcessSlot, withComputeChildOperations } from "../serverCompute/proces
 import type { ComputeChild } from "../serverCompute/processSlot.ts";
 import { isComputeFailure } from "../serverCompute/failure.ts";
 import { evaluateNativeThreadBudget } from "./nativeThreadBudget.ts";
+import { makeMacNativePoolCensus } from "./macosNativePoolCensus.ts";
 import type { WorkerCommand } from "../serverCompute/workerCommand.ts";
 import type { LogicalFinderHandle } from "./computeContract.ts";
 import type { ComputeObservation } from "./observations.ts";
@@ -86,6 +87,7 @@ export interface NativeQualificationOptions {
     readonly sink: DiagnosticSink;
   };
   readonly sample?: typeof sampleProcesses;
+  readonly macNativePoolCensus?: string;
   readonly signal?: AbortSignal;
   readonly onShutdown?: () => void;
   readonly onProductiveOverlap?: (pids: readonly number[]) => void;
@@ -560,10 +562,13 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
     resourceTail = work;
     return work;
   };
+  const macCensus = options.macNativePoolCensus
+    ? makeMacNativePoolCensus(options.macNativePoolCensus)
+    : undefined;
   const generationEvidence = new NativeGenerationEvidence({
     captured,
     now: () => performance.now(),
-    pools: sampleNativePools,
+    pools: macCensus?.sample ?? sampleNativePools,
     resources: sampleResources,
     method:
       HostProcess.Platform.defaultValue() === "linux" ? "linux-proc-task-comm" : "macos-sample",
@@ -1074,11 +1079,13 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
         ? "observed"
         : "unknown",
     };
+    const macNativePoolComparison = macCensus?.comparison() ?? null;
     const threadBudget = evaluateNativeThreadBudget({
       configuredN: count,
       platform: HostProcess.Platform.defaultValue(),
       parentPid: process.pid,
       macPerformanceCores,
+      macNativePoolCensusVerified: macNativePoolComparison?.verified === true,
       generations,
       samples: resources,
       lifecycleBounds,
@@ -1146,6 +1153,7 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
       executions,
       resourceCoverage,
       populationSampling,
+      macNativePoolComparison,
       threadBudget,
       serializedNegativeControl,
       steadyRotations,

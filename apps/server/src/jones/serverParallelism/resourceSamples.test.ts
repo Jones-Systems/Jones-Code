@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeOS from "node:os";
 import * as NodeProcess from "node:process";
+import { makeMacNativePoolCensus, parseMacNativePoolCensus } from "./macosNativePoolCensus.ts";
 import {
   classifyCpuEnvelope,
   diagnosticTrace,
@@ -15,7 +16,83 @@ import {
   sampleCpuStats,
   processResourceSample,
   resourcePredicates,
+  type NativePoolObservation,
 } from "./resourceSamples.ts";
+
+const censusNames = ["fff-bg-0", "fff-bg-1", "fff-search-0", ""];
+function census(pid: number, start = 42) {
+  const rows = censusNames.map(
+    (name, index) => `${index + 1}\t${Buffer.from(name).toString("hex")}`,
+  );
+  return `${pid}\t${start}\t123456\n${rows.join("\n")}\n`;
+}
+function referencePool(pid: number): NativePoolObservation {
+  return {
+    pid,
+    method: "macos-sample",
+    status: "complete",
+    threads: censusNames.map((name, index) => ({
+      tid: String(index + 10),
+      name: name || "runtime",
+    })),
+    raw: "",
+  };
+}
+
+it("fails closed on a misbound, duplicate, malformed or incomplete macOS census", () => {
+  expect(parseMacNativePoolCensus(123, census(123)).observation).toMatchObject({
+    status: "complete",
+    threads: censusNames.map((name, index) => ({
+      tid: String(index + 1),
+      name: name || "<unnamed>",
+    })),
+  });
+  for (const raw of [
+    census(124),
+    census(123).replace("\n2\t", "\n1\t"),
+    census(123) + "5\tff\n",
+    census(123).slice(0, -1),
+    "123\t42\t123456\n",
+  ]) {
+    expect(parseMacNativePoolCensus(123, raw)).toMatchObject({
+      identity: null,
+      observation: { status: "unavailable", threads: [] },
+    });
+  }
+});
+
+it("keeps the reference read and adopts the census after a stable comparison", async () => {
+  const reference = vi.fn(async (pid: number) => referencePool(pid));
+  const read = vi.fn(async (pid: number) => census(pid));
+  const sampler = makeMacNativePoolCensus("/fixture", reference, read);
+  expect(sampler.comparison()).toBeNull();
+  expect((await sampler.sample(123)).method).toBe("macos-sample");
+  expect((await sampler.sample(124)).method).toBe("macos-proc-info");
+  expect(sampler.comparison()).toMatchObject({ pid: 123, verified: true, threads: 4 });
+  expect(reference).toHaveBeenCalledTimes(1);
+  expect(read).toHaveBeenCalledTimes(3);
+});
+
+it("uses the reference when process identity changes or a later census fails", async () => {
+  const reference = vi.fn(async (pid: number) => referencePool(pid));
+  const unstable = vi
+    .fn(async (pid: number) => census(pid, 43))
+    .mockImplementationOnce(async (pid) => census(pid, 42));
+  const sampler = makeMacNativePoolCensus("/fixture", reference, unstable);
+  expect((await sampler.sample(123)).method).toBe("macos-sample");
+  expect((await sampler.sample(124)).method).toBe("macos-sample");
+  expect(sampler.comparison()?.verified).toBe(false);
+  expect(unstable).toHaveBeenCalledTimes(2);
+
+  const recovering = makeMacNativePoolCensus("/fixture", reference, async (pid) => {
+    if (pid === 124) throw new Error("unavailable");
+    return census(pid);
+  });
+  await recovering.sample(123);
+  expect((await recovering.sample(124)).method).toBe("macos-sample");
+  expect(recovering.comparison()?.verified).toBe(true);
+});
+
 const row = (pid: number, rssBytes = 64 * 1024 * 1024) => ({ pid, rssBytes, cpuMs: 1 });
 it("retains missing PID evidence after a prior complete overlap sample", () => {
   const complete = processResourceSample([1, 2, 3], [row(1), row(2), row(3)]);

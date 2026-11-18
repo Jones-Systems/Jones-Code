@@ -99,6 +99,24 @@ it("uses observed macOS P with provenance and native names", () => {
   expect(result.predicate).toBe(true);
 });
 
+it("requires a verified macOS reference comparison before accepting census evidence", () => {
+  const fixtureInput = fixture([8, 8], 4);
+  const input: Input = {
+    ...fixtureInput,
+    generations: fixtureInput.generations.map((generation) => ({
+      ...generation,
+      nativePools: generation.nativePools.map((observation) => ({
+        ...observation,
+        method: "macos-proc-info",
+      })),
+    })),
+  };
+  expect(evaluateNativeThreadBudget(input).predicate).toBe("unknown");
+  const result = evaluateNativeThreadBudget({ ...input, macNativePoolCensusVerified: true });
+  expect(result.ceiling).toBe(144);
+  expect(result.predicate).toBe(true);
+});
+
 it("keeps failed macOS P collection and unproved fallback unknown", () => {
   const input = fixture([8, 8], 4);
   const result = evaluateNativeThreadBudget({

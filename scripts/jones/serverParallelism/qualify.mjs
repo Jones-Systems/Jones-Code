@@ -42,6 +42,15 @@ const command = {
     manifest.runtimeForm === "electron",
   ),
 };
+let macNativePoolCensus;
+if (process.env.JONES_SP_MAC_NATIVE_POOL_CENSUS === "1") {
+  if (process.platform !== "darwin") throw new Error("The native pool census requires macOS");
+  const census = NodePath.join(NodeOS.tmpdir(), "jones-macos-native-pool-census");
+  const stat = await NodeFSP.lstat(census);
+  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0)
+    throw new Error("The native pool census must be a runner-owned regular file");
+  macNativePoolCensus = census;
+}
 const scratch = await NodeFSP.realpath(
   await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-qualification-")),
 );
@@ -72,6 +81,7 @@ try {
   const report = await runNativeQualification({
     count,
     command,
+    ...(macNativePoolCensus ? { macNativePoolCensus } : {}),
     directory: NodePath.join(scratch, "fixture"),
     signal: controller.signal,
     onShutdown: () => {
