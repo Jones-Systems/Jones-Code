@@ -1,3 +1,61 @@
+// Timer callbacks bracket any contiguous period during which the loop could
+// not run callbacks. A long interval is only an upper bound, not causal proof.
+export function snapshotPhaseLoopBounds(measurement) {
+  return measurement.samples.map((sample, index) => {
+    const trace = sample.phaseLoopTrace;
+    const ticks = trace?.ticksMs;
+    const validTicks =
+      trace?.overflow === false &&
+      Array.isArray(ticks) &&
+      ticks.length >= 2 &&
+      ticks.length <= 4_096 &&
+      ticks.every(
+        (tick, tickIndex) =>
+          Number.isFinite(tick) && tick >= 0 && (tickIndex === 0 || tick > ticks[tickIndex - 1]),
+      );
+    const coveredPhase = (phase, elapsedMs) => {
+      const { startMs, endMs } = phase ?? {};
+      if (
+        !validTicks ||
+        !Number.isFinite(startMs) ||
+        !Number.isFinite(endMs) ||
+        startMs > endMs ||
+        endMs - startMs !== elapsedMs ||
+        ticks[0] > startMs ||
+        ticks.at(-1) < endMs
+      )
+        return null;
+      return phase;
+    };
+    const bound = (phase) => {
+      if (!phase) return null;
+      const { startMs, endMs } = phase;
+      let maxOverlapMs = 0;
+      for (let tickIndex = 1; tickIndex < ticks.length; tickIndex++) {
+        const overlap = Math.min(endMs, ticks[tickIndex]) - Math.max(startMs, ticks[tickIndex - 1]);
+        maxOverlapMs = Math.max(maxOverlapMs, overlap);
+      }
+      return maxOverlapMs;
+    };
+    const capture = coveredPhase(trace?.capture, sample.captureMs);
+    const decode = coveredPhase(trace?.decode, sample.decodeMs);
+    const schemaProjection = coveredPhase(trace?.schemaProjection, sample.schemaProjectionMs);
+    // A timer gap can straddle the transaction-to-decode handoff even when
+    // neither phase individually overlaps enough of the gap to explain it.
+    const captureThroughDecode =
+      capture && decode && capture.endMs <= decode.startMs
+        ? { startMs: capture.startMs, endMs: decode.endMs }
+        : null;
+    return {
+      window: index + 1,
+      captureMaxGapMs: bound(capture),
+      decodeMaxGapMs: bound(decode),
+      captureThroughDecodeMaxGapMs: bound(captureThroughDecode),
+      schemaProjectionMaxGapMs: bound(schemaProjection),
+    };
+  });
+}
+
 // Node's delay histogram records intervals between callbacks. With ticks on both
 // sides of the workload, its maximum bounds any contiguous main-loop block.
 export function snapshotDecision(measurement) {

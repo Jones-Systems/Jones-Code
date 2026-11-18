@@ -1,7 +1,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { measureSnapshotPipeline } from "../../../apps/server/src/jones/serverParallelism/snapshotQualification.ts";
-import { snapshotDecision } from "./snapshotDecision.mjs";
+import { snapshotDecision, snapshotPhaseLoopBounds } from "./snapshotDecision.mjs";
 const [output, count = "2000"] = process.argv.slice(2);
 if (!output || !NodePath.isAbsolute(output))
   throw new Error("snapshot.mjs <absolute report.json> [thread-count]");
@@ -27,6 +27,7 @@ try {
   report = {
     ...measurement,
     ...decision,
+    phaseLoopBounds: snapshotPhaseLoopBounds(measurement),
     source: process.env.JONES_SP_SOURCE_SHA ?? null,
     threadCount: Number(count),
     outcome:
