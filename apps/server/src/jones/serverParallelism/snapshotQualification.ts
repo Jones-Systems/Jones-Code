@@ -19,6 +19,16 @@ const waitForLoopSamples = Effect.promise(() =>
   NodeTimersPromises.setTimeout(3 * loopResolutionMs),
 );
 
+function startPhaseLoopTrace() {
+  // Observe Node's timer turns directly, independently of the measured Effect scheduler.
+  const trace = { ticksMs: [] as number[], overflow: false };
+  const timer = NodeTimers.setInterval(() => {
+    if (trace.ticksMs.length < maxPhaseLoopTicks) trace.ticksMs.push(performance.now());
+    else trace.overflow = true;
+  }, loopResolutionMs);
+  return { trace, stop: () => NodeTimers.clearInterval(timer) };
+}
+
 export async function measureSnapshotPipeline(threadCount = 2_000) {
   if (!Number.isSafeInteger(threadCount) || threadCount < 100 || threadCount > 10_000)
     throw new Error("Bounded snapshot fixture requires 100..10000 threads");
@@ -45,13 +55,8 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
       const samples = [];
       for (let window = 0; window < 3; window++) {
         const loop = NodePerfHooks.monitorEventLoopDelay({ resolution: loopResolutionMs });
-        const ticksMs: number[] = [];
-        let traceOverflow = false;
         loop.enable();
-        const phaseTimer = NodeTimers.setInterval(() => {
-          if (ticksMs.length < maxPhaseLoopTicks) ticksMs.push(performance.now());
-          else traceOverflow = true;
-        }, loopResolutionMs);
+        const phaseLoop = startPhaseLoopTrace();
         try {
           // Arm the timer before the work. A new monitor can miss an entire synchronous block.
           yield* waitForLoopSamples;
@@ -86,8 +91,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
             decodeMs: decodeFinishedAt - decodedAt,
             schemaProjectionMs: projectionFinishedAt - projectedAt,
             phaseLoopTrace: {
-              ticksMs,
-              overflow: traceOverflow,
+              ...phaseLoop.trace,
               decode: { startMs: decodedAt, endMs: decodeFinishedAt },
               schemaProjection: { startMs: projectedAt, endMs: projectionFinishedAt },
             },
@@ -105,7 +109,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
             watermark: shell.snapshotSequence,
           });
         } finally {
-          NodeTimers.clearInterval(phaseTimer);
+          phaseLoop.stop();
           loop.disable();
         }
       }
