@@ -4,13 +4,13 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import migration from "./161_JonesOrdinaryPreparation.ts";
+import migration from "./162_JonesOrdinaryPreparation.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 class SyntheticRollback extends Schema.TaggedError<SyntheticRollback>()("SyntheticRollback", {}) {}
 
 it.effect(
-  "161 creates three sparse tables without upstream schema, data, foreign keys or ledger writes",
+  "162 creates three sparse tables without upstream schema, data, foreign keys or ledger writes",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -25,7 +25,7 @@ it.effect(
         "CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY,payload_json TEXT)",
       );
       yield* sql.unsafe("INSERT INTO effect_sql_migrations VALUES (74,'Upstream')");
-      yield* sql.unsafe("INSERT INTO jones_sql_migrations VALUES (158,'LegacyBootstrap')");
+      yield* sql.unsafe("INSERT INTO jones_sql_migrations VALUES (161,'WorkstreamNameIcons')");
       yield* sql.unsafe("INSERT INTO orchestration_v2_projection_threads VALUES ('T','public')");
       const before = yield* sql.unsafe(
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -73,7 +73,7 @@ it.effect(
 );
 
 it.effect(
-  "161 DDL rolls back with its transaction and enforces origin and binding uniqueness",
+  "162 DDL rolls back with its transaction and enforces origin and binding uniqueness",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

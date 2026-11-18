@@ -3,11 +3,11 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
-import migration from "./163_JonesLegacyBootstrap.ts";
+import migration from "./164_JonesLegacyBootstrap.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 it.effect(
-  "158 creates five sparse Jones tables without upstream FKs, schema, rows or ledger changes",
+  "164 creates five sparse Jones tables without upstream FKs, schema, rows or ledger changes",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -17,7 +17,7 @@ it.effect(
       yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY,payload_json TEXT)`;
       yield* sql`CREATE TABLE orchestration_v2_projection_runs(run_id TEXT PRIMARY KEY,payload_json TEXT)`;
       yield* sql`INSERT INTO effect_sql_migrations VALUES (74,'Upstream')`;
-      yield* sql`INSERT INTO jones_sql_migrations VALUES (157,'RemoteSendReceipts')`;
+      yield* sql`INSERT INTO jones_sql_migrations VALUES (163,'RemoteSendReceipts')`;
       yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES ('T','{"public":true}')`;
       const before =
         yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name`;
@@ -54,7 +54,7 @@ it.effect(
 );
 
 it.effect(
-  "158 rejects mixed sequence domains and impossible cleanup states at the SQL boundary",
+  "164 rejects mixed sequence domains and impossible cleanup states at the SQL boundary",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

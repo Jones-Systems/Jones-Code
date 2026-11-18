@@ -258,9 +258,10 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 158, name: "WorkstreamAutoRoute" },
           { id: 159, name: "WorkstreamLifecycleRevision" },
           { id: 160, name: "WorkstreamSnooze" },
-          { id: 161, name: "OrdinaryPreparation" },
-          { id: 162, name: "RemoteSendReceipts" },
-          { id: 163, name: "LegacyBootstrap" },
+          { id: 161, name: "WorkstreamNameIcons" },
+          { id: 162, name: "OrdinaryPreparation" },
+          { id: 163, name: "RemoteSendReceipts" },
+          { id: 164, name: "LegacyBootstrap" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

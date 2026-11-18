@@ -3563,7 +3563,7 @@
         "apps/server/src/jones/legacyBootstrap/TerminalCleanupWorker.test.ts",
         "apps/server/src/jones/legacyBootstrap/Transaction.test.ts",
         "apps/server/src/jones/legacyBootstrap/Transaction.integration.test.ts",
-        "apps/server/src/jones/persistence/Migrations/163_JonesLegacyBootstrap.test.ts",
+        "apps/server/src/jones/persistence/Migrations/164_JonesLegacyBootstrap.test.ts",
         "apps/server/src/orchestration-v2/ProjectionMaintenance.test.ts"
       ],
       "scope": "Jones-owned legacy-bootstrap decision, integrity, recorded-metadata, retained-record, storage, terminal-cleanup and transaction modules over the jones_legacy_bootstrap_* tables of Jones-loader migration 161. Upstream EventSink, Orchestrator, EffectWorker, EventStore, ProjectionStore, ProjectionMaintenance, ThreadLaunchService, ThreadManagementService and runtimeLayer hooks import them; the ProjectionReplay testkit hook and the ProjectionMaintenance test exception retain historical inline values before rebuild deletes. This records source paths and import edges from the c8c51af sync only; it claims no test, typecheck or runtime qualification."

@@ -55,7 +55,7 @@ import * as Links from "./LinkedThreads.ts";
 import * as Launch from "./launchTransport.ts";
 import * as Handoff from "./handoff.ts";
 import migration from "../persistence/Migrations/122_JonesThreadLinks.ts";
-import remoteSendReceiptsMigration from "../persistence/Migrations/162_JonesRemoteSendReceipts.ts";
+import remoteSendReceiptsMigration from "../persistence/Migrations/163_JonesRemoteSendReceipts.ts";
 import { acceptingSendReceipts } from "../remoteDelegation/RemoteDelegation.testkit.ts";
 import { RecordedAppThreadJson } from "../../orchestration-v2/RecordedTypes.ts";
 import {

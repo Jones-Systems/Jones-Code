@@ -38,6 +38,7 @@
     "apps/web/src/jones/workstreams/ClosedWorkstreams.tsx",
     "apps/web/src/jones/workstreams/PersonalSidebarGroupHeader.tsx",
     "apps/web/src/jones/workstreams/PersonalWorkstreamTitleEditor.tsx",
+    "apps/web/src/jones/workstreams/WorkstreamNameIconPicker.tsx",
     "apps/web/src/jones/workstreams/personalInlineRename.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalThreadWindow.ts",
     "apps/web/src/jones/workstreams/personalThreadWindow.test.ts",

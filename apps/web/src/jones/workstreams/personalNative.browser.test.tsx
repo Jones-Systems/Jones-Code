@@ -597,6 +597,104 @@ describe("personal Workstreams native presentation", () => {
     await userEvent.click(page.getByRole("button", { name: "Create “Second group” and move" }));
     expect(controller.createAndAssign).toHaveBeenCalledWith(thread, "Second group");
   });
+  it.each([240, 320])(
+    "keeps the Name icon picker within the name field and uses the supplied project order at %s px",
+    async (width) => {
+      using setup = fixture();
+      const projects = ["Zulu", "Alpha"].map((name) => ({
+        projectKey: name,
+        displayName: name,
+        environmentId: env,
+        workspaceRoot: `/synthetic/${name}`,
+        title: name,
+        faviconPath: null,
+        projectIcon: { kind: "emoji" as const, emoji: "🟪" },
+      }));
+      await using screen = await render(
+        <div style={{ width }}>
+          <WorkstreamCreateForm
+            controller={setup.controller}
+            canSetNameIcon
+            nameIconProjects={projects}
+            open
+            onClose={() => {}}
+            onPendingChange={() => {}}
+          />
+        </div>,
+      );
+      const name = screen.getByRole("textbox", { name: "Workstream name" });
+      const picker = screen.getByRole("combobox", { name: "Name icon" });
+      const inputRect = name
+        .element()
+        .closest('[data-slot="input-control"]')!
+        .getBoundingClientRect();
+      const pickerRect = picker.element().getBoundingClientRect();
+      expect(pickerRect.top).toBeGreaterThanOrEqual(inputRect.bottom);
+      expect(pickerRect.right).toBeCloseTo(inputRect.right, 0);
+      expect(pickerRect.width).toBeLessThanOrEqual(inputRect.width);
+      expect(pickerRect.width).toBeGreaterThan(50);
+      await userEvent.click(picker);
+      const options = page.getByRole("option");
+      await expect.element(options.nth(0)).toHaveTextContent("None");
+      await expect.element(options.nth(1)).toHaveAccessibleName("Zulu");
+      await expect.element(options.nth(2)).toHaveAccessibleName("Alpha");
+      await userEvent.click(options.nth(1));
+      await userEvent.fill(name, "New group");
+      await userEvent.click(screen.getByRole("button", { name: "Create", exact: true }));
+      expect(setup.controller.create).toHaveBeenCalledWith({
+        name: "New group",
+        nameIconProjectKey: "Zulu",
+      });
+    },
+  );
+  it("saves a different Name icon from the Workstream menu and closes the editor", async () => {
+    using setup = fixture();
+    const { registry, controller, initial, state } = setup;
+    const project = {
+      projectKey: "studio",
+      displayName: "Studio",
+      environmentId: env,
+      workspaceRoot: "/synthetic/studio",
+      title: "Studio",
+      faviconPath: null,
+      projectIcon: { kind: "emoji" as const, emoji: "🟪" },
+    };
+    registry.set(state, { ...initial, canSetNameIcon: true });
+    const setNameIcon = vi.fn<NonNullable<PersonalWorkstreamsController["setNameIcon"]>>(
+      async (_id, projectKey) => {
+        const value = { ...workstream, nameIcon: { projectKey, updatedAt: workstream.updatedAt } };
+        registry.set(state, { ...initial, canSetNameIcon: true, workstreams: [value] });
+        return { ok: true, value };
+      },
+    );
+    controller.setNameIcon = setNameIcon;
+    await using _screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <WorkstreamNativeSidebar
+          controller={controller}
+          nameIconProjects={[project]}
+          threads={[thread]}
+          renderThread={(entry) => <li>{entry.title}</li>}
+          canOperate={() => true}
+          canReorder={() => false}
+          reorder={async () => {}}
+        />
+      </RegistryContext.Provider>,
+    );
+    for (const [label, projectKey] of [
+      ["Studio", "studio"],
+      ["None", null],
+    ] as const) {
+      await userEvent.click(page.getByRole("button", { name: "Options for Alpha", exact: true }));
+      await userEvent.click(page.getByRole("menuitem", { name: "Change name icon" }));
+      const picker = page.getByRole("combobox", { name: "Name icon" });
+      await userEvent.click(picker);
+      await userEvent.click(page.getByRole("option", { name: label, exact: true }));
+      await userEvent.click(page.getByRole("button", { name: "Save", exact: true }));
+      await expect.element(picker).not.toBeInTheDocument();
+      expect(setNameIcon).toHaveBeenLastCalledWith(workstream.id, projectKey);
+    }
+  });
   it("renders a pushed controller update without refresh and keeps a cached group visible while offline", async () => {
     using setup = fixture();
     const { registry, controller, initial, state } = setup;

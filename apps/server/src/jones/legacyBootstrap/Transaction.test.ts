@@ -18,7 +18,7 @@ import {
   RecordedStoredLifecycleEvent,
 } from "../../orchestration-v2/RecordedTypes.ts";
 import { legacyBootstrapCreateCommandId } from "../../orchestration-v2/LegacyBootstrap.ts";
-import migration from "../persistence/Migrations/163_JonesLegacyBootstrap.ts";
+import migration from "../persistence/Migrations/164_JonesLegacyBootstrap.ts";
 import * as Storage from "./Storage.ts";
 import * as Decision from "./Decision.ts";
 import * as Transaction from "./Transaction.ts";

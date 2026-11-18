@@ -493,9 +493,10 @@ it.effect(
           [158, "WorkstreamAutoRoute"],
           [159, "WorkstreamLifecycleRevision"],
           [160, "WorkstreamSnooze"],
-          [161, "OrdinaryPreparation"],
-          [162, "RemoteSendReceipts"],
-          [163, "LegacyBootstrap"],
+          [161, "WorkstreamNameIcons"],
+          [162, "OrdinaryPreparation"],
+          [163, "RemoteSendReceipts"],
+          [164, "LegacyBootstrap"],
         ],
       );
       assert.deepStrictEqual(
@@ -738,9 +739,10 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [158, "WorkstreamAutoRoute"],
       [159, "WorkstreamLifecycleRevision"],
       [160, "WorkstreamSnooze"],
-      [161, "OrdinaryPreparation"],
-      [162, "RemoteSendReceipts"],
-      [163, "LegacyBootstrap"],
+      [161, "WorkstreamNameIcons"],
+      [162, "OrdinaryPreparation"],
+      [163, "RemoteSendReceipts"],
+      [164, "LegacyBootstrap"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;
