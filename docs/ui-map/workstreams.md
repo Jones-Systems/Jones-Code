@@ -11,6 +11,7 @@ Thread navigation shortcuts follow the displayed order.
 | Journey                                           | Surface                                                                                    | Coverage                                                              |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
 | Create, rename, color, lifecycle, reorder, delete | Sidebar group menu; mobile group controls                                                  | Personal browser and mobile presentation/control tests                |
+| Start a thread in a Workstream                    | Right-click or open options on a named group in the shared web and desktop sidebar         | Group menu activation and draft seeding tests                         |
 | Set, change or clear a name icon                  | Inline toolbar form and Workstream group menu on web and desktop                           | Picker alignment and order, wrapped title geometry, and sync tests    |
 | Assign, unassign, create and assign               | Thread picker, sidebar drag, mobile thread menu                                            | Personal browser tests and shared controller command tests            |
 | Move a pinned thread                              | Sidebar drag; assigned members keep their pin                                              | Personal browser tests                                                |
@@ -28,6 +29,8 @@ Focused source coverage lives in [personalNative.browser.test.tsx](../../apps/we
 Availability rows use the ordinary settings primitives and say Ready, Offline, Update required, Read only or Couldn’t sync. Failures use deduplicated native notifications with ordinary connection/update destinations. A cached snapshot is display-only; an environment without the personal capability shows no cached grouping and receives no writes.
 
 Assignment confirmation belongs to the thread’s environment. Definition propagation requires an eventual client bridge with write access to the lagging environment. Read-only observation and offline suppression do not prove durable synchronization. Group lifecycle is metadata and does not change thread settlement.
+
+For **New thread**, use two open Workstreams on a writable test environment with **No project** support. Set a name icon from a registered project on one group and leave the other group without an icon. Open each group’s menu and choose **New thread**. Check the Workstream picker and the project shown in the composer, then send a fixture message and check the thread in its group after reload. Discard unsent drafts and use isolated test state for the sent threads.
 
 ## Retained history boundary
 

@@ -39,6 +39,8 @@
     "apps/web/src/jones/workstreams/PersonalSidebarGroupHeader.tsx",
     "apps/web/src/jones/workstreams/PersonalWorkstreamTitleEditor.tsx",
     "apps/web/src/jones/workstreams/WorkstreamNameIconPicker.tsx",
+    "apps/web/src/jones/workstreams/useStartWorkstreamThread.ts",
+    "apps/web/src/jones/workstreams/useStartWorkstreamThread.test.ts",
     "apps/web/src/jones/workstreams/personalInlineRename.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalThreadWindow.ts",
     "apps/web/src/jones/workstreams/personalThreadWindow.test.ts",
@@ -782,6 +784,10 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/jones/workstreams/personalSnooze.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/useStartWorkstreamThread.ts"
     },
     {
       "from": "apps/web/src/components/Sidebar.tsx",

@@ -29,7 +29,11 @@ const group = (name: string) => ({
 });
 const groups = [group("Alpha"), group("Beta"), group("Gamma")];
 
-function fixture(put?: PersonalWorkstreamsTransport["put"], memberCount = 0) {
+function fixture(
+  put?: PersonalWorkstreamsTransport["put"],
+  memberCount = 0,
+  newThreadAction?: React.ComponentProps<typeof WorkstreamSidebarSection>["newThreadAction"],
+) {
   const keys = [
     personalGroupCollapsedKey(null),
     personalNamedGroupsHiddenKey,
@@ -156,6 +160,7 @@ function fixture(put?: PersonalWorkstreamsTransport["put"], memberCount = 0) {
         <div style={{ width: 360 }}>
           <WorkstreamSidebarSection
             controller={controller}
+            newThreadAction={newThreadAction}
             memberCounts={new Map([["menu-Alpha", memberCount]])}
             summaries={
               new Map([
@@ -441,6 +446,17 @@ describe("Workstream options and header ordering", () => {
     expect(
       section(screen.container, null).querySelector("[data-workstream-window-footer]"),
     ).toBeNull();
+  });
+
+  it("starts a thread for the Workstream that was right-clicked", async () => {
+    const startThread = vi.fn();
+    using setup = fixture(undefined, 0, ({ id }) => ({ run: () => startThread(id) }));
+    await using _screen = await render(setup.ui);
+    await page
+      .getByRole("button", { name: "Collapse Beta", exact: true })
+      .click({ button: "right" });
+    await page.getByRole("menuitem", { name: "New thread", exact: true }).click();
+    expect(startThread).toHaveBeenCalledExactlyOnceWith("menu-Beta");
   });
 
   it("opens Workstream actions by right-click and uses the thread snooze presets", async () => {

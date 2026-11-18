@@ -3398,6 +3398,8 @@
     {
       "id": "workstreams-personal",
       "tests": [
+        "apps/web/src/hooks/useHandleNewThread.test.ts",
+        "apps/web/src/jones/workstreams/useStartWorkstreamThread.test.ts",
         "apps/web/src/jones/composer/NewThreadWorkstreamPicker.browser.test.tsx",
         "apps/web/src/jones/composer/newThreadWorkstream.test.ts",
         "apps/web/src/jones/workstreams/personalSnooze.test.ts",
