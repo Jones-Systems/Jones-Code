@@ -3488,21 +3488,11 @@ it.effect.each([
     const bindings = new Map<string, ConversationPolicy.Binding>();
     const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
       ownsPath: (path) => path === cwd,
+      preflight: () => Effect.void,
       allocate: (input) =>
         Effect.sync(() => {
           allocated++;
-          const binding: ConversationPolicy.Binding = {
-            threadId: input.threadId,
-            projectId: input.projectId,
-            ownerThreadId: input.threadId,
-            path: cwd,
-            device: "fixture",
-            inode: "fixture",
-            state: "conversation",
-            commonDirectory: "/objects",
-            commit: "a".repeat(40),
-            baseRef: "main",
-          };
+          const binding = { ...conversationFixtureBinding(input), path: cwd };
           bindings.set(input.threadId, binding);
           return binding;
         }),
@@ -3586,4 +3576,190 @@ it.effect.each([
       }
     }).pipe(Effect.provide(harness.layer));
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each(["idle", "message"] as const)(
+  "On write %s refuses deterministic placement before the thread claim and can retry",
+  (kind) =>
+    Effect.gen(function* () {
+      let refuse = true;
+      const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
+        lookup: () => Effect.succeed(null),
+        ownsPath: () => false,
+        preflight: (input) =>
+          refuse
+            ? Effect.fail(
+                new ConversationPolicy.ConversationWorkspaceError({
+                  threadId: input.threadId,
+                  reason: "placement",
+                  placementRule: "system_temp",
+                }),
+              )
+            : Effect.void,
+        allocate: (input) => Effect.succeed(conversationFixtureBinding(input)),
+      });
+      const harness = makeHarness({ conversationLayer });
+      yield* Effect.gen(function* () {
+        const launch = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const input = launchInput({
+          command: `command:on-write-preflight:${kind}`,
+          thread: `thread:on-write-preflight:${kind}`,
+          workspace: { type: "auto" },
+          ...(kind === "message" ? { message: "Read the project." } : {}),
+        });
+        const failure = yield* launch.launch(input).pipe(Effect.flip);
+        assert.equal(failure._tag, "ThreadLaunchError");
+        if (failure._tag !== "ThreadLaunchError") return;
+        assert.isUndefined(failure.threadId);
+        assert.deepEqual(failure.conversationFailure, {
+          stage: "preflight",
+          detail: "Conversation state lies inside the system temporary directory.",
+        });
+        assert.isNull(yield* threads.getThreadShell(input.threadId));
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(input.commandId)));
+
+        refuse = false;
+        const result = yield* launch.launch(input);
+        assert.equal(result.threadId, input.threadId);
+        assert.lengthOf(result.projection.runs, kind === "message" ? 1 : 0);
+        assert.equal(harness.createWorktree.mock.calls.length, 0);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+function conversationFixtureBinding(
+  input: ConversationPolicy.ConversationAllocationInput,
+): ConversationPolicy.Binding {
+  return {
+    threadId: input.threadId,
+    projectId: input.projectId,
+    ownerThreadId: input.threadId,
+    path: "/conversation-fixture",
+    device: "fixture",
+    inode: "fixture",
+    state: "conversation",
+    commonDirectory: "/objects",
+    commit: "a".repeat(40),
+    baseRef: "main",
+  };
+}
+
+it.effect.each(["new-idle", "new-message", "reuse-draft", "replay-idle"] as const)(
+  "On write %s handles an allocation failure after a thread claim",
+  (kind) =>
+    Effect.gen(function* () {
+      let allocationCount = 0;
+      let binding: ConversationPolicy.Binding | null = null;
+      let preflightCount = 0;
+      const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
+        lookup: () => Effect.sync(() => binding),
+        ownsPath: () => false,
+        preflight: () =>
+          Effect.sync(() => {
+            preflightCount++;
+          }),
+        allocate: (input, onUnboundFailure) =>
+          Effect.gen(function* () {
+            allocationCount++;
+            if (allocationCount === 1 && kind !== "replay-idle") {
+              if (onUnboundFailure !== undefined) yield* onUnboundFailure;
+              return yield* new ConversationPolicy.ConversationWorkspaceError({
+                threadId: input.threadId,
+                reason: "storage",
+              });
+            }
+            binding = conversationFixtureBinding(input);
+            return binding;
+          }),
+      });
+      const harness = makeHarness({ conversationLayer });
+      yield* Effect.gen(function* () {
+        const launch = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const events = yield* EventSink.EventSinkV2;
+        const input = {
+          ...launchInput({
+            command: `command:on-write-allocation:${kind}`,
+            thread: `thread:on-write-allocation:${kind}`,
+            workspace: { type: "auto" },
+            ...(kind === "new-message" ? { message: "Read the project." } : {}),
+          }),
+          ...(kind === "reuse-draft" ? { reuseExistingThread: true } : {}),
+        };
+        // Represent a composer draft or a claim left by an older server.
+        if (kind === "reuse-draft" || kind === "replay-idle") {
+          yield* threads.dispatch({
+            type: "thread.create",
+            commandId:
+              kind === "replay-idle" ? input.commandId : CommandId.make(`${input.commandId}:draft`),
+            threadId: input.threadId,
+            projectId,
+            title: input.title,
+            modelSelection: input.modelSelection,
+            runtimeMode: input.runtimeMode,
+            interactionMode: input.interactionMode,
+            branch: null,
+            worktreePath: null,
+            createdBy: input.createdBy,
+            creationSource: input.creationSource,
+          });
+        }
+        if (kind !== "replay-idle") {
+          const failure = yield* launch.launch(input).pipe(Effect.flip);
+          assert.equal(failure._tag, "ThreadLaunchError");
+          if (failure._tag !== "ThreadLaunchError") return;
+          assert.equal(failure.threadId, input.threadId);
+          assert.deepEqual(failure.conversationFailure, {
+            stage: "allocation",
+            detail: "Conversation workspace: storage.",
+            cleanup: kind === "reuse-draft" ? "preserved" : "deleted",
+          });
+        }
+        const shouldDelete = kind === "new-idle" || kind === "new-message";
+        const shell = yield* threads.getThreadShell(input.threadId);
+        if (shouldDelete) assert.isNull(shell);
+        else assert.isNotNull(shell);
+        const tombstone = yield* events
+          .readByCommandId({
+            commandId: CommandId.make(`${input.commandId}:on-write-allocation-failed`),
+          })
+          .pipe(Stream.runCollect);
+        assert.deepEqual(
+          tombstone.map(({ event }) => event.type),
+          shouldDelete ? ["thread.deleted"] : [],
+        );
+        const claim = yield* events
+          .readByCommandId({ commandId: input.commandId })
+          .pipe(Stream.runCollect);
+        assert.isFalse(
+          claim.some(
+            ({ event }) => event.type === "run.created" || event.type === "message.updated",
+          ),
+        );
+        const newMessage = yield* events
+          .readByCommandId({ commandId: CommandId.make(`${input.commandId}:initial-message`) })
+          .pipe(Stream.runCollect);
+        assert.lengthOf(newMessage, 0);
+        if (!shouldDelete) {
+          const projection = yield* threads.getThreadRecords(input.threadId, ["runs"]);
+          assert.lengthOf(projection.runs, 0);
+        }
+        if (shouldDelete) {
+          yield* launch.launch(input).pipe(Effect.flip);
+          assert.equal(allocationCount, 1);
+        } else {
+          const bound = yield* launch.launch(input);
+          assert.equal(bound.threadId, input.threadId);
+          assert.isNotNull(binding);
+          const repeated = yield* launch.launch(input);
+          assert.equal(repeated.threadId, input.threadId);
+          assert.equal(allocationCount, kind === "replay-idle" ? 1 : 2);
+        }
+        assert.equal(preflightCount, kind === "replay-idle" ? 0 : 1);
+        assert.equal(harness.createWorktree.mock.calls.length, 0);
+        assert.equal(harness.runSetup.mock.calls.length, 0);
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );

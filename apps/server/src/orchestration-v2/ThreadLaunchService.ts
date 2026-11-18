@@ -9,6 +9,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as LaunchPreparation from "../jones/ordinaryCheckout/LaunchPreparation.ts";
 import * as LegacyBootstrapLaunch from "../jones/legacyBootstrap/LegacyBootstrapLaunch.ts";
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as AutoLaunchStrategy from "../jones/conversationWorkspace/LaunchStrategy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
@@ -218,9 +219,31 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
     threadId: Schema.optional(ThreadId),
     cause: Schema.Defect(),
     bootstrapThreadDisposition: Schema.optional(Schema.Literal("deleted")),
+    conversationFailure: Schema.optional(
+      Schema.Struct({
+        detail: Schema.String,
+        stage: Schema.Literals(["preflight", "allocation"]),
+        cleanup: Schema.optional(Schema.Literals(["deleted", "preserved", "unknown"])),
+      }),
+    ),
   },
 ) {
   override get message(): string {
+    if (this.conversationFailure !== undefined) {
+      const { stage, detail, cleanup } = this.conversationFailure;
+      const prefix =
+        stage === "preflight" ? "On write preflight failed." : "On write allocation failed.";
+      const followUp =
+        cleanup === "deleted"
+          ? " The empty thread was removed. Start a new launch to retry."
+          : cleanup === "unknown"
+            ? " The thread cleanup outcome is unresolved."
+            : cleanup === "preserved"
+              ? " The thread was preserved."
+              : "";
+      const thread = this.threadId === undefined ? "" : ` Thread ${this.threadId}.`;
+      return `${prefix} ${detail}${followUp}${thread}`;
+    }
     return `Thread launch ${this.commandId} failed during ${this.operation}.`;
   }
 }
@@ -417,6 +440,44 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
         ...(threadId === undefined ? {} : { threadId }),
         cause,
       });
+
+  const mapConversationFailure = (
+    input: ThreadLaunchInput,
+    cause: ConversationPolicy.ConversationWorkspaceError,
+    stage: "preflight" | "allocation",
+    threadId?: ThreadId,
+    cleanup?: "deleted" | "preserved" | "unknown",
+  ) =>
+    new ThreadLaunchError({
+      operation: "provision-worktree",
+      commandId: input.commandId,
+      projectId: input.projectId,
+      ...(threadId === undefined ? {} : { threadId }),
+      cause,
+      conversationFailure: {
+        stage,
+        detail: cause.message,
+        ...(cleanup === undefined ? {} : { cleanup }),
+      },
+    });
+
+  const readIdleWorktree = (input: ThreadLaunchInput, threadId: ThreadId) =>
+    idleWorktrees === undefined
+      ? Effect.succeed(null)
+      : idleWorktrees
+          .read(threadId)
+          .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+
+  const resolveLaunchProject = (input: ThreadLaunchInput) =>
+    projects.getById(input.projectId).pipe(
+      Effect.mapError(mapError(input, "resolve-project")),
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.fail(mapError(input, "resolve-project")("Project not found.")),
+          onSome: Effect.succeed,
+        }),
+      ),
+    );
 
   const recordBranchRenameFailure = Effect.fn("ThreadLaunchService.recordBranchRenameFailure")(
     function* (threadId: ThreadId, runId: RunId, branch: string, cause: Cause.Cause<unknown>) {
@@ -1629,12 +1690,57 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
       const needsAdmission =
         recordedClaim === undefined ||
         (request.initialMessage !== undefined && replayMessage === undefined);
-      const autoResolution = needsAdmission
-        ? yield* resolveAutoStrategy(request)
-        : {
-            strategy: replayMessage?.run.workspacePreparation ?? request.workspaceStrategy,
-            fallbackDriver: undefined,
-          };
+      const priorIdle =
+        recordedClaim !== undefined && request.workspaceStrategy.type === "auto"
+          ? yield* readIdleWorktree(request, recordedClaim.id)
+          : null;
+      const replayAuto =
+        recordedClaim !== undefined &&
+        request.workspaceStrategy.type === "auto" &&
+        priorIdle === null &&
+        autoStrategy.available &&
+        replayMessage === undefined;
+      let resumeAllocation = false;
+      let alreadyBound = false;
+      if (replayAuto) {
+        const shell = yield* threads
+          .getThreadShell(recordedClaim.id)
+          .pipe(Effect.mapError(mapError(request, "read-receipt", recordedClaim.id)));
+        if (shell === null || shell.deletedAt !== null || shell.projectId !== request.projectId)
+          return yield* mapError(request, "create-thread", recordedClaim.id)("Thread not found.");
+        if (shell.worktreePath === null && shell.archivedAt === null) {
+          alreadyBound =
+            (yield* autoStrategy
+              .lookup(recordedClaim.id)
+              .pipe(
+                Effect.mapError((cause) =>
+                  mapConversationFailure(request, cause, "allocation", recordedClaim.id),
+                ),
+              )) !== null;
+          if (!alreadyBound) {
+            const usage = yield* threads
+              .getThreadRecords(recordedClaim.id, ["runs", "messages"])
+              .pipe(Effect.mapError(mapError(request, "read-receipt", recordedClaim.id)));
+            resumeAllocation = usage.runs.length === 0 && usage.messages.length === 0;
+          }
+        }
+      }
+      let autoResolution: AutoLaunchStrategy.AutoLaunchResolution = {
+        strategy: replayMessage?.run.workspacePreparation ?? request.workspaceStrategy,
+        fallbackDriver: undefined,
+      };
+      if (priorIdle !== null && request.workspaceStrategy.type === "auto") {
+        autoResolution = {
+          strategy: { ...request.workspaceStrategy, type: "worktree" },
+          fallbackDriver: undefined,
+        };
+      } else if (!alreadyBound && (needsAdmission || resumeAllocation)) {
+        autoResolution = yield* resolveAutoStrategy(
+          recordedClaim === undefined
+            ? request
+            : { ...request, modelSelection: recordedClaim.modelSelection },
+        );
+      }
       const resolvedRequest: ThreadLaunchInput =
         autoResolution.strategy === request.workspaceStrategy
           ? request
@@ -1652,17 +1758,10 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
           type: "thread.create",
           projectId: input.projectId,
         }).pipe(Effect.mapError(mapError(input, "resolve-project")));
-      const project = !needsAdmission
-        ? null
-        : yield* projects.getById(input.projectId).pipe(
-            Effect.mapError(mapError(input, "resolve-project")),
-            Effect.flatMap(
-              Option.match({
-                onNone: () => Effect.fail(mapError(input, "resolve-project")("Project not found.")),
-                onSome: Effect.succeed,
-              }),
-            ),
-          );
+      const project =
+        needsAdmission || (resumeAllocation && input.workspaceStrategy.type === "auto")
+          ? yield* resolveLaunchProject(input)
+          : null;
       if (input.reuseExistingThread === true && input.threadId === undefined) {
         return yield* mapError(
           input,
@@ -1706,6 +1805,37 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
                 },
               )
             : input.workspaceStrategy;
+        if (project !== null && project.id !== input.projectId)
+          return yield* mapError(
+            input,
+            "resolve-project",
+            candidateThreadId,
+          )("Project identity changed.");
+        const allocation =
+          workspaceStrategy.type === "auto" &&
+          project !== null &&
+          !alreadyBound &&
+          (recordedClaim === undefined || resumeAllocation)
+            ? autoStrategy.allocationInput(workspaceStrategy, {
+                threadId: candidateThreadId,
+                projectId: project.id,
+                projectRoot: project.workspaceRoot,
+              })
+            : undefined;
+        // Jones hook: deterministic checks leave no thread claim. Allocation checks again after claim.
+        if (allocation !== undefined && recordedClaim === undefined)
+          yield* autoStrategy
+            .preflight(allocation)
+            .pipe(
+              Effect.mapError((cause) =>
+                mapConversationFailure(
+                  input,
+                  cause,
+                  "preflight",
+                  input.reuseExistingThread === true ? candidateThreadId : undefined,
+                ),
+              ),
+            );
         // A previously accepted claim is never redispatched. Only a fresh creation reads its checkout.
         const initialBranch =
           project !== null && recordedClaim === undefined
@@ -1787,8 +1917,9 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
                     : { delegatedFrom: input.delegatedFrom }),
                   createdBy: input.createdBy,
                   creationSource: input.creationSource,
-                  // Agent messages must recheck caller modes against the committed thread.
-                  ...(initialMessage === undefined ||
+                  // On write binds before recording the message. Agent messages recheck caller modes.
+                  ...(workspaceStrategy.type === "auto" ||
+                  initialMessage === undefined ||
                   input.createdBy === "agent" ||
                   input.initialMessage?.sourcePlanRef !== undefined
                     ? {}
@@ -1826,25 +1957,55 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
         const threadId =
           claimed.storedEvents.find((stored) => stored.event.type.startsWith("thread."))?.event
             .threadId ?? candidateThreadId;
-        if (project !== null && project.id !== input.projectId) {
-          return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
-        }
-        // A conversation launch binds its workspace once the thread exists; allocation is idempotent.
-        if (workspaceStrategy.type === "auto" && project !== null)
+        if (allocation !== undefined) {
+          const created =
+            Option.isNone(launchReceipt) &&
+            claimed.replayed !== true &&
+            input.reuseExistingThread !== true
+              ? claimed.storedEvents.find(
+                  ({ event }) => event.type === "thread.created" && event.threadId === threadId,
+                )?.event
+              : undefined;
+          let cleanup: "deleted" | "preserved" | "unknown" =
+            created === undefined ? "preserved" : "unknown";
+          const removeUnusedShell =
+            created?.type !== "thread.created"
+              ? undefined
+              : threads
+                  .dispatch({
+                    type: "thread.delete",
+                    commandId: CommandId.make(`${input.commandId}:on-write-allocation-failed`),
+                    threadId,
+                    onlyIfUnused: true,
+                  })
+                  .pipe(
+                    Effect.provideService(
+                      ConversationPolicy.FailedLaunchCleanup,
+                      created.payload.updatedAt,
+                    ),
+                    Effect.match({
+                      onFailure: () => {
+                        cleanup = "unknown";
+                      },
+                      onSuccess: ({ storedEvents }) => {
+                        cleanup = storedEvents.some(
+                          ({ event }) =>
+                            event.type === "thread.deleted" && event.threadId === threadId,
+                        )
+                          ? "deleted"
+                          : "preserved";
+                      },
+                    }),
+                  );
           yield* autoStrategy
-            .allocate(workspaceStrategy, {
-              threadId,
-              projectId: input.projectId,
-              projectRoot: project.workspaceRoot,
-            })
-            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
-        else yield* autoStrategy.observeFallback(autoResolution, threadId);
-        const idleRecord =
-          idleWorktrees === undefined
-            ? null
-            : yield* idleWorktrees
-                .read(threadId)
-                .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+            .allocate({ ...allocation, threadId }, removeUnusedShell)
+            .pipe(
+              Effect.mapError((cause) =>
+                mapConversationFailure(input, cause, "allocation", threadId, cleanup),
+              ),
+            );
+        } else yield* autoStrategy.observeFallback(autoResolution, threadId);
+        const idleRecord = priorIdle ?? (yield* readIdleWorktree(input, threadId));
         if (
           (holdsIdleWorktree && idleRecord === null) ||
           (idleRecord !== null &&

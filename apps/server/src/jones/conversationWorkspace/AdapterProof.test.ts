@@ -65,8 +65,8 @@ const git = (cwd: string, ...args: string[]) =>
   ).trim();
 
 it.effect.each([
-  { driver: "codex", scenario: "handoff" },
-  { driver: "claudeAgent", scenario: "handoff" },
+  { driver: "codex", scenario: "handoff-under-registered-parent" },
+  { driver: "claudeAgent", scenario: "handoff-under-registered-parent" },
   { driver: "codex", scenario: "registered-callback" },
   { driver: "claudeAgent", scenario: "registered-callback" },
   { driver: "codex", scenario: "checkout-interruption" },
@@ -239,6 +239,10 @@ it.effect.each([
         yield* Migration;
         yield* sql`CREATE TABLE projection_projects(workspace_root TEXT, deleted_at TEXT)`;
         yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, payload_json TEXT, deleted_at TEXT)`;
+        if (scenario === "handoff-under-registered-parent") {
+          yield* sql`INSERT INTO projection_projects VALUES(${root},NULL),(${repo},NULL)`;
+          yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES('broad-folder',${JSON.stringify({ worktreePath: root })},NULL)`;
+        }
         yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES(${threadId},${JSON.stringify({ id: threadId, projectId })},NULL)`;
         const policy = yield* Policy.ConversationPolicy;
         const worktree = yield* Worktree.WorktreeMcpService;

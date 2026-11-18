@@ -17703,7 +17703,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
               ),
             );
-          if (usage.runs.length > 0 || usage.messages.length > 0) {
+          const failedLaunch = yield* ConversationPolicy.FailedLaunchCleanup;
+          if (
+            usage.runs.length > 0 ||
+            usage.messages.length > 0 ||
+            (failedLaunch !== undefined &&
+              (usage.thread.worktreePath !== null ||
+                sideChatIds.length > 0 ||
+                DateTime.toEpochMillis(usage.thread.updatedAt) !==
+                  DateTime.toEpochMillis(failedLaunch)))
+          ) {
             return { events: [], effects: [] };
           }
         }
