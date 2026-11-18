@@ -242,6 +242,7 @@ const writeFakeRuntime = (
     return entryPath;
   });
 
+// These fixtures bind real launcher receipts, whose home path must be canonical.
 const runLauncher = async (root: string) => {
   vi.stubEnv("T3CODE_HOME", root);
   try {
@@ -583,7 +584,9 @@ setInterval(() => {}, 1_000);
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-unit-" });
+      const root = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-unit-" }),
+      );
       const home = path.join(root, "home");
       const unitPath = path.join(home, "Library", "LaunchAgents", "t3code.plist");
       const render = (version: string) =>
@@ -627,7 +630,9 @@ setInterval(() => {}, 1_000);
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-xdg-" });
+        const root = yield* fs.realPath(
+          yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-xdg-" }),
+        );
         const home = path.join(root, "home");
         const managerUnitDir = path.join(home, ".config", "systemd", "user");
         const unitPath = path.join(managerUnitDir, "t3code.service");
@@ -689,7 +694,9 @@ setInterval(() => {}, 1_000);
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-log-" });
+      const root = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-log-" }),
+      );
       const home = path.join(root, "home");
       const unitPath = path.join(home, "Library", "LaunchAgents", "t3code.plist");
       const plan = unitPlan(root, "1.0.0");
@@ -730,7 +737,9 @@ setInterval(() => {}, 1_000);
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-migrate-" });
+      const root = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-migrate-" }),
+      );
       const statePath = path.join(root, "runtime", "service-state.json");
       const activeVersion = "0.0.43-nightly.20260919.1962+build.1";
       const versionDir = path.join(root, "runtime", "versions", activeVersion);
@@ -763,7 +772,9 @@ process.exit(0);
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const parent = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-space-" });
+      const parent = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-space-" }),
+      );
       const root = path.join(parent, "T3 data ");
       const versionDir = path.join(root, "runtime", "versions", "1.0.0");
       yield* writeFakeRuntime(
