@@ -44,7 +44,7 @@ import { qualify, type QualificationInput } from "./Qualification.ts";
 import { readReservation } from "./Reservation.ts";
 import * as NodeChildProcess from "node:child_process";
 
-async function fixtureSql(
+export async function fixtureSql(
   path: string,
   after?: (query: string, values: unknown[]) => Promise<void>,
   migrate = true,
@@ -217,7 +217,7 @@ const retireRequest = (repo: string, worktree: string, input: QualificationInput
   revalidate: Effect.void,
   finalizeOutputs: () => Effect.void,
 });
-const receiptRow = (f: Awaited<ReturnType<typeof fixtureSql>>, id: string) => {
+export const receiptRow = (f: Awaited<ReturnType<typeof fixtureSql>>, id: string) => {
   const row = f.db
     .prepare(
       "SELECT state,receipt_json FROM jones_workspace_retirement_receipts WHERE receipt_id=?",

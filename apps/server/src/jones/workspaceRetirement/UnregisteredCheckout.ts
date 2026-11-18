@@ -21,13 +21,26 @@ const MAX_HASHED_BYTES = 2 * 1024 ** 3;
 const MAX_REPORTED = 20;
 
 /**
- * The branch, containing and preservation refs a retirement recorded still resolve to their recorded
- * heads. Nothing is read from the removed admin directory.
+ * The branch, containing, preservation and preserve-branch refs a retirement recorded still resolve
+ * to their recorded heads. Nothing is read from the removed admin directory.
  */
 export async function receiptRefsRead(projectRoot: string, receipt: RetirementReceipt) {
   for (const ref of receipt.preservationRefs)
     if ((await git(projectRoot, ["rev-parse", ref.ref])).toString().trim() !== ref.head)
       return false;
+  if (
+    receipt.preserve &&
+    (
+      await git(projectRoot, [
+        "rev-parse",
+        "--verify",
+        `refs/heads/${receipt.preserve.branch}^{commit}`,
+      ])
+    )
+      .toString()
+      .trim() !== receipt.preserve.sha
+  )
+    return false;
   if (
     receipt.qualification.branch &&
     (await git(projectRoot, ["rev-parse", receipt.qualification.branch])).toString().trim() !==
@@ -82,9 +95,9 @@ async function trackedTree(projectRoot: string, head: string) {
 
 /**
  * Finishes the removal of a directory Git already deregistered, but only when the leftover is
- * covered ignored roots, tracked files equal to the recorded HEAD, the `.git` link or empty
- * directories. Any other path holds the checkout and is named. The caller proved the interrupted
- * executor is gone and holds the owner's Retire for this receipt.
+ * covered ignored roots, tracked files equal to the recorded HEAD (or to the receipt's preserve
+ * commit), the `.git` link or empty directories. Any other path holds the checkout and is named.
+ * The caller proved the interrupted executor is gone and holds the owner's Retire for this receipt.
  */
 export async function finishUnregisteredCheckout(
   projectRoot: string,
@@ -108,7 +121,8 @@ export async function finishUnregisteredCheckout(
     if (!head || !(await receiptRefsRead(projectRoot, receipt)))
       return held("interrupted_removal_refs_unverified");
     const algorithm = head.length === 64 ? "sha256" : "sha1";
-    const tracked = await trackedTree(projectRoot, head);
+    // A preserve commit carries the checkout's edits and untracked files, so leftovers equal to it are recreatable.
+    const tracked = await trackedTree(projectRoot, receipt.preserve?.sha ?? head);
     const roots = new Set(
       stale.journal.filter((entry) => entry.kind === "ignored").map((entry) => entry.path),
     );

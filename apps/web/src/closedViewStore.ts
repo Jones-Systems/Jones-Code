@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import { parseRemoteFileHref } from "./jones/remoteFileLinks/remoteFileLink";
 import { resolveStorage } from "./lib/storage";
 import { randomUUID } from "./lib/utils";
 import { type RightPanelSurface } from "./rightPanelStore";
@@ -66,6 +67,8 @@ const isClosedViewEntry = (entry: unknown): entry is ClosedViewEntry => {
       return surface.id === surface.kind;
     case "preview":
       return surface.resourceId === null || typeof surface.resourceId === "string";
+    case "remote-file":
+      return parseRemoteFileHref(surface.href) !== null;
     case "file":
       return (
         typeof surface.relativePath === "string" &&

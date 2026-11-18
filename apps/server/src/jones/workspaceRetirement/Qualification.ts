@@ -27,6 +27,8 @@ import { observeReftable } from "./ReftableObservation.ts";
 import {
   classifyRecoverability,
   planPreservation,
+  preservable,
+  preserveSelection,
   type PreservePlan,
   type Recoverability,
 } from "./Recoverability.ts";
@@ -111,6 +113,18 @@ function errorClass(cause: unknown): ObservationErrorClass {
   if (typeof error?.code === "string" && /^E[A-Z]+$/.test(error.code)) return "native_read";
   return "unexpected";
 }
+
+/**
+ * The checkout's object store outlives it: a durable repository, outside the checkout and every
+ * temporary root. Only then can a local ref there restore anything after removal.
+ */
+export const storeAnchored = (
+  input: Pick<QualificationInput, "durableRepositories" | "temporaryRoots">,
+  current: Pick<Binding, "path" | "git_common_dir">,
+) =>
+  input.durableRepositories.includes(current.git_common_dir) &&
+  !inside(current.git_common_dir, current.path) &&
+  !input.temporaryRoots.some((root) => inside(current.git_common_dir, root));
 
 // Git makes every pseudoref and these three ref namespaces worktree-local.
 const localRefNamespaces = ["refs/bisect/", "refs/worktree/", "refs/rewritten/"];
@@ -535,10 +549,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       if (await exists(NodePath.join(current.git_dir, file))) reasons.add("operation_in_progress");
     if ((await g(["for-each-ref", "--format=%(refname)", ...localRefNamespaces])).length)
       reasons.add("per_worktree_refs");
-    const anchored =
-      input.durableRepositories.includes(current.git_common_dir) &&
-      !inside(current.git_common_dir, current.path) &&
-      !input.temporaryRoots.some((root) => inside(current.git_common_dir, root));
+    const anchored = storeAnchored(input, current);
     stage = "ref_containment";
     const containing = (await g(["for-each-ref", "--contains", result.head, "--format=%(refname)"]))
       .toString()
@@ -711,7 +722,12 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
 }
 
 // J3 must invoke this while holding the reservation; this helper supplies no exclusion or deletion authority.
-export async function finalCheck(input: QualificationInput, previous: QualificationResult) {
+// `preserve` accepts a target that stays preservable with the same holds and the same preserve selection.
+export async function finalCheck(
+  input: QualificationInput,
+  previous: QualificationResult,
+  accept: "retirable" | "preserve" = "retirable",
+) {
   const fresh = await qualify(input);
   const fact = (r: QualificationResult) =>
     canonical({
@@ -726,8 +742,11 @@ export async function finalCheck(input: QualificationInput, previous: Qualificat
       sparsePatterns: r.sparsePatterns,
       processBasis: r.consumers?.coverage.process?.processPolicy?.basisDigest,
     });
-  return {
-    result: fresh,
-    conflict: fresh.outcome !== "retirable" || fact(fresh) !== fact(previous),
-  };
+  const admissible =
+    accept === "retirable"
+      ? fresh.outcome === "retirable"
+      : preservable(fresh) &&
+        canonical(fresh.reasons) === canonical(previous.reasons) &&
+        canonical(preserveSelection(fresh)) === canonical(preserveSelection(previous));
+  return { result: fresh, conflict: !admissible || fact(fresh) !== fact(previous) };
 }
