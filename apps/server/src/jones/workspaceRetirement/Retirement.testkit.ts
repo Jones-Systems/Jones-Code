@@ -6,6 +6,7 @@ import { ClaimAbsence } from "./ClaimReconciliation.ts";
 import type { JournalEntry, RetirementReceipt } from "./Receipts.ts";
 import { makeRootsWritable } from "./ReadOnlyRemoval.ts";
 import { forgetWorktreeOutputs } from "./OutputFinalization.ts";
+import type { WorkspaceRetirementOutcome } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
 import { DutyIdentityJson, NativeDutyOwnerJson, RetirementReceiptJson } from "./DurableCodecs.ts";
@@ -1603,6 +1604,9 @@ interface EvaluatedRetirement {
     readonly receiptId: string | null;
     readonly fingerprint: string | null;
     readonly details: readonly { readonly nextAction: string }[];
+    readonly paths: readonly string[];
+    readonly recoverability?: WorkspaceRetirementOutcome["recoverability"];
+    readonly preserve?: WorkspaceRetirementOutcome["preserve"];
   };
 }
 export interface OutputStub {

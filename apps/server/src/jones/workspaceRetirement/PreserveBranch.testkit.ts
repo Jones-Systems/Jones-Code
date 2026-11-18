@@ -737,12 +737,28 @@ export const preserveRuntimeCases = (
           });
           NodeAssert.equal(proposal.state, "held");
           NodeAssert.deepEqual(proposal.reasons, ["dirty_tracked", "untracked"]);
+          // The proposal states what Retire will save and where, and names no untracked file as a disposal path.
+          NodeAssert.equal(proposal.outcome.recoverability?.verdict, "retirable_after_preserve");
+          NodeAssert.deepEqual(proposal.outcome.recoverability?.preserve, {
+            files: 4,
+            deletions: 1,
+            bytes: proposal.outcome.recoverability?.preserve?.bytes,
+            remote: "origin",
+            excluded: [],
+            excludedBytes: 0,
+          });
+          NodeAssert.equal(
+            proposal.outcome.paths.some((path) => path.endsWith("draft.md")),
+            false,
+          );
+          NodeAssert.equal(proposal.outcome.preserve, undefined);
           for (const cause of ["sweep", "settlement"] as const) {
             const automatic = await evaluate({ worktree, projectRoot: repo, execute: true, cause });
             NodeAssert.equal(automatic.state, "not_retired");
             NodeAssert.deepEqual(automatic.reasons, ["dirty_tracked", "untracked"]);
           }
-          NodeAssert.deepEqual(git.calls, []);
+          // The proposal reads the branch's remote to name it; that lookup is the only Git call before Retire.
+          NodeAssert.deepEqual(git.calls, [["config", "--get", "branch.task.remote"], ["remote"]]);
           NodeAssert.equal(await refs(remote, "refs/heads/preserve/"), "");
           NodeAssert.equal(await exists(worktree), true);
           const retired = await evaluate({
@@ -759,6 +775,27 @@ export const preserveRuntimeCases = (
           const sha = await command(remote, ["rev-parse", pushed[0]!]);
           NodeAssert.equal(await command(repo, ["rev-parse", pushed[0]!]), sha);
           NodeAssert.deepEqual(await treeNames(remote, sha), PRESERVED);
+          // The result carries the receipt's branch, verification and restore command to the owner.
+          NodeAssert.deepEqual(
+            {
+              branch: retired.outcome.preserve?.branch,
+              sha: retired.outcome.preserve?.sha,
+              remote: retired.outcome.preserve?.remote,
+              verification: retired.outcome.preserve?.verification,
+              forced: retired.outcome.preserve?.forced,
+            },
+            {
+              branch: pushed[0]!.slice("refs/heads/".length),
+              sha,
+              remote: "origin",
+              verification: "remote_verified",
+              forced: true,
+            },
+          );
+          NodeAssert.match(
+            retired.outcome.preserve?.restore ?? "",
+            /preserve\/\d{8}\/mini\/checkout/,
+          );
           NodeAssert.equal(await exists(worktree), false);
           NodeAssert.ok(git.calls.some((args) => args[0] === "push"));
         } finally {
