@@ -1,4 +1,5 @@
 import { makeClientLaunchHarness } from "../../../jones/mcp/clientLaunch/ClientLaunch.testkit.ts";
+import { clientLaunchIds } from "../../../jones/mcp/clientLaunch/ClientLaunchIdentity.ts";
 import { ClaudeProviderCapabilitiesV2 } from "../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Deferred from "effect/Deferred";
@@ -842,6 +843,7 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
     expect(first.isFailure).toBe(false);
     expect(first.result).toMatchObject({
       threadId: "mcp-launch:v1:bb28e36939ff8007bb08bada853383628e4e045f10401a4624afe27b092919dc",
+      initialMessage: "accepted",
     });
     const originalId = launched[0]!.commandId;
     const originalReceipt = yield* receipt(originalId);
@@ -851,6 +853,7 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
     expect(replay.result).toMatchObject({
       threadId: "mcp-launch:v1:bb28e36939ff8007bb08bada853383628e4e045f10401a4624afe27b092919dc",
       replayed: true,
+      initialMessage: "accepted",
     });
     expect(yield* receipt(originalId)).toEqual(originalReceipt);
     expect(yield* creationReceipts(originalId)).toEqual([
@@ -865,8 +868,9 @@ it.effect("a launch retried with the same clientRequestId replays the first one"
     const stored = yield* projection(ThreadId.make(originalId));
     expect(stored.messages).toHaveLength(1);
     expect(stored.runs).toHaveLength(1);
-    expect(stored.messages[0]!.id).toBe(originalId);
-    expect(stored.runs[0]!.userMessageId).toBe(originalId);
+    const { messageId } = clientLaunchIds("client:session-1", "fix-1");
+    expect(stored.messages[0]!.id).toBe(messageId);
+    expect(stored.runs[0]!.userMessageId).toBe(messageId);
     const distinct = (yield* launch("fix-2")).at(-1)!;
     expect(distinct.isFailure).toBe(false);
     expect(distinct.result).toMatchObject({
@@ -1251,7 +1255,11 @@ it.effect("a retried worktree launch replays after its base ref is gone", () =>
     expect((yield* launch).at(-1)?.result).toMatchObject({ projectId });
     const replay = (yield* launch).at(-1)!;
     expect(replay.isFailure).toBe(false);
-    expect(replay.result).toMatchObject({ threadId: originalId, replayed: true });
+    expect(replay.result).toMatchObject({
+      threadId: originalId,
+      replayed: true,
+      initialMessage: "accepted",
+    });
     expect(yield* receipt(originalId)).toEqual(originalReceipt);
     expect(yield* creationReceipts(originalId)).toEqual([
       {
@@ -1265,8 +1273,9 @@ it.effect("a retried worktree launch replays after its base ref is gone", () =>
     const stored = yield* projection(ThreadId.make(originalId));
     expect(stored.messages).toHaveLength(1);
     expect(stored.runs).toHaveLength(1);
-    expect(stored.messages[0]!.id).toBe(originalId);
-    expect(stored.runs[0]!.userMessageId).toBe(originalId);
+    const { messageId } = clientLaunchIds("client:session-1", "fix-worktree");
+    expect(stored.messages[0]!.id).toBe(messageId);
+    expect(stored.runs[0]!.userMessageId).toBe(messageId);
     expect(createWorktree.mock.calls).toHaveLength(1);
     expect(runSetup.mock.calls).toHaveLength(1);
     const fresh = (yield* toolkit

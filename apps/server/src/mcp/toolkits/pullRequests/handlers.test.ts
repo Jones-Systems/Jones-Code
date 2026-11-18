@@ -613,6 +613,8 @@ describe("listThreadPullRequests", () => {
           repository: "Jones-Systems/Jones-Code",
           url: `https://github.com/Jones-Systems/Jones-Code/pull/${number}`,
           source: "stack",
+          // PR 508 was linked last; the list pages by link time independently of stack position.
+          ...(number === 508 ? { linkedAt: "2026-08-11T00:00:00.000Z" } : {}),
           // Only the appended top has the latest authoritative membership.
           stack: number === 516 ? stack : { ...stack, layers: stack.layers.slice(0, -1) },
         }),

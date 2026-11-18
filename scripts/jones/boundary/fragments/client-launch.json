@@ -52,6 +52,10 @@
     {
       "from": "apps/server/src/mcp/toolkits/project/handlers.test.ts",
       "to": "apps/server/src/jones/mcp/clientLaunch/ClientLaunch.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+      "to": "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.ts"
     }
   ]
 }

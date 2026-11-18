@@ -23,8 +23,12 @@ type ReceiptReader = Pick<Receipts.CommandReceiptStoreV2["Service"], "getByComma
 type EventReader = Pick<EventSink.EventSinkV2["Service"], "readByCommandId">;
 export type LaunchDeliveryRequest = Pick<
   OrchestrationV2ThreadLaunchInput,
-  "commandId" | "projectId" | "threadId" | "reuseExistingThread" | "initialMessage"
->;
+  "commandId" | "projectId" | "threadId" | "reuseExistingThread"
+> & {
+  readonly initialMessage?:
+    | Pick<NonNullable<OrchestrationV2ThreadLaunchInput["initialMessage"]>, "messageId">
+    | undefined;
+};
 
 const receiptMatches = (
   receipt: Receipts.CommandReceiptV2,
@@ -47,7 +51,7 @@ const eventsMatch = (
   );
 
 /** Only the original command's immutable claim can establish its project and target. */
-function recordedLaunchClaim(
+export function recordedLaunchClaim(
   input: LaunchDeliveryRequest,
   receipt: Receipts.CommandReceiptV2,
   events: ReadonlyArray<RecordedStoredEvent>,
@@ -155,6 +159,48 @@ function recordedClaimMessage(
   return firstMessageIn(input, events, threadId);
 }
 
+/** Read the two possible carriers of the first message before admitting a retry. */
+export const readLaunchMessage = Effect.fn("jones.orchestration.readLaunchMessage")(function* (
+  receipts: ReceiptReader,
+  events: EventReader,
+  input: LaunchDeliveryRequest,
+  claimReceipt: Receipts.CommandReceiptV2,
+  claimEvents: ReadonlyArray<RecordedStoredEvent>,
+) {
+  const commandId = initialMessageCommandId(input.commandId);
+  const threadId = claimReceipt.threadId;
+  const separate = yield* receipts.getByCommandId(commandId);
+  if (claimCarriesFirstMessage(input, claimEvents, threadId)) {
+    const match =
+      Option.isNone(separate) && recordedClaimMessage(input, claimReceipt, claimEvents, threadId);
+    return match
+      ? {
+          status: "accepted" as const,
+          ...match,
+          storedEvents: claimEvents,
+          sequence: claimReceipt.resultSequence,
+          replayed: true,
+        }
+      : { status: "conflict" as const };
+  }
+  if (Option.isNone(separate)) return { status: "absent" as const };
+  const receipt = separate.value;
+  if (!receiptMatches(receipt, commandId, "message.dispatch", threadId))
+    return { status: "conflict" as const };
+  if (receipt.status === "rejected") return { status: "rejected" as const, receipt };
+  const storedEvents = yield* events.readByCommandId({ commandId }).pipe(Stream.runCollect);
+  const match = recordedLaunchMessage(input, receipt, storedEvents, threadId);
+  return match
+    ? {
+        status: "accepted" as const,
+        ...match,
+        storedEvents,
+        sequence: receipt.resultSequence,
+        replayed: true,
+      }
+    : { status: "conflict" as const };
+});
+
 export const dispatchDeliveryEvidence = Effect.fn("jones.orchestration.dispatchDeliveryEvidence")(
   function* (receipts: ReceiptReader, command: OrchestrationV2Command) {
     const threadId =
@@ -229,52 +275,27 @@ export const launchDeliveryEvidence = Effect.fn("jones.orchestration.launchDeliv
     if (input.initialMessage === undefined) return claimed;
     // The wire names the first prompt by its derived delivery key, whichever command carried it.
     const messageCommandId = initialMessageCommandId(input.commandId);
-    const messageRead = yield* receipts.getByCommandId(messageCommandId).pipe(
-      Effect.map((found) => ({ readable: true as const, receipt: found })),
-      Effect.catchCause(() => Effect.succeed({ readable: false as const })),
-    );
-    // An unreadable derived key can neither prove a separate dispatch nor rule one out.
-    if (!messageRead.readable) return claimed;
-    const messageReceipt = messageRead.receipt;
-    if (claimCarriesFirstMessage(input, claimEvents, claim.id)) {
-      // A combined claim leaves the derived key unused; a receipt there conflicts with it.
-      if (Option.isSome(messageReceipt)) return claimed;
-      const carried = recordedClaimMessage(input, receipt.value, claimEvents, claim.id);
-      return carried === undefined
-        ? claimed
-        : ({
-            ...claimed,
-            initialMessage: {
-              status: "accepted",
-              commandId: messageCommandId,
-              messageId: carried.message.id,
-            },
-          } satisfies LaunchDeliveryEvidence);
-    }
-    if (
-      Option.isNone(messageReceipt) ||
-      !receiptMatches(messageReceipt.value, messageCommandId, "message.dispatch", claim.id)
-    )
-      return claimed;
-    if (messageReceipt.value.status === "rejected")
+    const result = yield* readLaunchMessage(
+      receipts,
+      events,
+      input,
+      receipt.value,
+      claimEvents,
+    ).pipe(Effect.catchCause(() => Effect.succeed({ status: "unknown" as const })));
+    if (result.status === "accepted")
+      return {
+        ...claimed,
+        initialMessage: {
+          status: "accepted",
+          commandId: messageCommandId,
+          messageId: result.message.id,
+        },
+      } satisfies LaunchDeliveryEvidence;
+    if (result.status === "rejected")
       return {
         ...claimed,
         initialMessage: { ...initialMessage, status: "rejected", commandId: messageCommandId },
       } satisfies LaunchDeliveryEvidence;
-    const messageEvents = yield* events.readByCommandId({ commandId: messageCommandId }).pipe(
-      Stream.runCollect,
-      Effect.catchCause(() => Effect.succeed([])),
-    );
-    const message = recordedLaunchMessage(input, messageReceipt.value, messageEvents, claim.id);
-    return message === undefined
-      ? claimed
-      : ({
-          ...claimed,
-          initialMessage: {
-            status: "accepted",
-            commandId: messageCommandId,
-            messageId: message.message.id,
-          },
-        } satisfies LaunchDeliveryEvidence);
+    return claimed;
   },
 );

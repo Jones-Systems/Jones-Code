@@ -106,6 +106,17 @@ import {
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
+const CurrentPublicationReconciliation = Context.Reference<
+  | {
+      readonly input: ProviderAdapter.RuntimeBindingPublicationInput;
+      readonly revalidate: Effect.Effect<void, ProviderRuntimeBindingError>;
+      readonly revalidateControl: (
+        binding: ProviderRuntimeBinding,
+      ) => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>;
+    }
+  | undefined
+>("jones/provider/CurrentPublicationReconciliation", { defaultValue: () => undefined });
+
 /** The turn-start transaction owns completion of its exact retained native fork. */
 export class CurrentForkRecording extends Context.Reference<
   | {
@@ -302,6 +313,9 @@ export interface ProviderSessionManagerV2Shape {
   readonly reconcileThreadBindingPublication?: (input: {
     readonly run: OrchestrationV2Run;
     readonly providerThread: OrchestrationV2ProviderThread;
+    readonly revalidateControl?: (
+      binding: ProviderRuntimeBinding,
+    ) => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>;
   }) => Effect.Effect<OrchestrationV2ProviderThread | null, ProviderSessionManagerV2Error>;
   readonly captureThreadRetirement?: (
     binding: ProviderRuntimeBinding,
@@ -484,6 +498,8 @@ function sessionScopedArtifactThreadId(
   event: ProviderAdapter.ProviderAdapterV2Event,
 ): ThreadId | undefined {
   switch (event.type) {
+    case "runtime_identity.observed":
+      return event.binding.threadId;
     case "provider_thread.updated":
       return event.sessionScoped === true
         ? (event.providerThread.appThreadId ?? undefined)
@@ -617,6 +633,10 @@ export const layerWithOptions = (
         publication:
           | {
               readonly handle: ProviderAdapter.CapturedRuntimeBindingPublication;
+              readonly input: ProviderAdapter.RuntimeBindingPublicationInput;
+              readonly ordinaryStart:
+                | { readonly runId: OrchestrationV2Run["id"]; readonly effectId: string }
+                | undefined;
               readonly readCompleted: Effect.Effect<
                 OrchestrationV2ProviderThread | null,
                 ProviderAdapter.ProviderAdapterV2Error
@@ -729,7 +749,14 @@ export const layerWithOptions = (
                 const original = publicationAuthorities.get(publication.input);
                 if (original === undefined)
                   return yield* protocolError("Original publication authority was lost.");
-                yield* original.revalidate;
+                const reconciliation = yield* CurrentPublicationReconciliation;
+                if (
+                  reconciliation?.input === publication.input &&
+                  original.nativeGuard === undefined
+                ) {
+                  yield* reconciliation.revalidate;
+                  yield* reconciliation.revalidateControl(publication.binding);
+                } else yield* original.revalidate;
                 yield* NativeProvider.revalidateNativeProviderGuard(original.nativeGuard, {
                   threadId,
                 });
@@ -809,6 +836,25 @@ export const layerWithOptions = (
               const captured = yield* restore(captureOriginalLoadBinding(value));
               const handle = yield* restore(publication.prepare(value));
               if (captured !== undefined) {
+                const claim = yield* Effect.serviceOption(CurrentEffectClaim);
+                const ordinaryStart =
+                  driver === "codex" &&
+                  captured.original.publication === undefined &&
+                  Option.isSome(claim) &&
+                  Option.isNone(guard) &&
+                  !captured.original.awaitsForkRecording
+                    ? yield* claim.value
+                        .use((effect) =>
+                          Effect.succeed(
+                            effect.request.type === "provider-turn.start" &&
+                              effect.nativeCreationExecutionReference === undefined &&
+                              effect.threadId === captured.threadId
+                              ? { runId: effect.request.runId, effectId: effect.id }
+                              : undefined,
+                          ),
+                        )
+                        .pipe(Effect.mapError(protocolError))
+                    : undefined;
                 const current = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
                 if (
                   current?.runtime !== captured.runtime ||
@@ -822,6 +868,8 @@ export const layerWithOptions = (
                   );
                 captured.original.publication ??= {
                   handle,
+                  input: value,
+                  ordinaryStart,
                   readCompleted: publication.readCompleted(handle),
                 };
               }
@@ -3395,6 +3443,7 @@ export const layerWithOptions = (
           target?: OrchestrationV2ProviderThread,
           settings: OriginalThreadLoad["settings"] = {},
           forkSource?: OrchestrationV2ProviderThread,
+          resumeSource?: OrchestrationV2ProviderThread,
         ) {
           yield* assertLoadAdmission;
           const recording = forkSource === undefined ? undefined : yield* CurrentForkRecording;
@@ -3545,11 +3594,15 @@ export const layerWithOptions = (
             recover,
             (cause) => {
               if (
-                forkSource === undefined ||
                 captured.binding !== undefined ||
                 captured.publication !== undefined ||
                 loads.get(threadId) !== captured ||
-                !ProviderAdapter.isUnappliedSourceFork(cause, forkSource)
+                !(
+                  (forkSource !== undefined &&
+                    ProviderAdapter.isUnappliedSourceFork(cause, forkSource)) ||
+                  (resumeSource !== undefined &&
+                    ProviderAdapter.isUnappliedSourceResume(cause, resumeSource))
+                )
               )
                 return false;
               loads.delete(threadId);
@@ -3888,6 +3941,8 @@ export const layerWithOptions = (
                           runtime.resumeThread(input),
                           input.providerThread,
                           input,
+                          undefined,
+                          input.providerThread,
                         ),
                   ),
                 ),
@@ -3969,6 +4024,7 @@ export const layerWithOptions = (
               Effect.filterOrFail(
                 ({ loaded }) =>
                   (runtime.driver !== "claudeAgent" &&
+                    runtime.driver !== "opencode" &&
                     loaded.runtimeIdentity?.runtimeGeneration === undefined) ||
                   input.targetProviderThread === undefined ||
                   ProviderAdapter.matchesForkDestination(
@@ -4624,6 +4680,7 @@ export const layerWithOptions = (
                       if (
                         current?.runtime !== entry.runtime ||
                         ((event.type === "provider_thread.updated" ||
+                          event.type === "runtime_identity.observed" ||
                           (event.type === "turn_item.updated" &&
                             event.turnItem.type === "command_execution")) &&
                           !current.attachedThreadIds.has(threadId))
@@ -4911,10 +4968,11 @@ export const layerWithOptions = (
       const reconcileThreadBindingPublication = Effect.fn(
         "ProviderSessionManager.reconcileThreadBindingPublication",
       )(
-        function* (input: {
-          readonly run: OrchestrationV2Run;
-          readonly providerThread: OrchestrationV2ProviderThread;
-        }) {
+        function* (
+          input: Parameters<
+            NonNullable<ProviderSessionManagerV2Shape["reconcileThreadBindingPublication"]>
+          >[0],
+        ) {
           const { run, providerThread } = input;
           const providerSessionId = providerThread.providerSessionId;
           if (providerSessionId === null) return null;
@@ -4933,7 +4991,30 @@ export const layerWithOptions = (
               detail: "The new run no longer owns this retained binding publication.",
               cause,
             });
+          const loads = originalThreadLoads.get(entry.runtime);
+          const original = loads?.get(run.threadId);
+          const publication = original?.publication;
+          const ordinaryStart =
+            providerThread.driver === "codex" && publication?.ordinaryStart?.runId !== run.id
+              ? publication?.ordinaryStart
+              : undefined;
+          const claim = yield* Effect.serviceOption(CurrentEffectClaim);
+          const checkClaim =
+            ordinaryStart === undefined
+              ? Effect.void
+              : Option.isNone(claim)
+                ? Effect.fail(refused("A live ordinary start claim is required."))
+                : claim.value.use((effect) =>
+                    effect.request.type === "provider-turn.start" &&
+                    effect.request.runId === run.id &&
+                    effect.threadId === run.threadId &&
+                    effect.id !== ordinaryStart.effectId &&
+                    effect.nativeCreationExecutionReference === undefined
+                      ? Effect.void
+                      : Effect.fail(refused("The claim does not own the new ordinary start.")),
+                  );
           const revalidate = Effect.gen(function* () {
+            yield* checkClaim;
             const latestEntry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
             const current = yield* projectionStore.getTurnStartContext(run.threadId, run.id);
             const currentRun = current.runs.find((candidate) => candidate.id === run.id);
@@ -4979,20 +5060,56 @@ export const layerWithOptions = (
               return yield* refused(
                 "The captured run, attempt, target, or existing runtime changed.",
               );
+            if (ordinaryStart !== undefined && publication !== undefined) {
+              const source = current.runs.find((candidate) => candidate.id === ordinaryStart.runId);
+              const generation = target.runtimeIdentity?.runtimeGeneration;
+              const bound =
+                generation === undefined ? undefined : runtimeBinding(target, generation);
+              const retainedBinding = publication.handle.binding;
+              if (
+                loads?.get(run.threadId)?.publication !== publication ||
+                source?.status !== "failed" ||
+                source.startedAt !== null ||
+                source.ordinal >= run.ordinal ||
+                source.providerThreadId !== providerThread.id ||
+                source.providerInstanceId !== providerThread.providerInstanceId ||
+                ((generation !== providerThread.runtimeIdentity?.runtimeGeneration ||
+                  target.nativeThreadRef?.nativeId !== providerThread.nativeThreadRef?.nativeId) &&
+                  (bound === undefined || !equivalentBinding(bound, retainedBinding)))
+              )
+                return yield* refused("The original failed start or retained binding changed.");
+              yield* eventSink.assertRuntimeStopStartAllowed({
+                threadId: run.threadId,
+                runId: run.id,
+              });
+            }
+            yield* checkClaim;
           }).pipe(Effect.mapError(refused));
+          // The fresh claim may finish only this captured local publication. Native
+          // execution and unrelated reservations still use their original authority.
+          const reconciliation =
+            ordinaryStart === undefined ||
+            publication === undefined ||
+            input.revalidateControl === undefined
+              ? undefined
+              : {
+                  input: publication.input,
+                  revalidate,
+                  revalidateControl: input.revalidateControl,
+                };
           yield* revalidate;
           let recovered = yield* reconcile({
             threadId: run.threadId,
             providerThreadId: providerThread.id,
             nativeThreadId,
             revalidate,
-          });
+          }).pipe(Effect.provideService(CurrentPublicationReconciliation, reconciliation));
           yield* revalidate;
-          const loads = originalThreadLoads.get(entry.runtime);
-          const original = loads?.get(run.threadId);
           if (recovered === null) {
-            if (original?.publication === undefined) return null;
-            recovered = yield* original.publication.readCompleted;
+            if (publication === undefined) return null;
+            recovered = yield* publication.readCompleted.pipe(
+              Effect.provideService(CurrentPublicationReconciliation, reconciliation),
+            );
             if (recovered === null)
               return yield* refused("The retained original publication is not complete.");
             yield* revalidate;

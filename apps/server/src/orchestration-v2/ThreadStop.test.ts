@@ -2425,7 +2425,7 @@ it.effect.each([
             const now = yield* DateTime.now;
             const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
             eventQueues.set(input.providerSessionId, events);
-            return {
+            return yield* ProviderReplayHarness.withReplayThreadPublication(input, {
               instanceId,
               driver,
               providerSessionId: input.providerSessionId,
@@ -2492,19 +2492,62 @@ it.effect.each([
               readThreadSnapshot: () => Effect.die("unused"),
               rollbackThread: () => Effect.die("unused"),
               forkThread: () => Effect.die("unused"),
-            };
+            });
           }),
       });
-      // The settlement promotes the follow-up; optionally its turn starts before Force stop releases.
+      const threadId = ThreadId.make("thread:force-stop-follow-up");
+      const registry = ProviderAdapterRegistry.ProviderAdapterRegistryV2;
+      const layerAdapters = Layer.effect(
+        registry,
+        Effect.map(registry, (adapters) =>
+          registry.of({
+            ...adapters,
+            // The two synthetic accounts expose the same native conversation history.
+            getMetadata: (id) =>
+              adapters.get(id).pipe(
+                Effect.map(({ driver }) => ({
+                  driver,
+                  continuationKey: "codex:test:shared-sessions",
+                  enabled: true,
+                  capabilities: adapterCapabilities,
+                })),
+              ),
+          }),
+        ),
+      ).pipe(
+        Layer.provide(
+          ProviderAdapterRegistry.layerFromAdapters([
+            liveAdapter(instanceId),
+            liveAdapter(otherInstanceId),
+          ]),
+        ),
+      );
+      // Observe promotion before release, independently of the worker starting the new turn.
       const layerSessionsStartingFollowUpFirst = Layer.effect(
         ProviderSessionManager.ProviderSessionManagerV2,
         Effect.gen(function* () {
           const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const promoted = orchestrator
+            .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
+            .pipe(
+              Stream.filter(
+                ({ event }) =>
+                  event.type === "run.updated" &&
+                  event.payload.ordinal === 2 &&
+                  event.payload.status === "starting",
+              ),
+              Stream.runHead,
+            );
           return ProviderSessionManager.ProviderSessionManagerV2.of({
             ...sessions,
             releaseUnlessBusy: (input) =>
-              (startedBeforeRelease ? worker.drain().pipe(Effect.orDie) : Effect.void).pipe(
+              promoted.pipe(
+                Effect.orDie,
+                Effect.andThen(
+                  startedBeforeRelease ? worker.drain().pipe(Effect.orDie) : Effect.void,
+                ),
                 Effect.andThen(sessions.releaseUnlessBusy(input)),
               ),
           });
@@ -2520,10 +2563,7 @@ it.effect.each([
             EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
             ProviderReplayHarness.layerWithRegistry(
               { name: "thread-stop-force-stop-follow-up" },
-              ProviderAdapterRegistry.layerFromAdapters([
-                liveAdapter(instanceId),
-                liveAdapter(otherInstanceId),
-              ]),
+              layerAdapters,
               { databaseLayer: layerDatabase, runEffectWorker: false },
             ),
           ),
@@ -2537,7 +2577,6 @@ it.effect.each([
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
         const threads = yield* ThreadManagementService.ThreadManagementService;
-        const threadId = ThreadId.make("thread:force-stop-follow-up");
         const runningTurn = orchestrator.streamDomainEvents.pipe(
           Stream.filter(
             (event) => event.type === "provider-turn.updated" && event.payload.status === "running",

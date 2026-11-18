@@ -89,12 +89,24 @@ export const lookup = Effect.fn("jones.clientLaunch.lookup")(function* (
     claim?.message_requested === 1
       ? yield* readReceipt(CommandId.make(`${ids.commandId}:initial-message`))
       : undefined;
+  const launches = yield* ThreadLaunch.ThreadLaunchService;
+  // Older combined launch commits can carry the exact message without a separate receipt.
+  const carried =
+    claim?.message_requested === 1 && messageReceipt === undefined && shell !== null
+      ? yield* launches.getDeliveryEvidence({
+          commandId: ids.commandId,
+          threadId: ids.threadId,
+          projectId: shell.projectId,
+          initialMessage: { messageId: ids.messageId },
+        })
+      : undefined;
   const initialMessage: ClientLaunchLookup["initialMessage"] =
     claim === undefined
       ? "unknown"
       : claim.message_requested === 0
         ? "not_requested"
-        : (messageReceipt?.status ?? "pending");
+        : (messageReceipt?.status ??
+          (carried?.initialMessage.status === "accepted" ? "accepted" : "pending"));
   const launched = {
     ...base,
     state: "launched" as const,
@@ -112,7 +124,6 @@ export const lookup = Effect.fn("jones.clientLaunch.lookup")(function* (
   if (run !== undefined) {
     if (run.status !== "preparing") preparation = "left_preparation";
     else {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
       if (yield* launches.preparationActive(ids.commandId)) preparation = "in_progress";
       else {
         const worktree = yield* readReceipt(CommandId.make(`${ids.commandId}:progress:worktree`));

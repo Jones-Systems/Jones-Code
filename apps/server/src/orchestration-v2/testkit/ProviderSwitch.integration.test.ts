@@ -230,7 +230,15 @@ function makeTestAdapter(input: {
                 (input.failResumeOnce !== undefined &&
                   (yield* Ref.getAndSet(input.failResumeOnce, false)))
               )
-                return yield* unimplemented(input.driver, "simulated native resume failure");
+                return yield* new ProviderAdapter.ProviderAdapterResumeThreadError({
+                  driver: input.driver,
+                  providerSessionId: sessionInput.providerSessionId,
+                  providerThreadId: providerThread.id,
+                  ...(providerThread.nativeThreadRef?.nativeId == null
+                    ? {}
+                    : { unappliedSourceNativeId: providerThread.nativeThreadRef.nativeId }),
+                  cause: "Synthetic source unavailable before native resume.",
+                });
               return providerThread;
             }),
           ...(input.injectedHistory === undefined
@@ -925,7 +933,11 @@ describe("orchestration v2 provider switching", () => {
           }
           return;
         }
-        assert.equal(projection.runs.at(-1)?.status, "completed");
+        assert.equal(
+          projection.runs.at(-1)?.status,
+          "completed",
+          JSON.stringify(projection.turnItems.filter((item) => item.type === "error")),
+        );
         if (exhaustedTarget) {
           assert.equal(yield* Ref.get(generation), 2);
           const turns = (yield* Ref.get(capturedTurns)).filter(
@@ -2755,18 +2767,21 @@ describe("orchestration v2 provider switching", () => {
             request.type === "provider-turn.start" && request.runId === queued.runs[3]?.id,
         );
         assert.isDefined(promotedStart);
-        const detachEffects = effects.filter(
-          (effect) =>
-            effect.commandId === promotedStart!.commandId &&
-            effect.request.type === "provider-session.detach",
+        assert.equal(promotedStart!.status, "succeeded");
+        // The promoted start owns retirement at normal admission, before starting Claude.
+        assert.equal(detachEvents[0]?.event.runId, queued.runs[3]?.id);
+        assert.equal(
+          detachEvents[0]?.event.type === "provider-session.detached"
+            ? detachEvents[0].event.payload.reason
+            : null,
+          "Selection changed at normal run admission.",
         );
-        assert.deepEqual(
-          detachEffects.map((effect) =>
-            effect.request.type === "provider-session.detach"
-              ? effect.request.providerSessionId
-              : null,
+        assert.isFalse(
+          effects.some(
+            (effect) =>
+              effect.commandId === promotedStart!.commandId &&
+              effect.request.type === "provider-session.detach",
           ),
-          [activeSession?.id],
         );
         return yield* orchestrator.getThreadProjection(queuedThreadId);
       }).pipe(

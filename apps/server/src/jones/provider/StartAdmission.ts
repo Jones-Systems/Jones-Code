@@ -31,6 +31,17 @@ export const CurrentBindingPublication = Context.Reference<
   | undefined
 >("jones/provider/CurrentBindingPublication", { defaultValue: () => undefined });
 
+// Scoped to the turn-start owner's explicit fresh load after native handoff recovery.
+export const CurrentHandoffReplacement = Context.Reference<
+  | {
+      readonly runId: RunId;
+      readonly attemptId: RunAttemptId;
+      readonly providerThreadId: ProviderRuntimeBinding["providerThreadId"];
+      readonly previousNativeId: string;
+    }
+  | undefined
+>("jones/provider/CurrentHandoffReplacement", { defaultValue: () => undefined });
+
 // Only the provider owning an acknowledged turn may continue it after the start claim settles.
 export const CurrentCapacityContinuation = Context.Reference<
   | {

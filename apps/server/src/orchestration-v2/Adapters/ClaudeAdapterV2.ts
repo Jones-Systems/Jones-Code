@@ -14994,8 +14994,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 appliedSessionTitles.set(nativeThreadId, threadInput.title);
               }
               const providerThread = makeProviderThread({
-                ...(threadInput.forceNewNativeThread === true &&
-                threadInput.existingProviderThread !== undefined
+                ...(threadInput.existingProviderThread !== undefined &&
+                (threadInput.existingProviderThread.nativeThreadRef === null ||
+                  threadInput.forceNewNativeThread === true)
                   ? { existing: threadInput.existingProviderThread }
                   : {}),
                 idAllocator,
@@ -15056,9 +15057,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   bound?.nativeThreadId !== nativeThreadId ||
                   (yield* Deferred.isDone(bound.closed))
                 ) {
-                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  return yield* new ProviderAdapter.ProviderAdapterResumeThreadError({
                     driver: CLAUDE_PROVIDER,
-                    detail: `Claude Code has no conversation ${nativeThreadId} to resume.`,
+                    providerSessionId: input.providerSessionId,
+                    providerThreadId: threadInput.providerThread.id,
+                    unappliedSourceNativeId: nativeThreadId,
+                    cause: new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CLAUDE_PROVIDER,
+                      detail: `Claude Code has no conversation ${nativeThreadId} to resume.`,
+                    }),
                   });
                 }
               }
@@ -15073,9 +15080,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   Effect.orElseSucceed(() => "missing" as const),
                 );
                 if (transcript === "empty") {
-                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  return yield* new ProviderAdapter.ProviderAdapterResumeThreadError({
                     driver: CLAUDE_PROVIDER,
-                    detail: `Claude session ${nativeThreadId} has no conversation to resume.`,
+                    providerSessionId: input.providerSessionId,
+                    providerThreadId: threadInput.providerThread.id,
+                    unappliedSourceNativeId: nativeThreadId,
+                    cause: new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CLAUDE_PROVIDER,
+                      detail: `Claude session ${nativeThreadId} has no conversation to resume.`,
+                    }),
                   });
                 }
                 // A session imported from the terminal has history but no T3
@@ -15110,14 +15123,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             },
             (effect, threadInput) =>
               effect.pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderAdapter.ProviderAdapterResumeThreadError({
-                      driver: CLAUDE_PROVIDER,
-                      providerSessionId: input.providerSessionId,
-                      providerThreadId: threadInput.providerThread.id,
-                      cause,
-                    }),
+                Effect.mapError((cause) =>
+                  cause._tag === "ProviderAdapterResumeThreadError"
+                    ? cause
+                    : new ProviderAdapter.ProviderAdapterResumeThreadError({
+                        driver: CLAUDE_PROVIDER,
+                        providerSessionId: input.providerSessionId,
+                        providerThreadId: threadInput.providerThread.id,
+                        cause,
+                      }),
                 ),
               ),
           ),

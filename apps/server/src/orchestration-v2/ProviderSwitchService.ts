@@ -256,11 +256,19 @@ export const layer: Layer.Layer<
             Option.isSome(targetAdapter) &&
             Option.isSome(currentInstance) &&
             (currentSession !== undefined || currentProviderThread !== undefined)
-              ? yield* targetAdapter.value.planSelectionTransition({
-                  current,
-                  target: targetModelSelection,
-                  sessionCapabilities: negotiatedCapabilities ?? currentInstance.value.capabilities,
-                })
+              ? negotiatedCapabilities === undefined &&
+                modelSelectionsEqual(
+                  { ...current, model: targetModelSelection.model },
+                  targetModelSelection,
+                )
+                ? // A detached session can apply a model-only change when it opens.
+                  ({ type: "apply_on_next_turn" } as const)
+                : yield* targetAdapter.value.planSelectionTransition({
+                    current,
+                    target: targetModelSelection,
+                    sessionCapabilities:
+                      negotiatedCapabilities ?? currentInstance.value.capabilities,
+                  })
               : undefined;
           // A selection change keeps the thread where it is. A shared session's cwd is the
           // workspace of whichever thread opened it, not a move of this thread.

@@ -773,7 +773,8 @@ jobs:
       - *test_receipt_upload
       - *test_receipt_cleanup
 
-  # Both shards run the complete web command, including unit and browser projects.
+  # Every shard runs the same unit and browser projects. Smaller shards limit
+  # the lifetime of each Chromium process on the Linux runners.
   test_web:
     needs: linux_changes
     if: ${{ !cancelled() && needs.linux_changes.outputs.test_web != 'false' }}
@@ -781,7 +782,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:

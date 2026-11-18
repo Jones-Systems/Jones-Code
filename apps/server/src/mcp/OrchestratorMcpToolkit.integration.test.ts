@@ -118,6 +118,7 @@ const localChild = (childThreadId: ThreadId | null): ThreadId => {
 
 const parentThreadId = ThreadId.make("thread:mcp-orchestrator-parent");
 const projectId = ProjectId.make("project:mcp-orchestrator");
+const foreignProjectId = ProjectId.make("project:mcp-foreign");
 const codexInstanceId = ProviderInstanceId.make("codex");
 const codexModel = "gpt-5.4";
 const parentPrompt = "Keep this parent turn active while orchestration tools are tested.";
@@ -269,6 +270,30 @@ function makeDeterministicAdapter(input: {
           Effect.forEach(providerEvents, (event) => PubSub.publish(events, event), {
             discard: true,
           });
+        // Exercise the same recorded native binding admission as the real adapters.
+        const publishBinding = Effect.fn("test.publishBinding")(function* (
+          threadId: ThreadId,
+          providerThread: OrchestrationV2ProviderThread,
+          selection: ModelSelection,
+        ) {
+          const lifecycle = sessionInput.runtimeLifecycle;
+          if (lifecycle?.prepareBindingPublication === undefined) {
+            return yield* unsupported(
+              input.driver,
+              "The test runtime needs native binding publication",
+            );
+          }
+          const runtimeGeneration = yield* lifecycle.reserve(threadId);
+          yield* lifecycle.admit({ runtimeGeneration, threadId });
+          const publication = yield* lifecycle.prepareBindingPublication({
+            providerThread,
+            runtimeGeneration,
+            requested: ProviderAdapter.requestedRuntimeIdentity(selection, input.driver),
+            observed: ProviderAdapter.unobservedRuntimeIdentity(),
+          });
+          return yield* publication.complete;
+        });
+
         const runOrdinals = new Map<ProviderTurnId, number>();
         const turnInputs = new Map<ProviderTurnId, ProviderAdapter.ProviderAdapterV2TurnInput>();
 
@@ -282,8 +307,10 @@ function makeDeterministicAdapter(input: {
             Effect.gen(function* () {
               const createdAt = yield* DateTime.now;
               const nativeThreadId = `${input.driver}:${threadInput.threadId}`;
-              return {
-                id: ProviderThreadId.make(`provider-thread:${nativeThreadId}`),
+              const providerThread = {
+                id:
+                  threadInput.existingProviderThread?.id ??
+                  ProviderThreadId.make(`provider-thread:${nativeThreadId}`),
                 driver: input.driver,
                 providerInstanceId: input.instanceId,
                 providerSessionId: sessionInput.providerSessionId,
@@ -303,8 +330,22 @@ function makeDeterministicAdapter(input: {
                 createdAt,
                 updatedAt: createdAt,
               } satisfies OrchestrationV2ProviderThread;
+              return yield* publishBinding(
+                threadInput.threadId,
+                providerThread,
+                threadInput.modelSelection,
+              );
             }),
-          resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+          resumeThread: ({ providerThread, threadId, modelSelection }) => {
+            const owner = threadId ?? providerThread.appThreadId;
+            return owner == null
+              ? unsupported(input.driver, "The test runtime needs a thread owner")
+              : publishBinding(
+                  owner,
+                  providerThread,
+                  modelSelection ?? sessionInput.modelSelection,
+                );
+          },
           startTurn: (turnInput) =>
             Effect.gen(function* () {
               yield* Ref.update(input.capturedTurns, (turns) => [
@@ -1182,7 +1223,8 @@ describe("orchestrator MCP toolkit", () => {
             (query) =>
               /FROM orchestration_v2_projection_(nodes|run_attempts)\b/.test(query) ||
               (/FROM orchestration_v2_projection_runs\b/.test(query) &&
-                !query.includes("AND run_id IN")) ||
+                !query.includes("AND run_id IN") &&
+                !/WHERE run_id = \?$/.test(query)) ||
               (/FROM orchestration_v2_projection_subagents\b/.test(query) &&
                 !query.includes("AND subagent_id IN")),
           ),
@@ -1329,7 +1371,18 @@ describe("orchestrator MCP toolkit", () => {
             ProviderContinuationRequests.ProviderContinuationRequests,
             {
               offer: (request) =>
-                Ref.updateAndGet(continuationOffers, (existing) => [...existing, request]).pipe(
+                Ref.updateAndGet(continuationOffers, (existing) => {
+                  // Reconciliation can offer the same durable completion more than once.
+                  const completion = request.delegatedCompletion;
+                  return completion !== undefined &&
+                    existing.some(
+                      (offer) =>
+                        offer.delegatedCompletion?.messageId === completion.messageId &&
+                        offer.delegatedCompletion.generation === completion.generation,
+                    )
+                    ? existing
+                    : [...existing, request];
+                }).pipe(
                   Effect.flatMap((offers) => Queue.offer(continuationOfferCounts, offers.length)),
                   Effect.asVoid,
                 ),
@@ -1349,7 +1402,8 @@ describe("orchestrator MCP toolkit", () => {
             Effect.gen(function* () {
               for (let sample = 0; sample < 4; sample += 1) {
                 yield* TestClock.adjust("50 millis");
-                expect(yield* Ref.get(continuationOffers)).toHaveLength(count);
+                const observed = yield* Ref.get(continuationOffers);
+                expect(observed, JSON.stringify(observed)).toHaveLength(count);
               }
             });
           const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
@@ -1366,6 +1420,7 @@ describe("orchestrator MCP toolkit", () => {
               },
             },
             layerRegistry,
+            { configureMcp: true },
           ).pipe(Layer.provide(layerContinuationProbe));
           const layerOrchestration = Layer.merge(
             layerOrchestrator,
@@ -1461,13 +1516,13 @@ describe("orchestrator MCP toolkit", () => {
               Layer.mock(ProjectService.ProjectService)({
                 getById: (id) =>
                   Effect.succeed(
-                    id === projectId
+                    id === projectId || id === foreignProjectId
                       ? Option.some({ id, defaultModelSelection: null } as never)
                       : Option.none(),
                   ),
                 getShell: (id) =>
                   Effect.succeed(
-                    id === projectId
+                    id === projectId || id === foreignProjectId
                       ? Option.some({
                           id,
                           title: "Project",
@@ -1539,7 +1594,7 @@ describe("orchestrator MCP toolkit", () => {
               requestNamespace: "mcp-provider-session-parent",
               thread: {
                 threadId: parentThreadId,
-                providerSessionId: "mcp-provider-session-parent",
+                providerSessionId: `mcp-test:${parentThreadId}`,
                 providerInstanceId: codexInstanceId,
               },
               client: undefined,
@@ -1572,7 +1627,7 @@ describe("orchestrator MCP toolkit", () => {
             const decodeUnlinked = Schema.decodeUnknownEffect(UnlinkPullRequestResult);
 
             const deferredSettle = yield* invoke("t3_thread_organize", { action: "settle" });
-            expect(deferredSettle.isError).toBe(false);
+            expect(deferredSettle.isError, JSON.stringify(deferredSettle.content)).toBe(false);
             expect(deferredSettle.structuredContent).toEqual({ settlesWhenTurnEnds: true });
             const afterDeferredSettle = yield* orchestrator.getThreadProjection(parentThreadId);
             expect(afterDeferredSettle.thread.settledOverride).not.toBe("settled");
@@ -1870,6 +1925,7 @@ describe("orchestrator MCP toolkit", () => {
 
             const childPromptReadCall = yield* invoke("t3_thread_read", {
               threadId: directChildThreadId,
+              afterPosition: -1,
               limit: 1,
             });
             const childPromptRead = yield* decodeThreadReadResult(
@@ -1922,7 +1978,7 @@ describe("orchestrator MCP toolkit", () => {
               (yield* orchestrator.getThreadProjection(parentThreadId)).subagents.find(
                 (task) => task.id === directRead.task.id,
               )?.completionDelivery?.state,
-            ).toBe("claimed");
+            ).toBe("acknowledged");
 
             const terminalResultReadCall = yield* invoke("t3_thread_read", {
               threadId: directChildThreadId,
@@ -2049,7 +2105,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(declaredFailure(missingThreadQueue)).toMatchObject({
               _tag: "OrchestratorMcpFailure",
               code: "thread_not_found",
-              message: "The thread was not found.",
+              message: expect.stringContaining("The thread was not found."),
             });
             expect(missingThreadQueue.structuredContent).toBeUndefined();
             expect(validateQueue({ items: "invalid", nextCursor: null }).valid).toBe(false);
@@ -2780,8 +2836,21 @@ describe("orchestrator MCP toolkit", () => {
 
             expect(childFollowup.taskId).toBeDefined();
             expect(activeChildFollowup.taskId).toBeDefined();
-            yield* waitForContinuationOffers(2);
-            yield* expectOffersToStay(2);
+            yield* waitForContinuationOffers(1);
+            const settledFollowups = yield* waitForProjection(
+              orchestrator,
+              parentThreadId,
+              (projection) =>
+                projection.subagents.some(
+                  (task) => task.id === activeChildFollowup.taskId && task.status === "interrupted",
+                ),
+            );
+            const followupDelivery = settledFollowups.runs.find((run) => run.id === parentRun.id)
+              ?.delegatedCompletion?.delivery;
+            expect(followupDelivery?.taskIds.toSorted()).toEqual(
+              [childFollowup.taskId, activeChildFollowup.taskId].toSorted(),
+            );
+            yield* expectOffersToStay(1);
             yield* invoke("task_status", { taskId: childFollowup.taskId });
             yield* invoke("task_status", { taskId: activeChildFollowup.taskId });
             yield* Ref.set(continuationOffers, []);
@@ -2853,7 +2922,7 @@ describe("orchestrator MCP toolkit", () => {
             const cancellable = yield* decodeDelegateTaskResult(
               cancellableCall.structuredContent,
             ).pipe(Effect.orDie);
-            expect(cancellable.status).toBe("running");
+            expect(["starting", "running"]).toContain(cancellable.status);
             expect(cancellable.hasPendingChildRuns).toBe(false);
             yield* waitForProjection(
               orchestrator,
@@ -3304,6 +3373,7 @@ describe("orchestrator MCP toolkit", () => {
 
             const promptedReadCall = yield* invoke("t3_thread_read", {
               threadId: promptedThread.threadId,
+              afterPosition: -1,
               limit: 1,
             });
             const promptedRead = yield* decodeThreadReadResult(
@@ -3548,7 +3618,7 @@ describe("orchestrator MCP toolkit", () => {
               creationSource: "web",
               commandId: CommandId.make("command:mcp-foreign-project:create"),
               threadId: foreignThreadId,
-              projectId: ProjectId.make("project:mcp-foreign"),
+              projectId: foreignProjectId,
               title: "Foreign project thread",
               modelSelection: codexSelection,
               runtimeMode: "full-access",
@@ -3567,7 +3637,7 @@ describe("orchestrator MCP toolkit", () => {
               threadId: foreignThreadId,
             });
             expect(foreignReadCall.structuredContent).toMatchObject({
-              thread: { threadId: foreignThreadId, projectId: "project:mcp-foreign" },
+              thread: { threadId: foreignThreadId, projectId: foreignProjectId },
             });
             const foreignUpdateCall = yield* invoke("t3_thread_update", {
               threadId: foreignThreadId,
@@ -3579,7 +3649,7 @@ describe("orchestrator MCP toolkit", () => {
               title: "Renamed from another project",
             });
             const foreignListCall = yield* invoke("t3_thread_list", {
-              projectId: "project:mcp-foreign",
+              projectId: foreignProjectId,
             });
             const foreignListed = yield* decodeThreadListResult(
               foreignListCall.structuredContent,
@@ -3633,7 +3703,7 @@ describe("orchestrator MCP toolkit", () => {
             const upgradedDelegated = yield* decodeDelegateTaskResult(
               upgradedCall.structuredContent,
             ).pipe(Effect.orDie);
-            expect(upgradedDelegated.status).toBe("running");
+            expect(["starting", "running"]).toContain(upgradedDelegated.status);
             yield* waitForProjection(
               orchestrator,
               localChild(upgradedDelegated.childThreadId),

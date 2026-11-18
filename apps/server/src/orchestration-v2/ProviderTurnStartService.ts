@@ -5,7 +5,12 @@ import * as ConversationPolicy from "../jones/conversationWorkspace/Conversation
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
-import { findEffectClaimLost, guardClaim } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
+import {
+  CurrentEffectClaim,
+  EffectClaimLost,
+  findEffectClaimLost,
+  guardClaim,
+} from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
 import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
 import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
@@ -143,6 +148,18 @@ const NON_COMPLETING_TERMINAL_RUN_STATUSES: ReadonlySet<OrchestrationV2Run["stat
 
 export const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 const isProviderAdapterProtocolError = Schema.is(ProviderAdapter.ProviderAdapterProtocolError);
+const isHeldStartAdmission = (error: unknown) =>
+  isProviderAdapterProtocolError(error) && Predicate.isTagged(error.cause, "ControlAdmissionHeld");
+const isControlAdmissionHeld = Schema.is(ControlAdmission.ControlAdmissionHeld);
+function retainedControlHold(error: unknown): ControlAdmission.ControlAdmissionHeld | undefined {
+  // Local publication wraps the control refusal in runtime binding and lookup errors.
+  for (let depth = 0; depth < 12; depth++) {
+    if (isControlAdmissionHeld(error)) return error;
+    if (typeof error !== "object" || error === null || !("cause" in error)) return undefined;
+    error = error.cause;
+  }
+  return undefined;
+}
 const isProviderAdapterOpenSessionError = Schema.is(
   ProviderAdapter.ProviderAdapterOpenSessionError,
 );
@@ -474,6 +491,26 @@ export const layer: Layer.Layer<
       };
     };
 
+    const writeWithStartClaim = Effect.fn("ProviderTurnStartService.writeWithStartClaim")(
+      function* (input: Parameters<typeof eventSink.writeIfRunCurrent>[0]) {
+        const write = eventSink.writeIfRunCurrent(input);
+        const claim = yield* Effect.serviceOption(CurrentEffectClaim);
+        if (Option.isNone(claim)) return yield* write;
+        return yield* claim.value.use((captured) => {
+          const request = captured.request;
+          if (
+            captured.threadId !== input.threadId ||
+            (request.type !== "provider-turn.start" && request.type !== "provider-turn.restart") ||
+            request.runId !== input.runId
+          )
+            return Effect.fail(new EffectClaimLost({ effectId: captured.id }));
+          // The second custody read shares the write transaction, so another
+          // worker cannot reclaim the effect between this check and commit.
+          return eventSink.withProviderBatch(claim.value.check.pipe(Effect.andThen(write)));
+        });
+      },
+    );
+
     const settleRunBeforeStart = Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(
       function* (input: {
         readonly run: OrchestrationV2Run;
@@ -498,6 +535,7 @@ export const layer: Layer.Layer<
           | "continuity_held"
           | "control_held";
         readonly providerThreadUpdate?: OrchestrationV2ProviderThread;
+        readonly requireStartClaim?: true;
       }) {
         const { run, rootNode, attempt, turnItems, now, status } = input;
         const runId = run.id;
@@ -527,7 +565,15 @@ export const layer: Layer.Layer<
           { type: "run.updated", payload: { ...run, status, ...started, completedAt: now } },
           {
             type: "run-attempt.updated",
-            payload: { ...attempt, status, ...started, completedAt: now },
+            payload: {
+              ...attempt,
+              status,
+              ...started,
+              completedAt: now,
+              ...(input.startRefusalReason === undefined || attempt.providerSettlement !== undefined
+                ? {}
+                : { providerSettlement: null }),
+            },
           },
           {
             type: "node.updated",
@@ -555,7 +601,11 @@ export const layer: Layer.Layer<
             } satisfies OrchestrationV2DomainEvent;
           }),
         );
-        const written = yield* eventSink.writeIfRunCurrent({
+        const written = yield* (
+          input.requireStartClaim === true || input.startRefusalReason !== undefined
+            ? writeWithStartClaim
+            : eventSink.writeIfRunCurrent
+        )({
           threadId: run.threadId,
           runId,
           activeAttemptId: attempt.id,
@@ -792,12 +842,42 @@ export const layer: Layer.Layer<
       // Jones: the manager may finish its retained local publication of this exact
       // binding first; admission is then captured against the recovered projection.
       if (providerSessions.reconcileThreadBindingPublication !== undefined) {
-        const recovered = yield* guardClaim(
+        const reconciliation = yield* guardClaim(
           providerSessions.reconcileThreadBindingPublication({
             run,
             providerThread: selectedProviderThread,
+            revalidateControl: Effect.fn("ProviderTurnStartService.revalidateRetainedControl")(
+              function* (binding) {
+                if (Option.isNone(controlService))
+                  return yield* admissionError(
+                    "Original provider control admission is unavailable.",
+                  );
+                const hold = yield* ControlAdmission.CurrentStartupPublication;
+                yield* controlService.value.assertOpen(
+                  {
+                    instanceId: binding.providerInstanceId,
+                    threadId: binding.threadId,
+                    nativeThreadId: binding.nativeThreadId,
+                    producer: {
+                      instanceId: binding.providerInstanceId,
+                      providerSessionId: binding.providerSessionId,
+                      runtimeGeneration: binding.runtimeGeneration,
+                    },
+                  },
+                  hold === undefined ? undefined : { hold, binding },
+                );
+              },
+              Effect.mapError(admissionError),
+            ),
           }),
-        ).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+        ).pipe(Effect.result);
+        if (reconciliation._tag === "Failure") {
+          const held = retainedControlHold(reconciliation.failure);
+          return yield* held === undefined
+            ? new ProviderTurnStartError({ runId, cause: reconciliation.failure })
+            : refuseAdmission("control_held", held);
+        }
+        const recovered = reconciliation.success;
         if (recovered !== null) {
           projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
           const currentRun = projection.runs.find((candidate) => candidate.id === runId);
@@ -839,12 +919,19 @@ export const layer: Layer.Layer<
           "continuity_unavailable",
           "Original durable start admission services are unavailable.",
         );
-      let capturedAdmission = yield* admissionService.value.capture({
-        threadId: input.threadId,
-        run,
-        attemptId: attempt.id,
-        providerThread,
-      });
+      const capture = yield* admissionService.value
+        .capture({
+          threadId: input.threadId,
+          run,
+          attemptId: attempt.id,
+          providerThread,
+        })
+        .pipe(Effect.result);
+      if (capture._tag === "Failure")
+        return yield* isHeldStartAdmission(capture.failure)
+          ? refuseAdmission("control_held", capture.failure)
+          : Effect.fail(capture.failure);
+      let capturedAdmission = capture.success;
       if (
         input.nativeCreationGuard !== undefined &&
         capturedAdmission.nativeCreationGuard !== input.nativeCreationGuard
@@ -856,6 +943,13 @@ export const layer: Layer.Layer<
       const controlAdmission = controlService.value;
       const environmentId = yield* environmentService.value.getEnvironmentId;
       let admissionRefusal: AdmissionRefusal | undefined;
+      const revalidateCapturedAdmission = () =>
+        capturedAdmission.revalidate.pipe(
+          Effect.tapError((error) => {
+            if (isHeldStartAdmission(error)) admissionRefusal = "control_held";
+            return Effect.void;
+          }),
+        );
       // Jones: once this attempt observed a required continuity owner, its
       // native conversation is never replaced by a fresh one.
       let continuityRequired = false;
@@ -905,7 +999,7 @@ export const layer: Layer.Layer<
       const assertAdmission = Effect.fn("ProviderTurnStartService.assertAdmission")(
         (expected: OrchestrationV2ProviderThread) =>
           Effect.gen(function* () {
-            yield* capturedAdmission.revalidate;
+            yield* revalidateCapturedAdmission();
             if (input.nativeCreationGuard !== undefined)
               yield* NativeProvider.assertNativeProviderStartOperation(
                 input.nativeCreationGuard,
@@ -926,14 +1020,26 @@ export const layer: Layer.Layer<
                 ? undefined
                 : ProviderAdapter.runtimeBinding(current, currentGeneration);
             const retainedSuccessor = admittedSuccessors.get(expected.id);
+            const replacement = yield* StartAdmission.CurrentHandoffReplacement;
+            const isHandoffReplacement =
+              replacement !== undefined &&
+              replacement.runId === runId &&
+              replacement.attemptId === attempt.id &&
+              replacement.providerThreadId === expected.id &&
+              replacement.previousNativeId ===
+                (retainedSuccessor?.nativeThreadId ?? expected.nativeThreadRef?.nativeId);
+            const previousGeneration =
+              (isHandoffReplacement ? retainedSuccessor?.runtimeGeneration : undefined) ??
+              expected.runtimeIdentity?.runtimeGeneration ??
+              null;
             const fromPublication =
               currentBinding !== undefined &&
               publication !== undefined &&
-              publication.previousGeneration ===
-                (expected.runtimeIdentity?.runtimeGeneration ?? null) &&
+              publication.previousGeneration === previousGeneration &&
               equivalentAdmissionBinding(currentBinding, publication.binding) &&
               (expected.nativeThreadRef == null ||
-                expected.nativeThreadRef.nativeId === currentBinding.nativeThreadId);
+                expected.nativeThreadRef.nativeId === currentBinding.nativeThreadId ||
+                isHandoffReplacement);
             const isSuccessor =
               fromPublication ||
               (currentBinding !== undefined &&
@@ -1030,7 +1136,7 @@ export const layer: Layer.Layer<
               admissionRefusal = "control_held";
               return yield* controlResult.failure;
             }
-            yield* capturedAdmission.revalidate;
+            yield* revalidateCapturedAdmission();
             if (fromPublication && currentBinding !== undefined)
               admittedSuccessors.set(expected.id, currentBinding);
           }).pipe(Effect.mapError(admissionError)),
@@ -1097,6 +1203,7 @@ export const layer: Layer.Layer<
             rootNode,
             attempt,
             turnItems: projection.turnItems,
+            requireStartClaim: true,
             signal:
               unavailable !== undefined
                 ? "provider-run-state-unavailable"
@@ -2086,7 +2193,7 @@ export const layer: Layer.Layer<
       let resumedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
-      let validatedFreshClaudeFork = false;
+      let validatedFreshFork = false;
       let acknowledgeFork: Effect.Effect<void> | undefined;
       let portableForkEvents: ReadonlyArray<OrchestrationV2DomainEvent> = [];
       let recoveryTurnItem: OrchestrationV2TurnItem | undefined;
@@ -2119,7 +2226,12 @@ export const layer: Layer.Layer<
           const validateForkLoad = Effect.fn("ProviderTurnStartService.validateForkLoad")(
             function* (loaded: OrchestrationV2ProviderThread, portable: boolean) {
               const generation = loaded.runtimeIdentity?.runtimeGeneration;
-              if (session.driver !== "claudeAgent" && generation === undefined) return;
+              if (
+                session.driver !== "claudeAgent" &&
+                session.driver !== "opencode" &&
+                generation === undefined
+              )
+                return;
               if (
                 requiredNativeSession !== undefined ||
                 capturedAdmission.nativeCreationGuard !== undefined ||
@@ -2160,7 +2272,7 @@ export const layer: Layer.Layer<
                   );
                 return;
               }
-              validatedFreshClaudeFork = true;
+              validatedFreshFork = true;
             },
           );
           // Providers refuse to fork a busy thread, so a source that started a turn after
@@ -2212,11 +2324,18 @@ export const layer: Layer.Layer<
               yield* validateForkLoad(forked.success, false);
               return forked.success;
             }
-            if (
-              input.willRetry === true ||
-              !ProviderAdapter.isUnappliedSourceFork(forked.failure, sourceProviderThread)
-            )
-              return yield* forked.failure;
+            if (!ProviderAdapter.isUnappliedSourceFork(forked.failure, sourceProviderThread)) {
+              // An uncertain native fork stays fenced; a worker retry cannot
+              // start another fork or fall back to a different destination.
+              if (terminalStartFailure(forked.failure)) return yield* forked.failure;
+              yield* settleStartFailure({
+                signal: "provider-thread-load-failure",
+                title: "Provider turn failed to start",
+                error: forked.failure,
+              });
+              return undefined;
+            }
+            if (input.willRetry === true) return yield* forked.failure;
             if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
             // Retries are spent (e.g. the source's native session is gone): start fresh with portable history.
             yield* Effect.logWarning("Starting a native fork in a fresh native session", {
@@ -2495,11 +2614,12 @@ export const layer: Layer.Layer<
           preserveNativeConversation ||
           manualResume ||
           guarded ||
+          goalCommand ||
+          capturedAdmission.nativeCreationGuard !== undefined ||
           continuityRequired ||
           (resumed._tag === "Failure" &&
-            (ProviderAdapter.hasUnknownRuntimeBinding(resumed.failure) ||
-              terminalStartFailure(resumed.failure) ||
-              findSteerFailure(resumed.failure) !== undefined))
+            !uncertainDelivery &&
+            !ProviderAdapter.isUnappliedSourceResume(resumed.failure, providerThread))
         ) {
           return yield* loadFromProvider(
             Effect.fail(
@@ -2518,14 +2638,6 @@ export const layer: Layer.Layer<
         resumedHandoffContext = undefined;
         resumedRetryHandoff = [];
         if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
-        // Another client is still writing to the native thread. A fresh
-        // session here would silently split the conversation from it.
-        if (
-          resumed._tag === "Failure" &&
-          resumed.failure._tag === "ProviderAdapterThreadInUseError"
-        ) {
-          return yield* loadFromProvider(Effect.fail(resumed.failure));
-        }
 
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {
           driver: session.driver,
@@ -2538,17 +2650,34 @@ export const layer: Layer.Layer<
               : "resume_failed",
           errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
         });
+        const previousNativeId =
+          admittedSuccessors.get(providerThread.id)?.nativeThreadId ??
+          providerThread.nativeThreadRef?.nativeId;
         const replacement = yield* loadFromProvider(
-          session.ensureThread({
-            threadId: projection.thread.id,
-            title: projection.thread.title,
-            modelSelection: run.modelSelection,
-            runtimePolicy: resolvedRuntimePolicy,
-            providerSessionId,
-            // Clear the native ref to force a fresh session while preserving row identity.
-            existingProviderThread: { ...providerThread, nativeThreadRef: null },
-            forceNewNativeThread: true,
-          }),
+          session
+            .ensureThread({
+              threadId: projection.thread.id,
+              title: projection.thread.title,
+              modelSelection: run.modelSelection,
+              runtimePolicy: resolvedRuntimePolicy,
+              providerSessionId,
+              // Clear the native ref to force a fresh session while preserving row identity.
+              existingProviderThread: { ...providerThread, nativeThreadRef: null },
+              forceNewNativeThread: true,
+            })
+            .pipe(
+              Effect.provideService(
+                StartAdmission.CurrentHandoffReplacement,
+                previousNativeId == null
+                  ? undefined
+                  : {
+                      runId,
+                      attemptId: attempt.id,
+                      providerThreadId: providerThread.id,
+                      previousNativeId,
+                    },
+              ),
+            ),
         );
         if (replacement === undefined) return undefined;
         const { handoff, transferId, createdAt } = yield* recoveryHandoff;
@@ -2829,32 +2958,47 @@ export const layer: Layer.Layer<
           payload: runningRootNode,
         },
       ];
-      // Claude allocates an ID while loading a fresh thread, before the first
-      // native query has a generation to publish.
-      const recordsFreshClaudeId =
-        session.driver === "claudeAgent" &&
-        (nativeForkTransfer === undefined || validatedFreshClaudeFork) &&
+      // Claude allocates an ID before a query has a generation. An external
+      // OpenCode connection can also return an ID without a local generation.
+      const recordsFreshNativeId =
+        (session.driver === "claudeAgent" || session.driver === "opencode") &&
+        (nativeForkTransfer === undefined || validatedFreshFork) &&
         requiredNativeSession === undefined &&
         capturedAdmission.nativeCreationGuard === undefined &&
         providerThread.nativeThreadRef === null &&
         providerThread.runtimeIdentity?.runtimeGeneration === undefined &&
         runningProviderThread.nativeThreadRef?.driver === session.driver &&
         runningProviderThread.runtimeIdentity?.runtimeGeneration === undefined;
-      if (validatedFreshClaudeFork && !recordsFreshClaudeId)
+      if (validatedFreshFork && !recordsFreshNativeId)
         return yield* admissionError(
           "The fresh fork no longer has its original unbound destination.",
         );
-      if (recordsFreshClaudeId) yield* capturedAdmission.revalidate;
+      if (recordsFreshNativeId) {
+        if (
+          loadedProviderThread.id !== providerThread.id ||
+          loadedProviderThread.appThreadId !== input.threadId ||
+          loadedProviderThread.providerInstanceId !== run.providerInstanceId ||
+          loadedProviderThread.providerSessionId !== providerSessionId ||
+          loadedProviderThread.driver !== session.driver ||
+          loadedProviderThread.ownerNodeId !== providerThread.ownerNodeId ||
+          loadedProviderThread.nativeThreadRef?.strength !== "strong" ||
+          !loadedProviderThread.nativeThreadRef.nativeId
+        )
+          return yield* admissionError("The native load returned a different provider thread.");
+        yield* capturedAdmission.revalidate;
+      }
       const publishedForkGeneration =
         nativeForkTransfer === undefined
           ? undefined
           : loadedProviderThread.runtimeIdentity?.runtimeGeneration;
-      const writeRunning = eventSink.writeIfRunCurrent({
+      const writeRunning = (
+        recordsFreshNativeId ? writeWithStartClaim : eventSink.writeIfRunCurrent
+      )({
         threadId: projection.thread.id,
         runId: run.id,
         activeAttemptId: attempt.id,
         expectedStatus: "starting",
-        ...(recordsFreshClaudeId
+        ...(recordsFreshNativeId
           ? {
               runtimeIdentityBoundary: {
                 expectedGeneration: null,
@@ -2880,7 +3024,7 @@ export const layer: Layer.Layer<
       if (!runningWrite.committed) {
         return;
       }
-      if (recordsFreshClaudeId) {
+      if (recordsFreshNativeId) {
         // The same claim and accepted receipt now authorize the ID recorded
         // by this attempt's guarded write. Native publication still binds
         // the actual query generation when the provider starts.

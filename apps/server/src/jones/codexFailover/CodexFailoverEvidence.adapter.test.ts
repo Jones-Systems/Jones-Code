@@ -225,9 +225,19 @@ function codexReplayPreamble(input: {
     },
     {
       type: "expect_outbound",
+      label: "config/read",
+      frame: { id: 3, method: "config/read", params: { cwd: "/workspace", includeLayers: false } },
+    },
+    {
+      type: "emit_inbound",
+      label: "config/read",
+      frame: { id: 3, result: { config: {}, origins: {} } },
+    },
+    {
+      type: "expect_outbound",
       label: "turn/start",
       frame: {
-        id: 3,
+        id: 4,
         method: "turn/start",
         params: {
           threadId: input.nativeThreadId,
@@ -238,7 +248,7 @@ function codexReplayPreamble(input: {
           approvalPolicy: "never",
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },
-          summary: "detailed",
+          summary: "auto",
         },
       },
     },
@@ -246,7 +256,7 @@ function codexReplayPreamble(input: {
       type: "emit_inbound",
       label: "turn/start",
       frame: {
-        id: 3,
+        id: 4,
         result: { turn: makeCodexReplayTurn({ id: input.nativeTurnId, status: "inProgress" }) },
       },
     },
@@ -596,7 +606,7 @@ it.effect("records exhausted capacity once with code other on the final continua
           {
             type: "expect_outbound",
             frame: {
-              id: 3 + retry,
+              id: 4 + retry,
               method: "turn/start",
               params: {
                 threadId: nativeThreadId,
@@ -607,14 +617,14 @@ it.effect("records exhausted capacity once with code other on the final continua
                 approvalPolicy: "never",
                 approvalsReviewer: "user",
                 sandboxPolicy: { type: "dangerFullAccess" },
-                summary: "detailed",
+                summary: "auto",
               },
             },
           },
           {
             type: "emit_inbound",
             frame: {
-              id: 3 + retry,
+              id: 4 + retry,
               result: { turn: makeCodexReplayTurn({ id: turnId, status: "inProgress" }) },
             },
           },

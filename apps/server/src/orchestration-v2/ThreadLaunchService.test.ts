@@ -2373,7 +2373,7 @@ it.effect(
           message: "Resume preparation",
           workspace: { type: "worktree", baseRef: "main" },
         });
-        const messageId = MessageId.make("message:launch:accepted-before-fork");
+        const messageId = input.initialMessage!.messageId;
 
         yield* threads.dispatch({
           type: "thread.create",

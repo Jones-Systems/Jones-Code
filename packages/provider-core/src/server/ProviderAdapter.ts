@@ -298,12 +298,31 @@ export class ProviderAdapterResumeThreadError extends Schema.TaggedError<Provide
     driver: ProviderDriverKind,
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
+    // The adapter verified the exact source was unavailable before any resume.
+    unappliedSourceNativeId: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
     return `Failed to resume ${this.driver} provider thread ${this.providerThreadId}.`;
   }
+}
+
+export function isUnappliedSourceResume(
+  error: ProviderAdapterV2Error,
+  source: OrchestrationV2ProviderThread,
+): boolean {
+  return (
+    error._tag === "ProviderAdapterResumeThreadError" &&
+    error.driver === source.driver &&
+    error.providerSessionId === source.providerSessionId &&
+    error.providerThreadId === source.id &&
+    source.nativeThreadRef?.driver === source.driver &&
+    source.nativeThreadRef.strength === "strong" &&
+    error.unappliedSourceNativeId !== undefined &&
+    error.unappliedSourceNativeId === source.nativeThreadRef.nativeId &&
+    !hasUnknownRuntimeBinding(error)
+  );
 }
 
 /**

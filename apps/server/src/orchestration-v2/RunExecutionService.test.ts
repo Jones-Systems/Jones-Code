@@ -4032,6 +4032,8 @@ export function captureRootRunTermination(input: {
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
           mockEventSink({
+            // Injected write failures happen before the fixture commits any events.
+            readByCommandId: () => Stream.empty,
             write: (payload) =>
               Effect.gen(function* () {
                 for (const event of payload.events) {

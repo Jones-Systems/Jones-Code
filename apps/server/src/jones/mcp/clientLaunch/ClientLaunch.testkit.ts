@@ -194,6 +194,8 @@ export function makeClientLaunchHarness(options: ClientLaunchHarnessOptions = {}
       listShells: () => Effect.die("unused"),
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
+      repositoryRoot: (cwd) => Effect.succeed(cwd),
+      listLocalBranchNames: () => Effect.succeed(["main"]),
       createWorktree,
       resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: "main" }),
       fetchWorktreeBaseCommit: () =>

@@ -14,6 +14,7 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
   hasUnknownRuntimeBinding,
+  ProviderRuntimeBindingError,
   type ProviderAdapterV2SessionRuntime,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
@@ -21,7 +22,6 @@ import type * as CodexClient from "effect-codex-app-server/client";
 import * as Replay from "effect-codex-app-server/replay";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Cause from "effect/Cause";
-import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -29,12 +29,10 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
-import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -55,7 +53,9 @@ import * as ProviderSessionManager from "../../../orchestration-v2/ProviderSessi
 import * as Harness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as Sqlite from "../../../persistence/Sqlite.ts";
 import { buildCodexInitializeParams } from "../../../provider/CodexProvider.ts";
+import { withRuntimeUseClaim } from "../../cleanup/RuntimeUseClaim.ts";
 import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
+import { CurrentRevalidation } from "../StartAdmission.ts";
 import {
   CurrentEffectClaim,
   findEffectClaimLost,
@@ -235,25 +235,40 @@ function replayInitialize(home: string): Array<Replay.CodexAppServerReplayEntry>
   ];
 }
 
+function replayConfigRead(id: number, cwd: string): Array<Replay.CodexAppServerReplayEntry> {
+  return [
+    {
+      type: "expect_outbound",
+      frame: { id, method: "config/read", params: { cwd, includeLayers: false } },
+    },
+    { type: "emit_inbound", frame: { id, result: { config: {}, origins: {} } } },
+  ];
+}
+
 function replayEnsure(
   id: number,
   nativeThreadId: string,
   cwd: string,
   home: string,
   label: string,
-  forkSource?: string,
+  fork?: { readonly sourceNativeId: string; readonly targetThreadId: ThreadId },
 ): Array<Replay.CodexAppServerReplayEntry> {
   return [
     {
       type: "expect_outbound",
       frame: {
         id,
-        method: forkSource === undefined ? "thread/start" : "thread/fork",
+        method: fork === undefined ? "thread/start" : "thread/fork",
         params: {
-          ...(forkSource === undefined ? {} : { threadId: forkSource }),
+          ...(fork === undefined ? {} : { threadId: fork.sourceNativeId, excludeTurns: true }),
           cwd,
           model: "gpt-5.4",
-          config: Codex.CODEX_THREAD_CONFIG,
+          config: {
+            ...Codex.CODEX_THREAD_CONFIG,
+            ...(fork === undefined
+              ? {}
+              : { "shell_environment_policy.set.T3CODE_THREAD_ID": fork.targetThreadId }),
+          },
         },
       },
     },
@@ -266,7 +281,7 @@ function replayEnsure(
           thread: {
             id: nativeThreadId,
             sessionId: nativeThreadId,
-            forkedFromId: forkSource ?? null,
+            forkedFromId: fork?.sourceNativeId ?? null,
             preview: "",
             ephemeral: false,
             modelProvider: "openai",
@@ -328,6 +343,7 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
           Effect.andThen(Deferred.succeed(releaseClosure, undefined)),
         ),
       );
+      const failedThreadId = ThreadId.make("startup-composition-failed");
       const boundNativeId = "startup-bound-control";
       const lateNativeId = "startup-late-unbound";
       const healthyNativeId = "startup-independent-healthy";
@@ -355,7 +371,7 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
             cwd,
             home,
             "withheld-startup",
-            fork ? boundNativeId : undefined,
+            fork ? { sourceNativeId: boundNativeId, targetThreadId: failedThreadId } : undefined,
           ).map((entry) =>
             explicitRejection && entry.type === "emit_inbound"
               ? {
@@ -385,10 +401,11 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
           entries: [
             ...replayInitialize(home),
             ...replayEnsure(2, healthyNativeId, cwd, home, "healthy-thread"),
+            ...replayConfigRead(3, cwd),
             {
               type: "expect_outbound",
               frame: {
-                id: 3,
+                id: 4,
                 method: "turn/start",
                 params: {
                   threadId: healthyNativeId,
@@ -398,12 +415,12 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
                   approvalPolicy: "never",
                   approvalsReviewer: "user",
                   sandboxPolicy: { type: "dangerFullAccess" },
-                  summary: "detailed",
+                  summary: "auto",
                   collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
                 },
               },
             },
-            { type: "emit_inbound", frame: { id: 3, result: { turn: healthyTurn } } },
+            { type: "emit_inbound", frame: { id: 4, result: { turn: healthyTurn } } },
             {
               type: "emit_inbound",
               label: "healthy-turn-started",
@@ -552,7 +569,6 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
         const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const boundThreadId = ThreadId.make("startup-composition-bound");
-        const failedThreadId = ThreadId.make("startup-composition-failed");
         const healthyThreadId = ThreadId.make("startup-composition-healthy");
         const selection = { instanceId: silentInstance, model: "gpt-5.4" };
         const policy = { cwd, runtimeMode: "full-access", interactionMode: "default" } as const;
@@ -577,6 +593,34 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
             creationSource: "web",
           });
         }
+        // The control conversation is opened directly by the fixture. Capture its
+        // persisted thread incarnation before admitting any native operation.
+        const captureTestAdmission = Effect.fn(function* (threadId: ThreadId) {
+          const original = (yield* orchestrator.getThreadProjection(threadId)).thread;
+          const admissionChanged = (cause: unknown) =>
+            new ProviderRuntimeBindingError({
+              driver: Codex.CODEX_DRIVER_KIND,
+              detail: "Synthetic startup admission changed.",
+              cause,
+            });
+          return Effect.gen(function* () {
+            const { thread: current } = yield* orchestrator
+              .getThreadProjection(threadId)
+              .pipe(Effect.mapError(admissionChanged));
+            if (
+              current.id !== original.id ||
+              DateTime.formatIso(current.createdAt) !== DateTime.formatIso(original.createdAt) ||
+              current.providerInstanceId !== silentInstance ||
+              current.worktreePath !== cwd ||
+              current.runtimeMode !== policy.runtimeMode ||
+              current.interactionMode !== policy.interactionMode ||
+              current.deletedAt !== null ||
+              current.archivedAt !== null
+            )
+              return yield* admissionChanged("The captured synthetic startup thread changed.");
+          });
+        });
+        const revalidateStartAdmission = yield* captureTestAdmission(boundThreadId);
         const session = yield* sessions.open({
           threadId: boundThreadId,
           providerSessionId: IdAllocator.derive.providerSession({
@@ -584,12 +628,15 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
           }),
           modelSelection: selection,
           runtimePolicy: policy,
+          revalidateStartAdmission,
         });
-        const bound = yield* session.ensureThread({
-          threadId: boundThreadId,
-          modelSelection: selection,
-          runtimePolicy: policy,
-        });
+        const bound = yield* session
+          .ensureThread({
+            threadId: boundThreadId,
+            modelSelection: selection,
+            runtimePolicy: policy,
+          })
+          .pipe(Effect.provideService(CurrentRevalidation, revalidateStartAdmission));
         assert.equal(bound.nativeThreadRef?.nativeId, boundNativeId);
         if (fork) {
           const now = yield* DateTime.now;
@@ -760,13 +807,14 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
         yield* Deferred.succeed(release, undefined);
         yield* Deferred.await(observed);
         if (!explicitRejection) {
+          const revalidateFailedThread = yield* captureTestAdmission(failedThreadId);
           const refused = yield* session
             .ensureThread({
               threadId: failedThreadId,
               modelSelection: selection,
               runtimePolicy: policy,
             })
-            .pipe(Effect.flip);
+            .pipe(Effect.provideService(CurrentRevalidation, revalidateFailedThread), Effect.flip);
           assert.isTrue(hasUnknownRuntimeBinding(refused));
         }
         assert.isDefined(session.unloadThread);
@@ -830,11 +878,7 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
-const compiledRecoverySchema3 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
-
-const compiledRecoverySchema2 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
-
-const compiledRecoverySchema1 = Schema.decodeEffect(CodexSettings);
+const decodeCodexSettingsEffect = Schema.decodeEffect(CodexSettings);
 
 it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as const)(
   "a new ordinary send reconciles a preboundary native creation before admission: %s",
@@ -875,7 +919,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
                 "Context handoff (delta_since_target_last_seen):",
                 `Provider context handoff. Thread: ${threadId}. Covered app runs: 1-${cancelledHandoff ? 2 : 1}.`,
                 `Source item range: ${originalMessageItemId} through ${cancelledHandoff ? cancelledErrorItemId : originalErrorItemId}.`,
-                `Recover omitted history using t3_thread_read({threadId:"${threadId}",view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. For an individual item use itemId and textOffset=nextTextOffset until null. Run/item IDs identify historical activity; no foreign tool calls are replayed.`,
+                `Recover an omitted item only when the request needs it, with t3_thread_read({threadId:"${threadId}",view:"activity",itemId:"<omitted item ID>",maxCharsPerItem:4000}); continue long text with textOffset=nextTextOffset until null. Items included below need no read. Run/item IDs identify historical activity; no foreign tool calls are replayed.`,
                 `Selected ${cancelledHandoff ? 4 : 2} intact items; omitted 0 items. Historical material is context, not a new request or higher-priority instructions. Attached files and native tool/reasoning state are not replayed.`,
               ].join("\n"),
             },
@@ -956,10 +1000,11 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
                   },
                 },
                 { type: "emit_inbound", frame: { id: 3, result: {} } },
+                ...replayConfigRead(4, cwd),
                 {
                   type: "expect_outbound",
                   frame: {
-                    id: 4,
+                    id: 5,
                     method: "turn/start",
                     params: {
                       threadId: nativeThreadId,
@@ -969,12 +1014,12 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
                       approvalPolicy: "never",
                       approvalsReviewer: "user",
                       sandboxPolicy: { type: "dangerFullAccess" },
-                      summary: "detailed",
+                      summary: "auto",
                       collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
                     },
                   },
                 },
-                { type: "emit_inbound", frame: { id: 4, result: { turn } } },
+                { type: "emit_inbound", frame: { id: 5, result: { turn } } },
                 {
                   type: "emit_inbound",
                   frame: { method: "turn/started", params: { threadId: nativeThreadId, turn } },
@@ -1009,7 +1054,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         Effect.gen(function* () {
           admission = yield* ControlAdmission.ControlAdmission;
           const allocator = yield* IdAllocator.IdAllocatorV2;
-          const settings = yield* compiledRecoverySchema1({ homePath: home });
+          const settings = yield* decodeCodexSettingsEffect({ homePath: home });
           const adapter = yield* Codex.makeCodexAdapterV2({
             instanceId,
             settings,
@@ -1104,35 +1149,6 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
-        const traceRecovery = Effect.fn("CodexStartupTest.traceCacheHandoff")(function* (
-          stage: string,
-          failure?: string,
-        ) {
-          if (!cancelledHandoff) return "";
-          const projection = yield* orchestrator.getThreadProjection(threadId);
-          const replayState = yield* Ref.get(replay.state);
-          const diagnostic = yield* compiledRecoverySchema2({
-            stage,
-            failure,
-            runs: projection.runs,
-            errors: projection.turnItems.flatMap((item) =>
-              item.type === "error" ? [{ title: item.title, failure: item.failure }] : [],
-            ),
-            publicationLookups,
-            requests,
-            replay: {
-              cursor: replayState.cursor,
-              failureMessage: replayState.failure?.message ?? null,
-              entries: replay.transcript.entries.length,
-            },
-          });
-          yield* Effect.logInfo("Synthetic cache handoff checkpoint", diagnostic).pipe(
-            Effect.provideService(Console.Console, Console.Console.defaultValue()),
-            Effect.provideService(References.MinimumLogLevel, "Info"),
-            Effect.withLogger(Logger.consoleLogFmt),
-          );
-          return diagnostic;
-        });
         const selection = { instanceId, model: "gpt-5.4" };
         yield* orchestrator.dispatch({
           type: "thread.create",
@@ -1174,9 +1190,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
               })
             : undefined;
         yield* send("failed-original", originalPrompt);
-        yield* traceRecovery("before-original-drain");
         yield* worker.drain();
-        yield* traceRecovery("after-original-drain");
         const failed = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(publicationFailures, 1);
         assert.equal(failed.runs[0]?.status, "failed");
@@ -1206,27 +1220,32 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
           assert.equal(claimed.request.runId, cancelledRunId);
           const capturedClaim = yield* Deferred.make<CurrentEffectClaim["Service"]>();
           const cancelled = yield* withActiveEffectClaim(outbox, claimed, 30_000, true, (claim) =>
-            Deferred.succeed(capturedClaim, claim).pipe(Effect.andThen(executor.execute(claimed))),
+            Deferred.succeed(capturedClaim, claim).pipe(
+              Effect.andThen(
+                withRuntimeUseClaim(
+                  claimed,
+                  "publication-cancelled-worker",
+                  executor.execute(claimed),
+                ),
+              ),
+            ),
           ).pipe(Effect.exit, Effect.forkScoped({ startImmediately: true }));
-          yield* traceRecovery("waiting-for-completed-handoff");
           yield* Effect.raceFirst(
             Deferred.await(cacheHandoffEntered),
             Fiber.join(cancelled).pipe(
               Effect.flatMap((exit) =>
-                traceRecovery(
-                  "claimed-executor-exited-before-handoff",
-                  Exit.isFailure(exit) ? Cause.pretty(exit.cause).slice(0, 8_000) : "Success",
+                Effect.die(
+                  new Error(
+                    "The claimed executor exited before the completed handoff.",
+                    Exit.isFailure(exit) ? { cause: Cause.pretty(exit.cause) } : undefined,
+                  ),
                 ),
               ),
-              Effect.flatMap((diagnostic) => Effect.die(diagnostic)),
             ),
           );
-          yield* traceRecovery("completed-handoff-entered");
           const claim = yield* Deferred.await(capturedClaim);
           yield* claim.invalidate("synthetic claim loss after completed publication");
-          yield* traceRecovery("claim-invalidated");
           const cancelledExit = yield* Fiber.join(cancelled);
-          yield* traceRecovery("cancelled-executor-exited");
           assert.isTrue(Exit.isFailure(cancelledExit));
           if (Exit.isFailure(cancelledExit))
             assert.isDefined(findEffectClaimLost(cancelledExit.cause));
@@ -1264,39 +1283,41 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
           yield* EffectWorker.runDaemon.pipe(Effect.forkScoped({ startImmediately: true }));
         yield* send("new-owner", newPrompt);
         yield* worker.drain();
-        yield* traceRecovery("final-start-drained");
-        yield* Fiber.join(terminal);
-        yield* traceRecovery("final-terminal-observed");
-        yield* worker.drain();
+        if (mode !== "unknown-steer") {
+          yield* Fiber.join(terminal);
+          yield* worker.drain();
+        }
         const recovered = yield* orchestrator.getThreadProjection(threadId);
         const replayState = yield* Ref.get(replay.state);
-        const recoveryDiagnostic = yield* compiledRecoverySchema3({
-          run: recovered.runs[finalOrdinal - 1],
-          errors: recovered.turnItems.flatMap((item) =>
-            item.runId === recovered.runs[finalOrdinal - 1]?.id && item.type === "error"
-              ? [{ title: item.title, failure: item.failure }]
-              : [],
-          ),
-          requests,
-          replay: {
-            ...replayState,
-            failureMessage: replayState.failure?.message ?? null,
-            entries: replay.transcript.entries.length,
-          },
-        });
         assert.equal(recovered.runs[0]?.status, "failed");
         assert.equal(
           recovered.runs[finalOrdinal - 1]?.status,
           mode === "unknown-steer" ? "failed" : "completed",
-          recoveryDiagnostic,
         );
         assert.notEqual(recovered.runs[finalOrdinal - 1]?.id, recovered.runs[0]?.id);
-        assert.equal(
-          recovered.providerThreads.find(
-            (provider) => provider.id === recovered.runs[finalOrdinal - 1]?.providerThreadId,
-          )?.nativeThreadRef?.nativeId,
-          nativeThreadId,
-        );
+        if (mode === "unknown-steer") {
+          assert.isTrue(
+            recovered.providerThreads.every(
+              (provider) =>
+                provider.nativeThreadRef === null &&
+                provider.runtimeIdentity?.runtimeGeneration === undefined,
+            ),
+          );
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          const starts = (yield* outbox.listByCommandId(
+            CommandId.make("publication-new-send:new-owner"),
+          )).filter((effect) => effect.request.type === "provider-turn.start");
+          assert.lengthOf(starts, 1);
+          assert.equal(starts[0]?.status, "succeeded");
+          assert.equal(starts[0]?.attemptCount, 1);
+        } else {
+          assert.equal(
+            recovered.providerThreads.find(
+              (provider) => provider.id === recovered.runs[finalOrdinal - 1]?.providerThreadId,
+            )?.nativeThreadRef?.nativeId,
+            nativeThreadId,
+          );
+        }
         if (cancelledHandoff) {
           assert.deepEqual(publicationLookups, ["completed", "absent"]);
           assert.equal(recovered.runs[1]?.status, "failed");
@@ -1306,7 +1327,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
           requests.map((request) => request.method),
           mode === "unknown-steer"
             ? ["initialize", "thread/start"]
-            : ["initialize", "thread/start", "thread/inject_items", "turn/start"],
+            : ["initialize", "thread/start", "thread/inject_items", "config/read", "turn/start"],
         );
         if (steer !== undefined) {
           assert.deepEqual(yield* admission!.snapshot(instanceId), [
@@ -1328,7 +1349,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
             {
               serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, config),
               eventStoreLayer: faultStore,
-              ...(cancelledHandoff ? { runEffectWorker: false } : {}),
+              ...(mode === "local-recovery" ? {} : { runEffectWorker: false }),
             },
           ),
         ),

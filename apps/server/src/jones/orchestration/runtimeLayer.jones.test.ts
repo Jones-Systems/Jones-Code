@@ -190,6 +190,16 @@ const seedProject = (input: {
     }),
   );
 
+// Install the observer before the orchestrator captures the projection methods.
+const queuePreflightObserver = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const preflight = store.hasQueuedToolBoundaryWork;
+    const spy = vi.spyOn(store, "hasQueuedToolBoundaryWork").mockImplementation(preflight);
+    yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+  }),
+).pipe(Layer.provide(ProjectionStore.layer));
+
 const TestLayer = Layer.mergeAll(
   RuntimeLayer.layer,
   RuntimeLayer.layerEventSink,
@@ -199,6 +209,7 @@ const TestLayer = Layer.mergeAll(
   ThreadCommandExecutor.layer,
   AuthSessions.layer,
 ).pipe(
+  Layer.provide(queuePreflightObserver),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
   Layer.provideMerge(SqlitePersistence.layerMemory),
@@ -431,17 +442,16 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
       const reacted = yield* Deferred.make<void>();
       const store = yield* ProjectionStore.ProjectionStoreV2;
       const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
-      const preflight = store.hasQueuedToolBoundaryWork;
+      const preflightSpy = vi.mocked(store.hasQueuedToolBoundaryWork);
+      const preflight = preflightSpy.getMockImplementation()!;
       const withLock = executor.withLock;
-      const preflightSpy = vi
-        .spyOn(store, "hasQueuedToolBoundaryWork")
-        .mockImplementation((id, runId) =>
-          preflight(id, runId).pipe(
-            Effect.tap((ready) =>
-              id === threadId && !ready ? Deferred.succeed(reacted, undefined) : Effect.void,
-            ),
+      preflightSpy.mockImplementation((id, runId) =>
+        preflight(id, runId).pipe(
+          Effect.tap((ready) =>
+            id === threadId && !ready ? Deferred.succeed(reacted, undefined) : Effect.void,
           ),
-        );
+        ),
+      );
       let intercepted = false;
       const observedLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
         id,
@@ -463,7 +473,7 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
-            preflightSpy.mockRestore();
+            preflightSpy.mockImplementation(preflight);
             lockSpy.mockRestore();
           }),
         ),
@@ -1760,7 +1770,7 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const store = yield* ProjectionStore.ProjectionStoreV2;
         const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
         const consumed = yield* Deferred.make<Exit.Exit<unknown, unknown>>();
-        const promoted = yield* Deferred.make<void>();
+        const promoted = yield* Deferred.make<Exit.Exit<unknown, unknown>>();
         const readError = new ProjectionStore.ProjectionStoreReadError({ threadId });
         let consuming = false;
         let historyReads = 0;
@@ -1769,6 +1779,13 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           span: (options) => {
             const span = new Tracer.NativeSpan(options);
             if (span.name === "DependencyStore.duties" && consuming) dutyReads++;
+            if (span.name === "Orchestrator.startNextQueuedRun") {
+              const end = span.end.bind(span);
+              span.end = (time, exit) => {
+                end(time, exit);
+                Deferred.doneUnsafe(promoted, Effect.succeed(exit));
+              };
+            }
             if (span.name === "Orchestrator.consumeSelfSettlement") {
               consuming = true;
               const end = span.end.bind(span);
@@ -1783,7 +1800,6 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         });
         const getThread = store.getThread;
         const getThreadRecords = store.getThreadRecords;
-        const canStartQueuedRun = store.canStartQueuedRun;
         const withLock = executor.withLock;
         const headerSpy = vi
           .spyOn(store, "getThread")
@@ -1799,15 +1815,6 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
             }
             return getThreadRecords(id, fields, filter);
           });
-        const promotionSpy = vi
-          .spyOn(store, "canStartQueuedRun")
-          .mockImplementation((id) =>
-            canStartQueuedRun(id).pipe(
-              Effect.tap(() =>
-                id === threadId ? Deferred.succeed(promoted, undefined) : Effect.void,
-              ),
-            ),
-          );
         const observedLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
           id,
           effect,
@@ -1817,7 +1824,6 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           Effect.sync(() => {
             headerSpy.mockRestore();
             recordsSpy.mockRestore();
-            promotionSpy.mockRestore();
             lockSpy.mockRestore();
           }),
         );
@@ -1850,7 +1856,7 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           return;
         }
         assert.isTrue(Exit.isSuccess(result));
-        yield* Deferred.await(promoted);
+        assert.isTrue(Exit.isSuccess(yield* Deferred.await(promoted)));
         const thread = yield* store.getThread(threadId);
         if (mode === "absent") {
           assert.equal(historyReads, 0);

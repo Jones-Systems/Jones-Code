@@ -573,6 +573,7 @@ export function layerWithRegistryAndServices<Error>(
     readonly databaseLayer?: Layer.Layer<SqlClient.SqlClient, ReplayDatabaseError>;
     readonly runEffectWorker?: boolean;
     readonly mcpSessionRegistryLayer?: Layer.Layer<McpSessionRegistry.McpSessionRegistry>;
+    readonly startRefusalProbeLayer?: Layer.Layer<StartRefusalProbe.Probe> | false;
     readonly isMcpCallerAttached?: ProviderSessionManager.ProviderSessionManagerV2["Service"]["isMcpCallerAttached"];
     readonly continuationRequestsLayer?: Layer.Layer<never>;
     readonly startAdmissionLayer?: Layer.Layer<ControlAdmission.ControlAdmission>;
@@ -670,11 +671,20 @@ export function layerWithRegistryAndServices<Error>(
       Layer.mergeAll(layerContinuationRequests, McpProviderSessions.layer, layerEnvironment),
     ),
   );
-  const layerAdmissionProbe = StartRefusalProbe.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(layerStores, layerControlAdmission, layerGoalContinuity, layerEnvironment),
-    ),
-  );
+  const layerAdmissionProbe =
+    options.startRefusalProbeLayer === false
+      ? Layer.empty
+      : (options.startRefusalProbeLayer ??
+        StartRefusalProbe.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              layerStores,
+              layerControlAdmission,
+              layerGoalContinuity,
+              layerEnvironment,
+            ),
+          ),
+        ));
   const layerEventSinkProvided = EventSink.layerFromStores.pipe(
     Layer.provide(
       Layer.mergeAll(layerStores, layerStartRefusals, options.checkoutIntentLayer ?? Layer.empty),

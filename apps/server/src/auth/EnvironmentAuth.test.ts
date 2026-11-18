@@ -2,6 +2,7 @@ import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   authScopeResponse,
+  AuthAdministrativeScopes,
   AuthStandardClientScopes,
   connectDeviceVerificationCode,
 } from "@t3tools/contracts";
@@ -106,7 +107,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
         const authenticated = yield* serverAuth.authenticateHttpRequest(request);
         expect(devExchange.cookieName).toMatch(/^t3_dev_session_/);
         expect(devExchange.expireNormalCookie).toBe(true);
-        expect(devExchange.response).toMatchObject(authScopeResponse(AuthStandardClientScopes));
+        expect(devExchange.response).toMatchObject(authScopeResponse(AuthAdministrativeScopes));
         expect(authenticated.scopes).toEqual(["orchestration:read"]);
       }).pipe(
         Effect.provide(

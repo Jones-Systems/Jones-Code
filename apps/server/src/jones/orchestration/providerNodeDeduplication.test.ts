@@ -249,18 +249,28 @@ it.effect.each(routes)(
       const fixture = yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const release = yield* Deferred.make<void>();
-      const writerConnection = yield* sql.withTransaction(
-        Effect.withFiber((fiber) =>
-          Effect.succeed(Context.getUnsafe(fiber.context, sql.transactionService)[0]),
-        ),
-      );
-      const dedupConnections: unknown[] = [];
+      // Writer admission can wrap each acquisition. A temporary table identifies
+      // the physical connection even when two transaction handles differ.
+      yield* sql`CREATE TEMP TABLE node_dedup_writer_marker (value INTEGER)`;
+      const writerReads: unknown[] = [];
       const observe: Statement.Transformer = (statement, _sql, fiber) => {
         const [query] = statement.compile();
-        if (/orchestration_v2_projection_nodes WHERE node_id/.test(query)) {
-          dedupConnections.push(Context.getOrUndefined(fiber.context, sql.transactionService)?.[0]);
+        if (!/orchestration_v2_projection_nodes WHERE node_id/.test(query)) {
+          return Effect.succeed(statement);
         }
-        return Effect.succeed(statement);
+        const [connection] = Context.getUnsafe(fiber.context, sql.transactionService);
+        return connection
+          .executeValues(
+            "SELECT count(*) FROM sqlite_temp_master WHERE type = 'table' AND name = 'node_dedup_writer_marker'",
+            [],
+          )
+          .pipe(
+            Effect.orDie,
+            Effect.map((rows) => {
+              writerReads.push(rows);
+              return statement;
+            }),
+          );
       };
       yield* Effect.gen(function* () {
         // Background takes the shared slot first; interactive then takes the reserved slot.
@@ -289,8 +299,7 @@ it.effect.each(routes)(
           assert.lengthOf(yield* ingestNode(route, fixture, changed), 1);
           assert.isEmpty(yield* ingestNode(route, fixture, { ...changed }));
         }).pipe(Effect.provideService(Statement.CurrentTransformer, observe));
-        assert.equal(dedupConnections.length, 2);
-        assert.isTrue(dedupConnections.every((connection) => connection === writerConnection));
+        assert.deepEqual(writerReads, [[[1]], [[1]]]);
         yield* Deferred.succeed(release, undefined);
         for (const holder of holders) yield* Fiber.join(holder);
         const projections = yield* ProjectionStore.ProjectionStoreV2;

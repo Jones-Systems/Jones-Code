@@ -5497,7 +5497,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           });
           const createdAt = yield* DateTime.now;
           const providerThread: OrchestrationV2ProviderThread = {
-            id: idAllocator.derive.providerThread({ driver, nativeThreadId: forked.id }),
+            id:
+              forkInput.targetProviderThread?.id ??
+              idAllocator.derive.providerThread({ driver, nativeThreadId: forked.id }),
             driver,
             providerInstanceId: instanceId,
             providerSessionId: input.providerSessionId,

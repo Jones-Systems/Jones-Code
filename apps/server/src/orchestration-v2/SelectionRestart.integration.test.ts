@@ -735,7 +735,9 @@ it.live(
           Effect.gen(function* () {
             const terminal = yield* orchestrator.streamDomainEvents.pipe(
               Stream.filter(
-                (event) => event.type === "run.updated" && event.payload.status === "completed",
+                (event) =>
+                  event.type === "run.updated" &&
+                  ["completed", "failed", "interrupted"].includes(event.payload.status),
               ),
               Stream.take(1),
               Stream.runDrain,
@@ -756,7 +758,13 @@ it.live(
             yield* worker.drain();
             yield* Fiber.join(terminal);
             yield* worker.drain();
-            return yield* orchestrator.getThreadProjection(threadId);
+            const result = yield* orchestrator.getThreadProjection(threadId);
+            assert.equal(
+              result.runs.at(-1)?.status,
+              "completed",
+              JSON.stringify(result.turnItems.filter((item) => item.type === "error")),
+            );
+            return result;
           });
         yield* orchestrator.dispatch({
           type: "thread.create",

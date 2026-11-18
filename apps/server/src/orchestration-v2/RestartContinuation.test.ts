@@ -152,65 +152,76 @@ it("continues a live turn whose session the adapter never marked running", () =>
     assert.isUndefined(restartContinuationRun(withSessionStatus(status), now), status);
 });
 
-it.effect("recovers an admitted continuation after another crash before provider start", () =>
-  Effect.gen(function* () {
-    const projection = makeProjection();
-    const starting = {
-      ...projection,
-      runs: [
-        {
-          ...projection.runs[0]!,
-          status: "starting" as const,
-          restartContinuationOfRunId: RunId.make("run:previous-crash"),
-        },
-      ],
-      providerThreads: [{ ...projection.providerThreads[0]!, status: "idle" as const }],
-      providerSessions: [{ ...projection.providerSessions[0]!, status: "stopped" as const }],
-      providerTurns: [],
-    };
-    assert.equal(restartContinuationRun(starting, now)?.id, runId);
-
-    // Marked running, but the provider never accepted its prompt.
-    const running = {
-      ...projection,
-      runs: [
-        { ...projection.runs[0]!, restartContinuationOfRunId: RunId.make("run:previous-crash") },
-      ],
-      providerTurns: [],
-    } as unknown as OrchestrationV2ThreadProjection;
-    const commits: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0][] = [];
-    const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
-          Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getRecoveryThreadIds: () => Effect.succeed([threadId]),
-            getRuntimeRecoveryProjection: () => Effect.succeed(running),
-            getThreadRecords: () => Effect.succeed(running),
-          }),
-          Layer.mock(EventSink.EventSinkV2)({
-            supersededTerminalTrace: SupersededTerminalTrace.make(),
-            commitCommand: (input) =>
-              Effect.sync(() => {
-                commits.push(input);
-                return { committed: true, cancelledEffectCount: 0 } as never;
-              }),
-          }),
-          IdAllocator.layer,
-          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
-          Layer.mock(EffectOutbox.EffectOutboxV2)({
-            get: () => Effect.succeedNone,
-            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
-          }),
+it.effect.each(["starting", "running"] as const)(
+  "recovers only the prepared continuation after another crash without a recorded turn (%s)",
+  (status) =>
+    Effect.gen(function* () {
+      const projection = makeProjection();
+      // A prepared continuation can recover before start. A running row without
+      // its provider turn leaves the native outcome unknown.
+      const stored = {
+        ...projection,
+        runs: [
+          {
+            ...projection.runs[0]!,
+            status,
+            startedAt: status === "starting" ? null : now,
+            restartContinuationOfRunId: RunId.make("run:previous-crash"),
+          },
+        ],
+        providerThreads: [
+          {
+            ...projection.providerThreads[0]!,
+            status: status === "starting" ? ("idle" as const) : ("active" as const),
+          },
+        ],
+        providerSessions: [
+          {
+            ...projection.providerSessions[0]!,
+            status: status === "starting" ? ("stopped" as const) : ("running" as const),
+          },
+        ],
+        providerTurns: [],
+      };
+      assert.equal(
+        restartContinuationRun(stored, now)?.id,
+        status === "starting" ? runId : undefined,
+      );
+      const commits: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0][] = [];
+      const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getRecoveryThreadIds: () => Effect.succeed([threadId]),
+              getRuntimeRecoveryProjection: () => Effect.succeed(stored),
+              getThreadRecords: () => Effect.succeed(stored),
+            }),
+            Layer.mock(EventSink.EventSinkV2)({
+              supersededTerminalTrace: SupersededTerminalTrace.make(),
+              commitCommand: (input) =>
+                Effect.sync(() => {
+                  commits.push(input);
+                  return { committed: true, cancelledEffectCount: 0 } as never;
+                }),
+            }),
+            IdAllocator.layer,
+            Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
+            Layer.mock(EffectOutbox.EffectOutboxV2)({
+              get: () => Effect.succeedNone,
+              reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+            }),
+          ),
         ),
-      ),
-    );
-    yield* recovery.reconcile("startup");
-    assert.deepEqual(
-      commits.flatMap((commit) => commit.effects.map((effect) => effect.request)),
-      [{ type: "provider-runtime.continue", sourceRunId: runId, processLossCount: 1 }],
-    );
-  }),
+      );
+      yield* recovery.reconcile("startup");
+      assert.deepEqual(
+        commits.flatMap((commit) => commit.effects.map((effect) => effect.request)),
+        status === "starting"
+          ? [{ type: "provider-runtime.continue", sourceRunId: runId, processLossCount: 1 }]
+          : [],
+      );
+    }),
 );
 
 it("does not continue settled root runs with restart-cancelled background work", () => {
@@ -653,29 +664,22 @@ const devServer = {
   work: { kind: "shell" as const, label: "vp run dev", id: "turn-item:dev-server" },
 };
 
-const unacceptedFollowUp = {
+const laterFollowUp = {
   id: RunId.make("run:follow-up"),
   ordinal: 2,
   activeAttemptId: RunAttemptId.make("attempt:follow-up"),
   userMessageId: MessageId.make("message:follow-up"),
-  status: "running",
-  startedAt: now,
 };
 
 it.effect.each([
-  ["completed", scratchProjectId, backgroundSubagent, true, ""],
-  ["waiting", ProjectId.make("restart-project"), backgroundSubagent, true, ""],
-  ["completed", ProjectId.make("restart-project"), devServer, false, ""],
-  ["waiting", scratchProjectId, devServer, false, ""],
-  [
-    "completed",
-    ProjectId.make("restart-project"),
-    backgroundSubagent,
-    true,
-    ", past a later prompt the provider never accepted",
-  ],
+  ["completed", scratchProjectId, backgroundSubagent, true, "none"],
+  ["waiting", ProjectId.make("restart-project"), backgroundSubagent, true, "none"],
+  ["completed", ProjectId.make("restart-project"), devServer, false, "none"],
+  ["waiting", scratchProjectId, devServer, false, "none"],
+  ["completed", ProjectId.make("restart-project"), backgroundSubagent, true, "queued"],
+  ["completed", ProjectId.make("restart-project"), backgroundSubagent, false, "running"],
 ] as const)(
-  "cleans up background work of a $0 run in project $1 and wakes it only for awaited work$4",
+  "cleans up background work of a $0 run in project $1 (wake $3, later follow-up $4)",
   ([status, projectId, background, wakes, followUp]) =>
     Effect.gen(function* () {
       const base = makeProjection();
@@ -684,7 +688,16 @@ it.effect.each([
         thread: { ...base.thread, projectId },
         runs: [
           { ...base.runs[0]!, status },
-          ...(followUp === "" ? [] : [{ ...base.runs[0]!, ...unacceptedFollowUp }]),
+          ...(followUp === "none"
+            ? []
+            : [
+                {
+                  ...base.runs[0]!,
+                  ...laterFollowUp,
+                  status: followUp,
+                  startedAt: followUp === "queued" ? null : now,
+                },
+              ]),
         ],
         providerTurns: [{ ...base.providerTurns[0]!, status: "completed" }],
         turnItems: [background.turnItem],
@@ -717,8 +730,8 @@ it.effect.each([
                   Effect.succeed(
                     new Map([
                       [
-                        unacceptedFollowUp.userMessageId,
-                        { id: unacceptedFollowUp.userMessageId, createdBy: "user" } as never,
+                        laterFollowUp.userMessageId,
+                        { id: laterFollowUp.userMessageId, createdBy: "user" } as never,
                       ],
                     ]),
                   ),
@@ -770,7 +783,7 @@ it.effect.each([
           ),
         );
         const note = events.find((event) => event.type === "run.background-work-cancelled");
-        assert.equal(note?.runId, runId);
+        assert.equal(note?.runId, followUp === "running" ? laterFollowUp.id : runId);
         assert.deepEqual(note?.payload.restartCancelledBackgroundWork, [background.work]);
         if (status === "completed")
           assert.isFalse(

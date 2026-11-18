@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import {
   ProviderAdapterProtocolError,
   runtimeBinding,
@@ -249,8 +250,6 @@ export const layer = Layer.effect(
             provider.nativeThreadRef?.driver !== provider.driver
           )
             return yield* refused();
-          if (nativeThreadId !== undefined && observedNativeId !== nativeThreadId)
-            return yield* refused();
           if (
             continuation !== undefined &&
             (run.status !== "running" ||
@@ -262,6 +261,20 @@ export const layer = Layer.effect(
           )
             return yield* refused();
           const publication = yield* StartAdmission.CurrentBindingPublication;
+          const replacement = yield* StartAdmission.CurrentHandoffReplacement;
+          if (
+            nativeThreadId !== undefined &&
+            observedNativeId !== nativeThreadId &&
+            (replacement === undefined ||
+              replacement.runId !== input.run.id ||
+              replacement.attemptId !== input.attemptId ||
+              replacement.providerThreadId !== provider.id ||
+              replacement.previousNativeId !== nativeThreadId ||
+              run.status !== "starting" ||
+              nativeCreationGuard !== undefined ||
+              continuation !== undefined)
+          )
+            return yield* refused();
           if (observedGeneration !== producerGeneration || observedNativeId !== nativeThreadId) {
             // Only the manager's retained publication may move this admission to
             // its exact reserved successor. A fresh projection alone is not proof.
@@ -282,6 +295,12 @@ export const layer = Layer.effect(
             publication?.binding,
             provider,
           );
+          if (nativeCreationGuard !== undefined)
+            yield* Guard.assertNativeProviderStartOperation(
+              nativeCreationGuard,
+              input.threadId,
+              input.run.id,
+            );
           yield* control.assertOpen(
             {
               instanceId: provider.providerInstanceId,
@@ -298,16 +317,21 @@ export const layer = Layer.effect(
             },
             publishing,
           );
-          if (nativeCreationGuard !== undefined)
-            yield* Guard.assertNativeProviderStartOperation(
-              nativeCreationGuard,
-              input.threadId,
-              input.run.id,
-            );
           if (!settledClaim) yield* claim.value.check;
           producerGeneration = observedGeneration;
           nativeThreadId = observedNativeId;
-        }).pipe(Effect.mapError(refused), Effect.withSpan("NativeStartAdmission.revalidate"));
+        }).pipe(
+          Effect.mapError((cause) =>
+            Predicate.isTagged(cause, "ControlAdmissionHeld")
+              ? new ProviderAdapterProtocolError({
+                  driver: input.providerThread.driver,
+                  detail: "The original provider control is held.",
+                  cause,
+                })
+              : refused(),
+          ),
+          Effect.withSpan("NativeStartAdmission.revalidate"),
+        );
         yield* revalidate;
         const classifyResume = Effect.gen(function* () {
           yield* revalidate;

@@ -865,6 +865,7 @@ function taskSessionId(part: ToolPart): string | null {
 }
 
 function makeProviderThread(input: {
+  readonly id?: OrchestrationV2ProviderThread["id"];
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
   readonly providerInstanceId: ProviderInstanceId;
   readonly providerSessionId: OrchestrationV2ProviderThread["providerSessionId"];
@@ -876,10 +877,12 @@ function makeProviderThread(input: {
 }): OrchestrationV2ProviderThread {
   const createdAt = dateTimeFromEpoch(input.nativeSession.time.created, input.now);
   return {
-    id: input.idAllocator.derive.providerThread({
-      driver: OPENCODE_PROVIDER,
-      nativeThreadId: input.nativeSession.id,
-    }),
+    id:
+      input.id ??
+      input.idAllocator.derive.providerThread({
+        driver: OPENCODE_PROVIDER,
+        nativeThreadId: input.nativeSession.id,
+      }),
     driver: OPENCODE_PROVIDER,
     providerInstanceId: input.providerInstanceId,
     providerSessionId: input.providerSessionId,
@@ -4482,6 +4485,9 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               const forkedAt = yield* DateTime.now;
               const providerThread = makeProviderThread({
                 idAllocator,
+                ...(forkInput.targetProviderThread
+                  ? { id: forkInput.targetProviderThread.id }
+                  : {}),
                 providerInstanceId: options.instanceId,
                 providerSessionId: input.providerSessionId,
                 appThreadId: forkInput.targetThreadId,

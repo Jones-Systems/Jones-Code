@@ -64,6 +64,8 @@ import * as Projection from "../../orchestration-v2/ProjectionStore.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
 import { workModeCandidate } from "../workMode/Policy.ts";
 import { HeldRuntimeOwner } from "../cleanup/CheckedRuntimeOwner.ts";
+import * as Incarnation from "../cleanup/sharedAdmission/DatabaseIncarnation.ts";
+import { prepareSyntheticOpen } from "../cleanup/sharedAdmission/DatabaseIncarnation.fixture.ts";
 import {
   SyntheticPresentation,
   installSelectedSyntheticPresentation,
@@ -322,9 +324,14 @@ const fixture = <A, E>(
       );
       const workspace = path.join(config.baseDir, "synthetic-workspace");
       yield* fs.makeDirectory(workspace);
-      const persistence = Layer.effectDiscard(runMigrations()).pipe(
-        Layer.provideMerge(NodeSqliteClient.layer({ filename: config.dbPath })),
-      );
+      const { open } = yield* prepareSyntheticOpen(owner.heldRuntimeOwner, config.baseDir);
+      const persistence = Layer.effectDiscard(
+        Effect.gen(function* () {
+          yield* Incarnation.bindOpen(open);
+          yield* runMigrations();
+          yield* Incarnation.revalidateOpen(open);
+        }),
+      ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: config.dbPath })));
       const stores = Layer.mergeAll(Projection.layer, Projects.layer, Outbox.layer).pipe(
         Layer.provideMerge(persistence),
       );
@@ -704,7 +711,9 @@ it.effect.each([
             Layer.mock(Orchestrator.OrchestratorV2)({
               ...unusedCorePorts(),
               recoverCodexFailover: record("failover"),
+              recoverSelfSettlements: record("self-settlement"),
               recoverDelegatedTasks: record("delegation"),
+              recoverRemoteTaskQuestions: record("remote-questions"),
               recoverPlannedUpdateQueues: record("planned"),
             }),
             Layer.mock(Sessions.ProviderSessionManagerV2)({ shutdown: Effect.void }),
@@ -770,7 +779,9 @@ it.effect.each([
               "legacy",
               "recovery",
               "failover",
+              "self-settlement",
               "delegation",
+              "remote-questions",
               "planned",
               "relay-registration",
               "auxiliary",
