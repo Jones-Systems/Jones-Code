@@ -6,7 +6,12 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import * as NodeTimersPromises from "node:timers/promises";
-import { parseDarwinWitness, parseLinuxSyscall, parseLinuxWitness } from "./native-block-proof.mjs";
+import {
+  darwinFffCodeDigest,
+  parseDarwinWitness,
+  parseLinuxSyscall,
+  parseLinuxWitness,
+} from "./native-block-proof.mjs";
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 export const parserSha256 = digest(
@@ -128,13 +133,26 @@ function linuxImages(maps) {
   if (fff.length !== 1 || ffi.length !== 1) throw new Error("Unattributed loaded native images");
   return { fff: fff[0], ffi: ffi[0] };
 }
+export async function readNativeImage(path) {
+  const file = await NodeFSP.open(
+    path,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  );
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size <= 0 || stat.size > 128 * 1024 * 1024)
+      throw new Error("Unhashable loaded image");
+    const bytes = await file.readFile();
+    if (bytes.length !== stat.size) throw new Error("Loaded image changed size");
+    return bytes;
+  } finally {
+    await file.close();
+  }
+}
 async function imageHashes(paths) {
   const result = {};
   for (const [name, path] of Object.entries(paths)) {
-    const stat = await NodeFSP.lstat(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > 128 * 1024 * 1024)
-      throw new Error("Unhashable loaded image");
-    result[name] = digest(await NodeFSP.readFile(path));
+    result[name] = digest(await readNativeImage(path));
   }
   return result;
 }
@@ -248,7 +266,9 @@ export async function witnessNativeBlock({
         if (images?.length !== 1) throw new Error("Unattributed loaded native images");
         paths[key] = images[0].path;
       }
-      binaryDigests = await imageHashes(paths);
+      const fff = await readNativeImage(paths.fff);
+      raw.fffCodeSha256 = darwinFffCodeDigest(fff);
+      binaryDigests = { fff: digest(fff), ffi: digest(await readNativeImage(paths.ffi)) };
       const observation = parseDarwinWitness(
         raw,
         subject,

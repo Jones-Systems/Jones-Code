@@ -1,3 +1,5 @@
+import * as NodeCrypto from "node:crypto";
+
 // These parsers accept OS observations, never JS entry markers, CPU deltas or test exit codes.
 export const NATIVE_BLOCK_PHASE = "fff-create/log-init/fifo-open";
 export const NATIVE_BLOCK_SCHEMA = "jones.native-block-proof/v1";
@@ -137,7 +139,7 @@ export function parseMacSample(text, pid) {
 // the observed chain. The final destination, 0x3e4b44, is the _open symbol stub.
 const darwinFff = {
   name: "libfff_c.dylib",
-  sha256: "d052aae92b8d89f4734399aa53f80a327c4931f1b5dea0a7d96f9c488229ba43",
+  codeSha256: "040dff319ec3c6d2c015801dee0bb6f912de2d215749c9638c0dbca10e9331d2",
   uuid: "A16BF197-B7BB-31BF-9522-B9F734296D65",
   returnAddresses: [0x39a30n, 0x1c54a8n, 0x2cf7b4n],
 };
@@ -146,11 +148,78 @@ const decimal = (value) => typeof value === "string" && /^[0-9]{1,20}$/.test(val
 const hexadecimal = (value) => typeof value === "string" && /^[a-f0-9]{1,16}$/i.test(value);
 const lowerHex = (value) => BigInt("0x" + value);
 
+// The CLI archive signer replaces the terminal signature and updates its size and
+// the two __LINKEDIT sizes. The load addresses, signature offset, code and imports
+// stay in this fingerprint. The receipt also binds the hash of each complete file.
+export function darwinFffCodeDigest(bytes) {
+  const headerSize = 32;
+  if (
+    !Buffer.isBuffer(bytes) ||
+    bytes.length < headerSize ||
+    bytes.readUInt32LE(0) !== 0xfeedfacf || // MH_MAGIC_64
+    bytes.readUInt32LE(4) !== 0x0100000c || // CPU_TYPE_ARM64
+    bytes.readUInt32LE(12) !== 6 // MH_DYLIB
+  )
+    return undefined;
+  const count = bytes.readUInt32LE(16);
+  const commandEnd = headerSize + bytes.readUInt32LE(20);
+  if (count > 256 || commandEnd > bytes.length) return undefined;
+  let linkedit, signature;
+  let offset = headerSize;
+  for (let command = 0; command < count; command++) {
+    if (offset + 8 > commandEnd) return undefined;
+    const kind = bytes.readUInt32LE(offset);
+    const size = bytes.readUInt32LE(offset + 4);
+    if (size < 8 || size % 8 !== 0 || offset + size > commandEnd) return undefined;
+    if (kind === 0x19) {
+      // LC_SEGMENT_64
+      if (size < 72) return undefined;
+      const name = bytes.toString("ascii", offset + 8, offset + 24).replace(/\0+$/, "");
+      if (name === "__LINKEDIT") {
+        if (linkedit || size !== 72 || bytes.readUInt32LE(offset + 64) !== 0) return undefined;
+        linkedit = {
+          command: offset,
+          vmSize: bytes.readBigUInt64LE(offset + 32),
+          fileOffset: bytes.readBigUInt64LE(offset + 40),
+          fileSize: bytes.readBigUInt64LE(offset + 48),
+        };
+      }
+    } else if (kind === 0x1d) {
+      // LC_CODE_SIGNATURE
+      if (signature || size !== 16) return undefined;
+      signature = {
+        command: offset,
+        fileOffset: bytes.readUInt32LE(offset + 8),
+        size: bytes.readUInt32LE(offset + 12),
+      };
+    }
+    offset += size;
+  }
+  if (
+    offset !== commandEnd ||
+    !linkedit ||
+    !signature ||
+    signature.size === 0 ||
+    signature.fileOffset < commandEnd ||
+    signature.fileOffset + signature.size !== bytes.length ||
+    linkedit.fileOffset < BigInt(commandEnd) ||
+    linkedit.fileOffset > BigInt(signature.fileOffset) ||
+    linkedit.fileOffset + linkedit.fileSize !== BigInt(bytes.length) ||
+    linkedit.vmSize < linkedit.fileSize
+  )
+    return undefined;
+  const canonical = Buffer.from(bytes.subarray(0, signature.fileOffset));
+  canonical.fill(0, linkedit.command + 32, linkedit.command + 40);
+  canonical.fill(0, linkedit.command + 48, linkedit.command + 56);
+  canonical.fill(0, signature.command + 12, signature.command + 16);
+  return NodeCrypto.createHash("sha256").update(canonical).digest("hex");
+}
+
 function darwinImages(sample, observed, digests) {
   if (
     !Array.isArray(observed) ||
     observed.length !== 2 ||
-    digests?.fff !== darwinFff.sha256 ||
+    !hash(digests?.fff) ||
     !hash(digests.ffi)
   )
     return undefined;
@@ -217,6 +286,7 @@ export function parseDarwinWitness(raw, subject, fifoTable, bounds, binaryDigest
   if (
     !positive(subject?.pid) ||
     raw?.samplerFinished !== true ||
+    raw.fffCodeSha256 !== darwinFff.codeSha256 ||
     typeof raw.sample !== "string" ||
     raw.sample.length > 4 * 1024 * 1024 ||
     !closed(mach, ["subject", "mainTid", "before", "after", "images"]) ||

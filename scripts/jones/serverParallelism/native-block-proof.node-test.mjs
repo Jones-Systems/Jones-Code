@@ -1,6 +1,7 @@
 import * as NodeTest from "node:test";
 import * as NodeAssert from "node:assert/strict";
 import {
+  darwinFffCodeDigest,
   parseLinuxSyscall,
   parseLinuxWitness,
   parseMacSample,
@@ -13,6 +14,44 @@ import { readBoundedEvidence } from "./native-block-observer.mjs";
 const H = "a".repeat(64);
 const expected = { os: "linux-x64", form: "source", profile: "laptop", build: H };
 const valid = nativeBlockTestProof;
+
+NodeTest.test("Mach-O fingerprint preserves all bytes outside signature and signer sizes", () => {
+  function image(signatureSize) {
+    const signatureStart = 0x180;
+    const linkeditStart = 0x100;
+    const bytes = Buffer.alloc(signatureStart + signatureSize);
+    bytes.writeUInt32LE(0xfeedfacf, 0);
+    bytes.writeUInt32LE(0x0100000c, 4);
+    bytes.writeUInt32LE(6, 12);
+    bytes.writeUInt32LE(2, 16);
+    bytes.writeUInt32LE(72 + 16, 20);
+    const segment = 32;
+    bytes.writeUInt32LE(0x19, segment);
+    bytes.writeUInt32LE(72, segment + 4);
+    bytes.write("__LINKEDIT", segment + 8);
+    bytes.writeBigUInt64LE(BigInt(256 + signatureSize), segment + 32);
+    bytes.writeBigUInt64LE(BigInt(linkeditStart), segment + 40);
+    bytes.writeBigUInt64LE(BigInt(bytes.length - linkeditStart), segment + 48);
+    const signature = segment + 72;
+    bytes.writeUInt32LE(0x1d, signature);
+    bytes.writeUInt32LE(16, signature + 4);
+    bytes.writeUInt32LE(signatureStart, signature + 8);
+    bytes.writeUInt32LE(signatureSize, signature + 12);
+    bytes.fill(signatureSize, signatureStart);
+    return bytes;
+  }
+  const original = image(32);
+  const resigned = image(64);
+  const fingerprint = darwinFffCodeDigest(original);
+  NodeAssert.match(fingerprint, /^[a-f0-9]{64}$/);
+  NodeAssert.equal(darwinFffCodeDigest(resigned), fingerprint);
+  resigned[0x140] = 42;
+  NodeAssert.notEqual(darwinFffCodeDigest(resigned), fingerprint);
+  NodeAssert.equal(darwinFffCodeDigest(original.subarray(0, -1)), undefined);
+  const invalidOffset = Buffer.from(original);
+  invalidOffset.writeUInt32LE(112, 104 + 8);
+  NodeAssert.equal(darwinFffCodeDigest(invalidOffset), undefined);
+});
 
 NodeTest.test(
   "macOS requires the same blocked thread, exact FIFO inode and pinned native chain",
@@ -63,6 +102,7 @@ Binary Images:
     const raw = {
       sample,
       samplerFinished: true,
+      fffCodeSha256: "040dff319ec3c6d2c015801dee0bb6f912de2d215749c9638c0dbca10e9331d2",
       mach: {
         subject,
         mainTid: "802",
@@ -81,6 +121,12 @@ Binary Images:
       binaryPaths: paths,
     });
     for (const mutate of [
+      (draft) => {
+        delete draft.fffCodeSha256;
+      },
+      (draft) => {
+        draft.fffCodeSha256 = H;
+      },
       (draft) => {
         delete draft.mach;
       },
@@ -119,7 +165,7 @@ Binary Images:
       NodeAssert.equal(parseDarwinWitness(draft, subject, table, bounds, digests), undefined);
     }
     NodeAssert.equal(
-      parseDarwinWitness(raw, subject, table, bounds, { ...digests, fff: H }),
+      parseDarwinWitness(raw, subject, table, bounds, { ...digests, fff: "invalid" }),
       undefined,
     );
   },

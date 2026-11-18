@@ -2,11 +2,13 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import {
+  darwinFffCodeDigest,
   nativeBlockReceiptPredicate,
   nativeBlockCohortRetired,
   parseDarwinWitness,
   parseLinuxWitness,
 } from "./native-block-proof.mjs";
+import { readNativeImage } from "./native-block-observer.mjs";
 import { proveAbsent } from "../../../apps/server/src/jones/serverCompute/journal.ts";
 const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -57,13 +59,19 @@ async function parseRetainedWitness(os, evidence, cohort, mode, directory) {
     evidence.raw.sample !== sample.toString("utf8")
   )
     return undefined;
-  return parseDarwinWitness(
+  const parsed = parseDarwinWitness(
     evidence.raw,
     evidence.subject,
     cohort.table,
     { issued: cohort.issued?.requestIssued, finished: evidence.finished },
     evidence.binaryDigests,
   );
+  if (!parsed) return undefined;
+  const fff = await readNativeImage(parsed.binaryPaths.fff);
+  return digest(fff) === evidence.binaryDigests.fff &&
+    darwinFffCodeDigest(fff) === evidence.raw.fffCodeSha256
+    ? parsed
+    : undefined;
 }
 
 export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
@@ -160,16 +168,13 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
       killed.table.length !== 20
     )
       return false;
-    for (const name of ["fff", "ffi"]) {
-      const path = proof.binaryPaths[name],
-        stat = await NodeFSP.lstat(path);
+    // On macOS the complete FFF image was verified together with its code fingerprint.
+    for (const name of expected.os === "macos-arm64" ? ["ffi"] : ["fff", "ffi"]) {
+      const path = proof.binaryPaths[name];
       if (
-        !stat.isFile() ||
-        stat.isSymbolicLink() ||
-        stat.size > 128 * 1024 * 1024 ||
         (expected.os === "linux-x64" &&
           !evidence.raw.maps.split("\n").some((line) => line.endsWith(" " + path))) ||
-        digest(await NodeFSP.readFile(path)) !== proof.binaryDigests[name]
+        digest(await readNativeImage(path)) !== proof.binaryDigests[name]
       )
         return false;
     }
