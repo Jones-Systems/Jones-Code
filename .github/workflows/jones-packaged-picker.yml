@@ -116,7 +116,7 @@ jobs:
         uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15
         with:
           node-version-file: package.json
-          cache: true
+          cache: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' }}
           run-install: true
       - name: Read producer selection
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333

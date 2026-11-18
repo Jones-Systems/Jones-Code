@@ -299,6 +299,11 @@
       "scope": "Twenty-two public-source checkout bootstraps are byte-bound to the canonical anonymous Git helper. Exact event merge commits and explicit Preview heads retain depth, full branch/tag history, sparse selection and classifier inputs. Empty-workspace/ref/repository guards precede Git; global/system/injected config, prompts and helpers are disabled. Synthetic unmapped gitlinks remain in the tested index on success and injected fetch/checkout failures; metadata-only assertions prove no checkout credential state, no retries or fallback, preserved native failure status and unchanged source. Separate API credentials and existing workflow triggers are unchanged."
     },
     {
+      "id": "macos-dependency-cache",
+      "tests": ["scripts/jones/ci/macos-dependency-cache.node-test.mjs"],
+      "scope": "macOS dependency archives are created on main. Rotation requires successful current main CI and a verified replacement, and preserves other refs and cache families."
+    },
+    {
       "id": "server-result-cache",
       "tests": [
         "scripts/jones/ci/server-result-cache.node-test.mjs",

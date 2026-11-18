@@ -82,7 +82,7 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version: 26.13.1
-          cache: true
+          cache: ${{ runner.os != 'macOS' || github.ref == 'refs/heads/main' }}
           run-install: true
 
       - name: Select the exact candidate runtime
