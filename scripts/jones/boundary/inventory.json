@@ -7,6 +7,11 @@
   },
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "paths": {
+    "packages/shared/src/markdownPipeline.ts": "hook",
+    "apps/web/src/reopenClosedView.ts": "hook",
+    "apps/web/src/closedViewStore.ts": "hook",
+    "apps/web/src/rightPanelStore.ts": "hook",
+    "apps/web/src/components/chat/RightPanelSurfaceContent.tsx": "hook",
     "apps/server/src/jones/provider/observations/ThreadManagementActivity.integration.test.ts": "jones-owned",
     "apps/web/src/components/EnvironmentMachineIcon.tsx": "accepted-shared",
     "apps/web/src/components/ThreadStatusIndicators.tsx": "accepted-shared",
