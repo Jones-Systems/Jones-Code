@@ -22,6 +22,7 @@ const waitForLoopSamples = Effect.promise(() =>
 function startPhaseLoopTrace() {
   // Observe Node's timer turns directly, independently of the measured Effect scheduler.
   const trace = { ticksMs: [] as number[], overflow: false };
+  // @effect-diagnostics-next-line globalTimers:off -- Measure the native event loop independently of Effect scheduling.
   const timer = NodeTimers.setInterval(() => {
     if (trace.ticksMs.length < maxPhaseLoopTicks) trace.ticksMs.push(performance.now());
     else trace.overflow = true;
