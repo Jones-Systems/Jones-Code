@@ -2259,6 +2259,11 @@
       "scope": "Opt-in serial verified official Effect TSRS incremental checking for explicitly selected exact-launcher workspaces. V2 identity covers compiler/pins/standard libraries, workspace/dependency bindings and guarded raw JSONC inputs, without unsupported native showConfig. Every invocation executes the verified compiler; authenticated launch coordinates with patch/restore only through spawn. Legacy v1 is ignored and preserved; unsupported retained hosts fail clearly. Fresh mode bypasses retained state; private buildinfo cleanup and existing bounds remain."
     },
     {
+      "id": "remote-fetch-observation",
+      "tests": ["apps/server/src/jones/git/remoteFetchObservation.test.ts"],
+      "scope": "The Git driver owns in-memory remote fetch evidence keyed by physical Git common directory, remote name and coverage. The existing status writer observes configured refspecs, and the worktree-base writer observes its selected branch. Driver hooks bind evidence to the fetch command result before status or launch fallbacks. The server-only read method uses fresh Git identity and returns unknown on a new driver. Jones tests use local Git fixtures and a controlled clock for coverage, shared worktree identity, skipped attempts, failures, timeouts and concurrent completion order."
+    },
+    {
       "id": "vcs-cache-efficiency",
       "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
       "scope": "VCS status cache updates mutate the private directory map synchronously while replacing snapshot values, preserving deduplication, remote ordering and existing retention. A small accepted shared-file edit and colocated regression preserve private cache ownership without adding an extraction interface."

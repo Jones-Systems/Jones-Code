@@ -75,6 +75,7 @@ import {
   observeListRefs,
   timeListRefsPhase,
 } from "../jones/git/listRefsTelemetry.ts";
+import { makeRemoteFetchObservation } from "../jones/git/remoteFetchObservation.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -1037,6 +1038,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const hostPlatform = yield* HostProcess.Platform;
   const serviceScope = yield* Effect.scope;
   const automaticFetchInterval = yield* VcsAutomaticFetchInterval;
+  const remoteFetchObservation = makeRemoteFetchObservation();
   type StatusFetchState = {
     phase: "queued" | "running" | "claimed";
     claimed: Deferred.Deferred<void>;
@@ -1489,12 +1491,23 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         // Frequent poll deadlines and disconnected clients must not interrupt a
         // healthy writer. A separate safety limit prevents a hung transport from
         // occupying its worker slot indefinitely.
-        const fetch = executeGit("GitVcsDriver.fetchRemoteForStatus", fetchCwd, args, {
+        const command = executeGit("GitVcsDriver.fetchRemoteForStatus", fetchCwd, args, {
           env: STATUS_UPSTREAM_REFRESH_ENV,
           fallbackErrorDetail: "Background Git fetch exited with a non-zero status.",
           timeoutMs: Duration.toMillis(STATUS_UPSTREAM_FETCH_TIMEOUT),
+        });
+        const fetch = Effect.gen(function* () {
+          // The writer targets this Git directory explicitly, regardless of the polling checkout.
+          const physicalCommonDir = yield* fileSystem
+            .realPath(gitCommonDir)
+            .pipe(Effect.orElseSucceed(() => null));
+          yield* remoteFetchObservation.observe(
+            physicalCommonDir,
+            { remoteName, coverage: { kind: "configured-refspecs" } },
+            command,
+            () => ({ status: "succeeded" }),
+          );
         }).pipe(
-          Effect.asVoid,
           Effect.tap(() =>
             Effect.sync(() => {
               statusRemoteRefreshFailures.delete(key);
@@ -1545,7 +1558,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
   });
 
-  const readGitCommonDir = Effect.fn("readGitCommonDir")(function* (cwd: string) {
+  const readGitCommonDir = Effect.fn("readGitCommonDir")(function* (
+    cwd: string,
+    requirePhysical = false,
+  ) {
     // Git reports relative paths from the physical cwd, which can differ from a symlink.
     const commonDirResult = yield* executeGitWithStableDiagnostics(
       "GitVcsDriver.resolveRepositoryPaths.commonDir",
@@ -1574,15 +1590,29 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       });
     }
 
-    const commonDirOutput = commonDirResult.stdout.trim();
-    const physicalCwd = yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
+    const commonDirOutput = commonDirResult.stdout.endsWith("\n")
+      ? commonDirResult.stdout.slice(0, -1)
+      : commonDirResult.stdout;
+    if (!commonDirOutput || commonDirResult.stdoutTruncated) return null;
+    const physicalCwd = yield* fileSystem
+      .realPath(cwd)
+      .pipe(Effect.orElseSucceed(() => (requirePhysical ? null : cwd)));
+    if (physicalCwd === null) return null;
     const resolvedGitCommonDir = path.isAbsolute(commonDirOutput)
       ? path.normalize(commonDirOutput)
       : path.resolve(physicalCwd, commonDirOutput);
     return yield* fileSystem
       .realPath(resolvedGitCommonDir)
-      .pipe(Effect.orElseSucceed(() => resolvedGitCommonDir));
+      .pipe(Effect.orElseSucceed(() => (requirePhysical ? null : resolvedGitCommonDir)));
   });
+
+  const readRemoteFetchCommonDir = (cwd: string) =>
+    readGitCommonDir(cwd, true).pipe(Effect.orElseSucceed(() => null));
+
+  const readRemoteFetchObservation: GitVcsDriver.GitVcsDriver["Service"]["readRemoteFetchObservation"] =
+    Effect.fn("GitVcsDriver.readRemoteFetchObservation")(function* (input) {
+      return remoteFetchObservation.read(yield* readRemoteFetchCommonDir(input.cwd), input);
+    });
 
   const readWorktreeRoot = Effect.fn("readWorktreeRoot")(function* (cwd: string) {
     const result = yield* executeGit(
@@ -5587,7 +5617,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return { headCommit: input.targetCommit, moved: true, onTarget: true };
     });
 
-  const fetchRemote = Effect.fn("fetchRemote")(function* (input: GitVcsDriver.GitFetchRemoteInput) {
+  const fetchRemote = Effect.fn("fetchRemote")(function* (
+    input: GitVcsDriver.GitFetchRemoteInput,
+    observedGitCommonDir: string | null = null,
+  ) {
     const args = ["fetch", "--quiet", "--", input.remoteName];
     const options = {
       env: STATUS_UPSTREAM_REFRESH_ENV,
@@ -5646,13 +5679,20 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       input.remoteName,
       `+refs/heads/${branch}:refs/remotes/${input.remoteName}/${branch}`,
     ];
-    const result = yield* runFetch(scopedArgs);
+    const missingBranch = (stderr: string) =>
+      stderr.split(/\r?\n/).includes(`fatal: couldn't find remote ref refs/heads/${branch}`);
+    const result = yield* remoteFetchObservation.observe(
+      observedGitCommonDir,
+      { remoteName: input.remoteName, coverage: { kind: "branch", branchName: branch } },
+      runFetch(scopedArgs),
+      ({ exitCode, stderr }) => {
+        if (exitCode === 0) return { status: "succeeded" };
+        const reason = missingBranch(stderr) ? "ref_not_found" : classifyGitFailure(stderr);
+        return reason === null ? { status: "failed" } : { status: "failed", reason };
+      },
+    );
     if (result.exitCode === 0) return true;
-    if (
-      result.stderr.split(/\r?\n/).includes(`fatal: couldn't find remote ref refs/heads/${branch}`)
-    ) {
-      return false;
-    }
+    if (missingBranch(result.stderr)) return false;
     return yield* new GitCommandError({
       ...gitCommandContext({
         operation: "GitVcsDriver.fetchRemote",
@@ -5777,8 +5817,30 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       if (target === null) return null;
       const { remoteName, branchName } = target;
       const remoteRefName = `${remoteName}/${branchName}`;
+      // A supplied target may outlive its configured remote. Git accepts paths here too.
+      const [gitCommonDir, configuredRemote] = yield* Effect.all(
+        [
+          readRemoteFetchCommonDir(input.cwd),
+          input.remote === undefined
+            ? Effect.succeed(true)
+            : listRemoteNames(input.cwd).pipe(
+                Effect.map((names) => names.includes(remoteName)),
+                Effect.orElseSucceed(() => false),
+                Effect.timeoutOrElse({
+                  duration: "5 seconds",
+                  orElse: () => Effect.succeed(false),
+                }),
+              ),
+        ],
+        { concurrency: 2 },
+      );
       // A missing remote branch can leave a stale tracking ref; never resolve it.
-      if (!(yield* fetchRemote({ cwd: input.cwd, remoteName, refName: remoteRefName }))) {
+      if (
+        !(yield* fetchRemote(
+          { cwd: input.cwd, remoteName, refName: remoteRefName },
+          configuredRemote ? gitCommonDir : null,
+        ))
+      ) {
         return null;
       }
       const resolved = yield* executeGit(
@@ -6279,6 +6341,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     statusDetails,
     statusDetailsLocal,
     statusDetailsRemote,
+    readRemoteFetchObservation,
     readRefSnapshot,
     prepareCommitContext,
     commit: Effect.fnUntraced(function* (cwd, subject, body, options) {
