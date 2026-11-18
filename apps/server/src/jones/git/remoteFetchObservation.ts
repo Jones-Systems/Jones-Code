@@ -227,7 +227,7 @@ export function makeRemoteFetchBinding(input: {
               execute({
                 ...command,
                 cwd: physicalCwd,
-                env: { ...selectors, GIT_NO_LAZY_FETCH: "1" },
+                env: { ...selectors, GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "" },
               }),
             ),
           ),

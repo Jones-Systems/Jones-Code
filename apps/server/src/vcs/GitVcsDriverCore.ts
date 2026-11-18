@@ -82,7 +82,12 @@ import {
   makeRemoteFetchWriters,
   remoteFetchWriterKey,
 } from "../jones/git/remoteFetchObservation.ts";
-import { fetchRepoDefault } from "../jones/git/repoFreshnessGit.ts";
+import {
+  captureRepoFreshnessCheckout,
+  skipRepoFreshnessCheckout,
+  updateRepoFreshnessCheckout,
+} from "../jones/git/repoFreshnessCheckout.ts";
+import { fetchRepoDefault, type RepoFreshnessRemote } from "../jones/git/repoFreshnessGit.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -1212,18 +1217,22 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   );
 
   const sharedConfigLocks = new Map<string, Semaphore.Semaphore>();
+  const withCommonGitWriter = <A, E>(gitCommonDir: string, effect: Effect.Effect<A, E>) => {
+    let lock = sharedConfigLocks.get(gitCommonDir);
+    if (lock === undefined) {
+      lock = Semaphore.makeUnsafe(1);
+      sharedConfigLocks.set(gitCommonDir, lock);
+    }
+    return lock.withPermit(effect);
+  };
   const withSharedConfigLock = <A, E>(cwd: string, effect: Effect.Effect<A, E>) =>
     resolveRepositoryPaths(cwd).pipe(
       Effect.orElseSucceed(() => null),
-      Effect.flatMap((repositoryPaths) => {
-        if (repositoryPaths === null) return effect;
-        let lock = sharedConfigLocks.get(repositoryPaths.gitCommonDir);
-        if (lock === undefined) {
-          lock = Semaphore.makeUnsafe(1);
-          sharedConfigLocks.set(repositoryPaths.gitCommonDir, lock);
-        }
-        return lock.withPermit(effect);
-      }),
+      Effect.flatMap((repositoryPaths) =>
+        repositoryPaths === null
+          ? effect
+          : withCommonGitWriter(repositoryPaths.gitCommonDir, effect),
+      ),
     );
 
   const execute: GitVcsDriver.GitVcsDriver["Service"]["execute"] = (input) =>
@@ -2021,34 +2030,82 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ),
     );
 
+  const bindRepoFreshnessRemote = Effect.fn("GitVcsDriver.bindRepoFreshnessRemote")(
+    function* (cwd: string) {
+      const physicalCwd = yield* fileSystem.realPath(cwd);
+      const names = yield* listRemoteNames(physicalCwd);
+      const remoteName = names.includes("origin") ? "origin" : names.length === 1 ? names[0] : null;
+      if (!remoteName) return null;
+      return yield* bindRemoteFetch(physicalCwd, remoteName);
+    },
+    Effect.orElseSucceed(() => null),
+  );
+
   const resolveRepoFreshnessRemote: GitVcsDriver.GitVcsDriver["Service"]["resolveRepoFreshnessRemote"] =
     Effect.fn("GitVcsDriver.resolveRepoFreshnessRemote")(
       function* (cwd) {
-        const physicalCwd = yield* fileSystem.realPath(cwd);
-        const names = yield* listRemoteNames(physicalCwd);
-        const remoteName = names.includes("origin")
-          ? "origin"
-          : names.length === 1
-            ? names[0]
-            : null;
-        if (!remoteName) return null;
-        const bound = yield* bindRemoteFetch(physicalCwd, remoteName);
+        const bound = yield* bindRepoFreshnessRemote(cwd);
         if (bound === null) return null;
+        const { remoteName, gitCommonDir } = bound;
+        const writerKey = remoteFetchWriterKey(gitCommonDir, remoteName);
+        const checkoutIdentity = yield* captureRepoFreshnessCheckout(cwd, bound, path);
+        const revalidate = Effect.gen(function* () {
+          const current = yield* bindRepoFreshnessRemote(cwd);
+          return (
+            current !== null &&
+            current.cwd === bound.cwd &&
+            current.gitDir === bound.gitDir &&
+            current.configuredIdentity === bound.configuredIdentity &&
+            (yield* captureRepoFreshnessCheckout(cwd, current, path)) === checkoutIdentity
+          );
+        });
         return {
           identity: bound.identity,
           remoteName,
+          checkoutIdentity,
           check: withRemoteFetchWriter(
-            remoteFetchWriterKey(bound.gitCommonDir, remoteName),
+            writerKey,
             Effect.gen(function* () {
               const selected = yield* fetchRepoDefault(bound);
-              const current = yield* bindRemoteFetch(physicalCwd, remoteName);
-              if (current?.identity !== bound.identity || current.gitDir !== bound.gitDir) {
+              if (!(yield* revalidate)) {
                 return yield* invalidRemoteFetch(bound.cwd);
               }
               return selected;
             }),
           ),
-        };
+          updateCheckout: (verified, authorize) =>
+            checkoutIdentity === null
+              ? Effect.succeed(skipRepoFreshnessCheckout("not-checkout-root"))
+              : withCommonGitWriter(
+                  gitCommonDir,
+                  withRemoteFetchWriter(
+                    writerKey,
+                    updateRepoFreshnessCheckout({
+                      execute,
+                      location: bound,
+                      path,
+                      platform: hostPlatform,
+                      verified,
+                      revalidate,
+                      verifyPhysical: captureRepoFreshnessCheckout(cwd, bound, path).pipe(
+                        Effect.map((identity) => identity === checkoutIdentity),
+                      ),
+                      authorize,
+                      invalidate: Effect.suspend(() =>
+                        Effect.all(
+                          [
+                            invalidateListRefsSnapshot(bound.cwd, gitCommonDir).pipe(Effect.ignore),
+                            invalidateStatusStaticCaches(bound.cwd, gitCommonDir).pipe(
+                              Effect.ignore,
+                            ),
+                          ],
+                          { discard: true },
+                        ),
+                      ),
+                    }),
+                  ),
+                ),
+        } satisfies RepoFreshnessRemote;
       },
       Effect.orElseSucceed(() => null),
     );
@@ -6345,8 +6402,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           // Killing a checkout midway (large or LFS repos) leaves a half-updated working tree.
           timeoutMs: null,
           fallbackErrorDetail: "git checkout failed",
-          // Creating a branch writes its upstream; Git also guesses a remote branch for a missing name.
-          writesSharedConfig: checkoutArgs[1] === "--track" || (!localInputExists && !remoteExists),
+          // Checkout changes the branch binding used by the primary checkout updater.
+          writesSharedConfig: true,
         },
       );
 
@@ -6482,7 +6539,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return yield* withListRefsInvalidation(cwd, pushCurrentBranch(cwd, fallbackBranch, options));
     }),
     pullCurrentBranch: Effect.fnUntraced(function* (cwd) {
-      return yield* withListRefsInvalidation(cwd, pullCurrentBranch(cwd));
+      return yield* withListRefsInvalidation(
+        cwd,
+        withSharedConfigLock(cwd, pullCurrentBranch(cwd)),
+      );
     }),
     readRangeContext,
     getReviewBranchCommits,
@@ -6504,7 +6564,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     fetchRefCommit,
     resolveCommit,
     refreshCheckedOutBranch: Effect.fnUntraced(function* (input) {
-      return yield* withListRefsInvalidation(input.cwd, refreshCheckedOutBranch(input));
+      return yield* withListRefsInvalidation(
+        input.cwd,
+        withSharedConfigLock(input.cwd, refreshCheckedOutBranch(input)),
+      );
     }),
     ensureRemote: Effect.fnUntraced(function* (input) {
       return yield* withListRefsInvalidation(input.cwd, ensureRemote(input));

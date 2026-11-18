@@ -1,4 +1,10 @@
-import type { ProjectId, ProjectSettingsOverrides, ServerSettings } from "@t3tools/contracts";
+import type {
+  ProjectId,
+  ProjectSettingsOverrides,
+  ServerSettings,
+  ServerSettingsError,
+} from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -10,6 +16,11 @@ import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import { forkParked } from "../../serverActivation.ts";
 import * as ServerSettingsService from "../../serverSettings.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
+import {
+  skipRepoFreshnessCheckout,
+  type RepoFreshnessCheckout,
+  type RepoFreshnessCheckoutSkipReason,
+} from "./repoFreshnessCheckout.ts";
 import type { RepoFreshnessRemote, VerifiedRepoDefault } from "./repoFreshnessGit.ts";
 
 type Cadence = NonNullable<ProjectSettingsOverrides["repoFreshnessCadenceSeconds"]>;
@@ -37,20 +48,29 @@ export interface RepoFreshnessStatus {
   readonly freshness: "unknown" | "fresh" | "stale" | "cadence-off";
 }
 
+type ProjectBinding =
+  | {
+      readonly cadence: Cadence;
+      readonly remote: RepoFreshnessRemote;
+      readonly workspaceRoot: string;
+    }
+  | {
+      readonly cadence: Cadence;
+      readonly reason: Extract<RepoFreshnessStatus["target"], { status: "unavailable" }>["reason"];
+    };
+
 interface RefreshResult {
   readonly status: RepoFreshnessStatus;
-  readonly checkout: {
-    readonly status: "skipped";
-    readonly reason: "checkout-update-deferred";
-  };
+  readonly checkout: RepoFreshnessCheckout;
 }
 
 export class RepoFreshness extends Context.Service<
   RepoFreshness,
   {
     readonly status: (projectId: ProjectId) => Effect.Effect<RepoFreshnessStatus>;
-    readonly refresh: (projectId: ProjectId) => Effect.Effect<RefreshResult>;
+    /** Fetch-only verification for launch. */
     readonly checkForLaunch: (projectId: ProjectId) => Effect.Effect<RepoFreshnessStatus>;
+    readonly refresh: (projectId: ProjectId) => Effect.Effect<RefreshResult>;
   }
 >()("t3/jones/git/RepoFreshness") {}
 
@@ -77,10 +97,12 @@ const make = Effect.gen(function* () {
   const evidence = new Map<string, { observed?: Evidence }>();
   const flights = new Map<string, Fiber.Fiber<Evidence>>();
   const due = new Map<ProjectId, { cadence: Cadence; at: number }>();
-  let scheduledChecks = 0;
+  const scheduledProjects = new Set<ProjectId>();
 
   const resolve = Effect.fn("RepoFreshness.resolve")(
-    function* (projectId: ProjectId) {
+    function* (
+      projectId: ProjectId,
+    ): Effect.fn.Return<ProjectBinding, ProjectStore.ProjectStoreV2Error | ServerSettingsError> {
       const [current, project] = yield* Effect.all([
         settings.getSettings,
         projects.getShell(projectId),
@@ -90,7 +112,11 @@ const make = Effect.gen(function* () {
       const remote = yield* git.resolveRepoFreshnessRemote(project.value.workspaceRoot);
       return remote === null
         ? ({ cadence, reason: "remote-unresolved" } as const)
-        : { cadence, remote };
+        : {
+            cadence,
+            remote,
+            workspaceRoot: project.value.workspaceRoot,
+          };
     },
     Effect.orElseSucceed(() => ({ cadence: 0, reason: "project-state-unavailable" }) as const),
   );
@@ -120,10 +146,7 @@ const make = Effect.gen(function* () {
     } satisfies RepoFreshnessStatus;
   });
 
-  const startCheck = Effect.fn("RepoFreshness.startCheck")(function* (
-    remote: RepoFreshnessRemote,
-    scheduled: boolean,
-  ) {
+  const startCheck = Effect.fn("RepoFreshness.startCheck")(function* (remote: RepoFreshnessRemote) {
     const pending = flights.get(remote.identity);
     if (pending) return pending;
     const entry = evidence.get(remote.identity) ?? {};
@@ -131,7 +154,6 @@ const make = Effect.gen(function* () {
     evidence.set(remote.identity, entry);
     const oldest = evidence.keys().next().value;
     if (evidence.size > MAX_EVIDENCE && oldest !== undefined) evidence.delete(oldest);
-    if (scheduled) scheduledChecks++;
     const check = Effect.gen(function* () {
       const selected = yield* remote.check.pipe(Effect.option);
       const checkedAtMs = yield* Clock.currentTimeMillis;
@@ -154,7 +176,6 @@ const make = Effect.gen(function* () {
       Effect.ensuring(
         Effect.sync(() => {
           flights.delete(remote.identity);
-          if (scheduled) scheduledChecks--;
         }),
       ),
     );
@@ -181,35 +202,99 @@ const make = Effect.gen(function* () {
         });
   });
 
-  const refreshStatus = Effect.fn("RepoFreshness.refreshStatus")(function* (projectId: ProjectId) {
+  const checkProject = Effect.fn("RepoFreshness.checkProject")(function* (
+    projectId: ProjectId,
+    scheduledRoot?: string,
+  ) {
     const binding = yield* resolve(projectId);
     if (!("remote" in binding)) {
-      return yield* snapshot(projectId, binding.cadence, {
-        status: "unavailable",
-        reason: binding.reason,
+      return {
+        status: yield* snapshot(projectId, binding.cadence, {
+          status: "unavailable",
+          reason: binding.reason,
+        }),
+        reason: "target-unavailable",
+      } as const;
+    }
+    const target = { status: "resolved", remoteName: binding.remote.remoteName } as const;
+    if (
+      scheduledRoot !== undefined &&
+      (scheduledRoot !== binding.workspaceRoot || !binding.cadence)
+    ) {
+      return {
+        status: yield* snapshot(projectId, binding.cadence, target),
+        reason: binding.cadence ? "target-changed" : "cadence-disabled",
+      } as const;
+    }
+    const identity = binding.remote.identity;
+    const prior = evidence.get(identity)?.observed;
+    const pending = flights.get(identity);
+    const now = yield* Clock.currentTimeMillis;
+    const dueAt =
+      prior === undefined ? 0 : attemptTime(prior.latestAttempt) + cadenceMs(binding.cadence);
+    // Only the remote evidence is shared. Each due project evaluates its own checkout and opt-in.
+    const checked =
+      scheduledRoot !== undefined && pending === undefined && prior !== undefined && dueAt > now
+        ? prior
+        : yield* Fiber.join(yield* startCheck(binding.remote));
+    if (scheduledRoot !== undefined) {
+      due.set(projectId, {
+        cadence: binding.cadence,
+        at: attemptTime(checked.latestAttempt) + cadenceMs(binding.cadence),
       });
     }
-    const checked = yield* Fiber.join(yield* startCheck(binding.remote, false));
     const current = yield* resolve(projectId);
-    if (!("remote" in current) || current.remote.identity !== binding.remote.identity) {
-      return yield* snapshot(projectId, current.cadence, {
-        status: "unavailable",
+    if (!("remote" in current) || current.remote.identity !== identity) {
+      return {
+        status: yield* snapshot(projectId, current.cadence, {
+          status: "unavailable",
+          reason: "target-changed",
+        }),
         reason: "target-changed",
-      });
+      } as const;
     }
-    return yield* snapshot(
-      projectId,
-      current.cadence,
-      { status: "resolved", remoteName: current.remote.remoteName },
-      checked,
-    );
+    const status = yield* snapshot(projectId, current.cadence, target, checked);
+    if (checked.latestAttempt.status === "failed")
+      return { status, reason: "verification-failed" } as const;
+    return { status, binding, current, checked, verified: checked.latestAttempt.verification };
   });
 
-  const refresh = Effect.fn("RepoFreshness.refresh")(function* (projectId: ProjectId) {
+  const refreshProject = Effect.fn("RepoFreshness.refreshProject")(function* (
+    projectId: ProjectId,
+    scheduledRoot?: string,
+  ): Effect.fn.Return<RefreshResult> {
+    const outcome = yield* checkProject(projectId, scheduledRoot);
+    const { status } = outcome;
+    if ("reason" in outcome) return { status, checkout: skipRepoFreshnessCheckout(outcome.reason) };
+    const { binding, current, checked, verified } = outcome;
+    if (
+      current.workspaceRoot !== binding.workspaceRoot ||
+      current.remote.checkoutIdentity !== binding.remote.checkoutIdentity
+    )
+      return { status, checkout: skipRepoFreshnessCheckout("target-changed") };
+
+    const authorize = Effect.gen(function* () {
+      const project = yield* projects.getShell(projectId);
+      if (
+        Option.isNone(project) ||
+        project.value.workspaceRoot !== binding.workspaceRoot ||
+        evidence.get(binding.remote.identity)?.observed !== checked
+      )
+        return "target-changed";
+      const policy = yield* settings.getSettings;
+      if (scheduledRoot !== undefined && !cadenceFor(policy, projectId)) return "cadence-disabled";
+      return resolveProjectSettings(policy, projectId).settings.defaultAutoPull
+        ? null
+        : "auto-pull-disabled";
+    }).pipe(
+      Effect.orElseSucceed(() => "target-unavailable" as const),
+    ) satisfies Effect.Effect<RepoFreshnessCheckoutSkipReason | null>;
+    const permission = yield* authorize;
+    if (permission !== null) return { status, checkout: skipRepoFreshnessCheckout(permission) };
     return {
-      status: yield* refreshStatus(projectId),
-      checkout: { status: "skipped", reason: "checkout-update-deferred" },
-    } satisfies RefreshResult;
+      status,
+      checkout: yield* binding.remote.updateCheckout(verified, authorize),
+    };
   });
 
   const tick = Effect.fn("RepoFreshness.tick")(function* () {
@@ -225,8 +310,7 @@ const make = Effect.gen(function* () {
     const registered = yield* projects.listShells();
     const now = yield* Clock.currentTimeMillis;
     const enabled = new Set<ProjectId>();
-    let next: (typeof registered)[number] | undefined;
-    let nextAt = Infinity;
+    const ready: Array<{ project: (typeof registered)[number]; cadence: Cadence; at: number }> = [];
     for (const project of registered) {
       const cadence = cadenceFor(current, project.id);
       if (cadence === 0) continue;
@@ -234,34 +318,43 @@ const make = Effect.gen(function* () {
       const previous = due.get(project.id);
       const at = previous?.cadence === cadence ? previous.at : now + staggerMs(project.id);
       due.set(project.id, { cadence, at });
-      if (at <= now && at < nextAt) {
-        next = project;
-        nextAt = at;
-      }
+      if (at <= now && !scheduledProjects.has(project.id)) ready.push({ project, cadence, at });
     }
     for (const id of due.keys()) if (!enabled.has(id)) due.delete(id);
-    if (next === undefined || scheduledChecks >= 2) return;
-
-    const cadence = cadenceFor(current, next.id);
-    due.set(next.id, { cadence, at: now + cadenceMs(cadence) });
-    const remote = yield* git.resolveRepoFreshnessRemote(next.workspaceRoot);
-    if (remote === null) return;
-    const prior = evidence.get(remote.identity)?.observed;
-    if (prior !== undefined) {
-      // A manual check or an alias at a shorter cadence can already have serviced this target.
-      const at = attemptTime(prior.latestAttempt) + cadenceMs(cadence);
-      if (at > now) {
-        due.set(next.id, { cadence, at });
-        return;
-      }
+    ready.sort((a, b) => a.at - b.at);
+    for (const {
+      project: { id, workspaceRoot },
+      cadence,
+    } of ready) {
+      if (scheduledProjects.size >= 2) break;
+      due.set(id, { cadence, at: now + cadenceMs(cadence) });
+      scheduledProjects.add(id);
+      yield* Effect.forkIn(
+        refreshProject(id, workspaceRoot).pipe(
+          Effect.provideService(GitVcsDriver.BackgroundGitWork, true),
+          Effect.ensuring(
+            Effect.sync(() => {
+              scheduledProjects.delete(id);
+            }),
+          ),
+        ),
+        scope,
+      );
     }
-    yield* startCheck(remote, true);
   });
 
   yield* forkParked(
     Effect.forever(tick().pipe(Effect.ignore, Effect.andThen(Effect.sleep(TICK_MS)))),
   );
-  return RepoFreshness.of({ status, refresh, checkForLaunch: refreshStatus });
+  return RepoFreshness.of({
+    status,
+    checkForLaunch: Effect.fn("RepoFreshness.checkForLaunch")(function* (projectId: ProjectId) {
+      return (yield* checkProject(projectId)).status;
+    }),
+    refresh: Effect.fnUntraced(function* (projectId: ProjectId) {
+      return yield* refreshProject(projectId);
+    }),
+  });
 });
 
 export const layer = Layer.effect(RepoFreshness, make);

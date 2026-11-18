@@ -2,6 +2,10 @@ import { GitCommandError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { invalidRemoteFetch, type makeRemoteFetchBinding } from "./remoteFetchObservation.ts";
+import type {
+  RepoFreshnessCheckout,
+  RepoFreshnessCheckoutSkipReason,
+} from "./repoFreshnessCheckout.ts";
 
 type BoundRemote = NonNullable<
   Effect.Success<ReturnType<ReturnType<typeof makeRemoteFetchBinding>>>
@@ -17,7 +21,12 @@ export interface RepoFreshnessRemote {
   /** Opaque, process-local key. Never serialize it into a status or an error. */
   readonly identity: string;
   readonly remoteName: string;
+  readonly checkoutIdentity: string | null;
   readonly check: Effect.Effect<VerifiedRepoDefault, GitCommandError>;
+  readonly updateCheckout: (
+    verified: VerifiedRepoDefault,
+    authorize: Effect.Effect<RepoFreshnessCheckoutSkipReason | null>,
+  ) => Effect.Effect<RepoFreshnessCheckout>;
 }
 
 export const fetchRepoDefault = Effect.fn("GitVcsDriver.fetchRepoDefault")(function* (
@@ -58,6 +67,16 @@ export const fetchRepoDefault = Effect.fn("GitVcsDriver.fetchRepoDefault")(funct
     });
   }
   yield* bound.read({ operation, args: ["check-ref-format", `refs/heads/${branchName}`] });
+  const readObjectType = bound.read({
+    operation,
+    args: ["--no-replace-objects", "cat-file", "-t", commitSha],
+    timeoutMs: 5_000,
+    allowNonZeroExit: true,
+  });
+  const local = yield* readObjectType;
+  if (local.exitCode === 0 && !local.stdoutTruncated && local.stdout === "commit\n") {
+    return { remoteName, branchName, commitSha } satisfies VerifiedRepoDefault;
+  }
   // The remote's live advertisement selects the exact SHA. Materialize that SHA
   // without writing any checkout or tracking ref, even for custom refspecs.
   yield* bound.run({
@@ -78,11 +97,8 @@ export const fetchRepoDefault = Effect.fn("GitVcsDriver.fetchRepoDefault")(funct
     ],
     timeoutMs: 30_000,
   });
-  const object = yield* bound.read({
-    operation,
-    args: ["cat-file", "-t", commitSha],
-    timeoutMs: 5_000,
-  });
-  if (object.stdout !== "commit\n") return yield* invalidRemoteFetch(bound.cwd);
+  const object = yield* readObjectType;
+  if (object.exitCode !== 0 || object.stdoutTruncated || object.stdout !== "commit\n")
+    return yield* invalidRemoteFetch(bound.cwd);
   return { remoteName, branchName, commitSha } satisfies VerifiedRepoDefault;
 });
