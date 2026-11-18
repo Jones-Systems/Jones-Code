@@ -135,4 +135,3 @@ export * from "./jones/threadResultDependency.ts";
 
 export * from "./jones/workspaceRetirement.ts";
 export * from "./jones/storageCleanupReport.ts";
-export * from "./jones/hostFiles.ts";
