@@ -1369,16 +1369,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const renderItem = ({ item }: { item: MessagesTimelineRow }) => (
     <TimelineRowCtx value={sharedState}>
       <div
-        className="messages-timeline-row-frame w-full min-w-0 [container-type:inline-size]"
+        className="messages-timeline-row-frame @container/chat-table-row w-full min-w-0 overflow-x-clip"
         onPlayCapture={(event) => onAudioPlaybackChange(item.id, event)}
         onPauseCapture={(event) => onAudioPlaybackChange(item.id, event)}
         onEndedCapture={(event) => onAudioPlaybackChange(item.id, event)}
       >
-        <div
-          ref={observeLaneWidth}
-          className="chat-content-lane overflow-x-clip"
-          data-timeline-root="true"
-        >
+        <div ref={observeLaneWidth} className="chat-content-lane" data-timeline-root="true">
           <AudioPreviewUnmountContext value={onAudioUnmount}>
             <TimelineRowContent row={item} />
           </AudioPreviewUnmountContext>

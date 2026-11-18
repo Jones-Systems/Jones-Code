@@ -2065,8 +2065,11 @@
     },
     {
       "id": "markdown-table-interactions",
-      "tests": ["apps/web/src/components/chat/MarkdownTable.browser.test.tsx"],
-      "scope": "Jones markdown table expand/collapse controls retain accessible state and bounded scrolling through the extracted upstream leaf."
+      "tests": [
+        "apps/web/src/components/chat/MarkdownTable.browser.test.tsx",
+        "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx"
+      ],
+      "scope": "Jones Markdown tables detect collapsed overflow across cells and within individual cells, and retain accessible expand and collapse controls and bounded scrolling. The shared MessagesTimeline moves horizontal clipping to the full row and exposes its width to the Jones stylesheet. The timeline integration test exercises both visible edges and the control through the real row."
     },
     {
       "id": "composer-attachment-capacity",

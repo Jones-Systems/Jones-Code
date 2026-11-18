@@ -7,12 +7,16 @@ import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import "./markdownTables.css";
 
-function tableHasClippedCells(container: HTMLElement, table: HTMLTableElement): boolean {
-  const viewport = table.closest<HTMLElement>('[data-slot="scroll-area-viewport"]');
-  const scrollLeft = viewport?.scrollLeft ?? 0;
+function collapsedTableNeedsExpansion(
+  container: HTMLElement,
+  table: HTMLTableElement,
+  viewport: HTMLElement,
+): boolean {
+  const { scrollLeft, scrollTop } = viewport;
   const previous = container.dataset.expanded;
   container.dataset.expanded = "false";
   try {
+    if (viewport.scrollWidth > viewport.clientWidth) return true;
     for (const row of table.rows) {
       for (const cell of row.cells) {
         if (cell.scrollWidth > cell.clientWidth) return true;
@@ -22,8 +26,9 @@ function tableHasClippedCells(container: HTMLElement, table: HTMLTableElement): 
   } finally {
     if (previous === undefined) delete container.dataset.expanded;
     else container.dataset.expanded = previous;
-    // The unwrapped layout can be narrower and clamp a sideways scroll.
-    if (viewport && scrollLeft > 0) viewport.scrollLeft = scrollLeft;
+    // Measuring the collapsed layout can clamp either scroll offset.
+    if (viewport.scrollLeft !== scrollLeft) viewport.scrollLeft = scrollLeft;
+    if (viewport.scrollTop !== scrollTop) viewport.scrollTop = scrollTop;
   }
 }
 
@@ -37,19 +42,21 @@ export function MarkdownTableExpansion({
   readonly controls: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(() => getClientSettings().wordWrap);
-  const [hasClippedCells, setHasClippedCells] = useState(false);
+  const [canExpand, setCanExpand] = useState(false);
   // React calls this with null when a previous attach returned no cleanup.
   const attachContainer = (container: HTMLDivElement | null) => {
     containerRef.current = container;
     const table = container?.querySelector("table");
-    if (!container || !table) return;
-    const measure = () => setHasClippedCells(tableHasClippedCells(container, table));
+    const viewport = table?.closest<HTMLElement>('[data-slot="scroll-area-viewport"]');
+    const markdown = container?.parentElement;
+    if (!container || !table || !viewport || !markdown) return;
+    const measure = () => setCanExpand(collapsedTableNeedsExpansion(container, table, viewport));
     measure();
-    // A streamed cell can grow until it clips while the table keeps its size, and a
-    // narrower column can clip a cell without this component rendering.
+    // Streaming can change cell overflow without resizing the table. The parent
+    // also tracks the available collapsed width when an expanded table is wider.
     const mutations = new MutationObserver(measure);
     mutations.observe(table, { childList: true, characterData: true, subtree: true });
-    const stopResize = observeResize(table, measure);
+    const stopResize = observeResize([table, markdown], measure);
     return () => {
       mutations.disconnect();
       stopResize();
@@ -74,7 +81,7 @@ export function MarkdownTableExpansion({
         {children}
       </ScrollArea>
       <div className="mt-0.5 -mx-1 flex items-center justify-between select-none">
-        {hasClippedCells ? (
+        {canExpand ? (
           <Tooltip>
             <TooltipTrigger
               render={
