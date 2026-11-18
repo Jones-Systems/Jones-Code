@@ -23,7 +23,9 @@
     "apps/server/src/jones/provider/claudeRetirement/retirement.test.ts",
     "apps/server/src/jones/provider/claudeRetirement/controlOutcome.integration.test.ts",
     "apps/server/src/jones/providerRetirement/transferBindings.ts",
-    "apps/server/src/jones/providerRetirement/transferBindings.test.ts"
+    "apps/server/src/jones/providerRetirement/transferBindings.test.ts",
+    "apps/server/src/jones/providerRetirement/admissionWait.ts",
+    "apps/server/src/jones/providerRetirement/admissionWait.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -127,6 +129,30 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
       "to": "apps/server/src/jones/providerRetirement/transferBindings.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/providerRetirement/admissionWait.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/providerRetirement/admissionWait.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/providerRetirement/admissionWait.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/providerRetirement/RetirementLedger.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+      "to": "apps/server/src/jones/providerRetirement/admissionWait.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexRetirement.ts"
     }
   ]
 }
