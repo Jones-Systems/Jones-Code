@@ -12,6 +12,7 @@ import { expect, it } from "vite-plus/test";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
@@ -55,6 +56,7 @@ it("uses the thread provider for stale background work without provider threads"
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
         Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
           commitCommand: (input) => {
             committedInput = input;
             return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);

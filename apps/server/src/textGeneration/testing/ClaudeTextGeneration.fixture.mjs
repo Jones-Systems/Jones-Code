@@ -13,8 +13,19 @@ if (permissionIndex === -1 || argv[permissionIndex + 1] !== "dontAsk") {
   fail("text generation must deny permission prompts", 12);
 }
 const toolsIndex = argv.indexOf("--tools");
-if (toolsIndex === -1 || argv[toolsIndex + 1] !== "") {
-  fail("text generation must receive an explicit empty tool set", 6);
+const investigation = process.env.T3_FAKE_CLAUDE_INVESTIGATION === "1";
+if (toolsIndex === -1 || argv[toolsIndex + 1] !== (investigation ? "Read,Grep,Glob,Bash" : "")) {
+  fail("text generation must receive the exact task tool set", 6);
+}
+if (investigation) {
+  const allowed = argv[argv.indexOf("--allowedTools") + 1];
+  const denied = argv[argv.indexOf("--disallowedTools") + 1];
+  if (
+    allowed !== "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*)" ||
+    denied !== "Bash(git * --output*),Bash(git * -o *)"
+  ) {
+    fail("investigation must retain read-only tool restrictions", 17);
+  }
 }
 if (argv.includes("--dangerously-skip-permissions")) {
   fail("text generation must not bypass permissions", 7);
@@ -22,8 +33,11 @@ if (argv.includes("--dangerously-skip-permissions")) {
 if (!argv.includes("--disable-slash-commands")) {
   fail("text generation must disable skills", 8);
 }
-if (!argv.includes("--strict-mcp-config")) {
-  fail("text generation must not load configured MCP servers", 9);
+const managedMcpConfig = process.env.T3_FAKE_CLAUDE_MANAGED_MCP_CONFIG === "1";
+if (
+  managedMcpConfig ? argv.includes("--strict-mcp-config") : !argv.includes("--strict-mcp-config")
+) {
+  fail("text generation must respect managed MCP flag compatibility", 9);
 }
 if (process.env.T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE === "1") {
   if (argv.includes("--no-session-persistence")) {
@@ -63,6 +77,30 @@ if (argsMustNotContain && args.includes(argsMustNotContain)) {
 const stdinMustContain = process.env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN;
 if (stdinMustContain && !stdinContent.includes(stdinMustContain)) {
   fail("stdin missing expected content", 4);
+}
+
+if (process.env.T3_FAKE_CLAUDE_EVALUATION === "1") {
+  if (investigation || argv[argv.indexOf("--disallowedTools") + 1] !== "mcp__*") {
+    fail("evaluation must deny every MCP tool and investigation", 18);
+  }
+  for (const flag of [
+    "--allowedTools",
+    "--chrome",
+    "--mcp-config",
+    "--plugin-dir",
+    "--agents",
+    "--add-dir",
+  ]) {
+    if (argv.includes(flag)) fail("evaluation must not enable task extensions", 19);
+  }
+}
+
+const capturePath = process.env.T3_FAKE_CLAUDE_CAPTURE_PATH;
+if (capturePath) {
+  NodeFS.writeFileSync(
+    capturePath,
+    JSON.stringify({ argv, cwd: process.cwd(), stdin: stdinContent }),
+  );
 }
 
 const configDirMustBe = process.env.T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE;

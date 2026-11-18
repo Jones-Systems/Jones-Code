@@ -13,11 +13,13 @@ import * as Tracer from "effect/Tracer";
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as LegacyV1ThreadImporter from "../../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import { ThreadWorktreeRestore } from "../../workspace/restoreMissingWorktree.ts";
 
 it.effect("coherent reference hydrates on writer before entering reader transaction", () =>
   Effect.gen(function* () {
@@ -54,8 +56,11 @@ it.effect("coherent reference hydrates on writer before entering reader transact
       });
       const serviceLayer = ThreadManagement.layerWithLegacyImporter.pipe(
         Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        // Timeline reads never restore a worktree; a restore here dies.
+        Layer.provide(Layer.mock(ThreadWorktreeRestore)({})),
         Layer.provide(
           Layer.mock(Orchestrator.OrchestratorV2)({
+            ...unusedCorePorts(),
             getTimelinePages: (threadId, selections) =>
               sql
                 .withTransaction(
@@ -69,6 +74,7 @@ it.effect("coherent reference hydrates on writer before entering reader transact
                       items: [],
                       totalItems: 0,
                       hasMore: false,
+                      hasEarlier: false,
                       snapshotSequence: 1,
                     }));
                   }),
@@ -145,8 +151,11 @@ it.effect.each(["hydration", "projection"] as const)(
       let reads = 0;
       const serviceLayer = ThreadManagement.layerWithLegacyImporter.pipe(
         Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        // Timeline reads never restore a worktree; a restore here dies.
+        Layer.provide(Layer.mock(ThreadWorktreeRestore)({})),
         Layer.provide(
           Layer.mock(Orchestrator.OrchestratorV2)({
+            ...unusedCorePorts(),
             getTimelinePages: () =>
               Effect.suspend(() => {
                 reads++;

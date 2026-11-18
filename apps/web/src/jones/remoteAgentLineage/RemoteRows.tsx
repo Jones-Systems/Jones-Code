@@ -107,7 +107,7 @@ export function RemoteParentRow({
               variant="ghost"
               part="row"
               disabled={!parent.open}
-              onClick={parent.open}
+              onClick={() => void parent.open?.()}
               aria-label={`Parent agent: ${parent.title}`}
               aria-description={parent.unavailableReason}
             >

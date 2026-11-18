@@ -17,6 +17,7 @@ import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
+import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import {
   makeReplayServerConfig,
@@ -166,11 +167,11 @@ export function makeCodexReplayClientFactory(input: {
   };
 }
 
-function makeCodexProviderAdapterRegistryReplayLayer(input: {
+export function layer(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
 }) {
-  const replayClientFactoryLayer = Layer.succeed(
+  const layerReplayClientFactory = Layer.succeed(
     CodexAdapterV2.CodexAppServerClientFactory,
     makeCodexReplayClientFactory(input),
   );
@@ -187,22 +188,21 @@ function makeCodexProviderAdapterRegistryReplayLayer(input: {
       config: DEFAULT_CODEX_SETTINGS,
     }).pipe(Effect.map((adapter) => [adapter])),
   ).pipe(
+    Layer.provide(ControlAdmission.layer),
     Layer.provide(
       Layer.mergeAll(
-        replayClientFactoryLayer,
+        layerReplayClientFactory,
         layerServerConfig,
         NodeServices.layer,
         NodeCrypto.layer,
         IdAllocator.layer,
-        ControlAdmission.layer,
+        PortScanner.layerTest,
       ),
     ),
   );
 
   return layerRegistry;
 }
-
-export const layer = makeCodexProviderAdapterRegistryReplayLayer;
 
 const decodeCodexAppServerReplayTranscript = Schema.decodeUnknownEffect(
   CodexReplay.CodexAppServerReplayTranscript,

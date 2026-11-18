@@ -4,7 +4,8 @@
   "jonesOwnedPaths": [
     "apps/server/src/jones/threadTitle/",
     "packages/provider-core/src/server/jones/ThreadTitleAssessment.ts",
-    "packages/provider-core/src/server/jones/ThreadTitleAssessment.test.ts"
+    "packages/provider-core/src/server/jones/ThreadTitleAssessment.test.ts",
+    "packages/provider-core/src/jones/promptTextComposition.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.ts",
@@ -66,6 +67,10 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/ThreadTitleRegenerationService.test.ts",
+      "to": "apps/server/src/jones/threadTitle/store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.test.ts",
       "to": "apps/server/src/jones/threadTitle/store.ts"
     }
   ]

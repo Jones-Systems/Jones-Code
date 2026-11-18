@@ -1,3 +1,5 @@
+import * as LegacyStorage from "../jones/legacyBootstrap/Storage.ts";
+import type { RecordedStoredLifecycleEvent } from "./RecordedTypes.ts";
 import {
   type RecordedEvent as OrchestrationV2RecordedEvent,
   type RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
@@ -13,7 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import type * as SqlClient from "effect/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 
 export class EventStoreAppendEventsError extends Schema.TaggedError<EventStoreAppendEventsError>()(
@@ -65,6 +67,9 @@ export interface EventStoreV2Shape {
     readonly eventType?: OrchestrationV2RecordedEvent["type"];
     readonly limit?: number;
   }) => Stream.Stream<OrchestrationV2RecordedStoredEvent, EventStoreV2Error>;
+  readonly readLifecycleByCommandId: (input: {
+    readonly commandId: CommandId;
+  }) => Stream.Stream<RecordedStoredLifecycleEvent, EventStoreV2Error>;
   readonly readByCommandId: (input: {
     readonly commandId: CommandId;
   }) => Stream.Stream<OrchestrationV2RecordedStoredEvent, EventStoreV2Error>;
@@ -81,79 +86,88 @@ export class EventStoreV2 extends Context.Service<EventStoreV2, EventStoreV2Shap
   "t3/orchestration-v2/EventStore/EventStoreV2",
 ) {}
 
-const layerBase: Layer.Layer<EventStoreV2, never, OrchestrationEventStore.OrchestrationEventStore> =
-  Layer.effect(
-    EventStoreV2,
-    Effect.gen(function* () {
-      const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
+const layerBase: Layer.Layer<
+  EventStoreV2,
+  never,
+  OrchestrationEventStore.OrchestrationEventStore | SqlClient.SqlClient
+> = Layer.effect(
+  EventStoreV2,
+  Effect.gen(function* () {
+    const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
+    const storage = LegacyStorage.make(yield* SqlClient.SqlClient);
 
-      const read: EventStoreV2Shape["read"] = (input) =>
-        applicationEvents
-          .readAgentEvents({
-            ...(input?.eventId === undefined ? {} : { eventId: input.eventId }),
-            ...(input?.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
-            ...(input?.throughSequence === undefined
-              ? {}
-              : { throughSequence: input.throughSequence }),
-            ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
-            ...(input?.eventType === undefined ? {} : { eventType: input.eventType }),
-            ...(input?.limit === undefined ? {} : { limit: input.limit }),
-          })
+    const read: EventStoreV2Shape["read"] = (input) =>
+      applicationEvents
+        .readAgentEvents({
+          ...(input?.eventId === undefined ? {} : { eventId: input.eventId }),
+          ...(input?.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
+          ...(input?.throughSequence === undefined
+            ? {}
+            : { throughSequence: input.throughSequence }),
+          ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
+          ...(input?.eventType === undefined ? {} : { eventType: input.eventType }),
+          ...(input?.limit === undefined ? {} : { limit: input.limit }),
+        })
+        .pipe(
+          Stream.mapError(
+            (cause) =>
+              new EventStoreReadEventsError({
+                ...(input?.afterSequence === undefined
+                  ? {}
+                  : { afterSequence: input.afterSequence }),
+                ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
+                cause,
+              }),
+          ),
+        );
+
+    return EventStoreV2.of({
+      append: Effect.fn("EventStoreV2.append")(function (input) {
+        return applicationEvents.appendAgentEvents(input).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EventStoreAppendEventsError({
+                eventCount: input.events.length,
+                cause,
+              }),
+          ),
+        );
+      }),
+      appendProjectEvent: Effect.fn("EventStoreV2.appendProjectEvent")(function (event) {
+        return applicationEvents
+          .appendProjectEvent(event)
           .pipe(
-            Stream.mapError(
-              (cause) =>
-                new EventStoreReadEventsError({
-                  ...(input?.afterSequence === undefined
-                    ? {}
-                    : { afterSequence: input.afterSequence }),
-                  ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
-                  cause,
-                }),
-            ),
+            Effect.mapError((cause) => new EventStoreAppendEventsError({ eventCount: 1, cause })),
           );
-
-      return EventStoreV2.of({
-        append: Effect.fn("EventStoreV2.append")(function (input) {
-          return applicationEvents.appendAgentEvents(input).pipe(
-            Effect.mapError(
-              (cause) =>
-                new EventStoreAppendEventsError({
-                  eventCount: input.events.length,
-                  cause,
-                }),
-            ),
-          );
-        }),
-        appendProjectEvent: Effect.fn("EventStoreV2.appendProjectEvent")(function (event) {
-          return applicationEvents
-            .appendProjectEvent(event)
-            .pipe(
-              Effect.mapError((cause) => new EventStoreAppendEventsError({ eventCount: 1, cause })),
-            );
-        }),
-        read,
-        readByCommandId: ({ commandId }) =>
-          applicationEvents
-            .readAgentEvents({ commandId })
-            .pipe(Stream.mapError((cause) => new EventStoreReadEventsError({ cause }))),
-        latestSequence: Effect.fn("EventStoreV2.latestSequence")(function (input) {
-          return applicationEvents.latestAgentSequence(input?.threadId).pipe(
-            Effect.mapError(
-              (cause) =>
-                new EventStoreReadEventsError({
-                  ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
-                  cause,
-                }),
-            ),
-          );
-        }),
-        latestApplicationSequence: applicationEvents.latestApplicationSequence.pipe(
-          Effect.mapError((cause) => new EventStoreReadEventsError({ cause })),
+      }),
+      read,
+      readLifecycleByCommandId: ({ commandId }) =>
+        Stream.fromEffect(storage.readLifecycleByCommandId(commandId)).pipe(
+          Stream.flatMap(Stream.fromIterable),
+          Stream.mapError((cause) => new EventStoreReadEventsError({ cause })),
         ),
-        publishCommitted: applicationEvents.publishCommitted,
-      });
-    }),
-  );
+      readByCommandId: ({ commandId }) =>
+        applicationEvents
+          .readAgentEvents({ commandId })
+          .pipe(Stream.mapError((cause) => new EventStoreReadEventsError({ cause }))),
+      latestSequence: Effect.fn("EventStoreV2.latestSequence")(function (input) {
+        return applicationEvents.latestAgentSequence(input?.threadId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EventStoreReadEventsError({
+                ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
+                cause,
+              }),
+          ),
+        );
+      }),
+      latestApplicationSequence: applicationEvents.latestApplicationSequence.pipe(
+        Effect.mapError((cause) => new EventStoreReadEventsError({ cause })),
+      ),
+      publishCommitted: applicationEvents.publishCommitted,
+    });
+  }),
+);
 
 export const layer: Layer.Layer<EventStoreV2, never, SqlClient.SqlClient> = layerBase.pipe(
   Layer.provide(OrchestrationEventStore.layer),

@@ -959,6 +959,10 @@
       "to": "apps/web/src/jones/workstreams/threadMenuBridge.ts"
     },
     {
+      "from": "apps/server/src/cli/thread.test.ts",
+      "to": "apps/server/src/cli/workstream.ts"
+    },
+    {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/jones/workstreams/personalPresentation.ts"
     }

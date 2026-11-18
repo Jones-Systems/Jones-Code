@@ -30,7 +30,7 @@ const settle = Effect.fnUntraced(function* (
       type: "run-attempt.updated",
       threadId: f.threadId,
       runId: f.run.id,
-      payload: { ...attempt, status: "failed", completedAt: now },
+      payload: { ...attempt, status: "failed", completedAt: now, providerSettlement: null },
     }),
   ];
   if (breakTransaction) {
@@ -48,9 +48,8 @@ const settle = Effect.fnUntraced(function* (
     effects: [],
   });
   if (consumer === undefined) return yield* write;
-  const sql = yield* SqlClient.SqlClient;
   const store = yield* StartRefusal.StartRefusals;
-  return yield* sql.withTransaction(
+  return yield* f.sink.withProviderBatch(
     Effect.gen(function* () {
       const result = yield* write;
       if (result.committed && reason !== undefined)
@@ -359,6 +358,7 @@ it.effect.each([false, true])(
       const result = yield* settle(f, "control_held", f.run.activeAttemptId!, false, consumer).pipe(
         Effect.result,
       );
+      if (!fail && result._tag === "Failure") return yield* result.failure;
       assert.equal(result._tag, fail ? "Failure" : "Success");
       assert.equal((yield* proof)[0]!.state, fail ? "eligible" : "refused");
       assert.lengthOf(yield* sql`SELECT * FROM jones_test_certification_observer`, fail ? 0 : 1);

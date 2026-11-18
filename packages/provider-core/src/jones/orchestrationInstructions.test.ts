@@ -3,12 +3,41 @@ import { OrchestratorMcpDelegateTaskInput } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import {
+  T3_CODE_BROWSER_TOOL_INSTRUCTIONS,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
   T3_CODE_ORCHESTRATION_SECTIONS,
   t3AcpPromptWithInstructions,
 } from "../server/orchestrationInstructions.ts";
+import {
+  JONES_CODE_BROWSER_TOOL_INSTRUCTIONS,
+  JONES_CODE_ORCHESTRATION_SECTIONS,
+} from "../server/jones/OrchestrationInstructions.ts";
 
 const decodeDelegateTask = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
+
+it("composes the Jones instruction owner with compatible upstream routing", () => {
+  assert.deepEqual(
+    T3_CODE_ORCHESTRATION_SECTIONS.slice(0, JONES_CODE_ORCHESTRATION_SECTIONS.length),
+    JONES_CODE_ORCHESTRATION_SECTIONS,
+  );
+  assert.equal(T3_CODE_BROWSER_TOOL_INSTRUCTIONS, JONES_CODE_BROWSER_TOOL_INSTRUCTIONS);
+  const injected = t3AcpPromptWithInstructions({
+    prompt: "Inspect the linked checkout.",
+    state: { interactionMode: "default", hasT3Mcp: true, hasDeviceTools: false },
+  });
+  for (const text of [
+    "Ordinary coding tasks need no T3 tools",
+    "Required unpublished commits and dependent work use their local base",
+    "`t3_environment_link`",
+    "Settings → Labs → Linked environments",
+    "`t3_thread_organize`",
+    "Page tools write only on user request",
+    "never a pairing code in chat",
+  ]) {
+    assert.include(injected, text);
+  }
+  assert.include(injected, JONES_CODE_BROWSER_TOOL_INSTRUCTIONS.trim());
+});
 
 it("routes actual owner actions to durable open input without plan mode or duplicate permissions", () => {
   for (const text of [

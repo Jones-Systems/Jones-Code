@@ -1,29 +1,41 @@
-// Requires resolved DEFAULT_RUNTIME_PID and DEFAULT_REMOTE_PORT plus REMOTE_PID,
-// REMOTE_PORT, REMOTE_MANAGED, PID_FILE, PORT_FILE, MANAGED_FILE and wait_ready().
-// The enclosing launch script provides server_running() and replaces the reuse timeout.
+// Jones: SSH disconnect and client shutdown close only the forward this client
+// owns. The remote server belongs to its host and outlives every client
+// connection, so no client path stops it or asks for a password to do so.
+export const CLIENT_CLOSE_STOPS_REMOTE_SERVER: boolean = false;
+
+// Persist the adopted owner PID so later launches do not create a second server.
+export const PERSISTENT_REMOTE_ADOPTION_SCRIPT = `      # Attaching to the home's owner never stops the server this client launched.
+      REMOTE_PID=""
+      REMOTE_PORT="$DEFAULT_REMOTE_PORT"
+      REMOTE_MANAGED="external"
+      printf '%s\\n' "$DEFAULT_RUNTIME_PID" >"$PID_FILE"
+      printf '%s\\n' "$REMOTE_PORT" >"$PORT_FILE"
+      printf 'external\\n' >"$MANAGED_FILE"`;
+
+// Runs after adoption and launch-identity transfer. Requires REMOTE_PID,
+// REMOTE_PORT, REMOTE_MANAGED, ADOPTED_PID, wait_ready() and
+// managed_server_running(). The enclosing launch script replaces the reuse
+// timeout. A cleared record continues to the update and home-owner waits.
 export const PERSISTENT_REMOTE_REUSE_SCRIPT = `# A client attaches to the host owner; readiness failure never grants replacement.
-if [ -n "$DEFAULT_REMOTE_PORT" ]; then
-  REMOTE_PORT="$DEFAULT_REMOTE_PORT"
-  if ! wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
-    printf 'Remote T3 server is already running with PID %s but is not ready on 127.0.0.1:%s. Inspect it on the host before retrying.\\n' "$DEFAULT_RUNTIME_PID" "$REMOTE_PORT" >&2
-    exit 1
-  fi
-  if [ "$REMOTE_MANAGED" != "managed" ] || [ "$REMOTE_PID" != "$DEFAULT_RUNTIME_PID" ]; then
-    REMOTE_MANAGED="external"
-  fi
-  if [ "$REMOTE_PID" != "$DEFAULT_RUNTIME_PID" ]; then
-    printf '%s\\n' "$DEFAULT_RUNTIME_PID" >"$PID_FILE"
-  fi
-  printf '%s\\n' "$REMOTE_PORT" >"$PORT_FILE"
-  printf '%s\\n' "$REMOTE_MANAGED" >"$MANAGED_FILE"
-elif [ -n "$REMOTE_PID" ] && server_running "$REMOTE_PID"; then
-  if [ -z "$REMOTE_PORT" ] || ! wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
+# A changed runner takes effect at the next launch, never by stopping a server.
+if [ "$REMOTE_MANAGED" = "external" ]; then
+  # A server adopted above has just answered. Probing it again could catch a
+  # momentary stall or exit and launch a second server beside it.
+  if [ -n "$ADOPTED_PID" ]; then
+    :
+  elif [ -n "$REMOTE_PORT" ] && wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
+    :
+  elif managed_server_running "$REMOTE_PID"; then
     printf 'Remote T3 server is already running with PID %s but is not ready. Inspect it on the host before retrying.\\n' "$REMOTE_PID" >&2
     exit 1
+  else
+    REMOTE_PID=""
+    REMOTE_PORT=""
+    REMOTE_MANAGED=""
   fi
-elif [ "$REMOTE_MANAGED" = "external" ] && [ -z "$REMOTE_PID" ]; then
-  if [ -z "$REMOTE_PORT" ] || ! wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
-    printf 'Previously discovered remote T3 server is unavailable. Verify its ownership on the host before retrying.\\n' >&2
+elif [ -n "$REMOTE_PORT" ] && managed_server_running "$REMOTE_PID"; then
+  if ! wait_ready "@@T3_REUSE_READY_TIMEOUT_MS@@"; then
+    printf 'Remote T3 server is already running with PID %s but is not ready on 127.0.0.1:%s. Inspect it on the host before retrying.\\n' "$REMOTE_PID" "$REMOTE_PORT" >&2
     exit 1
   fi
 else

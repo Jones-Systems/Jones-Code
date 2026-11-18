@@ -7,6 +7,8 @@ import {
   CommandId,
   MessageId,
   NodeId,
+  ModelSelection,
+  NonNegativeInt,
   ProviderSessionId,
   RunAttemptId,
   ProviderApprovalDecision,
@@ -24,12 +26,17 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-runtime.continue"),
     sourceRunId: RunId,
+    processLossCount: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
     preparedForRestart: Schema.optional(Schema.Boolean),
     continueWithoutPreference: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-session.detach"),
     runtimeStopCommandId: Schema.optional(CommandId),
     providerSessionId: ProviderSessionId,
@@ -38,10 +45,28 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     revokeMcpCredential: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
+    type: Schema.Literal("provider-session.apply-model-selection"),
+    providerSessionId: ProviderSessionId,
+    providerThreadId: ProviderThreadId,
+    modelSelection: ModelSelection,
+  }),
+  Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
+    type: Schema.Literal("provider-session.apply-thread-title"),
+    title: Schema.String,
+  }),
+  Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-turn.start"),
     runId: RunId,
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-turn.interrupt"),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
@@ -49,23 +74,33 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     subagent: Schema.optional(Schema.Struct({ id: NodeId, nativeTaskId: Schema.String })),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-turn.steer"),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     messageId: MessageId,
+    modelSelection: Schema.optional(ModelSelection),
+    steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
   }),
   // A distinct tag makes older workers fail closed instead of dropping batch members.
   // Drain these effects with a capable worker before downgrading.
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-turn.steer-batch"),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     messageId: MessageId,
     messageIds: Schema.Array(MessageId).check(Schema.isMinLength(1)),
+    modelSelection: Schema.optional(ModelSelection),
+    steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-turn.restart"),
     providerSessionId: ProviderSessionId,
     providerThreadId: ProviderThreadId,
@@ -83,6 +118,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     ),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("runtime-request.respond"),
     providerSessionId: ProviderSessionId,
     requestId: RuntimeRequestId,
@@ -91,6 +128,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     answers: Schema.optional(ProviderUserInputAnswers),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("provider-thread.rollback"),
     restoreFiles: Schema.optional(Schema.Boolean),
     providerThreadId: ProviderThreadId,
@@ -98,26 +137,39 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     scopeId: CheckpointScopeId,
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("checkpoint.capture"),
     runId: RunId,
     scopeId: CheckpointScopeId,
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("scheduled-tasks.cleanup"),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("terminal.cleanup"),
     legacyOwnedControl: Schema.optional(LegacyOwnedTerminalControl),
   }),
   /** Closes a deleted thread's preview sessions, ending their server browser tabs. */
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("preview.cleanup"),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("attachment.cleanup"),
     attachmentIds: Schema.Array(Schema.String),
+    skipReferenced: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("thread-title.generate"),
     kind: Schema.Union([
       Schema.Struct({ type: Schema.Literal("initial"), messageId: MessageId }),
@@ -126,6 +178,8 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   }),
   /** Follows a Stop: sends `thread.stop` to every delegated task under the stopped thread. */
   Schema.Struct({
+    request: Schema.optional(Schema.Never),
+    nativeCreationExecutionReference: Schema.optional(Schema.Never),
     type: Schema.Literal("delegated-tasks.stop"),
     reason: Schema.optional(Schema.String),
   }),

@@ -14,7 +14,7 @@ export const makeTerminalHistoryWorker = Effect.fn("TerminalHistoryWorker.make")
   History,
 >(options: {
   readonly debounceMs: number;
-  readonly process: (key: string, history: History) => Effect.Effect<void>;
+  readonly process: (key: string, history: History, immediate: boolean) => Effect.Effect<void>;
 }) {
   const stateRef = yield* TxRef.make({
     pending: new Map<string, HistoryRequest<History>>(),
@@ -49,7 +49,7 @@ export const makeTerminalHistoryWorker = Effect.fn("TerminalHistoryWorker.make")
     }).pipe(Effect.tx);
 
     yield* options
-      .process(key, request.history)
+      .process(key, request.history, request.immediate)
       .pipe(
         Effect.ignoreCause,
         Effect.ensuring(

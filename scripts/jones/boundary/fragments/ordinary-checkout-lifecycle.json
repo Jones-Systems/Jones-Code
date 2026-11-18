@@ -2,6 +2,8 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "ordinary-checkout-lifecycle",
   "jonesOwnedPaths": [
+    "apps/server/src/jones/cleanup/ScratchCleanupAdmission.ts",
+    "apps/server/src/jones/cleanup/ScratchCleanupAdmission.test.ts",
     "apps/server/src/jones/ordinaryCheckout/CheckoutTarget.test.ts",
     "apps/server/src/jones/ordinaryCheckout/CheckoutTargetNode.ts",
     "apps/server/src/jones/ordinaryCheckout/CheckoutTargetNode.test.ts",
@@ -14,11 +16,37 @@
     "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
     "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.ts",
     "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts",
-    "apps/server/src/jones/ordinaryCheckout/CheckoutPermitAdapter.ts"
+    "apps/server/src/jones/ordinaryCheckout/CheckoutPermitAdapter.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/Protocol.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/Journal.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/PhysicalScope.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/LocalBridge.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/Protocol.test.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/Journal.test.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/PhysicalScope.test.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/fixtures.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/contender.fixture.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/NativeJournal.ts",
+    "apps/server/src/jones/cleanup/sharedAdmission/NativeJournal.test.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutPreparation.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutPreparationSchema.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutPreparationMigration.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutPreparation.test.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutCommit.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutCommit.test.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutCommit.testkit.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutPreparationSchema.test.ts",
+    "apps/server/src/jones/ordinaryCheckout/LaunchPreparation.ts",
+    "apps/server/src/jones/ordinaryCheckout/LaunchPreparation.test.ts",
+    "apps/server/src/jones/ordinaryCheckout/LaunchPreparation.testkit.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/cleanup/ScratchCleanupAdmission.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/EventSink.ts",
       "to": "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.ts"
@@ -30,6 +58,50 @@
     {
       "from": "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
       "to": "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/cleanup/sharedAdmission/Protocol.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutCommit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutPreparation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutPreparationSchema.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutProtocol.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutCommit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutProtocol.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/LaunchPreparation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutCommit.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.ts",
+      "to": "apps/server/src/jones/cleanup/sharedAdmission/Protocol.ts"
     }
   ]
 }

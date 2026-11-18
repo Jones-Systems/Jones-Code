@@ -2,7 +2,10 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as NetService from "@t3tools/shared/Net";
 import { DesktopCompanionConfig } from "@t3tools/contracts";
@@ -26,10 +29,27 @@ import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
 import * as ElectronProtocol from "../../electron/ElectronProtocol.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
+import * as DesktopHomeOwner from "../../backend/DesktopHomeOwner.ts";
+import * as DesktopLocalEnvironmentAuth from "../../backend/DesktopLocalEnvironmentAuth.ts";
 import * as DesktopServerExposure from "../../backend/DesktopServerExposure.ts";
 import * as DesktopWslBackend from "../../wsl/DesktopWslBackend.ts";
+import * as ElectronDialog from "../../electron/ElectronDialog.ts";
 import { setLocalEnvironmentEnabled } from "../../ipc/methods/localEnvironment.ts";
 import * as CompanionConfig from "./CompanionConfig.ts";
+import { afterEach, vi } from "vite-plus/test";
+
+// The home-lock probe is native SQLite/process inspection, independently tested in
+// DesktopHomeOwner.test.ts. Every startup fixture supplies an explicit admission result.
+vi.mock("../../backend/DesktopHomeOwner.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../backend/DesktopHomeOwner.ts")>()),
+  awaitHomeOwnershipRelease: vi.fn(),
+  readLiveHomeOwner: vi.fn(),
+}));
+vi.mock("electron", () => ({}));
+vi.mock("@clerk/electron", () => ({ createClerkBridge: vi.fn() }));
+vi.mock("@clerk/electron/storage", () => ({ storage: vi.fn() }));
+
+afterEach(() => vi.clearAllMocks());
 
 const config = Schema.decodeSync(DesktopCompanionConfig)({
   enabled: true,
@@ -38,7 +58,17 @@ const config = Schema.decodeSync(DesktopCompanionConfig)({
   label: "Mini",
   browserOnly: true,
 });
-function fixture(companion = config, localEnabled = true) {
+function fixture(
+  companion = config,
+  localEnabled = true,
+  options: {
+    readonly homeAvailable?: boolean;
+    readonly settingsWriteError?: DesktopAppSettings.DesktopSettingsWriteError;
+  } = {},
+) {
+  const events: string[] = [];
+  const authRequested = Deferred.makeUnsafe<void>();
+  const wslRequested = Deferred.makeUnsafe<void>();
   const counts = {
     backend: 0,
     port: 0,
@@ -47,11 +77,48 @@ function fixture(companion = config, localEnabled = true) {
     window: 0,
     relaunch: 0,
     snapshot: 0,
+    homeOwner: 0,
+    bearer: 0,
+    wsl: 0,
+    dialog: 0,
+    quit: 0,
   };
   const count = (key: keyof typeof counts) =>
     Effect.sync(() => {
       counts[key]++;
     });
+  const record = (event: string) =>
+    Effect.sync(() => {
+      events.push(event);
+    });
+  vi.mocked(DesktopHomeOwner.awaitHomeOwnershipRelease).mockImplementation(() =>
+    count("homeOwner").pipe(Effect.as(options.homeAvailable !== false)),
+  );
+  vi.mocked(DesktopHomeOwner.readLiveHomeOwner).mockImplementation(() =>
+    Effect.succeedSome({ pid: 1234, port: 3773, serviceManaged: true }),
+  );
+  const settingsLayer = Layer.effect(
+    DesktopAppSettings.DesktopAppSettings,
+    Effect.map(DesktopAppSettings.DesktopAppSettings, (settings) => ({
+      ...settings,
+      get: record("settings.read").pipe(Effect.andThen(settings.get)),
+      setLocalEnvironmentEnabled: (enabled: boolean) =>
+        record(`local=${enabled}`).pipe(
+          Effect.andThen(
+            options.settingsWriteError === undefined
+              ? settings.setLocalEnvironmentEnabled(enabled)
+              : Effect.fail(options.settingsWriteError),
+          ),
+        ),
+    })),
+  ).pipe(
+    Layer.provide(
+      DesktopAppSettings.layerTest({
+        ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+        localEnvironmentEnabled: localEnabled,
+      }),
+    ),
+  );
   const backend: DesktopBackendManager.DesktopBackendInstance = {
     id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
     label: Effect.succeed("fixture"),
@@ -66,12 +133,10 @@ function fixture(companion = config, localEnabled = true) {
   const layer = Layer.mergeAll(
     DesktopState.layer,
     DesktopShutdown.layer,
-    Layer.mock(ElectronApp.ElectronApp, {}),
+    Layer.mock(ElectronApp.ElectronApp, { quit: count("quit") }),
+    Layer.mock(ElectronDialog.ElectronDialog, { showErrorBox: () => count("dialog") }),
     Layer.mock(ElectronTheme.ElectronTheme, {}),
-    DesktopAppSettings.layerTest({
-      ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
-      localEnvironmentEnabled: localEnabled,
-    }),
+    settingsLayer,
     Layer.succeed(CompanionConfig.CompanionConfig, {
       get: Effect.succeed(companion),
       set: () => Effect.succeed(companion),
@@ -120,9 +185,18 @@ function fixture(companion = config, localEnabled = true) {
       load: () => Effect.void,
     }),
     DesktopBackendPool.layerTest([backend]),
+    Layer.succeed(DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth, {
+      getBearerToken: count("bearer").pipe(
+        Effect.andThen(Deferred.succeed(authRequested, undefined)),
+        Effect.as("synthetic-startup-bearer"),
+      ),
+    }),
     Layer.mock(NetService.NetService, {
       canListenOnHost: () => count("port").pipe(Effect.as(true)),
     }),
+    // The mocked HomeOwner probes declare these services; the no-op file system holds no files.
+    FileSystem.layerNoop({}),
+    Path.layer,
     Layer.mock(DesktopServerExposure.DesktopServerExposure, {
       configureFromSettings: () =>
         count("exposure").pipe(
@@ -143,7 +217,7 @@ function fixture(companion = config, localEnabled = true) {
       }),
     }),
     Layer.succeed(DesktopWslBackend.DesktopWslBackend, {
-      reconcile: Effect.void,
+      reconcile: count("wsl").pipe(Effect.andThen(Deferred.succeed(wslRequested, undefined))),
       lastPreflightError: Effect.succeedNone,
     }),
     Layer.succeed(DesktopLifecycle.DesktopLifecycle, {
@@ -152,9 +226,13 @@ function fixture(companion = config, localEnabled = true) {
     }),
   );
   // Production and tests run the same startup body; IPC registration has independent sender tests.
-  const bootstrap = DesktopApp.bootstrapWithIpcRegistration(Effect.void);
+  const bootstrap = Effect.gen(function* () {
+    const backendStarted = yield* DesktopApp.startLocalBackend(Effect.void);
+    yield* DesktopApp.bootstrap(backendStarted);
+    return backendStarted;
+  });
   const reenable = setLocalEnvironmentEnabled.handler(true);
-  return { counts, layer, bootstrap, reenable };
+  return { counts, events, layer, bootstrap, reenable, authRequested, wslRequested };
 }
 
 describe("browser-only actual desktop bootstrap", () => {
@@ -172,7 +250,13 @@ describe("browser-only actual desktop bootstrap", () => {
           window: 1,
           relaunch: 0,
           snapshot: 1,
+          homeOwner: 0,
+          bearer: 0,
+          wsl: 0,
+          dialog: 0,
+          quit: 0,
         });
+        expect(f.events.slice(0, 2)).toEqual(["local=false", "settings.read"]);
       }),
   );
 
@@ -188,6 +272,11 @@ describe("browser-only actual desktop bootstrap", () => {
         window: 1,
         relaunch: 0,
         snapshot: 1,
+        homeOwner: 0,
+        bearer: 0,
+        wsl: 0,
+        dialog: 0,
+        quit: 0,
       });
     }),
   );
@@ -235,6 +324,10 @@ describe("browser-only actual desktop bootstrap", () => {
       expect(f.counts.backend).toBe(0);
       expect(f.counts.port).toBe(0);
       expect(f.counts.appActivation).toBe(0);
+      expect(f.counts.exposure).toBe(0);
+      expect(f.counts.homeOwner).toBe(0);
+      expect(f.counts.bearer).toBe(0);
+      expect(f.counts.wsl).toBe(0);
       expect(f.counts.window).toBe(2);
     }),
   );
@@ -245,10 +338,20 @@ describe("browser-only actual desktop bootstrap", () => {
   ])("retains ordinary non-browser-only startup with transport enabled or disabled", (companion) =>
     Effect.gen(function* () {
       const f = fixture(companion);
-      yield* f.bootstrap.pipe(Effect.provide(f.layer), Effect.scoped);
+      yield* Effect.gen(function* () {
+        expect(yield* f.bootstrap).toBe(true);
+        // Join the observed fork effects before closing the same startup scope.
+        yield* Deferred.await(f.authRequested);
+        yield* Deferred.await(f.wslRequested);
+      }).pipe(Effect.provide(f.layer), Effect.scoped);
       expect(f.counts.backend).toBe(1);
       expect(f.counts.port).toBe(3);
+      expect(f.counts.exposure).toBe(1);
       expect(f.counts.appActivation).toBe(1);
+      expect(f.counts.homeOwner).toBe(1);
+      expect(f.counts.bearer).toBe(1);
+      expect(f.counts.wsl).toBe(1);
+      expect(f.events).toEqual(["settings.read", "settings.read"]);
     }),
   );
 
@@ -262,7 +365,65 @@ describe("browser-only actual desktop bootstrap", () => {
       expect(f.counts.backend).toBe(0);
       expect(f.counts.port).toBe(0);
       expect(f.counts.appActivation).toBe(0);
+      expect(f.counts.homeOwner).toBe(0);
+      expect(f.counts.bearer).toBe(0);
+      expect(f.counts.wsl).toBe(0);
       expect(f.counts.window).toBe(1);
+    }),
+  );
+
+  it.effect(
+    "propagates failed browser-only settings persistence before either startup phase admits work",
+    () =>
+      Effect.gen(function* () {
+        const writeError = new DesktopAppSettings.DesktopSettingsWriteError({
+          operation: "replace-settings-file",
+          path: "/fixture/companion/settings.json",
+          cause: new Error("synthetic persistence refusal"),
+        });
+        const f = fixture(config, true, { settingsWriteError: writeError });
+        const result = yield* Effect.exit(f.bootstrap.pipe(Effect.provide(f.layer), Effect.scoped));
+        expect(Exit.isFailure(result)).toBe(true);
+        if (Exit.isFailure(result)) {
+          expect(Option.getOrThrow(Cause.findErrorOption(result.cause))).toBe(writeError);
+        }
+        expect(f.events).toEqual(["local=false"]);
+        expect(f.counts).toEqual({
+          backend: 0,
+          port: 0,
+          exposure: 0,
+          appActivation: 0,
+          window: 0,
+          relaunch: 0,
+          snapshot: 0,
+          homeOwner: 0,
+          bearer: 0,
+          wsl: 0,
+          dialog: 0,
+          quit: 0,
+        });
+      }),
+  );
+
+  it.effect("preserves ordinary HomeOwner refusal before port, exposure, auth or WSL work", () =>
+    Effect.gen(function* () {
+      const f = fixture({ ...config, browserOnly: false }, true, { homeAvailable: false });
+      expect(yield* f.bootstrap.pipe(Effect.provide(f.layer), Effect.scoped)).toBe(false);
+      expect(DesktopHomeOwner.readLiveHomeOwner).toHaveBeenCalledOnce();
+      expect(f.counts).toEqual({
+        backend: 0,
+        port: 0,
+        exposure: 0,
+        appActivation: 0,
+        window: 0,
+        relaunch: 0,
+        snapshot: 0,
+        homeOwner: 1,
+        bearer: 0,
+        wsl: 0,
+        dialog: 1,
+        quit: 1,
+      });
     }),
   );
 

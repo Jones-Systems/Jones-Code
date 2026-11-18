@@ -1,4 +1,3 @@
-import { Configuration as FleetCheckpointConfiguration } from "../jones/fleetCheckpoint/Configuration.ts";
 import * as NetService from "@t3tools/shared/Net";
 import {
   OtlpHeadersFromString,
@@ -28,7 +27,9 @@ import { resolveServiceLauncherMode } from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import { resolveHostCliCommand } from "./invocation.ts";
 import { resolveServerParallelismProfile } from "../jones/serverParallelism/config.ts";
+import { retainedPolicyConfig } from "../jones/updates/configComposition.ts";
 
 const modeFlag = Flag.Literals("mode", ServerConfig.RuntimeMode.literals).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
@@ -103,11 +104,12 @@ export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
 );
 
 const EnvServerConfig = Config.all({
-  fleetCheckpoint: Config.schema(
-    Schema.fromJsonString(FleetCheckpointConfiguration),
-    "JONES_FLEET_CHECKPOINT_COMMAND",
-  ).pipe(Config.option, Config.map(Option.getOrUndefined)),
+  retainedPolicy: retainedPolicyConfig,
   serverParallelismProfile: Config.String("JONES_SERVER_PARALLELISM_PROFILE").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
+  nativeAuthorityStateDir: Config.String("T3CODE_NATIVE_AUTHORITY_STATE_DIR").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
@@ -146,10 +148,6 @@ const EnvServerConfig = Config.all({
   ),
   port: Config.Port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.String("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
-  nativeAuthorityStateDir: Config.String("T3CODE_NATIVE_AUTHORITY_STATE_DIR").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
-  ),
   t3Home: Config.String("T3CODE_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
   devUrl: Config.URL("VITE_DEV_SERVER_URL").pipe(Config.option, Config.map(Option.getOrUndefined)),
   devAllowedOrigins: Config.String("T3CODE_DEV_ALLOWED_ORIGINS").pipe(
@@ -274,17 +272,25 @@ const loadPersistedObservabilitySettings = Effect.fn(function* (settingsPath: st
   return parsePersistedServerObservabilitySettings(raw);
 });
 
+export interface ServerConfigOptions {
+  readonly startupPresentation?: ServerConfig.StartupPresentation;
+  readonly forceAutoBootstrapProjectFromCwd?: boolean;
+  readonly rejectRunningServer?: boolean;
+  readonly selectAutomaticPort?: (
+    preferred: number,
+  ) => Effect.Effect<number, NetService.NetError | CliError.UserError>;
+}
+
+// Preserve the validated desktop envelope fields at the CLI composition boundary.
+export type ResolvedServerConfig = ServerConfig.ServerConfig["Service"] & {
+  readonly desktopNativeOwnerInputFd: DesktopBackendBootstrap["desktopNativeOwnerInputFd"];
+  readonly desktopNativeOwnerOutputFd: DesktopBackendBootstrap["desktopNativeOwnerOutputFd"];
+};
+
 export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(function* (
   flags: CliServerFlags,
   cliLogLevel: Option.Option<LogLevel.LogLevel>,
-  options?: {
-    readonly startupPresentation?: ServerConfig.StartupPresentation;
-    readonly forceAutoBootstrapProjectFromCwd?: boolean;
-    readonly rejectRunningServer?: boolean;
-    readonly selectAutomaticPort?: (
-      preferred: number,
-    ) => Effect.Effect<number, NetService.NetError | CliError.UserError>;
-  },
+  options?: ServerConfigOptions,
 ) {
   const { findAvailablePort } = yield* NetService.NetService;
   const selectAutomaticPort = options?.selectAutomaticPort ?? findAvailablePort;
@@ -386,8 +392,13 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
       runtime.value.pid !== process.pid &&
       isProcessAlive(runtime.value.pid)
     ) {
+      // Bare `t3 pair` prefers a linked worktree's `.t3`, so always name this home.
+      const { command: pairCommand } = yield* resolveHostCliCommand("pair", [
+        "--base-dir",
+        baseDir,
+      ]);
       return yield* new CliError.UserError({
-        cause: `A T3 Code server is already running for ${baseDir} (pid ${runtime.value.pid}, ${runtime.value.origin}). Connect to that server, stop it before starting another, or use a different --base-dir.`,
+        cause: `A T3 Code server is already running for ${baseDir} (pid ${runtime.value.pid}, ${runtime.value.origin}). To open it, run \`${pairCommand}\` and open the pairing URL it prints. To start another server, stop this one first or use a different --base-dir.`,
       });
     }
   }
@@ -414,6 +425,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const shellEnvironmentPrepared = bootstrap?.shellEnvironmentPrepared;
   const desktopTelemetryFd = bootstrap?.desktopTelemetryFd;
   const desktopTelemetryControlFd = bootstrap?.desktopTelemetryControlFd;
+  const desktopAppUpdate = bootstrap?.desktopAppUpdate;
   const desktopBrowserFd = bootstrap?.desktopBrowserFd;
   const desktopBrowserControlFd = bootstrap?.desktopBrowserControlFd;
   const desktopNativeOwnerInputFd = bootstrap?.desktopNativeOwnerInputFd;
@@ -510,7 +522,8 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     },
   );
 
-  const config: ServerConfig.ServerConfig["Service"] = {
+  const config: ResolvedServerConfig = {
+    ...env.retainedPolicy,
     serverParallelism,
     logLevel,
     traceMinLevel: env.traceMinLevel,
@@ -550,12 +563,12 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     ...(shellEnvironmentPrepared === undefined ? {} : { shellEnvironmentPrepared }),
     desktopTelemetryFd,
     desktopTelemetryControlFd,
+    ...(desktopAppUpdate === undefined ? {} : { desktopAppUpdate }),
     desktopBrowserFd,
     desktopBrowserControlFd,
     desktopNativeOwnerInputFd,
     desktopNativeOwnerOutputFd,
     resourceMonitorPath,
-    fleetCheckpoint: env.fleetCheckpoint,
     autoBootstrapProjectFromCwd,
     logWebSocketEvents,
     tailscaleServeEnabled,

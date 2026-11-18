@@ -526,13 +526,18 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
         }
         const object = (await g(["ls-files", "-s", "--", path]))
           .toString()
-          .match(/^\d+ ([a-f0-9]+) 0\t/);
+          .match(/^(\d+) ([a-f0-9]+) 0\t/);
         if (!object) {
           reasons.add("index_flags");
           continue;
         }
-        const content = await readBounded(NodePath.join(current.path, path), 16 * 1024 * 1024);
-        if (!content.equals(await g(["cat-file", "blob", object[1]!]))) reasons.add("index_flags");
+        // A tracked symlink's blob records its link text, never the referent.
+        const content = await readBounded(
+          NodePath.join(current.path, path),
+          16 * 1024 * 1024,
+          object[1] === "120000",
+        );
+        if (!content.equals(await g(["cat-file", "blob", object[2]!]))) reasons.add("index_flags");
       }
     stage = "operation_state";
     for (const file of [

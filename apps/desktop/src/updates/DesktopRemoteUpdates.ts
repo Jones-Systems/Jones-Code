@@ -32,12 +32,34 @@ const PREPARED_UPDATE_TTL = Duration.minutes(5);
 
 interface PreparedUpdate {
   readonly requestId: string;
+  readonly channel: DesktopTelemetryRequestDesktopUpdate["channel"];
+  readonly targetVersion: DesktopTelemetryRequestDesktopUpdate["targetVersion"];
+  /** The qualified Jones artifact a selected download staged; a release preparation has none. */
+  readonly selection?: { readonly artifactId: number; readonly sourceSha: string };
   readonly downloadedVersion: string;
   readonly stagedHandle?: string;
   readonly status: "prepared" | "committing" | "failed";
   readonly failureReason?: string;
   readonly expiresAt: number;
 }
+
+// A retry re-reports a preparation only when it asks for the same one: the same track switch,
+// the same Jones selection (or none), and the same downloaded and staged build.
+const isSamePreparation = (
+  prepared: PreparedUpdate,
+  request: DesktopTelemetryRequestDesktopUpdate,
+  state: DesktopUpdateState,
+): boolean =>
+  prepared.status === "prepared" &&
+  prepared.channel === request.channel &&
+  prepared.targetVersion === request.targetVersion &&
+  state.downloadedVersion === prepared.downloadedVersion &&
+  (prepared.selection === undefined
+    ? request.action === undefined
+    : request.action === "download" &&
+      request.artifactId === prepared.selection.artifactId &&
+      request.sourceSha === prepared.selection.sourceSha &&
+      state.jones?.stagedHandle === prepared.stagedHandle);
 
 type CommitClaim =
   | { readonly _tag: "invalid" }
@@ -68,7 +90,11 @@ export const listen: Effect.Effect<
 
   const publishReport = (
     state: DesktopUpdateState,
-    terminal?: { readonly outcome: DesktopUpdateRemoteOutcome; readonly reason?: string },
+    terminal?: {
+      readonly outcome: DesktopUpdateRemoteOutcome;
+      readonly reason?: string;
+      readonly preparedRequestId?: string;
+    },
     explicitRequestId?: string,
   ): Effect.Effect<void> => {
     const reason = normalizeRemoteUpdateReason(terminal?.reason);
@@ -83,6 +109,9 @@ export const listen: Effect.Effect<
               ? { requestId: requestId.value }
               : {}),
           ...(terminal === undefined ? {} : { outcome: terminal.outcome }),
+          ...(terminal?.preparedRequestId === undefined
+            ? {}
+            : { preparedRequestId: terminal.preparedRequestId }),
           ...(reason ? { reason } : {}),
           state,
         }),
@@ -168,8 +197,17 @@ export const listen: Effect.Effect<
             : ([current, current] as const),
         );
         if (Option.isSome(prepared) && prepared.value.status !== "failed") {
+          const state = yield* updates.getState;
+          if (isSamePreparation(prepared.value, request, state)) {
+            yield* publishReport(
+              state,
+              { outcome: "ready-to-install", preparedRequestId: prepared.value.requestId },
+              request.requestId,
+            );
+            return;
+          }
           yield* publishReport(
-            yield* updates.getState,
+            state,
             {
               outcome: "failed",
               reason: "A prepared desktop update is already in progress.",
@@ -317,6 +355,9 @@ export const listen: Effect.Effect<
             preparedUpdateRef,
             Option.some({
               requestId: request.requestId,
+              channel: request.channel,
+              targetVersion: request.targetVersion,
+              selection: { artifactId: fixed.artifactId, sourceSha: fixed.sourceSha },
               downloadedVersion: downloaded.state.downloadedVersion,
               stagedHandle,
               status: "prepared",
@@ -410,6 +451,8 @@ export const listen: Effect.Effect<
                 preparedUpdateRef,
                 Option.some({
                   requestId: request.requestId,
+                  channel: request.channel,
+                  targetVersion: request.targetVersion,
                   downloadedVersion: state.downloadedVersion,
                   status: "prepared",
                   expiresAt:

@@ -1,5 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  CommandId,
+  EventId,
+  RunAttemptId,
+  type OrchestrationV2Run,
+  type OrchestrationV2StoredEvent,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -10,8 +15,12 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2Notification,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Stream from "effect/Stream";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -22,6 +31,9 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { LiveStreamBufferError } from "./LiveStreamBudget.ts";
+import { EventSinkStreamError } from "./EventSink.ts";
+import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 
@@ -93,10 +105,15 @@ const makeGuard = Effect.fnUntraced(function* (completed?: Deferred.Deferred<voi
 function layerTest(input: {
   readonly dispatched: Queue.Queue<unknown>;
   readonly getThreadRecords: () => Effect.Effect<OrchestrationV2ThreadProjection>;
+  readonly beforeDispatch?: (threadId: ThreadId) => Effect.Effect<void>;
 }) {
   const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
     getThreadRecords: input.getThreadRecords,
-    dispatch: (command) => Queue.offer(input.dispatched, command).pipe(Effect.as({} as never)),
+    dispatch: (command) =>
+      (
+        ("threadId" in command ? input.beforeDispatch?.(command.threadId) : undefined) ??
+        Effect.void
+      ).pipe(Effect.andThen(Queue.offer(input.dispatched, command)), Effect.as({} as never)),
   });
   const layerWorker = ProviderContinuationService.layer.pipe(
     Layer.provide(
@@ -107,6 +124,96 @@ function layerTest(input: {
 }
 
 describe("ProviderContinuationService", () => {
+  it.effect.each(["queued", "starting"] as const)(
+    "resumes an overflowed continuation watch after its last inspected %s update",
+    (status) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const instanceId = ProviderInstanceId.make("continuation");
+        const created: OrchestrationV2Run = {
+          id: parentRunId,
+          threadId,
+          ordinal: 1,
+          status: "queued",
+          activeAttemptId: RunAttemptId.make("attempt"),
+          providerInstanceId: instanceId,
+          modelSelection: { instanceId, model: "test" },
+          providerThreadId,
+          userMessageId: delegatedMessageId,
+          rootNodeId: null,
+          startedAt: null,
+          requestedAt: now,
+          completedAt: null,
+          contextHandoffId: null,
+          checkpointId: null,
+        };
+        const update = (
+          sequence: number,
+          next: OrchestrationV2Run["status"],
+        ): OrchestrationV2StoredEvent => ({
+          sequence,
+          commandId: CommandId.make("update"),
+          event: {
+            id: EventId.make(`event-${sequence}`),
+            threadId,
+            occurredAt: now,
+            type: "run.updated",
+            payload: { ...created, status: next },
+          },
+        });
+        const overflow = new Orchestrator.OrchestratorDomainEventStreamError({
+          cause: new EventSinkStreamError({
+            cause: new LiveStreamBufferError({ message: "budget exceeded" }),
+          }),
+        });
+        const cursors: Array<number | undefined> = [];
+        const watcher = yield* ProviderContinuationService.readContinuationTerminal(
+          (input) => {
+            cursors.push(input?.afterSequence);
+            return cursors.length === 1
+              ? Stream.make(update(12, status)).pipe(Stream.concat(Stream.fail(overflow)))
+              : Stream.make(update(13, "queued"), update(14, "cancelled"));
+          },
+          created,
+          10,
+        ).pipe(Effect.forkScoped);
+        yield* TestClock.adjust("100 millis");
+        const { ended, continuouslyQueued } = yield* Fiber.join(watcher);
+        assert.deepEqual(cursors, [10, 12]);
+        assert.equal(Option.getOrThrow(ended).sequence, 14);
+        assert.equal(continuouslyQueued, status === "queued");
+      }),
+  );
+
+  it.effect("requires an accepted cancellation receipt covering the exact queued event", () =>
+    Effect.gen(function* () {
+      const commandId = CommandId.make("cancel-continuation");
+      const accepted = {
+        commandId,
+        threadId,
+        commandType: "queued-run.cancel",
+        acceptedAt: yield* DateTime.now,
+        resultSequence: 10,
+        status: "accepted" as const,
+        error: null,
+      };
+      const check = (
+        receipt: Parameters<typeof ProviderContinuationService.isAcceptedQueuedCancellation>[0],
+      ) =>
+        ProviderContinuationService.isAcceptedQueuedCancellation(receipt, threadId, commandId, 10);
+      assert.isTrue(check(Option.some(accepted)));
+      assert.isFalse(check(Option.none()));
+      for (const change of [
+        { commandType: "thread.interrupt" },
+        { status: "rejected" as const },
+        { resultSequence: 9 },
+        { commandId: CommandId.make("another-command") },
+        { threadId: ThreadId.make("another-thread") },
+      ])
+        assert.isFalse(check(Option.some({ ...accepted, ...change })));
+    }),
+  );
+
   it.effect("recovers an unaccepted persisted steer using the same delivery identity", () =>
     Effect.gen(function* () {
       const dispatched = yield* Queue.unbounded<unknown>();
@@ -419,6 +526,43 @@ describe("ProviderContinuationService", () => {
   );
 
   it.effect(
+    "clears a sticky continuation offer when a non-delegated wake dispatch fails generically",
+    () => {
+      return Effect.gen(function* () {
+        const cleared = yield* Deferred.make<void>();
+        const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getThreadRecords: () => Effect.succeed(projection),
+          dispatch: (command) =>
+            Effect.fail(
+              new Orchestrator.OrchestratorDispatchError({
+                commandId: CommandId.make(String(command.commandId)),
+                commandType: command.type,
+                cause: new Error("SQLITE_FULL: database or disk is full"),
+              }),
+            ),
+        });
+        const layerWorker = ProviderContinuationService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(IdAllocator.layer, ProviderContinuationRequests.layer, layerThreads),
+          ),
+        );
+
+        yield* Effect.gen(function* () {
+          const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+          yield* requests.offer({
+            ...request(),
+            clearIfCurrent: () => Deferred.succeed(cleared, undefined),
+          });
+          yield* Deferred.await(cleared);
+        }).pipe(
+          Effect.provide(Layer.merge(ProviderContinuationRequests.layer, layerWorker)),
+          Effect.scoped,
+        );
+      });
+    },
+  );
+
+  it.effect(
     "drops stopped and disposed delegated completions instead of reviving them after recovery",
     () => {
       return Effect.gen(function* () {
@@ -579,4 +723,41 @@ describe("ProviderContinuationService", () => {
       );
     });
   });
+  it.effect(
+    "a wake held by another thread's parent lock does not delay other threads' wakes",
+    () => {
+      return Effect.gen(function* () {
+        const dispatched = yield* Queue.unbounded<unknown>();
+        const blockedChildId = ThreadId.make("thread-provider-continuation-blocked-child");
+        const dispatchedAt = new Map<ThreadId, number>();
+        yield* Effect.gen(function* () {
+          const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+          yield* requests.offer({ ...request(), threadId: blockedChildId });
+          yield* requests.offer(request());
+          yield* TestClock.adjust("10 minutes");
+          yield* Queue.take(dispatched);
+          yield* Queue.take(dispatched);
+          assert.equal(dispatchedAt.get(blockedChildId), 10 * 60 * 1000);
+          assert.equal(dispatchedAt.get(threadId), 0);
+        }).pipe(
+          Effect.provide(
+            layerTest({
+              dispatched,
+              getThreadRecords: () => Effect.succeed(projection),
+              // Models the child's message intake waiting on its coordinator's dispatch lock.
+              beforeDispatch: (dispatchThreadId) =>
+                (dispatchThreadId === blockedChildId
+                  ? Effect.sleep("10 minutes")
+                  : Effect.void
+                ).pipe(
+                  Effect.andThen(Clock.currentTimeMillis),
+                  Effect.map((now) => void dispatchedAt.set(dispatchThreadId, now)),
+                ),
+            }),
+          ),
+          Effect.scoped,
+        );
+      });
+    },
+  );
 });

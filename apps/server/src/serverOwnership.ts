@@ -13,10 +13,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Runtime from "effect/Runtime";
 import * as Schema from "effect/Schema";
-import {
-  beginCheckedServerOwnership,
-  invalidateCheckedServerOwnership,
-} from "./jones/cleanup/CheckedRuntimeOwner.ts";
+import * as Scope from "effect/Scope";
 
 import {
   BOOT_SERVICE_LAUNCHD_LABEL,
@@ -32,7 +29,16 @@ import {
   compareExactServiceVersions,
   serviceStateActiveVersion,
 } from "./cloud/serviceProtocol.ts";
+import {
+  legacyOwnerStartedBeforeRecord,
+  legacyOwnerStartTimeCommand,
+} from "./legacyServerOwner.ts";
 import * as ProcessRunner from "./processRunner.ts";
+import {
+  beginCheckedServerOwnership,
+  invalidateCheckedServerOwnership,
+  type HeldRuntimeOwnerToken,
+} from "./jones/cleanup/CheckedRuntimeOwner.ts";
 import {
   clearPersistedServerRuntimeState,
   isProcessAlive,
@@ -85,29 +91,20 @@ const legacyOwnerIsLive = Effect.fn("legacyOwnerIsLive")(function* (
   if (!isProcessAlive(state.pid)) return false;
   const recordedAt = Date.parse(state.startedAt);
   if (!Number.isFinite(recordedAt)) return true;
-  const windows = (yield* HostProcess.Platform) === "win32";
+  const platform = yield* HostProcess.Platform;
   const runner = yield* ProcessRunner.ProcessRunner;
   const result = yield* runner
     .run({
-      command: windows ? "powershell.exe" : "ps",
-      args: windows
-        ? [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `(Get-Process -Id ${state.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
-          ]
-        : ["-p", String(state.pid), "-o", "lstart="],
-      env: { LC_ALL: "C", TZ: "UTC" },
+      ...legacyOwnerStartTimeCommand(state.pid, platform),
       timeout: Duration.seconds(2),
       maxOutputBytes: 16_384,
     })
     .pipe(Effect.option);
-  if (Option.isNone(result) || result.value.code !== 0) return true;
-  const output = result.value.stdout.trim();
-  const startedAt = Date.parse(windows ? output : `${output} UTC`);
-  // ps reports whole seconds. Unknown identity stays conservative.
-  return !Number.isFinite(startedAt) || startedAt <= recordedAt + 1_000;
+  return legacyOwnerStartedBeforeRecord(
+    Option.isSome(result) && result.value.code === 0 ? result.value.stdout : undefined,
+    recordedAt,
+    platform,
+  );
 });
 
 // Pre-lock services become invisible when another server replaces their runtime
@@ -179,17 +176,67 @@ const olderBootServiceHome = Effect.fn("olderBootServiceHome")(
   Effect.orElseSucceed(() => undefined),
 );
 
+const ownershipLockPath = (stateDir: string) => NodePath.join(stateDir, "server-owner.sqlite");
+
 /** Original live server-owner lock; absent outside the acquired server scope. */
 export const ServerOwnershipLifetime = Context.Reference<
   { readonly assertCurrent: () => void } | undefined
 >("t3/serverOwnership/Lifetime", { defaultValue: () => undefined });
 
 /**
- * Hold an exclusive lock on the state directory until the scope closes. The
- * lock is an exclusive transaction on `server-owner.sqlite`, which never holds
- * data and must never be unlinked: the OS releases it when the process exits,
- * even on SIGKILL, so a crashed owner never blocks the next start.
+ * The lock is an exclusive transaction on `server-owner.sqlite`, which never
+ * holds data and must never be unlinked: the OS releases it when the process
+ * exits, even on SIGKILL, so a crashed owner never blocks the next start.
  */
+const openOwnershipLock = (stateDir: string, scope: Scope.Scope) =>
+  Effect.try({
+    try: () => {
+      const lockPath = ownershipLockPath(stateDir);
+      NodeFS.mkdirSync(stateDir, { recursive: true });
+      let before = NodeFS.statSync(lockPath, { bigint: true, throwIfNoEntry: false });
+      if (before === undefined) {
+        NodeFS.closeSync(NodeFS.openSync(lockPath, "a", 0o644));
+        before = NodeFS.statSync(lockPath, { bigint: true });
+      }
+      const db = new NodeSqlite.DatabaseSync(lockPath);
+      let heldRuntimeOwner: HeldRuntimeOwnerToken | undefined;
+      try {
+        heldRuntimeOwner = beginCheckedServerOwnership(db, stateDir, lockPath, scope);
+        const identity = NodeFS.statSync(lockPath, { bigint: true });
+        const replacedDuringAcquire = before.dev !== identity.dev || before.ino !== identity.ino;
+        if (replacedDuringAcquire) invalidateCheckedServerOwnership(heldRuntimeOwner);
+        return {
+          db,
+          heldRuntimeOwner,
+          identity,
+          replacedDuringAcquire,
+        };
+      } catch (cause) {
+        if (heldRuntimeOwner !== undefined) invalidateCheckedServerOwnership(heldRuntimeOwner);
+        db.close();
+        throw cause;
+      }
+    },
+    catch: (cause) =>
+      isSqliteBusy(cause)
+        ? new ServerAlreadyRunningError({ stateDir })
+        : new ServerOwnershipError({ stateDir, cause }),
+  });
+
+/** Hold only the ownership lock until the scope closes, without claiming the runtime state. */
+export const holdServerOwnershipLock = Effect.fn("holdServerOwnershipLock")(function* (
+  statePath: string,
+) {
+  const scope = yield* Scope.Scope;
+  yield* Effect.acquireRelease(openOwnershipLock(NodePath.dirname(statePath), scope), (lock) =>
+    Effect.sync(() => {
+      invalidateCheckedServerOwnership(lock.heldRuntimeOwner);
+      lock.db.close();
+    }),
+  );
+});
+
+/** Hold an exclusive lock on the state directory until the scope closes. */
 export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(function* (
   statePath: string,
 ) {
@@ -198,37 +245,11 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
   const ownerId = yield* random
     .uuidV4()
     .pipe(Effect.mapError((cause) => new ServerOwnershipError({ stateDir, cause })));
-  const lockPath = NodePath.join(stateDir, "server-owner.sqlite");
+  const lockPath = ownershipLockPath(stateDir);
+  const scope = yield* Scope.Scope;
   let active = true;
   const lock = yield* Effect.acquireRelease(
-    Effect.try({
-      try: () => {
-        NodeFS.mkdirSync(stateDir, { recursive: true });
-        let before = NodeFS.statSync(lockPath, { bigint: true, throwIfNoEntry: false });
-        if (before === undefined) {
-          NodeFS.closeSync(NodeFS.openSync(lockPath, "a", 0o644));
-          before = NodeFS.statSync(lockPath, { bigint: true });
-        }
-        const db = new NodeSqlite.DatabaseSync(lockPath);
-        try {
-          const heldRuntimeOwner = beginCheckedServerOwnership(db, stateDir, lockPath);
-          const identity = NodeFS.statSync(lockPath, { bigint: true });
-          return {
-            db,
-            heldRuntimeOwner,
-            identity,
-            replacedDuringAcquire: before.dev !== identity.dev || before.ino !== identity.ino,
-          };
-        } catch (cause) {
-          db.close();
-          throw cause;
-        }
-      },
-      catch: (cause) =>
-        isSqliteBusy(cause)
-          ? new ServerAlreadyRunningError({ stateDir })
-          : new ServerOwnershipError({ stateDir, cause }),
-    }),
+    openOwnershipLock(stateDir, scope),
     ({ db, heldRuntimeOwner }) =>
       Effect.sync(() => {
         active = false;
@@ -288,6 +309,8 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
         current.dev !== lock.identity.dev ||
         current.ino !== lock.identity.ino;
     }
+    active = false;
+    invalidateCheckedServerOwnership(lock.heldRuntimeOwner);
     yield* Effect.logError(
       `Server ownership lock at ${lockPath} was deleted or replaced. Another server may now share this T3 home. Stop any other server using this home, then restart this server. Do not delete server-owner.sqlite while a server is running.`,
     );
@@ -295,8 +318,28 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
 
   const lifetime = Object.freeze({
     assertCurrent(this: { readonly assertCurrent: () => void }) {
-      if (this !== lifetime || !active || !lock.db.isOpen || !lock.db.isTransaction) {
-        throw new ServerOwnershipError({ stateDir, cause: "Original server ownership has ended." });
+      // Use the actual acquisition scope, not a copied service context. It is
+      // already Closed while earlier (LIFO) finalizers still retain the lock.
+      if (this !== lifetime) {
+        throw new ServerOwnershipError({ stateDir, cause: "Invalid ownership lifetime receiver." });
+      }
+      try {
+        if (
+          !active ||
+          scope.state._tag === "Closed" ||
+          !lock.db.isOpen ||
+          !lock.db.isTransaction ||
+          lock.replacedDuringAcquire
+        )
+          throw new Error("Original server ownership has ended.");
+        // Stat by path only: another descriptor's close could release POSIX locks.
+        const current = NodeFS.statSync(lockPath, { bigint: true });
+        if (current.dev !== lock.identity.dev || current.ino !== lock.identity.ino)
+          throw new Error("Original server ownership lock was replaced.");
+      } catch (cause) {
+        active = false;
+        invalidateCheckedServerOwnership(lock.heldRuntimeOwner);
+        throw new ServerOwnershipError({ stateDir, cause });
       }
     },
   });

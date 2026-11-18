@@ -5,6 +5,7 @@ import {
   type RecordedEvent as OrchestrationV2RecordedEvent,
 } from "../orchestration-v2/RecordedTypes.ts";
 import {
+  OrchestrationV2DomainEventJson,
   ApplicationEventMetadata,
   ApplicationProjectEvent,
   CommandId,
@@ -190,7 +191,7 @@ interface ApplicationEventRow {
 }
 
 const decodeV2EventJson = Schema.decodeUnknownEffect(OrchestrationV2RecordedEventJson);
-const encodeV2EventJson = Schema.encodeEffect(OrchestrationV2RecordedEventJson);
+const encodeV2EventJson = Schema.encodeEffect(OrchestrationV2DomainEventJson);
 const decodeV2StoredEvent = Schema.decodeUnknownEffect(OrchestrationV2RecordedStoredEvent);
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -464,6 +465,14 @@ const makeEventStore = Effect.gen(function* () {
       input.events,
       (event) =>
         Effect.gen(function* () {
+          if (
+            event.type === "legacy-bootstrap.preflight-intent" ||
+            event.type === "legacy-bootstrap.preflight-outcome"
+          )
+            return yield* toPersistenceSqlError(
+              "OrchestrationEventStore.appendAgentEvents:private-preflight",
+            )(new Error("Fresh preflight events require Jones private storage."));
+          // The public storage schema omits private thread and run fields while retaining full event bodies.
           const encoded = yield* encodeV2EventJson(event);
           const subagent =
             encoded.type === "subagent.updated"

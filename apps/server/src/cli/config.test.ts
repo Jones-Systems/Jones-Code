@@ -86,6 +86,47 @@ const liveProcess = Effect.acquireRelease(
 );
 
 it.layer(NodeServices.layer)("cli config resolution", (it) => {
+  it.effect.each(["blank", "explicit", "home"] as const)(
+    "resolves native authority environment paths through ConfigProvider (%s)",
+    (kind) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "jones-cli-authority-env-" });
+        const baseDir = path.join(root, "app");
+        const home = path.join(root, "home");
+        yield* fs.makeDirectory(home);
+        const expected =
+          kind === "blank"
+            ? path.join(baseDir, "native-store-authority")
+            : kind === "explicit"
+              ? path.join(root, "authority")
+              : path.join(home, "authority");
+        const raw =
+          kind === "blank" ? "  " : kind === "explicit" ? `  ${expected}  ` : "  ~/authority  ";
+        const config = yield* resolveServerConfig(
+          { ...minimalDesktopFlags(baseDir), cwd: Option.some(root) },
+          Option.none(),
+        ).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              NetService.layer,
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: { T3CODE_NATIVE_AUTHORITY_STATE_DIR: raw },
+                }),
+              ),
+            ),
+          ),
+          Effect.provideService(HostProcess.HomeDirectory, home),
+        );
+        expect(config.authorityStateDir).toBe(expected);
+        expect(yield* fs.exists(expected)).toBe(true);
+        if (kind !== "blank")
+          expect(yield* fs.exists(path.join(baseDir, "native-store-authority"))).toBe(false);
+      }),
+  );
+
   it.effect("resolves the startup worker profile through the CLI environment", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -322,6 +363,59 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         expect(String(error)).toContain(`pid ${child.pid}`);
         expect(yield* fs.exists(cwd)).toBe(false);
       }),
+  );
+
+  it.effect("names the pair command for the refused server's home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const child = yield* liveProcess;
+      assert(child.pid !== undefined);
+      for (const source of ["flag", "T3CODE_HOME", "default"] as const) {
+        const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-preflight-pair-" });
+        const baseDir = source === "default" ? path.join(home, ".t3") : home;
+        const stateDir = path.join(baseDir, "userdata");
+        yield* fs.makeDirectory(stateDir, { recursive: true });
+        yield* fs.writeFileString(
+          path.join(stateDir, "server-runtime.json"),
+          yield* encodeUnknownJson({
+            version: 1,
+            pid: child.pid,
+            port: 3773,
+            origin: "http://127.0.0.1:3773",
+            startedAt: "2026-10-01T00:00:00.000Z",
+          }),
+        );
+        const error = yield* resolveServerConfig(
+          {
+            ...minimalWebFlags(baseDir),
+            baseDir: source === "flag" ? Option.some(baseDir) : Option.none(),
+            cwd: Option.some(path.join(home, "project")),
+          },
+          Option.none(),
+          { rejectRunningServer: true },
+        ).pipe(
+          Effect.provide(
+            Layer.merge(
+              NetService.layer,
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: source === "T3CODE_HOME" ? { T3CODE_HOME: baseDir } : {},
+                }),
+              ),
+            ),
+          ),
+          Effect.provideService(HostProcess.HomeDirectory, home),
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.flip,
+        );
+        // A temp dir with spaces or backslashes is single-quoted for the shell.
+        const homePattern = baseDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        expect(String(error)).toMatch(
+          new RegExp(`pair --base-dir (${homePattern}|'${homePattern}')`),
+        );
+      }
+    }),
   );
 
   it.effect("enables a trimmed reusable auth token only for web dev mode", () =>
@@ -763,6 +857,60 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: false,
         tailscaleServePort: 443,
       });
+    }),
+  );
+
+  it.effect("preserves native-owner descriptors with the current desktop bootstrap options", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      for (const source of ["flag", "environment"]) {
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-native-owner-" });
+        const fd = yield* openBootstrapFd(
+          makeDesktopBootstrap({
+            desktopNativeOwnerInputFd: 71,
+            desktopNativeOwnerOutputFd: 72,
+            desktopAppUpdate: true,
+            desktopBootstrapSecret: "synthetic-bootstrap-secret",
+            shellEnvironmentPrepared: true,
+            desktopTelemetryFd: 73,
+            desktopTelemetryControlFd: 74,
+            desktopBrowserFd: 75,
+            desktopBrowserControlFd: 76,
+            resourceMonitorPath: "/synthetic/resource-monitor",
+          }),
+        );
+        const resolved = yield* resolveServerConfig(
+          {
+            ...minimalDesktopFlags(baseDir),
+            bootstrapFd: source === "flag" ? Option.some(fd) : Option.none(),
+          },
+          Option.none(),
+        ).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: source === "environment" ? { T3CODE_BOOTSTRAP_FD: String(fd) } : {},
+                }),
+              ),
+              NetService.layer,
+            ),
+          ),
+        );
+
+        expect(resolved).toMatchObject({
+          desktopNativeOwnerInputFd: 71,
+          desktopNativeOwnerOutputFd: 72,
+          desktopAppUpdate: true,
+          desktopBootstrapSecret: "synthetic-bootstrap-secret",
+          shellEnvironmentPrepared: true,
+          desktopTelemetryFd: 73,
+          desktopTelemetryControlFd: 74,
+          desktopBrowserFd: 75,
+          desktopBrowserControlFd: 76,
+          resourceMonitorPath: "/synthetic/resource-monitor",
+        });
+      }
     }),
   );
 

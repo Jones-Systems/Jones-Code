@@ -12,7 +12,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { Tool } from "effect/ai";
+import { Tool, McpSchema } from "effect/ai";
 import * as Access from "../../mcp/McpToolAccess.ts";
 import * as Invocation from "../../mcp/McpInvocationContext.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
@@ -43,7 +43,8 @@ export const ThreadRequestFulfillTool = Tool.make("t3_thread_request_fulfill", {
 })
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true);
+  .annotate(Tool.Idempotent, true)
+  .annotate(McpSchema.EnabledWhen, Invocation.hiddenFromOutsideClients);
 export const ThreadDependencyReleaseTool = Tool.make("t3_thread_dependency_release", {
   description:
     "Release this thread's result dependency without waking it or stopping the target. Stop releases all outstanding dependencies. A released dependency cannot be reopened by a late answer.",
@@ -55,7 +56,8 @@ export const ThreadDependencyReleaseTool = Tool.make("t3_thread_dependency_relea
 })
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true);
+  .annotate(Tool.Idempotent, true)
+  .annotate(McpSchema.EnabledWhen, Invocation.hiddenFromOutsideClients);
 export const ThreadRequestObserveTool = Tool.make("t3_thread_request_observe", {
   description:
     "Server transport observation of one authenticated originating environment's exact result operation. Subscribe then read, up to 50000 ms. A fence reconciles a lost dispatch without replaying it. Observation cannot fulfill a request or cancel remote work. Agents should use awaitResult on send and end their turn rather than poll this tool.",

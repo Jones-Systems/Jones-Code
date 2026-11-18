@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../orchestration/threadMetadataReads.ts";
 import * as InProcessMcp from "../../mcp/McpHttpServer.ts";
 import { withOwnerSelectionIngress } from "./ownerIngress.ts";
 import { assert, it } from "@effect/vitest";
@@ -123,6 +124,7 @@ const catalog: ServerProvider = {
   slashCommands: [],
   skills: [],
 };
+const isThreadSelfConfigurationError = Schema.is(Service.ThreadSelfConfigurationError);
 const decodeCommand = Schema.decodeUnknownEffect(OrchestrationV2Command);
 
 const decodeEvidence = Schema.decodeUnknownEffect(ThreadConfigurationEvidence);
@@ -130,20 +132,43 @@ const decodeReceipt = Schema.decodeUnknownEffect(ThreadSelfConfigurationResult);
 const failure = (result: McpSchema.CallToolResult) =>
   result.content[0]?.type === "text" ? JSON.parse(result.content[0].text) : null;
 
+function toolCalls(server: McpServer.McpServer["Service"], scope: Invocation.McpInvocationScope) {
+  const invoke = (name: string, args: Record<string, unknown> = {}, caller = scope) =>
+    server
+      .callTool({ name, arguments: args })
+      .pipe(
+        Effect.provideService(Invocation.McpInvocationContext, caller),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+  return {
+    call: (...args: Parameters<typeof invoke>) => invoke(...args).pipe(Effect.orDie),
+    assertToolHidden: (
+      name: string,
+      args: Record<string, unknown>,
+      caller: Invocation.McpInvocationScope,
+    ) =>
+      invoke(name, args, caller).pipe(
+        Effect.flip,
+        Effect.tap((error) =>
+          Effect.sync(() => assert.equal(error.message, `Tool '${name}' not found`)),
+        ),
+        Effect.asVoid,
+        Effect.orDie,
+      ),
+  };
+}
+
 function scenario<E>(
   name: string,
   restartRequired: boolean,
-  body: (ctx: {
-    threadId: ThreadId;
-    scope: Invocation.McpInvocationScope;
-    state: Ref.Ref<RestartAdapterState>;
-    sql: SqlClient.SqlClient;
-    call: (
-      name: string,
-      args?: Record<string, unknown>,
-      caller?: Invocation.McpInvocationScope,
-    ) => Effect.Effect<McpSchema.CallToolResult>;
-  }) => Effect.Effect<
+  body: (
+    ctx: {
+      threadId: ThreadId;
+      scope: Invocation.McpInvocationScope;
+      state: Ref.Ref<RestartAdapterState>;
+      sql: SqlClient.SqlClient;
+    } & ReturnType<typeof toolCalls>,
+  ) => Effect.Effect<
     void,
     E,
     | Scope.Scope
@@ -167,6 +192,7 @@ function scenario<E>(
     readonly capabilities: OrchestrationV2ProviderCapabilities;
   },
   preparing = false,
+  transactionRace?: "configuration_changed" | "execution_changed",
 ) {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -260,8 +286,56 @@ function scenario<E>(
             })),
         },
       );
+      const selfConfigurationRuntime =
+        transactionRace === undefined
+          ? runtime
+          : Layer.merge(
+              runtime,
+              Layer.effect(
+                Sink.EventSinkV2,
+                Effect.gen(function* () {
+                  const sink = yield* Sink.EventSinkV2;
+                  return Sink.EventSinkV2.of({
+                    ...sink,
+                    commitCommand: (input) =>
+                      input.threadSelfConfiguration === undefined
+                        ? sink.commitCommand(input)
+                        : sink.commitCommand({
+                            ...input,
+                            threadSelfConfiguration: {
+                              revalidate: () =>
+                                Effect.gen(function* () {
+                                  // Inject after optimistic validation, inside the real acceptance transaction.
+                                  // The domain callback must detect this changed authority and roll it back.
+                                  if (transactionRace === "configuration_changed") {
+                                    yield* sql`INSERT INTO jones_owner_selections
+                        (thread_id, command_id, result_sequence, model_selection_json, recorded_at)
+                        VALUES (${threadId}, 'interleaved-owner', 2147483647,
+                          ${JSON.stringify(initialSelection)}, '2026-01-01T00:00:00Z')
+                        ON CONFLICT(thread_id) DO UPDATE SET result_sequence = 2147483647`;
+                                  } else {
+                                    yield* sql`UPDATE orchestration_v2_projection_runs
+                        SET status = 'completed', payload_json = json_set(payload_json, '$.status', 'completed')
+                        WHERE thread_id = ${threadId} AND status = 'running'`;
+                                  }
+                                  return yield* input.threadSelfConfiguration!.revalidate();
+                                }).pipe(
+                                  Effect.mapError((error) =>
+                                    isThreadSelfConfigurationError(error)
+                                      ? error
+                                      : new Service.ThreadSelfConfigurationError({
+                                          reason: "state_unavailable",
+                                        }),
+                                  ),
+                                ),
+                            },
+                          }),
+                  });
+                }),
+              ).pipe(Layer.provide(runtime)),
+            );
       const service = Service.layer.pipe(
-        Layer.provide(runtime),
+        Layer.provide(selfConfigurationRuntime),
         Layer.provide(
           Layer.mock(Catalog.ProviderRegistry)({
             getProviders: Effect.succeed([
@@ -288,6 +362,7 @@ function scenario<E>(
         Mcp.layerThreadSelfConfigurationToolkit,
       ).pipe(
         Layer.provide(service),
+        Layer.provide(ThreadMetadataReads.layer),
         Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(runtime),
@@ -300,14 +375,6 @@ function scenario<E>(
         const worker = yield* Worker.OrchestrationEffectWorkerV2;
         const sink = yield* Sink.EventSinkV2;
         const server = yield* McpServer.McpServer;
-        const call = (name: string, args: Record<string, unknown> = {}, caller = scope) =>
-          server
-            .callTool({ name, arguments: args })
-            .pipe(
-              Effect.provideService(Invocation.McpInvocationContext, caller),
-              Effect.provideService(McpSchema.McpServerClient, client),
-              Effect.orDie,
-            );
         yield* orchestrator.dispatch({
           type: "thread.create",
           commandId: CommandId.make(name + ":create"),
@@ -346,7 +413,7 @@ function scenario<E>(
         });
         if (running !== undefined) yield* Fiber.join(running);
         yield* worker.drain();
-        yield* body({ threadId, scope, state, call, sql });
+        yield* body({ threadId, scope, state, sql, ...toolCalls(server, scope) });
         if (scratch !== undefined) {
           // Capture committed crash state before scoped shutdown can persist stopped sessions.
           yield* sql`VACUUM INTO ${scratch}`;
@@ -357,15 +424,13 @@ function scenario<E>(
         yield* Effect.gen(function* () {
           const recoveredSql = yield* SqlClient.SqlClient;
           const server = yield* McpServer.McpServer;
-          const call = (name: string, args: Record<string, unknown> = {}, caller = scope) =>
-            server
-              .callTool({ name, arguments: args })
-              .pipe(
-                Effect.provideService(Invocation.McpInvocationContext, caller),
-                Effect.provideService(McpSchema.McpServerClient, client),
-                Effect.orDie,
-              );
-          yield* afterRestart({ threadId, scope, state, call, sql: recoveredSql });
+          yield* afterRestart({
+            threadId,
+            scope,
+            state,
+            sql: recoveredSql,
+            ...toolCalls(server, scope),
+          });
         }).pipe(Effect.provide(Layer.fresh(Layer.merge(runtime, tools))));
       }
     }),
@@ -499,7 +564,7 @@ it.live.each([false, true])(
 it.live(
   "rejects stale execution/revision, invalid catalog values and non-thread callers without effects",
   () =>
-    scenario("self-configure-refusals", false, ({ call, scope, state }) =>
+    scenario("self-configure-refusals", false, ({ call, assertToolHidden, scope, state }) =>
       Effect.gen(function* () {
         const evidence = yield* decodeEvidence(
           (yield* call("t3_thread_configure")).structuredContent,
@@ -560,14 +625,29 @@ it.live(
           ).message,
           "execution_changed",
         );
-        assert.equal(
-          (yield* call("t3_thread_self_configure", request, {
+        for (const linked of [false, true]) {
+          yield* assertToolHidden("t3_thread_self_configure", request, {
             ...scope,
             thread: undefined,
-            client: { sessionId: "client", label: "test", access: "full-access" },
-          })).isError,
-          true,
-        );
+            client: { sessionId: "client", label: "test", access: "full-access", linked },
+          });
+        }
+        for (const caller of [
+          { ...scope, capabilities: new Set<Invocation.McpCapability>() },
+          {
+            ...scope,
+            client: { sessionId: "read-only", label: "test", access: "read-only" as const },
+          },
+          {
+            ...scope,
+            thread: { ...scope.thread!, providerSessionId: "foreign-credential" },
+          },
+          {
+            ...scope,
+            thread: { ...scope.thread!, providerInstanceId: ProviderInstanceId.make("foreign") },
+          },
+        ])
+          assert.equal((yield* call("t3_thread_self_configure", request, caller)).isError, true);
         assert.notEqual((yield* call("t3_thread_organize", { action: "pin" })).isError, true);
         assert.equal(
           (yield* decodeEvidence((yield* call("t3_thread_configure")).structuredContent))
@@ -2366,7 +2446,7 @@ it.live.each(["starting", "running"] as const)(
 );
 
 it.live.each(["restart", "next_turn", "handoff", "reject"] as const)(
-  "A9/A9b crash continuation with pending C validates a fresh session: %s",
+  "A9/A9b crash continuation with pending C respects execution authority: %s",
   (transition) =>
     scenario(
       "owner-crash-continuation-" + transition,
@@ -2421,7 +2501,7 @@ it.live.each(["restart", "next_turn", "handoff", "reject"] as const)(
                   Stream.runDrain,
                   Effect.forkScoped,
                 )
-              : yield* observeRun(threadId, 2, "completed");
+              : yield* observeRun(threadId, 2, transition === "restart" ? "failed" : "completed");
           yield* worker.drain();
           yield* outbox.awaitSettled(scheduled[0]!.id);
           const continuation = yield* orchestrator.getThreadProjection(threadId);
@@ -2430,13 +2510,13 @@ it.live.each(["restart", "next_turn", "handoff", "reject"] as const)(
             transition === "reject" ? 1 : 2,
             "Settled recovery intent must admit C or record its typed decline",
           );
-          assert.notEqual(
-            continuation.runs[1]?.status,
-            "failed",
-            "Recovery must reach the provider without a pre-admission failure",
-          );
-          if (transition !== "reject")
-            assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, replacement);
+          if (transition === "next_turn" || transition === "handoff") {
+            assert.notEqual(
+              continuation.runs[1]?.status,
+              "failed",
+              "Recovery must reach the provider without a pre-admission failure",
+            );
+          }
           yield* Fiber.join(barrier);
           yield* worker.drain();
           const after = yield* orchestrator.getThreadProjection(threadId);
@@ -2460,6 +2540,20 @@ it.live.each(["restart", "next_turn", "handoff", "reject"] as const)(
             assert.equal(yield* sink.latestSequence({ threadId }), sequence);
             assert.lengthOf((yield* Ref.get(state)).started, 1);
             assert.lengthOf((yield* Ref.get(state)).resumed ?? [], 0);
+          } else if (transition === "restart") {
+            // The snapshot excludes shutdown and carries no completed native retirement receipt.
+            assert.equal(after.runs[1]?.restartContinuationOfRunId, after.runs[0]?.id);
+            assert.equal(after.runs[1]?.status, "failed");
+            assert.isTrue(
+              after.turnItems.some(
+                (item) =>
+                  item.runId === after.runs[1]?.id &&
+                  item.title === "Previous provider writer could not retire",
+              ),
+            );
+            assert.lengthOf(invoked.started, 1);
+            assert.lengthOf(invoked.opened, 1);
+            assert.lengthOf(invoked.resumed ?? [], 0);
           } else {
             assert.lengthOf(after.runs, 2);
             assert.equal(after.runs[1]?.restartContinuationOfRunId, after.runs[0]?.id);
@@ -2684,14 +2778,14 @@ it.live(
     ),
 );
 
-it.live("owner unchanged Claude restart intent retains the generic typed refusal", () =>
+it.live("owner unchanged Claude restart intent stops the old turn and queues a new one", () =>
   scenario(
     "owner-claude-unchanged-restart",
     false,
-    ({ threadId, state, sql }) =>
+    ({ threadId, state }) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const sink = yield* Sink.EventSinkV2;
+        const worker = yield* Worker.OrchestrationEffectWorkerV2;
         yield* orchestrator
           .dispatch({
             type: "thread.model-selection.set",
@@ -2700,20 +2794,26 @@ it.live("owner unchanged Claude restart intent retains the generic typed refusal
             modelSelection: initialSelection,
           })
           .pipe(withOwnerSelectionIngress);
-        const sequence = yield* sink.latestSequence({ threadId });
-        const effects = yield* countEffects(sql, threadId);
-        const error = yield* orchestrator
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const started = yield* observeRun(threadId, 2, "running");
+        yield* orchestrator
           .dispatch({
             ...messageCommand(threadId, "claude:unchanged-restart"),
             deliveryIntent: "restart",
           })
-          .pipe(withOwnerSelectionIngress, Effect.flip);
-        assert.instanceOf(error, Orchestrator.OrchestratorDispatchError);
-        assert.nestedPropertyVal(error, "cause.capability", "interrupt_restart_steering");
-        assert.equal(yield* sink.latestSequence({ threadId }), sequence);
-        assert.equal(yield* countEffects(sql, threadId), effects);
-        assert.lengthOf((yield* Ref.get(state)).started, 1);
-        assert.lengthOf((yield* Ref.get(state)).interrupted ?? [], 0);
+          .pipe(withOwnerSelectionIngress);
+        yield* Fiber.join(started);
+        yield* worker.drain();
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        const invoked = yield* Ref.get(state);
+        assert.deepEqual(after.thread.modelSelection, initialSelection);
+        assert.equal(after.runs[0]?.id, before.runs[0]?.id);
+        assert.equal(after.runs[0]?.activeAttemptId, before.runs[0]?.activeAttemptId);
+        assert.equal(after.runs[0]?.status, "interrupted");
+        assert.equal(after.runs[1]?.status, "running");
+        assert.lengthOf(after.attempts, 2);
+        assert.lengthOf(invoked.started, 2);
+        assert.lengthOf(invoked.interrupted ?? [], 1);
         assert.lengthOf((yield* Ref.get(state)).steered ?? [], 0);
       }),
     undefined,
@@ -2721,4 +2821,60 @@ it.live("owner unchanged Claude restart intent retains the generic typed refusal
     false,
     { driver: "claude-code", capabilities: ClaudeProviderCapabilitiesV2 },
   ),
+);
+
+it.live.each(["configuration_changed", "execution_changed"] as const)(
+  "registered self-configuration rolls back a %s interleaving at EventSink acceptance",
+  (reason) =>
+    scenario(
+      "self-configure-transaction-race-" + reason,
+      false,
+      ({ threadId, call, sql, state }) =>
+        Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const sink = yield* Sink.EventSinkV2;
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          const evidence = yield* decodeEvidence(
+            (yield* call("t3_thread_configure")).structuredContent,
+          );
+          const sequence = yield* sink.latestSequence({ threadId });
+          const receipts =
+            yield* sql`SELECT * FROM orchestration_command_receipts WHERE aggregate_id = ${threadId} ORDER BY command_id`;
+          const effects =
+            yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} ORDER BY effect_id`;
+          const owner =
+            yield* sql`SELECT * FROM jones_owner_selections WHERE thread_id = ${threadId}`;
+          const response = yield* call("t3_thread_self_configure", {
+            clientRequestId: "interleaved-save",
+            modelSelection: replacement,
+            expectedConfigurationRevision: evidence.configurationRevision,
+            executionPrecondition: evidence.executionPrecondition,
+          });
+          assert.include(failure(response).message, reason);
+          assert.equal(yield* sink.latestSequence({ threadId }), sequence);
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(after.thread, before.thread);
+          assert.deepEqual(after.runs, before.runs);
+          assert.deepEqual(
+            yield* sql`SELECT * FROM orchestration_command_receipts WHERE aggregate_id = ${threadId} ORDER BY command_id`,
+            receipts,
+          );
+          assert.deepEqual(
+            yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId} ORDER BY effect_id`,
+            effects,
+          );
+          assert.deepEqual(
+            yield* sql`SELECT * FROM jones_owner_selections WHERE thread_id = ${threadId}`,
+            owner,
+          );
+          assert.equal((yield* Ref.get(state)).closedSessionCount, 0);
+          assert.lengthOf((yield* Ref.get(state)).started, 1);
+        }),
+      undefined,
+      undefined,
+      false,
+      undefined,
+      false,
+      reason,
+    ),
 );

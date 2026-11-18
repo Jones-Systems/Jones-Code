@@ -26,7 +26,7 @@ vi.mock(import("@t3tools/client-runtime/state/thread-workflows"), async (origina
 });
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
-  useThreadProjection: (() => ({ projection: state.projection })) as never,
+  useQuietThreadProjection: (() => ({ projection: state.projection })) as never,
 }));
 vi.mock(import("../../state/server"), async (original) => {
   const actual = await original();
@@ -148,6 +148,7 @@ async function render(props: Partial<React.ComponentProps<typeof QueuedRunsContr
       onOpenThread={() => undefined}
       onEditQueuedRun={() => undefined}
       onCancelEdit={() => undefined}
+      onImageExpand={() => undefined}
       {...props}
     />,
     { router: false },
@@ -286,7 +287,25 @@ describe("queue header batch action", () => {
       setupTest();
       const projection = state.projection as OrchestrationV2ThreadProjection;
       if (condition === "pending question")
-        state.projection = { ...projection, runtimeRequests: [{ status: "pending" }] };
+        state.projection = {
+          ...projection,
+          runtimeRequests: [
+            {
+              id: "request:test",
+              status: "pending",
+              kind: "user_input",
+              responseCapability: { type: "live" },
+              createdAt: DateTime.makeUnsafe("2026-10-20T12:00:00Z"),
+            },
+          ],
+          turnItems: [
+            {
+              type: "user_input_request",
+              requestId: "request:test",
+              questions: [{ id: "q1", header: "Choice", question: "Which option?", options: [] }],
+            },
+          ],
+        };
       if (condition === "ended turn") state.projection = { ...projection, providerTurns: [] };
       if (condition === "restart only")
         state.projection = {

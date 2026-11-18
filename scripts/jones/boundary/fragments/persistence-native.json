@@ -164,6 +164,34 @@
     {
       "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
       "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecution.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/servicePreflight.ts",
+      "to": "apps/server/src/jones/persistence/JonesMigrations.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeStartAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/jones/persistence/migrationHistory.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Migrations.ts",
+      "to": "apps/server/src/jones/persistence/JonesMigrationGuard.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.ts",
+      "to": "apps/server/src/jones/persistence/JonesMigrations.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeStartAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/vcs/GitVcsDriverCore.ts",
+      "to": "apps/server/src/jones/nativeCreation/worktreeObservation/ObservedBranchRename.ts"
     }
   ]
 }

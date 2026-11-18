@@ -100,7 +100,7 @@ it.effect("JE-08: linked MCP delivery commits once in B, never in A or unrelated
         clientRequestId: "je08-stable-delivery",
       };
       const sent = yield* a.call("t3_thread_send", input, threadId);
-      expect(sent.isError).toBe(false);
+      expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
       const result = yield* decodeThreadSendResult(sent.structuredContent);
       const committed = yield* b.orchestrator.getThreadProjection(threadId);
       expect(committed.messages).toHaveLength(1);

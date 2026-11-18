@@ -66,6 +66,7 @@ const setup = Effect.gen(function* () {
   const project = yield* decodeProjectRow({
     projectId: "project",
     title: "Synthetic project",
+    hasCustomTitle: true,
     workspaceRoot: "/synthetic/project",
     defaultModelSelection: null,
     defaultThreadEnvMode: null,

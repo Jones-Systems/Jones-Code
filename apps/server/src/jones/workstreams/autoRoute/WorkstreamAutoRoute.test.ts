@@ -18,6 +18,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Config from "../../../config.ts";
+import * as SupersededTerminalTrace from "../../orchestration/SupersededTerminalTrace.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import * as Threads from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Queue from "../../../orchestration-v2/QueueCompatibility.ts";
@@ -382,7 +383,9 @@ it.effect("an accepted HTTP compatibility dispatch reaches the durable routing w
               Layer.mergeAll(
                 Layer.succeed(AutoRoute.WorkstreamAutoRoute, router),
                 Layer.mock(Launch.ThreadLaunchService)({}),
-                Layer.mock(Sink.EventSinkV2)({}),
+                Layer.mock(Sink.EventSinkV2)({
+                  supersededTerminalTrace: SupersededTerminalTrace.make(),
+                }),
                 Layer.mock(Outbox.EffectOutboxV2)({}),
                 Layer.mock(Clones.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
                 Layer.mock(Projects.ProjectService)({}),

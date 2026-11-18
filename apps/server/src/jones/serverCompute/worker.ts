@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off preferSchemaOverJson:off -- Hidden entry is the native callback/runtime boundary with a closed bootstrap decoder.
 import type * as EffectTypes from "effect/Effect";
 import type * as ScopeTypes from "effect/Scope";
+import * as NodeNet from "node:net";
+import { CurrentProbeOwner, SearchProbeClient, WorkspaceSearchProbe } from "./searchProbeClient.ts";
 import * as NodeWorkerThreads from "node:worker_threads";
 import * as NodePath from "node:path";
 import * as NodeV8 from "node:v8";
@@ -140,13 +142,36 @@ export class WorkerReplies {
   }
   async failure(cause: unknown, signal: AbortSignal): Promise<void> {
     this.replyStartedMs ??= this.now();
+    const scanTimedOut =
+      typeof cause === "object" &&
+      cause !== null &&
+      "_tag" in cause &&
+      cause._tag === "WorkspaceSearchIndexScanTimedOut";
+    // Workspace error wrappers retain probe failures at the native boundary.
+    // Fatal protocol and oversize categories must keep the existing compute ABI.
+    for (
+      let depth = 0;
+      depth < 3 &&
+      typeof cause === "object" &&
+      cause !== null &&
+      "cause" in cause &&
+      "_tag" in cause &&
+      String(cause._tag).startsWith("WorkspaceSearchIndex");
+      depth++
+    ) {
+      cause = cause.cause;
+    }
     const tag =
       typeof cause === "object" && cause !== null && "_tag" in cause ? cause._tag : undefined;
     // Protocol/ownership uncertainty is fatal: the parent must prove process exit before reuse.
-    if (tag === "ComputeFailure" && (cause as { reason?: string }).reason === "protocol")
+    if (
+      (tag === "ComputeFailure" || tag === "SearchGitProbeFailure") &&
+      (cause as { reason?: string }).reason === "protocol"
+    )
       throw cause;
     const oversize =
-      tag === "ComputeFailure" && (cause as { reason?: string }).reason === "oversize";
+      (tag === "ComputeFailure" || tag === "SearchGitProbeFailure") &&
+      (cause as { reason?: string }).reason === "oversize";
     // Keep the same aggregate counter; reserved terminal bytes make a partial result an explicit failure.
     await this.send({
       type: "failure",
@@ -159,7 +184,7 @@ export class WorkerReplies {
             : this.request.operation === "refresh" || this.request.operation === "refreshContent"
               ? "finder-refresh"
               : "finder-search",
-      scanTimedOut: tag === "WorkspaceSearchIndexScanTimedOut",
+      scanTimedOut: scanTimedOut || tag === "WorkspaceSearchIndexScanTimedOut",
     });
   }
   async settle(): Promise<void> {
@@ -271,12 +296,17 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
     }),
   );
   // GO was issued only after the parent durably registered this captured child PID.
-  const [{ make }, Effect, Scope, Exit] = await Promise.all([
+  const [{ make }, Effect, Scope, Exit, NodeFileSystem, EffectNodePath, Layer] = await Promise.all([
     import("../workspace/nativeSearchRuntime.ts"),
     import("effect/Effect"),
     import("effect/Scope"),
     import("effect/Exit"),
+    import("@effect/platform-node/NodeFileSystem"),
+    import("@effect/platform-node/NodePath"),
+    import("effect/Layer"),
   ]);
+  // Only filesystem/path services enter the child; no VCS, process runner or spawner.
+  const nativePlatform = Layer.merge(NodeFileSystem.layer, EffectNodePath.layer);
   guardian.postMessage({
     type: "nativeReady",
     heapLimit,
@@ -294,6 +324,11 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
     if (result._tag === "Failure") throw result.failure;
     return result.success;
   };
+  const probeClient = new SearchProbeClient(
+    boot,
+    new NodeNet.Socket({ fd: 4, readable: true, writable: true }),
+    () => process.kill(process.pid, "SIGKILL"),
+  );
   type Native = EffectTypes.Success<ReturnType<typeof make>>;
   // Scope carries native destruction. No parent-side native instance exists.
   const residents = new Map<
@@ -338,6 +373,16 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
       job.controller.abort();
       pendingCancellation = undefined;
     }
+    const executeRequest = <A, E>(effect: EffectTypes.Effect<A, E>) =>
+      execute(
+        effect.pipe(
+          Effect.provideService(CurrentProbeOwner, {
+            kind: "foreground",
+            requestId: request.requestId,
+          }),
+        ),
+        job.controller.signal,
+      );
     try {
       const { output, status } = await job.replies.execute(async () => {
         job.controller.signal.throwIfAborted();
@@ -353,11 +398,12 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
           }
           const scope = await Effect.runPromise(Scope.make());
           try {
-            const runtime = await execute(
+            const runtime = await executeRequest(
               make(key.cwd, key.variant, createOptions).pipe(
+                Effect.provide(nativePlatform),
                 Effect.provideService(Scope.Scope, scope),
+                Effect.provideService(WorkspaceSearchProbe, probeClient.forToken(request.token)),
               ),
-              job.controller.signal,
             );
             resident = { token: request.token, key, scope, runtime };
             residents.set(request.token.keyId, resident);
@@ -372,30 +418,28 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
         let output: Output | undefined;
         switch (request.operation) {
           case "list":
-            output = await execute(resident.runtime.list(), job.controller.signal);
+            output = await executeRequest(resident.runtime.list());
             break;
           case "search": {
             const input = request.input as WorkspaceJobs["search"]["input"];
-            output = await execute(
+            output = await executeRequest(
               resident.runtime.search(input.query, input.limit, input.kind, input.imageOnly),
-              job.controller.signal,
             );
             break;
           }
           case "searchContents":
-            output = await execute(
+            output = await executeRequest(
               resident.runtime.searchContents(
                 request.input as WorkspaceJobs["searchContents"]["input"],
               ),
-              job.controller.signal,
             );
             break;
           case "refresh":
-            await execute(resident.runtime.refresh(), job.controller.signal);
+            await executeRequest(resident.runtime.refresh());
             break;
           case "refreshContent":
             if (resident.key.variant !== "content") throw computeFailure("protocol");
-            await execute(resident.runtime.refreshContent(), job.controller.signal);
+            await executeRequest(resident.runtime.refreshContent());
             break;
           case "close":
             // Close is diagnostic teardown only; the allocation tombstone survives until process exit.
@@ -409,7 +453,7 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
         let status: ScanStatus | undefined;
         if (request.operation !== "close") {
           try {
-            status = resident.runtime.status();
+            status = await resident.runtime.status();
           } catch {
             throw computeFailure("protocol");
           }

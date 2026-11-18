@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../orchestration/threadMetadataReads.ts";
 import * as InProcessMcp from "../../mcp/McpHttpServer.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -73,13 +74,7 @@ it.live(
           );
         }).pipe(Effect.provide(NodeServices.layer));
         const raw = JSON.parse(JSON.stringify(yield* decodeProviderReplayNdjson(fixture)));
-        const secondIndex = raw.entries.findIndex(
-          (entry: { type: string; frame?: { id?: number; method?: string } }) =>
-            entry.type === "expect_outbound" &&
-            entry.frame?.method === "turn/start" &&
-            entry.frame.id === 4,
-        );
-        const first = raw.entries.find(
+        const [first, second] = raw.entries.filter(
           (entry: { type: string; frame?: { method?: string } }) =>
             entry.type === "expect_outbound" && entry.frame?.method === "turn/start",
         );
@@ -94,8 +89,6 @@ it.live(
             developer_instructions: "<ignored>",
           },
         };
-        const second = raw.entries[secondIndex];
-        second.frame.id = 5;
         second.frame.params = {
           ...second.frame.params,
           model: selection.model,
@@ -114,23 +107,33 @@ it.live(
           { model: selection.model, reasoningEffort: "high" },
           { browser: true, device: false },
         );
-        raw.entries[secondIndex + 1].frame.id = 5;
-        const startResult = raw.entries.find(
-          (entry: { type: string; frame?: { id?: number; result?: unknown } }) =>
-            entry.type === "emit_inbound" && entry.frame?.id === 2,
-        ).frame.result;
+        const threadStart = raw.entries.find(
+          (entry: { type: string; label?: string }) =>
+            entry.type === "emit_inbound" && entry.label === "thread/start",
+        );
+        const resumeIndex = raw.entries.findLastIndex(
+          (entry: { type: string; label?: string }) =>
+            entry.type === "expect_outbound" && entry.label === "config/read",
+        );
+        const resumeId = raw.entries[resumeIndex].frame.id;
+        // The saved selection resumes the thread before reading the second turn's config.
+        for (const entry of raw.entries.slice(resumeIndex)) {
+          if (typeof entry.frame?.id === "number") entry.frame.id += 1;
+        }
         raw.entries.splice(
-          secondIndex,
+          resumeIndex,
           0,
           {
             type: "expect_outbound",
             label: "thread/resume",
             frame: {
-              id: 4,
+              id: resumeId,
               method: "thread/resume",
               params: {
                 threadId: second.frame.params.threadId,
                 excludeTurns: true,
+                cwd,
+                model: selection.model,
                 config: {
                   "tools.update_plan.enabled": true,
                   mcp_optional_startup_grace_ms: 10000,
@@ -139,7 +142,11 @@ it.live(
               },
             },
           },
-          { type: "emit_inbound", label: "thread/resume", frame: { id: 4, result: startResult } },
+          {
+            type: "emit_inbound",
+            label: "thread/resume",
+            frame: { id: resumeId, result: threadStart.frame.result },
+          },
         );
         const transcript = yield* Codex.CodexOrchestratorReplayHarness.decodeTranscript(
           materializeReplayTranscriptWorkspace(raw, cwd),
@@ -217,6 +224,7 @@ it.live(
           Mcp.layerThreadSelfConfigurationToolkit,
         ).pipe(
           Layer.provide(service),
+          Layer.provide(ThreadMetadataReads.layer),
           Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
           Layer.provide(NodeCrypto.layer),
           Layer.provide(runtime),

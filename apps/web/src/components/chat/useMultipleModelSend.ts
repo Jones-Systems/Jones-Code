@@ -1,3 +1,4 @@
+import { withMessageContext } from "../../jones/composer/messageContext";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { pendingNewThread } from "../../jones/pendingSends/newThread";
 import { pendingSends } from "../../jones/pendingSends/store";
@@ -39,7 +40,6 @@ import {
   optimisticMessageAttachments,
   type ComposerSendSnapshot,
   type makeThreadErrorSetter,
-  withMessageContext,
 } from "../ChatView.logic";
 import {
   draftFanoutSelectionsAtom,
@@ -104,6 +104,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     readFileBlockReason,
     buildOutgoingMessageContext,
     isCurrentSend,
+    draftChangedDuringPreparation,
     submittedComposerDraft,
     onNewThreadAccepted,
   }: {
@@ -123,6 +124,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     ) => ReturnType<typeof buildMessageContext>;
     /** False once a newer send from this composer started. */
     readonly isCurrentSend: () => boolean;
+    readonly draftChangedDuringPreparation: () => boolean;
     readonly onNewThreadAccepted?: ((thread: ScopedThreadRef) => void) | undefined;
   }) => {
     const { attachments: attachmentsSnapshot, messageText } = sendSnapshot;
@@ -170,6 +172,8 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     // fails every selection; the draft restore below still runs.
     const sendResult = await settlePromise(async () => {
       const attachments = await attachmentsPromise;
+      if (draftChangedDuringPreparation())
+        throw new Error("Draft changed while preparing this message. Review it and send again.");
       const fileBlockReason = readFileBlockReason();
       if (fileBlockReason !== null) throw new Error(fileBlockReason);
       const context = buildOutgoingMessageContext(
@@ -230,6 +234,9 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                     ...withMessageContext({
                       text: target.text,
                       context,
+                      supportsInlineMessageContext:
+                        appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)
+                          ?.environment.capabilities.inlineMessageContext === true,
                     }),
                   },
                   modelSelection: target.selection,
@@ -301,10 +308,13 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
       if (clearedDraft) {
         restoreComposerDraft(composerDraftTarget, sendSnapshot);
         if (composerRef.current && currentRouteThreadKeyRef.current === routeThreadKey) {
-          promptRef.current = messageText;
+          promptRef.current = sendSnapshot.draftText;
           composerRef.current.resetCursorState({
-            cursor: collapseExpandedComposerCursor(messageText, messageText.length),
-            prompt: messageText,
+            cursor: collapseExpandedComposerCursor(
+              sendSnapshot.draftText,
+              sendSnapshot.draftText.length,
+            ),
+            prompt: sendSnapshot.draftText,
             detectTrigger: true,
           });
         }

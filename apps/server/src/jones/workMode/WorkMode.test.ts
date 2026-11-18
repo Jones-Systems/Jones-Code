@@ -45,6 +45,7 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -1522,7 +1523,7 @@ it.effect.each(["after-probe", "during-snapshot"] as const)(
       const walDependencies = Layer.mergeAll(
         walStores,
         ServerSettings.layerTest({ workModeEnabled: true }).pipe(Layer.orDie),
-        Layer.mock(Orchestrator.OrchestratorV2)({}),
+        Layer.mock(Orchestrator.OrchestratorV2)(unusedCorePorts()),
         Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
       );
       yield* Effect.gen(function* () {

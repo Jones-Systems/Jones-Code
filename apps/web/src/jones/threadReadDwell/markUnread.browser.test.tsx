@@ -1,8 +1,12 @@
 import { act, render as renderTest, type Screen, fakeTimers } from "../../../test/render";
 
+import { RegistryContext } from "@effect/atom-react";
 import { expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
+import * as Cause from "effect/Cause";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { makeThreadFixture } from "../../test-fixtures";
 import { useUiStateStore } from "../../uiStateStore";
 import type { SidebarThreadSummary } from "../../types";
@@ -39,8 +43,22 @@ vi.mock(
         command === state.visitCommand ? state.visit : state.unread,
     }) as never,
 );
+vi.mock(
+  import("../../connection/catalog"),
+  () =>
+    ({
+      environmentCatalog: {
+        sessionGenerationAtom: (environmentId: string) => sessionGeneration(environmentId),
+      },
+    }) as never,
+);
 import { ThreadVisitWatermark } from "../../components/chat/ThreadVisitWatermark";
 import { useMarkThreadUnread } from "./useMarkThreadUnread";
+
+// Each test's registry owns the connection sessions its environments have seen.
+const sessionGeneration = Atom.family((_environmentId: string) =>
+  Atom.make(0).pipe(Atom.keepAlive),
+);
 
 const updatedAt = "2026-10-17T12:00:00.000Z";
 const earlier = "2026-10-17T11:00:00.000Z";
@@ -60,6 +78,7 @@ const thread = makeThreadFixture({
 });
 let root: Screen;
 let container: HTMLDivElement;
+let registry = AtomRegistry.make();
 function Viewing({ selected }: { selected: SidebarThreadSummary }) {
   const markUnread = useMarkThreadUnread();
   const threadRef = scopeThreadRef(selected.environmentId, selected.id);
@@ -73,10 +92,18 @@ function Viewing({ selected }: { selected: SidebarThreadSummary }) {
 const render = async (next = thread) =>
   await act(async () => {
     state.thread = next;
-    await root.rerender(<Viewing selected={next} />);
+    await root.rerender(
+      <RegistryContext.Provider value={registry}>
+        <Viewing selected={next} />
+      </RegistryContext.Provider>,
+    );
   });
 const advance = async (ms: number) => await act(async () => vi.advanceTimersByTime(ms));
 const markUnread = async () => await act(async () => container.querySelector("button")!.click());
+const reconnect = async (environmentId: EnvironmentId) =>
+  await act(async () =>
+    registry.update(sessionGeneration(environmentId), (generation) => generation + 1),
+  );
 async function setupTest(): Promise<AsyncDisposable> {
   let testTimers: Disposable | undefined;
   let initialized = false;
@@ -88,6 +115,7 @@ async function setupTest(): Promise<AsyncDisposable> {
       try {
         await screen?.[Symbol.asyncDispose]();
       } finally {
+        registry.dispose();
         vi.useRealTimers();
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
@@ -101,9 +129,10 @@ async function setupTest(): Promise<AsyncDisposable> {
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     state.supportsVisits = true;
-    state.visit.mockClear();
+    state.visit.mockReset().mockResolvedValue(AsyncResult.success(undefined));
     state.unread.mockClear();
     useUiStateStore.setState({ threadLastVisitedAtById: {} });
+    registry = AtomRegistry.make();
     container = document.createElement("div");
     root = await renderTest(null, { container: container, router: false });
     initialized = true;
@@ -163,4 +192,24 @@ it("cancels on unmount without leaving an automatic visit queued", async () => {
   await act(async () => await root.rerender(null));
   await advance(30_000);
   expect(state.visit).not.toHaveBeenCalled();
+});
+it("keeps explicit unread over a visit rejected after it, through reconnects and activity", async () => {
+  await using _fixture = await setupTest();
+  let reject: () => void = () => undefined;
+  state.visit.mockReturnValueOnce(
+    new Promise<AtomCommandResult<void, string>>((resolve) => {
+      reject = () => resolve(AsyncResult.failure(Cause.fail("disconnected")));
+    }),
+  );
+  await render();
+  await advance(3000);
+  expect(state.visit).toHaveBeenCalledTimes(1);
+  await markUnread();
+  await act(async () => reject());
+  await reconnect(thread.environmentId);
+  await render({ ...thread, updatedAt: "2026-10-17T12:00:10.000Z" });
+  await reconnect(thread.environmentId);
+  await advance(30_000);
+  expect(state.unread).toHaveBeenCalledOnce();
+  expect(state.visit).toHaveBeenCalledTimes(1);
 });

@@ -21,7 +21,11 @@ const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const ProbeToolkit = Toolkit.make(
   Tool.make(LINKED_MCP_PROBE_TOOL, {
     description: "Synthetic mutation routed through the real admission wrapper.",
-    parameters: Schema.Record(Schema.String, Schema.Unknown),
+    parameters: Schema.Struct({
+      marker: Schema.optionalKey(Schema.String),
+      clientRequestId: Schema.optionalKey(Schema.String),
+      message: Schema.optionalKey(Schema.String),
+    }),
     success: Schema.Unknown,
     failure: OrchestratorMcpFailure,
     failureMode: "return",

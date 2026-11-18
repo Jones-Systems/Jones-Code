@@ -52,6 +52,9 @@ const invariant = (input: OrdinaryPreflight | Checkout.Accept) => {
 export class CheckoutConflictIntegration extends Context.Service<
   CheckoutConflictIntegration,
   {
+    readonly prepareTargetValidation: (
+      keys: readonly string[],
+    ) => Effect.Effect<Effect.Effect<void, CheckoutError>, CheckoutError>;
     readonly prepareOrdinary: (
       preflight: readonly OrdinaryPreflight[],
     ) => Effect.Effect<CommitOrdinary, CheckoutError>;
@@ -125,6 +128,8 @@ const make = Effect.gen(function* () {
     UNION ALL SELECT 'legacy',lease_id,resource_path,NULL FROM worktree_ownership_leases
     ORDER BY kind,id,target`;
   const prepareForeign = Effect.gen(function* () {
+    if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
+      return yield* new CheckoutError({ reason: "unavailable" });
     const rows = yield* foreignRows();
     const keys: string[] = [];
     for (const row of rows) {
@@ -262,6 +267,18 @@ const make = Effect.gen(function* () {
   });
   return CheckoutConflictIntegration.of({
     prepareOrdinary,
+    prepareTargetValidation: Effect.fn("CheckoutConflictIntegration.prepareTargetValidation")(
+      function* (keys: readonly string[]) {
+        const snapshot = yield* prepareForeign;
+        const frozen = [...keys];
+        return Effect.gen(function* () {
+          if (Option.isNone(yield* Effect.serviceOption(sql.transactionService)))
+            return yield* new CheckoutError({ reason: "unavailable" });
+          yield* assertForeign(snapshot, frozen);
+        }).pipe(Effect.mapError(checkoutError));
+      },
+      Effect.mapError(checkoutError),
+    ),
     prepareHandoff: Effect.fn("CheckoutConflictIntegration.prepareHandoff")(function* (input) {
       const snapshot = yield* prepareForeign;
       const expected = canonical(input);

@@ -1,6 +1,7 @@
 import * as OrchestrationHttpApi from "./http.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { EventSinkV2 } from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import { describe, expect, it } from "vite-plus/test";
 import * as Context from "effect/Context";
 
@@ -116,7 +117,7 @@ function fixture(
         Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
           getEnvironmentId: Effect.succeed(EnvironmentId.make("environment:goal-http")),
         }),
-        Layer.mock(EventSinkV2)({}),
+        Layer.mock(EventSinkV2)({ supersededTerminalTrace: SupersededTerminalTrace.make() }),
         SqlitePersistence.layerMemory,
         Layer.mock(ThreadManagement.ThreadManagementService)({}),
         Layer.mock(ProjectStore.ProjectStoreV2)({}),

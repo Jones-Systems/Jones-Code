@@ -37,6 +37,21 @@ it.each([1])("blocks legacy launcher protocol %i with exact recovery steps", (la
   expect(reason).toContain("which -a t3");
 });
 
+// regression: #34502 every installed launcher was protocol 3, so protocol 4 blocked every remote update
+it.each([3, SERVICE_LAUNCHER_PROTOCOL])(
+  "is ready under launcher protocol %i and reports it back",
+  (launcherProtocol) => {
+    // A released server accepts a ready result only when it names that server's own protocol.
+    expect(
+      runServicePreflight({
+        databasePath: "/missing/state.sqlite",
+        launcherProtocol,
+        version: "9.8.7",
+      }),
+    ).toEqual({ status: "ready", version: "9.8.7", launcherProtocol });
+  },
+);
+
 it.layer(NodeServices.layer)("service preflight database", (it) => {
   it.effect("blocks a database that a newer build migrated", () =>
     Effect.gen(function* () {
@@ -55,6 +70,37 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
 
       expect(preflight().status).toBe("ready");
       expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
+
+      db.prepare("UPDATE effect_sql_migrations SET name = ? WHERE migration_id = ?").run(
+        "ForkMigration",
+        BUILD_MIGRATION_HEAD,
+      );
+      const conflict = preflight();
+      expect(conflict.status).toBe("blocked");
+      expect(conflict.status === "blocked" ? conflict.reason : "").toContain("ForkMigration");
+      db.prepare("UPDATE effect_sql_migrations SET name = ? WHERE migration_id = ?").run(
+        migrationManifest.at(-1)![1],
+        BUILD_MIGRATION_HEAD,
+      );
+
+      // Startup reconciles this V2 preview history, so it must not block an update.
+      const preview = path.join(path.dirname(databasePath), "preview.sqlite");
+      const previewDb = new NodeSqlite.DatabaseSync(preview);
+      previewDb.exec(
+        "CREATE TABLE effect_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)",
+      );
+      const insertPreview = previewDb.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
+      for (const [id, name] of migrationManifest.filter(([id]) => id < 53)) {
+        insertPreview.run(id, name);
+      }
+      insertPreview.run(53, "PullRequestFilesViewed");
+      insertPreview.run(54, "OrchestrationV2");
+      insertPreview.run(55, "RemoveRedundantProjectionIndexes");
+      previewDb.close();
+      expect(
+        runServicePreflight({ databasePath: preview, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL })
+          .status,
+      ).toBe("ready");
 
       const newerId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
       insert.run(newerId, "FromNightly");
@@ -215,4 +261,34 @@ it("preserves a bound candidate database blocker before stopping the active serv
       }),
     }),
   ).toBe("Candidate older than this database (Jones migration 105).");
+});
+
+it.layer(NodeServices.layer)("independent candidate ledgers", (it) => {
+  it.effect("blocks unknown Jones history even when the upstream ledger is absent", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const databasePath = path.join(
+        yield* fs.makeTempDirectoryScoped({ prefix: "s1-preflight-jones-" }),
+        "statev2.sqlite",
+      );
+      const db = new NodeSqlite.DatabaseSync(databasePath);
+      try {
+        db.exec(
+          "CREATE TABLE jones_sql_migrations(migration_id INTEGER PRIMARY KEY, name TEXT); INSERT INTO jones_sql_migrations VALUES (999, 'UnknownJones')",
+        );
+      } finally {
+        db.close();
+      }
+      const before = yield* fs.readFile(databasePath);
+      const result = runServicePreflight({
+        databasePath,
+        launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+        version: "candidate",
+      });
+      expect(result.status).toBe("blocked");
+      if (result.status === "blocked") expect(result.reason).toContain("Jones migration 999");
+      expect(yield* fs.readFile(databasePath)).toEqual(before);
+    }).pipe(Effect.scoped),
+  );
 });

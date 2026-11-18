@@ -4,6 +4,7 @@ import { ProviderInstanceId, type ModelSelection, type ServerProvider } from "@t
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import { resolveRemoteEvaluationModel } from "./remoteEvaluationModel.ts";
 import * as TextGeneration from "../TextGeneration.ts";
@@ -94,6 +95,7 @@ it.effect(
         Effect.provide(
           Layer.mergeAll(
             ServerSettings.layerTest(),
+            ProviderInstallationGate.layer,
             Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),
           ),
         ),

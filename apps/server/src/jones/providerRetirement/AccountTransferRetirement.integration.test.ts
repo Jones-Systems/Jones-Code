@@ -10,10 +10,12 @@ import {
   type OrchestrationV2ThreadProjection,
   ProjectId,
   ProviderInstanceId,
+  ProviderSessionId,
   type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { runtimeBinding } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -26,7 +28,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
-import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -288,6 +289,7 @@ const scenario = (
         }),
       ),
       Layer.provide(Layer.succeed(HostProcess.HomeDirectory, homePath)),
+      Layer.provide(PortScanner.layerTest),
     );
     const firstAttempt = yield* Deferred.make<Outbox.OrchestrationEffectV2>();
     let sourceRunId: string | undefined;
@@ -343,29 +345,12 @@ const scenario = (
       stage: string,
       predicate: (traces: ReadonlyArray<typeof Trace.Type>) => boolean,
     ) {
-      return yield* Effect.gen(function* () {
-        const random = yield* SecureRandom.SecureRandom;
-        const probe = path.join(stateDir, `watch-ready-${yield* random.uuidV4()}`);
-        yield* Effect.acquireRelease(fs.writeFileString(probe, "", { flag: "wx" }), () =>
-          fs.remove(probe).pipe(Effect.orDie),
-        );
-        const changes = yield* Stream.toQueue(fs.watch(stateDir), {
-          capacity: 1,
-          strategy: "sliding",
-        });
-        // FileSystem.watch registers asynchronously; observe an event before the first snapshot.
-        yield* Effect.raceFirst(
-          Queue.take(changes),
-          Stream.tick("10 millis").pipe(
-            Stream.runForEach(() => fs.writeFileString(probe, "SYNTHETIC_WATCH_READY\n")),
-          ),
-        );
-        while (true) {
-          const traces = yield* readTraces();
-          if (predicate(traces)) return traces;
-          yield* Queue.take(changes);
-        }
-      }).pipe(
+      // A directory watch can miss appends to an existing peer trace on macOS.
+      return yield* Stream.tick("50 millis").pipe(
+        Stream.mapEffect(readTraces),
+        Stream.filter(predicate),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
         Effect.timeout("45 seconds"),
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
@@ -385,7 +370,7 @@ const scenario = (
           }),
         ),
       );
-    }, Effect.scoped);
+    });
     const attribution = yield* ProcessAttribution.ProcessAttribution;
     yield* Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -461,17 +446,48 @@ const scenario = (
       )!.processId;
       const target = { ...initialSelection, instanceId: instanceId("B") };
       if (mode === "foreign") {
-        // An ordinary unsubscribe intentionally leaves the synthetic holder alive until closure.
-        yield* sessions.detach({ providerSessionId: sourceThread.providerSessionId!, threadId });
+        const lockPath = path.join(stateDir, `lock-${nativeId}`);
+        yield* select("B", "synthetic:foreign-B");
         yield* awaitTrace("source unsubscribe", (traces) =>
           traces.some(
-            (trace) =>
-              trace.method === "synthetic/unsubscribe" && trace.processId === sourceProcess,
+            (row) => row.processId === sourceProcess && row.method === "synthetic/unsubscribe",
           ),
         );
-        const lockPath = path.join(stateDir, `lock-${nativeId}`);
+        yield* fs.writeFileString(path.join(stateDir, `close-${nativeId}`), "SYNTHETIC_CLOSE\n");
+        const generation = sourceThread.runtimeIdentity?.runtimeGeneration;
+        assert.isDefined(generation);
+        const binding = runtimeBinding(sourceThread, generation!)!;
+        const proof = yield* sessions.captureThreadRetirement!(binding);
+        assert.isNotNull(proof);
+        assert.deepEqual((yield* proof!.awaitRetired).binding, binding);
+        assert.isFalse(yield* fs.exists(lockPath));
+
+        // An independent synthetic process takes the native lock after the original writer retires.
+        const foreign = yield* clientFactory.open({
+          instanceId: instanceId("C"),
+          threadId,
+          providerSessionId: ProviderSessionId.make("synthetic-independent-writer"),
+          runtimePolicy: { cwd, runtimeMode: "full-access", interactionMode: "default" },
+          settings: yield* decodeSettings({
+            binaryPath: peerPath,
+            homePath,
+            launchArgs: `--state-dir ${JSON.stringify(stateDir)} --account C`,
+          }),
+          environment: {
+            HOME: homePath,
+            PATH: `${path.dirname(realNode)}${delimiter}/usr/bin${delimiter}/bin`,
+          },
+        });
+        yield* foreign.raw.request("thread/resume", { threadId: nativeId });
+        const foreignTrace = (yield* readTraces()).find(
+          (row) =>
+            row.instance === "C" &&
+            row.method === "thread/resume" &&
+            row.nativeThreadId === nativeId,
+        )!;
         const holder = yield* fs.readFileString(lockPath);
-        yield* select("B", "synthetic:foreign-B");
+        assert.equal(JSON.parse(holder).processId, foreignTrace.processId);
+        assert.notEqual(foreignTrace.processId, sourceProcess);
         yield* dispatch("SYNTHETIC_FOREIGN");
         yield* awaitProjection(
           threadId,
@@ -484,12 +500,20 @@ const scenario = (
         );
         assert.equal(yield* fs.readFileString(lockPath), holder);
         assert.isTrue(
-          (yield* readTraces()).some((trace) => trace.method === "synthetic/writer-refused"),
+          (yield* readTraces()).some(
+            (row) =>
+              row.instance === "B" &&
+              row.method === "synthetic/writer-refused" &&
+              row.nativeThreadId === nativeId,
+          ),
         );
-        yield* fs.writeFileString(path.join(stateDir, `close-${nativeId}`), "SYNTHETIC_CLOSE\n");
+        yield* foreign.raw.request("thread/unsubscribe", { threadId: nativeId });
         yield* awaitTrace("foreign writer closed", (traces) =>
           traces.some(
-            (trace) => trace.method === "synthetic/closed" && trace.processId === sourceProcess,
+            (row) =>
+              row.method === "synthetic/closed" &&
+              row.processId === foreignTrace.processId &&
+              row.nativeThreadId === nativeId,
           ),
         );
         yield* dispatch("SYNTHETIC_RETRY");

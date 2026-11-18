@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as TestClock from "effect/testing/TestClock";
-import type { PullRequestReaction } from "@t3tools/contracts";
+import { SourceControlProviderKind, type PullRequestReaction } from "@t3tools/contracts";
 
 import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
@@ -15,20 +15,22 @@ import type {
 import { gitHubViewerPermissions, loginAvatarUrl, make } from "./GitHubPullRequestProvider.ts";
 import type { GitHubReviewThreadComments } from "./gitHubPullRequestJson.ts";
 
-const observeChecks: GitHubPullRequestApi.GitHubPullRequestApi["Service"]["getPullRequestCheckObservation"] =
-  (input) =>
-    Effect.succeed({
-      headSha: input.headSha ?? "abc123",
-      checks: input.checks,
+const getPullRequestCheckObservation: GitHubPullRequestApi.GitHubPullRequestApi["Service"]["getPullRequestCheckObservation"] =
+  ({ headSha, checks }) => {
+    const sha = headSha ?? "abc123";
+    return Effect.succeed({
+      headSha: sha,
+      checks,
       jonesCheckObservation: {
-        headSha: input.headSha ?? "abc123",
-        enumerationComplete: true,
-        workflowState: "complete",
+        headSha: sha,
+        enumerationComplete: false,
+        workflowState: "unknown",
         requiredSetKnown: false,
         requiredState: "unknown",
         requiredChecks: [],
       },
     });
+  };
 
 const coreFields = {
   maintainerCanModify: true,
@@ -54,7 +56,6 @@ it.effect("maps credential verification failures without relabeling operation fa
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
-          getPullRequestCheckObservation: observeChecks,
           withVerifiedCredential: (_input, use) =>
             verificationFails
               ? Effect.fail(
@@ -298,7 +299,8 @@ describe("gitHubViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
-          getPullRequestCheckObservation: observeChecks,
+          getPullRequestCheckObservation,
+          listUnfinishedWorkflowRuns: () => Effect.succeed([]),
           getPullRequestDetail: () =>
             Effect.succeed({
               ...coreFields,
@@ -396,7 +398,7 @@ describe("gitHubViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
-          getPullRequestCheckObservation: observeChecks,
+          getPullRequestCheckObservation,
           getPullRequestDetail: () =>
             Effect.succeed({
               ...coreFields,
@@ -437,6 +439,7 @@ describe("gitHubViewerPermissions", () => {
               comments: [],
               commits: [],
             }),
+          listUnfinishedWorkflowRuns: () => Effect.succeed([]),
           listWorkflowRunsRequiringApproval: () =>
             Effect.succeed([
               {
@@ -492,7 +495,17 @@ const openDetail = {
   commits: [],
 };
 
-it.effect("does not classify same-repository gates as fork workflow approvals", () =>
+const sameRepositoryChecks = [
+  { name: "CodeRabbit", status: "skipped" as const, description: null, url: null },
+  {
+    name: "lint",
+    status: "pending" as const,
+    description: null,
+    url: "https://github.com/acme/web/actions/runs/201/job/1",
+  },
+];
+
+it.effect("adds unstarted same-repository workflow runs as pending, not as approvals", () =>
   Effect.gen(function* () {
     const provider = yield* make;
     const detail = yield* provider.getChangeRequest({
@@ -503,13 +516,28 @@ it.effect("does not classify same-repository gates as fork workflow approvals", 
     });
 
     expect(detail.workflowApprovalsRequired).toBe(0);
-    expect(detail.checks).toEqual([]);
+    expect(detail.checks).toEqual([
+      ...sameRepositoryChecks,
+      {
+        name: "CI",
+        status: "pending",
+        description: "This workflow run has not finished.",
+        url: "https://github.com/acme/web/actions/runs/202",
+      },
+    ]);
   }).pipe(
     Effect.provide(
       Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
         revalidateChecks: (_input, read) => read,
-        getPullRequestCheckObservation: observeChecks,
-        getPullRequestDetail: () => Effect.succeed({ ...openDetail, isCrossRepository: false }),
+        getPullRequestCheckObservation,
+        getPullRequestDetail: () =>
+          Effect.succeed({ ...openDetail, isCrossRepository: false, checks: sameRepositoryChecks }),
+        // Run 201 is represented by its running job; run 202 is queued before any job exists.
+        listUnfinishedWorkflowRuns: () =>
+          Effect.succeed([
+            { id: 201, name: "Lint", url: "https://github.com/acme/web/actions/runs/201" },
+            { id: 202, name: "CI", url: "https://github.com/acme/web/actions/runs/202" },
+          ]),
         listWorkflowRunsRequiringApproval: () =>
           Effect.die("same-repository pull requests must not probe fork workflow approvals"),
         getViewerAccess: () =>
@@ -550,8 +578,9 @@ it.effect("keeps an unsafe workflow approval scope visible as unknown", () =>
     Effect.provide(
       Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
         revalidateChecks: (_input, read) => read,
-        getPullRequestCheckObservation: observeChecks,
+        getPullRequestCheckObservation,
         getPullRequestDetail: () => Effect.succeed(openDetail),
+        listUnfinishedWorkflowRuns: () => Effect.succeed([]),
         listWorkflowRunsRequiringApproval: () =>
           Effect.fail(
             new GitHubPullRequestApi.GitHubWorkflowApprovalRefusedError({
@@ -592,7 +621,6 @@ describe("getViewerPermissions", () => {
   ) =>
     Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
       revalidateChecks: (_input, read) => read,
-      getPullRequestCheckObservation: observeChecks,
       getPullRequestDetail: () =>
         SourceControlRateLimit.Interactive.pipe(
           Effect.tap((allowReserve) => Effect.sync(() => onDetail(allowReserve))),
@@ -638,7 +666,6 @@ describe("getViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
-          getPullRequestCheckObservation: observeChecks,
           getPullRequestDetail: () =>
             Effect.fail(
               new GitHubPullRequestApi.GitHubPullRequestReadError({
@@ -716,7 +743,6 @@ describe("getChangeRequest commits", () => {
   const layerWith = (commits: GitHubReviewThreadComments["commits"]) =>
     Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
       revalidateChecks: (_input, read) => read,
-      getPullRequestCheckObservation: observeChecks,
       getPullRequestActivity: () =>
         Effect.succeed({
           author: baseDetail.author,
@@ -737,6 +763,7 @@ describe("getChangeRequest commits", () => {
               authors: [],
             },
           ],
+          truncated: false,
         }),
       listReviewThreadComments: () => Effect.succeed({ ...baseThreadComments, commits }),
     });
@@ -786,7 +813,7 @@ describe("getChangeRequest commits", () => {
   );
 });
 
-describe("getChangeRequestActivity dismissed reviews", () => {
+describe("getChangeRequestActivity", () => {
   const dismissedReview = (body: string) => ({
     id: "PRR_1",
     kind: "review" as const,
@@ -816,9 +843,13 @@ describe("getChangeRequestActivity dismissed reviews", () => {
   const layerFor = (body: string) =>
     Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
       revalidateChecks: (_input, read) => read,
-      getPullRequestCheckObservation: observeChecks,
       getPullRequestActivity: () =>
-        Effect.succeed({ author: null, comments: [dismissedReview(body)], commits: [] }),
+        Effect.succeed({
+          author: null,
+          comments: [dismissedReview(body)],
+          commits: [],
+          truncated: false,
+        }),
       listReviewThreadComments: () => Effect.succeed(threadComments),
     });
   const readActivity = Effect.gen(function* () {
@@ -840,6 +871,59 @@ describe("getChangeRequestActivity dismissed reviews", () => {
       }),
       Effect.provide(layerFor("<!-- Macroscope (Approvability) review body marker -->")),
     ),
+  );
+
+  const failingThreadRead = (error: GitHubPullRequestApi.GitHubPullRequestApiError) =>
+    Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
+      getPullRequestActivity: () =>
+        Effect.succeed({ author: null, comments: [], commits: [], truncated: false }),
+      listReviewThreadComments: () => Effect.fail(error),
+    });
+  const retryAt = 1_900_000_000_000;
+
+  it.effect.each([
+    {
+      name: "rate limit",
+      error: new GitHubRequestPolicy.GitHubApiRateLimitError({
+        host: "github.com",
+        operation: "listReviewThreadComments",
+        retryAt,
+      }),
+    },
+    {
+      name: "rate-limit pause",
+      error: new SourceControlRateLimit.SourceControlRateLimitPausedError({
+        provider: SourceControlProviderKind.make("github"),
+        host: "github.com",
+        retryAt,
+      }),
+    },
+  ])("fails rate-limited when the review-thread read hits a $name", ({ error }) =>
+    readActivity.pipe(
+      Effect.flip,
+      Effect.map((failure) => expect(failure).toMatchObject({ reason: "rate-limited", retryAt })),
+      Effect.provide(failingThreadRead(error)),
+    ),
+  );
+
+  it.effect(
+    "keeps activity with truncated threads when the review-thread read fails otherwise",
+    () =>
+      readActivity.pipe(
+        Effect.map((activity) => {
+          expect(activity.reviewThreads).toEqual([]);
+          expect(activity.reviewThreadsTruncated).toBe(true);
+        }),
+        Effect.provide(
+          failingThreadRead(
+            new GitHubRequestPolicy.GitHubApiResponseError({
+              host: "github.com",
+              operation: "listReviewThreadComments",
+              status: 500,
+            }),
+          ),
+        ),
+      ),
   );
 });
 

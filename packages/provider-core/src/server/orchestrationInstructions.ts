@@ -1,12 +1,22 @@
+import type { ProviderInteractionMode } from "@t3tools/contracts";
+
 import {
   JONES_CODE_BROWSER_TOOL_INSTRUCTIONS,
   JONES_CODE_ORCHESTRATION_SECTIONS,
 } from "./jones/OrchestrationInstructions.ts";
-import type { ProviderInteractionMode } from "@t3tools/contracts";
 
 // Codex truncates entries over 4,000 bytes; keep each section self-contained and below that limit.
-export const T3_CODE_ORCHESTRATION_SECTIONS: ReadonlyArray<string> =
-  JONES_CODE_ORCHESTRATION_SECTIONS;
+export const T3_CODE_ORCHESTRATION_SECTIONS: ReadonlyArray<string> = [
+  ...JONES_CODE_ORCHESTRATION_SECTIONS,
+  `Ordinary coding tasks need no T3 tools.
+
+- For a standalone worktree thread, honor a requested base. Otherwise independent work uses the default branch as \`remote/branch\` with \`startFromOrigin:true\`; with no remote, use the local default. Required unpublished commits and dependent work use their local base. Never make a child's checkout in the shell or put checkout setup in its prompt.
+- Asked to settle a thread, this one too: \`t3_thread_organize\`.
+- Unlinked ("delegate this to my vps"): \`t3_environment_link\` with a \`hint\` from the user's words, never a pairing code in chat. No link tools: say to enable Settings → Labs → Linked environments.
+- A login, token, PIN, pairing code or sudo password only the user can give: call \`request_secret\`, not a chat ask or a handoff. Not for access you have. For an authorized sudo command needing a password, use \`delivery: "file"\` and run \`sudo -S -p '' <cmd> < "$file"\`; the password takes stdin, so give other input as a file argument.
+- Provider or model unavailable: say so. Never switch unasked. Fix small review findings yourself; start no delegate for them.
+- Page tools write only on user request. Never use them to show results.`,
+];
 
 export const T3_CODE_ORCHESTRATION_INSTRUCTIONS = `
 
@@ -49,7 +59,7 @@ Investigate with read-only actions and do not edit files or otherwise execute th
 export interface T3AcpInstructionState {
   readonly interactionMode: ProviderInteractionMode;
   readonly hasT3Mcp: boolean;
-  readonly hasDeviceTools?: boolean;
+  readonly hasDeviceTools: boolean;
 }
 
 /** ACP lacks system/developer fields; inject context on first prompt and tool/mode changes. */
@@ -63,7 +73,7 @@ export function t3AcpPromptWithInstructions(input: {
   if (
     input.previousState?.interactionMode === input.state.interactionMode &&
     input.previousState.hasT3Mcp === input.state.hasT3Mcp &&
-    (input.previousState.hasDeviceTools ?? false) === (input.state.hasDeviceTools ?? false)
+    input.previousState.hasDeviceTools === input.state.hasDeviceTools
   ) {
     return input.prompt;
   }
@@ -102,12 +112,10 @@ export function t3OrchestrationPrompt(input: {
 }): string {
   if (!input.hasT3Mcp) return input.prompt;
   if (!input.orchestrationDelivered) {
-    return t3OrchestrationPromptForFirstRun({
-      prompt: input.prompt,
-      runOrdinal: 1,
-      hasT3Mcp: input.hasT3Mcp,
-      hasDeviceTools: input.hasDeviceTools,
-    });
+    return prependT3OrchestrationInstructions(
+      input.prompt,
+      orchestrationInstructions(input.hasDeviceTools),
+    );
   }
   return input.hasDeviceTools && !input.deviceInstructionsDelivered
     ? prependT3OrchestrationInstructions(input.prompt, T3_CODE_DEVICE_TOOL_INSTRUCTIONS)
@@ -116,22 +124,7 @@ export function t3OrchestrationPrompt(input: {
 
 export function t3OrchestrationSystemPrompt(
   hasT3Mcp: boolean,
-  hasDeviceTools = false,
+  hasDeviceTools: boolean,
 ): string | undefined {
   return hasT3Mcp ? orchestrationInstructions(hasDeviceTools) : undefined;
-}
-
-/** Compatibility entry point for providers that still track their first run ordinal. */
-function t3OrchestrationPromptForFirstRun(input: {
-  readonly prompt: string;
-  readonly runOrdinal: number;
-  readonly hasT3Mcp: boolean;
-  readonly hasDeviceTools?: boolean;
-}): string {
-  return input.runOrdinal === 1 && input.hasT3Mcp
-    ? prependT3OrchestrationInstructions(
-        input.prompt,
-        orchestrationInstructions(input.hasDeviceTools ?? false),
-      )
-    : input.prompt;
 }

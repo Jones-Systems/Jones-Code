@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Duration from "effect/Duration";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -117,6 +119,7 @@ describe("DesktopLifecycle", () => {
       const layerEnvironment = Layer.succeed(DesktopEnvironment.DesktopEnvironment, {
         platform,
         isDevelopment: false,
+        appImagePath: Option.none(),
       } as DesktopEnvironment.DesktopEnvironment["Service"]);
 
       const layer = DesktopLifecycle.layer.pipe(
@@ -307,7 +310,9 @@ describe("DesktopLifecycle", () => {
           } as Electron.Event;
           appListeners.get("before-quit")?.(event);
           appListeners.get("before-quit")?.(event);
-          yield* TestClock.adjust("9999 millis");
+          yield* TestClock.adjust(
+            Duration.millis(Duration.toMillis(DesktopLifecycle.SHUTDOWN_STALL_THRESHOLD) - 1),
+          );
           appListeners.get("before-quit")?.(event);
           assert.deepEqual(
             exitCodes,
@@ -320,6 +325,8 @@ describe("DesktopLifecycle", () => {
 
           assert.deepEqual(exitCodes, [0]);
           assert.equal(prevented, 4);
+          const shutdown = yield* DesktopShutdown.DesktopShutdown;
+          assert.isFalse(yield* shutdown.isComplete, "forced app exit is not shutdown completion");
         }),
       ).pipe(Effect.provide(layer));
     }),

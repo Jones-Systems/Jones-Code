@@ -18,6 +18,7 @@ import { pendingBackgroundTurnItems } from "@t3tools/shared/orchestrationV2Pendi
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as MutableRef from "effect/MutableRef";
 import * as Scope from "effect/Scope";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -37,7 +38,12 @@ import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as Persistence from "../platform/persistence.ts";
 import { runCachePersistence } from "./cachePersistence.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
-import { isAuthorizationFailure, request, subscribeDynamicWithProducer } from "../rpc/client.ts";
+import {
+  isAuthorizationFailure,
+  request,
+  subscribeDynamicWithProducer,
+  subscriptionRetryDelay,
+} from "../rpc/client.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
 import { THREAD_SNAPSHOT_IDLE_TTL_MS } from "./threadRetention.ts";
@@ -53,12 +59,14 @@ import {
   type ThreadHistoryMeta,
 } from "./threadHistoryMerge.ts";
 import * as ThreadSnapshotLoader from "./threadSnapshotHttp.ts";
-import { makeThreadRequestsResolvedAnnouncer, pendingRuntimeRequestIds } from "./threadRequests.ts";
+import { makeThreadRequestsResolvedAnnouncer } from "./threadRequests.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
   type EnvironmentThreadState,
   type EnvironmentThreadStatus,
 } from "./threadState.ts";
+
+const THREAD_SUBSCRIPTION_RETRY_DELAY = "250 millis";
 
 function statusWithoutLiveData(
   data: Option.Option<OrchestrationV2ThreadProjection>,
@@ -78,6 +86,17 @@ function formatHistoryError(error: unknown): string {
     return error.message;
   }
   return "Could not load earlier activity.";
+}
+
+// Steers join a running turn; every other user message opens one. The timeline shows every
+// notification as a response boundary, whether it opened its run or arrived mid-run.
+function startsTurn(item: OrchestrationV2TurnItem): boolean {
+  return (
+    item.type === "notification" ||
+    (item.type === "user_message" &&
+      item.inputIntent !== "steer" &&
+      item.inputIntent !== "promoted_queued_to_steer")
+  );
 }
 
 function historyMetaFromCachedSnapshot(
@@ -301,7 +320,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     const owns = resumeCache === undefined || resumeCache.owner === owner;
     if (owns && current.status === "deleted") announceRequests([]);
     else if (owns && current.status === "live" && Option.isSome(current.data))
-      announceRequests(pendingRuntimeRequestIds(current.data.value));
+      announceRequests(current.data.value.runtimeRequests);
     committed = {
       state: current,
       sequence,
@@ -371,7 +390,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return Option.match(current.data, {
         onNone: () => Effect.void,
         onSome: (projection) =>
-          shouldPersistThread(projection, current.history)
+          !current.history.expanded
             ? persist(
                 snapshotToPersist(
                   snapshotSequence,
@@ -813,9 +832,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               ? page.nextCursor !== null
               : throughEntryId === undefined &&
                 page.hasMoreHistory &&
-                !page.items.some(
-                  ({ item }) => item.type === "user_message" && item.createdBy === "user",
-                ));
+                !page.items.some(({ item }) => startsTurn(item)));
           if (keepPaging && (page.nextCursor === null || page.nextCursor === requestCursor))
             return yield* failLoad(
               workAnchorId === undefined
@@ -989,13 +1006,21 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   // apart from a failed load.
   const socketOpenTried = yield* Ref.make(false);
   const socketOnlyOpen = yield* Ref.make(false);
-  const failedSocketOnlyOpen = Effect.gen(function* () {
-    return (
-      (yield* Ref.get(socketOnlyOpen)) && Option.isNone((yield* SubscriptionRef.get(state)).data)
-    );
-  });
-  // A defect parks the subscription, so a socket-only open resubscribes once.
-  const httpRetries = yield* Queue.unbounded<void>();
+  const resubscribes = yield* Queue.unbounded<void>();
+  const retrySocketOnlyOpen = (producer: SubscriptionProducer) =>
+    SubscriptionRef.modify(state, (current) => {
+      if (
+        !producerGuard.isCurrent(producer) ||
+        !Ref.getUnsafe(socketOnlyOpen) ||
+        Option.isSome(current.data)
+      ) {
+        return [false, current] as const;
+      }
+      // Clear before the handoff: even a defect in the successor's config must use normal backoff.
+      MutableRef.set(socketOnlyOpen.ref, false);
+      Queue.offerUnsafe(resubscribes, undefined);
+      return [true, current] as const;
+    });
   const markSynchronizing = Effect.gen(function* () {
     if (yield* Ref.get(resumingLive)) return;
     yield* SubscriptionRef.update(state, (current) =>
@@ -1005,8 +1030,14 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
+  let httpMisses = 0;
   yield* markSynchronizing;
-  yield* Effect.forkScoped(
+  let applicationFailures = 0;
+  const followThread = (): Effect.Effect<
+    void,
+    never,
+    EnvironmentSupervisor.EnvironmentSupervisor
+  > =>
     subscribeDynamicWithProducer(
       ORCHESTRATION_V2_WS_METHODS.subscribeThread,
       Effect.fn("EnvironmentThreadState.makeSubscribeInput")(function* (producer) {
@@ -1015,10 +1046,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         // Settled before the state is read, so the read below is not older than the config.
         const config = yield* Effect.option(session.initialConfig);
         let current = yield* SubscriptionRef.get(state);
-        // A prior definitive miss (or delete event) already cleared this thread.
-        // Park the subscription attempt without opening the socket so we do not
-        // retry forever against a known-missing id.
-        if (current.status === "deleted") {
+        // A delete event already cleared this thread. Park without opening the socket.
+        if (current.status === "deleted" && httpMisses === 0) {
           return yield* Effect.never;
         }
 
@@ -1055,6 +1084,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           if (!producerGuard.isCurrent(producer)) return yield* Effect.never;
           switch (httpResult._tag) {
             case "present": {
+              httpMisses = 0;
               if (canLoadHistory && httpResult.history !== undefined) {
                 yield* Ref.set(acceptsBoundedSocketSnapshots, true);
               }
@@ -1083,9 +1113,13 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               break;
             }
             case "missing": {
-              yield* setDeleted();
+              if (current.status !== "deleted") yield* setDeleted();
               // A 404 also means "not created yet". Only a delete event may outlive this mount.
               if (resumeCache?.owner === owner) resumeCache.snapshot = undefined;
+              yield* Effect.sleep(
+                subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, httpMisses++),
+              );
+              yield* Queue.offer(resubscribes, undefined);
               return yield* Effect.never;
             }
             case "unavailable": {
@@ -1111,31 +1145,50 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
               }
             : {}),
           acceptDedupedBodies: true as const,
+          acceptCompactThreadVisits: true as const,
         };
       }),
       {
         // A socket-only open that fails retries over HTTP, which tells a
         // missing thread apart from a failure, before showing an error.
         onDefect: Effect.fn("EnvironmentThreadState.onDefect")(function* (_cause, producer) {
-          if (yield* failedSocketOnlyOpen) {
-            yield* Ref.set(socketOnlyOpen, false);
-            return yield* Queue.offer(httpRetries, undefined);
-          }
+          if (!producerGuard.isCurrent(producer)) return;
+          if (yield* retrySocketOnlyOpen(producer)) return;
           yield* setStreamError("Could not synchronize the thread.", producer);
         }),
         onExpectedFailure: Effect.fn("EnvironmentThreadState.onExpectedFailure")(
           function* (cause, producer) {
-            const retryOverHttp = !isAuthorizationFailure(cause) && (yield* failedSocketOnlyOpen);
+            if (!producerGuard.isCurrent(producer)) return;
+            const retryOverHttp =
+              !isAuthorizationFailure(cause) && (yield* retrySocketOnlyOpen(producer));
             if (!retryOverHttp) yield* setStreamError(formatThreadError(cause), producer);
           },
         ),
         retryExpectedFailureAfter: "250 millis",
-        resubscribe: Stream.merge(foregroundResubscriptions, Stream.fromQueue(httpRetries)),
+        resubscribe: Stream.merge(foregroundResubscriptions, Stream.fromQueue(resubscribes)),
         // Resume an open conversation on the same session if its stream ends early.
         resubscribeWhileSessionCurrent: "1 second",
       },
-    ).pipe(Stream.runForEachArray((items) => applyProducerBatches(items, applyItems))),
-  );
+    ).pipe(
+      Stream.runForEachArray((items) => applyProducerBatches(items, applyItems)),
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("Thread projection failed; resubscribing.", {
+              cause: Cause.pretty(cause),
+              environmentId,
+              threadId,
+            }).pipe(
+              Effect.andThen(
+                Effect.sleep(
+                  subscriptionRetryDelay(THREAD_SUBSCRIPTION_RETRY_DELAY, applicationFailures++),
+                ),
+              ),
+              Effect.andThen(Effect.suspend(followThread)),
+            ),
+      ),
+    );
+  yield* Effect.forkScoped(followThread());
 
   return state;
 });

@@ -3,6 +3,7 @@ import {
   deriveEffectiveComposerModelState,
   useComposerDraftModelState,
 } from "../../composerDraftStore";
+import { draftModelSelectionApplies } from "../../lib/chatThreadActions";
 import {
   type ModelSelection,
   type ProjectId,
@@ -18,7 +19,7 @@ import {
 } from "../../providerInstances";
 import { type UnifiedSettings } from "@t3tools/contracts/settings";
 import { getComposerPromptInjectionState, getComposerProviderState } from "./composerProviderState";
-import { resolveComposerProviderSelection } from "../ChatView.logic";
+import { resolveComposerProviderSelection } from "../../jones/composer/providerSelection";
 
 const NO_PROVIDER_MODELS: ServerProvider["models"] = [];
 
@@ -37,6 +38,7 @@ export function useComposerProviderModel(
     readonly threadModelSelection: ModelSelection | null | undefined;
     readonly projectModelSelection: ModelSelection | null | undefined;
     readonly promptInjectionState: ReturnType<typeof getComposerPromptInjectionState>;
+    readonly threadStarted: boolean;
   },
 ) {
   const {
@@ -50,6 +52,7 @@ export function useComposerProviderModel(
     candidateInstanceIds,
     lockedProvider,
     lockedInstanceId,
+    threadStarted,
     requiredInstanceId,
   } = input;
   const draftModelState = useComposerDraftModelState(threadRef);
@@ -60,7 +63,12 @@ export function useComposerProviderModel(
   );
   const selection = resolveComposerProviderSelection({
     entries: providerInstanceEntries,
-    candidateInstanceIds,
+    candidateInstanceIds: [
+      draftModelSelectionApplies(draftModelState, threadStarted)
+        ? draftModelState.activeProvider
+        : null,
+      ...candidateInstanceIds,
+    ],
     lockedProvider,
     lockedInstanceId,
     requiredInstanceId,
@@ -73,6 +81,7 @@ export function useComposerProviderModel(
     selection.selectedProviderEntry?.driverKind ?? selection.requestedDriverKind;
   const modelState = deriveEffectiveComposerModelState({
     draft: draftModelState,
+    threadStarted,
     providers: providerStatuses,
     selectedProvider,
     selectedInstanceId,

@@ -231,6 +231,7 @@ it.each(explicitCases)(
         routeThreadKey,
         currentRouteThreadKeyRef: { current: routeThreadKey },
         canOperateThread: true,
+        runIsLive: false,
         clientSettingsHydrated: true,
         activeThread: thread,
         activeThreadId: thread.id,

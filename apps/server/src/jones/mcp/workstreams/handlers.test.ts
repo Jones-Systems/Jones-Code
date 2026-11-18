@@ -107,22 +107,23 @@ const routedInputs: ReadonlyArray<readonly [WorkstreamToolName, Record<string, u
   ["t3_thread_workstream_read", { threadId }],
   ["t3_workstream_update", { id: workstream.id, name: "Renamed" }],
 ];
+// The toolkit decodes JSON parameters itself: a routed call validates its
+// arguments against the tool's schema and passes their canonical JSON form.
+const routedParams = <S extends Schema.Constraint>(schema: S) => {
+  const codec = Schema.toCodecJson(schema);
+  return (args: unknown) =>
+    Schema.decodeUnknownEffect(codec)(args).pipe(Effect.flatMap(Schema.encodeEffect(codec)));
+};
 const routedDecoders = {
-  t3_workstreams_list: Schema.decodeUnknownEffect(
-    WorkstreamToolkit.tools.t3_workstreams_list.parametersSchema,
-  ),
-  t3_workstream_create: Schema.decodeUnknownEffect(
-    WorkstreamToolkit.tools.t3_workstream_create.parametersSchema,
-  ),
-  t3_thread_workstream_set: Schema.decodeUnknownEffect(
+  t3_workstreams_list: routedParams(WorkstreamToolkit.tools.t3_workstreams_list.parametersSchema),
+  t3_workstream_create: routedParams(WorkstreamToolkit.tools.t3_workstream_create.parametersSchema),
+  t3_thread_workstream_set: routedParams(
     WorkstreamToolkit.tools.t3_thread_workstream_set.parametersSchema,
   ),
-  t3_thread_workstream_read: Schema.decodeUnknownEffect(
+  t3_thread_workstream_read: routedParams(
     WorkstreamToolkit.tools.t3_thread_workstream_read.parametersSchema,
   ),
-  t3_workstream_update: Schema.decodeUnknownEffect(
-    WorkstreamToolkit.tools.t3_workstream_update.parametersSchema,
-  ),
+  t3_workstream_update: routedParams(WorkstreamToolkit.tools.t3_workstream_update.parametersSchema),
 };
 const routedCall = (
   toolkit: Effect.Success<ReturnType<typeof build>>,

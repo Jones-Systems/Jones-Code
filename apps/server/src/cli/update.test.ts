@@ -1,12 +1,10 @@
-import { assertReleaseUpdateAllowed } from "./update.ts";
+import { cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
-import { cliArchiveFileName, cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
-import * as Fiber from "effect/Fiber";
-import { isJonesBootServiceCgroup } from "./update.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it, describe } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import type { ManagedUpdatesPolicy } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Fiber from "effect/Fiber";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -17,17 +15,28 @@ import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
 import * as TestConsole from "effect/testing/TestConsole";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { afterEach, vi } from "vite-plus/test";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
-import { pinnedRuntimePaths, prunePinnedRuntimes } from "../cloud/pinnedRuntime.ts";
+import * as PinnedRuntime from "../cloud/pinnedRuntime.ts";
+import {
+  pinnedRuntimePaths,
+  posixLauncherScript,
+  prunePinnedRuntimes,
+  readPosixLauncherTarget,
+  resolveLauncherPath,
+} from "../cloud/pinnedRuntime.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ServerRuntimeState from "../serverRuntimeState.ts";
+import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 import {
+  assertReleaseUpdateAllowed,
+  isJonesBootServiceCgroup,
   repointLauncher,
-  resolveLauncherPath,
   resolveMirrorVersion,
   resolveNewestVersion,
   runUpdate,
@@ -225,7 +234,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       );
     }).pipe(Effect.scoped),
   );
-  it.effect("repoints a symlink that lives in a runtime versions tree", () =>
+  it.effect("replaces a legacy symlink with a script that execs the new version", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -247,8 +256,81 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       });
 
       assert.deepStrictEqual(Option.getOrUndefined(repointed), launcher);
-      assert.equal(yield* fs.readLink(launcher), newExe);
+      assert.equal(yield* fs.readFileString(launcher), posixLauncherScript(newExe));
+      // Replaced, not written through.
+      assert.equal(yield* fs.readFileString(oldExe), "");
     }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
+  );
+
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "finds the script that ran this executable and rewrites it, keeping aliases and arguments",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const root = yield* fs.realPath(
+          yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" }),
+        );
+        // A quote and a space in the home path exercise the script's quoting.
+        const home = path.join(root, "it's home");
+        const entry = (version: string) => path.join(home, "runtime/versions", version, "t3");
+        for (const version of ["1.0.0", "2.0.0"]) {
+          yield* fs.makeDirectory(path.dirname(entry(version)), { recursive: true });
+          yield* fs.writeFileString(entry(version), '#!/bin/sh\nprintf \'[%s]\\n\' "$0" "$@"\n', {
+            mode: 0o755,
+          });
+        }
+        const launcher = path.join(root, "bin/t3");
+        const alias = path.join(root, "alias/t3");
+        yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
+        yield* fs.makeDirectory(path.dirname(alias), { recursive: true });
+        yield* fs.writeFileString(launcher, posixLauncherScript(entry("1.0.0")), { mode: 0o755 });
+        yield* fs.symlink(launcher, alias);
+        const repoint = (environment: Record<string, string>) =>
+          repointLauncher({
+            // The script execs by absolute path, so argv0 names the executable.
+            launchedAs: entry("1.0.0"),
+            baseDir: home,
+            targetEntryPath: entry("2.0.0"),
+          }).pipe(Effect.provideService(HostProcess.Environment, environment));
+
+        assert.equal(
+          Option.getOrUndefined(yield* repoint({ PATH: path.dirname(alias) })),
+          launcher,
+        );
+        assert.equal(yield* fs.readLink(alias), launcher);
+        const args = ["two words", "it's quoted", "", "*", "$HOME"];
+        assert.equal(
+          yield* spawner.string(ChildProcess.make(alias, args, { cwd: root })),
+          [entry("2.0.0"), ...args].map((arg) => `[${arg}]\n`).join(""),
+        );
+
+        // Like the shell, a relative PATH entry resolves from the working directory, and a
+        // script nobody can execute is passed over.
+        const unrunnable = path.join(root, "unrunnable/t3");
+        yield* fs.makeDirectory(path.dirname(unrunnable), { recursive: true });
+        yield* fs.writeFileString(unrunnable, posixLauncherScript(entry("2.0.0")), { mode: 0o644 });
+        yield* fs.writeFileString(launcher, posixLauncherScript(entry("2.0.0")), { mode: 0o755 });
+        const relative = yield* repointLauncher({
+          launchedAs: entry("2.0.0"),
+          baseDir: home,
+          targetEntryPath: entry("1.0.0"),
+        }).pipe(
+          Effect.provideService(HostProcess.Environment, {
+            PATH: `${path.dirname(unrunnable)}:bin`,
+          }),
+          Effect.provideService(HostProcess.WorkingDirectory, root),
+        );
+        assert.equal(Option.getOrUndefined(relative), launcher);
+        assert.equal(yield* fs.readFileString(unrunnable), posixLauncherScript(entry("2.0.0")));
+
+        // An edited script is the user's own wrapper now.
+        const edited = `${posixLauncherScript(entry("1.0.0"))}# mine\n`;
+        yield* fs.writeFileString(launcher, edited);
+        assert.isTrue(Option.isNone(yield* repoint({ PATH: path.dirname(launcher) })));
+        assert.equal(yield* fs.readFileString(launcher), edited);
+      }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect.each([
@@ -309,12 +391,11 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       );
 
       assert.deepStrictEqual(removed, ["1.0.0"]);
-      // macOS temp dirs sit behind the /var -> /private/var symlink, so compare canonical paths.
       assert.equal(
-        yield* fs.realPath(launcher),
-        yield* fs.realPath(path.join(root, "runtime/versions/2.0.0/t3")),
+        yield* readPosixLauncherTarget(launcher),
+        path.join(root, "runtime/versions/2.0.0/t3"),
       );
-    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
+    }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   const launcherFixture = Effect.fnUntraced(function* () {
@@ -345,7 +426,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       });
 
       assert.equal(yield* fs.readFileString(launchersFile), `\n${launcher}\n`);
-    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
+    }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("fails instead of repointing a launcher it cannot record", () =>
@@ -363,7 +444,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
 
       assert.isTrue(Exit.isFailure(result));
       assert.equal(yield* fs.readLink(launcher), oldExe);
-    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
+    }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect.each(["recording", "repointing"] as const)(
@@ -392,14 +473,14 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
           Effect.exit,
         );
 
-        const repointed = (yield* fs.readLink(launcher)) === newExe;
+        const repointed = (yield* readPosixLauncherTarget(launcher)) === newExe;
         const recorded = (yield* fs
           .readFileString(launchersFile)
           .pipe(Effect.orElseSucceed(() => "")))
           .split("\n")
           .includes(launcher);
         assert.isFalse(repointed && !recorded);
-      }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
+      }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("leaves a plain copy or a foreign symlink alone", () =>
@@ -432,7 +513,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       }
       assert.equal(yield* fs.readLink(foreign), elsewhere);
       assert.equal(yield* fs.readLink(otherLauncher), otherHome);
-    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
+    }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("finds the launcher a bare command name resolved to on PATH", () =>
@@ -443,7 +524,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" });
       const launcher = path.join(root, "bin/t3");
       yield* fs.makeDirectory(path.dirname(launcher), { recursive: true });
-      yield* fs.writeFileString(launcher, "");
+      yield* fs.writeFileString(launcher, "", { mode: 0o755 });
 
       const bare = yield* resolveLauncherPath.pipe(
         Effect.provideService(HostProcess.InvokedAs, "t3"),
@@ -466,7 +547,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       assert.equal(bare, launcher);
       assert.equal(relative, launcher);
       assert.equal(absent, undefined);
-    }).pipe(Effect.scoped),
+    }),
   );
 });
 
@@ -489,6 +570,230 @@ const withoutTerminals = Effect.acquireRelease(
 );
 
 it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
+  it.effect(
+    "binds target installation to the same home and unit and refuses unresolved system ownership",
+    () =>
+      Effect.gen(function* () {
+        for (const scenario of [
+          "bound",
+          "managed-cgroup",
+          "suffix-cgroup",
+          "foreign-home",
+          "foreign-unit",
+          "unknown-home",
+          "damaged-system",
+          "missing-system",
+        ] as const) {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-update-binding-" });
+          const version = packageJson.version;
+          const cgroupScenario = scenario === "managed-cgroup" || scenario === "suffix-cgroup";
+          const statePath = path.join(baseDir, "server-runtime.json");
+          if (cgroupScenario) {
+            yield* fs.writeFileString(
+              statePath,
+              JSON.stringify({
+                version: 1,
+                pid: 4242,
+                port: 43129,
+                origin: "http://127.0.0.1:43129",
+                startedAt: "2026-11-17T00:00:00.000Z",
+                serviceManaged: false,
+              }),
+            );
+          }
+          const syntheticFs = FileSystem.FileSystem.of({
+            ...fs,
+            readFileString: (file, encoding) =>
+              file === "/proc/4242/cgroup"
+                ? Effect.succeed(
+                    `0::/user.slice/user@1000.service/app.slice/${scenario === "managed-cgroup" ? "jones-code.service/child" : "jones-code.service-other"}\n`,
+                  )
+                : file === "/proc/self/cgroup"
+                  ? Effect.succeed("0::/user.slice/user@1000.service/session.scope\n")
+                  : file.startsWith("/proc/")
+                    ? Effect.die(`unexpected synthetic proc read: ${file}`)
+                    : fs.readFileString(file, encoding),
+            readDirectory: (directory) =>
+              directory === "/proc"
+                ? Effect.succeed([])
+                : directory.startsWith("/proc/")
+                  ? Effect.die(`unexpected synthetic proc directory: ${directory}`)
+                  : fs.readDirectory(directory),
+            readLink: (file) =>
+              file.startsWith("/proc/")
+                ? Effect.die(`unexpected synthetic proc link: ${file}`)
+                : fs.readLink(file),
+          });
+          const runtime = pinnedRuntimePaths(path, baseDir, version, "linux");
+          yield* fs.makeDirectory(runtime.versionDir, { recursive: true });
+          yield* fs.writeFileString(runtime.entryPath, "");
+          yield* fs.writeFileString(runtime.sentinelPath, `${version}\n`);
+          yield* fs.makeDirectory(path.join(baseDir, "jones"));
+          yield* fs.writeFileString(
+            path.join(baseDir, "jones", "host-service.json"),
+            JSON.stringify({ schema: 1, port: 43129 }),
+          );
+          if (scenario === "damaged-system") {
+            yield* fs.writeFileString(
+              path.join(baseDir, "runtime", "jones-system-adoption.json"),
+              "{}",
+            );
+          }
+          const unitPath = path.join(baseDir, "jones-code.service");
+          const logPath = path.join(baseDir, "boot-service.log");
+          // An unknown home omits the field rather than storing an explicit undefined.
+          const statusAt = (
+            installedBaseDir: string | undefined,
+          ): BootService.BootServiceStatus => ({
+            supported: true,
+            installed: true,
+            current: false,
+            installedVersion: "0.0.1",
+            ...(installedBaseDir === undefined ? {} : { installedBaseDir }),
+            unitPath,
+            logPath,
+          });
+          const initialStatus = statusAt(baseDir);
+          let initialInstalls = 0;
+          let targetInstalls = 0;
+          const initial = Layer.mock(BootService.BootService, {
+            status: Effect.succeed(initialStatus),
+            install: () =>
+              Effect.sync(() => {
+                initialInstalls++;
+                return { program: ["wrong-initial-runtime"], baseDir, unitPath, logPath };
+              }),
+          });
+          const target = Layer.mock(BootService.BootService, {
+            status: Effect.succeed({
+              ...statusAt(
+                scenario === "foreign-home"
+                  ? `${baseDir}/foreign`
+                  : scenario === "unknown-home"
+                    ? undefined
+                    : baseDir,
+              ),
+              unitPath: scenario === "foreign-unit" ? `${baseDir}/t3code.service` : unitPath,
+            }),
+            install: (options) =>
+              Effect.sync(() => {
+                assert.deepStrictEqual(options, { allowDowngrade: false, start: true });
+                targetInstalls++;
+                return { program: [runtime.entryPath], baseDir, unitPath, logPath };
+              }),
+          });
+          const targetLayer = vi.spyOn(BootService, "layer").mockReturnValue(target);
+          const alive = vi.spyOn(ServerRuntimeState, "isProcessAlive").mockReturnValue(true);
+          const runtimeStage = vi
+            .spyOn(PinnedRuntime, "ensurePinnedRuntimeInstalled")
+            .mockImplementation((input) => {
+              assert.equal(input.baseDir, baseDir);
+              assert.equal(input.version, version);
+              return input.validate(runtime).pipe(Effect.as(runtime));
+            });
+          const runner = ProcessRunner.ProcessRunner.of({
+            run: (input) =>
+              unrelatedLsof
+                .run(input)
+                .pipe(
+                  Effect.map((result) =>
+                    input.args?.includes("--version") === true
+                      ? { ...result, stdout: `t3 v${version}\n` }
+                      : result,
+                  ),
+                ),
+          });
+          try {
+            const { error, output } = yield* runUpdate({
+              baseDir,
+              logsDir: baseDir,
+              serverRuntimeStatePath: statePath,
+              channel: undefined,
+              requestedVersion: version,
+              allowDowngrade: false,
+              assumeYes: true,
+            }).pipe(
+              Effect.match({ onSuccess: () => undefined, onFailure: (cause) => cause.message }),
+              Effect.flatMap((error) =>
+                TestConsole.logLines.pipe(
+                  Effect.map((lines) => ({ error, output: lines.join("\n") })),
+                ),
+              ),
+              Effect.provide(
+                Layer.mergeAll(
+                  initial,
+                  Layer.succeed(ProcessRunner.ProcessRunner, runner),
+                  ManagedPolicy.layerTest(),
+                  Layer.fresh(TestConsole.layer),
+                  Layer.succeed(
+                    HttpClient.HttpClient,
+                    HttpClient.make(() => Effect.die("unexpected network request")),
+                  ),
+                ),
+              ),
+              Effect.provideService(HostProcess.Platform, "linux"),
+              Effect.provideService(FileSystem.FileSystem, syntheticFs),
+              Effect.provideService(HostProcess.UserId, 1000),
+              Effect.provideService(HostProcess.ExecutablePath, "/synthetic/cli"),
+              Effect.provideService(HostProcess.IsExecutable, false),
+              Effect.provideService(
+                HostProcess.Environment,
+                scenario === "missing-system" ? { T3_BOOT_SERVICE_SCOPE: "system" } : {},
+              ),
+            );
+            assert.equal(initialInstalls, 0);
+            if (scenario === "bound" || cgroupScenario) {
+              assert.equal(error, undefined);
+              assert.equal(targetInstalls, 1);
+            } else {
+              assert.equal(targetInstalls, 0);
+              assert.include(
+                error ?? "",
+                scenario === "damaged-system"
+                  ? "adoption receipt"
+                  : scenario === "missing-system"
+                    ? "no completed system adoption receipt"
+                    : "binding changed or could not be verified",
+              );
+            }
+            if (cgroupScenario) {
+              assert.equal(
+                output.includes("A server started by hand is still running"),
+                scenario === "suffix-cgroup",
+              );
+            }
+            if (scenario === "damaged-system" || scenario === "missing-system") {
+              assert.equal(targetLayer.mock.calls.length, 0);
+            } else {
+              assert.deepStrictEqual(
+                targetLayer.mock.calls.map(([input]) => input),
+                [
+                  {
+                    baseDir,
+                    logsDir: baseDir,
+                    cliVersion: version,
+                    identity: JONES_BOOT_SERVICE_IDENTITY,
+                    allowEnableLinger: false,
+                    environment: {
+                      T3CODE_HOST: "127.0.0.1",
+                      T3CODE_PORT: "43129",
+                      T3CODE_TAILSCALE_SERVE: "false",
+                    },
+                  },
+                ],
+              );
+            }
+          } finally {
+            targetLayer.mockRestore();
+            runtimeStage.mockRestore();
+            alive.mockRestore();
+          }
+        }
+      }),
+  );
+
   it.effect("names the version a service with a pending restart still runs", () =>
     Effect.gen(function* () {
       yield* withoutTerminals;
@@ -499,22 +804,6 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
       const runtime = pinnedRuntimePaths(path, baseDir, version, "linux");
       yield* fs.makeDirectory(runtime.versionDir, { recursive: true });
       yield* fs.writeFileString(runtime.entryPath, "");
-      // Jones reuses an installed runtime only with verified local provenance for its bytes.
-      yield* fs.writeFileString(
-        path.join(runtime.versionDir, ".jones-provenance.json"),
-        JSON.stringify({
-          schema: 1,
-          repository: "Jones-Systems/Jones-Code",
-          source: "a".repeat(40),
-          version,
-          platform: "linux",
-          architecture: "x64",
-          artifact: cliArchiveFileName(version, "linux-x64"),
-          sha256: "b".repeat(64),
-          // SHA-256 of the empty fixture executable.
-          entrySha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        }),
-      );
       yield* fs.writeFileString(runtime.sentinelPath, `${version}\n`);
       const unitPath = path.join(baseDir, "t3code.service");
       const logPath = path.join(baseDir, "boot-service.log");
@@ -532,7 +821,12 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
         }),
         install: () => Effect.succeed({ program: [runtime.entryPath], baseDir, unitPath, logPath }),
       });
-      vi.spyOn(BootService, "layer").mockReturnValue(service);
+      const targetLayer = vi.spyOn(BootService, "layer").mockReturnValue(service);
+      vi.spyOn(PinnedRuntime, "ensurePinnedRuntimeInstalled").mockImplementation((input) => {
+        assert.equal(input.baseDir, baseDir);
+        assert.equal(input.version, version);
+        return input.validate(runtime).pipe(Effect.as(runtime));
+      });
       const runner = ProcessRunner.ProcessRunner.of({
         run: (input) =>
           input.args?.includes("--version") === true
@@ -571,10 +865,16 @@ it.layer(NodeServices.layer)("t3 update with a background service", (it) => {
         output,
         `Background service still running the version before ${version}. Run \`t3 service restart\` when you are ready to switch it to ${version}.`,
       );
+      assert.equal(targetLayer.mock.calls.length, 1);
+      assert.deepStrictEqual(targetLayer.mock.calls[0]?.[0], {
+        baseDir,
+        logsDir: baseDir,
+        cliVersion: version,
+        identity: JONES_BOOT_SERVICE_IDENTITY,
+        allowEnableLinger: false,
+      });
     }).pipe(
-      Effect.scoped,
       Effect.provideService(HostProcess.Platform, "linux"),
-      Effect.provideService(HostProcess.Architecture, "x64"),
       Effect.provideService(HostProcess.Environment, { PATH: "" }),
     ),
   );

@@ -9,6 +9,10 @@ const options = {};
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === "app-server") continue;
+  if (arg === "-c" && args[i + 1] === "thread_unload_delay_secs=0") {
+    i++;
+    continue;
+  }
   if (["--hold", "--version", "--defer-close", "--shared-producer"].includes(arg))
     options[arg] = true;
   else if (["--state-dir", "--account", "--mode", "--outcome"].includes(arg) && args[i + 1])
@@ -215,6 +219,7 @@ const finish = (status) => {
         questions: null,
       };
       notify("item/started", {
+        startedAtMs: Date.now(),
         threadId: thread.id,
         turnId: active.id,
         item: { ...item, text: "" },
@@ -226,7 +231,12 @@ const finish = (status) => {
         delta: item.text,
       });
       active.items.push(item);
-      notify("item/completed", { threadId: thread.id, turnId: active.id, item });
+      notify("item/completed", {
+        completedAtMs: Date.now(),
+        threadId: thread.id,
+        turnId: active.id,
+        item,
+      });
     }
   }
   Object.assign(active, {
@@ -271,14 +281,15 @@ const closeThread = () => {
   trace("synthetic/closed", { nativeThreadId: id });
   notify("thread/closed", { threadId: id });
 };
-const watcher = NodeFS.watch(root, () => {
+// Directory change events can precede a complete marker write on macOS.
+const markerTimer = setInterval(() => {
   try {
     release();
     closeThread();
   } catch {
     fail();
   }
-});
+}, 50);
 const fail = () => {
   clearTimeout(timer);
   clearTimeout(closeTimer);
@@ -490,7 +501,7 @@ const cleanup = () => {
   cleaned = true;
   clearTimeout(timer);
   clearTimeout(closeTimer);
-  watcher.close();
+  clearInterval(markerTimer);
   for (const id of ownedLocks) releaseWriter(id);
   trace("synthetic/exit");
 };

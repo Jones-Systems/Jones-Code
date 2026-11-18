@@ -20,7 +20,7 @@ export interface ReaderAdmissionHarnessInput {
   readonly text: string;
   readonly nativeResume?: "same" | "changed" | "missing";
   readonly continuityRead?: GoalContinuity.GoalContinuity["Service"]["requirementFor"];
-  readonly runtimeRecoveryRead?: () => Effect.Effect<void, ProjectionStoreReadError>;
+  readonly turnStartRead?: () => Effect.Effect<void, ProjectionStoreReadError>;
   readonly retireBeforeRevalidation?: boolean;
 }
 
@@ -96,8 +96,10 @@ export function registerReaderAdmissionStartTests<E extends Error>(
         expect((yield* Effect.result(harness.startWithRetry))._tag).toBe("Failure");
         expect(harness.projection().runs.at(-1)?.status).toBe("starting");
         expect(harness.open).not.toHaveBeenCalled();
+        expect(reads).toBe(1);
         yield* harness.start;
-        expect(reads).toBe(2);
+        // The retry passes all four continuity checks before and during the start.
+        expect(reads).toBe(5);
         expect(harness.open).toHaveBeenCalledOnce();
         expect(harness.startRootRun).toHaveBeenCalledOnce();
         expect(harness.fallbackEnsure).not.toHaveBeenCalled();
@@ -219,8 +221,9 @@ export function registerReaderAdmissionStartTests<E extends Error>(
     }),
   );
 
-  // Reads 2 and 4 revalidate selection; read 3 is the intervening attempt-ownership guard.
-  it.effect.each([2, 4])(
+  // The first three narrow reads capture the run and check start admission.
+  // Reads 4 and 5 revalidate selection after retirement and before opening.
+  it.effect.each([4, 5])(
     "run-state read failure at check %s is unavailable, with no provider open",
     (failedRead) =>
       Effect.gen(function* () {
@@ -229,7 +232,7 @@ export function registerReaderAdmissionStartTests<E extends Error>(
           text: "Continue",
           nativeResume: "same",
           retireBeforeRevalidation: true,
-          runtimeRecoveryRead: () =>
+          turnStartRead: () =>
             Effect.suspend(() =>
               ++reads === failedRead
                 ? Effect.fail(
@@ -265,9 +268,9 @@ export function registerReaderAdmissionStartTests<E extends Error>(
         text: "Continue",
         nativeResume: "same",
         retireBeforeRevalidation: true,
-        runtimeRecoveryRead: () =>
+        turnStartRead: () =>
           Effect.suspend(() =>
-            ++reads === 2
+            ++reads === 4
               ? Effect.fail(
                   new ProjectionStoreReadError({
                     threadId: harness.projection().thread.id,
@@ -296,9 +299,9 @@ export function registerReaderAdmissionStartTests<E extends Error>(
           text: "Continue",
           nativeResume: "same",
           retireBeforeRevalidation: true,
-          runtimeRecoveryRead: () =>
+          turnStartRead: () =>
             Effect.suspend(() => {
-              if (++reads !== 2) return Effect.void;
+              if (++reads !== 4) return Effect.void;
               if (mode === "read")
                 return Effect.fail(
                   new ProjectionStoreReadError({

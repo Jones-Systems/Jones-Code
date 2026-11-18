@@ -73,10 +73,22 @@ type HistoryRow = Pick<
     readonly deferredWork?: OrchestrationV2TurnItem["deferredWork"];
   };
 };
+/** What a caller that passes only the newest part of a history knows about the rows it left out. */
+export type ThreadHistoryPrefix = {
+  readonly hasUserTurn: boolean;
+  /** Runs that have a user message or notification among the rows left out. */
+  readonly startedRuns: ReadonlySet<string>;
+};
+
 export type SelectTimelinePageResult<Row extends HistoryRow = OrchestrationV2ProjectedTurnItem> = {
   readonly items: ReadonlyArray<Row>;
   readonly nextCursor: string | null;
   readonly hasMoreHistory: boolean;
+  /**
+   * Set with `prefix`: the oldest row the selection read, which can be older than `items[0]`.
+   * The page is the same as on the full history only when a row lies before this one.
+   */
+  readonly oldestScanned?: Row | undefined;
 };
 
 export type BoundedProjectionResult = {
@@ -201,6 +213,15 @@ function isDeferrableWorkItem(item: HistoryRow["item"]): boolean {
   );
 }
 
+/** A row that folds when its run is not blocked and its group is large enough. */
+export function isFoldableWorkItem(item: HistoryRow["item"]): boolean {
+  return (
+    item.runId != null &&
+    (item.runStatus === "completed" || item.attemptStatus === "superseded") &&
+    isDeferrableWorkItem(item)
+  );
+}
+
 export function deferWorkHistoryRows<Row extends HistoryRow>(items: ReadonlyArray<Row>): Row[] {
   const blocked = new Set(
     items.flatMap(({ item }) =>
@@ -218,12 +239,7 @@ export function deferWorkHistoryRows<Row extends HistoryRow>(items: ReadonlyArra
     const item = row.item;
     if (item.runId == null) continue;
     if (item.type === "user_message") segments.set(item.runId, (segments.get(item.runId) ?? 0) + 1);
-    if (
-      (item.runStatus !== "completed" && item.attemptStatus !== "superseded") ||
-      blocked.has(item.runId) ||
-      !isDeferrableWorkItem(item)
-    )
-      continue;
+    if (blocked.has(item.runId) || !isFoldableWorkItem(item)) continue;
     const key = `${row.sourceThreadId}:${item.runId}:${segments.get(item.runId) ?? 0}:${item.attemptId ?? ""}`;
     const group = groups.get(key) ?? [];
     group.push(row);
@@ -288,10 +304,11 @@ export function selectDeferredWorkPage<Row extends HistoryRow>(input: {
 }
 
 /** Notifications can start wake turns when they are the run's first input; match ProjectionStore run_starts. */
-export function threadHistoryTurnStarts(
+function threadHistoryTurnStarts(
   items: ReadonlyArray<HistoryRow["item"]>,
+  earlierRuns?: ReadonlySet<string>,
 ): ReadonlyArray<boolean> {
-  const startedRuns = new Set<string>();
+  const startedRuns = new Set<string>(earlierRuns);
   return items.map((item) => {
     if (item.type !== "user_message" && item.type !== "notification") return false;
     const firstInput = item.runId != null && !startedRuns.has(item.runId);
@@ -306,6 +323,10 @@ export function isThreadHistoryUserTurn(item: HistoryRow["item"]): boolean {
   );
 }
 
+/**
+ * One page budget shared by the in-memory selection below and the Jones SQL pager.
+ * `hasUserTurns` also covers user turns a caller left out of the rows it passed.
+ */
 export function createThreadHistoryPageBudget(
   policy: ThreadHistoryPagePolicy,
   hasUserTurns: boolean,
@@ -350,7 +371,9 @@ export function createThreadHistoryPageBudget(
       if (row.turnStart) rawTurns += 1;
       return true;
     },
-    // Inside a long turn, the selected window contains no user-turn start.
+    // Inside a turn longer than the window, no selected row starts a user turn.
+    // Later pages and the snapshot query see only such rows and use `maxItems`,
+    // so this page uses it too.
     keep: () => (userTurns === 0 ? Math.min(selected, policy.maxItems) : selected),
   };
 }
@@ -364,6 +387,7 @@ function selectOlderTimelinePage<Row extends HistoryRow>(input: {
   readonly snapshotSequence: number;
   readonly policy?: ThreadHistoryPagePolicy | undefined;
   readonly rowEncodedBytes?: ((row: Row) => number) | undefined;
+  readonly prefix?: ThreadHistoryPrefix | undefined;
 }): SelectTimelinePageResult<Row> {
   const policy = input.policy ?? THREAD_HISTORY_PAGE_POLICY;
   const rowCost = input.rowEncodedBytes ?? projectedRowEncodedBytes;
@@ -374,8 +398,13 @@ function selectOlderTimelinePage<Row extends HistoryRow>(input: {
 
   const selected: Row[] = [];
   const candidates = input.items.slice(0, end);
-  const turnStarts = threadHistoryTurnStarts(candidates.map((row) => row.item));
-  const hasUserTurns = candidates.some((row) => isThreadHistoryUserTurn(row.item));
+  const turnStarts = threadHistoryTurnStarts(
+    candidates.map((row) => row.item),
+    input.prefix?.startedRuns,
+  );
+  const hasUserTurns =
+    input.prefix?.hasUserTurn === true ||
+    candidates.some((row) => isThreadHistoryUserTurn(row.item));
   const budget = createThreadHistoryPageBudget(policy, hasUserTurns);
   for (let index = end - 1; index >= 0; index -= 1) {
     const row = input.items[index]!;
@@ -390,6 +419,7 @@ function selectOlderTimelinePage<Row extends HistoryRow>(input: {
       break;
     selected.push(row);
   }
+  const oldestScanned = selected.at(-1);
   selected.splice(budget.keep());
   selected.reverse();
 
@@ -415,6 +445,7 @@ function selectOlderTimelinePage<Row extends HistoryRow>(input: {
     items: renumberPositions(selected),
     nextCursor,
     hasMoreHistory,
+    ...(input.prefix === undefined ? {} : { oldestScanned }),
   };
 }
 
@@ -433,7 +464,7 @@ export function selectRecentTimelineWindow(input: {
   });
 }
 
-function findCursorEndIndex(
+export function findCursorEndIndex(
   items: ReadonlyArray<HistoryRow>,
   cursor: ThreadHistoryCursorPayload,
 ): number {
@@ -497,14 +528,19 @@ export function selectHistoryPageFromCursor<Row extends HistoryRow>(input: {
   readonly policy?: ThreadHistoryPagePolicy | undefined;
   readonly rowEncodedBytes?: ((row: Row) => number) | undefined;
   readonly throughEntryId?: string | undefined;
+  /** Where the page ends in `items`. Set when `items` can lack the cursor's row. */
+  readonly exclusiveEndIndex?: number | undefined;
+  /** Set when `items` holds only the newest part of the history. */
+  readonly prefix?: ThreadHistoryPrefix | undefined;
 }): SelectTimelinePageResult<Row> {
   const decoded = decodeThreadHistoryCursor(input.cursor);
   return selectOlderTimelinePage({
     items: input.items,
-    exclusiveEndIndex: findCursorEndIndex(input.items, decoded),
+    exclusiveEndIndex: input.exclusiveEndIndex ?? findCursorEndIndex(input.items, decoded),
     snapshotSequence: input.snapshotSequence,
     ...(input.rowEncodedBytes === undefined ? {} : { rowEncodedBytes: input.rowEncodedBytes }),
     policy: olderHistoryPagePolicy(input),
+    prefix: input.prefix,
   });
 }
 

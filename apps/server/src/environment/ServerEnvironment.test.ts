@@ -295,6 +295,50 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
     }),
   );
   it.effect.each([
+    { desktopAppUpdate: false, advertised: undefined },
+    { desktopAppUpdate: true, advertised: true },
+  ])(
+    "advertises desktop app updates only when the desktop can install them ($desktopAppUpdate)",
+    ({ desktopAppUpdate, advertised }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        const config = yield* makeServerConfig(baseDir);
+        yield* fs.makeDirectory(config.stateDir, { recursive: true });
+        const descriptor = yield* Effect.gen(function* () {
+          const environment = yield* ServerEnvironment.ServerEnvironment;
+          return yield* environment.getDescriptor;
+        }).pipe(
+          Effect.provide(
+            ServerEnvironment.layer.pipe(
+              Layer.provide(layerEmptySecretStore),
+              Layer.provide(
+                ServerConfig.layer({
+                  ...config,
+                  mode: "desktop",
+                  desktopTelemetryControlFd: 5,
+                  desktopAppUpdate,
+                }),
+              ),
+            ),
+          ),
+          Effect.provideService(HostProcess.Environment, {}),
+        );
+        const capabilities = descriptor.capabilities;
+        expect({
+          serverSelfUpdate: capabilities.serverSelfUpdate,
+          desktopAppUpdate: capabilities.desktopAppUpdate,
+          desktopAppChannelSwitch: capabilities.desktopAppChannelSwitch,
+          serverSelfUpdateProgress: capabilities.serverSelfUpdateProgress,
+        }).toEqual({
+          serverSelfUpdate: "desktop-managed",
+          desktopAppUpdate: advertised,
+          desktopAppChannelSwitch: advertised,
+          serverSelfUpdateProgress: advertised,
+        });
+      }),
+  );
+  it.effect.each([
     { platform: "darwin", architecture: "arm64", supported: true },
     { platform: "linux", architecture: "x64", supported: true },
     { platform: "linux", architecture: "x64", libc: "musl", supported: false },
@@ -466,7 +510,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
     }),
   );
 
-  it.effect("advertises desktopAppUpdate only with desktop mode and the control fd", () =>
+  it.effect("requires desktop mode and a control fd to advertise desktop app updates", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -483,7 +527,9 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
           Effect.provide(
             ServerEnvironment.layer.pipe(
               Layer.provide(ServerSecretStore.layer),
-              Layer.provide(ServerConfig.layer({ ...serverConfig, ...overrides })),
+              Layer.provide(
+                ServerConfig.layer({ ...serverConfig, desktopAppUpdate: true, ...overrides }),
+              ),
             ),
           ),
         );
@@ -734,7 +780,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
     }),
   );
 
-  it.effect("advertises desktopAppUpdate only with desktop mode and the control fd", () =>
+  it.effect("requires desktop mode and a control fd to advertise desktop app updates", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -751,7 +797,9 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
           Effect.provide(
             ServerEnvironment.layer.pipe(
               Layer.provide(ServerSecretStore.layer),
-              Layer.provide(ServerConfig.layer({ ...serverConfig, ...overrides })),
+              Layer.provide(
+                ServerConfig.layer({ ...serverConfig, desktopAppUpdate: true, ...overrides }),
+              ),
             ),
           ),
         );

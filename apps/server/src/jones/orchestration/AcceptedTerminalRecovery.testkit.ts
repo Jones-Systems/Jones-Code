@@ -122,7 +122,7 @@ export function registerAcceptedTerminalRecoveryTests(
               return yield* new ProviderEventIngestor.ProviderEventNormalizeError({
                 providerSessionId: input.providerSessionId,
                 threadId: input.threadId,
-                providerEvent: input.event,
+                eventType: input.event.type,
                 cause: admission(),
               });
             return [];
@@ -141,10 +141,14 @@ export function registerAcceptedTerminalRecoveryTests(
         `run:${scenario.status === "completed" ? "waiting" : "failed"}`,
         "pull-requests-refreshed",
       ]);
-      const attempt = result.events.find((event) => event.type === "run-attempt.updated")?.payload;
+      const attempt = result.finalEvents.find(
+        (event) => event.type === "run-attempt.updated",
+      )?.payload;
       assert.equal(attempt?.providerSettlement?.status, scenario.status);
       assert.deepEqual(attempt?.providerSettlement?.completedAt, completedAt);
-      const turn = result.events.find((event) => event.type === "provider-turn.updated")?.payload;
+      const turn = result.finalEvents.find(
+        (event) => event.type === "provider-turn.updated",
+      )?.payload;
       assert.equal(
         turn?.nativeTurnRef?.nativeId ?? null,
         scenario.driver === "codex" ? "original-native-turn" : null,
@@ -152,7 +156,10 @@ export function registerAcceptedTerminalRecoveryTests(
       assert.deepEqual(turn?.completedAt, completedAt);
       assert.equal(yield* Ref.get(interrupts), 0);
       assert.equal(result.committedEffects.length, scenario.status === "completed" ? 1 : 0);
-      assert.equal(result.events.filter((event) => event.type === "run-attempt.updated").length, 1);
+      assert.equal(
+        result.finalEvents.filter((event) => event.type === "run-attempt.updated").length,
+        1,
+      );
       if (scenario.seam === "write") assert.equal(yield* Ref.get(reads), 1);
     }),
   );
@@ -232,7 +239,7 @@ export function registerAcceptedTerminalRecoveryTests(
                   return yield* new ProviderEventIngestor.ProviderEventNormalizeError({
                     providerSessionId: input.providerSessionId,
                     threadId: input.threadId,
-                    providerEvent: input.event,
+                    eventType: input.event.type,
                     cause: admission(),
                   });
                 return [];
@@ -407,15 +414,15 @@ export function registerAcceptedTerminalRecoveryTests(
           "completed",
         );
         assert.equal(
-          result.events.filter((event) => event.type === "run-attempt.updated").length,
+          result.finalEvents.filter((event) => event.type === "run-attempt.updated").length,
           1,
         );
-        assert.equal(result.events.filter((event) => event.type === "run.updated").length, 1);
+        assert.equal(result.finalEvents.filter((event) => event.type === "run.updated").length, 1);
         assert.deepEqual(result.observed, [
           `run:${scenario.status === "completed" ? "waiting" : "failed"}`,
           "pull-requests-refreshed",
         ]);
-        const settlement = result.events.find((event) => event.type === "run-attempt.updated")
+        const settlement = result.finalEvents.find((event) => event.type === "run-attempt.updated")
           ?.payload.providerSettlement;
         assert.equal(settlement?.status, scenario.status);
         assert.deepEqual(settlement?.completedAt, completedAt);
@@ -461,7 +468,7 @@ export function registerAcceptedTerminalRecoveryTests(
             }),
           interruptTurn: () => Ref.update(interrupts, (n) => n + 1),
         });
-        assert.deepEqual(result.events, []);
+        assert.deepEqual(result.finalEvents, []);
         assert.deepEqual(result.committedEffects, []);
         assert.equal(yield* Ref.get(interrupts), 0);
       }),
@@ -499,7 +506,7 @@ export function registerAcceptedTerminalRecoveryTests(
             ),
           interruptTurn: () => Effect.die("Accepted terminal must not issue control"),
         });
-        const attempt = result.events.find(
+        const attempt = result.finalEvents.find(
           (event) => event.type === "run-attempt.updated",
         )?.payload;
         assert.equal(attempt?.providerSettlement?.status, "failed");
@@ -538,7 +545,7 @@ export function registerAcceptedTerminalRecoveryTests(
                           new ProviderEventIngestor.ProviderEventNormalizeError({
                             providerSessionId: input.providerSessionId,
                             threadId: input.threadId,
-                            providerEvent: input.event,
+                            eventType: input.event.type,
                             cause: admission(),
                           }),
                         )
@@ -596,7 +603,7 @@ export function registerAcceptedTerminalRecoveryTests(
           interruptTurn: () => Effect.die("A native snapshot must not issue control"),
         });
         assert.deepEqual(result.observed, []);
-        assert.deepEqual(result.events, []);
+        assert.deepEqual(result.finalEvents, []);
         assert.equal(reads, 2);
       }),
   );
@@ -633,7 +640,7 @@ export function registerAcceptedTerminalRecoveryTests(
                   new ProviderEventIngestor.ProviderEventNormalizeError({
                     providerSessionId: input.providerSessionId,
                     threadId: input.threadId,
-                    providerEvent: input.event,
+                    eventType: input.event.type,
                     cause: admission(),
                   }),
                 );

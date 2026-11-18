@@ -24,6 +24,14 @@
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/importedHistory.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/importedHistory/ImportedHistoryCommit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/importedHistory/ImportedHistoryManagement.ts"
     }
   ]
 }

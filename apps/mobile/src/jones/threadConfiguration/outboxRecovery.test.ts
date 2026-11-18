@@ -358,6 +358,7 @@ describe("mobile evidence-aware editable recovery", () => {
         const extra = {
           ...message.attachments[0]!,
           id: "newer-file",
+          name: "newer.txt",
           fileUri: "file:///synthetic-c3/newer.txt",
         };
         drafts.appendComposerDraftAttachments(keyOf(message), [extra]);
@@ -458,6 +459,7 @@ describe("mobile evidence-aware editable recovery", () => {
       const extra = {
         ...message.attachments[0]!,
         id: "newer-file",
+        name: "new.txt",
         fileUri: "file:///synthetic-c3/new.txt",
       };
       drafts.appendComposerDraftAttachments(keyOf(message), [extra]);

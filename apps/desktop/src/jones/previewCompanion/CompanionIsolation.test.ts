@@ -11,7 +11,7 @@ import {
   createCompanionAssignments,
   guardCompanionGuest,
   isCompanionGuest,
-  localBrowserChannel,
+  localBrowserHost,
 } from "./CompanionIsolation.ts";
 
 const remote = { threadId: "remote-thread", tabId: "remote-tab" };
@@ -77,19 +77,19 @@ describe("companion isolation", () => {
       host.replaceCompanionAssignments([remote]);
       host.attach(remote, companion.tab);
       host.attach(localTab, ordinary.tab);
-      const localChannel = localBrowserChannel(host);
+      const localHost = localBrowserHost(host);
       const source = {};
       const turn = (active: boolean) =>
         JSON.stringify({ type: "turn", threadId: remote.threadId, active });
       yield* host.handleCommandLine(turn(true), host.isCompanionAssigned, source);
-      yield* localChannel.onDesktopBrowserCommand(turn(true));
+      yield* localHost.handleCommandLine(turn(true));
       yield* host.handleCommandLine(line(remote, 1), host.isCompanionAssigned, source);
-      yield* localChannel.onDesktopBrowserCommand(line(localTab, 2));
+      yield* localHost.handleCommandLine(line(localTab, 2));
       yield* settleCommands;
       yield* TestClock.adjust("5 seconds");
       expect(companion.focusEmulation).toHaveBeenLastCalledWith({ enabled: true });
       expect(ordinary.focusEmulation).toHaveBeenLastCalledWith({ enabled: true });
-      yield* localChannel.onDesktopBrowserCommand(turn(false));
+      yield* localHost.handleCommandLine(turn(false));
       yield* TestClock.adjust("5 seconds");
       expect(ordinary.focusEmulation).toHaveBeenLastCalledWith({ enabled: false });
       expect(companion.focusEmulation).toHaveBeenLastCalledWith({ enabled: true });
@@ -147,14 +147,12 @@ describe("companion isolation", () => {
       host.replaceCompanionAssignments([remote]);
       host.attach(remote, companion.tab);
       host.attach(local, ordinary.tab);
-      const localChannel = localBrowserChannel(host);
+      const localHost = localBrowserHost(host);
       expect(yield* readEvents(host.eventsMatching(host.isCompanionAssigned), 1)).toEqual([
         { type: "attached", ...remote },
       ]);
-      expect(yield* readEvents(localChannel.desktopBrowserStream, 1)).toEqual([
-        { type: "attached", ...local },
-      ]);
-      yield* localChannel.onDesktopBrowserCommand(line(remote, 1));
+      expect(yield* readEvents(localHost.events, 1)).toEqual([{ type: "attached", ...local }]);
+      yield* localHost.handleCommandLine(line(remote, 1));
       yield* host.handleCommandLine(line(local, 2), host.isCompanionAssigned);
       expect(companion.sendCommand).not.toHaveBeenCalled();
       expect(ordinary.sendCommand).not.toHaveBeenCalled();
@@ -170,15 +168,15 @@ describe("companion isolation", () => {
       );
       yield* Effect.yieldNow;
       yield* host.handleCommandLine(line(remote, 3), host.isCompanionAssigned);
-      yield* localChannel.onDesktopBrowserCommand(JSON.stringify({ type: "release", ...remote }));
+      yield* localHost.handleCommandLine(JSON.stringify({ type: "release", ...remote }));
       // Starting the local FD sink must not reset an in-flight companion relay.
-      yield* readEvents(localChannel.desktopBrowserStream, 1);
+      yield* readEvents(localHost.events, 1);
       yield* settleCommands;
       finishCommand();
       const [, reply] = yield* Fiber.join(replies);
       expect(reply).toMatchObject({ type: "cdp", ...remote });
       expect(JSON.parse(reply!.message as string)).toMatchObject({ id: 3, result: {} });
-      yield* localChannel.onDesktopBrowserCommand(line(local, 4));
+      yield* localHost.handleCommandLine(line(local, 4));
       yield* settleCommands;
       expect(ordinary.sendCommand).toHaveBeenCalledOnce();
     }).pipe(Effect.scoped),

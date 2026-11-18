@@ -356,7 +356,11 @@ it.effect.each([
             type: "message.updated",
             threadId: f.waiter.id,
             runId: run.id,
-            payload: f.message(run.userMessageId, run),
+            payload: {
+              ...f.message(run.userMessageId, run),
+              createdBy: "user",
+              creationSource: "web",
+            },
           }),
         ],
       });

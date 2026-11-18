@@ -11,16 +11,15 @@
     "voice-cleanup": "node --env-file-if-exists=../.env voice-cleanup/run.ts",
     "test-signal": "node --env-file-if-exists=../.env test-signal/run.ts",
     "typecheck": "vp run tsrs:typecheck",
-    "typecheck:native": "node ../scripts/jones/tsrs/typecheck.ts --noEmit",
-    "test": "vp test run --config ../vite.config.ts --dir ."
+    "test": "vp test run --config ../vite.config.ts --dir .",
+    "typecheck:native": "node ../scripts/jones/tsrs/typecheck.ts --noEmit"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/provider-core": "workspace:*",
     "@t3tools/shared": "workspace:*",
-    "effect": "catalog:",
-    "t3": "workspace:*"
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

@@ -14,6 +14,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Ownership from "../../serverOwnership.ts";
+import * as Incarnation from "./sharedAdmission/DatabaseIncarnation.ts";
+import { prepareSyntheticOpen } from "./sharedAdmission/DatabaseIncarnation.fixture.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import {
   bindCheckedDatabaseOwner,
@@ -55,8 +57,10 @@ const fixture = <A, E>(
       const serverRuntimeStatePath = NodePath.join(stateDir, "server-runtime.json");
       return yield* Effect.gen(function* () {
         const ownership = yield* Ownership.acquireServerOwnership(serverRuntimeStatePath);
+        const { open } = yield* prepareSyntheticOpen(ownership.heldRuntimeOwner, root);
         return yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
+          yield* Incarnation.bindOpen(open);
           yield* deletionMigration;
           yield* sql.withTransaction(createRuntimeUseSchema);
           const owner = yield* bindCheckedDatabaseOwner(ownership.heldRuntimeOwner, {

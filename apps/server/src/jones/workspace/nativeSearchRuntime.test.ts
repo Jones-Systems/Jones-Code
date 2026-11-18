@@ -9,13 +9,199 @@ import {
 import { afterEach, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import { vi } from "vite-plus/test";
 
-import * as WorkspaceSearchIndex from "./nativeSearchRuntime.ts";
+import * as NodeFS from "node:fs";
+import * as NativeRuntime from "./nativeSearchRuntime.ts";
+import { nativeSearchProbeTestLayer } from "../serverParallelism/nativeWorkspace.testkit.ts";
+import { WorkspaceSearchProbe } from "../serverCompute/searchProbeClient.ts";
+import { probeFailure } from "../serverCompute/searchProbeProtocol.ts";
+import { WorkspaceSearchIndexScanTimedOut } from "../serverCompute/workspaceErrors.ts";
+const WorkspaceSearchIndex = {
+  ...NativeRuntime,
+  make: (...args: Parameters<typeof NativeRuntime.make>) =>
+    NativeRuntime.make(...args).pipe(
+      Effect.provide(
+        NodeFS.existsSync(args[0])
+          ? nativeSearchProbeTestLayer(args[0])
+          : Layer.succeed(WorkspaceSearchProbe, {
+              // Explicit nonexistent-path native-unit fixture. This is completed Git
+              // non-repository evidence in the fake boundary, never a production fallback.
+              run: () =>
+                Effect.succeed({
+                  exitCode: 128,
+                  stdout: "",
+                  stderr: "fatal: not a git repository",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  stdoutInvalidUtf8: false,
+                  stderrInvalidUtf8: false,
+                }),
+              beginScan: Effect.succeed({
+                owner: { kind: "scan" as const, epoch: 1 },
+                end: Effect.void,
+              }),
+            }),
+      ),
+    ),
+};
+
+const nativeServices = VcsProcess.layer.pipe(Layer.provideMerge(NodeServices.layer));
+const withNativeServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.scoped(effect).pipe(Effect.provide(nativeServices));
+
+// Receiving fixtures expose synchronous fake methods. Adapt their explicit results
+// to the pinned upstream async API; production never uses this fixture adapter.
+function asyncFinder(finder: FileFinder): FileFinder {
+  const empty = {
+    ok: true as const,
+    value: { items: [], scores: [], totalMatched: 0, totalFiles: 0, totalDirs: 0 },
+  };
+  return Object.assign(finder, {
+    fileSearchAsync: async (...args: Parameters<FileFinder["fileSearch"]>) =>
+      finder.fileSearch(...args),
+    mixedSearchAsync: async (...args: Parameters<FileFinder["mixedSearch"]>) =>
+      finder.mixedSearch?.(...args) ?? empty,
+    directorySearchAsync: async (...args: Parameters<FileFinder["directorySearch"]>) =>
+      finder.directorySearch?.(...args) ?? empty,
+    grepAsync: async (...args: Parameters<FileFinder["grep"]>) => finder.grep(...args),
+    scanFilesAsync: async () => finder.scanFiles(),
+    // Both refresh variants use the fixture's explicit native rescan result.
+    reindexAsync: async () => finder.scanFiles(),
+    getScanProgressAsync: async () =>
+      finder.getScanProgress?.() ?? {
+        ok: true as const,
+        value: { isScanning: false, isWarmupComplete: true },
+      },
+    watchAsync: async () => ({ ok: true as const, value: () => {} }),
+  });
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+it.effect.each(["list", "names", "contents"] as const)(
+  "retains the triggering %s query/page evidence and immediate probe failure",
+  (operation) =>
+    withNativeServices(
+      Effect.gen(function* () {
+        // Only the native external dependency is fake; the runtime's error mapping is real.
+        const finder = {
+          destroy: vi.fn(),
+          waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
+          getScanProgress: () => ({
+            ok: true as const,
+            value: { isScanning: true, isWarmupComplete: false },
+          }),
+        } as unknown as FileFinder;
+        vi.spyOn(FileFinder, "create").mockReturnValueOnce({
+          ok: true,
+          value: asyncFinder(finder),
+        });
+        const cause = probeFailure("queue-timeout");
+        const probes = WorkspaceSearchProbe.of({
+          run: (input) =>
+            input.kind === "ignoredPaths"
+              ? Effect.succeed({
+                  exitCode: 0,
+                  stdout: "",
+                  stderr: "",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  stdoutInvalidUtf8: false,
+                  stderrInvalidUtf8: false,
+                })
+              : Effect.fail(cause),
+          beginScan: Effect.fail(cause),
+        });
+        const runtime = yield* NativeRuntime.make(
+          "/synthetic/evidence",
+          operation === "contents" ? "content" : "paths",
+        ).pipe(Effect.provideService(WorkspaceSearchProbe, probes));
+        const query = "[λ-needle";
+        const error = yield* operation === "list"
+          ? runtime.list().pipe(Effect.flip)
+          : operation === "names"
+            ? runtime.search(query, 4, "file").pipe(Effect.flip)
+            : runtime
+                .searchContents({
+                  query,
+                  limit: 4,
+                  caseSensitive: true,
+                  wholeWord: false,
+                  useRegex: false,
+                })
+                .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "WorkspaceSearchIndexSearchFailed",
+          cwd: "/synthetic/evidence",
+          queryLength: operation === "list" ? 0 : query.length,
+          pageSize: operation === "list" ? 25_002 : operation === "names" ? 5 : 4,
+          reason: cause.message,
+        });
+        if (error._tag === "WorkspaceSearchIndexSearchFailed") expect(error.cause).toBe(cause);
+      }),
+    ),
+);
+
+it.effect(
+  "propagates the real content fallback scan timeout without changing its 15-second boundary",
+  () =>
+    withNativeServices(
+      Effect.gen(function* () {
+        const waitForIndexReady = vi.fn<FileFinder["waitForIndexReady"]>(async () => ({
+          ok: true,
+          value: false,
+        }));
+        const finder = {
+          destroy: vi.fn(),
+          waitForIndexReady,
+          getScanProgress: () => ({
+            ok: true as const,
+            value: { isScanning: true, isWarmupComplete: false },
+          }),
+        } as unknown as FileFinder;
+        vi.spyOn(FileFinder, "create").mockReturnValueOnce({
+          ok: true,
+          value: asyncFinder(finder),
+        });
+        const runtime = yield* NativeRuntime.make("/synthetic/timeout", "content").pipe(
+          Effect.provideService(
+            WorkspaceSearchProbe,
+            WorkspaceSearchProbe.of({
+              run: () =>
+                Effect.succeed({
+                  exitCode: 128,
+                  stdout: "",
+                  stderr: "fatal: not a git repository",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  stdoutInvalidUtf8: false,
+                  stderrInvalidUtf8: false,
+                }),
+              beginScan: Effect.die("Content fallback must not start a path scan"),
+            }),
+          ),
+        );
+        const error = yield* runtime
+          .searchContents({
+            query: "needle",
+            limit: 4,
+            caseSensitive: true,
+            wholeWord: false,
+            useRegex: false,
+          })
+          .pipe(Effect.flip);
+        expect(error).toBeInstanceOf(WorkspaceSearchIndexScanTimedOut);
+        expect(error).toMatchObject({ cwd: "/synthetic/timeout", timeout: "15 seconds" });
+        expect(waitForIndexReady.mock.calls).toEqual([[15_000]]);
+      }),
+    ),
+);
 
 function fileItem(relativePath: string): FileItem {
   return {
@@ -31,27 +217,29 @@ function fileItem(relativePath: string): FileItem {
 }
 
 it.effect("filters image searches before applying the result limit", () =>
-  Effect.scoped(
+  withNativeServices(
     Effect.gen(function* () {
       const items = [
         ...Array.from({ length: 200 }, (_, index) => fileItem(`src/file-${index}.ts`)),
         fileItem("public/icon.svg"),
       ];
-      const fileSearch = vi.fn(() => ({
-        ok: true as const,
-        value: {
-          items,
-          scores: [],
-          totalMatched: items.length,
-          totalFiles: items.length,
-        },
-      }));
+      const fileSearch = vi.fn(
+        (_query: string, _options?: { pageSize?: number; maxThreads?: number }) => ({
+          ok: true as const,
+          value: {
+            items,
+            scores: [],
+            totalMatched: items.length,
+            totalFiles: items.length,
+          },
+        }),
+      );
       const finder = {
         destroy: vi.fn(),
         waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
         fileSearch,
       } as unknown as FileFinder;
-      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: asyncFinder(finder) });
 
       const searchIndex = yield* WorkspaceSearchIndex.make("/workspace/project");
       const resultWithoutKind = yield* searchIndex.search("", 200, undefined, true);
@@ -60,13 +248,19 @@ it.effect("filters image searches before applying the result limit", () =>
       expect(resultWithoutKind.entries).toEqual([{ kind: "file", path: "public/icon.svg" }]);
       expect(resultWithDirectoryKind.entries).toEqual([{ kind: "file", path: "public/icon.svg" }]);
       expect(fileSearch).toHaveBeenCalledTimes(2);
-      expect(fileSearch).toHaveBeenCalledWith("", { pageSize: 25_002, maxThreads: 1 });
+      expect(fileSearch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ maxThreads: 1 }),
+      );
+      expect(
+        fileSearch.mock.calls.every((call) => (call[1] as { pageSize: number }).pageSize <= 25_002),
+      ).toBe(true);
     }),
   ),
 );
 
 it.effect("continues whole-word searches after a filtered grep page", () =>
-  Effect.scoped(
+  withNativeServices(
     Effect.gen(function* () {
       const nextCursor = {
         __brand: "GrepCursor",
@@ -114,7 +308,7 @@ it.effect("continues whole-word searches after a filtered grep page", () =>
         waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
         grep,
       } as unknown as FileFinder;
-      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: asyncFinder(finder) });
 
       const searchIndex = yield* WorkspaceSearchIndex.make("/workspace/project", "content");
       const result = yield* searchIndex.searchContents({
@@ -145,7 +339,7 @@ it.effect("continues whole-word searches after a filtered grep page", () =>
 it.effect.each(["paths", "content"] as const)(
   "waits for %s index readiness after refresh scans",
   (variant) =>
-    Effect.scoped(
+    withNativeServices(
       Effect.gen(function* () {
         const started = Promise.withResolvers<void>();
         const ready = Promise.withResolvers<Awaited<ReturnType<FileFinder["waitForIndexReady"]>>>();
@@ -160,7 +354,10 @@ it.effect.each(["paths", "content"] as const)(
         }));
         const scanFiles = vi.fn(() => ({ ok: true as const, value: undefined }));
         const finder = { destroy: vi.fn(), waitForIndexReady, scanFiles } as unknown as FileFinder;
-        vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+        vi.spyOn(FileFinder, "create").mockReturnValueOnce({
+          ok: true,
+          value: asyncFinder(finder),
+        });
         const index = yield* WorkspaceSearchIndex.make("/workspace/project", variant);
         waitForIndexReady.mockImplementationOnce(() => {
           started.resolve();
@@ -178,7 +375,7 @@ it.effect.each(["paths", "content"] as const)(
 );
 
 it.effect("sets the pinned native cache and watcher controls without a grep file-size filter", () =>
-  Effect.scoped(
+  withNativeServices(
     Effect.gen(function* () {
       const grep = vi.fn((_query: string, _options?: GrepOptions) => ({
         ok: true as const,
@@ -198,7 +395,7 @@ it.effect("sets the pinned native cache and watcher controls without a grep file
       } as unknown as FileFinder;
       const create = vi
         .spyOn(FileFinder, "create")
-        .mockReturnValueOnce({ ok: true, value: finder });
+        .mockReturnValueOnce({ ok: true, value: asyncFinder(finder) });
       const runtime = yield* WorkspaceSearchIndex.make("/synthetic", "content");
       yield* runtime.searchContents({
         query: "rare",
@@ -225,7 +422,7 @@ it.effect("sets the pinned native cache and watcher controls without a grep file
 );
 
 it.effect("retains sorted directory ancestors and the 25000-entry listing boundary", () =>
-  Effect.scoped(
+  withNativeServices(
     Effect.gen(function* () {
       const mixedSearch = vi.fn(() => ({
         ok: true as const,
@@ -245,7 +442,7 @@ it.effect("retains sorted directory ancestors and the 25000-entry listing bounda
         waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
         mixedSearch,
       } as unknown as FileFinder;
-      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: asyncFinder(finder) });
       const runtime = yield* WorkspaceSearchIndex.make("/synthetic");
       const result = yield* runtime.list();
       expect(result.entries).toHaveLength(25_000);
@@ -260,7 +457,7 @@ it.effect("retains sorted directory ancestors and the 25000-entry listing bounda
 );
 
 it.effect("allows partial path readiness while retaining native scan/warmup observations", () =>
-  Effect.scoped(
+  withNativeServices(
     Effect.gen(function* () {
       const finder = {
         destroy: vi.fn(),
@@ -275,10 +472,13 @@ it.effect("allows partial path readiness while retaining native scan/warmup obse
           value: { items: [], scores: [], totalMatched: 0, totalFiles: 0, totalDirs: 0 },
         }),
       } as unknown as FileFinder;
-      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: asyncFinder(finder) });
       const runtime = yield* WorkspaceSearchIndex.make("/synthetic", "paths");
       expect(yield* runtime.list()).toEqual({ entries: [], truncated: true });
-      expect(runtime.status()).toEqual({ scanning: true, warmupComplete: false });
+      expect(yield* Effect.promise(() => runtime.status())).toEqual({
+        scanning: true,
+        warmupComplete: false,
+      });
     }),
   ),
 );
@@ -286,7 +486,7 @@ it.effect("allows partial path readiness while retaining native scan/warmup obse
 it.effect(
   "preserves actual pinned-native Unicode whole-word matches and refresh over synthetic files",
   () =>
-    Effect.scoped(
+    withNativeServices(
       Effect.gen(function* () {
         const fs = yield* Effect.promise(() => import("node:fs/promises"));
         const os = yield* Effect.promise(() => import("node:os"));
@@ -348,13 +548,15 @@ it.effect(
 );
 
 it.effect("passes the supported qualification log option only when explicitly supplied", () =>
-  Effect.scoped(
+  withNativeServices(
     Effect.gen(function* () {
       const finder = {
         destroy: vi.fn(),
         waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
       } as unknown as FileFinder;
-      const create = vi.spyOn(FileFinder, "create").mockReturnValue({ ok: true, value: finder });
+      const create = vi
+        .spyOn(FileFinder, "create")
+        .mockReturnValue({ ok: true, value: asyncFinder(finder) });
       yield* WorkspaceSearchIndex.make("/synthetic/ordinary");
       expect(create.mock.calls[0]?.[0]).not.toHaveProperty("logFilePath");
       yield* WorkspaceSearchIndex.make("/synthetic/blocked-workspace", "paths", {
@@ -371,7 +573,7 @@ it.effect("passes the supported qualification log option only when explicitly su
 it.effect.each(["scan-failure", "false-readiness"] as const)(
   "strict content refresh fails honestly on %s",
   (mode) =>
-    Effect.scoped(
+    withNativeServices(
       Effect.gen(function* () {
         const scanFiles = vi.fn(() =>
           mode === "scan-failure"
@@ -383,7 +585,10 @@ it.effect.each(["scan-failure", "false-readiness"] as const)(
           value: true,
         }));
         const finder = { destroy: vi.fn(), waitForIndexReady, scanFiles } as unknown as FileFinder;
-        vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+        vi.spyOn(FileFinder, "create").mockReturnValueOnce({
+          ok: true,
+          value: asyncFinder(finder),
+        });
         const runtime = yield* WorkspaceSearchIndex.make("/workspace/project", "content");
         waitForIndexReady.mockResolvedValueOnce({ ok: true, value: false });
         const result = yield* runtime.refreshContent().pipe(Effect.result);
@@ -397,15 +602,13 @@ it.effect.each(["scan-failure", "false-readiness"] as const)(
           },
         });
         expect(scanFiles).toHaveBeenCalledTimes(1);
-        expect(waitForIndexReady.mock.calls).toEqual(
-          mode === "scan-failure" ? [[15000]] : [[15000], [15000]],
-        );
+        expect(waitForIndexReady.mock.calls).toEqual(mode === "scan-failure" ? [] : [[15000]]);
       }),
     ),
 );
 
 it.effect("strict content cancellation retains the finder until native readiness settles", () =>
-  Effect.scoped(
+  withNativeServices(
     Effect.gen(function* () {
       const entered = Promise.withResolvers<void>();
       const ready = Promise.withResolvers<Awaited<ReturnType<FileFinder["waitForIndexReady"]>>>();
@@ -419,7 +622,7 @@ it.effect("strict content cancellation retains the finder until native readiness
         waitForIndexReady,
         scanFiles: vi.fn(() => ({ ok: true, value: undefined })),
       } as unknown as FileFinder;
-      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+      vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: asyncFinder(finder) });
       yield* Effect.gen(function* () {
         const runtime = yield* WorkspaceSearchIndex.make("/workspace/project", "content");
         waitForIndexReady.mockImplementationOnce(() => {
@@ -441,7 +644,7 @@ it.effect("strict content cancellation retains the finder until native readiness
 );
 
 it.effect("strict real native scans expose successive versions of the same physical file", () =>
-  Effect.scoped(
+  withNativeServices(
     Effect.gen(function* () {
       const fs = yield* Effect.promise(() => import("node:fs/promises"));
       const os = yield* Effect.promise(() => import("node:os"));
@@ -482,4 +685,42 @@ it.effect("strict real native scans expose successive versions of the same physi
       }
     }),
   ),
+);
+
+it.effect(
+  "strict refresh cancellation retains its finder while the native restart is pending",
+  () =>
+    withNativeServices(
+      Effect.gen(function* () {
+        const entered = Promise.withResolvers<void>();
+        const restarted = Promise.withResolvers<Awaited<ReturnType<FileFinder["reindexAsync"]>>>();
+        const destroy = vi.fn();
+        const finder = asyncFinder({
+          destroy,
+          waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
+        } as unknown as FileFinder);
+        const reindex = vi.fn<FileFinder["reindexAsync"]>((newPath) => {
+          expect(newPath).toBe("/workspace/project");
+          entered.resolve();
+          return restarted.promise;
+        });
+        finder.reindexAsync = reindex;
+        vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
+        yield* Effect.gen(function* () {
+          const runtime = yield* WorkspaceSearchIndex.make("/workspace/project", "content");
+          const work = yield* runtime.refreshContent().pipe(Effect.forkChild);
+          yield* Effect.promise(() => entered.promise);
+          const cancellation = yield* Fiber.interrupt(work).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          expect(cancellation.pollUnsafe()).toBeUndefined();
+          expect(destroy).not.toHaveBeenCalled();
+          restarted.resolve({ ok: true, value: undefined });
+          yield* Fiber.join(cancellation);
+          expect(work.pollUnsafe()).toMatchObject({ _tag: "Failure" });
+          expect(reindex).toHaveBeenCalledTimes(1);
+        }).pipe(
+          Effect.ensuring(Effect.sync(() => restarted.resolve({ ok: true, value: undefined }))),
+        );
+      }),
+    ),
 );

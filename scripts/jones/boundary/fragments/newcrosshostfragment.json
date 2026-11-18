@@ -157,6 +157,34 @@
     {
       "from": "apps/server/src/peer/RemoteDelegation.ts",
       "to": "apps/server/src/jones/remoteDelegation/FollowerSupervision.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/remoteDelegation/SendIngress.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+      "to": "apps/server/src/jones/remoteDelegation/SendIngressHandler.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/remoteDelegation/FollowUp.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/remoteDelegation/SendIngress.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/remoteDelegation/SendPreparation.ts"
+    },
+    {
+      "from": "apps/server/src/peer/RemoteDelegation.test.ts",
+      "to": "apps/server/src/jones/remoteDelegation/RemoteDelegation.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerForwarding.test.ts",
+      "to": "apps/server/src/jones/remoteDelegation/RemoteDelegation.testkit.ts"
     }
   ]
 }

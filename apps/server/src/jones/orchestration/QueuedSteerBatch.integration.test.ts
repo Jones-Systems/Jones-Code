@@ -3,6 +3,8 @@ import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore
 import * as ServerSettings from "../../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
 import {
+  ChatAttachmentId,
+  type ChatAttachment,
   CommandId,
   MessageId,
   EventId,
@@ -15,6 +17,7 @@ import {
   ProviderTurnId,
   ThreadId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ProviderThread,
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -33,6 +36,8 @@ import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderTurnStartService from "../../orchestration-v2/ProviderTurnStartService.ts";
+import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { queuedToolBoundaryTarget } from "../../orchestration-v2/QueuedToolBoundary.ts";
@@ -61,6 +66,18 @@ const makeQueuedProviderFixture = ({
       openSession: (input) =>
         Effect.gen(function* () {
           const now = yield* DateTime.now;
+          const lifecycle = input.runtimeLifecycle;
+          if (lifecycle === undefined)
+            return yield* Effect.die("Synthetic adapter requires the manager's actual lifecycle");
+          const runtimeGeneration = yield* lifecycle.reserve(input.threadId);
+          yield* lifecycle.admit({ runtimeGeneration, threadId: input.threadId });
+          const bindThread = (providerThread: OrchestrationV2ProviderThread) =>
+            lifecycle.bind({
+              providerThread,
+              runtimeGeneration,
+              requested: ProviderAdapter.requestedRuntimeIdentity(input.modelSelection, driver),
+              observed: ProviderAdapter.unobservedRuntimeIdentity(),
+            });
           return {
             instanceId,
             driver,
@@ -78,9 +95,11 @@ const makeQueuedProviderFixture = ({
               lastError: null,
             },
             events: Stream.fromQueue(events),
-            ensureThread: ({ threadId }) =>
-              Effect.succeed({
-                id: ProviderThreadId.make(`provider-thread:${threadId}`),
+            ensureThread: ({ threadId, existingProviderThread }) =>
+              bindThread({
+                id:
+                  existingProviderThread?.id ??
+                  ProviderThreadId.make(`provider-thread:${threadId}`),
                 driver,
                 providerInstanceId: instanceId,
                 providerSessionId: input.providerSessionId,
@@ -100,10 +119,13 @@ const makeQueuedProviderFixture = ({
                 createdAt: now,
                 updatedAt: now,
               }),
-            resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+            resumeThread: ({ providerThread }) => bindThread(providerThread),
             startTurn: (turn) =>
               Effect.gen(function* () {
+                assert.isDefined(turn.revalidateStartAdmission);
+                yield* turn.revalidateStartAdmission!;
                 started.push(turn);
+                const now = yield* DateTime.now;
                 yield* Queue.offer(events, {
                   type: "provider_turn.updated",
                   driver,
@@ -142,12 +164,110 @@ const makeQueuedProviderFixture = ({
     return { adapter, events, started, steered, interrupted };
   });
 
-it.effect.each(["manual", "automatic", "completed", "switched"] as const)(
+it.effect("replay start requires the original worker claim and accepted command receipt", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("queued-start-admission");
+      const driver = ProviderDriverKind.make("codex");
+      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "test-model" };
+      const { adapter, started } = yield* makeQueuedProviderFixture({
+        cwd,
+        driver,
+        modelSelection,
+      });
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const starts = yield* ProviderTurnStartService.ProviderTurnStartServiceV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const threadId = ThreadId.make("thread:original-start-admission");
+        const commandId = CommandId.make("original-start-admission:start");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("original-start-admission:create"),
+          threadId,
+          projectId: ProjectId.make("project:batch"),
+          title: "Original admission",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId,
+          threadId,
+          messageId: MessageId.make("original-start-admission:message"),
+          text: "guarded start",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+        const receipt = yield* receipts.getByCommandId(commandId);
+        assert.isTrue(Option.isSome(receipt));
+        if (Option.isNone(receipt)) return;
+        assert.equal(receipt.value.status, "accepted");
+        const pending = (yield* outbox.listByThreadId(threadId)).filter(
+          (effect) => effect.request.type === "provider-turn.start",
+        );
+        assert.lengthOf(pending, 1);
+        assert.equal(pending[0]!.status, "pending");
+        assert.equal(pending[0]!.attemptCount, 0);
+        const unclaimed = yield* starts.start({ threadId, runId: run.id }).pipe(Effect.result);
+        assert.equal(unclaimed._tag, "Failure");
+        assert.lengthOf(started, 0);
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.status,
+          "starting",
+        );
+        yield* worker.drain();
+        assert.lengthOf(started, 1);
+        assert.equal(started[0]!.runId, run.id);
+        assert.equal(started[0]!.attemptId, run.activeAttemptId);
+        const completed = yield* outbox.get(pending[0]!.id);
+        assert.isTrue(Option.isSome(completed));
+        if (Option.isNone(completed)) return;
+        assert.equal(completed.value.status, "succeeded");
+        assert.equal(completed.value.attemptCount, 1);
+        assert.equal(completed.value.commandId, commandId);
+        assert.deepEqual(yield* receipts.getByCommandId(commandId), receipt);
+        const expiredAdmission = yield* started[0]!.revalidateStartAdmission!.pipe(Effect.result);
+        assert.equal(
+          expiredAdmission._tag,
+          "Failure",
+          "A settled claim cannot authorize another start",
+        );
+      }).pipe(
+        Effect.provide(
+          // The receipt reader shares the harness database, so it reads the orchestrator's receipts.
+          CommandReceiptStore.layer.pipe(
+            Layer.provideMerge(
+              ProviderReplayHarness.layerWithRegistryAndServices(
+                { name: "queued-start-admission" },
+                ProviderAdapterRegistry.layerFromAdapters([adapter]),
+                { runEffectWorker: false },
+              ),
+            ),
+          ),
+        ),
+      );
+    }),
+  ),
+);
+
+it.effect.each(["manual", "automatic", "completed", "switched", "bounded"] as const)(
   "originals use one batch effect and preserve delivery on %s",
   (mode) =>
     Effect.scoped(
       Effect.gen(function* () {
         const count = mode === "switched" ? 4 : 22;
+        const promotedCount = mode === "bounded" ? 2 : count;
         const driver = ProviderDriverKind.make("codex");
         const instanceId = ProviderInstanceId.make("codex");
         const modelSelection = { instanceId, model: "test-model" };
@@ -177,7 +297,8 @@ it.effect.each(["manual", "automatic", "completed", "switched"] as const)(
             createdBy: "user",
             creationSource: "web",
           });
-          const running = yield* orchestrator.streamDomainEvents.pipe(
+          const running = yield* orchestrator.streamStoredEvents.pipe(
+            Stream.map((stored) => stored.event),
             Stream.filter(
               (event: OrchestrationV2DomainEvent) =>
                 event.type === "provider-turn.updated" && event.payload.status === "running",
@@ -198,6 +319,16 @@ it.effect.each(["manual", "automatic", "completed", "switched"] as const)(
             creationSource: "web",
           });
           yield* worker.drain();
+          // Fail with the actual retained effect error before awaiting a running
+          // signal that a failed first start can never publish.
+          const failedStarts = yield* sql`
+            SELECT effect_type, status, last_error FROM orchestration_v2_effect_outbox
+            WHERE thread_id = ${threadId} AND last_error IS NOT NULL`;
+          assert.deepEqual(failedStarts, []);
+          const initialEffects = yield* sql`
+            SELECT effect_type, status, last_error FROM orchestration_v2_effect_outbox
+            WHERE thread_id = ${threadId}`;
+          assert.lengthOf(started, 1, JSON.stringify(initialEffects));
           yield* Fiber.join(running);
           const threads = yield* ThreadManagementService.ThreadManagementService.pipe(
             Effect.provide(
@@ -213,8 +344,19 @@ it.effect.each(["manual", "automatic", "completed", "switched"] as const)(
               projectId: ProjectId.make("project:batch"),
               threadId,
               messageId: MessageId.make(`message:${i}`),
-              text: `queued input ${i}`,
-              attachments: [],
+              text: mode === "bounded" && i === 2 ? "x".repeat(120_000) : `queued input ${i}`,
+              attachments:
+                i === 0
+                  ? [
+                      {
+                        id: ChatAttachmentId.make("batch-file"),
+                        type: "file",
+                        name: "context.txt",
+                        mimeType: "text/plain",
+                        sizeBytes: 1,
+                      } satisfies ChatAttachment,
+                    ]
+                  : [],
               createdBy: "agent" as const,
               creationSource: "mcp" as const,
               senderThreadId: ThreadId.make(`sender:${i}`),
@@ -264,6 +406,7 @@ it.effect.each(["manual", "automatic", "completed", "switched"] as const)(
             targetRunId: started[0]!.runId,
             items: before.runs
               .filter((run) => run.status === "queued")
+              .slice(0, promotedCount)
               .map((run) => ({
                 queuedRunId: run.id,
                 messageId: run.userMessageId,
@@ -308,6 +451,35 @@ it.effect.each(["manual", "automatic", "completed", "switched"] as const)(
               );
             }
           }
+          for (const index of [0, 1]) {
+            const freshSession = {
+              ...before,
+              runs: before.runs.map((run) =>
+                run.id === command.items[index]!.queuedRunId ? { ...run, freshContext: true } : run,
+              ),
+            };
+            assert.isTrue("error" in validateQueuedSteerBatch(freshSession, command));
+          }
+          assert.isTrue("error" in validateQueuedSteerBatch(before, { ...command, items: [] }));
+          assert.isTrue(
+            "error" in
+              validateQueuedSteerBatch(
+                {
+                  ...before,
+                  providerSessions: before.providerSessions.map((session) => ({
+                    ...session,
+                    capabilities: {
+                      ...session.capabilities,
+                      turns: {
+                        ...session.capabilities.turns,
+                        activeSteeringAcceptsAttachments: false,
+                      },
+                    },
+                  })),
+                },
+                command,
+              ),
+          );
           const firstMessage = before.messages.find(
             (message) => message.id === command.items[0]!.messageId,
           )!;
@@ -459,8 +631,26 @@ it.effect.each(["manual", "automatic", "completed", "switched"] as const)(
             });
             yield* Fiber.join(promoted);
           } else {
-            yield* orchestrator.dispatch(command);
-            yield* orchestrator.dispatch(command);
+            const input = {
+              commandId: command.commandId,
+              threadId,
+              targetRunId: command.targetRunId,
+              queuedRunIds: before.runs
+                .filter((run) => run.status === "queued")
+                .map((run) => run.id),
+            };
+            const refused = yield* threads.promoteQueuedBatch!({
+              ...input,
+              commandId: CommandId.make("batch:wrong-prefix"),
+              queuedRunIds: [...input.queuedRunIds].reverse(),
+            }).pipe(Effect.result);
+            assert.equal(refused._tag, "Failure");
+            const accepted = yield* threads.promoteQueuedBatch!(input);
+            assert.equal(accepted.promotedCount, promotedCount);
+            assert.equal(accepted.remainingCount, count - promotedCount);
+            const replay = yield* orchestrator.dispatch(command);
+            assert.equal(replay.sequence, accepted.sequence);
+            assert.isTrue(replay.replayed);
           }
           const effects =
             yield* sql`SELECT effect_type FROM orchestration_v2_effect_outbox WHERE effect_type = 'provider-turn.steer-batch'`;
@@ -502,12 +692,13 @@ it.effect.each(["manual", "automatic", "completed", "switched"] as const)(
           }
           yield* worker.drain();
           assert.equal(steered.length, 1);
-          for (let i = 0; i < count; i++)
+          assert.deepEqual(steered[0]!.attachments, firstMessage.attachments);
+          for (let i = 0; i < promotedCount; i++)
             assert.include(steered[0]!.text, `sender: thread sender:${i}`);
           const after = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(
             after.runs.filter((run) => run.status === "queued").length,
-            mode === "automatic" ? 1 : 0,
+            count - promotedCount + (mode === "automatic" ? 1 : 0),
           );
           if (mode === "automatic")
             assert.isUndefined(
@@ -518,8 +709,17 @@ it.effect.each(["manual", "automatic", "completed", "switched"] as const)(
             (item) =>
               item.type === "user_message" && item.inputIntent === "promoted_queued_to_steer",
           );
-          assert.equal(promoted.length, count);
-          assert.equal(new Set(promoted.map((item) => item.ordinal)).size, count);
+          assert.equal(promoted.length, promotedCount);
+          assert.equal(new Set(promoted.map((item) => item.ordinal)).size, promotedCount);
+          for (const item of promoted) {
+            assert.equal(item.type, "user_message");
+            if (item.type !== "user_message") continue;
+            const original = before.messages.find((message) => message.id === item.messageId)!;
+            assert.equal(item.createdBy, original.createdBy);
+            assert.equal(item.creationSource, original.creationSource);
+            assert.equal(item.senderThreadId, original.senderThreadId);
+            assert.deepEqual(item.attachments, original.attachments);
+          }
           for (const item of command.items)
             assert.equal(
               after.messages.find((message) => message.id === item.messageId)?.runId,
@@ -913,6 +1113,86 @@ it.effect.each(["codex", "cursor"] as const)(
           );
           yield* assertNoMonitorPromotion;
           assert.equal(steered.length, 1);
+          assert.deepEqual(interrupted, []);
+
+          // A duplicate completion cannot spend a later queued message. A fresh tool
+          // completion is the serial positive control that proves the duplicate was consumed.
+          const control = yield* orchestrator.getThreadProjection(controlThreadId);
+          const originalBoundary = control.nodes.find(
+            (node) => node.id === NodeId.make(`tool:${controlThreadId}`),
+          )!;
+          const laterMessageId = MessageId.make("composer:after-original-boundary");
+          yield* orchestrator.dispatch({
+            ...monitorCommand,
+            commandId: CommandId.make("composer:after-original-boundary"),
+            threadId: controlThreadId,
+            messageId: laterMessageId,
+            text: "Wait for a fresh safe boundary",
+            queuedToolBoundaryEligible: true,
+          });
+          const laterRun = (yield* orchestrator.getThreadProjection(controlThreadId)).runs.find(
+            (run) => run.userMessageId === laterMessageId,
+          )!;
+          const duplicate = (yield* sink.write({
+            events: [
+              {
+                id: EventId.make("boundary:duplicate"),
+                type: "node.updated",
+                threadId: controlThreadId,
+                runId: originalBoundary.runId!,
+                occurredAt: yield* DateTime.now,
+                payload: originalBoundary,
+              },
+            ],
+          }))[0]!;
+          assert.isFalse(
+            yield* sink.canPromoteQueuedAtToolBoundary({
+              threadId: controlThreadId,
+              activeRunId: originalBoundary.runId!,
+              queuedRunId: laterRun.id,
+              messageId: laterMessageId,
+              boundary: duplicate,
+              runtimeMode: control.thread.runtimeMode,
+              interactionMode: control.thread.interactionMode,
+            }),
+          );
+          const laterPromoted = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter(
+              (event) => event.type === "message.updated" && event.payload.id === laterMessageId,
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped,
+          );
+          const freshNodeId = NodeId.make("tool:fresh-after-duplicate");
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("boundary:fresh-after-duplicate"),
+                type: "node.updated",
+                threadId: controlThreadId,
+                runId: originalBoundary.runId!,
+                occurredAt: yield* DateTime.now,
+                payload: {
+                  ...originalBoundary,
+                  id: freshNodeId,
+                  nativeItemRef: { driver, nativeId: "fresh-after-duplicate", strength: "strong" },
+                },
+              },
+            ],
+          });
+          yield* Fiber.join(laterPromoted);
+          yield* worker.drain();
+          const promotions = yield* sql<{
+            command_id: string;
+          }>`SELECT command_id FROM orchestration_command_receipts
+            WHERE aggregate_id = ${controlThreadId} AND status = 'accepted'
+              AND command_type IN ('queued-message.promote-batch-to-steer', 'queued-message.promote-to-steer')`;
+          assert.lengthOf(promotions, 2);
+          assert.isFalse(
+            promotions.some((receipt) => receipt.command_id.endsWith(`:${duplicate.sequence}`)),
+          );
+          assert.equal(steered.length, 2);
           assert.deepEqual(interrupted, []);
         }).pipe(
           Effect.provide(

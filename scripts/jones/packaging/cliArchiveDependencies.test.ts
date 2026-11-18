@@ -93,8 +93,13 @@ describe("CLI archive patched dependencies", () => {
       patchedDependencies: workspace.patchedDependencies,
       lockfile: inputs.lockfile,
     });
-    expect(result.dependencies).toEqual({ ...dependencies, "node-pty": "1.2.0-beta.15" });
+    expect(result.dependencies).toEqual({
+      ...dependencies,
+      "node-pty": "1.2.0-beta.15",
+      zod: "4.6.7",
+    });
     expect(result.patchedDependencies).toEqual({
+      "@cursor/sdk@1.3.1": workspace.patchedDependencies["@cursor/sdk@1.3.1"],
       "node-pty@1.2.0-beta.15": workspace.patchedDependencies["node-pty@1.2.0-beta.15"],
       "@ff-labs/fff-node@0.11.0": workspace.patchedDependencies["@ff-labs/fff-node@0.11.0"],
     });
@@ -200,6 +205,53 @@ describe("CLI archive patched dependencies", () => {
     const input = fixture();
     mutate(input);
     expect(() => plan(input)).toThrow();
+  });
+
+  it.each([
+    "different patched root",
+    "unstaged peer",
+    "stale peer specifier",
+    "out-of-range peer",
+    "different importer resolution",
+    "different snapshot dependency",
+    "missing peer snapshot",
+    "conflicting peer override",
+  ])("rejects a peer-qualified patch with %s", (defect) => {
+    const name = defect === "different patched root" ? "other" : "@cursor/sdk";
+    const peerSpecifier = defect === "out-of-range peer" ? "^3.0.0" : "^4.0.0";
+    const patchKey = `${name}@1.0.0`;
+    const version = `1.0.0(patch_hash=${ptyHash})(zod@4.1.0)`;
+    expect(() =>
+      planCliArchiveDependencies({
+        dependencies: {
+          [name]: "1.0.0",
+          ...(defect === "unstaged peer" ? {} : { zod: peerSpecifier }),
+        },
+        patchedDependencies: { [patchKey]: "patches/sdk.patch" },
+        lockfile: JSON.stringify({
+          lockfileVersion: "9.0",
+          overrides: defect === "conflicting peer override" ? { zod: "4.2.0" } : {},
+          patchedDependencies: { [patchKey]: ptyHash },
+          importers: {
+            "apps/server": {
+              dependencies: {
+                [name]: { specifier: "1.0.0", version },
+                zod: {
+                  specifier: defect === "stale peer specifier" ? "^3.0.0" : peerSpecifier,
+                  version: defect === "different importer resolution" ? "4.2.0" : "4.1.0",
+                },
+              },
+            },
+          },
+          snapshots: {
+            [`${name}@${version}`]: {
+              dependencies: { zod: defect === "different snapshot dependency" ? "4.2.0" : "4.1.0" },
+            },
+            ...(defect === "missing peer snapshot" ? {} : { "zod@4.1.0": {} }),
+          },
+        }),
+      }),
+    ).toThrow("zod peer");
   });
 
   it("rejects a missing server importer", () => {

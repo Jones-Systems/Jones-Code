@@ -25,6 +25,9 @@ import {
   type HeldRuntimeOwnerToken,
 } from "./CheckedRuntimeOwner.ts";
 
+import * as Incarnation from "./sharedAdmission/DatabaseIncarnation.ts";
+import { prepareSyntheticOpen } from "./sharedAdmission/DatabaseIncarnation.fixture.ts";
+
 const isCheckedRuntimeOwnerError = Schema.is(CheckedRuntimeOwnerError);
 
 const platform = ProcessRunner.layer.pipe(
@@ -50,8 +53,10 @@ const fixture = <A, E, R>(use: (input: Fixture) => Effect.Effect<A, E, R>) =>
       const dbPath = NodePath.join(stateDir, "statev2.sqlite");
       return yield* Effect.gen(function* () {
         const ownership = yield* Ownership.acquireServerOwnership(serverRuntimeStatePath);
+        const prepared = yield* prepareSyntheticOpen(ownership.heldRuntimeOwner, root);
         return yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
+          yield* Incarnation.bindOpen(prepared.open);
           yield* sql`CREATE TABLE synthetic_fixture (value TEXT)`;
           return yield* use({
             token: ownership.heldRuntimeOwner,
@@ -226,6 +231,13 @@ describe("checked held runtime owner", () => {
           (error) =>
             isCheckedRuntimeOwnerError(error) && error.reason === "database_identity_changed",
         );
+        NodeFS.renameSync(input.dbPath, `${input.dbPath}.replacement`);
+        NodeFS.renameSync(`${input.dbPath}.retained`, input.dbPath);
+        NodeAssert.throws(
+          () => assertCheckedDatabaseOwner(bound),
+          (error) =>
+            isCheckedRuntimeOwnerError(error) && error.reason === "database_binding_invalidated",
+        );
       }),
     ),
   );
@@ -268,6 +280,12 @@ describe("checked held runtime owner", () => {
             () => assertCheckedDatabaseOwner(bound),
             (error) =>
               isCheckedRuntimeOwnerError(error) && error.reason === "owner_lock_identity_changed",
+          );
+          NodeFS.renameSync(lockPath, `${lockPath}.replacement`);
+          NodeFS.renameSync(`${lockPath}.retained`, lockPath);
+          assert.strictEqual(
+            yield* reason(bindCheckedDatabaseOwner(input.token, input)),
+            "owner_scope_closed",
           );
         }),
       ),

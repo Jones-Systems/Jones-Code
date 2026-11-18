@@ -5,8 +5,11 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeVM from "node:vm";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { JonesActionsClient } from "@t3tools/shared/jones/jonesActions";
+import * as Effect from "effect/Effect";
+import * as DesktopIpc from "../../ipc/DesktopIpc.ts";
 import { createPickerVerificationCore } from "./pickerVerificationCore.ts";
 import { createDesktopUpdateBridge } from "./updateBridge.ts";
+import { registerDesktopUpdateIpc } from "./updateIpcRegistration.ts";
 import { createMemoryIpc } from "../../../../../scripts/jones/updates/packaged-picker-memory-ipc.mjs";
 import {
   createPickerFixture,
@@ -99,7 +102,25 @@ it.each(["unchanged", "wrong-latest", "same-id-different-identity"] as const)(
         },
       });
       try {
-        await core.register(ipc.main);
+        // Memory sync events carry no sender; name the one renderer its invoke events name.
+        const main: DesktopIpc.DesktopIpcMain = {
+          ...ipc.main,
+          on: (channel, listener) =>
+            ipc.main.on(channel, (event) => {
+              const syncEvent: DesktopIpc.DesktopIpcSyncEvent = {
+                sender: { id: 1 },
+                returnValue: undefined,
+              };
+              listener(syncEvent);
+              event.returnValue = syncEvent.returnValue;
+            }),
+        };
+        // Composed as the Electron host does, with the real IPC sender guard.
+        await core.register(
+          registerDesktopUpdateIpc(
+            DesktopIpc.make(main, (event) => Effect.succeed(event.sender.id === 1)),
+          ),
+        );
         const bridge = createDesktopUpdateBridge(ipc.renderer);
         const source = await NodeFSP.readFile(
           new URL("./pickerVerificationMain.ts", import.meta.url),

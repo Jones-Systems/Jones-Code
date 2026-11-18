@@ -12,6 +12,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ServerActivation } from "../../serverActivation.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
 import { DependencyWakeCommit } from "./DependencyCommit.ts";
 import * as Changes from "./DependencyChanges.ts";
@@ -28,6 +29,7 @@ const ports = (
 ) => {
   let wakeOrdinal = 1;
   return Layer.mock(Orchestrator.OrchestratorV2)({
+    ...unusedCorePorts(),
     getThreadRecords: (threadId, fields, filter) =>
       f.projection
         .getThreadRecords(threadId, fields, filter)
@@ -93,7 +95,8 @@ const ports = (
           commandType: command.type,
           threadId: command.threadId,
           acceptedAt: Fixture.time,
-          dependencyWake: wake,
+          // Production spreads the optional wake the same way.
+          ...(wake === undefined ? {} : { dependencyWake: wake }),
           events: [
             f.event({
               type: "run.created",

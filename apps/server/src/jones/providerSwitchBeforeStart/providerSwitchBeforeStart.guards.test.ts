@@ -211,13 +211,10 @@ it.effect.each(variants)("keeps the saved-conversation guard for $name", ({ name
         };
       }),
   });
-  const layer = Layer.merge(
-    ProviderSwitch.layer.pipe(Layer.provide(registry)),
-    ProviderReplayHarness.layerWithRegistry(
-      { name: "provider-switch-before-start-guards" },
-      registry,
-      { runEffectWorker: false, serverConfigLayer: TestFixture.layer },
-    ),
+  const layer = ProviderReplayHarness.layerWithRegistryAndServices(
+    { name: "provider-switch-before-start-guards" },
+    registry,
+    { runEffectWorker: false, serverConfigLayer: TestFixture.layer },
   );
   return Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -245,7 +242,7 @@ it.effect.each(variants)("keeps the saved-conversation guard for $name", ({ name
       attachments: [],
       createdBy: "user",
       creationSource: "web",
-      dispatchMode: { type: "defer_start" },
+      dispatchMode: { type: "start_immediately" },
     });
     const pending = yield* orchestrator.getThreadProjection(threadId);
     yield* orchestrator.dispatch({
@@ -323,13 +320,10 @@ it.effect.each(["codex", "claude-code"])(
           capabilities: CodexProviderCapabilitiesV2,
         }),
     });
-    const runtime = Layer.merge(
-      ProviderSwitch.layer.pipe(Layer.provide(registry)),
-      ProviderReplayHarness.layerWithRegistry(
-        { name: "preparing-rebind-guards-" + driverName },
-        registry,
-        { runEffectWorker: false, serverConfigLayer: TestFixture.layer },
-      ),
+    const runtime = ProviderReplayHarness.layerWithRegistryAndServices(
+      { name: "preparing-rebind-guards-" + driverName },
+      registry,
+      { runEffectWorker: false, serverConfigLayer: TestFixture.layer },
     );
     return Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -364,8 +358,10 @@ it.effect.each(["codex", "claude-code"])(
           dispatchMode: { type: mode },
         });
       const before = yield* orchestrator.getThreadProjection(threadId);
+      const certifiedUnsent = new Set(before.attempts.map((attempt) => attempt.id));
+      assert.isUndefined(preparingPendingProviderThread(before, before));
       assert.equal(
-        preparingPendingProviderThread(before, before)?.id,
+        preparingPendingProviderThread(before, before, certifiedUnsent)?.id,
         before.thread.activeProviderThreadId,
       );
       const plan = yield* service.plan({
@@ -411,9 +407,9 @@ it.effect.each(["codex", "claude-code"])(
       ];
       for (const change of mutations) {
         const changed = change(before);
-        assert.isUndefined(preparingPendingProviderThread(changed, changed));
+        assert.isUndefined(preparingPendingProviderThread(changed, changed, certifiedUnsent));
       }
-      assert.isUndefined(preparingPendingProviderThread(before, undefined));
+      assert.isUndefined(preparingPendingProviderThread(before, undefined, certifiedUnsent));
     }).pipe(Effect.provide(runtime));
   },
 );

@@ -17,6 +17,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import { formatHostForUrl, isWildcardHost } from "@t3tools/shared/hostClassification";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
@@ -62,12 +63,7 @@ import {
   maybeOpenBrowser as maybeOpenJonesBrowser,
 } from "./jones/startupAccessLogging.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import {
-  formatHeadlessServeOutput,
-  formatHostForUrl,
-  isWildcardHost,
-  issueHeadlessServeAccessInfo,
-} from "./startupAccess.ts";
+import { formatHeadlessServeOutput, issueHeadlessServeAccessInfo } from "./startupAccess.ts";
 
 export class ServerRuntimeStartupError extends Schema.TaggedError<ServerRuntimeStartupError>()(
   "ServerRuntimeStartupError",
@@ -301,12 +297,24 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
 
   if (serverConfig.autoBootstrapProjectFromCwd) {
     const threadModelSelection = getAutoBootstrapThreadModelSelection();
-    const { project } = yield* projects.bootstrap({
-      commandId: CommandId.make(yield* randomUUID),
-      projectId: ProjectId.make(yield* randomUUID),
-      title: path.basename(serverConfig.cwd) || "project",
-      workspaceRoot: serverConfig.cwd,
-    });
+    const bootstrapped = yield* projects
+      .bootstrap({
+        commandId: CommandId.make(yield* randomUUID),
+        projectId: ProjectId.make(yield* randomUUID),
+        title: path.basename(serverConfig.cwd) || "project",
+        workspaceRoot: serverConfig.cwd,
+      })
+      .pipe(
+        // A folder the project rules refuse must not stop the server from starting there.
+        Effect.catchTags({
+          ProjectInvalidError: (error) =>
+            Effect.logWarning("Skipped bootstrap project", { detail: error.detail }).pipe(
+              Effect.as(undefined),
+            ),
+        }),
+      );
+    if (bootstrapped === undefined) return {} satisfies AutoBootstrapWelcomeTargets;
+    const { project } = bootstrapped;
     const existingThread = (yield* metadata.list({
       projectId: project.id,
       location: "active",
@@ -459,16 +467,22 @@ export const runOrderedV2StartupPhases = Effect.fn(
   readonly awaitTrialCommit?: Effect.Effect<void, TrialError, TrialContext>;
   readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
   readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
-  readonly recoverCodexFailover?: Effect.Effect<void, DelegationError, DelegationContext>;
+  readonly recoverCodexFailover: Effect.Effect<void, DelegationError, DelegationContext>;
+  readonly recoverSelfSettlements: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
+  readonly recoverRemoteTaskQuestions: Effect.Effect<void, DelegationError, DelegationContext>;
+  readonly recoverPlannedUpdateQueues: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
   readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
 }) {
   yield* input.awaitTrialCommit ?? Effect.void;
   yield* input.importLegacyShells;
   const recovery = yield* input.recover;
-  yield* input.recoverCodexFailover ?? Effect.void;
+  yield* input.recoverCodexFailover;
+  yield* input.recoverSelfSettlements;
   yield* input.recoverDelegatedTasks;
+  yield* input.recoverRemoteTaskQuestions;
+  yield* input.recoverPlannedUpdateQueues;
   yield* input.startEffectWorker;
   const bootstrap = yield* input.autoBootstrap;
   return { recovery, bootstrap } as const;
@@ -647,13 +661,23 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       ),
       recoverCodexFailover: runStartupPhase(
         "orchestration-v2.codex-failover.recover",
-        orchestrator.recoverCodexFailover ?? Effect.void,
+        orchestrator.recoverCodexFailover,
+      ),
+      recoverSelfSettlements: runStartupPhase(
+        "orchestration-v2.self-settlements.recover",
+        orchestrator.recoverSelfSettlements,
       ),
       recoverDelegatedTasks: runStartupPhase(
         "orchestration-v2.delegated-tasks.recover",
-        orchestrator.recoverDelegatedTasks.pipe(
-          Effect.andThen(orchestrator.recoverPlannedUpdateQueues ?? Effect.void),
-        ),
+        orchestrator.recoverDelegatedTasks,
+      ),
+      recoverPlannedUpdateQueues: runStartupPhase(
+        "orchestration-v2.planned-update-queues.recover",
+        orchestrator.recoverPlannedUpdateQueues,
+      ),
+      recoverRemoteTaskQuestions: runStartupPhase(
+        "orchestration-v2.remote-task-questions.recover",
+        orchestrator.recoverRemoteTaskQuestions,
       ),
       startEffectWorker: runStartupPhase(
         "orchestration-v2.effect-worker.start",
@@ -745,7 +769,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     yield* runStartupPhase("http.wait", Deferred.await(httpListening));
     yield* runStartupPhase("auxiliary-roots.parked", options?.awaitAuxiliaryParked ?? Effect.void);
 
-    const updateOutcome = yield* launcher.prepareTrial;
+    const updateOutcome = yield* launcher.prepareTrial({ baseDir: serverConfig.baseDir });
     yield* installSelectedSyntheticPresentation();
 
     yield* Effect.logDebug("startup phase: publishing welcome event", {

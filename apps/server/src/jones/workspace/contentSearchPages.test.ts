@@ -1,3 +1,6 @@
+import * as Layer from "effect/Layer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { WorkspaceSearchProbe } from "../serverCompute/searchProbeClient.ts";
 import { FileFinder, type GrepCursor, type GrepMatch, type GrepResult } from "@ff-labs/fff-node";
 import { afterEach, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -64,9 +67,33 @@ function makeIndex(grep: FileFinder["grep"]) {
     destroy,
     waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
     grep,
+    grepAsync: async (...args: Parameters<FileFinder["grep"]>) => grep(...args),
+    getScanProgressAsync: async () => ({
+      ok: true as const,
+      value: { isScanning: false, isWarmupComplete: true },
+    }),
   } as unknown as FileFinder;
   vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
-  return { index: NativeSearchRuntime.make("/workspace/project", "content"), destroy };
+  // Only the external finder/probe are synthetic; pagination and cancellation run unchanged.
+  const probe = Layer.succeed(WorkspaceSearchProbe, {
+    run: () =>
+      Effect.succeed({
+        exitCode: 128,
+        stdout: "",
+        stderr: "fatal: not a git repository",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        stdoutInvalidUtf8: false,
+        stderrInvalidUtf8: false,
+      }),
+    beginScan: Effect.succeed({ owner: { kind: "scan" as const, epoch: 1 }, end: Effect.void }),
+  });
+  return {
+    index: NativeSearchRuntime.make("/workspace/project", "content").pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, probe)),
+    ),
+    destroy,
+  };
 }
 
 it.effect(
@@ -92,7 +119,7 @@ it.effect(
           expect(options?.cursor).toBe(next);
           return {
             ok: true,
-            value: page([{ ...match("😀 café", [[5, 10]]), relativePath: "src\\words.ts" }], null),
+            value: page([{ ...match("😀 café", [[5, 10]]), relativePath: "src/words.ts" }], null),
           };
         });
         const { index } = makeIndex(grep);
@@ -386,7 +413,7 @@ it.effect.each([false, true])(
           cwd: "/workspace/project",
           queryLength: 6,
           pageSize: 2,
-          reason: throws ? "FileFinder.grep threw unexpectedly." : "native failure",
+          reason: throws ? "FileFinder.grep rejected unexpectedly." : "native failure",
           ...(throws ? { cause } : {}),
         });
         expect(grep).toHaveBeenCalledTimes(2);

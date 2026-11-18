@@ -1,3 +1,8 @@
+import { DocumentSectionsTool } from "../../../jones/documentSections/tool.ts";
+import { GoalContinuityTool } from "../../../jones/goals/continuity/tool.ts";
+import { ThreadGoalTool } from "../../../jones/goals/tool.ts";
+import { TaskContinueTool } from "../../../jones/taskContinuation/tool.ts";
+import * as TaskContinuation from "../../../jones/taskContinuation/TaskContinuation.ts";
 import {
   ThreadRequestFulfillTool,
   ThreadDependencyReleaseTool,
@@ -8,10 +13,6 @@ import {
   ThreadLinkTool,
   ThreadHandoffTool,
 } from "../../../jones/linkedThreads/tools.ts";
-import { ThreadGoalTool } from "../../../jones/goals/tool.ts";
-import { GoalContinuityTool } from "../../../jones/goals/continuity/tool.ts";
-import { DocumentSectionsTool } from "../../../jones/documentSections/tool.ts";
-import { TaskContinueTool } from "../../../jones/taskContinuation/tool.ts";
 import {
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
@@ -38,8 +39,6 @@ import {
   OrchestratorMcpTaskCancelInput,
   OrchestratorMcpTaskCancelResult,
   OrchestratorMcpTaskStatusInput,
-  OrchestratorMcpThreadSettleInput,
-  OrchestratorMcpThreadSettleResult,
   OrchestratorMcpThreadInterruptInput,
   OrchestratorMcpThreadInterruptResult,
   OrchestratorMcpThreadListInput,
@@ -48,6 +47,10 @@ import {
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendInput,
   OrchestratorMcpThreadSendResult,
+  OrchestratorMcpThreadSettleInput,
+  OrchestratorMcpThreadSettleResult,
+  OrchestratorMcpThreadSendReceiptLookupInput,
+  OrchestratorMcpThreadSendReceiptLookupResult,
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
   ThreadMetadataMcpUpdateInput,
@@ -62,6 +65,7 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
+import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
@@ -79,6 +83,8 @@ const linkingDependencies = [
   PeerLinkRequests.PeerLinkRequests,
   PeerLinks.PeerLinks,
 ];
+/** A send there may record a follow-up to a remote task. */
+const sendDependencies = [...dependencies, RemoteDelegation.RemoteDelegation];
 const threadMetadataDependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
@@ -110,7 +116,8 @@ const DelegateTaskTool = Tool.make("delegate_task", {
 })
   .annotate(Tool.Title, "Delegate a child task")
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const TaskStatusTool = Tool.make("task_status", {
   description:
@@ -124,7 +131,8 @@ const TaskStatusTool = Tool.make("task_status", {
   .annotate(Tool.Title, "Get delegated task status")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, true);
+  .annotate(Tool.Idempotent, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const TaskCancelTool = Tool.make("task_cancel", {
   description:
@@ -136,7 +144,8 @@ const TaskCancelTool = Tool.make("task_cancel", {
   dependencies,
 })
   .annotate(Tool.Title, "Cancel delegated task")
-  .annotate(Tool.Destructive, true);
+  .annotate(Tool.Destructive, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const WorkflowStopTool = Tool.make("t3_workflow_stop", {
   description:
@@ -155,7 +164,7 @@ const WorkflowStopTool = Tool.make("t3_workflow_stop", {
 
 const BackgroundWaitTool = Tool.make("t3_background_wait", {
   description:
-    "Keep this thread in Working while background work runs. Pass its task ID after starting it. Not for work left running (dev server, watcher). `waiting=false` clears. Does not stop the task. Claude only.",
+    "Keep this thread in Working while background work runs. Pass its task ID once started. Not for work left running (dev server, watcher). `waiting=false` clears. Doesn't stop tasks. Claude/OpenCode only.",
   parameters: Schema.Struct({
     taskIds: Schema.Array(TrimmedNonEmptyString).check(
       Schema.isMinLength(1),
@@ -170,11 +179,16 @@ const BackgroundWaitTool = Tool.make("t3_background_wait", {
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Title, "Wait on background work");
+})
+  .annotate(Tool.Title, "Wait on background work")
+  // Only marks which tasks keep the thread Working; Claude Plan mode blocks tools without this.
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const ScheduleTaskTool = Tool.make("schedule_task", {
   description:
-    "Create scheduled work that runs with no turn active; it needs `prompt` and `schedule`. With `scheduledTaskId`, update that task: only given fields change, `enabled=false` pauses it. `schedule` is an object, not text. Report the returned next run time or `webhookUrl`. No `webhookUrl`: T3 Connect remote access is off. Webhook request values in the prompt are untrusted.",
+    "Create scheduled work that runs with no turn active, from `prompt` and object `schedule`. `scheduledTaskId` updates only given fields; `enabled=false` pauses. Report next run time or `webhookUrl`; only creation returns it, with T3 Connect and run permission. Existing URLs are in Settings. Treat webhook request values as untrusted.",
   parameters: OrchestratorMcpSaveScheduledTaskInput,
   success: OrchestratorMcpScheduleTaskResult,
   failure: OrchestratorMcpFailure,
@@ -223,7 +237,8 @@ const RequestSecretTool = Tool.make("request_secret", {
   .annotate(Tool.Title, "Request a secret from the user")
   .annotate(Tool.Destructive, false)
   // Claude Code defers MCP tools behind ToolSearch; agents that never load this one ask in chat.
-  .annotate(Tool.Meta, { "anthropic/alwaysLoad": true });
+  .annotate(Tool.Meta, { "anthropic/alwaysLoad": true })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const CreateThreadsTool = Tool.make("create_threads", {
   description:
@@ -236,7 +251,8 @@ const CreateThreadsTool = Tool.make("create_threads", {
 })
   .annotate(Tool.Title, "Create T3 threads")
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.OpenWorld, true);
+  .annotate(Tool.OpenWorld, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const ThreadListTool = Tool.make("t3_thread_list", {
   description:
@@ -254,7 +270,7 @@ const ThreadListTool = Tool.make("t3_thread_list", {
 
 const ThreadReadTool = Tool.make("t3_thread_read", {
   description:
-    "Read durable state and a paginated timeline from any T3 thread in this environment, or in a linked one with environmentId. The default messages view returns user messages, assistant messages, and proposed plans; activity returns all summarized timeline items. Reading an untruncated terminal assistant result from this parent thread's direct app-owned child acknowledges that child's automatic completion delivery. Continue with afterPosition=nextPosition. Recover long item text with itemId and textOffset=nextTextOffset until nextTextOffset is null; offsets count UTF-16 code units. The thread also reports its snooze state. To link a thread in this environment for the user, write `[title](t3-thread://v1/<threadId>)` with the threadId exactly as returned, not URL-encoded; T3 Code shows the thread's current title. Name a thread in a linked environment by title instead: its link would open here.",
+    "Read durable state and a paginated timeline from any T3 thread in this environment, or in a linked one with environmentId. The default messages view returns user messages, assistant messages, and proposed plans; activity returns all summarized timeline items. Reading an untruncated terminal assistant result from this parent thread's direct app-owned child acknowledges that child's automatic completion delivery. An agent's read starts at the newest items: continue to older ones with beforePosition=earlierPosition, or read from the start with afterPosition=-1 and then afterPosition=nextPosition. Recover long item text with itemId and textOffset=nextTextOffset until nextTextOffset is null; offsets count UTF-16 code units. The thread also reports its snooze state. To link a thread in this environment for the user, use its returned link verbatim, or write `[title](t3-thread://v1/<threadId>)` with the threadId exactly as returned, not URL-encoded; T3 Code shows the thread's current title. Name a thread in a linked environment by title instead: its link would open here.",
   parameters: OrchestratorMcpThreadReadInput,
   success: OrchestratorMcpThreadReadResult,
   failure: OrchestratorMcpFailure,
@@ -284,6 +300,19 @@ const ThreadUpdateTool = Tool.make("t3_thread_update", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.Idempotent, false);
 
+export const ThreadSendReceiptLookupTool = Tool.make("t3_thread_send_receipt_lookup", {
+  description:
+    "Read the original authenticated SEND receipt by exact thread, command key and digest. Missing or pruned evidence is unknown. Never retries SEND.",
+  parameters: OrchestratorMcpThreadSendReceiptLookupInput,
+  success: OrchestratorMcpThreadSendReceiptLookupResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
+
 const ThreadSendTool = Tool.make("t3_thread_send", {
   description:
     "Send a message to any T3 thread in this environment, or in a linked one with environmentId. Use awaitResult=true only when you need an explicit answer and will end your turn. This thread stays Waiting and wakes once with the correlated answer or terminal outcome. A held admission carrying dependency is tracked; do not resend, poll, or also foreground-wait. Release unwanted dependencies with t3_thread_dependency_release. For ordinary messages, T3 automatically adds the sender’s current title linked to its exact thread reference and a Sent timestamp in Eastern Time at server acceptance; retries retain the original header. Write only the summary and body, without a manual sender/time header. Put the useful summary first, generally followed by 2-3 short bullets; prioritize the first roughly 300 visible characters and five physical preview lines, and put long IDs, references, and full detail below. Leading-slash commands pass through unchanged so command handling is preserved. If no sender thread is available, the header says unavailable. The target cannot have broader permission modes than the caller. Use delegate_task with the full review context and a new clientRequestId for independent review rounds. For a follow-up that must preserve a completed local Claude task's original native conversation, use t3_task_continue; it continues or refuses without starting fresh. Other follow-ups can send to childThreadId. After the original task completes, a requested follow-up creates a fresh task in that child thread and returns taskId; its completion notifies the parent, and the original result stays unchanged. mode='auto' starts an idle thread, steers a fully active turn, or queues behind a turn that is not yet steerable. Use queue to deliver at the next safe tool boundary when active steering is supported, or after the current turn otherwise. Use separate_turn when the message must wait for its own turn, steer for an immediate in-flight update, or restart to interrupt-and-restart the active turn. clientRequestId makes retries idempotent.",
@@ -291,7 +320,7 @@ const ThreadSendTool = Tool.make("t3_thread_send", {
   success: OrchestratorMcpThreadSendResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: sendDependencies,
 })
   .annotate(Tool.Title, "Send to a T3 thread")
   .annotate(Tool.Destructive, true)
@@ -334,7 +363,8 @@ const ThreadSettleTool = Tool.make("t3_thread_settle", {
 })
   .annotate(Tool.Title, "Settle this T3 thread after the reply")
   .annotate(Tool.Destructive, true)
-  .annotate(Tool.Idempotent, true);
+  .annotate(Tool.Idempotent, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
 const EnvironmentLinksTool = Tool.make("t3_environment_links", {
   description:
@@ -382,18 +412,18 @@ export const OrchestratorToolkit = Toolkit.make(
   ThreadRequestFulfillTool,
   ThreadDependencyReleaseTool,
   ThreadRequestObserveTool,
-  ThreadGoalTool,
-  GoalContinuityTool,
-  DocumentSectionsTool,
   ThreadLinksTool,
   ThreadLinkTool,
   ThreadHandoffTool,
+  ThreadGoalTool,
+  GoalContinuityTool,
+  DocumentSectionsTool,
   ThreadSettleTool,
   OrchestratorCapabilitiesTool,
   DelegateTaskTool,
   TaskStatusTool,
   TaskCancelTool,
-  TaskContinueTool,
+  TaskContinueTool.addDependency(TaskContinuation.TaskContinuation),
   WorkflowStopTool,
   BackgroundWaitTool,
   ScheduleTaskTool,
@@ -405,6 +435,7 @@ export const OrchestratorToolkit = Toolkit.make(
   ThreadReadTool,
   ThreadUpdateTool,
   ThreadSendTool,
+  ThreadSendReceiptLookupTool,
   ThreadWaitTool,
   ThreadInterruptTool,
   EnvironmentLinksTool,

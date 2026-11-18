@@ -34,7 +34,6 @@ import {
   isProviderNativeSubagentThread,
   NodeId,
   type EnvironmentId,
-  type OrchestrationV2DelegatedFrom,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadShell,
@@ -63,8 +62,7 @@ import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import {
   useProjects,
-  useQuietThreadShell,
-  useThreadProjection,
+  useQuietThreadProjection,
   useThreadRelationshipShells,
   useHiddenThreadKeys,
   useAnyEnvironmentHiding,
@@ -74,6 +72,7 @@ import { serverEnvironment } from "../../state/server";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  hasInstanceBadge,
 } from "../../providerInstances";
 import { threadEnvironment } from "../../state/threads";
 import { orchestrationEnvironment } from "../../state/orchestration";
@@ -82,7 +81,7 @@ import { useEnvironmentQuery } from "../../state/query";
 import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
 import { ThreadLineageWorkflowRow } from "./ThreadLineageWorkflowRow";
-import { openSideChatTab } from "../../lib/sideChatPane";
+import { resolveThreadOpenRoute } from "../../lib/sideChatPane";
 
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -119,7 +118,7 @@ function ThreadLineageRowList(props: {
       {/* ScrollArea's max-height viewport measures badly inside this scrolling panel. */}
       <ul
         aria-label="Related threads"
-        className="m-0 max-h-[13.5rem] list-none overflow-y-auto overscroll-contain p-0 has-data-workflow-expanded:max-h-[min(28rem,55dvh)]"
+        className="m-0 max-h-[13.5rem] list-none overflow-y-auto p-0 has-data-workflow-expanded:max-h-[min(28rem,55dvh)]"
       >
         {props.children}
       </ul>
@@ -264,6 +263,7 @@ function currentSubagent<Agent extends RuntimeSubagent>(
 function RemoteSubagentRow(props: {
   readonly agent: RemoteSubagent;
   readonly provider: ServerProvider | undefined;
+  readonly anyInstanceBadge: boolean;
 }) {
   const navigate = useNavigate();
   const environment = useEnvironment(props.agent.remoteChild.environmentId);
@@ -301,6 +301,7 @@ function RemoteSubagentRow(props: {
             // The task's own driver here is only a "remote" label.
             driver={props.provider?.driver}
             provider={props.provider}
+            anyInstanceBadge={props.anyInstanceBadge}
             fallbackIcon={BotIcon}
             status={status}
           />
@@ -331,70 +332,6 @@ function RemoteSubagentRow(props: {
   );
 }
 
-/**
- * The thread on a linked environment whose agent delegated this one. It opens
- * there when this client is connected to that environment.
- */
-function DelegatedFromRow(props: {
-  readonly delegatedFrom: OrchestrationV2DelegatedFrom;
-  readonly fallbackLabel: string | undefined;
-}) {
-  const navigate = useNavigate();
-  const { delegatedFrom } = props;
-  const environment = useEnvironment(delegatedFrom.environmentId);
-  const parentRef = scopeThreadRef(delegatedFrom.environmentId, delegatedFrom.threadId);
-  // The title it had at delegation, until this client sees the parent itself.
-  const parent = useQuietThreadShell(parentRef);
-  const label = environment?.label ?? props.fallbackLabel;
-  const title = parent?.title ?? delegatedFrom.title;
-  return (
-    <li className="group relative flex h-8 items-center rounded-lg">
-      <Tooltip>
-        <TooltipTrigger
-          delay={200}
-          render={
-            <ThreadDetailsControl
-              size="sm"
-              variant="ghost"
-              part="row"
-              aria-disabled={environment === null || undefined}
-              onClick={() => {
-                if (environment === null) return;
-                void navigate({
-                  to: "/$environmentId/$threadId",
-                  params: buildThreadRouteParams(parentRef),
-                });
-              }}
-            />
-          }
-        >
-          <ThreadRelationshipIcon fallbackIcon={CornerLeftUpIcon} status={null} />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
-              {title}
-            </span>
-          </span>
-          {label ? (
-            <span className="max-w-1/2 shrink-0 truncate text-2xs text-muted-foreground">
-              on {label}
-            </span>
-          ) : null}
-        </TooltipTrigger>
-        <TooltipPopup side="left">
-          <LineageTooltipContent
-            title={title}
-            hint={
-              environment === null
-                ? `Delegated from ${label ?? "a linked environment"}. Connect to it to open the parent thread.`
-                : `Open parent agent on ${environment.label}`
-            }
-          />
-        </TooltipPopup>
-      </Tooltip>
-    </li>
-  );
-}
-
 function NativeThreadRelationshipsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -402,7 +339,7 @@ function NativeThreadRelationshipsPanel(props: {
   readonly showSideChats: boolean;
 }) {
   const ref = scopeThreadRef(props.environmentId, props.threadId);
-  const projection = useThreadProjection(ref)?.projection ?? null;
+  const projection = useQuietThreadProjection(ref)?.projection ?? null;
   const providersByEnvironment = useEnvironmentProviders();
   const settings = useAtomValue(serverEnvironment.settingsValueAtom(props.environmentId));
   const relationshipShells = useThreadRelationshipShells(ref);
@@ -429,7 +366,7 @@ function NativeThreadRelationshipsPanel(props: {
     parentShell && isProviderNativeSubagentThread(parentShell)
       ? scopeThreadRef(props.environmentId, parentShell.id)
       : null;
-  const parentProjection = useThreadProjection(parentRef)?.projection;
+  const parentProjection = useQuietThreadProjection(parentRef)?.projection;
   const navigate = useNavigate();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack);
   const stopSession = useAtomCommand(threadEnvironment.stopSession);
@@ -581,9 +518,6 @@ function NativeThreadRelationshipsPanel(props: {
       (agent) => agent.childThreadId === null && agent.status === "running",
     ).length ?? 0) + active.filter(({ edge }) => edge.status === "running").length;
 
-  // A linked environment's agent may have delegated this thread from there.
-  const delegatedFrom = currentThread?.delegatedFrom;
-
   const lineageVisible =
     props.showLineage &&
     (related.length > 0 ||
@@ -592,7 +526,6 @@ function NativeThreadRelationshipsPanel(props: {
       runningCount > 0 ||
       remoteActive.length > 0 ||
       remotePrevious.length > 0 ||
-      delegatedFrom !== undefined ||
       // Disconnect lives in this heading, so a thread with only side chats still shows it.
       (canDetach && sideChats.length > 0));
   const sideChatsVisible = props.showSideChats && sideChats.length > 0;
@@ -604,10 +537,14 @@ function NativeThreadRelationshipsPanel(props: {
 
   // Idle children can be omitted from the shell; opening one loads its own detail.
   const openThread = (threadId: ThreadId) => {
-    if (openSideChatTab(ref, graph.nodes.get(threadId)?.thread ?? null)) return;
+    const routeRef = resolveThreadOpenRoute(
+      scopeThreadRef(props.environmentId, threadId),
+      graph.nodes.get(threadId)?.thread ?? null,
+    );
+    if (routeRef.threadId === ref.threadId) return;
     void navigate({
       to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
+      params: buildThreadRouteParams(routeRef),
     });
   };
 
@@ -885,7 +822,7 @@ function NativeThreadRelationshipsPanel(props: {
                         ? `Merge back to ${parentTitle}`
                         : "Merge back to source conversation"
                     }
-                    disabled={!canMerge || busyAction !== null}
+                    aria-disabled={!canMerge || busyAction !== null || undefined}
                     onClick={() => void merge()}
                   >
                     {busyAction === "merge" ? (
@@ -953,8 +890,7 @@ function NativeThreadRelationshipsPanel(props: {
             canDetach ||
             related.length > 0 ||
             active.length > 0 ||
-            remoteActive.length > 0 ||
-            delegatedFrom !== undefined
+            remoteActive.length > 0
           }
           data-thread-relationships-panel
           actions={
@@ -983,14 +919,6 @@ function NativeThreadRelationshipsPanel(props: {
             ) : null
           }
         >
-          {delegatedFrom === undefined ? null : (
-            <ThreadLineageRowList hiddenCount={0} onShowMore={() => {}}>
-              <DelegatedFromRow
-                delegatedFrom={delegatedFrom}
-                fallbackLabel={currentThread?.linkOrigin?.label}
-              />
-            </ThreadLineageRowList>
-          )}
           {groups.map((group) => (
             <ThreadLineageGroup key={`${scopedThreadKey(ref)}:${group.id}`} {...group}>
               {(visibleRows) =>
@@ -1003,6 +931,7 @@ function NativeThreadRelationshipsPanel(props: {
                       provider={providersByEnvironment
                         .get(row.remote.remoteChild.environmentId)
                         ?.find((entry) => entry.instanceId === row.remote.providerInstanceId)}
+                      anyInstanceBadge={hasInstanceBadge(providerEntries)}
                     />
                   ) : (
                     renderRelationshipRow(row)

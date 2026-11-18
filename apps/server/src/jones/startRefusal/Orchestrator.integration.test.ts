@@ -6,6 +6,7 @@ import { historicalMessage } from "@t3tools/provider-core/server/handoffBudget";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 
 it.effect("retains a completed child's claim when its admitted delivery is control-held", () =>
   Effect.gen(function* () {
@@ -63,14 +64,23 @@ const consumeOffer = Effect.fnUntraced(function* (
   request: Continuations.ProviderContinuationRequest,
 ) {
   const drained = yield* Deferred.make<void>();
-  let taken = false;
+  const pending: Array<Continuations.ProviderContinuationRequest> = [
+    request,
+    {
+      threadId: request.threadId,
+      providerThreadId: request.providerThreadId,
+      driver: request.driver,
+      detail: null,
+      // A later request for the same thread runs behind this request's dispatch.
+      dispatchIfCurrent: () => Deferred.succeed(drained, undefined).pipe(Effect.as(Option.none())),
+    },
+  ];
   let dispatches = 0;
   const requests = Layer.succeed(Continuations.ProviderContinuationRequests, {
     offer: () => Effect.die("The selected sibling delivery must not need a retry"),
     take: Effect.suspend(() => {
-      if (taken) return Deferred.succeed(drained, undefined).pipe(Effect.andThen(Effect.never));
-      taken = true;
-      return Effect.succeed(request);
+      const next = pending.shift();
+      return next === undefined ? Effect.never : Effect.succeed(next);
     }),
   });
   const threads = Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -321,15 +331,71 @@ const resolveTask = Effect.fnUntraced(function* (
 
 const startAtAdmission = Effect.fnUntraced(function* (f: Effect.Success<typeof Fixture.seed>) {
   const gate = yield* Fixture.StartingGate;
-  const fiber = yield* f.start
-    .start({ threadId: f.threadId, runId: f.run.id })
-    .pipe(Effect.result, Effect.forkChild);
-  yield* Deferred.await(gate.entered);
+  const fiber = yield* f.startRun(f.run.id).pipe(Effect.result, Effect.forkChild);
+  yield* Effect.raceFirst(
+    Deferred.await(gate.entered),
+    Fiber.join(fiber).pipe(
+      Effect.flatMap((result) =>
+        Effect.die(`Fixture start returned before control admission: ${JSON.stringify(result)}`),
+      ),
+    ),
+  );
   const p = yield* f.orchestrator.getThreadProjection(f.threadId);
   assert.equal(p.runs.find((r) => r.id === f.run.id)!.status, "starting");
   assert.isFalse(yield* (yield* Store.StartRefusals).qualifies(f.threadId, f.run.id));
   return Deferred.succeed(gate.release, undefined).pipe(Effect.andThen(Fiber.join(fiber)));
 });
+
+it.effect("a superseded start claim cannot certify a held control refusal", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const sql = yield* SqlClient.SqlClient;
+    const outbox = yield* Outbox.EffectOutboxV2;
+    const finishAttempt = yield* startAtAdmission(f);
+    const sequence = yield* f.sink.latestSequence({ threadId: f.threadId });
+    const claim = (yield* outbox.listByThreadId(f.threadId)).find(
+      (row) =>
+        row.status === "running" &&
+        row.request.type === "provider-turn.start" &&
+        row.request.runId === f.run.id,
+    )!;
+    assert.isNotNull(claim.leaseOwner);
+
+    // Change only the selected effect lease while the original control read is paused.
+    const replacement = "start-refusal-replacement";
+    const updatedAt = DateTime.formatIso(DateTime.add(yield* DateTime.now, { milliseconds: 1 }));
+    const reassigned = yield* sql`UPDATE orchestration_v2_effect_outbox
+      SET lease_owner = ${replacement}, attempt_count = attempt_count + 1, updated_at = ${updatedAt}
+      WHERE effect_id = ${claim.id} AND status = 'running'
+        AND lease_owner = ${claim.leaseOwner} AND attempt_count = ${claim.attemptCount}
+      RETURNING effect_id`;
+    assert.lengthOf(reassigned, 1);
+
+    const result = yield* finishAttempt;
+    assert.equal(yield* f.sink.latestSequence({ threadId: f.threadId }), sequence);
+    const projection = yield* f.orchestrator.getThreadProjection(f.threadId);
+    const run = projection.runs.find((row) => row.id === f.run.id)!;
+    assert.equal(run.status, "starting");
+    assert.equal(run.activeAttemptId, f.run.activeAttemptId);
+    assert.equal(
+      projection.attempts.find((row) => row.id === run.activeAttemptId)?.status,
+      "pending",
+    );
+    const refusals = yield* Store.StartRefusals;
+    const prefix = yield* refusals.readPrefix({
+      threadId: f.threadId,
+      runId: f.run.id,
+      attemptId: run.activeAttemptId!,
+    });
+    assert.equal(prefix.state, "eligible");
+    assert.lengthOf(yield* sql`SELECT 1 FROM jones_start_refusal_holds`, 0);
+    const current = Option.getOrThrow(yield* outbox.get(claim.id));
+    assert.equal(current.status, "running");
+    assert.equal(current.leaseOwner, replacement);
+    assert.equal(current.attemptCount, claim.attemptCount + 1);
+    assert.equal(result._tag, "Failure");
+  }).pipe(Effect.provide(Fixture.startingRuntime)),
+);
 
 it.effect.each(["acknowledge", "dispose"] as const)(
   "%s during starting retains only the admitted survivor at certification",
@@ -531,7 +597,7 @@ it.effect.each(["acknowledge", "dispose"] as const)(
         const f = yield* Fixture.seedTasks(2);
         yield* sql`CREATE TEMP TRIGGER fail_first_hold BEFORE INSERT ON jones_start_refusal_holds
           BEGIN SELECT RAISE(ABORT, 'synthetic pre-reservation crash'); END`;
-        yield* f.start.start({ threadId: f.threadId, runId: f.run.id }).pipe(Effect.result);
+        yield* f.startRun(f.run.id).pipe(Effect.result);
         yield* f.orchestrator.recoverDelegatedTasks;
         assert.isTrue(yield* (yield* Store.StartRefusals).qualifies(f.threadId, f.run.id));
         assert.lengthOf(yield* sql`SELECT 1 FROM jones_start_refusal_holds`, 0);
@@ -1046,7 +1112,7 @@ it.effect.each([false, true])(
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TEMP TRIGGER fail_hold BEFORE INSERT ON jones_start_refusal_holds
     BEGIN SELECT RAISE(ABORT, 'synthetic reservation failure'); END`;
-      yield* f.start.start({ threadId: f.threadId, runId: f.run.id }).pipe(Effect.result);
+      yield* f.startRun(f.run.id).pipe(Effect.result);
       yield* f.orchestrator.recoverDelegatedTasks;
       const failed = yield* f.orchestrator.getThreadProjection(f.threadId);
       assert.equal(failed.subagents[0]!.completionDelivery!.state, "claimed");
@@ -1117,7 +1183,7 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TEMP TRIGGER fail_refusal BEFORE UPDATE ON jones_start_refusal_attempts
     WHEN NEW.state = 'refused' BEGIN SELECT RAISE(ABORT, 'synthetic refusal failure'); END`;
-      yield* f.start.start({ threadId: f.threadId, runId: f.run.id }).pipe(Effect.result);
+      yield* f.startRun(f.run.id).pipe(Effect.result);
       const failed = yield* f.orchestrator.getThreadProjection(f.threadId);
       assert.equal(failed.runs.find((r) => r.id === f.run.id)!.status, "starting");
       assert.equal(
@@ -1138,7 +1204,7 @@ it.effect("successor commit revalidates the exact claimed task set in its transa
     yield* dispatch.withLock(
       f.threadId,
       Effect.gen(function* () {
-        yield* f.start.start({ threadId: f.threadId, runId: f.run.id }).pipe(Effect.result);
+        yield* f.startRun(f.run.id).pipe(Effect.result);
         const p = yield* f.orchestrator.getThreadProjection(f.threadId);
         const parent = p.runs.find((r) => r.id === f.parent.id)!;
         const successor = {
@@ -1248,7 +1314,7 @@ it.effect(
           Effect.forkChild,
         );
       yield* Effect.yieldNow;
-      yield* f.start.start({ threadId: f.threadId, runId: successor.id }).pipe(Effect.result);
+      yield* f.startRun(successor.id).pipe(Effect.result);
       yield* Fiber.join(nextHold);
       assert.lengthOf(yield* f.read, 2);
       assert.equal((yield* f.read)[1]!.state, "held");

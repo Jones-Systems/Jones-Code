@@ -372,6 +372,8 @@ describe("Codex synthetic peer real adapter fixture qualification", () => {
             McpProviderSessions.layer,
             ControlAdmission.layer,
             ProcessAttribution.layer,
+            // The adapter tracks its agent process with the same test port owner as its clients.
+            PortScanner.layerTest,
           ),
         ),
         Effect.provideService(

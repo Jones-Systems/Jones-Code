@@ -31,6 +31,7 @@ import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionMaintenance from "../../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
+import { isPublicStoredOrchestrationEvent } from "../../orchestration-v2/WireProjection.ts";
 
 const databaseLayer = SqlitePersistence.layerMemory;
 const eventStoreProvided = EventStore.layer.pipe(Layer.provideMerge(databaseLayer));
@@ -519,7 +520,10 @@ it.effect.each([undefined, false, true] as const)(
       const events = yield* store.read({ threadId: thread.id }).pipe(Stream.runCollect);
       yield* Effect.gen(function* () {
         const memory = yield* ProjectionStore.ProjectionStoreV2;
-        for (const event of events) yield* memory.apply(event.event);
+        // As in the projection rebuild, retained private rows never reach a projection.
+        for (const event of events) {
+          if (isPublicStoredOrchestrationEvent(event)) yield* memory.apply(event.event);
+        }
         assert.strictEqual(
           (yield* memory.getThreadProjection(thread.id)).runs[0]!.queuedToolBoundaryEligible,
           eligibility,

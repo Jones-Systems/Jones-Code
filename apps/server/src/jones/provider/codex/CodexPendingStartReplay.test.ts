@@ -177,6 +177,10 @@ const goalUpdate = (status: "active" | "complete") =>
       },
     },
   });
+const configRead = (id: number) => [
+  outbound({ id, method: "config/read", params: { cwd: "/workspace", includeLayers: false } }),
+  inbound({ id, result: { config: {}, origins: {} } }),
+];
 const turnStart = (id: number) =>
   outbound({
     id,
@@ -186,10 +190,18 @@ const turnStart = (id: number) =>
       input: [{ type: "text", text: "Work" }],
       cwd: "/workspace",
       model: modelSelection.model,
-      approvalPolicy: "never",
+      approvalPolicy: {
+        granular: {
+          mcp_elicitations: true,
+          request_permissions: false,
+          rules: false,
+          sandbox_approval: false,
+          skill_approval: false,
+        },
+      },
       approvalsReviewer: "user",
       sandboxPolicy: { type: "dangerFullAccess" },
-      summary: "detailed",
+      summary: "auto",
       collaborationMode: { mode: "default", settings: { model: modelSelection.model } },
     },
   });
@@ -265,7 +277,8 @@ const makeTranscript = (outcome: Outcome) =>
             reasoningEffort: "medium",
           },
         }),
-        turnStart(3),
+        ...configRead(3),
+        turnStart(4),
         inbound({
           method: "turn/started",
           params: { threadId: rootThread, turn: turn(rootTurn, "inProgress") },
@@ -313,7 +326,7 @@ const makeTranscript = (outcome: Outcome) =>
         outcome === "goal-successor-after-early-terminal-during-replay"
           ? [rootCompletion]
           : []),
-        inbound({ id: 3, result: { turn: turn(rootTurn, "inProgress") } }, "original-ack"),
+        inbound({ id: 4, result: { turn: turn(rootTurn, "inProgress") } }, "original-ack"),
         ...(outcome === "terminal-after-ack"
           ? [
               usageUpdate(rootTurn, usageBreakdown(1030, 410, 206), usageBreakdown(20, 5, 4)),
@@ -341,17 +354,18 @@ const makeTranscript = (outcome: Outcome) =>
           : []),
         ...(reconcilesAdmission(outcome)
           ? [
-              turnStart(4),
-              inbound({ id: 4, result: { turn: turn(reconciledTurn, "inProgress") } }),
+              ...configRead(5),
+              turnStart(6),
+              inbound({ id: 6, result: { turn: turn(reconciledTurn, "inProgress") } }),
               inbound({
                 method: "turn/completed",
                 params: { threadId: rootThread, turn: turn(reconciledTurn, "completed") },
               }),
             ]
           : []),
-        outbound({ id: reconcilesAdmission(outcome) ? 5 : 4, method: "model/list", params: {} }),
+        outbound({ id: reconcilesAdmission(outcome) ? 7 : 5, method: "model/list", params: {} }),
         inbound({
-          id: reconcilesAdmission(outcome) ? 5 : 4,
+          id: reconcilesAdmission(outcome) ? 7 : 5,
           result: { data: [], nextCursor: null },
         }),
       ],

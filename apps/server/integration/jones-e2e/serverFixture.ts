@@ -221,7 +221,14 @@ export const startServer = (
       Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
       Layer.provide(Layer.mock(ScheduledTasks.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-      Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      Layer.provide(
+        Layer.mock(RemoteDelegation.RemoteDelegation)({
+          followUp: (_scope, _environmentId, _input, sent) =>
+            sent.taskId === undefined
+              ? Effect.succeed(sent)
+              : Effect.die(new Error("The linked-message fixture does not run delegated tasks.")),
+        }),
+      ),
       Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
     );
     const routes = Layer.mergeAll(

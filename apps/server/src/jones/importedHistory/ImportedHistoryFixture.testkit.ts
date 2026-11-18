@@ -53,7 +53,7 @@ export const run = {
   checkpointId: null,
   contextHandoffId: null,
 };
-export const setup = Effect.gen(function* () {
+const setupFixture = Effect.fn("ImportedHistoryFixture.setup")(function* (queued: boolean) {
   const sink = yield* EventSink.EventSinkV2;
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO auth_sessions(session_id,subject,scopes,method,issued_at,expires_at) VALUES (${principal.sessionId}, 'fixture', ${yield* encode([...principal.scopes])}, 'browser-session-cookie', '2026-10-07T00:00:00Z', '2099-01-01T00:00:00Z')`;
@@ -171,5 +171,63 @@ export const setup = Effect.gen(function* () {
       },
     },
   ] satisfies Parameters<typeof sink.write>[0]["events"];
-  for (const event of fixtureEvents) yield* sink.write({ events: [event] });
+  for (const event of fixtureEvents) {
+    if (!queued && (event.type === "run.created" || event.type === "message.updated")) continue;
+    yield* sink.write({ events: [event] });
+  }
+});
+
+export const setup = setupFixture(true);
+export const setupWithoutQueuedDelivery = setupFixture(false);
+
+export const seedExecutionIdentity = Effect.gen(function* () {
+  const sink = yield* EventSink.EventSinkV2;
+  yield* sink.write({
+    events: [
+      {
+        id: EventId.make("event:import:root"),
+        type: "node.updated",
+        threadId,
+        runId,
+        occurredAt: now,
+        payload: {
+          id: run.rootNodeId,
+          threadId,
+          runId,
+          parentNodeId: null,
+          rootNodeId: run.rootNodeId,
+          kind: "root_turn",
+          status: "pending",
+          countsForRun: true,
+          providerThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          runtimeRequestId: null,
+          checkpointScopeId: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      },
+      {
+        id: EventId.make("event:import:attempt"),
+        type: "run-attempt.created",
+        threadId,
+        runId,
+        occurredAt: now,
+        payload: {
+          id: run.activeAttemptId,
+          runId,
+          attemptOrdinal: 1,
+          rootNodeId: run.rootNodeId,
+          providerInstanceId,
+          providerThreadId,
+          providerTurnId: null,
+          reason: "initial",
+          status: "pending",
+          startedAt: null,
+          completedAt: null,
+        },
+      },
+    ],
+  });
 });

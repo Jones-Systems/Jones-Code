@@ -121,6 +121,38 @@ const readers: ReadonlyArray<Reader> = [
     proof: "persistence/EventLogPruning.test.ts (captured proof and missing pruned events)",
   },
   {
+    file: "legacyBootstrap/Integrity.ts",
+    classification: "tolerate",
+    after:
+      "Recording new deletion or preparation-failure evidence requires the exact run.updated event, command and stream. A missing event fails integrity validation.",
+    proof:
+      "legacyBootstrap/Integrity.test.ts (decision provenance); missing event behavior follows the recordedCommand check.",
+  },
+  {
+    file: "legacyBootstrap/Storage.ts",
+    classification: "tolerate",
+    after:
+      "Private preflights survive in Jones command rows. Historical accepted intent receipts identify prior commands even after pruning, but a missing event prevents exact preflight readback and fences replacement. Lifecycle reads return only surviving events. Missing historical birth, claim or metadata anchors refuse preservation writes.",
+    proof:
+      "legacyBootstrap/Storage.test.ts (private replay, historical intent pruned before replacement, inline preservation)",
+  },
+  {
+    file: "nativeCreation/NativeStartAdmission.ts",
+    classification: "tolerate",
+    after:
+      "Missing reconciliation or delegated-start witnesses refuse admission on capture and revalidation. Pruned birth evidence cannot certify a cancelled effect as unsent. Without independent proof for refusal or native resume, the continuation stays held.",
+    proof:
+      "nativeCreation/NativeStartAdmission.test.ts (pruned cancellation evidence and delegated child birth revalidation)",
+  },
+  {
+    file: "provider/UnsentStartProof.ts",
+    classification: "tolerate",
+    after:
+      "Absent command birth or queue-promotion witnesses cannot certify a cancelled start as unsent. Unreleased starts require a run birth above the prune boundary, an accepted dispatch receipt and a matching attempt birth within that receipt's sequence range.",
+    proof:
+      "provider/UnsentStartProof.test.ts (receipt mismatch, promotion and unavailable unreleased birth)",
+  },
+  {
     file: "nativeCreation/NativeCreationExecutionSqlite.ts",
     classification: "tolerate",
     after:

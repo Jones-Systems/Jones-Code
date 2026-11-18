@@ -26,6 +26,7 @@ import {
   RawEventId,
   RunAttemptId,
   RunId,
+  type RuntimeRequestId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -37,7 +38,6 @@ import * as Schema from "effect/Schema";
 import * as SqlError from "effect/sql/SqlError";
 
 import { AgentScope } from "@t3tools/shared/AgentScope";
-import { isTemporaryWorktreeBranch } from "@t3tools/shared/git";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import {
   ProviderTurnAnalytics,
@@ -45,6 +45,7 @@ import {
 } from "../telemetry/ProviderUsageAnalytics.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import { UsageLimitResetFallback } from "../usage/UsageLimitSources.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -59,12 +60,13 @@ export class ProviderEventNormalizeError extends Schema.TaggedError<ProviderEven
   {
     providerSessionId: ProviderSessionId,
     threadId: ThreadId,
-    providerEvent: ProviderAdapter.ProviderAdapterV2Event,
+    // The rejected payload cannot be validated again while reporting its normalization failure.
+    eventType: Schema.String,
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    return `Failed to normalize provider event ${this.providerEvent.type} for thread ${this.threadId}.`;
+    return `Failed to normalize provider event ${this.eventType} for thread ${this.threadId}.`;
   }
 }
 
@@ -216,24 +218,36 @@ export interface ProviderEventIngestInput {
   readonly analyticsContext?: ProviderTurnAnalyticsContext;
 }
 
+export type ProviderEventPublishInput = ProviderEventIngestInput & {
+  readonly writeIfRunCurrent?: {
+    readonly runId: RunId;
+    readonly activeAttemptId: RunAttemptId;
+    readonly expectedStatus: OrchestrationV2Run["status"];
+  };
+  readonly writeIfProviderThreadOwner?: {
+    readonly providerThreadId: ProviderThreadId;
+    readonly runId: RunId;
+    readonly activeAttemptId: RunAttemptId;
+    readonly expectedLastRunOrdinal: number;
+  };
+};
+
 export interface ProviderEventIngestorV2Shape {
+  readonly captureTerminal: (input: ProviderEventPublishInput) => Effect.Effect<
+    {
+      readonly publish: Effect.Effect<
+        ReadonlyArray<OrchestrationV2StoredEvent>,
+        ProviderEventIngestorV2Error
+      >;
+    },
+    ProviderEventIngestorV2Error
+  >;
+
   readonly normalize: (
     input: ProviderEventIngestInput,
   ) => Effect.Effect<ReadonlyArray<OrchestrationV2DomainEvent>, ProviderEventIngestorV2Error>;
   readonly ingestNormalized: (
-    input: ProviderEventIngestInput & {
-      readonly writeIfRunCurrent?: {
-        readonly runId: RunId;
-        readonly activeAttemptId: RunAttemptId;
-        readonly expectedStatus: OrchestrationV2Run["status"];
-      };
-      readonly writeIfProviderThreadOwner?: {
-        readonly providerThreadId: ProviderThreadId;
-        readonly runId: RunId;
-        readonly activeAttemptId: RunAttemptId;
-        readonly expectedLastRunOrdinal: number;
-      };
-    },
+    input: ProviderEventPublishInput,
   ) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, ProviderEventIngestorV2Error>;
 }
 
@@ -270,6 +284,7 @@ export const layer: Layer.Layer<
     const analytics = yield* ProviderTurnAnalytics;
     const agentScope = yield* AgentScope;
     const instances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+    const usageLimitResets = yield* UsageLimitResetFallback;
     const scope = yield* Effect.scope;
     const completedTurnAnalytics = new Set<string>();
 
@@ -316,13 +331,16 @@ export const layer: Layer.Layer<
         input: ProviderEventIngestInput,
         providerTurnId: ProviderTurnId,
         threadId = input.threadId,
+        retained: ReadonlyArray<RuntimeRequestId> = [],
       ) {
         const pending = yield* retryAdmissionUnavailable(
           projections.getPendingNativeUserInputs(threadId, providerTurnId),
         );
         const now = yield* DateTime.now;
         const events: Array<OrchestrationV2DomainEvent> = [];
+        const kept = new Set(retained);
         for (const request of pending.runtimeRequests) {
+          if (kept.has(request.id)) continue;
           events.push(
             yield* makeDomainEvent(input, {
               type: "runtime-request.updated",
@@ -333,6 +351,7 @@ export const layer: Layer.Layer<
           );
         }
         for (const node of pending.nodes) {
+          if (node.runtimeRequestId !== null && kept.has(node.runtimeRequestId)) continue;
           events.push(
             yield* makeDomainEvent(input, {
               type: "node.updated",
@@ -344,6 +363,7 @@ export const layer: Layer.Layer<
           );
         }
         for (const item of pending.turnItems) {
+          if (item.type === "user_input_request" && kept.has(item.requestId)) continue;
           events.push(
             yield* makeDomainEvent(input, {
               type: "turn-item.updated",
@@ -489,7 +509,7 @@ export const layer: Layer.Layer<
             return yield* new ProviderEventNormalizeError({
               providerSessionId: input.providerSessionId,
               threadId: input.threadId,
-              providerEvent: input.event,
+              eventType: input.event.type,
               cause: "A retained identity event ID requires runtime_identity.observed.",
             });
           switch (input.event.type) {
@@ -586,6 +606,7 @@ export const layer: Layer.Layer<
                       input,
                       input.event.providerTurn.id,
                       input.event.threadId,
+                      input.event.retainedRuntimeRequestIds,
                     )
                   : []),
                 yield* makeDomainEvent(input, {
@@ -672,6 +693,35 @@ export const layer: Layer.Layer<
                 }),
               ];
             }
+            case "steer.updated": {
+              const item = yield* projections.getTurnItem({
+                threadId: input.event.threadId,
+                itemId: idAllocator.derive.userTurnItem({ messageId: input.event.messageId }),
+              });
+              if (
+                item?.type !== "user_message" ||
+                item.status === input.event.status ||
+                (item.status !== "pending" && item.status !== "completed")
+              ) {
+                return [];
+              }
+              const occurredAt = yield* DateTime.now;
+              return [
+                yield* makeDomainEvent(input, {
+                  type: "turn-item.updated",
+                  threadId: item.threadId,
+                  payload: {
+                    ...item,
+                    status: input.event.status,
+                    completedAt: input.event.status === "pending" ? null : occurredAt,
+                    updatedAt: occurredAt,
+                  },
+                  runId: item.runId,
+                  nodeId: item.nodeId,
+                  occurredAt,
+                }),
+              ];
+            }
             case "background_work.updated":
               return [];
             case "command_output.delta":
@@ -679,14 +729,49 @@ export const layer: Layer.Layer<
               // The session manager serves these to clients before ingestion.
               return [];
             case "turn.terminal":
-              const dismissed = yield* dismissNativeUserInputs(input, input.event.providerTurnId);
+              const dismissed = yield* dismissNativeUserInputs(
+                input,
+                input.event.providerTurnId,
+                undefined,
+                input.event.retainedRuntimeRequestIds,
+              );
               if (input.event.status !== "failed") {
                 return dismissed;
               }
               const occurredAt = yield* DateTime.now;
-              const failure = (yield* agentScope.oomKilled(input.threadId))
+              const reported = (yield* agentScope.oomKilled(input.threadId))
                 ? { ...input.event.failure, message: "Killed: out of memory.", code: "oom_kill" }
                 : input.event.failure;
+              // A proxied CLI can drop the reset time; the hub still knows when its pool refills.
+              const endpoint =
+                reported.class === "usage_limit" && reported.resetAt == null
+                  ? (yield* Effect.flatMap(
+                      instances.getInstance(input.providerInstanceId),
+                      (instance) => instance?.snapshot.getSnapshot ?? Effect.undefined,
+                    ))?.auth.endpoint
+                  : undefined;
+              const hubResetAt =
+                endpoint === undefined
+                  ? null
+                  : yield* Effect.gen(function* () {
+                      // The failing run's model, which may differ from a selection changed mid-turn.
+                      const { runs } =
+                        input.runId === undefined
+                          ? { runs: [] }
+                          : yield* projections.getThreadRecords(input.threadId, ["runs"], {
+                              runIds: [input.runId],
+                            });
+                      return (
+                        runs[0]?.modelSelection ??
+                        (yield* projections.getThread(input.threadId)).modelSelection
+                      ).model;
+                    }).pipe(
+                      Effect.orElseSucceed(() => null),
+                      Effect.flatMap((model) =>
+                        usageLimitResets.resetAt(input.event.driver, endpoint, model),
+                      ),
+                    );
+              const failure = hubResetAt === null ? reported : { ...reported, resetAt: hubResetAt };
               return [
                 ...dismissed,
                 yield* makeDomainEvent(input, {
@@ -717,301 +802,345 @@ export const layer: Layer.Layer<
                 new ProviderEventNormalizeError({
                   providerSessionId: input.providerSessionId,
                   threadId: input.threadId,
-                  providerEvent: input.event,
+                  eventType: input.event.type,
                   cause,
                 }),
             ),
           ),
       );
 
+    // Publication owns only the captured normalized batch and its exact history fallback.
+    // No post-publication model/analytics read belongs in this retryable operation.
+    const publishNormalized = Effect.fnUntraced(function* (
+      input: ProviderEventPublishInput,
+      prepared?: {
+        readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
+        readonly historical?: HistoricalTerminalInput;
+      },
+    ) {
+      const recordIneligibleRejection = isHistoricalTerminalCandidate(input.event)
+        ? Effect.void
+        : SupersededTerminalTrace.recordTerminalRejection(
+            eventSink.supersededTerminalTrace,
+            input.event,
+            "ineligible",
+          );
+      let ordinaryRejected = false;
+      let historicalInput: HistoricalTerminalInput | undefined;
+      let historicalWrite:
+        | Effect.Effect<
+            {
+              readonly handled: boolean;
+              readonly persisted?: boolean;
+              readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
+            },
+            ProviderEventPublishError
+          >
+        | undefined;
+      if (
+        isHistoricalTerminalCandidate(input.event) &&
+        eventSink.writeHistoricalTerminal !== undefined
+      ) {
+        historicalInput = prepared?.historical ?? {
+          providerSessionId: input.providerSessionId,
+          providerInstanceId: input.providerInstanceId,
+          threadId: input.threadId,
+          ...(input.runId === undefined ? {} : { runId: input.runId }),
+          event: input.event,
+          terminal: yield* makeDomainEvent(input, {
+            type: "provider-turn.updated",
+            ...(input.event.threadId === undefined ? {} : { threadId: input.event.threadId }),
+            payload: input.event.providerTurn,
+            nodeId: input.event.providerTurn.nodeId,
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderEventNormalizeError({
+                  providerSessionId: input.providerSessionId,
+                  threadId: input.threadId,
+                  eventType: input.event.type,
+                  cause,
+                }),
+            ),
+          ),
+        };
+        historicalWrite = eventSink.writeHistoricalTerminal(historicalInput).pipe(
+          retryLockTimeout,
+          Effect.mapError(
+            (cause) =>
+              new ProviderEventPublishError({
+                providerSessionId: input.providerSessionId,
+                eventCount: 1,
+                cause,
+              }),
+          ),
+        );
+        const historical = yield* historicalWrite;
+        if (historical.handled) return historical.storedEvents;
+      }
+      // Restart can commit after the initial eligibility read. A rejected
+      // ordinary write retries only exact terminal history, never its bundle.
+      const retainRejectedTerminal = (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) =>
+        storedEvents.length === 0 && historicalWrite !== undefined
+          ? historicalWrite.pipe(
+              Effect.tap((historical) =>
+                !historical.handled
+                  ? SupersededTerminalTrace.recordTerminalRejection(
+                      eventSink.supersededTerminalTrace,
+                      input.event,
+                      "ordinary_rejected",
+                    )
+                  : Effect.void,
+              ),
+              Effect.map((historical) => historical.storedEvents),
+            )
+          : (ordinaryRejected ? recordIneligibleRejection : Effect.void).pipe(
+              Effect.as(storedEvents),
+            );
+      const ordinary = Effect.gen(function* () {
+        const events =
+          prepared?.events ??
+          (yield* input.event.type === "turn.terminal"
+            ? normalizeTerminal(input.event, normalize(input))
+            : normalize(input));
+        if (events.length === 0) {
+          return [];
+        }
+        const observation =
+          input.event.type === "runtime_identity.observed" ? input.event : undefined;
+        const identity =
+          observation === undefined
+            ? undefined
+            : events.find((event) => event.type === "provider-thread.updated");
+        const runtimeGuard = {
+          ...(historicalInput === undefined ? {} : { historicalTerminal: historicalInput }),
+          ...(observation === undefined
+            ? "runtimeEvidence" in input.event && input.event.runtimeEvidence !== undefined
+              ? { runtimeEvidence: input.event.runtimeEvidence }
+              : {}
+            : {
+                runtimeEvidence: {
+                  ...observation.binding,
+                  ...(identity?.type === "provider-thread.updated" &&
+                  identity.payload.runtimeIdentity?.evidenceRevision !== undefined
+                    ? { evidenceRevision: identity.payload.runtimeIdentity.evidenceRevision }
+                    : {}),
+                },
+                runtimeIdentityObservation: observation.requested,
+              }),
+        };
+        const mapWriteError = (cause: unknown) =>
+          new ProviderEventPublishError({
+            providerSessionId: input.providerSessionId,
+            eventCount: events.length,
+            cause,
+          });
+        if (input.writeIfProviderThreadOwner !== undefined) {
+          const ownerWrite = {
+            guardPendingUserInputCancellations: true,
+            skipUnchangedProviderNodes: input.event.type === "node.updated",
+            ...runtimeGuard,
+            ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+            ...input.writeIfProviderThreadOwner,
+            events,
+          };
+          const ownerResult = yield* (
+            input.event.type === "turn.terminal"
+              ? publishTerminal(input.event, "owner-ingestion", {
+                  type: "provider-owner",
+                  input: ownerWrite,
+                })
+              : eventSink.writeIfProviderThreadOwner(ownerWrite).pipe(retryLockTimeout)
+          ).pipe(Effect.mapError(mapWriteError));
+          ordinaryRejected = !ownerResult.committed;
+          return ownerResult.storedEvents;
+        }
+        if (input.writeIfRunCurrent === undefined) {
+          return yield* eventSink
+            .write({
+              guardPendingUserInputCancellations: true,
+              skipUnchangedProviderNodes: input.event.type === "node.updated",
+              ...runtimeGuard,
+              ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+              events,
+            })
+            .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
+        }
+        const terminalWrite = {
+          guardPendingUserInputCancellations: true,
+          skipUnchangedProviderNodes: input.event.type === "node.updated",
+          ...runtimeGuard,
+          ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
+          threadId: input.threadId,
+          ...input.writeIfRunCurrent,
+          events,
+        };
+        const result = yield* (
+          input.event.type === "turn.terminal"
+            ? publishTerminal(input.event, "ingestion", {
+                type: "current",
+                input: terminalWrite,
+              })
+            : eventSink.writeIfRunCurrent(terminalWrite).pipe(retryLockTimeout)
+        ).pipe(Effect.mapError(mapWriteError));
+        ordinaryRejected = !result.committed;
+        return result.storedEvents;
+      });
+      return yield* ordinary.pipe(
+        Effect.matchCauseEffect({
+          onFailure: (cause) =>
+            retainHistoricalTerminalOnError(Effect.failCause(cause), historicalWrite).pipe(
+              Effect.tapCause((failure) =>
+                Cause.hasInterruptsOnly(failure) ? Effect.void : recordIneligibleRejection,
+              ),
+            ),
+          onSuccess: retainRejectedTerminal,
+        }),
+      );
+    });
     return ProviderEventIngestorV2.of({
       normalize,
-      ingestNormalized:
-        /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
-        Effect.fnUntraced(
-          function* (input) {
-            const recordIneligibleRejection = isHistoricalTerminalCandidate(input.event)
-              ? Effect.void
-              : SupersededTerminalTrace.recordTerminalRejection(
-                  eventSink.supersededTerminalTrace,
-                  input.event,
-                  "ineligible",
-                );
-            let ordinaryRejected = false;
-            let historicalInput: HistoricalTerminalInput | undefined;
-            let historicalWrite:
-              | Effect.Effect<
-                  {
-                    readonly handled: boolean;
-                    readonly persisted?: boolean;
-                    readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
-                  },
-                  ProviderEventPublishError
-                >
-              | undefined;
-            if (
-              isHistoricalTerminalCandidate(input.event) &&
-              eventSink.writeHistoricalTerminal !== undefined
-            ) {
-              historicalInput = {
-                providerSessionId: input.providerSessionId,
-                providerInstanceId: input.providerInstanceId,
-                threadId: input.threadId,
-                ...(input.runId === undefined ? {} : { runId: input.runId }),
-                event: input.event,
-                terminal: yield* makeDomainEvent(input, {
-                  type: "provider-turn.updated",
-                  ...(input.event.threadId === undefined ? {} : { threadId: input.event.threadId }),
-                  payload: input.event.providerTurn,
-                  nodeId: input.event.providerTurn.nodeId,
-                }).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderEventNormalizeError({
-                        providerSessionId: input.providerSessionId,
-                        threadId: input.threadId,
-                        providerEvent: input.event,
-                        cause,
-                      }),
-                  ),
-                ),
-              };
-              historicalWrite = eventSink.writeHistoricalTerminal(historicalInput).pipe(
-                retryLockTimeout,
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderEventPublishError({
-                      providerSessionId: input.providerSessionId,
-                      eventCount: 1,
-                      cause,
-                    }),
-                ),
-              );
-              const historical = yield* historicalWrite;
-              if (historical.handled) return historical.storedEvents;
+      captureTerminal: Effect.fnUntraced(function* (input) {
+        const terminal = input.event;
+        if (terminal.type !== "turn.terminal")
+          return yield* new ProviderEventNormalizeError({
+            providerSessionId: input.providerSessionId,
+            threadId: input.threadId,
+            eventType: terminal.type,
+          });
+        // A captured `turn.terminal` retains only its normalized batch. It is never a
+        // historical-terminal candidate: that path takes `provider_turn.updated` with
+        // runtime evidence. publishNormalized records a superseded `turn.terminal` as an
+        // ineligible rejection, the same as an uncaptured one.
+        let retained: { readonly events: ReadonlyArray<OrchestrationV2DomainEvent> } | undefined;
+        const publish = Effect.suspend(() =>
+          Effect.gen(function* () {
+            if (retained === undefined) {
+              retained = { events: yield* normalizeTerminal(terminal, normalize(input)) };
             }
-            // Restart can commit after the initial eligibility read. A rejected
-            // ordinary write retries only exact terminal history, never its bundle.
-            const retainRejectedTerminal = (
-              storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
-            ) =>
-              storedEvents.length === 0 && historicalWrite !== undefined
-                ? historicalWrite.pipe(
-                    Effect.tap((historical) =>
-                      !historical.handled
-                        ? SupersededTerminalTrace.recordTerminalRejection(
-                            eventSink.supersededTerminalTrace,
-                            input.event,
-                            "ordinary_rejected",
-                          )
-                        : Effect.void,
-                    ),
-                    Effect.map((historical) => historical.storedEvents),
-                  )
-                : (ordinaryRejected ? recordIneligibleRejection : Effect.void).pipe(
-                    Effect.as(storedEvents),
-                  );
-            const ordinary = Effect.gen(function* () {
-              const events = yield* input.event.type === "turn.terminal"
-                ? normalizeTerminal(input.event, normalize(input))
-                : normalize(input);
-              if (events.length === 0) {
-                return [];
-              }
-              const observation =
-                input.event.type === "runtime_identity.observed" ? input.event : undefined;
-              const identity =
-                observation === undefined
-                  ? undefined
-                  : events.find((event) => event.type === "provider-thread.updated");
-              const runtimeGuard = {
-                ...(historicalInput === undefined ? {} : { historicalTerminal: historicalInput }),
-                ...(observation === undefined
-                  ? "runtimeEvidence" in input.event && input.event.runtimeEvidence !== undefined
-                    ? { runtimeEvidence: input.event.runtimeEvidence }
-                    : {}
-                  : {
-                      runtimeEvidence: {
-                        ...observation.binding,
-                        ...(identity?.type === "provider-thread.updated" &&
-                        identity.payload.runtimeIdentity?.evidenceRevision !== undefined
-                          ? { evidenceRevision: identity.payload.runtimeIdentity.evidenceRevision }
-                          : {}),
-                      },
-                      runtimeIdentityObservation: observation.requested,
-                    }),
-              };
-              const mapWriteError = (cause: unknown) =>
-                new ProviderEventPublishError({
-                  providerSessionId: input.providerSessionId,
-                  eventCount: events.length,
-                  cause,
-                });
-              if (input.writeIfProviderThreadOwner !== undefined) {
-                const ownerResult = yield* eventSink
-                  .writeIfProviderThreadOwner({
-                    guardPendingUserInputCancellations: true,
-                    skipUnchangedProviderNodes: input.event.type === "node.updated",
-                    ...runtimeGuard,
-                    ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-                    ...input.writeIfProviderThreadOwner,
-                    events,
-                  })
-                  .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
-                ordinaryRejected = !ownerResult.committed;
-                return ownerResult.storedEvents;
-              }
-              if (input.writeIfRunCurrent === undefined) {
-                return yield* eventSink
-                  .write({
-                    guardPendingUserInputCancellations: true,
-                    skipUnchangedProviderNodes: input.event.type === "node.updated",
-                    ...runtimeGuard,
-                    ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-                    events,
-                  })
-                  .pipe(retryLockTimeout, Effect.mapError(mapWriteError));
-              }
-              const terminalWrite = {
-                guardPendingUserInputCancellations: true,
-                skipUnchangedProviderNodes: input.event.type === "node.updated",
-                ...runtimeGuard,
-                ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
-                threadId: input.threadId,
-                ...input.writeIfRunCurrent,
-                events,
-              };
-              const result = yield* (
-                input.event.type === "turn.terminal"
-                  ? publishTerminal(input.event, "ingestion", {
-                      type: "current",
-                      input: terminalWrite,
-                    })
-                  : eventSink.writeIfRunCurrent(terminalWrite).pipe(retryLockTimeout)
-              ).pipe(Effect.mapError(mapWriteError));
-              ordinaryRejected = !result.committed;
-              return result.storedEvents;
-            });
-            return yield* ordinary.pipe(
-              Effect.matchCauseEffect({
-                onFailure: (cause) =>
-                  retainHistoricalTerminalOnError(Effect.failCause(cause), historicalWrite).pipe(
-                    Effect.tapCause((failure) =>
-                      Cause.hasInterruptsOnly(failure) ? Effect.void : recordIneligibleRejection,
-                    ),
-                  ),
-                onSuccess: retainRejectedTerminal,
+            const stored = yield* publishNormalized(input, retained);
+            if (
+              stored.length > 0 &&
+              terminal.status === "failed" &&
+              terminal.failure.class === "usage_limit"
+            )
+              yield* instances.getInstance(input.providerInstanceId).pipe(
+                Effect.flatMap((instance) => instance?.snapshot.refreshUsage ?? Effect.void),
+                Effect.ignoreCause({ log: true }),
+                Effect.forkIn(scope, { startImmediately: true }),
+              );
+            return stored;
+          }),
+        );
+        return { publish };
+      }),
+      ingestNormalized: Effect.fnUntraced(
+        function* (input: ProviderEventPublishInput) {
+          return yield* publishNormalized(input);
+        },
+        (effect, input) =>
+          effect.pipe(
+            Effect.tap((storedEvents) =>
+              Effect.gen(function* () {
+                if (
+                  storedEvents.length === 0 ||
+                  input.event.type !== "turn.terminal" ||
+                  input.event.status !== "failed" ||
+                  input.event.failure.class !== "usage_limit"
+                )
+                  return;
+                const instance = yield* instances.getInstance(input.providerInstanceId);
+                if (!instance?.snapshot.refreshUsage) return;
+                yield* instance.snapshot.refreshUsage.pipe(
+                  Effect.ignoreCause({ log: true }),
+                  Effect.forkIn(scope, { startImmediately: true }),
+                );
               }),
-            );
-          },
-          (effect, input) =>
-            effect.pipe(
-              Effect.tap((storedEvents) =>
-                Effect.gen(function* () {
-                  if (
-                    storedEvents.length === 0 ||
-                    input.event.type !== "turn.terminal" ||
-                    input.event.status !== "failed" ||
-                    input.event.failure.class !== "usage_limit"
-                  )
-                    return;
-                  const instance = yield* instances.getInstance(input.providerInstanceId);
-                  if (!instance?.snapshot.refreshUsage) return;
-                  yield* instance.snapshot.refreshUsage.pipe(
-                    Effect.ignoreCause({ log: true }),
-                    Effect.forkIn(scope, { startImmediately: true }),
-                  );
-                }),
-              ),
-              Effect.flatMap((storedEvents) =>
-                Effect.gen(function* () {
-                  if (input.event.type !== "app_thread.created") return storedEvents;
-                  const created = storedEvents.find(
-                    (stored) => stored.event.type === "thread.created",
-                  );
-                  if (created?.event.type !== "thread.created") return storedEvents;
-                  const child = created.event.payload;
-                  if (
-                    child.worktreePath === null ||
-                    child.branch === null ||
-                    !isTemporaryWorktreeBranch(child.branch)
-                  )
-                    return storedEvents;
-                  // Git renames before scanning committed threads. If that scan missed this
-                  // creation, HEAD already has the new name, even if the parent moved away.
-                  const branch = yield* git.resolveBranchName(child.worktreePath, "HEAD");
-                  if (branch === null || branch === child.branch) return storedEvents;
-                  const now = yield* DateTime.now;
-                  const event = yield* makeDomainEvent(input, {
-                    type: "thread.metadata-updated",
-                    threadId: child.id,
-                    payload: { ...child, branch, updatedAt: now },
-                    occurredAt: now,
-                  });
-                  const synced = yield* eventSink.write({ events: [event] });
-                  return [...storedEvents, ...synced];
-                }).pipe(
-                  Effect.catchCause((cause) =>
-                    Effect.logWarning("Native thread worktree branch recheck failed", {
-                      threadId:
-                        input.event.type === "app_thread.created"
-                          ? input.event.appThread.id
-                          : input.threadId,
-                      cause,
-                    }).pipe(Effect.as(storedEvents)),
-                  ),
+            ),
+            Effect.flatMap((storedEvents) =>
+              Effect.gen(function* () {
+                if (input.event.type !== "app_thread.created") return storedEvents;
+                const created = storedEvents.find(
+                  (stored) => stored.event.type === "thread.created",
+                );
+                if (created?.event.type !== "thread.created") return storedEvents;
+                const child = created.event.payload;
+                if (child.worktreePath === null || child.branch === null) return storedEvents;
+                // Git renames before scanning committed threads. If that scan missed this
+                // creation, HEAD already has the new name, even if the parent moved away.
+                const branch = yield* git.resolveBranchName(child.worktreePath, "HEAD");
+                if (branch === null || branch === child.branch) return storedEvents;
+                const now = yield* DateTime.now;
+                const event = yield* makeDomainEvent(input, {
+                  type: "thread.metadata-updated",
+                  threadId: child.id,
+                  payload: { ...child, branch, updatedAt: now },
+                  occurredAt: now,
+                });
+                const synced = yield* eventSink.write({ events: [event] });
+                return [...storedEvents, ...synced];
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Native thread worktree branch recheck failed", {
+                    threadId:
+                      input.event.type === "app_thread.created"
+                        ? input.event.appThread.id
+                        : input.threadId,
+                    cause,
+                  }).pipe(Effect.as(storedEvents)),
                 ),
               ),
-              // @effect-diagnostics-next-line flatMapConditionalToFilterOrFail:off - The predicate narrows the captured event for the subagent update.
-              Effect.flatMap((storedEvents) =>
-                storedEvents.length === 0 || input.event.type !== "subagent.updated"
-                  ? Effect.succeed(storedEvents)
-                  : syncSubagentThreadModel(input, input.event.subagent).pipe(
-                      Effect.map((synced) => [...storedEvents, ...synced]),
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderEventPublishError({
-                            providerSessionId: input.providerSessionId,
-                            eventCount: 1,
-                            cause,
-                          }),
-                      ),
-                    ),
-              ),
-              Effect.tap((storedEvents) =>
-                Effect.gen(function* () {
-                  if (storedEvents.length === 0 || input.event.type !== "provider_turn.updated")
-                    return;
-                  const providerTurn = input.event.providerTurn;
-                  if (
-                    providerTurn.status !== "completed" &&
-                    providerTurn.status !== "failed" &&
-                    providerTurn.status !== "interrupted" &&
-                    providerTurn.status !== "cancelled"
-                  )
-                    return;
-                  const key = `${input.providerInstanceId}:${providerTurn.id}`;
-                  if (completedTurnAnalytics.has(key)) return;
-                  completedTurnAnalytics.add(key);
-                  if (completedTurnAnalytics.size > 4096) {
-                    const oldest = completedTurnAnalytics.values().next().value;
-                    if (oldest !== undefined) completedTurnAnalytics.delete(oldest);
-                  }
-                  yield* analytics.turnCompleted({
-                    driver: input.event.driver,
-                    providerTurn,
-                    ...(input.analyticsContext === undefined
-                      ? {}
-                      : { context: input.analyticsContext }),
-                  });
-                }),
-              ),
-              (effect) =>
-                input.event.type === "app_thread.created"
-                  ? threadCommands.withLock(input.event.appThread.id, effect)
-                  : effect,
             ),
-        ),
+            // @effect-diagnostics-next-line flatMapConditionalToFilterOrFail:off - The predicate narrows the captured event for the subagent update.
+            Effect.flatMap((storedEvents) =>
+              storedEvents.length === 0 || input.event.type !== "subagent.updated"
+                ? Effect.succeed(storedEvents)
+                : syncSubagentThreadModel(input, input.event.subagent).pipe(
+                    Effect.map((synced) => [...storedEvents, ...synced]),
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderEventPublishError({
+                          providerSessionId: input.providerSessionId,
+                          eventCount: 1,
+                          cause,
+                        }),
+                    ),
+                  ),
+            ),
+            Effect.tap((storedEvents) =>
+              Effect.gen(function* () {
+                if (storedEvents.length === 0 || input.event.type !== "provider_turn.updated")
+                  return;
+                const providerTurn = input.event.providerTurn;
+                if (
+                  providerTurn.status !== "completed" &&
+                  providerTurn.status !== "failed" &&
+                  providerTurn.status !== "interrupted" &&
+                  providerTurn.status !== "cancelled"
+                )
+                  return;
+                const key = `${input.providerInstanceId}:${providerTurn.id}`;
+                if (completedTurnAnalytics.has(key)) return;
+                completedTurnAnalytics.add(key);
+                if (completedTurnAnalytics.size > 4096) {
+                  const oldest = completedTurnAnalytics.values().next().value;
+                  if (oldest !== undefined) completedTurnAnalytics.delete(oldest);
+                }
+                yield* analytics.turnCompleted({
+                  driver: input.event.driver,
+                  providerTurn,
+                  ...(input.analyticsContext === undefined
+                    ? {}
+                    : { context: input.analyticsContext }),
+                });
+              }),
+            ),
+            (effect) =>
+              input.event.type === "app_thread.created"
+                ? threadCommands.withLock(input.event.appThread.id, effect)
+                : effect,
+          ),
+      ),
     });
   }),
 );

@@ -14,7 +14,57 @@ import { runJonesMigrations } from "../persistence/JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../persistence/JonesMigrations.ts";
 import nativeLeaseRenewal from "../persistence/Migrations/137_JonesNativeCreationLeaseRenewal.ts";
 import workspaceRetirement from "../persistence/Migrations/138_JonesWorkspaceRetirement.ts";
-import { readMigrationPlan } from "./migrationPlan.ts";
+import { decodeMigrationPlan, readMigrationPlan } from "./migrationPlan.ts";
+
+it("decodes exact pending arrays without sorting, deduplicating, or replacing them", () => {
+  const pendingUpstream = [54, 53, 54, 96];
+  const pendingJones = [156, 1, 105];
+  const decoded = decodeMigrationPlan({ pendingUpstream, pendingJones });
+  expect(decoded).toEqual({ pendingUpstream, pendingJones });
+  expect(decoded?.pendingUpstream).toBe(pendingUpstream);
+  expect(decoded?.pendingJones).toBe(pendingJones);
+  expect(decodeMigrationPlan({ pendingUpstream: [], pendingJones: [] })).toEqual({
+    pendingUpstream: [],
+    pendingJones: [],
+  });
+});
+
+it("rejects malformed, sparse, and non-array pending IDs on either ledger", () => {
+  const sparse = [1, 2];
+  delete sparse[0];
+  for (const values of [
+    undefined,
+    null,
+    {},
+    "1",
+    new Uint32Array([1]),
+    sparse,
+    [undefined],
+    [null],
+    [true],
+    ["1"],
+    [0],
+    [-1],
+    [1.5],
+    [NaN],
+    [Infinity],
+    [Number.MAX_SAFE_INTEGER + 1],
+  ]) {
+    expect(decodeMigrationPlan({ pendingUpstream: values, pendingJones: [] })).toBeUndefined();
+    expect(decodeMigrationPlan({ pendingUpstream: [], pendingJones: values })).toBeUndefined();
+  }
+  for (const value of [
+    undefined,
+    null,
+    true,
+    "plan",
+    {},
+    [],
+    Object.assign([], { pendingUpstream: [96], pendingJones: [156] }),
+  ]) {
+    expect(decodeMigrationPlan(value)).toBeUndefined();
+  }
+});
 
 /** Upstream migration IDs from `first` through the newest one this build ships. */
 const upstreamFrom = (first: number) =>
@@ -751,3 +801,79 @@ it.effect(
       }
     }),
 );
+
+it("rejects an upstream gap even when the highest recorded ID matches the candidate", () => {
+  withDatabase((databasePath) => {
+    const db = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      db.exec(
+        "DELETE FROM effect_sql_migrations; INSERT INTO effect_sql_migrations VALUES (2, 'UpstreamNext')",
+      );
+    } finally {
+      db.close();
+    }
+    const before = NodeFS.readFileSync(databasePath);
+    expect(readMigrationPlan({ databasePath, ...manifest })).toMatchObject({ status: "blocked" });
+    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+  });
+});
+
+it.each([53, 54])(
+  "predicts the exact preview-%i reconciliation effects without rewriting history",
+  (preview) => {
+    withDatabase((databasePath) => {
+      const db = new NodeSqlite.DatabaseSync(databasePath);
+      try {
+        db.exec("DELETE FROM effect_sql_migrations");
+        const insert = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
+        for (const [id, name] of migrationManifest.filter(([id]) => id < 53)) insert.run(id, name);
+        if (preview === 54) insert.run(53, "PullRequestFilesViewed");
+        insert.run(preview, "OrchestrationV2");
+      } finally {
+        db.close();
+      }
+      const before = NodeFS.readFileSync(databasePath);
+      expect(
+        readMigrationPlan({ databasePath, upstream: migrationManifest, jones: manifest.jones }),
+      ).toEqual({
+        status: "ready",
+        migrationPlan: {
+          pendingUpstream: [...(preview === 53 ? [53, 54] : [54]), ...upstreamFrom(56)],
+          pendingJones: [105],
+        },
+      });
+      expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+    });
+  },
+);
+
+it("candidate registration predicts the exact pending Jones migrations after release 155", () => {
+  withDatabase((databasePath) => {
+    const db = new NodeSqlite.DatabaseSync(databasePath);
+    try {
+      db.exec("DELETE FROM effect_sql_migrations; DELETE FROM jones_sql_migrations");
+      const upstream = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
+      for (const [id, name] of migrationManifest) upstream.run(id, name);
+      const jones = db.prepare("INSERT INTO jones_sql_migrations VALUES (?, ?)");
+      for (const [id, name] of jonesMigrationEntries.filter(([id]) => id <= 155))
+        jones.run(id, name);
+    } finally {
+      db.close();
+    }
+    const before = NodeFS.readFileSync(databasePath);
+    expect(
+      readMigrationPlan({
+        databasePath,
+        upstream: migrationManifest,
+        jones: jonesMigrationEntries.map(([id, name]) => [id, name] as const),
+      }),
+    ).toEqual({
+      status: "ready",
+      migrationPlan: {
+        pendingUpstream: [],
+        pendingJones: [156, 157, 158, 159, 160, 161, 162, 163, 164],
+      },
+    });
+    expect(NodeFS.readFileSync(databasePath)).toEqual(before);
+  });
+});

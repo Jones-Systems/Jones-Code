@@ -1,5 +1,6 @@
 import { claimThreadOpen } from "@t3tools/client-runtime/state/thread-search";
 import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
@@ -27,10 +28,25 @@ vi.mock(import("../../state/threads"), async (original) => {
   };
 });
 
+vi.mock(import("../../connection/catalog"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    environmentCatalog: {
+      ...actual.environmentCatalog,
+      sessionGenerationAtom: (environmentId: EnvironmentId) => sessionGeneration(environmentId),
+    },
+  };
+});
+
 import { ThreadVisitWatermark } from "./ThreadVisitWatermark";
 
 // Kept alive so a shell set before its tracker mounts is still there when it does.
 const shellAtom = Atom.family((_key: string) => Atom.make<unknown>(null).pipe(Atom.keepAlive));
+// Stands in for the environment's established sessions, so a case can reconnect it.
+const sessionGeneration = Atom.family((_environmentId: string) =>
+  Atom.make(0).pipe(Atom.keepAlive),
+);
 
 const NOW = Date.parse("2026-01-04T00:00:00.000Z");
 const ENVIRONMENT = EnvironmentId.make("environment-visit-watermark");
@@ -106,6 +122,44 @@ it("records each thread after its own visible focused dwell when switching threa
         input: { threadId: threadB.threadId, visitedAt: "2026-01-03T00:00:00.000Z" },
       },
     ]);
+  } finally {
+    visibility.mockRestore();
+    focus.mockRestore();
+  }
+});
+
+it("retries a rejected dwell visit, with its open, once after the session reconnects", async () => {
+  const threadC: ScopedThreadRef = { environmentId: ENVIRONMENT, threadId: ThreadId.make("c") };
+  const visit = {
+    environmentId: ENVIRONMENT,
+    input: { threadId: threadC.threadId, visitedAt: "2026-01-02T00:00:00.000Z", opened: true },
+  };
+  const reconnect = () =>
+    act(async () =>
+      appAtomRegistry.update(sessionGeneration(ENVIRONMENT), (generation) => generation + 1),
+    );
+  mocks.visitRun.mockReset();
+  mocks.visitRun.mockResolvedValueOnce(AsyncResult.failure(Cause.fail("disconnected")));
+  mocks.visitRun.mockResolvedValue(AsyncResult.success(undefined));
+  setShell(threadC, "2026-01-02T00:00:00.000Z");
+  using _timers = fakeTimers();
+  vi.setSystemTime(NOW);
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  try {
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <ThreadVisitWatermark threadRef={threadC} />
+      </AppAtomRegistryProvider>,
+    );
+    await act(async () => vi.advanceTimersByTime(3000));
+    await act(async () => vi.advanceTimersByTime(30_000));
+    expect(mocks.visitRun.mock.calls.map(([, input]) => input)).toEqual([visit]);
+
+    await reconnect();
+    await reconnect();
+    await act(async () => vi.advanceTimersByTime(30_000));
+    expect(mocks.visitRun.mock.calls.map(([, input]) => input)).toEqual([visit, visit]);
   } finally {
     visibility.mockRestore();
     focus.mockRestore();

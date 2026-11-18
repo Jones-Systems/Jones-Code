@@ -16,6 +16,14 @@
     {
       "from": "apps/server/src/terminal/Manager.test.ts",
       "to": "apps/server/src/terminal/NativeSetupControl.ts"
+    },
+    {
+      "from": "apps/server/src/vcs/GitVcsDriver.ts",
+      "to": "apps/server/src/jones/nativeCreation/worktreeObservation/WorktreeObservation.ts"
+    },
+    {
+      "from": "apps/server/src/vcs/GitVcsDriverCore.ts",
+      "to": "apps/server/src/jones/nativeCreation/worktreeObservation/ObservedWorktreeCreation.ts"
     }
   ]
 }

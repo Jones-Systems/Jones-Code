@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { satisfiesSemverRange } from "@t3tools/shared/semver";
 import { readPnpmProjectLockfile } from "@t3tools/shared/jones/packaging/pnpmProjectLockfile";
 
 const Lockfile = Schema.Struct({
@@ -19,6 +20,9 @@ const Lockfile = Schema.Struct({
   snapshots: Schema.Record(Schema.String, Schema.Unknown),
 });
 const decodeLockfile = Schema.decodeUnknownSync(Lockfile);
+const hasZodDependency = Schema.is(
+  Schema.Struct({ dependencies: Schema.Struct({ zod: Schema.String }) }),
+);
 
 export function planCliArchiveDependencies(input: {
   readonly dependencies: Readonly<Record<string, string>>;
@@ -46,12 +50,12 @@ export function planCliArchiveDependencies(input: {
     if (!locked || locked.specifier !== (override ?? input.dependencies[name])) {
       throw new Error(`Missing or stale CLI archive lock importer entry for ${name}.`);
     }
-    // This reduced manifest has no lock seed: an exact patch must have an exact
-    // root. Peer-qualified, aliased and non-registry resolutions need a separate
-    // staging policy instead of silently discarding their resolution context.
-    const resolution = /^(\d+\.\d+\.\d+(?:-[\dA-Za-z.-]+)?)\(patch_hash=([a-f0-9]{64})\)$/.exec(
-      locked.version,
-    );
+    // The reduced manifest has no lock seed. Cursor's zod peer can be reproduced
+    // from a staged direct root. Other peer contexts need their own staging policy.
+    const resolution =
+      /^(\d+\.\d+\.\d+(?:-[\dA-Za-z.-]+)?)\(patch_hash=([a-f0-9]{64})\)(?:\(zod@(\d+\.\d+\.\d+)\))?$/.exec(
+        locked.version,
+      );
     const version = resolution?.[1];
     const patchHash = resolution?.[2];
     if (
@@ -66,6 +70,24 @@ export function planCliArchiveDependencies(input: {
       patchPath.length === 0
     ) {
       throw new Error(`Unsupported or mismatched CLI archive patch resolution for ${name}.`);
+    }
+    const zodPeer = resolution?.[3];
+    if (zodPeer !== undefined) {
+      const snapshot = lockfile.snapshots[`${name}@${locked.version}`];
+      if (
+        name !== "@cursor/sdk" ||
+        !importer.zod ||
+        importer.zod.specifier !== input.dependencies.zod ||
+        importer.zod.version !== zodPeer ||
+        !satisfiesSemverRange(zodPeer, importer.zod.specifier) ||
+        (lockfile.overrides?.zod !== undefined && lockfile.overrides.zod !== zodPeer) ||
+        !hasZodDependency(snapshot) ||
+        snapshot.dependencies.zod !== zodPeer ||
+        !Object.hasOwn(lockfile.snapshots, `zod@${zodPeer}`)
+      ) {
+        throw new Error(`Unsupported or mismatched CLI archive zod peer for ${name}.`);
+      }
+      dependencies.zod = zodPeer;
     }
     dependencies[name] = version;
     patchedDependencies[patchKey] = patchPath;

@@ -166,22 +166,30 @@ function UpdateEverythingDialogContent({
             </p>
           ))}
           {/* Machine names truncate first. Provider lists wrap between names, never inside one. */}
-          <div className="grid grid-cols-[minmax(4rem,max-content)_max-content_minmax(min-content,1fr)_max-content] gap-x-4 text-sm">
-            <div className="col-span-full grid grid-cols-subgrid border-b pb-1.5 text-muted-foreground text-xs">
-              <span>Machine</span>
-              <span>T3 Code</span>
-              <span>Providers</span>
-              <span />
+          <div
+            role="table"
+            className="grid grid-cols-[minmax(4rem,max-content)_max-content_minmax(min-content,1fr)_max-content] gap-x-4 text-sm"
+          >
+            <div
+              role="row"
+              className="col-span-full grid grid-cols-subgrid border-b pb-1.5 text-muted-foreground text-xs"
+            >
+              <span role="columnheader">Machine</span>
+              <span role="columnheader">T3 Code</span>
+              <span role="columnheader">Providers</span>
+              <span role="columnheader" />
             </div>
             {updating.map((row) => (
               <div
                 key={row.environmentId ?? "this-app"}
+                role="row"
                 className="col-span-full grid grid-cols-subgrid border-b border-border/50 py-1.5 last:border-b-0"
               >
-                <span className="max-w-32 min-w-0">
-                  <MiddleTruncate value={row.label} />
+                <span role="cell" className="max-w-32 min-w-0">
+                  <span className="sr-only">{row.label}</span>
+                  <MiddleTruncate value={row.label} aria-hidden />
                 </span>
-                <span>
+                <span role="cell">
                   {row.app !== null
                     ? APP_LABELS[row.app]
                     : row.jonesHandoffNotice
@@ -194,7 +202,7 @@ function UpdateEverythingDialogContent({
                     <span className="block text-muted-foreground text-xs">restarts last</span>
                   ) : null}
                 </span>
-                <span>
+                <span role="cell">
                   {row.jonesHandoffNotice ? (
                     <span className="block text-muted-foreground text-xs">
                       {row.jonesHandoffNotice}
@@ -207,7 +215,7 @@ function UpdateEverythingDialogContent({
                     </Fragment>
                   ))}
                 </span>
-                <span className="text-right">
+                <span role="cell" className="text-right">
                   {row.environmentId !== null && restarting.has(row.environmentId) ? (
                     <RunningThreads environmentId={row.environmentId} />
                   ) : null}

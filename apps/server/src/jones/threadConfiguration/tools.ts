@@ -4,7 +4,7 @@ import {
   ThreadSelfConfigurationResult,
   OrchestratorMcpFailure,
 } from "@t3tools/contracts";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Effect from "effect/Effect";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import * as Invocation from "../../mcp/McpInvocationContext.ts";
@@ -22,7 +22,9 @@ const tool = Tool.make("t3_thread_self_configure", {
     Service.ThreadSelfConfiguration,
     ThreadManagement.ThreadManagementService,
   ],
-}).annotate(Tool.Destructive, false);
+})
+  .annotate(Tool.Destructive, false)
+  .annotate(McpSchema.EnabledWhen, Invocation.hiddenFromOutsideClients);
 export const ThreadSelfConfigurationToolkit = Toolkit.make(tool);
 export const layer = McpToolAccess.toLayer(ThreadSelfConfigurationToolkit, {
   t3_thread_self_configure: McpToolAccess.actsAsCallerWithReceipt((input) =>

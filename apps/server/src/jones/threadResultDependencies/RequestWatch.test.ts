@@ -7,6 +7,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import * as Projection from "../../orchestration-v2/ProjectionStore.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import { makeDependencyStore } from "./DependencyStore.ts";
@@ -29,6 +30,7 @@ const observationPorts = (continuation?: {
       const projection = yield* Projection.ProjectionStoreV2;
       const sink = yield* EventSink.EventSinkV2;
       return Layer.mock(Orchestrator.OrchestratorV2)({
+        ...unusedCorePorts(),
         getThreadRecords: (threadId, fields, filter) =>
           projection
             .getThreadRecords(threadId, fields, filter)

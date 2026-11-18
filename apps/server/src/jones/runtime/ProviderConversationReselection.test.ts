@@ -766,62 +766,85 @@ it.effect.each([
   }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
 
-it.effect("rechecks session revocation inside receipt transaction and rolls the receipt back", () =>
-  Effect.gen(function* () {
-    const f = yield* fixture();
-    yield* Effect.gen(function* () {
-      const service = yield* Reselection.ProviderConversationReselection;
-      const preview = yield* service.preview(f.input, f.principal);
-      let observed = false;
-      const racedSink = EventSink.EventSinkV2.of({
-        ...f.sink,
-        commitCommand: (input) => {
-          const context = input.providerConversationReselection!;
-          return f.sink.commitCommand({
-            ...input,
-            providerConversationReselection: {
-              revalidate: (envelope, replay) =>
-                Effect.gen(function* () {
-                  observed = true;
-                  yield* f.sql`UPDATE auth_sessions SET revoked_at = ${DateTime.formatIso(f.now)} WHERE session_id = ${f.principal.sessionId}`.pipe(
-                    Effect.orDie,
-                  );
-                  yield* context.revalidate(envelope, replay);
-                }),
-            },
-          });
-        },
-      });
-      const result = yield* Effect.gen(function* () {
-        const owner = yield* Reselection.ProviderConversationReselection;
-        return yield* owner
-          .reselect(
-            {
-              ...f.input,
-              commandId: CommandId.make("command:revocation-race"),
-              expectedPreimageDigest: preview.preimageDigest,
-            },
-            f.principal,
-          )
-          .pipe(Effect.result);
-      }).pipe(
-        Effect.provide(
-          Layer.fresh(Reselection.layer).pipe(
-            Layer.provide(Layer.succeed(EventSink.EventSinkV2, racedSink)),
-            Layer.provide(f.manager),
+it.effect.each(["session_revoked", "generation_replaced"] as const)(
+  "rechecks %s inside the receipt transaction and rolls authority and receipt back",
+  (change) =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* Effect.gen(function* () {
+        const service = yield* Reselection.ProviderConversationReselection;
+        const preview = yield* service.preview(f.input, f.principal);
+        const authorityBefore =
+          yield* f.sql`SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${f.target.id}`;
+        const actorBefore =
+          yield* f.sql`SELECT revoked_at FROM auth_sessions WHERE session_id = ${f.principal.sessionId}`;
+        let observed = false;
+        const racedSink = EventSink.EventSinkV2.of({
+          ...f.sink,
+          commitCommand: (input) => {
+            const context = input.providerConversationReselection!;
+            return f.sink.commitCommand({
+              ...input,
+              providerConversationReselection: {
+                revalidate: (envelope, replay) =>
+                  Effect.gen(function* () {
+                    observed = true;
+                    if (change === "session_revoked")
+                      yield* f.sql`UPDATE auth_sessions SET revoked_at = ${DateTime.formatIso(f.now)} WHERE session_id = ${f.principal.sessionId}`.pipe(
+                        Effect.orDie,
+                      );
+                    else
+                      yield* f.sql`UPDATE orchestration_v2_projection_provider_threads SET payload_json = json_set(payload_json, '$.runtimeIdentity.runtimeGeneration', 'generation:replaced-in-transaction') WHERE provider_thread_id = ${f.target.id}`.pipe(
+                        Effect.orDie,
+                      );
+                    yield* context.revalidate(envelope, replay);
+                  }),
+              },
+            });
+          },
+        });
+        const result = yield* Effect.gen(function* () {
+          const owner = yield* Reselection.ProviderConversationReselection;
+          return yield* owner
+            .reselect(
+              {
+                ...f.input,
+                commandId: CommandId.make("command:revocation-race"),
+                expectedPreimageDigest: preview.preimageDigest,
+              },
+              f.principal,
+            )
+            .pipe(Effect.result);
+        }).pipe(
+          Effect.provide(
+            Layer.fresh(Reselection.layer).pipe(
+              Layer.provide(Layer.succeed(EventSink.EventSinkV2, racedSink)),
+              Layer.provide(f.manager),
+            ),
           ),
-        ),
-      );
-      assert.isTrue(observed);
-      assert.strictEqual(result._tag, "Failure");
-      if (result._tag === "Failure") assert.strictEqual(result.failure.reason, "actor_unavailable");
-      assert.deepEqual(yield* f.sql`SELECT * FROM orchestration_command_receipts`, []);
-      assert.strictEqual(
-        (yield* f.projections.getThread(f.input.threadId)).activeProviderThreadId,
-        f.old.id,
-      );
-    }).pipe(Effect.provide(f.service));
-  }).pipe(Effect.scoped, Effect.provide(testLayer)),
+        );
+        assert.isTrue(observed);
+        assert.strictEqual(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.strictEqual(
+            result.failure.reason,
+            change === "session_revoked" ? "actor_unavailable" : "preimage_changed",
+          );
+        assert.deepEqual(yield* f.sql`SELECT * FROM orchestration_command_receipts`, []);
+        assert.deepEqual(
+          yield* f.sql`SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${f.target.id}`,
+          authorityBefore,
+        );
+        assert.deepEqual(
+          yield* f.sql`SELECT revoked_at FROM auth_sessions WHERE session_id = ${f.principal.sessionId}`,
+          actorBefore,
+        );
+        assert.strictEqual(
+          (yield* f.projections.getThread(f.input.threadId)).activeProviderThreadId,
+          f.old.id,
+        );
+      }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
 
 it.effect(

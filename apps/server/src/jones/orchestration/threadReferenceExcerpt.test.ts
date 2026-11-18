@@ -133,6 +133,7 @@ describe("source thread excerpt", () => {
           snapshotSequence: 42,
           totalItems: items.length,
           hasMore: true,
+          hasEarlier: true,
         });
       });
       expect(calls).toEqual([
@@ -169,6 +170,7 @@ describe("source thread excerpt", () => {
           snapshotSequence: 5,
           totalItems: 2,
           hasMore: false,
+          hasEarlier: false,
           inProgress: true,
         }),
       );
@@ -182,7 +184,13 @@ describe("source thread excerpt", () => {
     Effect.gen(function* () {
       let calls = 0;
       const result = yield* capture(() =>
-        Effect.succeed({ items: [], totalItems: ++calls, hasMore: false, snapshotSequence: 1 }),
+        Effect.succeed({
+          items: [],
+          totalItems: ++calls,
+          hasMore: false,
+          hasEarlier: false,
+          snapshotSequence: 1,
+        }),
       );
       expect(calls).toBe(2);
       expect(result.excerpt).toMatchObject({ status: "unavailable", reason: "invalid_response" });
@@ -196,6 +204,7 @@ describe("source thread excerpt", () => {
           items: [],
           totalItems: 0,
           hasMore: false,
+          hasEarlier: false,
           snapshotSequence: [1, 2, 3, 3][calls++]!,
         }),
       );
@@ -207,7 +216,13 @@ describe("source thread excerpt", () => {
     Effect.gen(function* () {
       let calls = 0;
       const result = yield* capture(() =>
-        Effect.succeed({ items: [], totalItems: 0, hasMore: false, snapshotSequence: ++calls }),
+        Effect.succeed({
+          items: [],
+          totalItems: 0,
+          hasMore: false,
+          hasEarlier: false,
+          snapshotSequence: ++calls,
+        }),
       );
       expect(calls).toBe(2);
       expect(result.excerpt).toMatchObject({ status: "unavailable", reason: "invalid_response" });
@@ -216,7 +231,7 @@ describe("source thread excerpt", () => {
   it.effect("does not invent a snapshot sequence", () =>
     Effect.gen(function* () {
       const result = yield* capture(() =>
-        Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+        Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
       );
       expect(result.excerpt).toMatchObject({ status: "unavailable", reason: "invalid_response" });
     }),
@@ -270,6 +285,7 @@ describe("source thread excerpt", () => {
               items: [input, output],
               totalItems: 2,
               hasMore: false,
+              hasEarlier: false,
               snapshotSequence: sequence,
             }));
           }),

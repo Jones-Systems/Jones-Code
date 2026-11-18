@@ -8,6 +8,44 @@ import * as NodeURL from "node:url";
 import { serverComputeBuildIdentity, computeBuildPlaceholder } from "./buildIdentity.ts";
 
 NodeTest.test(
+  "source compute identity binds each closed probe and ordinary lifecycle module",
+  async () => {
+    const { currentBuildIdentity, sourceFiles } =
+      await import("../../../apps/server/src/jones/serverCompute/workerCommand.ts");
+    const additions = [
+      "jones/workspace/SearchGitProbe.ts",
+      "jones/serverCompute/searchProbeProtocol.ts",
+      "jones/serverCompute/searchProbeClient.ts",
+      "jones/serverCompute/searchProbeBinding.ts",
+      "vcs/VcsProcess.ts",
+      "processRunner.ts",
+    ];
+    for (const file of additions) NodeAssert.ok(sourceFiles.includes(file));
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-probe-identity-"));
+    const previous = process.argv[1];
+    try {
+      const entry = NodePath.join(root, "bin.ts");
+      for (const file of ["bin.ts", ...sourceFiles]) {
+        const target = NodePath.join(root, file);
+        await NodeFSP.mkdir(NodePath.dirname(target), { recursive: true });
+        await NodeFSP.writeFile(target, file);
+      }
+      process.argv[1] = entry;
+      const baseline = await currentBuildIdentity();
+      for (const file of additions) {
+        const target = NodePath.join(root, file);
+        await NodeFSP.writeFile(target, `${file}\nchanged probe candidate`);
+        NodeAssert.notEqual(await currentBuildIdentity(), baseline, file);
+        await NodeFSP.writeFile(target, file);
+      }
+    } finally {
+      process.argv[1] = previous;
+      await NodeFSP.rm(root, { recursive: true });
+    }
+  },
+);
+
+NodeTest.test(
   "one complete-input digest stamps every chunk and changes with sibling code or lock bytes",
   async () => {
     const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-build-id-"));

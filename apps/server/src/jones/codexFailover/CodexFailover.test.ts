@@ -106,6 +106,7 @@ const registry = Registry.ProviderRegistry.of({
   reloadSecretsAndRefresh: () => Effect.succeed(catalog),
   invalidateModelCaches: () => Effect.void,
   refreshModelCatalog: Effect.void,
+  applySecretAndRefresh: () => Effect.die("unused"),
   refreshInstance: () => Effect.succeed(catalog),
   refreshAfterUpdate: () => Effect.succeed(catalog),
   refreshWorkspaceSnapshot: () => Effect.succeed(catalog),
@@ -436,6 +437,7 @@ const queueRun = Effect.fn("CodexFailover.test.queueRun")(function* (
     startedAt: null,
     completedAt: null,
   };
+  const failover = ctx.service.commitContext(command);
   yield* ctx.sink.commitCommand({
     commandId: command.commandId,
     threadId,
@@ -452,7 +454,7 @@ const queueRun = Effect.fn("CodexFailover.test.queueRun")(function* (
         payload: run,
       },
     ],
-    codexFailover: ctx.service.commitContext(command),
+    ...(failover === undefined ? {} : { codexFailover: failover }),
   });
   return run;
 });
@@ -974,6 +976,7 @@ it.effect("a newer selection revision refuses continuation and leaves no run or 
       dispatchMode: { type: "start_immediately" as const },
       creationSource: "server" as const,
     };
+    const failover = ctx.service.commitContext(command);
     const result = yield* Effect.exit(
       ctx.sink.commitCommand({
         commandId: command.commandId,
@@ -991,7 +994,7 @@ it.effect("a newer selection revision refuses continuation and leaves no run or 
             payload: { ...ctx.run, id: RunId.make("refused:run"), ordinal: 10, status: "running" },
           },
         ],
-        codexFailover: ctx.service.commitContext(command),
+        ...(failover === undefined ? {} : { codexFailover: failover }),
       }),
     );
     assert.isTrue(Exit.isFailure(result));

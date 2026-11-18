@@ -53,6 +53,7 @@ export function queuedSteerBatchCandidates(
           message !== undefined &&
           root !== undefined &&
           attempt !== undefined &&
+          run.freshContext !== true &&
           run.sourcePlanRef === undefined &&
           run.restartContinuationOfRunId === undefined &&
           (!automaticDelivery ||
@@ -101,6 +102,8 @@ export function validateQueuedSteerBatch(
     return { error: "Wait for the active command to finish." } as const;
   if (projection.runtimeRequests.some((request) => request.status === "pending"))
     return { error: "Resolve the pending request before steering queued messages." } as const;
+  if (command.items.length === 0)
+    return { error: "Select the queue's leading messages before batch steering." } as const;
   const candidates = queuedSteerBatchCandidates(projection, target.id, automaticDelivery);
   const selected = candidates.slice(0, command.items.length);
   if (
@@ -123,6 +126,11 @@ export function validateQueuedSteerBatch(
     return {
       error: `${plan.reason}: ${plan.count} messages fit; use a smaller batch or the first row's Steer action.`,
     } as const;
+  if (
+    plan.attachments.length > 0 &&
+    session.capabilities.turns.activeSteeringAcceptsAttachments === false
+  )
+    return { error: "This provider requires individual delivery for attachments." } as const;
   return {
     target,
     rootNodeId: target.rootNodeId,

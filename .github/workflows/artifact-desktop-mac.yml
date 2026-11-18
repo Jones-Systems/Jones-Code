@@ -190,6 +190,7 @@ jobs:
 
       - name: Build unsigned preview DMG
         env:
+          T3CODE_DESKTOP_UNTRUSTED_BUNDLE: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
           BUILD_VERSION: ${{ steps.version.outputs.value }}
           CARGO_BUILD_JOBS: ${{ steps.build_capacity.outputs.jobs }}
           CMAKE_BUILD_PARALLEL_LEVEL: ${{ steps.build_capacity.outputs.jobs }}

@@ -1,8 +1,11 @@
 import { assert, it } from "@effect/vitest";
 import {
+  CommandId,
   EventId,
+  MessageId,
   NodeId,
   PlanId,
+  RunId,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2TurnItem,
@@ -15,8 +18,10 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -28,7 +33,14 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
+import * as LegacyStorage from "../jones/legacyBootstrap/Storage.ts";
+import { legacyBootstrapCreateCommandId } from "./LegacyBootstrap.ts";
+import { RecordedAppThreadJson, RecordedRunJson } from "./RecordedTypes.ts";
 
+const decodeRecordedThread = Schema.decodeEffect(RecordedAppThreadJson);
+const decodeRecordedRun = Schema.decodeEffect(RecordedRunJson);
+const encodeRecordedThreadRow = Schema.encodeEffect(Schema.fromJsonString(RecordedAppThreadJson));
+const encodeRecordedRunRow = Schema.encodeEffect(Schema.fromJsonString(RecordedRunJson));
 const database = SqlitePersistence.layerMemory;
 const eventStoreProvided = EventStore.layer.pipe(Layer.provideMerge(database));
 const projectionStoreProvided = ProjectionStore.layer.pipe(Layer.provideMerge(database));
@@ -382,4 +394,179 @@ it.effect("keeps an anchor that a row appended during the pass borrows from", ()
       );
     }),
   ).pipe(Effect.provide(layerTest)),
+);
+
+// Receiving-era rows: private values inline in the ledger and projection, accepted receipts,
+// and no Jones sidecar yet, because no ordinary write touched the run before rebuild.
+const writeHistoricalLegacyRows = Effect.fn("ProjectionMaintenanceTest.historicalLegacyRows")(
+  function* (key: string, options: { readonly anchored: boolean }) {
+    const sink = yield* EventSink.EventSinkV2;
+    const sql = yield* SqlClient.SqlClient;
+    const timestamp = "2026-10-05T00:00:00.000Z";
+    const threadId = ThreadId.make(`${key}:T`);
+    const runId = RunId.make(`${key}:R`);
+    const projectId = ProjectId.make(`${key}:P`);
+    const releaseCommandId = CommandId.make(`${key}:C`);
+    const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
+    const policy = {
+      version: 1 as const,
+      createCommandId,
+      birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
+      releaseCommandId,
+      projectId,
+      threadId,
+      messageId: MessageId.make(`${key}:M`),
+      payloadHash: `${key}-payload`,
+      ownsNewThread: true,
+      runId,
+    };
+    const { runId: _claimRunId, ...claimPolicy } = policy;
+    const thread = yield* decodeRecordedThread({
+      createdBy: "user",
+      creationSource: "web",
+      id: threadId,
+      projectId,
+      title: "Historical legacy rows",
+      providerInstanceId,
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: null,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      forkedFrom: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      lastVisitedAt: null,
+      deletedAt: null,
+      legacyBootstrapClaim: claimPolicy,
+    });
+    const run = yield* decodeRecordedRun({
+      id: runId,
+      threadId,
+      ordinal: 1,
+      providerInstanceId,
+      modelSelection,
+      providerThreadId: null,
+      userMessageId: policy.messageId,
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: "preparing",
+      requestedAt: timestamp,
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+      workspaceRunSetupScript: false,
+      legacyPreparationFailureKnown: false,
+      legacyBootstrap: policy,
+    });
+    yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at)
+      VALUES(${projectId},'Historical legacy rows','/historical',${"[]"},${timestamp},${timestamp})`;
+    // An unanchored claim was not recorded by its create command, so it cannot be retained.
+    const claimCommandId = options.anchored ? createCommandId : CommandId.make(`${key}:other`);
+    const [claimStored] = yield* sink.write({
+      commandId: claimCommandId,
+      events: [
+        {
+          id: EventId.make(`${key}:thread`),
+          threadId,
+          type: "thread.created",
+          occurredAt: thread.createdAt,
+          payload: thread,
+        },
+      ],
+    });
+    const [birthStored] = yield* sink.write({
+      commandId: policy.birthCommandId,
+      events: [
+        {
+          id: EventId.make(`${key}:run`),
+          threadId,
+          runId,
+          type: "run.created",
+          occurredAt: run.requestedAt,
+          payload: run,
+        },
+      ],
+    });
+    if (claimStored === undefined || birthStored === undefined)
+      return yield* Effect.die("Historical claim and birth positions required");
+    const threadRow = yield* encodeRecordedThreadRow(thread);
+    const runRow = yield* encodeRecordedRunRow(run);
+    yield* sql`UPDATE orchestration_events SET payload_json = ${threadRow} WHERE event_id = ${`${key}:thread`}`;
+    yield* sql`UPDATE orchestration_events SET payload_json = ${runRow} WHERE event_id = ${`${key}:run`}`;
+    yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${threadRow} WHERE thread_id = ${threadId}`;
+    yield* sql`UPDATE orchestration_v2_projection_runs SET payload_json = ${runRow} WHERE run_id = ${runId}`;
+    for (const [commandId, commandType, sequence] of [
+      [claimCommandId, "thread.create", claimStored.sequence],
+      [policy.birthCommandId, "message.dispatch", birthStored.sequence],
+    ] as const)
+      yield* sql`INSERT INTO orchestration_command_receipts (command_id, aggregate_kind, aggregate_id, command_type, accepted_at, result_sequence, status, error)
+        VALUES (${commandId}, 'thread', ${threadId}, ${commandType}, ${timestamp}, ${sequence}, 'accepted', NULL)`;
+    return { threadId, runId, policy, claimPolicy };
+  },
+);
+
+const inlinePrivateRows = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const threads = yield* sql`SELECT thread_id FROM orchestration_v2_projection_threads
+    WHERE json_type(payload_json, '$.legacyBootstrapClaim') IS NOT NULL`;
+  const runs = yield* sql`SELECT run_id FROM orchestration_v2_projection_runs
+    WHERE json_type(payload_json, '$.legacyBootstrap') IS NOT NULL
+      OR json_type(payload_json, '$.workspaceRunSetupScript') IS NOT NULL
+      OR json_type(payload_json, '$.legacyPreparationFailureKnown') IS NOT NULL`;
+  return threads.length + runs.length;
+});
+
+const legacySidecarRows = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const threads = yield* sql`SELECT thread_id FROM jones_legacy_bootstrap_threads`;
+  const runs = yield* sql`SELECT run_id FROM jones_legacy_bootstrap_runs`;
+  return threads.length + runs.length;
+});
+
+it.effect("rebuild retains historical inline legacy values that were never preserved", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const fixture = yield* writeHistoricalLegacyRows("rebuild-historical", { anchored: true });
+    assert.equal(yield* inlinePrivateRows, 2);
+    assert.equal(yield* legacySidecarRows, 0);
+
+    assert.isTrue((yield* maintenance.rebuild).valid);
+    // Replay rewrote public rows only; the values moved into Jones records in that transaction.
+    assert.equal(yield* inlinePrivateRows, 0);
+    assert.equal(yield* legacySidecarRows, 2);
+    const storage = LegacyStorage.make(sql);
+    const thread = yield* storage.readThread(fixture.threadId);
+    const run = yield* storage.readRun(fixture.runId);
+    assert.deepStrictEqual(thread?.thread.legacyBootstrapClaim, fixture.claimPolicy);
+    assert.deepStrictEqual(run?.run.legacyBootstrap, fixture.policy);
+    assert.strictEqual(run?.run.workspaceRunSetupScript, false);
+    assert.strictEqual(run?.run.legacyPreparationFailureKnown, false);
+
+    // With nothing left inline, a second rebuild keeps the retained values unchanged.
+    assert.isTrue((yield* maintenance.rebuild).valid);
+    assert.deepStrictEqual(
+      (yield* storage.readRun(fixture.runId))?.run.legacyBootstrap,
+      fixture.policy,
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("rebuild refuses unanchored inline legacy values and leaves the rows in place", () =>
+  Effect.gen(function* () {
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    yield* writeHistoricalLegacyRows("rebuild-unanchored", { anchored: false });
+    assert.equal(yield* inlinePrivateRows, 2);
+
+    assert.isTrue(Exit.isFailure(yield* maintenance.rebuild.pipe(Effect.exit)));
+    assert.equal(yield* inlinePrivateRows, 2);
+    assert.equal(yield* legacySidecarRows, 0);
+  }).pipe(Effect.provide(layerTest)),
 );

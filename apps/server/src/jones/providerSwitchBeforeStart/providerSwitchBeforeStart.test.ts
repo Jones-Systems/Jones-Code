@@ -10,9 +10,11 @@ import {
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 
@@ -76,6 +78,7 @@ it.effect(
     const test = makeLayer();
     return Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const outbox = yield* Outbox.EffectOutboxV2;
       const threadId = ThreadId.make("thread:before-start");
       yield* orchestrator.dispatch({
         type: "thread.create",
@@ -101,7 +104,8 @@ it.effect(
         text: "Keep this request",
         attachments: [],
         modelSelection,
-        dispatchMode: { type: "defer_start" },
+        // Stage an actual start effect. The disabled worker leaves it unclaimed.
+        dispatchMode: { type: "start_immediately" },
       });
       const pending = yield* orchestrator.getThreadProjection(threadId);
       yield* orchestrator.dispatch({
@@ -112,6 +116,12 @@ it.effect(
         holdQueue: true,
       });
       const before = yield* orchestrator.getThreadProjection(threadId);
+      const cancelled = Option.getOrThrow(
+        yield* outbox.get(`effect:message:provider-turn.start:${pending.runs[0]!.id}`),
+      );
+      assert.equal(cancelled.status, "cancelled");
+      assert.equal(cancelled.attemptCount, 0);
+      assert.equal(cancelled.leaseOwner, null);
       assert.equal(before.runs[0]!.startedAt, null);
       assert.equal(before.providerTurns.length, 0);
       assert.ok(

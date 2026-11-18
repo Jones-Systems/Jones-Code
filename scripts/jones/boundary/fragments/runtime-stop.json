@@ -10,7 +10,9 @@
     "apps/server/src/jones/runtime/RuntimeStop.test.ts",
     "apps/server/src/jones/runtime/RuntimeStopSqlite.ts",
     "apps/server/src/jones/provider/stopBudgets.ts",
-    "apps/server/src/jones/provider/stopBudgets.test.ts"
+    "apps/server/src/jones/provider/stopBudgets.test.ts",
+    "apps/server/src/jones/provider/CapturedRuntimeStop.ts",
+    "apps/server/src/jones/provider/CapturedRuntimeStop.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/auth/RpcAuthorization.ts",
@@ -97,6 +99,10 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnControlService.ts",
       "to": "apps/server/src/jones/provider/stopBudgets.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/provider/CapturedRuntimeStop.ts"
     }
   ]
 }

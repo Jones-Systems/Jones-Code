@@ -23,6 +23,7 @@ import {
 } from "@t3tools/provider-muse/testing";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -442,6 +443,39 @@ export function layer(input: {
   );
 }
 
+// Recorded Muse turns put generated runtime notes in their own first input part.
+function materializeMuseRuntimeInstructions(
+  entry: ProviderReplayEntryType,
+): ProviderReplayEntryType {
+  if (entry.type !== "expect_outbound" || !isRecord(entry.frame)) return entry;
+  const frame = entry.frame;
+  const params = frame.params;
+  if (frame.method !== "turn/start" || !isRecord(params) || !Array.isArray(params.input))
+    return entry;
+  const [notes, ...message] = params.input;
+  if (!isRecord(notes) || notes.type !== "text" || typeof notes.text !== "string") return entry;
+  const legacyPrefix =
+    "<runtime_info>In case you're asked: you are running in T3 Code through the Muse Code harness, as ";
+  if (!notes.text.startsWith(legacyPrefix)) return entry;
+  const recorded =
+    /^(\S+?)(?: with (\S+) reasoning effort)?\. No need to mention this otherwise\.[^<]*<\/runtime_info>\n\n<pull_request_linking>[\s\S]*?<\/pull_request_linking>/.exec(
+      notes.text.slice(legacyPrefix.length),
+    );
+  if (!recorded) return entry;
+  const [, model, reasoningEffort] = recorded;
+  const instructions = buildRuntimeInstructions({
+    appIdentity: APP_IDENTITY,
+    harness: "Muse Code",
+    model,
+    reasoningEffort,
+  });
+  const text = instructions + notes.text.slice(legacyPrefix.length + recorded[0].length);
+  return {
+    ...entry,
+    frame: { ...frame, params: { ...params, input: [{ ...notes, text }, ...message] } },
+  };
+}
+
 /** Uses canonical workspace paths, with turn/start in museWorkspaceRoot form (verbatim on Windows). */
 export const materializeMuseReplayWorkspace = Effect.fn("materializeMuseReplayWorkspace")(
   function* (transcript: ProviderReplayTranscript, workspace: string) {
@@ -460,7 +494,7 @@ export const materializeMuseReplayWorkspace = Effect.fn("materializeMuseReplayWo
         entry.type === "expect_outbound" &&
         isRecord(entry.frame) &&
         entry.frame.method === "turn/start"
-          ? turnStarts.entries[index]!
+          ? materializeMuseRuntimeInstructions(turnStarts.entries[index]!)
           : entry,
       ),
     };

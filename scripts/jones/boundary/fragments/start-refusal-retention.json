@@ -2,6 +2,9 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "start-refusal-retention",
   "jonesOwnedPaths": [
+    "apps/server/src/jones/provider/UnsentStartProof.ts",
+    "apps/server/src/jones/provider/UnsentStartProof.test.ts",
+    "apps/server/src/jones/startRefusal/Store.prefix.test.ts",
     "apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts",
     "apps/server/src/jones/startRefusal/Probe.test.ts",
     "apps/server/src/jones/startRefusal/Probe.ts",
@@ -10,9 +13,36 @@
     "apps/server/src/jones/startRefusal/integration.testkit.ts",
     "apps/server/src/jones/startRefusal/model.ts"
   ],
-  "hookPaths": [],
+  "hookPaths": [
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+    "apps/server/src/orchestration-v2/ProviderContinuationService.ts"
+  ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts",
+      "to": "apps/server/src/jones/provider/UnsentStartProof.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/provider/UnsentStartProof.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSwitchService.ts",
+      "to": "apps/server/src/jones/provider/UnsentStartProof.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+      "to": "apps/server/src/jones/provider/UnsentStartProof.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderContinuationService.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/EventSink.ts",
       "to": "apps/server/src/jones/startRefusal/Store.ts"
@@ -55,6 +85,22 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSwitchService.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
+      "to": "apps/server/src/jones/startRefusal/Probe.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
       "to": "apps/server/src/jones/startRefusal/Store.ts"
     }
   ]
