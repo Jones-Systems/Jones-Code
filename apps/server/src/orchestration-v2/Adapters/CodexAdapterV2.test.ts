@@ -555,7 +555,7 @@ describe("CodexAdapterV2 process spawning", () => {
       CodexAdapterV2.codexThreadRuntimeParams({
         threadId: mcpSession.threadId,
         mcpSession,
-        modelSelection: { model: "gpt-5.4" },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
         runtimePolicy: {
           runtimeMode: "full-access",
           interactionMode: "default",
@@ -22540,9 +22540,11 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
   it.effect.each([
     { operation: "start", tier: undefined },
     { operation: "start", tier: null },
+    { operation: "start", tier: "default" },
     { operation: "start", tier: "priority" },
     { operation: "resume", tier: undefined },
     { operation: "resume", tier: null },
+    { operation: "resume", tier: "default" },
     { operation: "resume", tier: "priority" },
   ] as const)(
     "records requested and native identity separately for Codex $operation tier $tier",
@@ -22566,13 +22568,23 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             prompt: "unused",
           })
             .slice(0, 5)
-            .map((entry) =>
-              entry.type === "emit_inbound" &&
-              Predicate.isObject(entry.frame) &&
-              entry.frame.id === 2
-                ? { ...entry, frame: { ...entry.frame, result: observedResult } }
-                : entry,
-            ) as Array<CodexReplay.CodexAppServerReplayEntry>;
+            .map((entry) => {
+              if (!("frame" in entry) || !Predicate.isObject(entry.frame) || entry.frame.id !== 2)
+                return entry;
+              if (entry.type === "emit_inbound") {
+                return { ...entry, frame: { ...entry.frame, result: observedResult } };
+              }
+              if (entry.type === "expect_outbound" && tier != null) {
+                return {
+                  ...entry,
+                  frame: {
+                    ...entry.frame,
+                    params: { config: CodexAdapterV2.CODEX_THREAD_CONFIG, serviceTier: tier },
+                  },
+                };
+              }
+              return entry;
+            }) as Array<CodexReplay.CodexAppServerReplayEntry>;
           if (operation === "resume")
             entries.push(
               {
@@ -22585,6 +22597,7 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
                     excludeTurns: true,
                     model: selection.model,
                     cwd: "/workspace",
+                    ...(tier == null ? {} : { serviceTier: tier }),
                     config: CodexAdapterV2.CODEX_THREAD_CONFIG,
                   },
                 },
@@ -22621,10 +22634,10 @@ describe("CodexAdapterV2 post-settle continuation (Jones retained)", () => {
             sourceEvent: "codex.thread/open",
           });
           assert.equal(identity?.observed.account.status, "unavailable");
-          if (tier === "priority")
+          if (tier != null)
             assert.deepEqual(identity?.observed.serviceTier, {
               status: "observed",
-              value: "priority",
+              value: tier,
               sourceEvent: "codex.thread/open",
             });
           else assert.equal(identity?.observed.serviceTier.status, "unavailable");

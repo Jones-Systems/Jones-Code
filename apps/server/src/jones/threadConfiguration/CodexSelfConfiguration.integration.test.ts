@@ -134,6 +134,7 @@ it.live(
                 excludeTurns: true,
                 cwd,
                 model: selection.model,
+                serviceTier: "priority",
                 config: {
                   "tools.update_plan.enabled": true,
                   mcp_optional_startup_grace_ms: 10000,
