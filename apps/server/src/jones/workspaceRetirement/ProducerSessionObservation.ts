@@ -16,13 +16,30 @@ export type HolderObservation = {
   reason: string;
 };
 
+const identityTimeoutMs = 1000;
 const command = (file: string, args: string[]) =>
   new Promise<string>((resolve, reject) => {
     NodeChildProcess.execFile(
       file,
       args,
-      { timeout: 1000, maxBuffer: 4 * 1024 * 1024, env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } },
-      (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
+      {
+        timeout: identityTimeoutMs,
+        maxBuffer: 4 * 1024 * 1024,
+        env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
+      },
+      (error, stdout) => {
+        if (error) {
+          const { code, signal, killed } = error;
+          reject(
+            new Error(
+              `${file} identity probe failed (code=${code ?? "none"}, signal=${signal ?? "none"}, killed=${killed === true}, timeoutMs=${identityTimeoutMs})`,
+              { cause: error },
+            ),
+          );
+          return;
+        }
+        resolve(stdout.trim());
+      },
     );
   });
 
@@ -32,9 +49,16 @@ import ctypes, sys
 class Info(ctypes.Structure):
     _fields_ = [(n,ctypes.c_uint32) for n in ('flags','status','xstatus','pid','ppid','uid','gid','ruid','rgid','svuid','svgid','rfu')]+[('comm',ctypes.c_char*16),('name',ctypes.c_char*32)]+[(n,ctypes.c_uint32) for n in ('nfiles','pgid','pjobc','tdev','tpgid','nice')]+[('sec',ctypes.c_uint64),('usec',ctypes.c_uint64)]
 lib = ctypes.CDLL('/usr/lib/libproc.dylib',use_errno=True)
+lib.proc_pidinfo.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int)
+lib.proc_pidinfo.restype = ctypes.c_int
 info = Info()
-size = lib.proc_pidinfo(int(sys.argv[1]),3,0,ctypes.byref(info),ctypes.sizeof(info))
-if size != ctypes.sizeof(info) or info.pid != int(sys.argv[1]) or info.status == 5 or not info.sec: sys.exit(1)
+pid = int(sys.argv[1])
+size = lib.proc_pidinfo(pid,3,0,ctypes.byref(info),ctypes.sizeof(info))
+if size != ctypes.sizeof(info):
+    sys.exit(f'proc_pidinfo returned {size} bytes, expected {ctypes.sizeof(info)} (errno {ctypes.get_errno()})')
+if info.pid != pid: sys.exit('proc_pidinfo returned a different PID')
+if info.status == 5: sys.exit('proc_pidinfo reported a zombie')
+if not info.sec or info.usec >= 1000000: sys.exit('proc_pidinfo returned an invalid start time')
 print(str(info.sec)+':'+str(info.usec))
 `;
 
