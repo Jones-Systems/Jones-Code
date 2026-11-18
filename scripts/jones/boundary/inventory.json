@@ -7,6 +7,7 @@
   },
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "paths": {
+    "apps/web/src/jones/workstreams/WorkstreamNameIconPicker.tsx": "jones-owned",
     "packages/shared/src/markdownPipeline.ts": "hook",
     "apps/web/src/reopenClosedView.ts": "hook",
     "apps/web/src/closedViewStore.ts": "hook",

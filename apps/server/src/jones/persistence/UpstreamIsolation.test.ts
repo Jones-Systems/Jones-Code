@@ -423,6 +423,7 @@ it.effect(
         [158, "WorkstreamAutoRoute"],
         [159, "WorkstreamLifecycleRevision"],
         [160, "WorkstreamSnooze"],
+        [161, "WorkstreamNameIcons"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

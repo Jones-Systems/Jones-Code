@@ -110,6 +110,50 @@ function harness(overrides: Partial<PersonalWorkstreamsTransport> = {}) {
   };
 }
 describe("personal Workstreams controller", () => {
+  it("confirms icon-aware creation before replicating a compatible definition to older servers", async () => {
+    const h = harness();
+    try {
+      h.controller.setEnvironments([connection("a"), connection("b")]);
+      h.frames[0]!.emit({ ...snapshot("a"), supportsSnooze: true });
+      expect(h.read().canSetNameIcon).toBe(false);
+      expect(
+        await h.controller.create({ name: "Icons", nameIconProjectKey: "project:one" }),
+      ).toMatchObject({
+        ok: false,
+        failure: { reason: "update_required" },
+      });
+      h.frames[1]!.emit({ ...snapshot("b"), supportsNameIcons: true });
+      expect(h.read().canSetNameIcon).toBe(true);
+      const result = await h.controller.create({
+        name: "Icons",
+        nameIconProjectKey: "project:one",
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        value: { nameIcon: { projectKey: "project:one" } },
+      });
+      await flush();
+      expect(h.puts.map(({ c }) => c.environmentId)).toEqual([env("b"), env("a")]);
+      expect(h.puts[1]?.w).not.toHaveProperty("nameIcon");
+      expect(h.read().workstreams[0]?.nameIcon?.projectKey).toBe("project:one");
+      const snoozedUntil = "2026-02-01T00:00:00.000Z";
+      expect(await h.controller.setSnoozedUntil?.("new-group", snoozedUntil)).toMatchObject({
+        ok: true,
+      });
+      await flush();
+      expect(h.puts[2]?.w).toMatchObject({ snoozedUntil });
+      expect(h.puts[2]?.w).not.toHaveProperty("nameIcon");
+      expect(h.puts[3]?.w).toMatchObject({ nameIcon: { projectKey: "project:one" } });
+      expect(h.puts[3]?.w).not.toHaveProperty("snoozedUntil");
+      expect(await h.controller.setNameIcon?.("new-group", null)).toMatchObject({ ok: true });
+      await flush();
+      expect(h.read().workstreams[0]?.nameIcon?.projectKey).toBeNull();
+      expect(h.read().workstreams[0]?.snoozedUntil).toBe(snoozedUntil);
+    } finally {
+      h.close();
+    }
+  });
+
   it("keeps a woken member in history while showing it in Unassigned until explicit reopen", async () => {
     const h = harness({
       members: async () => [{ threadId: thread.id, title: "Finished work", settled: true }],

@@ -26,6 +26,7 @@ import * as Environment from "../../../environment/ServerEnvironment.ts";
 import migration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
 import lifecycleMigration from "../../persistence/Migrations/159_JonesWorkstreamLifecycleRevision.ts";
 import snoozeMigration from "../../persistence/Migrations/160_JonesWorkstreamSnooze.ts";
+import nameIconMigration from "../../persistence/Migrations/161_JonesWorkstreamNameIcons.ts";
 import * as Personal from "./service.ts";
 
 const environmentId = EnvironmentId.make("synthetic-personal-server");
@@ -46,6 +47,7 @@ const database = Layer.effectDiscard(
     yield* migration;
     yield* lifecycleMigration;
     yield* snoozeMigration;
+    yield* nameIconMigration;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 const dependencies = Layer.mergeAll(
@@ -57,6 +59,50 @@ const dependencies = Layer.mergeAll(
 ).pipe(Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)));
 const fixture = Personal.layer.pipe(Layer.provideMerge(dependencies));
 const fresh = Personal.PersonalWorkstreams.pipe(Effect.provide(Personal.layer));
+
+it.effect("persists a name icon, its explicit clear, and a snooze across legacy writes", () =>
+  Effect.gen(function* () {
+    const service = yield* Personal.PersonalWorkstreams;
+    const legacy = w("icons");
+    const snoozedUntil = "2026-02-01T00:00:00.000Z";
+    const snoozed = P.editPersonalWorkstream(
+      legacy,
+      { snoozedAt: "2026-01-01T00:00:00.000Z", snoozedUntil },
+      "2026-01-01T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(snoozed);
+    const selected = P.editPersonalWorkstream(
+      { ...legacy, rev: snoozed.rev },
+      { nameIconProjectKey: "project:one" },
+      "2026-01-02T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(selected);
+    const legacyRename = { ...legacy, name: "Renamed", rev: selected.rev + 1 };
+    yield* service.put(legacyRename, {
+      ...legacy,
+      rev: selected.rev,
+      updatedAt: selected.updatedAt,
+    });
+    const reloaded = yield* fresh;
+    const [renamed] = (yield* reloaded.snapshot()).workstreams;
+    assert.equal(renamed?.name, "Renamed");
+    assert.deepEqual(renamed?.nameIcon, selected.nameIcon);
+    assert.equal(renamed?.snoozedUntil, snoozedUntil);
+    const cleared = P.editPersonalWorkstream(
+      renamed!,
+      { nameIconProjectKey: null },
+      "2026-01-03T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(cleared);
+    yield* service.put({ ...legacyRename, rev: cleared.rev + 1 });
+    const [persisted] = (yield* reloaded.snapshot()).workstreams;
+    assert.deepEqual(persisted?.nameIcon, cleared.nameIcon);
+    assert.equal(persisted?.snoozedUntil, snoozedUntil);
+  }).pipe(Effect.provide(fixture)),
+);
 
 it.effect("desired-first retries, ABA/CAS rollback, LWW and terminal deletion use real SQL", () =>
   Effect.gen(function* () {
@@ -391,6 +437,7 @@ it.effect(
         yield* migration;
         yield* lifecycleMigration;
         yield* snoozeMigration;
+        yield* nameIconMigration;
         yield* stage();
         const s = yield* fresh;
         yield* s.assign({ threadId, workstream: null, expectedRevision: 1 });

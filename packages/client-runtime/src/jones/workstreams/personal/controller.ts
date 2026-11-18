@@ -2,7 +2,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import {
   comparePersonalWorkstreams,
   isClosedPersonalWorkstream,
-  preservePersonalWorkstreamSnooze,
+  mergePersonalWorkstreams,
   newPersonalWorkstream,
   editPersonalWorkstream,
   deletePersonalWorkstream,
@@ -177,11 +177,7 @@ export function createPersonalWorkstreamsController(options: {
       if (!e.connection.capable || (confirmedOnly && !e.confirmed)) continue;
       for (const w of e.snapshot?.workstreams ?? []) {
         const old = result.get(w.id);
-        const wins = !old || comparePersonalWorkstreams(w, old) > 0;
-        result.set(
-          w.id,
-          old ? preservePersonalWorkstreamSnooze(wins ? w : old, wins ? old : w) : w,
-        );
+        result.set(w.id, old ? mergePersonalWorkstreams([old, w]) : w);
       }
     }
     return result;
@@ -257,6 +253,9 @@ export function createPersonalWorkstreamsController(options: {
       pendingThreadKeys: pending,
       autoAssignedThreadKeys: autoAssigned,
       canCreate: [...entries.values()].some(writable),
+      canSetNameIcon: [...entries.values()].some(
+        (e) => writable(e) && e.snapshot?.supportsNameIcons,
+      ),
       canSnooze: [...entries.values()].some((e) => writable(e) && e.snapshot?.supportsSnooze),
       environments: [...entries.values()].map((e): PersonalEnvironmentState => {
         const workstreams = e.connection.capable
@@ -310,8 +309,17 @@ export function createPersonalWorkstreamsController(options: {
     };
   };
   const definitionFor = (entry: Entry, workstream: PersonalWorkstream): PersonalWorkstream => {
-    if (entry.snapshot?.supportsSnooze) return workstream;
-    const { snoozedAt: _started, snoozedUntil: _until, ...legacy } = workstream;
+    let local = workstream;
+    if (!entry.snapshot?.supportsNameIcons && local.nameIcon !== undefined) {
+      const { nameIcon: _nameIcon, ...legacy } = local;
+      local = legacy;
+    }
+    if (
+      entry.snapshot?.supportsSnooze ||
+      (local.snoozedAt === undefined && local.snoozedUntil === undefined)
+    )
+      return local;
+    const { snoozedAt: _started, snoozedUntil: _until, ...legacy } = local;
     return legacy;
   };
   const repair = () => {
@@ -321,12 +329,12 @@ export function createPersonalWorkstreamsController(options: {
       if (!writable(e)) continue;
       for (const winner of merged.values()) {
         if (activeRepairs >= 4) return;
-        const w = definitionFor(e, winner);
-        const key = JSON.stringify([e.connection.environmentId, w.id]);
-        const old = e.snapshot?.workstreams.find((d) => d.id === w.id);
+        const candidate = definitionFor(e, winner);
+        const key = JSON.stringify([e.connection.environmentId, winner.id]);
+        const old = e.snapshot?.workstreams.find((d) => d.id === winner.id);
         if (
-          pendingClosures.has(w.id) ||
-          (old && comparePersonalWorkstreams(old, w) >= 0) ||
+          pendingClosures.has(winner.id) ||
+          (old && comparePersonalWorkstreams(old, candidate) >= 0) ||
           repairInFlight.has(key) ||
           repairFailures.has(key)
         )
@@ -334,11 +342,11 @@ export function createPersonalWorkstreamsController(options: {
         repairInFlight.add(key);
         activeRepairs++;
         void Promise.resolve()
-          .then(() => options.transport.put(e.connection, w))
+          .then(() => options.transport.put(e.connection, candidate))
           .then((reply) => {
             if (!current(e)) return;
             mergeReply(e, reply);
-            if (comparePersonalWorkstreams(reply.workstream, w) < 0)
+            if (comparePersonalWorkstreams(reply.workstream, candidate) < 0)
               throw new Error("Invalid canonical reply");
           })
           .catch(() => {
@@ -377,11 +385,21 @@ export function createPersonalWorkstreamsController(options: {
     action: PersonalWorkstreamsAction,
     w: PersonalWorkstream,
   ): Promise<PersonalResult<PersonalWorkstream>> => {
-    const snoozeEdit = action === "snooze" || action === "unsnooze";
-    const targets = [...entries.values()].filter(
-      (e) => writable(e) && (!snoozeEdit || e.snapshot?.supportsSnooze),
+    const requireNameIcons =
+      action === "nameIcon" || (action === "create" && w.nameIcon !== undefined);
+    const requireSnooze = action === "snooze" || action === "unsnooze";
+    const available = [...entries.values()].filter(writable);
+    const targets = available.filter(
+      (e) =>
+        (!requireNameIcons || e.snapshot?.supportsNameIcons) &&
+        (!requireSnooze || e.snapshot?.supportsSnooze),
     );
-    if (!targets.length) return fail(action, w.id, unavailable(entries.values().next().value));
+    if (!targets.length)
+      return fail(
+        action,
+        w.id,
+        available.length ? "update_required" : unavailable(entries.values().next().value),
+      );
     const id = ++actionId;
     overlays.set(id, { definition: w });
     publish();
@@ -390,14 +408,14 @@ export function createPersonalWorkstreamsController(options: {
     await Promise.all(
       targets.map(async (e) => {
         try {
-          const sent = definitionFor(e, w);
-          const reply = await options.transport.put(e.connection, sent);
+          const candidate = definitionFor(e, w);
+          const reply = await options.transport.put(e.connection, candidate);
           if (!current(e)) return;
           replied = true;
           mergeReply(e, reply);
           if (
             reply.outcome !== "superseded" &&
-            comparePersonalWorkstreams(reply.workstream, sent) === 0
+            comparePersonalWorkstreams(reply.workstream, candidate) === 0
           )
             confirmed = true;
         } catch {
@@ -435,7 +453,7 @@ export function createPersonalWorkstreamsController(options: {
       if (
         !targets.every((entry) => {
           const copy = entry.snapshot?.workstreams.find((workstream) => workstream.id === id);
-          return copy && comparePersonalWorkstreams(copy, base) === 0;
+          return copy && comparePersonalWorkstreams(copy, definitionFor(entry, base)) === 0;
         })
       )
         return fail("lifecycle", id, "closure_unavailable");
@@ -443,10 +461,15 @@ export function createPersonalWorkstreamsController(options: {
       const results = await Promise.all(
         targets.map(async (entry) => {
           try {
-            const reply = await options.transport.put(entry.connection, candidate, base);
+            const local = definitionFor(entry, candidate);
+            const reply = await options.transport.put(
+              entry.connection,
+              local,
+              definitionFor(entry, base),
+            );
             if (!current(entry)) return { entry, reason: "unconfirmed" } as const;
             mergeReply(entry, reply);
-            return comparePersonalWorkstreams(reply.workstream, candidate) === 0
+            return comparePersonalWorkstreams(reply.workstream, local) === 0
               ? ({ entry, applied: true } as const)
               : ({ entry, reason: "changed_elsewhere" } as const);
           } catch (error) {
@@ -471,10 +494,15 @@ export function createPersonalWorkstreamsController(options: {
           .map(async ({ entry }) => {
             try {
               if (!current(entry)) return false;
-              const reply = await options.transport.put(entry.connection, restore, candidate);
+              const local = definitionFor(entry, restore);
+              const reply = await options.transport.put(
+                entry.connection,
+                local,
+                definitionFor(entry, candidate),
+              );
               if (!current(entry)) return false;
               mergeReply(entry, reply);
-              return comparePersonalWorkstreams(reply.workstream, restore) === 0;
+              return comparePersonalWorkstreams(reply.workstream, local) === 0;
             } catch {
               return false;
             }
@@ -544,7 +572,7 @@ export function createPersonalWorkstreamsController(options: {
       try {
         const reply = await options.transport.assign(e.connection, {
           threadId: thread.id,
-          workstream: w ?? null,
+          workstream: w === null || w === undefined ? null : definitionFor(e, w),
           expectedRevision,
         });
         if (!current(e)) return fail(action, key, "unconfirmed", thread.environmentId);
@@ -615,13 +643,14 @@ export function createPersonalWorkstreamsController(options: {
       const e = entries.get(thread.environmentId);
       return !!e && writable(e);
     },
-    create: async ({ name }) => {
+    create: async ({ name, nameIconProjectKey }) => {
       try {
         return await put(
           "create",
           newPersonalWorkstream({
             id: uuid(),
             name: name.trim(),
+            ...(nameIconProjectKey === undefined ? {} : { nameIconProjectKey }),
             orderKey:
               pinOrderKeyBetween(
                 [...editableWinners().values()]
@@ -640,6 +669,7 @@ export function createPersonalWorkstreamsController(options: {
     },
     rename: (id, name) => edit("rename", id, { name: name.trim() }),
     setColor: (id, color) => edit("recolor", id, { color }),
+    setNameIcon: (id, nameIconProjectKey) => edit("nameIcon", id, { nameIconProjectKey }),
     setLifecycle: (id, lifecycle) => edit("lifecycle", id, { lifecycle }),
     setSnoozedUntil: (id, snoozedUntil) => {
       const action = snoozedUntil === null ? "unsnooze" : "snooze";
