@@ -17,13 +17,14 @@ export type HolderObservation = {
 };
 
 const identityTimeoutMs = 1000;
-const command = (file: string, args: string[]) =>
+const darwinStartTimeoutMs = 3000;
+const command = (file: string, args: string[], timeoutMs = identityTimeoutMs) =>
   new Promise<string>((resolve, reject) => {
     NodeChildProcess.execFile(
       file,
       args,
       {
-        timeout: identityTimeoutMs,
+        timeout: timeoutMs,
         maxBuffer: 4 * 1024 * 1024,
         env: { PATH: "/usr/bin:/bin", LC_ALL: "C" },
       },
@@ -32,7 +33,7 @@ const command = (file: string, args: string[]) =>
           const { code, signal, killed } = error;
           reject(
             new Error(
-              `${file} identity probe failed (code=${code ?? "none"}, signal=${signal ?? "none"}, killed=${killed === true}, timeoutMs=${identityTimeoutMs})`,
+              `${file} identity probe failed (code=${code ?? "none"}, signal=${signal ?? "none"}, killed=${killed === true}, timeoutMs=${timeoutMs})`,
               { cause: error },
             ),
           );
@@ -61,6 +62,15 @@ if info.status == 5: sys.exit('proc_pidinfo reported a zombie')
 if not info.sec or info.usec >= 1000000: sys.exit('proc_pidinfo returned an invalid start time')
 print(str(info.sec)+':'+str(info.usec))
 `;
+
+// Include cold interpreter startup on loaded hosts. Keep the libproc identity check bounded.
+function darwinStart(pid: number) {
+  return command(
+    "/usr/bin/python3",
+    ["-I", "-S", "-B", "-c", DARWIN_START, String(pid)],
+    darwinStartTimeoutMs,
+  );
+}
 
 function linuxStat(value: string) {
   const end = value.lastIndexOf(")");
@@ -147,7 +157,7 @@ export async function producerIdentity(): Promise<ProducerIdentity> {
   const start =
     nativePlatform === "linux"
       ? linuxStat(await NodeFSP.readFile(`/proc/${process.pid}/stat`, "utf8")).start
-      : await command("/usr/bin/python3", ["-B", "-c", DARWIN_START, String(process.pid)]);
+      : await darwinStart(process.pid);
   return { ...host, pid: process.pid, start };
 }
 
@@ -171,7 +181,7 @@ export async function observeProducerSelf(identity: ProducerIdentity): Promise<H
       const row = rows.find((entry) => Number(entry.trim().split(/\s+/)[0]) === identity.pid);
       if (!row) return { state: "absent", reason: "self_absent" };
       if (row.includes("Z")) throw new Error("process_identity_unavailable");
-      start = await command("/usr/bin/python3", ["-B", "-c", DARWIN_START, String(identity.pid)]);
+      start = await darwinStart(identity.pid);
     }
     return start === identity.start
       ? { state: "present", reason: "holder_present" }
