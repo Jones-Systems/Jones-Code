@@ -50,6 +50,22 @@ function previewHtml(script, css) {
 </head>
 <body>
   <div id="root"></div>
+  <script>
+    // The attachment has an opaque origin. Only renderer-local state is available.
+    for (const name of ["localStorage", "sessionStorage"]) {
+      const values = new Map();
+      Object.defineProperty(window, name, {
+        value: {
+          get length() { return values.size; },
+          clear() { values.clear(); },
+          getItem(key) { return values.get(String(key)) ?? null; },
+          key(index) { return Array.from(values.keys())[index] ?? null; },
+          removeItem(key) { values.delete(String(key)); },
+          setItem(key, value) { values.set(String(key), String(value)); },
+        },
+      });
+    }
+  </script>
   <script>${embeddedScript}</script>
 </body>
 </html>
@@ -57,13 +73,21 @@ function previewHtml(script, css) {
 }
 
 const [name, filename, ...extraArgs] = process.argv.slice(2);
-if (extraArgs.length || !/^[a-z][a-z0-9-]{0,63}$/.test(name ?? "") || !filename?.endsWith(".html")) {
-  throw new Error("Usage: node apps/web/scripts/build-design-review.mjs <preview-name> <new-output.html>");
+if (
+  extraArgs.length ||
+  !/^[a-z][a-z0-9-]{0,63}$/.test(name ?? "") ||
+  !filename?.endsWith(".html")
+) {
+  throw new Error(
+    "Usage: node apps/web/scripts/build-design-review.mjs <preview-name> <new-output.html>",
+  );
 }
 const destination = await outputPath(filename);
 const source = git("rev-parse", "HEAD");
 if (git("status", "--porcelain", "--untracked-files=normal")) {
-  throw new Error("Build a clean, committed candidate so the preview can identify its exact source.");
+  throw new Error(
+    "Build a clean, committed candidate so the preview can identify its exact source.",
+  );
 }
 const entry = join(webRoot, "src", "jones", "designReview", `${name}-entry.tsx`);
 const result = await build({
@@ -88,7 +112,9 @@ if (Array.isArray(result) || !("output" in result)) {
 }
 
 const [script] = result.output.filter((file) => file.type === "chunk");
-const [styles] = result.output.filter((file) => file.type === "asset" && file.fileName.endsWith(".css"));
+const [styles] = result.output.filter(
+  (file) => file.type === "asset" && file.fileName.endsWith(".css"),
+);
 if (
   result.output.length !== 2 ||
   !script ||
@@ -97,13 +123,18 @@ if (
   !styles ||
   typeof styles.source !== "string"
 ) {
-  throw new Error("The preview must contain one bundled script and one stylesheet with no extra files.");
+  throw new Error(
+    "The preview must contain one bundled script and one stylesheet with no extra files.",
+  );
 }
 const html = previewHtml(script.code, styles.source);
 if (Buffer.byteLength(html) > maximumPageBytes) {
   throw new Error("The preview exceeds the Jones Code HTML attachment size limit.");
 }
-if (git("rev-parse", "HEAD") !== source || git("status", "--porcelain", "--untracked-files=normal")) {
+if (
+  git("rev-parse", "HEAD") !== source ||
+  git("status", "--porcelain", "--untracked-files=normal")
+) {
   throw new Error("The source changed during the preview build.");
 }
 await writeFile(destination, html, { flag: "wx" });
