@@ -8,9 +8,11 @@ import {
   type ReactNode,
 } from "react";
 import { useAtomValue } from "@effect/atom-react";
-import type {
-  PersonalWorkstreamsController,
-  PersonalWorkstreamView,
+import {
+  openPersonalWorkstreams,
+  type PersonalThreadRef,
+  type PersonalWorkstreamsController,
+  type PersonalWorkstreamView,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import {
   ArrowDownIcon,
@@ -48,6 +50,7 @@ import {
   AlertDialogFooter,
 } from "../ui/alert-dialog";
 import { Dialog, DialogPopup, DialogHeader, DialogTitle } from "../ui/dialog";
+import { ClosedWorkstreams } from "../../jones/workstreams/ClosedWorkstreams";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
@@ -237,7 +240,8 @@ function Group({
         setPending(false);
       });
   };
-  const index = state.workstreams.findIndex((entry) => entry.id === item.id);
+  const openWorkstreams = openPersonalWorkstreams(state);
+  const index = openWorkstreams.findIndex((entry) => entry.id === item.id);
   return (
     <section
       ref={sectionRef}
@@ -381,8 +385,8 @@ function Group({
                     onClick={() =>
                       void run(async () => {
                         const result = await controller.reorder(item.id, {
-                          afterId: state.workstreams[index - 1]!.id,
-                          beforeId: state.workstreams[index - 2]?.id ?? null,
+                          afterId: openWorkstreams[index - 1]!.id,
+                          beforeId: openWorkstreams[index - 2]?.id ?? null,
                         });
                         return result.ok ? { ok: true, value: undefined } : result;
                       })
@@ -391,12 +395,12 @@ function Group({
                     <ArrowUpIcon aria-hidden /> Move up
                   </MenuItem>
                   <MenuItem
-                    disabled={!state.canCreate || pending || index === state.workstreams.length - 1}
+                    disabled={!state.canCreate || pending || index === openWorkstreams.length - 1}
                     onClick={() =>
                       void run(async () => {
                         const result = await controller.reorder(item.id, {
-                          beforeId: state.workstreams[index + 1]!.id,
-                          afterId: state.workstreams[index + 2]?.id ?? null,
+                          beforeId: openWorkstreams[index + 1]!.id,
+                          afterId: openWorkstreams[index + 2]?.id ?? null,
                         });
                         return result.ok ? { ok: true, value: undefined } : result;
                       })
@@ -500,6 +504,7 @@ function Group({
 export function WorkstreamSidebarSection({
   controller,
   renderMembers,
+  onOpenHistoryThread,
   summaries,
   rosterTotals,
   unassignedSummary = emptySummary,
@@ -508,6 +513,7 @@ export function WorkstreamSidebarSection({
 }: {
   controller: PersonalWorkstreamsController;
   dropTargetId?: string | null | undefined;
+  onOpenHistoryThread?: ((thread: PersonalThreadRef) => void) | undefined;
   renderMembers: (
     id: string | null,
     window?: { limit: PersonalThreadLimit; expanded: boolean },
@@ -530,9 +536,10 @@ export function WorkstreamSidebarSection({
     collapsedSchema,
   );
   const namedGroupsId = useId();
-  const namedIds = state.workstreams.map((entry) => entry.id);
+  const openWorkstreams = openPersonalWorkstreams(state);
+  const namedIds = openWorkstreams.map((entry) => entry.id);
   const sharedStatus = useSharedPersonalStatusFilter(namedIds);
-  const namedSummary = state.workstreams.reduce(
+  const namedSummary = openWorkstreams.reduce(
     (total, entry) => {
       const summary = summaries?.get(entry.id) ?? emptySummary;
       return {
@@ -587,9 +594,9 @@ export function WorkstreamSidebarSection({
       !event.dataTransfer.types.includes(workstreamDragType)
     )
       return null;
-    const sourceIndex = state.workstreams.findIndex((entry) => entry.id === source);
+    const sourceIndex = openWorkstreams.findIndex((entry) => entry.id === source);
     if (sourceIndex < 0) return null;
-    const others = state.workstreams.filter((entry) => entry.id !== source);
+    const others = openWorkstreams.filter((entry) => entry.id !== source);
     let slot: number;
     if (targetId === null) {
       // Unassigned is a fixed tail: only its leading gap and header accept a drop.
@@ -641,8 +648,8 @@ export function WorkstreamSidebarSection({
       });
   };
   const focusAfterRemoval = (id: string) => {
-    const index = state.workstreams.findIndex((entry) => entry.id === id);
-    const following = state.workstreams.slice(index + 1).map((entry) => entry.id);
+    const index = openWorkstreams.findIndex((entry) => entry.id === id);
+    const following = openWorkstreams.slice(index + 1).map((entry) => entry.id);
     requestAnimationFrame(() => {
       const sections = containerRef.current?.querySelectorAll<HTMLElement>(
         "[data-native-workstream]",
@@ -721,7 +728,7 @@ export function WorkstreamSidebarSection({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInsertion(null);
       }}
     >
-      {state.workstreams.length > 0 ? (
+      {openWorkstreams.length > 0 ? (
         <PersonalWorkstreamsHeader
           summary={namedSummary}
           hidden={namedHidden}
@@ -736,7 +743,7 @@ export function WorkstreamSidebarSection({
       {/* The container stays mounted so the disclosure's aria-controls always resolves. */}
       <div id={namedGroupsId} hidden={namedHidden}>
         {!namedHidden
-          ? state.workstreams.map((item) => (
+          ? openWorkstreams.map((item) => (
               <div
                 key={item.id}
                 data-workstream-group-slot
@@ -817,6 +824,7 @@ export function WorkstreamSidebarSection({
           {!unassignedCollapsed ? renderMembers(null) : null}
         </section>
       </div>
+      <ClosedWorkstreams controller={controller} state={state} onOpenThread={onOpenHistoryThread} />
       {deleteTarget ? (
         <AlertDialog
           open

@@ -2184,7 +2184,10 @@ export const layerWsRpc = (
       const personalWorkstreams = yield* PersonalWorkstreams.PersonalWorkstreams;
       const handlers = ServerWsRpcGroup.of({
         "workstreamsPersonal.subscribe": () => personalWorkstreams.changes,
-        "workstreamsPersonal.put": ({ workstream }) => personalWorkstreams.put(workstream),
+        "workstreamsPersonal.members": ({ workstreamId }) =>
+          personalWorkstreams.members(workstreamId),
+        "workstreamsPersonal.put": ({ workstream, expected }) =>
+          personalWorkstreams.put(workstream, expected),
         "workstreamsPersonal.assign": (input) =>
           personalWorkstreams.assign(input, { supersedeInitialAutoAssignment: true }),
         [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: (input) =>

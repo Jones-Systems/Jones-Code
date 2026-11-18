@@ -128,6 +128,7 @@ describe("personal Workstream edits", () => {
       ...base,
       name: "Renamed",
       lifecycle: "completed",
+      lifecycleRevision: 1,
       color: "#ABCDEF",
       orderKey: "p",
       rev: 8,

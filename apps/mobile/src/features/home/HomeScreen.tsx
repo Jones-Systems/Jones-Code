@@ -94,6 +94,7 @@ import {
 import { createSwipeRowActivation } from "./swipe-row-activation";
 import { SwipeableScrollGateProvider, useSwipeableScrollGate } from "./thread-swipe-actions";
 import { useFabScroll } from "./FabScrollContext";
+import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { ThreadListFilters } from "./ThreadListFilters";
 
@@ -266,7 +267,13 @@ export function HomeScreen(props: HomeScreenProps) {
   const activeNewTask = useActiveNewTask();
   const selectedThreadKey = activeNewTask ? null : (primaryColumn?.selectedThreadKey ?? null);
   const fullSwipeWidth = primaryColumn && columnMetrics ? columnMetrics.width - 20 : undefined;
-  const workstreams = useMobileWorkstreams(props.threads);
+  const selectDetail = useSelectWorkspaceDetail();
+  const workstreams = useMobileWorkstreams(props.threads, (thread) =>
+    selectDetail({
+      name: "Thread",
+      params: { environmentId: thread.environmentId, threadId: thread.id },
+    }),
+  );
   const queuedThreadKeys = useQueuedThreadKeys();
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const homeScrollGesture = useNativeGesture();

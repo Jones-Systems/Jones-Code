@@ -22,6 +22,8 @@ export const PersonalWorkstreamLifecycle = Schema.Literals([
   "abandoned",
 ]);
 export type PersonalWorkstreamLifecycle = typeof PersonalWorkstreamLifecycle.Type;
+export const isClosedPersonalWorkstream = (lifecycle: PersonalWorkstreamLifecycle): boolean =>
+  lifecycle === "completed" || lifecycle === "abandoned";
 
 export const PersonalWorkstreamColor = Schema.NullOr(
   Schema.String.check(Schema.isPattern(/^#[0-9A-F]{6}$/)),
@@ -59,6 +61,8 @@ export const PersonalWorkstream = Schema.Struct({
   updatedAt: PersonalTimestamp,
   deletedAt: Schema.NullOr(PersonalTimestamp),
   rev: PersonalWorkstreamRev,
+  // Older definitions start at zero. Crossing the open/closed boundary advances this counter.
+  lifecycleRevision: Schema.optionalKey(NonNegativeInt),
   origin: PersonalWorkstreamOrigin,
 });
 export type PersonalWorkstream = typeof PersonalWorkstream.Type;
@@ -110,6 +114,9 @@ export class WorkstreamsPersonalError extends Schema.TaggedError<WorkstreamsPers
       "thread_not_found",
       "workstream_not_found",
       "workstream_deleted",
+      "workstream_closed",
+      "unsettled_threads",
+      "closure_unavailable",
       "precondition_failed",
       "invalid_request",
       "storage_unavailable",
@@ -118,7 +125,20 @@ export class WorkstreamsPersonalError extends Schema.TaggedError<WorkstreamsPers
   },
 ) {}
 
-export const PutPersonalWorkstreamInput = Schema.Struct({ workstream: PersonalWorkstream });
+export const PersonalWorkstreamMembersInput = Schema.Struct({ workstreamId: PersonalWorkstreamId });
+export const PersonalWorkstreamMembers = Schema.Array(
+  Schema.Struct({
+    threadId: ThreadId,
+    title: Schema.String,
+    settled: Schema.Boolean,
+  }),
+);
+export type PersonalWorkstreamMembers = typeof PersonalWorkstreamMembers.Type;
+
+export const PutPersonalWorkstreamInput = Schema.Struct({
+  workstream: PersonalWorkstream,
+  expected: Schema.optionalKey(PersonalWorkstream),
+});
 export type PutPersonalWorkstreamInput = typeof PutPersonalWorkstreamInput.Type;
 export const PutPersonalWorkstreamResult = Schema.Struct({
   outcome: Schema.Literals(["applied", "already_satisfied", "superseded"]),
@@ -155,6 +175,7 @@ export const canonicalPersonalWorkstream = (workstream: PersonalWorkstream): str
     workstream.deletedAt,
     workstream.rev,
     workstream.origin,
+    workstream.lifecycleRevision ?? 0,
   ]);
 
 const compare = (a: string | number, b: string | number): -1 | 0 | 1 =>
@@ -165,6 +186,7 @@ export const comparePersonalWorkstreams = (
   b: PersonalWorkstream,
 ): -1 | 0 | 1 =>
   compare(Number(a.deletedAt !== null), Number(b.deletedAt !== null)) ||
+  compare(a.lifecycleRevision ?? 0, b.lifecycleRevision ?? 0) ||
   compare(a.rev, b.rev) ||
   compare(a.updatedAt, b.updatedAt) ||
   compare(a.origin, b.origin) ||
@@ -215,10 +237,14 @@ export const editPersonalWorkstream = (
   origin: PersonalWorkstreamOrigin,
 ): PersonalWorkstream => {
   if (base.deletedAt !== null) throw new Error("Cannot edit a deleted personal Workstream.");
+  const lifecycle = patch.lifecycle ?? base.lifecycle;
+  const lifecycleChanged =
+    isClosedPersonalWorkstream(lifecycle) !== isClosedPersonalWorkstream(base.lifecycle);
   return decodeWorkstream({
     ...base,
     name: patch.name === undefined ? base.name : patch.name.trim(),
-    lifecycle: patch.lifecycle === undefined ? base.lifecycle : patch.lifecycle,
+    lifecycle,
+    ...(lifecycleChanged ? { lifecycleRevision: (base.lifecycleRevision ?? 0) + 1 } : {}),
     color: patch.color === undefined ? base.color : patch.color,
     orderKey: patch.orderKey === undefined ? base.orderKey : patch.orderKey,
     updatedAt: now,
