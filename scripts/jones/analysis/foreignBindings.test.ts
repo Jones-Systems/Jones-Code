@@ -246,7 +246,7 @@ const cli = NodePath.join(NodePath.dirname(require.resolve("knip")), "cli.js");
 const preprocessor = NodePath.join(root, "scripts/knip-schemas.ts");
 it("real Knip CLI classifies full-URI declarations while changed/unknown/unrelated findings fail", async () => {
   const directory = await NodeFSP.mkdtemp(
-    NodePath.join(NodeOS.tmpdir(), "jones-foreign-analysis-"),
+    NodePath.join(await NodeFSP.realpath(NodeOS.tmpdir()), "jones-foreign-analysis-"),
   );
   const write = async (file: string, source: string) => {
     const target = NodePath.join(directory, file);
@@ -354,7 +354,7 @@ it("real compiler namespace CLI uses private genuine artifact identity and refus
   }
   const installed = await Identity.verified(await Identity.resolveInstalled(root, target));
   const directory = await NodeFSP.mkdtemp(
-    NodePath.join(NodeOS.tmpdir(), "jones-foreign-compiler-"),
+    NodePath.join(await NodeFSP.realpath(NodeOS.tmpdir()), "jones-foreign-compiler-"),
   );
   const write = async (file: string, source: string) => {
     const name = NodePath.join(directory, file);
@@ -439,6 +439,7 @@ it("real compiler namespace CLI uses private genuine artifact identity and refus
     // This fixture deliberately retains an unreferenced real Vite source as contract evidence.
     // Its unrelated file finding must survive successful native-namespace classification.
     expect(valid.code, valid.stderr + valid.stdout).toBe(1);
+    expect(valid.stdout, valid.stderr).not.toBe("");
     const remaining = JSON.parse(valid.stdout).issues;
     expect(remaining).toHaveLength(1);
     const { file, files, ...otherCategories } = remaining[0];
