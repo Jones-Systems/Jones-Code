@@ -100,6 +100,34 @@ export type VoiceReviewMutationPayload =
   | typeof VoiceReviewEditSavePayload.Type
   | typeof VoiceReviewEditCancelPayload.Type;
 
+const ReviewedSendWorkstreamId = Schema.String.check(
+  Schema.isPattern(/\S/),
+  Schema.isMaxLength(256),
+);
+export const VoiceReviewSendOptions = strictPayload({
+  schema: Schema.Literal("voice.reviewed-send/v1"),
+  workstream_ids: Schema.Array(ReviewedSendWorkstreamId),
+  can_send_without_workstream: Schema.Boolean,
+});
+export type VoiceReviewSendOptions = typeof VoiceReviewSendOptions.Type;
+
+export const VoiceReviewSendReviewedPayload = strictPayload({
+  expected_revision: PositiveInt,
+  workstream_id: Schema.NullOr(ReviewedSendWorkstreamId),
+  text: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(100_000))),
+  additional_instructions: Schema.optionalKey(VoiceReviewText),
+  edit_handle: Schema.optionalKey(
+    Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
+  ),
+});
+export type VoiceReviewSendReviewedPayload = typeof VoiceReviewSendReviewedPayload.Type;
+
+export const VoiceReviewSendReviewedResult = strictPayload({
+  draft: VoiceReviewDraft,
+  edit_handle: Schema.Null,
+});
+export type VoiceReviewSendReviewedResult = typeof VoiceReviewSendReviewedResult.Type;
+
 export class VoiceReviewNotConfiguredError extends Schema.TaggedError<VoiceReviewNotConfiguredError>()(
   "VoiceReviewNotConfiguredError",
   {},

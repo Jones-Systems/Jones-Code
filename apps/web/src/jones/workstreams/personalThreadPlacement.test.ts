@@ -169,6 +169,23 @@ function fixture(
 }
 
 describe("placePersonalThread", () => {
+  it("reorders an unsettled historical member in Unassigned without removing its saved Workstream", async () => {
+    const f = fixture(["u1", "moved", "u2"], [["moved", "a"]]);
+    const input = f.input(null, "u1");
+    const state: PersonalWorkstreamsState = {
+      ...input.state,
+      workstreams: input.state.workstreams.map((workstream) =>
+        workstream.id === "a" ? { ...workstream, lifecycle: "completed" } : workstream,
+      ),
+    };
+    expect(await placePersonalThread({ ...input, state })).toBe(true);
+    expect(f.assignmentWrites).toEqual([]);
+    expect(f.orderWrites.length).toBeGreaterThan(0);
+    expect(state.assignmentsByThreadKey.get(personalThreadKey(input.thread))?.workstreamId).toBe(
+      "a",
+    );
+  });
+
   it.each([
     { after: false, neighbor: "u1", expected: ["moved", "u1", "u2"] },
     { after: true, neighbor: "u2", expected: ["u1", "u2", "moved"] },

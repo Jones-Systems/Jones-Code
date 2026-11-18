@@ -90,6 +90,8 @@ describe("Jones environment HTTP registration", () => {
       ["editSave", "POST", "/api/voice-review/drafts/:id/edit-save"],
       ["editCancel", "POST", "/api/voice-review/drafts/:id/edit-cancel"],
       ["sendNow", "POST", "/api/voice-review/drafts/:id/send-now"],
+      ["sendOptions", "GET", "/api/voice-review/drafts/:id/send-options"],
+      ["sendReviewed", "POST", "/api/voice-review/drafts/:id/send-reviewed"],
       ["delete", "POST", "/api/voice-review/drafts/:id/delete"],
       ["snapshot", "GET", "/api/host-status"],
       ["snapshot", "GET", "/api/work-queue/metadata"],

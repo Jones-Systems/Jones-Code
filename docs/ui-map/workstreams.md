@@ -2,6 +2,8 @@
 
 The sidebar and mobile thread navigation use the shared [personal Workstreams controller](../../packages/client-runtime/src/jones/workstreams/personal/index.ts). The user flow is described in [Workstreams](../user/workstreams.md).
 
+Completed and Abandoned groups appear under **Closed Workstreams**. The closed group detail lists its saved thread assignments and offers **Reopen Workstream**. An unsettled historical member appears under **Unassigned** in the sidebar.
+
 | Journey                                           | Surface                                                                                    | Coverage                                                              |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
 | Create, rename, color, lifecycle, reorder, delete | Sidebar group menu; mobile group controls                                                  | Personal browser and mobile presentation/control tests                |

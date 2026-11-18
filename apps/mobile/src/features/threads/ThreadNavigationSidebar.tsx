@@ -125,7 +125,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const { fabClearance, fabSize } = useAndroidControlSizing();
   const projects = useProjects();
   const threads = useNavigationThreadShells();
-  const workstreams = useMobileWorkstreams(threads);
+
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
@@ -149,6 +149,12 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const activeNewTask = useActiveNewTask();
   const queuedThreadKeys = useQueuedThreadKeys();
   const selectDetail = useSelectWorkspaceDetail();
+  const workstreams = useMobileWorkstreams(threads, (thread) =>
+    selectDetail({
+      name: "Thread",
+      params: { environmentId: thread.environmentId, threadId: thread.id },
+    }),
+  );
   const { confirmDeletePendingTask } = usePendingTaskListActions((params) =>
     selectDetail({ name: "Thread", params }),
   );

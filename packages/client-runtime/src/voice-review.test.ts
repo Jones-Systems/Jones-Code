@@ -9,7 +9,9 @@ import { layerRemoteHttpClient } from "./rpc/http.ts";
 import {
   fetchVoiceReviewDrafts,
   fetchVoiceReviewDraft,
+  fetchVoiceReviewSendOptions,
   mutateVoiceReviewDraft,
+  sendReviewedVoiceDraft,
   fetchVoiceReviewRecent,
   fetchThreadRegistrySnapshot,
   fetchThreadRegistryWorkstreams,
@@ -106,6 +108,48 @@ it.effect(
       });
     }),
 );
+
+it.effect("distinguishes unsupported reviewed send from draft errors and invalid options", () =>
+  Effect.gen(function* () {
+    const input = {
+      prepared,
+      signer: Option.none<ManagedRelayDpopSigner["Service"]>(),
+      id: "capture",
+    };
+    const probe = (response: Response) =>
+      fetchVoiceReviewSendOptions(input).pipe(
+        Effect.provide(layerRemoteHttpClient(async () => response)),
+      );
+    expect(yield* probe(Response.json(null))).toBeNull();
+    expect(yield* probe(new Response("Missing", { status: 404 }))).toBeNull();
+    expect(
+      yield* probe(
+        new Response("<!doctype html><title>Jones Code</title>", {
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+          },
+        }),
+      ),
+    ).toBeNull();
+    const options = {
+      schema: "voice.reviewed-send/v1",
+      workstream_ids: [],
+      can_send_without_workstream: false,
+    };
+    expect(yield* probe(Response.json(options))).toEqual(options);
+    expect(
+      yield* probe(Response.json({ _tag: "VoiceReviewNotFoundError" }, { status: 404 })).pipe(
+        Effect.flip,
+      ),
+    ).toMatchObject({ _tag: "VoiceReviewNotFoundError" });
+    expect(
+      yield* probe(Response.json({ ...options, can_send_without_workstream: 0 })).pipe(Effect.flip),
+    ).toMatchObject({ _tag: "RemoteEnvironmentAuthInvalidJsonError" });
+  }),
+);
+
 it.effect(
   "binds relay DPoP to the selected environment request and never retries ambiguous mutations",
   () =>
@@ -143,23 +187,37 @@ it.effect(
         expect(new Headers(init?.headers).get("dpop")).toBe("fixture-proof");
         return Response.json({ _tag: "VoiceReviewUnavailableError" }, { status: 502 });
       });
-      const error = yield* mutateVoiceReviewDraft({
+      const input = {
         prepared: {
           ...prepared,
-          httpAuthorization: { _tag: "Dpop", accessToken: "old", expiresAtEpochMs: 0 },
+          httpAuthorization: { _tag: "Dpop" as const, accessToken: "old", expiresAtEpochMs: 0 },
         },
         signer: Option.some(signer),
         remoteAuthorization: Option.some(remoteAuthorization),
         id: "capture",
+      };
+      const error = yield* mutateVoiceReviewDraft({
+        ...input,
         action: "send-now",
         payload: { expected_revision: 2 },
       }).pipe(Effect.flip, Effect.provide(layer));
       expect(error).toMatchObject({ _tag: "VoiceReviewUnavailableError" });
       expect(calls).toBe(1);
+      const reviewedError = yield* sendReviewedVoiceDraft({
+        ...input,
+        payload: { expected_revision: 2, workstream_id: null },
+      }).pipe(Effect.flip, Effect.provide(layer));
+      expect(reviewedError).toMatchObject({ _tag: "VoiceReviewUnavailableError" });
+      expect(calls).toBe(2);
       expect(proofs).toEqual([
         {
           method: "POST",
           url: "https://relay.test/api/voice-review/drafts/capture/send-now",
+          accessToken: "fresh-token",
+        },
+        {
+          method: "POST",
+          url: "https://relay.test/api/voice-review/drafts/capture/send-reviewed",
           accessToken: "fresh-token",
         },
       ]);
@@ -220,6 +278,14 @@ it.effect("signs the exact encoded Voice Review and registry request URLs", () =
     const id = "capture:/ α?x#%";
     yield* unavailable(fetchVoiceReviewDrafts({ ...input, scope: "recent", limit: 17 }));
     yield* unavailable(fetchVoiceReviewDraft({ ...input, id }));
+    yield* unavailable(fetchVoiceReviewSendOptions({ ...input, id }));
+    yield* unavailable(
+      sendReviewedVoiceDraft({
+        ...input,
+        id,
+        payload: { expected_revision: 2, workstream_id: null },
+      }),
+    );
     yield* unavailable(
       mutateVoiceReviewDraft({
         ...input,
@@ -250,6 +316,8 @@ it.effect("signs the exact encoded Voice Review and registry request URLs", () =
     const expected = [
       "https://relay.test/api/voice-review/drafts?scope=recent&limit=17",
       "https://relay.test/api/voice-review/drafts/capture%3A%2F%20%CE%B1%3Fx%23%25",
+      "https://relay.test/api/voice-review/drafts/capture%3A%2F%20%CE%B1%3Fx%23%25/send-options",
+      "https://relay.test/api/voice-review/drafts/capture%3A%2F%20%CE%B1%3Fx%23%25/send-reviewed",
       "https://relay.test/api/voice-review/drafts/capture%3A%2F%20%CE%B1%3Fx%23%25/pause",
       "https://relay.test/api/voice-review/recent?limit=19",
       "https://relay.test/api/voice-review/registry/snapshot?limit=23&cursor=next%3A%2F+%CE%B1%3Fx%23%25%26%3D",
@@ -260,7 +328,7 @@ it.effect("signs the exact encoded Voice Review and registry request URLs", () =
     expect(urls).toEqual(expected);
     expect(proofs).toEqual(
       expected.map((url, index) => ({
-        method: index === 2 || index === 7 ? "POST" : "GET",
+        method: index === 3 || index === 4 || index === 9 ? "POST" : "GET",
         url,
         accessToken: "fresh-token",
       })),

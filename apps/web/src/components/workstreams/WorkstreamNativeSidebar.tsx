@@ -11,7 +11,10 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   groupPersonalThreads,
   personalThreadKey,
+  openPersonalWorkstreams,
+  visiblePersonalWorkstreamId,
   type PersonalWorkstreamsController,
+  type PersonalThreadRef,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -63,6 +66,7 @@ export function WorkstreamNativeSidebar({
   summaryThreads = threads,
   rosterThreads = summaryThreads,
   renderThread,
+  onOpenHistoryThread,
   assignmentMenuRef,
   externalDropRef,
   canOperate,
@@ -74,6 +78,7 @@ export function WorkstreamNativeSidebar({
   threads: readonly EnvironmentThreadShell[];
   summaryThreads?: readonly EnvironmentThreadShell[];
   rosterThreads?: readonly EnvironmentThreadShell[];
+  onOpenHistoryThread?: (thread: PersonalThreadRef) => void;
   renderThread: (
     thread: EnvironmentThreadShell,
     assignment: NativeThreadAssignmentMenu,
@@ -97,6 +102,7 @@ export function WorkstreamNativeSidebar({
   ) => Promise<boolean>;
 }) {
   const state = useAtomValue(controller.state);
+  const openWorkstreams = openPersonalWorkstreams(state);
   const grouping = groupPersonalThreads(state, threads);
   const summaryGrouping = groupPersonalThreads(state, summaryThreads);
   const [picker, setPicker] = useState<EnvironmentThreadShell | null>(null);
@@ -152,16 +158,19 @@ export function WorkstreamNativeSidebar({
         label: "Search or create Workstream…",
         disabled: !canMove(thread),
       },
-      ...state.workstreams.map((item) => ({
+      ...openWorkstreams.map((item) => ({
         id: `assign-workstream:group:${item.id}` as ThreadActionMenuId,
         label: item.name,
-        checked:
-          state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId === item.id,
+        checked: visiblePersonalWorkstreamId(state, thread) === item.id,
         disabled: !canMove(thread),
       })),
       {
         id: "assign-workstream:remove",
-        label: "Unassigned",
+        label:
+          visiblePersonalWorkstreamId(state, thread) === null &&
+          state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId != null
+            ? "Remove saved Workstream"
+            : "Unassigned",
         checked: state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId == null,
         disabled: !canMove(thread),
         separatorBefore: true,
@@ -172,7 +181,7 @@ export function WorkstreamNativeSidebar({
       if (action === "assign-workstream:picker") setPicker(thread);
       else if (action === "assign-workstream:remove") void move(thread, null);
       else {
-        const item = state.workstreams.find(
+        const item = openWorkstreams.find(
           (entry) => action === `assign-workstream:group:${entry.id}`,
         );
         if (item) void move(thread, item.id);
@@ -180,13 +189,9 @@ export function WorkstreamNativeSidebar({
     },
   });
   type Target = { id: string | null; neighborKey: string | null; after: boolean };
-  const groupId = (thread: EnvironmentThreadShell) => {
-    const id = state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId;
-    return id && state.workstreams.some((item) => item.id === id) ? id : null;
-  };
+  const groupId = (thread: EnvironmentThreadShell) => visiblePersonalWorkstreamId(state, thread);
   const validTarget = (target: Target) => {
-    if (target.id !== null && !state.workstreams.some((item) => item.id === target.id))
-      return false;
+    if (target.id !== null && !openWorkstreams.some((item) => item.id === target.id)) return false;
     return (
       target.neighborKey === null ||
       threads.some(
@@ -503,6 +508,7 @@ export function WorkstreamNativeSidebar({
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        onOpenHistoryThread={onOpenHistoryThread}
         rosterTotals={personalSidebarRosterTotals(state, rosterThreads)}
         dropTargetId={drop}
         memberCounts={

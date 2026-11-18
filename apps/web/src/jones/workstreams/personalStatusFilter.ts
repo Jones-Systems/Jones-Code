@@ -1,6 +1,7 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   groupPersonalThreads,
+  openPersonalWorkstreams,
   personalThreadKey,
   type PersonalThreadRef,
   type PersonalWorkstreamsState,
@@ -173,7 +174,7 @@ export function useSharedPersonalStatusFilter(ids: readonly string[]) {
 }
 
 function usePersonalStatusFilters(state: PersonalWorkstreamsState) {
-  const ids = state.workstreams.map((workstream) => workstream.id);
+  const ids = openPersonalWorkstreams(state).map(({ id }) => id);
   const { shared, locals } = usePersonalStatusChoices(ids);
   return new Map(
     ids.map((id, index) => [id, effectivePersonalStatusFilter(locals[index] ?? null, shared)]),

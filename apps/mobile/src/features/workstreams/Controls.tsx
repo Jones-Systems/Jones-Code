@@ -1,10 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import type {
-  PersonalThreadRef,
-  PersonalWorkstreamsController,
-  PersonalWorkstreamsState,
-  PersonalResult,
+import { isClosedPersonalWorkstream } from "@t3tools/contracts/jones/workstreamsPersonal";
+import {
+  openPersonalWorkstreams,
+  personalThreadKey,
+  type PersonalWorkstreamHistory,
+  type PersonalThreadRef,
+  type PersonalWorkstreamsController,
+  type PersonalWorkstreamsState,
+  type PersonalResult,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import { WorkstreamColorPicker } from "../../jones/workstreamAppearance/WorkstreamColorPicker";
 import { personalEnvironmentStatusText } from "./personalPresentation";
@@ -16,6 +20,7 @@ export function MobileWorkstreamControls(props: {
   selection: Selection | null;
   onSelect: (selection: Selection) => void;
   onClose: () => void;
+  onOpenThread?: ((thread: PersonalThreadRef) => void) | undefined;
   perform: <A>(action: () => Promise<PersonalResult<A>>) => Promise<boolean>;
   environmentNames: ReadonlyMap<string, string>;
 }) {
@@ -24,6 +29,27 @@ export function MobileWorkstreamControls(props: {
   const [colorOpen, setColorOpen] = useState(false);
   const group = props.state.workstreams.find((entry) => entry.id === props.selection?.groupKey);
   const thread = props.selection?.thread;
+  const openWorkstreams = openPersonalWorkstreams(props.state);
+  const closedWorkstreams = props.state.workstreams.filter((entry) =>
+    isClosedPersonalWorkstream(entry.lifecycle),
+  );
+  const closedId = group && isClosedPersonalWorkstream(group.lifecycle) ? group.id : null;
+  const [history, setHistory] = useState<PersonalWorkstreamHistory | null>(null);
+  const controller = props.controller;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read history for the mounted group and discard late results on close.
+  useEffect(() => {
+    if (!closedId) return;
+    let live = true;
+    const unavailable = { members: [], complete: false };
+    void (controller.readHistory?.(closedId) ?? Promise.resolve(unavailable))
+      .catch(() => unavailable)
+      .then((result) => {
+        if (live) setHistory(result);
+      });
+    return () => {
+      live = false;
+    };
+  }, [controller, closedId]);
   const writable = thread ? props.controller.canAssign(thread) : props.state.canCreate;
   const run = async (action: () => Promise<PersonalResult<unknown>>) => {
     if (busy) return;
@@ -50,8 +76,8 @@ export function MobileWorkstreamControls(props: {
   );
   const move = (direction: -1 | 1) => {
     if (!group) return;
-    const ordered = props.state.workstreams.filter((entry) => entry.id !== group.id);
-    const oldIndex = props.state.workstreams.findIndex((entry) => entry.id === group.id);
+    const ordered = openWorkstreams.filter((entry) => entry.id !== group.id);
+    const oldIndex = openWorkstreams.findIndex((entry) => entry.id === group.id);
     const index = Math.max(0, Math.min(ordered.length, oldIndex + direction));
     void run(() =>
       props.controller.reorder(group.id, {
@@ -74,16 +100,47 @@ export function MobileWorkstreamControls(props: {
         <Text accessibilityRole="header" style={{ fontSize: 24, fontWeight: "600" }}>
           {group?.name ?? "Workstreams"}
         </Text>
-        <TextInput
-          accessibilityLabel={group ? "Workstream name" : "New Workstream name"}
-          value={name}
-          onChangeText={setName}
-          placeholder={group?.name ?? "Workstream name"}
-          maxLength={160}
-          editable={!busy && writable}
-          style={{ padding: 12, borderWidth: 1, borderColor: "#9CA3AF" }}
-        />
-        {group ? (
+        {!closedId && (
+          <TextInput
+            accessibilityLabel={group ? "Workstream name" : "New Workstream name"}
+            value={name}
+            onChangeText={setName}
+            placeholder={group?.name ?? "Workstream name"}
+            maxLength={160}
+            editable={!busy && writable}
+            style={{ padding: 12, borderWidth: 1, borderColor: "#9CA3AF" }}
+          />
+        )}
+        {group && closedId ? (
+          <>
+            <Text>{group.lifecycle === "completed" ? "Completed" : "Abandoned"}</Text>
+            <Text accessibilityRole="header">Assigned threads</Text>
+            {!history && <Text>Loading threads…</Text>}
+            {history && !history.complete && (
+              <Text>Some environments are unavailable. This list may be incomplete.</Text>
+            )}
+            {history?.complete && !history.members.length && <Text>No assigned threads.</Text>}
+            {history?.members.map((member) => (
+              <View key={personalThreadKey(member)}>
+                {props.onOpenThread ? (
+                  button(member.title, () => {
+                    props.onOpenThread?.(member);
+                    props.onClose();
+                  })
+                ) : (
+                  <Text>{member.title}</Text>
+                )}
+                <Text>{member.settled ? "Settled" : "Unsettled"}</Text>
+              </View>
+            ))}
+            {button(
+              "Reopen Workstream",
+              () => void run(() => props.controller.setLifecycle(group.id, "active")),
+              !writable,
+            )}
+            {button("All Workstreams", () => props.onSelect({}))}
+          </>
+        ) : group ? (
           <>
             {button(
               "Rename Workstream",
@@ -116,12 +173,12 @@ export function MobileWorkstreamControls(props: {
             {button(
               "Move Workstream up",
               () => move(-1),
-              !writable || props.state.workstreams[0]?.id === group.id,
+              !writable || openWorkstreams[0]?.id === group.id,
             )}
             {button(
               "Move Workstream down",
               () => move(1),
-              !writable || props.state.workstreams.at(-1)?.id === group.id,
+              !writable || openWorkstreams.at(-1)?.id === group.id,
             )}
             {button(
               "Delete Workstream",
@@ -165,7 +222,7 @@ export function MobileWorkstreamControls(props: {
                 () => void run(() => props.controller.assign(thread, null)),
                 !writable,
               )}
-            {props.state.workstreams.map((entry) =>
+            {openWorkstreams.map((entry) =>
               button(
                 entry.name,
                 () => {
@@ -177,6 +234,17 @@ export function MobileWorkstreamControls(props: {
                 },
                 !!thread && !writable,
               ),
+            )}
+            {!thread && closedWorkstreams.length > 0 && (
+              <View>
+                <Text accessibilityRole="header">Closed Workstreams</Text>
+                {closedWorkstreams.map((entry) => (
+                  <View key={entry.id}>
+                    {button(entry.name, () => props.onSelect({ groupKey: entry.id }))}
+                    <Text>{entry.lifecycle === "completed" ? "Completed" : "Abandoned"}</Text>
+                  </View>
+                ))}
+              </View>
             )}
             <View accessibilityLabel="Workstreams connection status" style={{ gap: 12 }}>
               {props.state.environments.map((entry) => (

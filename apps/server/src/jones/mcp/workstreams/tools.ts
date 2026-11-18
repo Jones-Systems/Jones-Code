@@ -77,7 +77,7 @@ export const WorkstreamToolkit = Toolkit.make(
   }).annotate(Tool.Readonly, false),
   Tool.make("t3_workstream_update", {
     description:
-      "Edit or delete a personal Workstream using its current local definition. Deletion is terminal for its id.",
+      "Edit, reopen or delete a personal Workstream using its current local definition. Use the app to mark an existing Workstream Completed or Abandoned so it can check all configured environments. Deletion is terminal for its id.",
     parameters: Schema.Struct({
       ...target,
       id: P.PersonalWorkstreamId,
