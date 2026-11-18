@@ -50,7 +50,7 @@ function resourceEmitter(diagnostic: ResourceDiagnostics | undefined, pid?: numb
 }
 const statStart = (text: string) => text.slice(text.lastIndexOf(")") + 2).split(" ")[19];
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
-const macThreadPidColumn = "JONES_SP_PID";
+const macResourceColumns = "pid=JONES_SP_PID,time=JONES_SP_TIME,rss=JONES_SP_RSS";
 let clockTicks: Promise<number> | undefined;
 export interface LinuxThreadScheduling {
   readonly startTimeTicks: string;
@@ -327,24 +327,31 @@ export function processResourceSample(
 
 export type QualificationPredicate = boolean | "unknown";
 
-export function parseMacThreadCounts(
+export function parseMacProcessResources(
   output: string,
   pids: readonly number[],
-): ReadonlyMap<number, number> {
+): readonly ProcessResources[] | undefined {
   const [header, ...lines] = output.trimEnd().split("\n");
-  const heading = header?.trimEnd() ?? "";
-  const offset = heading.length - macThreadPidColumn.length;
-  if (!heading.endsWith(` ${macThreadPidColumn}`)) return new Map();
+  const columns = /\s+JONES_SP_PID\s+JONES_SP_TIME\s+JONES_SP_RSS$/.exec(header ?? "");
+  if (!columns) return undefined;
 
-  const counts = new Map<number, number>();
-  const requested = new Set(pids.map(String));
+  const processes = new Map<number, ProcessResources & { threads: number }>();
+  const requested = new Set(pids);
   for (const line of lines) {
-    const pid = line.slice(offset).trim();
-    if (!requested.has(pid)) return new Map();
-    const value = Number(pid);
-    counts.set(value, (counts.get(value) ?? 0) + 1);
+    const fields = line.slice(columns.index).trim().split(/\s+/);
+    const [pidText, time, rssText] = fields;
+    if (fields.length !== 3 || !/^\d+$/.test(pidText!) || !/^\d+$/.test(rssText!))
+      return undefined;
+    const pid = Number(pidText);
+    const cpuMs = cpuTime(time!);
+    const rssBytes = Number(rssText) * 1024;
+    if (!requested.has(pid) || !valid({ pid, cpuMs, rssBytes })) return undefined;
+
+    const process = processes.get(pid);
+    if (process && (process.cpuMs !== cpuMs || process.rssBytes !== rssBytes)) return undefined;
+    processes.set(pid, { pid, cpuMs, rssBytes, threads: (process?.threads ?? 0) + 1 });
   }
-  return counts;
+  return [...processes.values()];
 }
 
 export function resourcePredicates(
@@ -498,29 +505,16 @@ export async function sampleProcesses(
         }
       }
     } else if (HostProcess.Platform.defaultValue() === "darwin") {
-      const result = await execute("ps", ["-o", "pid=,time=,rss=", "-p", pids.join(",")], {
-        timeout: 2_000,
-      });
-      // macOS ps -M prepends its default thread columns even when -o selects a PID.
-      // Read a named trailing PID column for all captured PIDs in one invocation.
-      const threadCounts = await execute(
+      // ps -M repeats process-wide time and RSS for each thread. Collect all
+      // three fields in one pass so polling does less work on the measured host.
+      const result = await execute(
         "ps",
-        ["-M", "-c", "-p", pids.join(","), "-o", `pid=${macThreadPidColumn}`],
+        ["-M", "-c", "-ww", "-p", pids.join(","), "-o", macResourceColumns],
         { timeout: 2_000 },
-      ).then(
-        ({ stdout }) => parseMacThreadCounts(stdout, pids),
-        () => new Map<number, number>(),
       );
-      for (const line of result.stdout.trim().split("\n").filter(Boolean)) {
-        const [pid, time, rss] = line.trim().split(/\s+/);
-        const threads = threadCounts.get(Number(pid));
-        rows.push({
-          pid: Number(pid),
-          cpuMs: cpuTime(time ?? ""),
-          rssBytes: Number(rss) * 1024,
-          ...(threads === undefined ? {} : { threads }),
-        });
-      }
+      const processes = parseMacProcessResources(result.stdout, pids);
+      if (processes) rows.push(...processes);
+      else errors.push("macos-resource-table-invalid");
     } else errors.push("unsupported-platform");
   } catch (cause) {
     resourceEmitter(diagnostic)("clock-ticks", "error", { errors: 1, ...diagnosticError(cause) });
