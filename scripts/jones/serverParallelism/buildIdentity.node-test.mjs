@@ -113,7 +113,7 @@ const pack = (await import(process.argv[1])).default.pack;
 const plugin = pack.plugins.find((entry) => entry.name === "jones-server-compute-build-identity");
 const bundle = { "entry.mjs": { type: "chunk", code: pack.banner.js + "body" } };
 await plugin.generateBundle.call(
-  { getModuleIds: () => pack.entry, getModuleInfo: (id) => ({ code: "module " + id }) },
+  { getModuleIds: () => Object.values(pack.entry), getModuleInfo: (id) => ({ code: "module " + id }) },
   {},
   bundle,
 );
@@ -122,6 +122,7 @@ process.stdout.write(
     entry: pack.entry,
     outDir: pack.outDir,
     exe: Object.keys(pack.exe ?? {}),
+    assets: pack.exe?.seaConfig?.assets ?? {},
     banner: pack.banner.js,
     define: pack.define.__JONES_SERVER_COMPUTE_BUILD_ID__,
     stamped: bundle["entry.mjs"].code,
@@ -161,6 +162,11 @@ NodeTest.test(
         1: { entry: ["src/bin.ts"], outDir: "dist-exe", sea: true },
         bootstrap: { entry: ["src/bin.ts"], outDir: "dist-exe", sea: false },
         bundle: { entry: ["src/binMain.ts"], outDir: assetDir, sea: false },
+        compute: {
+          entry: { serverComputeWorker: "src/jones/serverCompute/worker.ts" },
+          outDir: NodePath.join(assetDir, "compute"),
+          sea: false,
+        },
       };
       const stamps = {};
       for (const [mode, want] of Object.entries(expected)) {
@@ -168,6 +174,20 @@ NodeTest.test(
         NodeAssert.deepEqual(result.entry, want.entry, mode);
         NodeAssert.equal(result.outDir, want.outDir, mode);
         NodeAssert.equal(result.exe.includes("seaConfig"), want.sea, mode);
+        NodeAssert.deepEqual(
+          result.assets,
+          want.sea
+            ? {
+                "binMain.mjs": NodePath.join(assetDir, "binMain.mjs"),
+                "serverComputeWorker.mjs": NodePath.join(
+                  assetDir,
+                  "compute",
+                  "serverComputeWorker.mjs",
+                ),
+              }
+            : {},
+          mode,
+        );
         NodeAssert.equal(result.define, JSON.stringify(computeBuildPlaceholder), mode);
         NodeAssert.ok(
           result.banner.startsWith("#!/usr/bin/env node\n") &&
@@ -181,6 +201,7 @@ NodeTest.test(
       }
       // The embedded main bundle and the bootstrap are different code, so they bind different identities.
       NodeAssert.notEqual(stamps.bundle, stamps.bootstrap);
+      NodeAssert.notEqual(stamps.bundle, stamps.compute);
       NodeAssert.equal(probe("bundle").stamped, probe("bundle").stamped);
     } finally {
       await NodeFSP.rm(assetDir, { recursive: true });
