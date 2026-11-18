@@ -651,20 +651,20 @@ export function describeUpdateEverything(plan: UpdateEverythingPlan): {
   readonly summary: string;
   readonly version: string | null;
   readonly providerCount: number;
+  readonly jonesMachineCount: number;
   readonly rows: ReadonlyArray<UpdateEverythingRow>;
 } {
   const providerCount = plan.providerMachines.reduce(
     (count, machine) => count + machine.providers.length,
     0,
   );
+  const jonesMachineCount =
+    plan.jonesMachines?.filter((machine) => machine.skipped === undefined).length ?? 0;
   const summary = `Update ${joinList(
     [
       plan.localVersion ? "this app" : null,
       countLabel(plan.servers.length, "server"),
-      countLabel(
-        plan.jonesMachines?.filter((machine) => machine.skipped === undefined).length ?? 0,
-        "Jones machine",
-      ),
+      countLabel(jonesMachineCount, "Jones machine"),
       countLabel(providerCount, "provider"),
     ].filter((part) => part !== null),
   )}`;
@@ -722,6 +722,7 @@ export function describeUpdateEverything(plan: UpdateEverythingPlan): {
       plan.servers.find((server) => server.selfUpdate !== "desktop-managed")?.targetVersion ??
       null,
     providerCount,
+    jonesMachineCount,
     rows: Array.from(rows.values()),
   };
 }

@@ -57,11 +57,7 @@ import {
 import { SidebarUpdateReleaseNotes } from "./SidebarUpdateReleaseNotes";
 import { SidebarUpdateCapsule } from "./SidebarUpdateCapsule";
 import { UpdateEverythingDialog } from "./UpdateEverythingDialog";
-import {
-  type UpdateEverythingRun,
-  type UpdateRunLocalState,
-  updateEverythingRowHasWork,
-} from "./updateEverything.logic";
+import type { UpdateEverythingRun, UpdateRunLocalState } from "./updateEverything.logic";
 import {
   clearSavedUpdateEverythingResult,
   saveUpdateEverythingResult,
@@ -426,7 +422,7 @@ function SidebarUpdateControl() {
   const tooltip = opensInstallStatus
     ? "Open Install status"
     : runsEverything
-      ? offeredBuild !== undefined && !everything.rows.some(updateEverythingRowHasWork)
+      ? offeredBuild !== undefined && everything.jonesMachineCount <= 1
         ? `Review Jones Code ${offeredBuild.version} · ${offeredBuild.sourceSha.slice(0, 8)}`
         : everything.summary
       : showUpdateDetails
