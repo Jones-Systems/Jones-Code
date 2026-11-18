@@ -9074,6 +9074,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       providerThreadRows,
       pendingTurnItemRows,
     }: Effect.Success<ReturnType<typeof readShellSnapshotRows>>) {
+      // Let the server run pending I/O between a large capture and its decode.
+      // Both the rows and their sequence were fixed by the capture transaction.
+      if (threadRows.length > 256) yield* Effect.yieldNow;
+
       const { runsByThreadId, itemCountsByThreadId } = runMapsByThreadId({
         runRows,
         itemCountRows,
