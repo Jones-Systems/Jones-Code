@@ -488,6 +488,12 @@ The advisory `Server parallel qualification` workflow defaults to bounded
 `source-evidence`: one unchanged baseline and one real source run for each
 profile, including churn and shutdown. It also runs matching-build and
 wrong-build dispatch checks. These reports cannot qualify the full matrix.
+
+Hosted macOS builds a read-only thread census from the checked-out source.
+Each qualification compares the first census with the stack sampler before
+using it. A failed comparison or a later unavailable census uses the stack
+sampler, and the report records the comparison and each read's method.
+
 After reviewing those prerequisites, select `scope: full` on the workflow's
 manual dispatch to exercise source, bundle, Electron and SEA on both platforms.
 Missing or failed cells remain explicit; a narrower diagnostic scope never

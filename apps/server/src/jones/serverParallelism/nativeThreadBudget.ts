@@ -80,6 +80,7 @@ export function evaluateNativeThreadBudget(input: {
   readonly platform: string;
   readonly parentPid: number;
   readonly macPerformanceCores: MacPerformanceCores;
+  readonly macNativePoolCensusVerified?: boolean;
   readonly generations: readonly ThreadBudgetGeneration[];
   readonly samples: readonly ThreadBudgetSample[];
   readonly lifecycleBounds: QualificationPredicate;
@@ -103,7 +104,12 @@ export function evaluateNativeThreadBudget(input: {
     const S = input.platform === "linux" ? A : input.platform === "darwin" ? P : null;
     const counts = generation.nativePools.map((observation) =>
       observation.pid === generation.pid &&
-      observation.method === (input.platform === "linux" ? "linux-proc-task-comm" : "macos-sample")
+      (input.platform === "linux"
+        ? observation.method === "linux-proc-task-comm"
+        : input.platform === "darwin" &&
+          (observation.method === "macos-sample" ||
+            (input.macNativePoolCensusVerified === true &&
+              observation.method === "macos-proc-info")))
         ? poolCounts(observation)
         : undefined,
     );
