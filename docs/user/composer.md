@@ -506,6 +506,12 @@ Follow an agent's file link to read a report or other file outside the workspace
 These files open read-only. An HTML file outside the workspace cannot load scripts,
 styles, or images from neighboring files.
 
+On web and desktop, a file link can name a different Jones Code computer.
+Click it to open the original file in the Files sidebar. The app uses your
+existing connection to that computer and its file-read permission. It does not
+save a copy to your workspace. If that computer is disconnected, reconnect it
+and open the link again.
+
 ## HTML and PDF files in the file viewer
 
 On web and desktop, HTML and PDF files open as rendered pages. Switch an HTML
