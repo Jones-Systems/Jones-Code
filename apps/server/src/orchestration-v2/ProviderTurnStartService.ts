@@ -1545,14 +1545,6 @@ export const layer: Layer.Layer<
               },
             });
           });
-          if (
-            canOfferRecovery &&
-            recovery === undefined &&
-            message.context?.checkoutRecreation === undefined
-          ) {
-            yield* offerRecovery();
-            return;
-          }
           let recoveryBinding: {
             readonly path: string | null;
             readonly branch: string | null;
@@ -1628,8 +1620,22 @@ export const layer: Layer.Layer<
                 ...(message.context?.checkoutRecreation === undefined
                   ? {}
                   : { detached: message.context.checkoutRecreation }),
-              }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause }))),
+              }).pipe(
+                Effect.catchIf(
+                  (cause) =>
+                    canOfferRecovery &&
+                    recovery === undefined &&
+                    message.context?.checkoutRecreation === undefined &&
+                    CheckoutRecovery.needsOwnerChoice(cause),
+                  () => Effect.void,
+                ),
+                Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })),
+              ),
             ));
+          if (recreated === undefined) {
+            yield* offerRecovery();
+            return;
+          }
           if (recreated !== null) {
             const recreatedBranch = recreated.branch?.replace(/^refs\/heads\//, "") ?? null;
             const now = yield* DateTime.now;

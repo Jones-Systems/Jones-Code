@@ -7,7 +7,16 @@ import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as GitWorkflow from "../../git/GitWorkflowService.ts";
 import { git, sha256 } from "../workspaceRetirement/Filesystem.ts";
-import { releaseMissingBranchRegistration } from "./Native.ts";
+import { RecreationHold, releaseMissingBranchRegistration } from "./Native.ts";
+
+export function needsOwnerChoice(cause: unknown): boolean {
+  return (
+    cause instanceof RecreationHold &&
+    (cause.reason === "source_unavailable" ||
+      cause.reason === "branch_changed" ||
+      cause.reason === "branch_in_use")
+  );
+}
 
 export const questionId = "checkout-recovery";
 type Choice = NonNullable<OrchestrationMessageContext["checkoutRecovery"]>["choice"];

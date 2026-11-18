@@ -246,8 +246,9 @@ files such as `.env` and build output. **Any local files** also protects ignored
 `node_modules`. **Edited tracked files** protects only tracked edits and allows untracked and
 ignored files to be deleted. Branches and thread history stay.
 
-When you send a message in a thread whose managed checkout was removed, **Needs input** lets you
-restore its saved branch if available or create a fresh worktree from the latest default branch.
+Jones Code automatically recreates a managed checkout when it can verify the saved checkout and
+branch. When it needs a decision, **Needs input** lets you restore the saved branch if available
+or create a fresh worktree from the latest default branch.
 Codex and Claude threads can also continue without a checkout and attach one later. If restoring
 the saved branch fails, Jones Code shows the reason and offers the remaining choices. Your
 original message resumes after the selected workspace is ready.
