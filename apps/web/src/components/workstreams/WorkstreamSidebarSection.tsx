@@ -151,6 +151,7 @@ export function WorkstreamCreateForm({
     >
       <Input
         autoFocus
+        size="compact"
         aria-label="Workstream name"
         placeholder="Workstream name"
         maxLength={160}
@@ -159,12 +160,14 @@ export function WorkstreamCreateForm({
       />
       <Button
         type="submit"
+        size="compact"
         disabled={pending || !name.trim() || Boolean(nameIconProjectKey && !canSetNameIcon)}
       >
         Create
       </Button>
       <Button
         type="button"
+        size="compact"
         variant="ghost"
         disabled={pending}
         onClick={() => {

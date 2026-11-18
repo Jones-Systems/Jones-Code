@@ -36,8 +36,11 @@ export function WorkstreamNameIconPicker({
   const labelId = useId();
   const selection = projects.find(({ projectKey }) => projectKey === value);
   return (
-    <div className="flex min-w-0 items-center justify-between gap-2">
-      <span id={labelId} className="shrink-0 text-xs text-muted-foreground">
+    <div className="@container/name-icon flex min-w-0 items-center justify-between gap-2">
+      <span
+        id={labelId}
+        className="shrink-0 text-xs text-muted-foreground @max-[8rem]/name-icon:sr-only"
+      >
         Name icon
       </span>
       <Select
@@ -45,14 +48,22 @@ export function WorkstreamNameIconPicker({
         onValueChange={(key) => onChange(key || null)}
         disabled={disabled}
       >
-        <SelectTrigger aria-labelledby={labelId} size="compact" valueSizing className="min-w-0">
+        <SelectTrigger
+          aria-labelledby={labelId}
+          size="compact"
+          valueSizing
+          className="ms-auto min-w-0"
+        >
           <SelectValue className="min-w-0 !flex-auto">
             {selection ? (
               <ProjectLabel project={selection} />
             ) : value ? (
               "Unavailable project"
             ) : (
-              "None"
+              <>
+                <span className="@max-[8rem]/name-icon:hidden">None</span>
+                <span className="hidden @max-[8rem]/name-icon:inline">Name icon</span>
+              </>
             )}
           </SelectValue>
         </SelectTrigger>
