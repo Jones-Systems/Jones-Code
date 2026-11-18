@@ -75,7 +75,7 @@ it.effect.each([
           Effect.gen(function* () {
             const now = yield* DateTime.now;
             const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
-            return {
+            return yield* ProviderReplayHarness.withReplayThreadPublication(input, {
               instanceId,
               driver,
               providerSessionId: input.providerSessionId,
@@ -136,7 +136,7 @@ it.effect.each([
               readThreadSnapshot: () => Effect.die("unused"),
               rollbackThread: () => Effect.die("unused"),
               forkThread: () => Effect.die("unused"),
-            };
+            });
           }),
       };
       const layerAdapters = ProviderAdapterRegistry.layerSingle(adapter);

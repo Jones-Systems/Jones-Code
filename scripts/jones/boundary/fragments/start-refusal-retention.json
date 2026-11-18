@@ -20,6 +20,14 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts",
+      "to": "apps/server/src/jones/startRefusal/Store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts",
+      "to": "apps/server/src/jones/provider/UnsentStartProof.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/EventSink.ts",
       "to": "apps/server/src/jones/provider/UnsentStartProof.ts"
     },

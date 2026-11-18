@@ -3695,18 +3695,8 @@ const make = Effect.gen(function* () {
         .toSorted((left, right) => right.ordinal - left.ordinal)
         .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)
         .map((run) => threadRun(target, run));
-      const ordinaryPage = timelineItemsWithinBudget(
-        { thread, recentRuns, nextPosition: null, hasMore: false, earlierPosition: null },
-        timeline.items.map((row) => ({
-          row,
-          maxChars,
-          messagesByThreadId,
-          ...(input.itemId === undefined ? {} : { textOffset: input.textOffset ?? 0 }),
-        })),
-        newestFirst,
-      );
-      let items = ordinaryPage.items;
-      let start = ordinaryPage.start;
+      let items: ReadonlyArray<OrchestratorMcpThreadTimelineItem>;
+      let start: number;
       if (input.contentEvidence !== undefined) {
         const rendered = timeline.items.map((row) =>
           timelineItem({ row, messagesByThreadId, maxChars: Number.MAX_SAFE_INTEGER }),
@@ -3742,7 +3732,20 @@ const make = Effect.gen(function* () {
           hasMore: timeline.hasMore || admission.success.items.length < rendered.length,
         });
         if (Result.isFailure(prepared)) return yield* prepared.failure;
-        items = [...prepared.success];
+        items = prepared.success;
+      } else {
+        const ordinaryPage = timelineItemsWithinBudget(
+          { thread, recentRuns, nextPosition: null, hasMore: false, earlierPosition: null },
+          timeline.items.map((row) => ({
+            row,
+            maxChars,
+            messagesByThreadId,
+            ...(input.itemId === undefined ? {} : { textOffset: input.textOffset ?? 0 }),
+          })),
+          newestFirst,
+        );
+        items = ordinaryPage.items;
+        start = ordinaryPage.start;
       }
       const page = timeline.items.slice(start, start + items.length);
       const dependencyRoster =
@@ -3800,7 +3803,18 @@ const make = Effect.gen(function* () {
             );
       // A read past the end of an item's text shows the agent nothing to acknowledge.
       const readPastEnd = (input.textOffset ?? 0) > 0 && items.every((item) => !item.text);
-      if (parent !== undefined && scope.thread !== undefined && tasks.length > 0 && !readPastEnd) {
+      // Negotiated continuation slices do not present the complete result.
+      const evidenceContinuation =
+        input.contentEvidence !== undefined &&
+        input.itemId !== undefined &&
+        (input.textOffset ?? 0) > 0;
+      if (
+        parent !== undefined &&
+        scope.thread !== undefined &&
+        tasks.length > 0 &&
+        !readPastEnd &&
+        !evidenceContinuation
+      ) {
         for (const task of tasks) {
           const transfer = taskResultTransfer(parent.thread.id, target, task);
           const resultRunId = transfer?.sourcePoint.runId ?? delegatedTaskRun(target, task)?.id;

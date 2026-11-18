@@ -254,11 +254,46 @@ it.effect(
     }).pipe(Effect.provide(runtime)),
 );
 
+const seedQueuedDispatchTarget = Effect.gen(function* () {
+  const f = yield* Fixture.seed;
+  const providerThreadId = ProviderThreadId.make("core-recovery-queued-target");
+  const provider = yield* decodeProviderThread({
+    id: providerThreadId,
+    appThreadId: f.receiver.id,
+    ownerNodeId: null,
+    driver: adapter.driver,
+    providerInstanceId: instanceId,
+    providerSessionId: null,
+    nativeThreadRef: null,
+    nativeConversationHeadRef: null,
+    status: "active",
+    firstRunOrdinal: f.receiverRun.ordinal,
+    lastRunOrdinal: f.receiverRun.ordinal,
+    handoffIds: [],
+    forkedFrom: null,
+    createdAt: Fixture.time,
+    updatedAt: Fixture.time,
+  });
+  const receiverRun = { ...f.receiverRun, providerThreadId };
+  yield* f.sink.write({
+    events: [
+      f.event({ type: "provider-thread.updated", threadId: f.receiver.id, payload: provider }),
+      f.event({
+        type: "run.updated",
+        threadId: f.receiver.id,
+        runId: receiverRun.id,
+        payload: receiverRun,
+      }),
+    ],
+  });
+  return { ...f, receiverRun };
+});
+
 it.effect(
   "serializes duplicate remote sends and guards workspace preparation against target replacement and recursive dispatch",
   () =>
     Effect.gen(function* () {
-      const f = yield* Fixture.seed;
+      const f = yield* seedQueuedDispatchTarget;
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const capture: RemoteReceipts.SendCapture = {
         originNamespace: "authenticated-origin",
@@ -389,9 +424,9 @@ it.effect(
   "restores remote question observations through the actual under-parent-lock dispatch and replays once",
   () =>
     Effect.gen(function* () {
-      const f = yield* Fixture.seed;
+      const f = yield* seedQueuedDispatchTarget;
       const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const taskId = NodeId.make("core-remote-task");
+      const taskId = NodeId.make("core-remote:task");
       const observation: RemoteTaskObservation = {
         schemaVersion: "t3.remote-task-observation/v1",
         environmentId: EnvironmentId.make("remote-core"),
@@ -401,7 +436,7 @@ it.effect(
           resumeToken: "core-question",
           requests: [
             {
-              requestId: RuntimeRequestId.make("remote-question"),
+              requestId: RuntimeRequestId.make("remote/question"),
               runId: RunId.make("remote-original"),
             },
           ],
@@ -437,19 +472,58 @@ it.effect(
       yield* f.sink.write({
         events: [f.event({ type: "subagent.updated", threadId: f.receiver.id, payload: task })],
       });
+      const noticeId = MessageId.make(
+        "message:remote-question:receiver:core-remote%3Atask:remote-core:remote-child:remote%2Fquestion",
+      );
+      const assertSuppressed = Effect.fn(function* (
+        reason: string,
+        messageId = noticeId,
+        sourceTask = taskId,
+      ) {
+        const result = yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`remote-question-probe:${reason}`),
+          threadId: f.receiver.id,
+          messageId,
+          text: "Question notice",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "agent",
+          creationSource: "server",
+          notification: {
+            source: { kind: "delegated_task", taskIds: [sourceTask] },
+            outcome: "updated",
+            summary: "Question",
+          },
+        });
+        assert.deepEqual(
+          result.storedEvents.map(({ event }) => event.type),
+          ["thread.metadata-updated"],
+        );
+      });
+      yield* assertSuppressed("missing-observation");
       yield* f.sql`INSERT INTO jones_remote_task_observations (parent_thread_id, task_id, observation_json, signal_pending)
       VALUES (${f.receiver.id}, ${taskId}, ${JSON.stringify(observation)}, 1)`;
+      for (const [field, value] of [
+        ["environmentId", EnvironmentId.make("replaced-environment")],
+        ["threadId", ThreadId.make("replaced-child")],
+        ["originalRunId", RunId.make("replaced-run")],
+      ] as const) {
+        yield* f.sql`UPDATE jones_remote_task_observations SET observation_json = ${JSON.stringify({ ...observation, [field]: value })}
+          WHERE parent_thread_id = ${f.receiver.id} AND task_id = ${taskId}`;
+        yield* assertSuppressed(field);
+      }
+      yield* f.sql`UPDATE jones_remote_task_observations SET observation_json = ${JSON.stringify(observation)}
+        WHERE parent_thread_id = ${f.receiver.id} AND task_id = ${taskId}`;
+      yield* assertSuppressed("unknown-task", noticeId, NodeId.make("unrelated-task"));
+      yield* assertSuppressed("unknown-request", MessageId.make(`${noticeId}-other`));
       const recover = orchestrator.recoverRemoteTaskQuestions;
       const read = orchestrator.readRemoteTaskObservation;
       if (recover === undefined || read === undefined)
         return yield* Effect.die("Required core observation ports missing");
       yield* recover;
       const first = yield* f.projection.getThreadRecords(f.receiver.id, ["messages", "runs"]);
-      assert.equal(
-        first.messages.filter((message) => message.id.startsWith("message:remote-question:"))
-          .length,
-        1,
-      );
+      assert.equal(first.messages.filter((message) => message.id === noticeId).length, 1);
       assert.deepEqual(yield* read(f.receiver.id, taskId), observation);
       yield* recover;
       const second = yield* f.projection.getThreadRecords(f.receiver.id, ["messages", "runs"]);
@@ -461,5 +535,32 @@ it.effect(
       WHERE parent_thread_id = ${f.receiver.id} AND task_id = ${taskId}`)[0]?.signal_pending,
         0,
       );
+      yield* orchestrator.observeRemoteTask({
+        parentThreadId: f.receiver.id,
+        taskId,
+        observation: {
+          ...observation,
+          blockingQuestions: { resumeToken: "answered", requests: [] },
+        },
+      });
+      yield* recover;
+      const afterAnswer = yield* f.projection.getThreadRecords(f.receiver.id, ["runs"]);
+      assert.equal(
+        afterAnswer.runs.find((run) => run.userMessageId === noticeId)?.status,
+        "cancelled",
+      );
+      yield* assertSuppressed("answered");
+
+      yield* orchestrator.observeRemoteTask({ parentThreadId: f.receiver.id, taskId, observation });
+      yield* f.sink.write({
+        events: [
+          f.event({
+            type: "subagent.updated",
+            threadId: f.receiver.id,
+            payload: { ...task, status: "completed", completedAt: Fixture.time },
+          }),
+        ],
+      });
+      yield* assertSuppressed("terminal-task");
     }).pipe(Effect.provide(runtime)),
 );

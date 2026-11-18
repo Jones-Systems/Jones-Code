@@ -42,6 +42,7 @@
     "apps/web/src/components/chat/useComposerStash.browser.test.tsx": "jones-tests-in-upstream",
     "packages/client-runtime/src/state/projectGrouping.test.ts": "jones-tests-in-upstream",
     "scripts/lib/tagged-source-version.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ProviderContinuationService.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/ProviderContinuationService.ts": "hook",
     "apps/web/src/components/files/office/word-document.ts": "accepted-shared",
     "scripts/lib/tagged-source-version.ts": "accepted-shared",
@@ -417,6 +418,7 @@
     "apps/server/src/background/BackgroundPolicy.ts": "accepted-shared",
     "apps/server/src/background/HostPowerMonitor.ts": "accepted-shared",
     "apps/server/src/bin.ts": "hook",
+    "apps/server/src/binCli.test.ts": "jones-tests-in-upstream",
     "apps/server/src/binCli.ts": "accepted-shared",
     "apps/server/src/checkpointing/CheckpointDiffQuery.test.ts": "jones-tests-in-upstream",
     "apps/server/src/checkpointing/CheckpointStore.test.ts": "jones-tests-in-upstream",
@@ -1076,6 +1078,7 @@
     "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts": "jones-tests-in-upstream",
     "apps/server/src/mcp/PreviewAutomationBroker.test.ts": "jones-tests-in-upstream",
     "apps/server/src/mcp/PreviewAutomationBroker.ts": "accepted-shared",
+    "apps/server/src/mcp/TaskCancelUsageLimit.integration.test.ts": "jones-tests-in-upstream",
     "apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts": "jones-tests-in-upstream",
     "apps/server/src/mcp/ThreadMetadataMcpService.test.ts": "upstream-deleted",
     "apps/server/src/mcp/ThreadMetadataMcpService.ts": "accepted-shared",
@@ -1367,6 +1370,7 @@
     "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts": "jones-tests-in-upstream",
     "apps/server/src/resourceTelemetry/ResourceTelemetry.ts": "accepted-shared",
     "apps/server/src/scheduledTasks/ScheduledTaskService.ts": "hook",
+    "apps/server/src/scheduledTasks/ScheduledTaskService.schedule.test.ts": "jones-tests-in-upstream",
     "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts": "jones-tests-in-upstream",
     "apps/server/src/scheduledTasks/webhookRoute.test.ts": "jones-tests-in-upstream",
     "apps/server/src/server.ts": "hook",
@@ -3889,6 +3893,10 @@
     "scripts/jones/boundary/fragments/experimental-typecheck.json"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts",
+      "to": "apps/server/src/jones/orchestration/OrphanedRunRecords.testkit.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
       "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"

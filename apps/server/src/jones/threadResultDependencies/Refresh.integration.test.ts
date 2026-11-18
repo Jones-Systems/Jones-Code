@@ -164,6 +164,10 @@ it.effect(
         events: [f.event({ type: "thread.metadata-updated", threadId: child.id, payload: child })],
       });
       yield* f.send("filtered-child");
+      const childMayBeLive = orchestrator
+        .listActiveShellIndex()
+        .pipe(Effect.map((rows) => rows.find((row) => row.id === child.id)?.mayBeLive));
+      assert.isTrue(yield* childMayBeLive);
       const enrichment = yield* PubSub.unbounded<Enrichment.ProjectEnrichmentChange>();
       const threadReads = Layer.mock(Threads.ThreadManagementService)({
         readShellSnapshot: orchestrator.readShellSnapshot,
@@ -216,6 +220,7 @@ it.effect(
         });
         assert.deepEqual(stop.storedEvents, []);
         assert.equal(yield* f.store.sequence, sequence);
+        assert.isFalse(yield* childMayBeLive);
         assert.deepEqual(
           (yield* f.projection.getThreadShell(child.id))?.pendingBackgroundTasks,
           [],

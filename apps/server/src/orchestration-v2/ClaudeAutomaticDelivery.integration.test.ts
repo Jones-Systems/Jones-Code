@@ -14,6 +14,7 @@ import {
   ThreadId,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
+import type * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -126,6 +127,22 @@ const result = (uuid: string, aborted: boolean) =>
     modelUsage: {},
   });
 
+// Finish the synthetic active turn while its event consumer can still commit terminal evidence.
+const completeActiveTurn = Effect.fnUntraced(function* (
+  messages: Queue.Queue<SDKMessage, Cause.Done>,
+) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const events = yield* orchestrator.acquireDomainEvents;
+  const waiting = yield* events.pipe(
+    Stream.filter((event) => event.type === "run.updated" && event.payload.status === "waiting"),
+    Stream.take(1),
+    Stream.runDrain,
+    Effect.forkScoped,
+  );
+  yield* Queue.offer(messages, result("completed", false));
+  yield* Fiber.join(waiting);
+});
+
 const deliveries = [
   "child completion",
   "scheduled message",
@@ -138,7 +155,7 @@ it.effect.each(deliveries)(
   (delivery) =>
     Effect.gen(function* () {
       const cwd = yield* checkpointWorkspace("claude-automatic-delivery");
-      const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+      const sdkMessages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
       const offers: SDKUserMessage[] = [];
       const nativeQueue: SDKUserMessage[] = [];
       // @effect-diagnostics-next-line abortControllerInEffect:off - The fake SDK interrupts its batch independently of the test fiber.
@@ -177,7 +194,7 @@ it.effect.each(deliveries)(
               listPermissionRules: Effect.die("unexpected permission rules read"),
               stopTask: () => Effect.void,
               interrupt: Effect.die("automatic delivery must never interrupt"),
-              close: Effect.void,
+              close: Queue.end(sdkMessages).pipe(Effect.asVoid),
               // No owned process exists; the fixture session ends with its close.
               termination: Effect.void,
             }),
@@ -498,7 +515,7 @@ it.effect.each(deliveries)(
 it.effect("applies an effort change to the running Claude query without waiting for a turn", () =>
   Effect.gen(function* () {
     const cwd = yield* checkpointWorkspace("claude-live-effort");
-    const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+    const sdkMessages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
     const flagSettings: unknown[] = [];
     const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
       instanceId: modelSelection.instanceId,
@@ -529,7 +546,7 @@ it.effect("applies an effort change to the running Claude query without waiting 
             listPermissionRules: Effect.die("unexpected permission rules read"),
             stopTask: () => Effect.void,
             interrupt: Effect.die("an effort change must not interrupt the turn"),
-            close: Effect.void,
+            close: Queue.end(sdkMessages).pipe(Effect.asVoid),
             // No owned process exists; the fixture session ends with its close.
             termination: Effect.void,
           }),
@@ -590,6 +607,7 @@ it.effect("applies an effort change to the running Claude query without waiting 
       yield* worker.drain();
 
       assert.deepEqual(flagSettings, [{ effortLevel: "medium", fastMode: null, ultracode: null }]);
+      yield* completeActiveTurn(sdkMessages);
     }).pipe(
       Effect.provide(
         ProviderReplayHarness.layerWithRegistry(
@@ -614,7 +632,7 @@ it.effect("applies an effort change to the running Claude query without waiting 
 const renamedClaudeSessionTitles = (options: { readonly renameDuringStartup: boolean }) =>
   Effect.gen(function* () {
     const cwd = yield* checkpointWorkspace("claude-live-rename");
-    const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+    const sdkMessages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
     const renames: string[] = [];
     const startupEntered = yield* Deferred.make<void>();
     const startupReleased = yield* Deferred.make<void>();
@@ -647,7 +665,7 @@ const renamedClaudeSessionTitles = (options: { readonly renameDuringStartup: boo
             listPermissionRules: Effect.die("unexpected permission rules read"),
             stopTask: () => Effect.void,
             interrupt: Effect.die("a rename must not interrupt the turn"),
-            close: Effect.void,
+            close: Queue.end(sdkMessages).pipe(Effect.asVoid),
             // No owned process exists; the fixture session ends with its close.
             termination: Effect.void,
           }),
@@ -714,6 +732,7 @@ const renamedClaudeSessionTitles = (options: { readonly renameDuringStartup: boo
         yield* rename;
       }
       yield* worker.drain();
+      yield* completeActiveTurn(sdkMessages);
       return renames;
     }).pipe(
       Effect.provide(
@@ -804,10 +823,12 @@ const wakeAssistant = (uuid: string) =>
     },
   });
 
-it.effect("offers a continuation for a later wake after a queued continuation is cancelled", () =>
+const cancelCommands = ["queued-run.cancel", "thread.stop", "run.interrupt"] as const;
+const laterWakeAfterCancellation = (cancel: (typeof cancelCommands)[number]) =>
   Effect.gen(function* () {
     const cwd = yield* checkpointWorkspace("claude-cancelled-continuation");
-    const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+    let sdkMessages: Queue.Queue<SDKMessage, Cause.Done>;
+    const firstRetired = yield* Deferred.make<void>();
     const processed = new WeakMap<SDKMessage, Deferred.Deferred<void>>();
     const offerAndWait = Effect.fnUntraced(function* (message: SDKMessage) {
       const done = yield* Deferred.make<void>();
@@ -838,46 +859,63 @@ it.effect("offers a continuation for a later wake after a queued continuation is
           idAllocator,
           continuationRequests: {
             offer: (request) =>
-              Effect.sync(() => continuations.push(request)).pipe(
-                Effect.andThen(requests.offer(request)),
-              ),
+              Effect.gen(function* () {
+                continuations.push(request);
+                const retire = request.onRunEndedWithoutStarting;
+                yield* requests.offer(
+                  continuations.length === 1 && retire !== undefined
+                    ? {
+                        ...request,
+                        onRunEndedWithoutStarting: () =>
+                          retire().pipe(
+                            Effect.andThen(Deferred.succeed(firstRetired, undefined)),
+                            Effect.asVoid,
+                          ),
+                      }
+                    : request,
+                );
+              }),
           },
           queryRunner: {
             allocateSessionId: Effect.succeed(sessionId),
             open: () =>
-              Effect.succeed({
-                // Resolve each frame's Deferred once the adapter pulls the next one.
-                messages: Stream.fromQueue(sdkMessages).pipe(
-                  Stream.flatMap((message) =>
-                    Stream.make(message).pipe(
-                      Stream.concat(
-                        Stream.fromEffect(
-                          Effect.suspend(() => {
-                            const done = processed.get(message);
-                            return done === undefined
-                              ? Effect.void
-                              : Deferred.succeed(done, undefined);
-                          }),
-                        ).pipe(Stream.drain),
+              Effect.gen(function* () {
+                const messages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
+                sdkMessages = messages;
+                return {
+                  // Resolve each frame's Deferred once the adapter pulls the next one.
+                  messages: Stream.fromQueue(messages).pipe(
+                    Stream.flatMap((message) =>
+                      Stream.make(message).pipe(
+                        Stream.concat(
+                          Stream.fromEffect(
+                            Effect.suspend(() => {
+                              const done = processed.get(message);
+                              return done === undefined
+                                ? Effect.void
+                                : Deferred.succeed(done, undefined);
+                            }),
+                          ).pipe(Stream.drain),
+                        ),
                       ),
                     ),
                   ),
-                ),
-                offer: () => Effect.void,
-                setModel: () => Effect.void,
-                applyFlagSettings: () => Effect.void,
-                setPermissionMode: () => Effect.void,
-                renameSession: () => Effect.void,
-                backgroundTasks: () => Effect.succeed(false),
-                mcpServerStatus: Effect.succeed([]),
-                readMcpResource: () => Effect.die("unexpected MCP resource read"),
-                callMcpTool: () => Effect.die("unexpected MCP tool call"),
-                listPermissionRules: Effect.die("unexpected permission rules read"),
-                stopTask: () => Effect.void,
-                interrupt: Effect.void,
-                close: Effect.void,
-                // No owned process exists; the fixture session ends with its close.
-                termination: Effect.void,
+                  offer: () => Effect.void,
+                  setModel: () => Effect.void,
+                  applyFlagSettings: () => Effect.void,
+                  setPermissionMode: () => Effect.void,
+                  renameSession: () => Effect.void,
+                  backgroundTasks: () => Effect.succeed(false),
+                  mcpServerStatus: Effect.succeed([]),
+                  readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                  callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                  listPermissionRules: Effect.die("unexpected permission rules read"),
+                  stopTask: () => Effect.void,
+                  interrupt: Effect.void,
+                  close: Queue.end(messages).pipe(Effect.asVoid),
+                  // No owned process exists; the fixture session ends with its close.
+                  termination: Effect.void,
+                };
               }),
             forkSession: () => Effect.die("unused"),
             subagentLaunchToolUseId: () => Effect.succeed(null),
@@ -951,16 +989,27 @@ it.effect("offers a continuation for a later wake after a queued continuation is
       yield* offerAndWait(wakeAssistant("wake-1"));
       yield* Fiber.join(queued);
       assert.lengthOf(continuations, 1);
-      const continuationRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
-        (run) => run.status === "queued",
-      );
+      const queuedProjection = yield* orchestrator.getThreadProjection(threadId);
+      const continuationRun = queuedProjection.runs.find((run) => run.status === "queued");
       assert.ok(continuationRun !== undefined);
-      yield* orchestrator.dispatch({
-        type: "queued-run.cancel",
-        commandId: CommandId.make("cancel"),
-        threadId,
-        runId: continuationRun.id,
-      });
+      yield* orchestrator.dispatch(
+        cancel === "queued-run.cancel"
+          ? {
+              type: cancel,
+              commandId: CommandId.make("cancel"),
+              threadId,
+              runId: continuationRun.id,
+            }
+          : cancel === "run.interrupt"
+            ? {
+                type: cancel,
+                commandId: CommandId.make("interrupt"),
+                threadId,
+                runId: queuedProjection.runs.find((run) => run.userMessageId === "first")!.id,
+                holdQueue: true,
+              }
+            : { type: cancel, commandId: CommandId.make("stop"), threadId },
+      );
       yield* offerAndWait(result("wake-1-result", false));
       yield* worker.drain();
       yield* orchestrator.resumeQueuedRuns;
@@ -969,6 +1018,7 @@ it.effect("offers a continuation for a later wake after a queued continuation is
       assert.equal(idle.runs.find((run) => run.id === continuationRun.id)?.status, "cancelled");
       assert.isFalse(idle.runs.some((run) => run.status === "queued"));
 
+      yield* Deferred.await(firstRetired);
       yield* userTurnWithBackgroundTask("second", "build-2");
       yield* worker.drain();
       // The second user run has completed, so this continuation starts without queueing.
@@ -1040,5 +1090,9 @@ it.effect("offers a continuation for a later wake after a queued continuation is
         NodeCrypto.layer,
       ),
     ),
-  ),
+  );
+
+it.effect.each(cancelCommands)(
+  "offers a continuation for a later wake after %s cancels a queued continuation",
+  laterWakeAfterCancellation,
 );

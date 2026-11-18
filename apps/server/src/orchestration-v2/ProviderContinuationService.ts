@@ -3,22 +3,90 @@ import {
   CommandId,
   type MessageId,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2Run,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import type { CommandReceiptV2 } from "./CommandReceiptStore.ts";
+import { EventSinkStreamError } from "./EventSink.ts";
+import { LiveStreamBufferError } from "./LiveStreamBudget.ts";
 import type * as Orchestrator from "./Orchestrator.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
 
 const CONTINUATION_MESSAGE_TEXT = "Background task completed.";
+
+export function isAcceptedQueuedCancellation(
+  receipt: Option.Option<CommandReceiptV2>,
+  threadId: ThreadId,
+  commandId: CommandId,
+  eventSequence: number,
+): boolean {
+  return (
+    Option.isSome(receipt) &&
+    receipt.value.commandId === commandId &&
+    (receipt.value.commandType === "queued-run.cancel" ||
+      receipt.value.commandType === "thread.stop" ||
+      receipt.value.commandType === "run.interrupt") &&
+    receipt.value.status === "accepted" &&
+    receipt.value.threadId === threadId &&
+    receipt.value.resultSequence >= eventSequence
+  );
+}
+
+const isSinkStreamError = Schema.is(EventSinkStreamError);
+const isBufferOverflow = Schema.is(LiveStreamBufferError);
+
+export const readContinuationTerminal = Effect.fn(
+  "ProviderContinuationService.readContinuationTerminal",
+)(function* (
+  streamEvents: ThreadManagementService.ThreadManagementService["Service"]["streamStoredEventsFrom"],
+  created: OrchestrationV2Run,
+  creationSequence: number,
+) {
+  let afterSequence = creationSequence;
+  let continuouslyQueued = created.status === "queued" && created.startedAt === null;
+  const ended = yield* Effect.suspend(() =>
+    streamEvents({ threadId: created.threadId, afterSequence, eventType: "run.updated" }).pipe(
+      Stream.dropWhile(({ event, sequence }) => {
+        afterSequence = sequence;
+        if (
+          event.type !== "run.updated" ||
+          event.threadId !== created.threadId ||
+          event.payload.id !== created.id
+        )
+          return true;
+        if (ThreadManagementService.isTerminalRunStatus(event.payload.status)) return false;
+        continuouslyQueued &&=
+          event.payload.status === "queued" &&
+          event.payload.startedAt === null &&
+          event.payload.activeAttemptId === created.activeAttemptId &&
+          event.payload.userMessageId === created.userMessageId;
+        return true;
+      }),
+      Stream.runHead,
+    ),
+  ).pipe(
+    Effect.retry({
+      schedule: Schedule.spaced("100 millis"),
+      while: (error) =>
+        error._tag === "OrchestratorDomainEventStreamError" &&
+        isSinkStreamError(error.cause) &&
+        isBufferOverflow(error.cause.cause),
+    }),
+  );
+  return { ended, continuouslyQueued };
+});
 
 function delegatedCompletionText(taskIds: ReadonlyArray<string>): string {
   const taskList = taskIds.join(", ");
@@ -94,53 +162,64 @@ export const layer = Layer.effectDiscard(
       ) {
         const onRunEndedWithoutStarting = request.onRunEndedWithoutStarting;
         if (onRunEndedWithoutStarting === undefined) return;
-        const runId = dispatched.storedEvents.flatMap(({ event }) =>
-          event.type === "run.created" && event.payload.userMessageId === messageId
-            ? [event.payload.id]
+        const [creation] = dispatched.storedEvents.flatMap(({ event, commandId, sequence }) =>
+          event.type === "run.created" &&
+          event.threadId === request.threadId &&
+          commandId === `provider-continuation:${messageId}` &&
+          event.payload.userMessageId === messageId
+            ? [{ run: event.payload, sequence }]
             : [],
-        )[0];
-        if (runId === undefined) return;
-        yield* threads
-          .streamStoredEventsFrom({
-            threadId: request.threadId,
-            afterSequence: dispatched.sequence,
-            eventType: "run.updated",
-          })
-          .pipe(
-            Stream.filter(
-              ({ event }) =>
-                event.type === "run.updated" &&
-                event.payload.id === runId &&
-                ThreadManagementService.isTerminalRunStatus(event.payload.status),
-            ),
-            Stream.runHead,
-            Effect.flatMap((ended) =>
-              Effect.gen(function* () {
+        );
+        if (creation === undefined) return;
+        const created = creation.run;
+        yield* readContinuationTerminal(
+          threads.streamStoredEventsFrom,
+          created,
+          creation.sequence,
+        ).pipe(
+          Effect.flatMap(({ ended, continuouslyQueued }) =>
+            Effect.gen(function* () {
+              if (
+                Option.isNone(ended) ||
+                ended.value.event.type !== "run.updated" ||
+                ended.value.event.payload.activeAttemptId === null
+              )
+                return;
+              const terminal = ended.value.event.payload;
+              const { commandId, sequence } = ended.value;
+              if (terminal.status === "cancelled") {
+                // Stop can also cancel buffered notifications. Prove the original attempt stayed queued through the receipt.
                 if (
-                  Option.isNone(ended) ||
-                  ended.value.event.type !== "run.updated" ||
-                  ended.value.event.payload.activeAttemptId === null ||
-                  Option.isNone(refusalProof)
+                  !continuouslyQueued ||
+                  terminal.startedAt !== null ||
+                  terminal.userMessageId !== messageId ||
+                  terminal.activeAttemptId !== created.activeAttemptId ||
+                  commandId === null
                 )
                   return;
-                const terminal = ended.value.event.payload;
-                const proof = yield* refusalProof.value.readPrefix({
-                  threadId: request.threadId,
-                  runId: terminal.id,
-                  attemptId: terminal.activeAttemptId!,
-                });
-                if (proof.state === "refused") yield* onRunEndedWithoutStarting();
-              }),
-            ),
-            Effect.catchCause((cause) =>
-              Effect.logWarning("orchestration-v2.provider-continuation.run-watch-failed", {
+                const receipt = yield* threads.getCommandReceipt(commandId);
+                if (isAcceptedQueuedCancellation(receipt, request.threadId, commandId, sequence))
+                  yield* onRunEndedWithoutStarting();
+                return;
+              }
+              if (Option.isNone(refusalProof)) return;
+              const proof = yield* refusalProof.value.readPrefix({
                 threadId: request.threadId,
-                providerThreadId: request.providerThreadId,
-                cause,
-              }),
-            ),
-            Effect.forkScoped,
-          );
+                runId: terminal.id,
+                attemptId: terminal.activeAttemptId!,
+              });
+              if (proof.state === "refused") yield* onRunEndedWithoutStarting();
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("orchestration-v2.provider-continuation.run-watch-failed", {
+              threadId: request.threadId,
+              providerThreadId: request.providerThreadId,
+              cause,
+            }),
+          ),
+          Effect.forkScoped,
+        );
       },
     );
 

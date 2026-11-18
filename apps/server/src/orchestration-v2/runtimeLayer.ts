@@ -488,6 +488,7 @@ const layerProviderContinuationWorkerProvided = ProviderContinuationService.laye
   Layer.provide(
     Layer.mergeAll(
       ProviderContinuationRequests.layer,
+      StartRefusal.layer,
       layerThreadManagementProvided,
       IdAllocator.layer,
     ),

@@ -69,7 +69,12 @@ import {
   withGitExecutionTiming,
   withGitPermitTiming,
 } from "../jones/git/gitTiming.ts";
-import { timeListRefsPhase } from "../jones/git/listRefsTelemetry.ts";
+import {
+  getObservedListRefsSnapshot,
+  markListRefsSnapshotRead,
+  observeListRefs,
+  timeListRefsPhase,
+} from "../jones/git/listRefsTelemetry.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -4869,7 +4874,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const bumpListRefsGeneration = (gitCommonDir: string): number =>
     setListRefsGeneration(gitCommonDir, ++listRefsGenerationSequence);
   const listRefsSnapshotCache = yield* Cache.makeWith(
-    (cacheKey: GitRefsSnapshotCacheKey) => readGitRefsSnapshot(cacheKey.gitCommonDir),
+    (cacheKey: GitRefsSnapshotCacheKey) =>
+      markListRefsSnapshotRead(readGitRefsSnapshot(cacheKey.gitCommonDir)),
     {
       capacity: LIST_REFS_SNAPSHOT_CACHE_CAPACITY,
       timeToLive: (exit) => (Exit.isSuccess(exit) ? LIST_REFS_SNAPSHOT_CACHE_TTL : Duration.zero),
@@ -4900,11 +4906,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const snapshot =
         refresh || currentEpoch === undefined
           ? // Cache the entire snapshot read so slow scans stay single-flight beyond the coalescing TTL.
-            yield* Cache.get(
+            yield* getObservedListRefsSnapshot(
               listRefsRefreshSnapshotCache,
               new GitRefsRefreshCacheKey({ gitCommonDir, generation }),
             )
-          : yield* Cache.get(
+          : yield* getObservedListRefsSnapshot(
               listRefsSnapshotCache,
               new GitRefsSnapshotCacheKey({ gitCommonDir, epoch: currentEpoch }),
             );
@@ -5034,6 +5040,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         totalCount: refs.totalCount,
       };
     },
+    (effect, input) => observeListRefs(input.refresh === true)(effect),
   );
 
   // A checkout stamps most files in the second it writes the index, and Git re-reads every file

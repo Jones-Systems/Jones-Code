@@ -6,6 +6,8 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2AppThread,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2RunAttempt,
   type OrchestrationV2Run,
   ProjectId,
   ProviderDriverKind,
@@ -26,6 +28,9 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
 
+import { makeRun } from "../jones/orchestration/OrphanedRunRecords.testkit.ts";
+import { makeUnreleasedStartProof } from "../jones/provider/UnsentStartProof.ts";
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
 import delegatedRecoveryIndexes from "../persistence/Migrations/079_DelegatedRecoveryIndexes.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -1067,9 +1072,10 @@ it.effect("bounds runtime provider-thread reads by ownership and preserves recov
       { name: "unrelated", ownership: "none", status: "active", ordinal: 8, included: false },
       { name: "unrelated-run", ownership: "none", status: "idle", ordinal: 9, included: false },
     ] as const;
+    let directPayload: OrchestrationV2ProviderThread | undefined;
     for (const entry of cases) {
       const id = ProviderThreadId.make(`provider-thread:ownership:${entry.name}`);
-      yield* projections.apply({
+      const event = {
         id: EventId.make(`event:${id}`),
         type: "provider-thread.updated",
         threadId,
@@ -1102,8 +1108,10 @@ it.effect("bounds runtime provider-thread reads by ownership and preserves recov
             entry.name === "roster"
               ? [{ taskId: "shell", description: "background", kind: "command" }]
               : [],
-        },
-      });
+        } satisfies OrchestrationV2ProviderThread,
+      };
+      if (entry.name === "direct") directPayload = event.payload;
+      yield* projections.apply({ ...event, type: "provider-thread.updated" });
       if (entry.ownership === "subagent" || entry.ownership === "all") {
         for (const suffix of ["a", "b"]) {
           yield* sql`
@@ -1131,6 +1139,24 @@ it.effect("bounds runtime provider-thread reads by ownership and preserves recov
       VALUES ('item:ownership', ${threadId}, ${waitingRunId}, ${ownerNodeId},
         ${ProviderThreadId.make("provider-thread:ownership:item")}, 1, 'assistant_message', 'waiting', '', '{}')
     `;
+    assert.equal(
+      (yield* projections.getThread(threadId)).activeProviderThreadId,
+      ProviderThreadId.make("provider-thread:ownership:settled"),
+    );
+    if (directPayload === undefined)
+      return yield* Effect.die("Missing original direct fixture payload");
+    yield* projections.apply({
+      id: EventId.make("event:recovery:ownership:select-direct"),
+      type: "provider-thread.updated",
+      threadId,
+      driver,
+      providerInstanceId,
+      occurredAt: now,
+      payload: directPayload,
+    });
+    const selected = (yield* projections.getThread(threadId)).activeProviderThreadId;
+    assert.equal(selected, ProviderThreadId.make("provider-thread:ownership:direct"));
+    assert.notEqual(selected, waitingProviderThreadId);
     const statements: Array<ReturnType<Statement.Statement<unknown>["compile"]>> = [];
     const nodeStatements: typeof statements = [];
     const observe: Statement.Transformer = (statement) => {
@@ -1240,13 +1266,91 @@ it.effect("reads the run that owns a background roster, not a queued or resumed 
   }).pipe(Effect.provide(layerTest)),
 );
 
+// Commit the queued prompt and its first attempt together, before any worker owns a start.
+const admitQueuedPrompt = Effect.fn(function* (
+  threadId: ThreadId,
+  providerThreadId: ProviderThreadId,
+  now: DateTime.Utc,
+) {
+  const sink = yield* EventSink.EventSinkV2;
+  const runId = RunId.make(`run:${threadId}:2`);
+  const rootNodeId = NodeId.make(`node:${runId}:root`);
+  const attemptId = RunAttemptId.make(`attempt:${runId}:1`);
+  const run = makeRun({
+    threadId,
+    id: runId,
+    ordinal: 2,
+    status: "queued",
+    providerThreadId,
+    rootNodeId,
+    activeAttemptId: attemptId,
+    now,
+  });
+  const attempt: OrchestrationV2RunAttempt = {
+    id: attemptId,
+    runId,
+    attemptOrdinal: 1,
+    rootNodeId,
+    providerInstanceId,
+    providerThreadId,
+    providerTurnId: null,
+    reason: "initial",
+    status: "pending",
+    startedAt: null,
+    completedAt: null,
+  };
+  const event = { threadId, runId, occurredAt: now };
+  yield* sink.commitCommand({
+    commandId: CommandId.make(`command:${runId}:message`),
+    commandType: "message.dispatch",
+    threadId,
+    acceptedAt: now,
+    events: [
+      {
+        ...event,
+        id: EventId.make(`event:${runId}:message`),
+        type: "message.updated",
+        payload: {
+          id: run.userMessageId,
+          threadId,
+          runId,
+          nodeId: null,
+          role: "user",
+          text: "Queued input",
+          attachments: [],
+          streaming: false,
+          createdBy: "user",
+          creationSource: "web",
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      { ...event, id: EventId.make(`event:${runId}:created`), type: "run.created", payload: run },
+      {
+        ...event,
+        id: EventId.make(`event:${attemptId}:created`),
+        type: "run-attempt.created",
+        payload: attempt,
+      },
+    ],
+    effects: [],
+  });
+  const readBirth = sink.readUnreleasedStartBirth;
+  assert.isDefined(readBirth);
+  const prove = makeUnreleasedStartProof({
+    readBirth,
+    outbox: yield* EffectOutbox.EffectOutboxV2,
+    refusals: yield* StartRefusals.StartRefusals.pipe(Effect.provide(StartRefusals.layer)),
+  });
+  assert.isTrue(yield* prove(run, [attempt]));
+  return runId;
+});
+
 it.effect.each([
-  ["a wake cut before it started", { status: "starting", startedAt: null }],
-  [
-    "a prompt the provider never accepted",
-    { status: "running", activeAttemptId: RunAttemptId.make("attempt:unaccepted") },
-  ],
-] as const)("wakes the run whose subagent lost its shell, past %s", ([, later]) =>
+  ["a wake cut before it started", "starting"],
+  ["a prompt with a recorded, unreleased start", "queued"],
+  ["a running prompt with unknown acceptance", "running"],
+] as const)("recovers lost subagent work after %s", ([, laterStatus]) =>
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
@@ -1276,12 +1380,16 @@ it.effect.each([
       },
     });
     const settledRun = yield* createRun(threadId, "completed", { providerThreadId });
-    yield* createRun(threadId, later.status, {
-      ordinal: 2,
-      providerThreadId,
-      completedAt: null,
-      ...later,
-    });
+    const laterRun =
+      laterStatus === "queued"
+        ? yield* admitQueuedPrompt(threadId, providerThreadId, now)
+        : yield* createRun(threadId, laterStatus, {
+            ordinal: 2,
+            providerThreadId,
+            ...(laterStatus === "starting"
+              ? { startedAt: null }
+              : { activeAttemptId: RunAttemptId.make("attempt:unknown-acceptance") }),
+          });
     yield* projections.apply({
       id: EventId.make(`event:${threadId}:roster`),
       type: "provider-thread.updated",
@@ -1316,11 +1424,26 @@ it.effect.each([
     const effects = yield* sql<{ readonly effect_id: string }>`
       SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${threadId}
     `;
-    assert.deepEqual(effects, [{ effect_id: `effect:restart-continuation:${settledRun}` }]);
     const projection = yield* projections.getThreadProjection(threadId);
-    assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, [
+    const later = projection.runs.find((run) => run.id === laterRun);
+    assert.isDefined(later);
+    const lostWork = [
       { kind: "subagent", label: "sleep 150 (subagent agent)", id: "agent" },
-    ]);
+    ] as const;
+    if (laterStatus === "running") {
+      // Missing provider-turn state cannot prove the later input was never sent.
+      assert.deepEqual(effects, []);
+      assert.equal(later.status, "cancelled");
+      assert.deepEqual(later.restartCancelledBackgroundWork, lostWork);
+      assert.isUndefined(projection.runs[0]?.restartCancelledBackgroundWork);
+    } else {
+      assert.deepEqual(effects, [{ effect_id: `effect:restart-continuation:${settledRun}` }]);
+      assert.deepEqual(projection.runs[0]?.restartCancelledBackgroundWork, lostWork);
+      if (laterStatus === "queued") {
+        assert.equal(later.status, "queued");
+        assert.isTrue(later.queueHeld);
+      }
+    }
   }).pipe(Effect.provide(layerRecoveryTest)),
 );
 

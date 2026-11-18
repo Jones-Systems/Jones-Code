@@ -625,6 +625,13 @@ it.effect(
             getThreadShell: () => Effect.succeed(shell),
             getProjectThreadRecords: () => Effect.succeed(projection),
             listProjectThreads: () => Effect.succeed([shell]),
+            getShellSnapshot: (options) =>
+              Effect.succeed({
+                schemaVersion: 1,
+                snapshotSequence: 0,
+                threads: options?.threadIds?.includes(shell.id) ? [shell] : [],
+                archivedThreads: [],
+              }),
             ...(blocked === undefined
               ? {}
               : {

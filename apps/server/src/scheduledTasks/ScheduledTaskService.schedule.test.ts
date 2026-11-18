@@ -276,16 +276,19 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
 
       const queuedOccurrencesOf = (taskId: typeof task.id) =>
         Ref.get(thread).pipe(
-          Effect.map(
-            ({ runs, messages }) =>
-              runs
-                .filter((run) => run.status === "queued")
-                .map((run) => messages.find((message) => message.id === run.userMessageId))
-                .filter((message) => message?.scheduledTaskId === taskId).length,
+          Effect.map(({ runs, messages }) =>
+            runs
+              .filter(
+                (run) =>
+                  run.status === "queued" &&
+                  messages.find((message) => message.id === run.userMessageId)?.scheduledTaskId ===
+                    taskId,
+              )
+              .map((run) => run.id),
           ),
         );
       const queuedOccurrences = queuedOccurrencesOf(task.id);
-      expect(yield* queuedOccurrences).toBe(1);
+      expect(yield* queuedOccurrences).toHaveLength(1);
       // Skipped intervals still move the schedule forward.
       const [listed] = (yield* service.list()).tasks;
       expect(Date.parse(listed?.nextRunAt ?? "")).toBeGreaterThan(
@@ -294,7 +297,7 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
 
       // Run now is an explicit request, so it still queues behind the held one.
       yield* service.runNow({ id: task.id });
-      expect(yield* queuedOccurrences).toBe(2);
+      expect(yield* queuedOccurrences).toHaveLength(2);
 
       // Once the queued copies start, the next interval sends again.
       yield* Ref.update(thread, (current) => ({
@@ -305,9 +308,9 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
       }));
       yield* TestClock.adjust("61 seconds");
       yield* Effect.flatten(Ref.get(runDueWork));
-      expect(yield* queuedOccurrences).toBe(1);
+      expect(yield* queuedOccurrences).toHaveLength(1);
 
-      // A one-time task's only scheduled occurrence still sends behind a queued Run now.
+      // A one-shot timer coalesces into the same task's queued manual wake.
       const { task: once } = yield* service.upsert(
         yield* decodeUpsertInput({
           id: "scheduled-task:busy-thread-once",
@@ -323,10 +326,19 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
           interactionMode: "default",
         }),
       );
-      yield* service.runNow({ id: once.id });
+      const manual = yield* service.runNow({ id: once.id });
+      const manualQueue = yield* queuedOccurrencesOf(once.id);
+      expect(manualQueue).toHaveLength(1);
+      expect(manual.task.nextRunAt).toBe("2026-07-01T09:05:00.000Z");
+
       yield* TestClock.adjust("61 seconds");
       yield* Effect.flatten(Ref.get(runDueWork));
-      expect(yield* queuedOccurrencesOf(once.id)).toBe(2);
+      expect(yield* queuedOccurrencesOf(once.id)).toEqual(manualQueue);
+      const settledOnce = (yield* service.list()).tasks.find(({ id }) => id === once.id);
+      expect(settledOnce?.nextRunAt).toBeNull();
+      expect(settledOnce?.lastRunAt).toBe(manual.task.lastRunAt);
+      expect(settledOnce?.lastRunStatus).toBe("succeeded");
+      expect(settledOnce?.runCount).toBe(manual.task.runCount);
     }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

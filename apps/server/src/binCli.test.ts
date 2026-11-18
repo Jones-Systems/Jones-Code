@@ -11,7 +11,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "./persistence/Migrations.ts";
+import { runMigrations } from "./persistence/Migrations.ts";
 import {
   makePersistedServerRuntimeState,
   persistServerRuntimeState,
@@ -25,12 +25,10 @@ it.live("keeps migration warnings out of JSON thread output", () =>
     yield* fs.makeDirectory(stateDir);
     yield* Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations();
-      const futureId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
-      yield* sql`
-        INSERT INTO effect_sql_migrations (migration_id, name)
-        VALUES (${futureId}, 'FutureMigration')
-      `;
+      // A database with an existing search index retries migration 69. SQLite reports
+      // the duplicate index and the migration logs its recoverable warning.
+      yield* runMigrations({ toMigrationInclusive: 69 });
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 69`;
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: `${stateDir}/statev2.sqlite` })));
 
     const server = yield* Effect.acquireRelease(

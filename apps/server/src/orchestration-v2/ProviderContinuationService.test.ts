@@ -1,6 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  EventId,
+  RunAttemptId,
+  type OrchestrationV2Run,
+  type OrchestrationV2StoredEvent,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -12,8 +16,11 @@ import {
   type OrchestrationV2Notification,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Stream from "effect/Stream";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -24,6 +31,8 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { LiveStreamBufferError } from "./LiveStreamBudget.ts";
+import { EventSinkStreamError } from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -115,6 +124,96 @@ function layerTest(input: {
 }
 
 describe("ProviderContinuationService", () => {
+  it.effect.each(["queued", "starting"] as const)(
+    "resumes an overflowed continuation watch after its last inspected %s update",
+    (status) =>
+      Effect.gen(function* () {
+        const now = yield* DateTime.now;
+        const instanceId = ProviderInstanceId.make("continuation");
+        const created: OrchestrationV2Run = {
+          id: parentRunId,
+          threadId,
+          ordinal: 1,
+          status: "queued",
+          activeAttemptId: RunAttemptId.make("attempt"),
+          providerInstanceId: instanceId,
+          modelSelection: { instanceId, model: "test" },
+          providerThreadId,
+          userMessageId: delegatedMessageId,
+          rootNodeId: null,
+          startedAt: null,
+          requestedAt: now,
+          completedAt: null,
+          contextHandoffId: null,
+          checkpointId: null,
+        };
+        const update = (
+          sequence: number,
+          next: OrchestrationV2Run["status"],
+        ): OrchestrationV2StoredEvent => ({
+          sequence,
+          commandId: CommandId.make("update"),
+          event: {
+            id: EventId.make(`event-${sequence}`),
+            threadId,
+            occurredAt: now,
+            type: "run.updated",
+            payload: { ...created, status: next },
+          },
+        });
+        const overflow = new Orchestrator.OrchestratorDomainEventStreamError({
+          cause: new EventSinkStreamError({
+            cause: new LiveStreamBufferError({ message: "budget exceeded" }),
+          }),
+        });
+        const cursors: Array<number | undefined> = [];
+        const watcher = yield* ProviderContinuationService.readContinuationTerminal(
+          (input) => {
+            cursors.push(input?.afterSequence);
+            return cursors.length === 1
+              ? Stream.make(update(12, status)).pipe(Stream.concat(Stream.fail(overflow)))
+              : Stream.make(update(13, "queued"), update(14, "cancelled"));
+          },
+          created,
+          10,
+        ).pipe(Effect.forkScoped);
+        yield* TestClock.adjust("100 millis");
+        const { ended, continuouslyQueued } = yield* Fiber.join(watcher);
+        assert.deepEqual(cursors, [10, 12]);
+        assert.equal(Option.getOrThrow(ended).sequence, 14);
+        assert.equal(continuouslyQueued, status === "queued");
+      }),
+  );
+
+  it.effect("requires an accepted cancellation receipt covering the exact queued event", () =>
+    Effect.gen(function* () {
+      const commandId = CommandId.make("cancel-continuation");
+      const accepted = {
+        commandId,
+        threadId,
+        commandType: "queued-run.cancel",
+        acceptedAt: yield* DateTime.now,
+        resultSequence: 10,
+        status: "accepted" as const,
+        error: null,
+      };
+      const check = (
+        receipt: Parameters<typeof ProviderContinuationService.isAcceptedQueuedCancellation>[0],
+      ) =>
+        ProviderContinuationService.isAcceptedQueuedCancellation(receipt, threadId, commandId, 10);
+      assert.isTrue(check(Option.some(accepted)));
+      assert.isFalse(check(Option.none()));
+      for (const change of [
+        { commandType: "thread.interrupt" },
+        { status: "rejected" as const },
+        { resultSequence: 9 },
+        { commandId: CommandId.make("another-command") },
+        { threadId: ThreadId.make("another-thread") },
+      ])
+        assert.isFalse(check(Option.some({ ...accepted, ...change })));
+    }),
+  );
+
   it.effect("recovers an unaccepted persisted steer using the same delivery identity", () =>
     Effect.gen(function* () {
       const dispatched = yield* Queue.unbounded<unknown>();

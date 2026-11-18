@@ -4,6 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it, expect } from "@effect/vitest";
 import {
+  ContextTransferId,
   EnvironmentId,
   MessageId,
   RunId,
@@ -429,11 +430,14 @@ function readFixture() {
     text: "aa-middle-zz",
     streaming: false,
   };
-  const parent = {
-    ...f.parent,
+  const child = {
+    ...f.child,
+    turnItems: [primary],
     contextTransfers: [
+      ...f.child.contextTransfers,
       {
         ...f.child.contextTransfers[0]!,
+        id: ContextTransferId.make("source-result"),
         type: "subagent_result" as const,
         sourceThreadId: f.child.thread.id,
         targetThreadId: f.parent.thread.id,
@@ -450,12 +454,11 @@ function readFixture() {
       item: primary,
     },
   ];
-  const child = { ...f.child, turnItems: [primary] };
   let hasMore = false;
   let acknowledgements = 0;
   const selections: Array<unknown> = [];
   const layer = serviceLayer({
-    getThreadRecords: (id) => Effect.succeed(id === parent.thread.id ? parent : child),
+    getThreadRecords: (id) => Effect.succeed(id === f.parent.thread.id ? f.parent : child),
     getThreadShell: () => Effect.succeed(liveThreadShell(child.thread.id, { activeRunId: null })),
     getProjectThreadRecords: () => Effect.succeed(child),
     getTimelinePage: (_id, selection) =>

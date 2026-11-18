@@ -16,6 +16,7 @@ import * as Worker from "../../orchestration-v2/EffectWorker.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Restore from "../settlementRestore/SettlementRestore.ts";
+import * as StartAdmission from "../provider/StartAdmission.ts";
 import * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Boundary from "./NativeBoundary.ts";
 import { fixture, threadId, selection } from "./ManagedConsumer.testkit.ts";
@@ -36,13 +37,19 @@ it.effect.each(["ensure", "baseline"] as const)(
         const f = yield* fixture;
         yield* Effect.gen(function* () {
           yield* f.seed;
-          const entered = yield* Deferred.make<void>();
+          const ensureEntered = yield* Deferred.make<void>();
+          const baselineEntered = yield* Deferred.make<void>();
           const release = yield* Deferred.make<void>();
-          const wait = Deferred.succeed(entered, undefined).pipe(
+          // Baseline capture overlaps native loading. Wait for its sibling to finish real Git
+          // work before advancing the test clock through the Git subprocess timeout.
+          f.state.beforeProviderEnsure = Deferred.succeed(ensureEntered, undefined).pipe(
             Effect.andThen(Deferred.await(release)),
           );
-          if (waitAt === "ensure") f.state.beforeProviderEnsure = wait;
-          else f.state.beforeBaseline = wait;
+          if (waitAt === "baseline") {
+            f.state.beforeBaseline = Deferred.succeed(baselineEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+            );
+          }
           const commandId = CommandId.make(`long-${waitAt}`);
           yield* f.dispatch({
             type: "message.dispatch",
@@ -67,13 +74,16 @@ it.effect.each(["ensure", "baseline"] as const)(
           const attemptId = admitted.runs.find((run) => run.id === runId)!.activeAttemptId;
           const worker = yield* Worker.OrchestrationEffectWorkerV2;
           const pending = yield* worker.drain(20).pipe(Effect.forkChild);
-          yield* Deferred.await(entered);
+          yield* Deferred.await(ensureEntered);
+          if (waitAt === "baseline") yield* Deferred.await(baselineEntered);
           const original = Option.getOrThrow(yield* outbox.get(start.id));
           const resumes = f.state.resumes;
           for (let interval = 0; interval < 4; interval++) {
             yield* TestClock.adjust("10 seconds");
             const live = Option.getOrThrow(yield* outbox.get(start.id));
-            expect(live.status).toBe("running");
+            expect(live.status, `Custody observation ${interval + 1}: ${live.lastError}`).toBe(
+              "running",
+            );
             expect(live.leaseOwner).toBe(original.leaseOwner);
             expect(live.attemptCount).toBe(original.attemptCount);
             expect(live.commandId).toBe(original.commandId);
@@ -248,6 +258,20 @@ it.effect(
         const f = yield* fixture;
         yield* Effect.gen(function* () {
           yield* f.seed;
+          // Keep the worker's original admission live through the loaded-session probes.
+          const captured =
+            yield* Deferred.make<Effect.Effect<void, Adapter.ProviderAdapterV2Error>>();
+          const loaded = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          f.state.beforeProviderEnsure = Effect.gen(function* () {
+            const revalidation = yield* StartAdmission.CurrentRevalidation;
+            if (revalidation === undefined)
+              return yield* Effect.die("The worker did not supply native load admission");
+            yield* Deferred.succeed(captured, revalidation);
+          });
+          f.state.beforeProviderUse = Deferred.succeed(loaded, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          );
           yield* f.dispatch({
             type: "message.dispatch",
             commandId: CommandId.make("start-work"),
@@ -260,14 +284,14 @@ it.effect(
             dispatchMode: { type: "start_immediately" },
           });
           const worker = yield* Worker.OrchestrationEffectWorkerV2;
-          yield* worker.drain(20);
-          expect(f.calls).toContain("provider-open");
-          expect(
-            yield* (yield* SqlClient.SqlClient)`SELECT last_error FROM orchestration_v2_effect_outbox WHERE last_error IS NOT NULL`,
-          ).toEqual([]);
-          expect(f.calls).toContain("provider-send");
-          expect(f.calls.indexOf("cas")).toBeLessThan(f.calls.indexOf("provider-open"));
-          expect(f.calls[f.calls.indexOf("provider-open") - 1]).toBe("show");
+          const draining = yield* worker.drain(20).pipe(Effect.forkChild);
+          yield* Effect.raceFirst(
+            Deferred.await(loaded),
+            Fiber.join(draining).pipe(
+              Effect.andThen(Effect.die("The worker did not reach the loaded provider")),
+            ),
+          );
+          const revalidate = yield* Deferred.await(captured);
           const projection = yield* (yield* Orchestrator.OrchestratorV2).getThreadProjection(
             threadId,
           );
@@ -278,31 +302,35 @@ it.effect(
           expect(Option.isSome(live)).toBe(true);
           if (Option.isNone(live)) return;
           const beforeEnsure = f.state.resumes;
-          yield* live.value.ensureThread({
-            threadId,
-            existingProviderThread: providerThread,
-            modelSelection: selection,
-            runtimePolicy: Adapter.ProviderAdapterV2RuntimePolicy.make({
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              cwd: f.linked,
-            }),
-          });
-          // The adapter's nested native admission reuses this operation's original transition.
-          expect(f.state.resumes).toBe(beforeEnsure + 1);
-          const count = f.state.resumes;
-          const externalResumes = f.calls.filter((call) => call === "provider-resume").length;
-          const resume = () =>
-            live.value.resumeThread({
+          yield* live.value
+            .ensureThread({
               threadId,
-              providerThread,
+              existingProviderThread: providerThread,
               modelSelection: selection,
               runtimePolicy: Adapter.ProviderAdapterV2RuntimePolicy.make({
                 runtimeMode: "full-access",
                 interactionMode: "default",
                 cwd: f.linked,
               }),
-            });
+            })
+            .pipe(Effect.provideService(StartAdmission.CurrentRevalidation, revalidate));
+          // The adapter's nested native admission reuses this operation's original transition.
+          expect(f.state.resumes).toBe(beforeEnsure + 1);
+          const count = f.state.resumes;
+          const externalResumes = f.calls.filter((call) => call === "provider-resume").length;
+          const resume = () =>
+            live.value
+              .resumeThread({
+                threadId,
+                providerThread,
+                modelSelection: selection,
+                runtimePolicy: Adapter.ProviderAdapterV2RuntimePolicy.make({
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  cwd: f.linked,
+                }),
+              })
+              .pipe(Effect.provideService(StartAdmission.CurrentRevalidation, revalidate));
           yield* resume();
           expect(f.state.resumes).toBe(count + 1);
           expect(f.calls.filter((call) => call === "provider-resume")).toHaveLength(
@@ -314,6 +342,16 @@ it.effect(
           expect(f.calls.filter((call) => call === "provider-resume")).toHaveLength(
             externalResumes,
           );
+          yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.branch',${projection.thread.branch}) WHERE thread_id=${threadId}`;
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(draining);
+          expect(f.calls).toContain("provider-open");
+          expect(
+            yield* sql`SELECT last_error FROM orchestration_v2_effect_outbox WHERE last_error IS NOT NULL`,
+          ).toEqual([]);
+          expect(f.calls).toContain("provider-send");
+          expect(f.calls.indexOf("cas")).toBeLessThan(f.calls.indexOf("provider-open"));
+          expect(f.calls[f.calls.indexOf("provider-open") - 1]).toBe("show");
         }).pipe(Effect.provide(f.layer));
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),

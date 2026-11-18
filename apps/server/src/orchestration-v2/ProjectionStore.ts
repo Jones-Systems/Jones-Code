@@ -9270,6 +9270,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     }, Effect.mapError(shellSnapshotReadError));
 
     const listActiveShellIndex = Effect.fn("ProjectionStore.listActiveShellIndex")(function* () {
+      const pendingResultDependency = yield* resultDependencies.pendingWaiterExists(
+        sql.literal("t.thread_id"),
+      );
       const rows = yield* sql<{
         readonly thread_id: string;
         readonly project_id: string;
@@ -9326,6 +9329,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               WHERE provider_thread.thread_id = t.thread_id
                 AND json_array_length(provider_thread.payload_json, '$.pendingBackgroundTasks') > 0
             )
+            OR ${pendingResultDependency}
             OR EXISTS (
               SELECT 1 FROM json_each(t.payload_json, '$.pullRequests') link
               WHERE json_type(link.value, '$.watch') IS NOT NULL

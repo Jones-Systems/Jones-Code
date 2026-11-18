@@ -2732,6 +2732,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return false;
     const source = notification.source;
     const threadId = projection.thread.id;
+    if (messageId.startsWith("message:remote-question:")) {
+      // A remote child's pending questions live in its bound observation on the parent.
+      const [taskId] = source.taskIds;
+      if (source.taskIds.length !== 1 || taskId === undefined) return true;
+      const observation = yield* remoteObservationHooks
+        .readRemoteTaskObservation(threadId, taskId)
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      return !observation?.blockingQuestions.requests.some(
+        ({ requestId }) =>
+          messageId ===
+          `message:remote-question:${RemoteObservationHooks.questionNoticeKey(threadId, taskId, observation, requestId)}`,
+      );
+    }
     const task =
       projection.subagents.find((candidate) => source.taskIds.includes(candidate.id)) ??
       // Command projections omit settled tasks whose result was already handed over.
@@ -8338,6 +8351,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         dispatchMode = { type: "queue_after_active" };
       }
     }
+    const latestRun = latestExecutedRun(projection.runs);
+    const recordedNotice =
+      command.notification === undefined
+        ? undefined
+        : projection.messages.find((message) => message.id === command.messageId);
+    const notificationSource =
+      recordedNotice?.runId == null
+        ? latestRun
+        : (projection.runs.find((run) => run.id === recordedNotice.runId) ?? latestRun);
+    const stoppedNotificationSource =
+      command.notification !== undefined &&
+      notificationSource != null &&
+      (yield* stopReachedRun(command, command.threadId, notificationSource.id))
+        ? notificationSource
+        : undefined;
+
     // Steer mailbox deliveries, delegated task questions, and command notices
     // into an active goal under the thread lock: queued behind a long turn or a
     // goal run, they are never seen. Never interrupt/restart a turn for one.
@@ -8345,6 +8374,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const commandNotice = noticeKind === "command" && command.creationSource === "server";
     if (
       !freshContext &&
+      stoppedNotificationSource === undefined &&
       (delegatedCompletion !== undefined
         ? delegatedCompletion.taskIds.every(
             (id) =>
@@ -8562,7 +8592,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const activeRun = projection.runs.find(isActiveRun);
     // Messages after failed or stopped worktree setup must wait for a worktree,
     // rather than start in the project checkout.
-    const latestRun = latestExecutedRun(projection.runs);
     const worktreeMissingRun =
       activeRun === undefined &&
       (dispatchMode.type === "queue_after_active" || dispatchMode.type === "start_immediately") &&
@@ -8571,7 +8600,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection.thread.worktreePath === null
         ? latestRun
         : undefined;
-    const queueBehindRun = activeRun ?? worktreeMissingRun;
+    const queueBehindRun = activeRun ?? worktreeMissingRun ?? stoppedNotificationSource;
     const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
     const startsOrQueuesRun =
       dispatchMode.type === "defer_start" ||
@@ -8714,7 +8743,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // Stop still holds wakes that arrive before the active run settles.
       const wakeSkipsHold =
         !worktreeSetupUnresolved &&
+        stoppedNotificationSource === undefined &&
         activeRun !== undefined &&
+        activeRun.status !== "preparing" &&
         queueIsHeld &&
         command.createdBy === "agent" &&
         command.creationSource === "provider" &&
@@ -8762,6 +8793,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(queuedToolBoundaryEligible === undefined ? {} : { queuedToolBoundaryEligible }),
         ...(steerWhenReadyRunId === undefined ? {} : { steerWhenReadyRunId }),
         ...(worktreeMissingRun !== undefined ||
+        stoppedNotificationSource !== undefined ||
         (queueIsHeld && !wakeSkipsHold && queuedRunStop?.skipsHeldQueue !== true)
           ? { queueHeld: true }
           : {}),
@@ -18957,6 +18989,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
   );
 
+  const remoteObservationHooks = yield* RemoteObservationHooks.make(dispatchPublicEffect);
+
   const codexFailover: CodexFailover.CodexFailoverHooks = yield* CodexFailover.make({
     dispatch: dispatchPublicEffect,
     queueAfterFailure: (threadId, runId) =>
@@ -20111,7 +20145,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const shellProjectionError = (cause: unknown) =>
     new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell"), cause });
 
-  const remoteObservationHooks = yield* RemoteObservationHooks.make(dispatchPublicEffect);
   const followUpCommandOwner = yield* CoreFollowUpCommandOwner.make(
     dispatchPublicEffect,
     commandThreadId,

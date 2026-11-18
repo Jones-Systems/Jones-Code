@@ -914,7 +914,9 @@ export function layerWithRegistryAndServices<Error>(
   const layerThreadManagementProvided = Layer.unwrap(
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
       return Layer.mock(ThreadManagementService.ThreadManagementService)({
+        getCommandReceipt: receipts.getByCommandId,
         dispatch: orchestrator.dispatch,
         getThreadShell: orchestrator.getThreadShell,
         listActiveShellIndex: orchestrator.listActiveShellIndex,
@@ -938,13 +940,14 @@ export function layerWithRegistryAndServices<Error>(
         streamStoredEventsFrom: orchestrator.streamStoredEventsFrom,
       });
     }),
-  ).pipe(Layer.provide(layerOrchestratorProvided));
+  ).pipe(Layer.provide(Layer.merge(layerOrchestratorProvided, layerCommandReceiptStoreProvided)));
   const layerContinuationWorkerProvided =
     options.runContinuationWorker === true
       ? ProviderContinuationService.layer.pipe(
           Layer.provide(
             Layer.mergeAll(
               layerContinuationRequests,
+              layerStartRefusals,
               layerThreadManagementProvided,
               IdAllocator.layer,
             ),

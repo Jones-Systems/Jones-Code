@@ -1029,7 +1029,10 @@ export const layer = Layer.effect(
             ),
           ))
         ) {
-          yield* rescheduleMissedRun(active, startedAt, queuedWakeSkipReason);
+          yield* rescheduleMissedRun(active, startedAt, {
+            type: "skipped",
+            message: queuedWakeSkipReason,
+          });
           return { task: active, threadId: null, dispatchFailed: false };
         }
         // Reject queued deliveries after pause, same-id recreation or trigger changes.
@@ -1266,13 +1269,12 @@ export const layer = Layer.effect(
     const rescheduleMissedRun = Effect.fn("ScheduledTaskService.rescheduleMissedRun")(function* (
       task: ScheduledTask,
       now: DateTime.DateTime,
-      reason = "missed",
-      runError?: string,
+      outcome: { readonly type: "skipped" | "missed"; readonly message: string },
     ) {
       const next = nextRunAt(task, now);
       yield* Effect.logInfo("Skipping schedule task run", {
         taskId: task.id,
-        reason,
+        reason: outcome.type === "missed" ? "missed" : outcome.message,
         missedRunAt: task.nextRunAt,
         rescheduledTo: next,
       });
@@ -1280,8 +1282,9 @@ export const layer = Layer.effect(
       const updated = yield* sql`
         UPDATE scheduled_tasks
         SET next_run_at = ${next},
-            updated_at = ${iso(now)}
-            ${runError === undefined ? sql`` : sql`, last_run_status = 'failed', last_run_error = ${runError}`}
+            updated_at = ${iso(now)},
+            last_run_error = ${outcome.message}
+            ${outcome.type === "missed" ? sql`, last_run_status = 'failed'` : sql``}
         WHERE task_id = ${task.id}
           AND next_run_at IS ${task.nextRunAt}
           AND last_run_at IS ${task.lastRunAt}
@@ -1331,12 +1334,11 @@ export const layer = Layer.effect(
         ({ task, dueAt }) =>
           Effect.suspend(() =>
             isMissedFixedTimeRun(task.schedule, dueAt, now)
-              ? rescheduleMissedRun(
-                  task,
-                  now,
-                  "missed",
-                  "Missed a scheduled run because the server was not running at that time.",
-                )
+              ? rescheduleMissedRun(task, now, {
+                  type: "missed",
+                  message:
+                    "Missed a scheduled run because the server was not running at that time.",
+                })
               : runTask(task, "scheduled"),
           ).pipe(
             Effect.catch((cause) =>
