@@ -357,6 +357,8 @@ class CursorModelUnavailableError extends Schema.TaggedError<CursorModelUnavaila
   }
 }
 
+const isCursorModelUnavailableError = Schema.is(CursorModelUnavailableError);
+
 // Uncoded SDK model rejections are identifiable only by message prefix.
 const classifyCursorModelRejection =
   (modelSelection: ModelSelection) => (error: CursorAgentSdk.CursorAgentSdkRunnerError) =>
@@ -2855,7 +2857,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                         return yield* captureAgent(opened.value, runtimeGeneration);
                       }
                       const cause = Cause.squash(opened.cause);
-                      if (cause instanceof CursorModelUnavailableError) {
+                      if (isCursorModelUnavailableError(cause)) {
                         yield* lifecycle.abandon(runtimeGeneration);
                         return yield* cause;
                       }

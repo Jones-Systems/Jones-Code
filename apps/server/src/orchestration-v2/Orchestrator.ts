@@ -8065,12 +8065,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : modelSelection,
       goalCommand !== null || isNativeMaintenanceCommand(command),
     );
+    let queuedToolBoundaryEligible = command.queuedToolBoundaryEligible;
     if (
-      deferredSteer?.status === "waiting" &&
+      deferredSteer !== undefined &&
+      (deferredSteer.status === "waiting" ||
+        (ownerMessage && !modelSelectionsEqual(modelSelection, deferredSteer.modelSelection))) &&
       !(yield* stopReachedRun(command, command.threadId, deferredSteer.id))
     ) {
+      // An inherited owner follow-up keeps the saved selection when it must wait.
       dispatchMode = { type: "queue_after_active" };
-      modelSelection = deferredSteer.modelSelection;
+      if (!ownerMessage) modelSelection = deferredSteer.modelSelection;
+      queuedToolBoundaryEligible ??= true;
     }
     // Stop leaves the run reading as running until its provider stops. A plain
     // send in that window queues behind the stopped queue instead of steering
@@ -8376,6 +8381,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           .pipe(mapDispatchError(command));
         yield* ensureSteeringMessage(command, command);
         steerWhenReadyRunId = target.id;
+        queuedToolBoundaryEligible ??= true;
         if (
           ownerMessage ||
           command.modelSelection === undefined ||
@@ -8658,10 +8664,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         rootNodeId,
         activeAttemptId: attemptId,
         status: "queued",
-        ...((command.queuedToolBoundaryEligible ??
-          (steerWhenReadyRunId === undefined ? undefined : true)) === undefined
-          ? {}
-          : { queuedToolBoundaryEligible: command.queuedToolBoundaryEligible ?? true }),
+        ...(queuedToolBoundaryEligible === undefined ? {} : { queuedToolBoundaryEligible }),
         ...(steerWhenReadyRunId === undefined ? {} : { steerWhenReadyRunId }),
         ...(worktreeMissingRun !== undefined ||
         (heldRunsToRelease.length === 0 &&

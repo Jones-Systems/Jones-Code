@@ -201,9 +201,12 @@ class TerminalProcessSignalError extends Schema.TaggedError<TerminalProcessSigna
   }
 }
 
-export class TerminalCwdRecovery extends Context.Reference<
-  (error: TerminalCwdNotFoundError) => Effect.Effect<void, TerminalCwdNotFoundError>
->("t3/terminal/TerminalCwdRecovery", { defaultValue: () => (error) => Effect.fail(error) }) {}
+export class TerminalCwdRecovery extends Context.Reference<{
+  readonly worktreePath: string;
+  readonly restore: (
+    error: TerminalCwdNotFoundError,
+  ) => Effect.Effect<void, TerminalCwdNotFoundError>;
+} | null>("t3/terminal/TerminalCwdRecovery", { defaultValue: () => null }) {}
 export class LegacyTerminalControlError extends Schema.TaggedError<LegacyTerminalControlError>()(
   "LegacyTerminalControlError",
   { operation: Schema.Literals(["open", "write", "close", "guard"]), detail: Schema.String },
@@ -1921,7 +1924,22 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const path = yield* Path.Path;
   const workspaceDuty = yield* WorkspaceDuty.hooks;
   const terminalWorkspaceObservation = yield* TerminalWorkspaceObservation;
-  const withTerminalWorkspaceLease = Effect.fn("TerminalManager.withTerminalWorkspaceLease")(
+  const assertValidCwd = Effect.fn("terminal.assertValidCwd")(function* (cwd: string) {
+    const stats = yield* fileSystem
+      .stat(cwd)
+      .pipe(
+        Effect.mapError((cause) =>
+          cause.reason._tag === "NotFound"
+            ? new TerminalCwdNotFoundError({ cwd })
+            : new TerminalCwdStatError({ cwd, cause }),
+        ),
+      );
+    if (stats.type !== "Directory") {
+      return yield* new TerminalCwdNotDirectoryError({ cwd });
+    }
+  });
+
+  const withObservedWorkspaceLease = Effect.fn("TerminalManager.withObservedWorkspaceLease")(
     function* <A, E, R>(
       input: { cwd: string; worktreePath?: string | null | undefined },
       effect: Effect.Effect<A, E, R>,
@@ -1938,6 +1956,31 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         }).pipe(
           Effect.andThen(effect),
           Effect.provideService(TerminalWorkspaceAdmission, observed),
+        ),
+      );
+    },
+  );
+
+  const withTerminalWorkspaceLease = Effect.fn("TerminalManager.withTerminalWorkspaceLease")(
+    function* <A, E, R>(
+      input: { cwd: string; worktreePath?: string | null | undefined },
+      effect: Effect.Effect<A, E, R>,
+    ) {
+      const validate = assertValidCwd(input.cwd);
+      const launch = withObservedWorkspaceLease(input, effect);
+      const recovery = yield* TerminalCwdRecovery;
+      if (recovery === null) return yield* validate.pipe(Effect.andThen(launch));
+
+      // The server's thread record supplies this lease even when its checkout is absent.
+      // Keep it through native observation and spawn so cleanup cannot remove the restored cwd.
+      return yield* withWorkspaceLease(
+        recovery.worktreePath,
+        validate.pipe(
+          Effect.catchTags({
+            TerminalCwdNotFoundError: (error) =>
+              recovery.restore(error).pipe(Effect.andThen(validate)),
+          }),
+          Effect.andThen(launch),
         ),
       );
     },
@@ -2659,28 +2702,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     );
   });
 
-  const assertValidCwd = Effect.fn("terminal.assertValidCwd")(function* (cwd: string) {
-    const stat = fileSystem.stat(cwd).pipe(
-      Effect.catchTags({
-        PlatformError: (cause) =>
-          cause.reason._tag === "NotFound"
-            ? new TerminalCwdNotFoundError({ cwd })
-            : new TerminalCwdStatError({ cwd, cause }),
-      }),
-    );
-    const stats = yield* stat.pipe(
-      Effect.catchTags({
-        TerminalCwdNotFoundError: (error) =>
-          Effect.flatMap(TerminalCwdRecovery, (recover) =>
-            recover(error).pipe(Effect.andThen(stat)),
-          ),
-      }),
-    );
-    if (stats.type !== "Directory") {
-      return yield* new TerminalCwdNotDirectoryError({ cwd });
-    }
-  });
-
   const getSession = Effect.fn("terminal.getSession")(function* (
     threadId: string,
     terminalId: string,
@@ -3258,9 +3279,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             }).pipe(Effect.onError(() => releaseWorkspaceDuty.pipe(Effect.orDie)));
             // Parent exit is not descendant drain. This independent subscription
             // retains the duty unless its exact captured native session is absent.
-            spawnResult.process.onExit(() => {
-              runFork(workspaceDuty.observeParentExit(releaseWorkspaceDuty).pipe(Effect.orDie));
-            });
+            if (workspaceDuty.claimed(releaseWorkspaceDuty)) {
+              spawnResult.process.onExit(() => {
+                runFork(workspaceDuty.observeParentExit(releaseWorkspaceDuty).pipe(Effect.orDie));
+              });
+            }
             yield* workspaceDuty
               .bindNative(releaseWorkspaceDuty, spawnResult.process.pid)
               .pipe(
@@ -3801,7 +3824,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     nativeSetup?: NativeSetup.NativeSetupTerminalHooks,
   ) {
     const terminalId = requestedInput.terminalId;
-    yield* assertValidCwd(requestedInput.cwd);
 
     const sessionKey = toSessionKey(requestedInput.threadId, terminalId);
     const input = withSharedGrid(sessionKey, requestedInput);
@@ -4726,7 +4748,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   ) {
     yield* increment(terminalRestartsTotal, { scope: "thread" });
     const terminalId = input.terminalId;
-    yield* assertValidCwd(input.cwd);
 
     const sessionKey = toSessionKey(input.threadId, terminalId);
     const existingSession = yield* getSession(input.threadId, terminalId);

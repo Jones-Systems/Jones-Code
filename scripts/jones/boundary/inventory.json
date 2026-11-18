@@ -1436,6 +1436,7 @@
     "apps/server/src/workspace/WorkspaceFileSystem.ts": "accepted-shared",
     "apps/server/src/workspace/WorkspaceSearchIndex.test.ts": "jones-tests-in-upstream",
     "apps/server/src/workspace/WorkspaceSearchIndex.ts": "hook",
+    "apps/server/src/workspace/restoreMissingWorktree.ts": "accepted-shared",
     "apps/server/src/workspace/workspaceLease.ts": "hook",
     "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts": "jones-owned",
     "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.ts": "jones-owned",

@@ -132,20 +132,43 @@ const decodeReceipt = Schema.decodeUnknownEffect(ThreadSelfConfigurationResult);
 const failure = (result: McpSchema.CallToolResult) =>
   result.content[0]?.type === "text" ? JSON.parse(result.content[0].text) : null;
 
+function toolCalls(server: McpServer.McpServer["Service"], scope: Invocation.McpInvocationScope) {
+  const invoke = (name: string, args: Record<string, unknown> = {}, caller = scope) =>
+    server
+      .callTool({ name, arguments: args })
+      .pipe(
+        Effect.provideService(Invocation.McpInvocationContext, caller),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+  return {
+    call: (...args: Parameters<typeof invoke>) => invoke(...args).pipe(Effect.orDie),
+    assertToolHidden: (
+      name: string,
+      args: Record<string, unknown>,
+      caller: Invocation.McpInvocationScope,
+    ) =>
+      invoke(name, args, caller).pipe(
+        Effect.flip,
+        Effect.tap((error) =>
+          Effect.sync(() => assert.equal(error.message, `Tool '${name}' not found`)),
+        ),
+        Effect.asVoid,
+        Effect.orDie,
+      ),
+  };
+}
+
 function scenario<E>(
   name: string,
   restartRequired: boolean,
-  body: (ctx: {
-    threadId: ThreadId;
-    scope: Invocation.McpInvocationScope;
-    state: Ref.Ref<RestartAdapterState>;
-    sql: SqlClient.SqlClient;
-    call: (
-      name: string,
-      args?: Record<string, unknown>,
-      caller?: Invocation.McpInvocationScope,
-    ) => Effect.Effect<McpSchema.CallToolResult>;
-  }) => Effect.Effect<
+  body: (
+    ctx: {
+      threadId: ThreadId;
+      scope: Invocation.McpInvocationScope;
+      state: Ref.Ref<RestartAdapterState>;
+      sql: SqlClient.SqlClient;
+    } & ReturnType<typeof toolCalls>,
+  ) => Effect.Effect<
     void,
     E,
     | Scope.Scope
@@ -352,14 +375,6 @@ function scenario<E>(
         const worker = yield* Worker.OrchestrationEffectWorkerV2;
         const sink = yield* Sink.EventSinkV2;
         const server = yield* McpServer.McpServer;
-        const call = (name: string, args: Record<string, unknown> = {}, caller = scope) =>
-          server
-            .callTool({ name, arguments: args })
-            .pipe(
-              Effect.provideService(Invocation.McpInvocationContext, caller),
-              Effect.provideService(McpSchema.McpServerClient, client),
-              Effect.orDie,
-            );
         yield* orchestrator.dispatch({
           type: "thread.create",
           commandId: CommandId.make(name + ":create"),
@@ -398,7 +413,7 @@ function scenario<E>(
         });
         if (running !== undefined) yield* Fiber.join(running);
         yield* worker.drain();
-        yield* body({ threadId, scope, state, call, sql });
+        yield* body({ threadId, scope, state, sql, ...toolCalls(server, scope) });
         if (scratch !== undefined) {
           // Capture committed crash state before scoped shutdown can persist stopped sessions.
           yield* sql`VACUUM INTO ${scratch}`;
@@ -409,15 +424,13 @@ function scenario<E>(
         yield* Effect.gen(function* () {
           const recoveredSql = yield* SqlClient.SqlClient;
           const server = yield* McpServer.McpServer;
-          const call = (name: string, args: Record<string, unknown> = {}, caller = scope) =>
-            server
-              .callTool({ name, arguments: args })
-              .pipe(
-                Effect.provideService(Invocation.McpInvocationContext, caller),
-                Effect.provideService(McpSchema.McpServerClient, client),
-                Effect.orDie,
-              );
-          yield* afterRestart({ threadId, scope, state, call, sql: recoveredSql });
+          yield* afterRestart({
+            threadId,
+            scope,
+            state,
+            sql: recoveredSql,
+            ...toolCalls(server, scope),
+          });
         }).pipe(Effect.provide(Layer.fresh(Layer.merge(runtime, tools))));
       }
     }),
@@ -551,7 +564,7 @@ it.live.each([false, true])(
 it.live(
   "rejects stale execution/revision, invalid catalog values and non-thread callers without effects",
   () =>
-    scenario("self-configure-refusals", false, ({ call, scope, state }) =>
+    scenario("self-configure-refusals", false, ({ call, assertToolHidden, scope, state }) =>
       Effect.gen(function* () {
         const evidence = yield* decodeEvidence(
           (yield* call("t3_thread_configure")).structuredContent,
@@ -612,14 +625,13 @@ it.live(
           ).message,
           "execution_changed",
         );
-        assert.equal(
-          (yield* call("t3_thread_self_configure", request, {
+        for (const linked of [false, true]) {
+          yield* assertToolHidden("t3_thread_self_configure", request, {
             ...scope,
             thread: undefined,
-            client: { sessionId: "client", label: "test", access: "full-access" },
-          })).isError,
-          true,
-        );
+            client: { sessionId: "client", label: "test", access: "full-access", linked },
+          });
+        }
         for (const caller of [
           { ...scope, capabilities: new Set<Invocation.McpCapability>() },
           {
@@ -633,16 +645,6 @@ it.live(
           {
             ...scope,
             thread: { ...scope.thread!, providerInstanceId: ProviderInstanceId.make("foreign") },
-          },
-          {
-            ...scope,
-            thread: undefined,
-            client: {
-              sessionId: "linked",
-              label: "peer",
-              access: "full-access" as const,
-              linked: true,
-            },
           },
         ])
           assert.equal((yield* call("t3_thread_self_configure", request, caller)).isError, true);

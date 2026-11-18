@@ -82,10 +82,14 @@ export function validateSources({ osRelease, architecture, mirrors, sources }) {
   if (stanzas.length !== 2) throw fail("config", "expected two Ubuntu source stanzas");
   const suites = [];
   for (const stanza of stanzas) {
+    const usesRunnerMirror = stanza.URIs === "mirror+file:/etc/apt/apt-mirrors.txt";
+    const usesUbuntuSecurity =
+      stanza.Suites === "noble-security" &&
+      /^https?:\/\/security\.ubuntu\.com\/ubuntu\/?$/.test(stanza.URIs);
     if (
       !sameSet(Object.keys(stanza), ["Types", "URIs", "Suites", "Components", "Signed-By"]) ||
       stanza.Types !== "deb" ||
-      stanza.URIs !== "mirror+file:/etc/apt/apt-mirrors.txt" ||
+      (!usesRunnerMirror && !usesUbuntuSecurity) ||
       stanza["Signed-By"] !== keyring ||
       !sameSet(stanza.Components.split(/\s+/), components)
     ) {

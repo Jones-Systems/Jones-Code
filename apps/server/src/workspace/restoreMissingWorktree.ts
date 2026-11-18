@@ -245,7 +245,7 @@ export const makePrepareTerminalLaunch = Effect.fn(
     ) {
       return { input, recover: TerminalCwdRecovery.defaultValue() };
     }
-    const recover = (error: TerminalCwdNotFoundError) =>
+    const restore = (error: TerminalCwdNotFoundError) =>
       restoreMissingWorktree(thread).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("failed to recreate missing worktree", {
@@ -256,6 +256,9 @@ export const makePrepareTerminalLaunch = Effect.fn(
         ),
       );
     // The lease must cover the worktree root, even when the terminal opens in a subdirectory.
-    return { input: { ...input, worktreePath }, recover };
+    return {
+      input: { ...input, worktreePath },
+      recover: { worktreePath: path.resolve(worktreePath), restore },
+    };
   });
 });

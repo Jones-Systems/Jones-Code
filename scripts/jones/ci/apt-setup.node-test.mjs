@@ -162,7 +162,13 @@ NodeTest.test("the GitHub AWS runner can fall back after an APT download deadlin
   const awsMirrors =
     "http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\nhttps://security.ubuntu.com/ubuntu/\tpriority:3\n";
   const s = scenario({
-    files: { "/etc/apt/apt-mirrors.txt": awsMirrors },
+    files: {
+      "/etc/apt/apt-mirrors.txt": awsMirrors,
+      "/etc/apt/sources.list.d/ubuntu.sources": sources.replace(
+        "URIs: mirror+file:/etc/apt/apt-mirrors.txt\nSuites: noble-security",
+        "URIs: http://security.ubuntu.com/ubuntu\nSuites: noble-security",
+      ),
+    },
     intercept: (_argv, _settings, count) =>
       count === 2 ? network({ stderr: "", timedOut: true }) : undefined,
   });
@@ -251,6 +257,12 @@ NodeTest.test(
     );
     for (const change of [
       { sources: sources.replace("noble-backports", "jammy") },
+      {
+        sources: sources.replace(
+          "mirror+file:/etc/apt/apt-mirrors.txt",
+          "https://security.ubuntu.com/ubuntu/",
+        ),
+      },
       { sources: sources.replaceAll("ubuntu-archive-keyring.gpg", "other.gpg") },
       { mirrors: mirrors.replace("priority:3", "priority:4") },
       { mirrors: mirrors.replace("azure.archive.ubuntu.com", "other.example") },

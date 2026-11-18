@@ -93,9 +93,11 @@ const makeHarness = Effect.fnUntraced(function* (
       Effect.provideService(ProviderHost.ProviderHost, { ...host, appIdentity: identity }),
       Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
         assertComplete: Effect.void,
-        open: () =>
+        open: (input) =>
           Effect.sync(() => {
-            const agentId = `captured-agent-${++counts.opens}`;
+            counts.opens++;
+            const agentId =
+              input.operation === "resume" ? input.agentId! : `captured-agent-${counts.opens}`;
             return {
               agentId,
               listMessages: Effect.succeed([]),
@@ -197,9 +199,16 @@ const makeHarness = Effect.fnUntraced(function* (
       ...(options.persistence === true
         ? {
             runtimeLifecycle: {
-              reserve: () => Effect.succeed("synthetic-generation"),
+              reserve: () => Effect.sync(() => `synthetic-generation-${counts.opens + 1}`),
               admit: () => Effect.void,
-              bind: ({ providerThread }) => Effect.succeed(providerThread),
+              bind: ({ providerThread, runtimeGeneration, requested, observed, producerOrigin }) =>
+                Effect.sync(() => {
+                  assert.equal(producerOrigin?.runtimeGeneration, runtimeGeneration);
+                  return {
+                    ...providerThread,
+                    runtimeIdentity: { runtimeGeneration, requested, observed },
+                  };
+                }),
               abandon: () => Effect.void,
               invalidate: () => Effect.void,
             },

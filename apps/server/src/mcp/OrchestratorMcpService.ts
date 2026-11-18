@@ -47,6 +47,7 @@ import {
   NodeId,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   TurnItemId,
+  OrchestrationV2DomainEvent,
   type OrchestrationV2Run,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
@@ -190,6 +191,7 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 const MAX_WAIT_TIMEOUT_MS = 45_000;
 const DEFAULT_SECRET_REQUEST_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_SECRET_REQUEST_TIMEOUT_MS = 60 * 60 * 1_000;
+const isTaskWakeDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 const TASK_WAKE_EVENTS = [
   { thread: "parent", eventType: "subagent.updated" },
   { thread: "child", eventType: "run.updated" },
@@ -2239,6 +2241,7 @@ const make = Effect.gen(function* () {
               Stream.filter(
                 ({ event }) =>
                   thread === "child" ||
+                  !isTaskWakeDomainEvent(event) ||
                   event.type !== "subagent.updated" ||
                   event.payload.id === taskId,
               ),

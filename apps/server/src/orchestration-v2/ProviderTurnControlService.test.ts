@@ -503,7 +503,7 @@ it.effect.each([
       modelSelection,
       providerThreadId,
     } as OrchestrationV2ThreadProjection["runs"][number];
-    const message = {
+    const message: OrchestrationV2ThreadProjection["messages"][number] = {
       id: messageId,
       threadId,
       runId,
@@ -511,8 +511,17 @@ it.effect.each([
       attachments: [],
       createdBy: "agent",
       creationSource: "server",
-      notification: { type: "goal" },
-    } as unknown as OrchestrationV2ThreadProjection["messages"][number];
+      nodeId: null,
+      role: "user",
+      streaming: false,
+      createdAt: now,
+      updatedAt: now,
+      notification: {
+        source: { kind: "delegated_task", taskIds: [NodeId.make("steer-original-task")] },
+        outcome: "completed",
+        summary: "Child finished",
+      },
+    };
     const turn = { ...projection.providerTurns[0]!, runAttemptId: attemptId };
     let reads = 0;
     let runtimeReads = 0;

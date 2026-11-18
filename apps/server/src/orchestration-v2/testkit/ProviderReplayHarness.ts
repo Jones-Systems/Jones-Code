@@ -907,6 +907,7 @@ export function layerWithRegistryAndServices<Error>(
       return Layer.mock(ThreadManagementService.ThreadManagementService)({
         dispatch: orchestrator.dispatch,
         getThreadShell: orchestrator.getThreadShell,
+        listActiveShellIndex: orchestrator.listActiveShellIndex,
         getProjectThreadRecords: ({ threadId }, fields, filter) =>
           orchestrator.getThreadRecords(threadId, fields, filter).pipe(Effect.orDie),
         stopDelegatedTasks: ({ threadId }) =>
