@@ -50,6 +50,9 @@ import {
   VoiceReviewRevisionPayload,
   VoiceReviewEditSavePayload,
   VoiceReviewEditCancelPayload,
+  VoiceReviewSendOptions,
+  VoiceReviewSendReviewedPayload,
+  VoiceReviewSendReviewedResult,
 } from "../voiceReview.ts";
 import {
   ThreadRegistryComposedSnapshot,
@@ -314,6 +317,23 @@ export const makeJonesHttpGroups = ({
         params: VoiceReviewParams,
         payload: VoiceReviewRevisionPayload,
         success: VoiceReviewMutationResult,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("sendOptions", "/api/voice-review/drafts/:id/send-options", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        success: Schema.NullOr(VoiceReviewSendOptions),
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("sendReviewed", "/api/voice-review/drafts/:id/send-reviewed", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        payload: VoiceReviewSendReviewedPayload,
+        success: VoiceReviewSendReviewedResult,
         error: VoiceReviewErrors,
       }).middleware(EnvironmentAuthenticatedAuth),
     )
