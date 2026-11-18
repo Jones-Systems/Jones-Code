@@ -64,6 +64,7 @@ export function personalSidebarRoster(
     activeThreads: readonly EnvironmentThreadShell[];
     workingThreads: readonly EnvironmentThreadShell[];
   },
+  keepsAwakeMemberUnassigned: (thread: EnvironmentThreadShell) => boolean = () => false,
 ) {
   const candidates = [
     ...partition.activeThreads,
@@ -72,7 +73,7 @@ export function personalSidebarRoster(
   ];
   const { workstreamIdByThreadKey } = groupPersonalThreads(state, candidates);
   const assigned = (thread: EnvironmentThreadShell) =>
-    workstreamIdByThreadKey.has(personalThreadKey(thread));
+    workstreamIdByThreadKey.has(personalThreadKey(thread)) || keepsAwakeMemberUnassigned(thread);
   const activeKeys = new Set(partition.activeThreads.map(personalThreadKey));
   return {
     pinnedThreads: partition.pinnedThreads.filter((thread) => !assigned(thread)),

@@ -2,6 +2,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import {
   comparePersonalWorkstreams,
   isClosedPersonalWorkstream,
+  preservePersonalWorkstreamSnooze,
   newPersonalWorkstream,
   editPersonalWorkstream,
   deletePersonalWorkstream,
@@ -176,7 +177,11 @@ export function createPersonalWorkstreamsController(options: {
       if (!e.connection.capable || (confirmedOnly && !e.confirmed)) continue;
       for (const w of e.snapshot?.workstreams ?? []) {
         const old = result.get(w.id);
-        if (!old || comparePersonalWorkstreams(w, old) > 0) result.set(w.id, w);
+        const wins = !old || comparePersonalWorkstreams(w, old) > 0;
+        result.set(
+          w.id,
+          old ? preservePersonalWorkstreamSnooze(wins ? w : old, wins ? old : w) : w,
+        );
       }
     }
     return result;
@@ -252,6 +257,7 @@ export function createPersonalWorkstreamsController(options: {
       pendingThreadKeys: pending,
       autoAssignedThreadKeys: autoAssigned,
       canCreate: [...entries.values()].some(writable),
+      canSnooze: [...entries.values()].some((e) => writable(e) && e.snapshot?.supportsSnooze),
       environments: [...entries.values()].map((e): PersonalEnvironmentState => {
         const workstreams = e.connection.capable
           ? (e.snapshot?.workstreams.filter((w) => w.deletedAt === null) ?? [])
@@ -303,13 +309,19 @@ export function createPersonalWorkstreamsController(options: {
       assignments: [...assignments.values()],
     };
   };
+  const definitionFor = (entry: Entry, workstream: PersonalWorkstream): PersonalWorkstream => {
+    if (entry.snapshot?.supportsSnooze) return workstream;
+    const { snoozedAt: _started, snoozedUntil: _until, ...legacy } = workstream;
+    return legacy;
+  };
   const repair = () => {
     if (disposed) return;
     const merged = winners(true);
     for (const e of entries.values()) {
       if (!writable(e)) continue;
-      for (const w of merged.values()) {
+      for (const winner of merged.values()) {
         if (activeRepairs >= 4) return;
+        const w = definitionFor(e, winner);
         const key = JSON.stringify([e.connection.environmentId, w.id]);
         const old = e.snapshot?.workstreams.find((d) => d.id === w.id);
         if (
@@ -365,7 +377,10 @@ export function createPersonalWorkstreamsController(options: {
     action: PersonalWorkstreamsAction,
     w: PersonalWorkstream,
   ): Promise<PersonalResult<PersonalWorkstream>> => {
-    const targets = [...entries.values()].filter(writable);
+    const snoozeEdit = action === "snooze" || action === "unsnooze";
+    const targets = [...entries.values()].filter(
+      (e) => writable(e) && (!snoozeEdit || e.snapshot?.supportsSnooze),
+    );
     if (!targets.length) return fail(action, w.id, unavailable(entries.values().next().value));
     const id = ++actionId;
     overlays.set(id, { definition: w });
@@ -375,13 +390,14 @@ export function createPersonalWorkstreamsController(options: {
     await Promise.all(
       targets.map(async (e) => {
         try {
-          const reply = await options.transport.put(e.connection, w);
+          const sent = definitionFor(e, w);
+          const reply = await options.transport.put(e.connection, sent);
           if (!current(e)) return;
           replied = true;
           mergeReply(e, reply);
           if (
             reply.outcome !== "superseded" &&
-            comparePersonalWorkstreams(reply.workstream, w) === 0
+            comparePersonalWorkstreams(reply.workstream, sent) === 0
           )
             confirmed = true;
         } catch {
@@ -625,6 +641,16 @@ export function createPersonalWorkstreamsController(options: {
     rename: (id, name) => edit("rename", id, { name: name.trim() }),
     setColor: (id, color) => edit("recolor", id, { color }),
     setLifecycle: (id, lifecycle) => edit("lifecycle", id, { lifecycle }),
+    setSnoozedUntil: (id, snoozedUntil) => {
+      const action = snoozedUntil === null ? "unsnooze" : "snooze";
+      const startedAt = now();
+      if (snoozedUntil !== null && !(Date.parse(snoozedUntil) > Date.parse(startedAt)))
+        return Promise.resolve(fail(action, id, "failed"));
+      return edit(action, id, {
+        snoozedAt: startedAt,
+        snoozedUntil,
+      });
+    },
     reorder: (id, { beforeId, afterId }) => {
       const merged = editableWinners();
       const orderKey = pinOrderKeyBetween(

@@ -1,3 +1,4 @@
+import { isPersonalWorkstreamSnoozed } from "@t3tools/contracts/jones/workstreamsPersonal";
 import { isListedThreadLineage, type ThreadId } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Context from "effect/Context";
@@ -82,7 +83,13 @@ const make = Effect.gen(function* () {
       threadId: observation.threadId,
       projectId: shell.projectId,
     });
-    const candidates = selectCandidates(yield* personal.readDefinitions(), excludedIds, stats);
+    const currentTime = Date.parse(yield* now);
+    const definitions = yield* personal.readDefinitions();
+    const candidates = selectCandidates(
+      definitions.filter((workstream) => !isPersonalWorkstreamSnoozed(workstream, currentTime)),
+      excludedIds,
+      stats,
+    );
     if (candidates.length === 0) return { state: "abstained", code: "no_candidates" } as const;
 
     const evidence = buildClassifierPrompt({

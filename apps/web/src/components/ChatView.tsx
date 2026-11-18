@@ -13,6 +13,9 @@ import {
   ComposerLayoutHeadline,
   ComposerLayoutFooter,
 } from "../jones/composer/ComposerLayout";
+import { NewThreadWorkstreamPicker } from "../jones/composer/NewThreadWorkstreamPicker";
+import { assignNewThreadWorkstream } from "../jones/composer/newThreadWorkstream";
+import { buildThreadRouteParams } from "../threadRoutes";
 import { useParentLink } from "../jones/remoteAgentLineage/useParentLink";
 import { listenForWorkspaceFileDragEnd } from "../jones/questionAnswer/workspaceFileDragLifecycle";
 import {
@@ -2903,6 +2906,7 @@ export default function ChatView(props: ChatViewProps) {
     scrollToEnd,
     setThreadError,
   });
+  const newThreadWorkstreamId = draftThread?.newThreadWorkstreamId ?? null;
   const { onSend, importedHistoryChoice, onImportedHistoryChoice } = useComposerSend({
     isImportedHistory: importedHistoryContinuationEligible(serverProjection),
     steeringBlockedByQuestion: pendingQuestionBlocksSteering(pendingUserInputs),
@@ -2975,6 +2979,19 @@ export default function ChatView(props: ChatViewProps) {
     setKeepFullHistory,
     anchorNewTurn,
     acknowledgeActiveThreadWoke,
+    onNewThreadAccepted:
+      !embedded && isLocalDraftThread && newThreadWorkstreamId !== null
+        ? (thread) =>
+            void assignNewThreadWorkstream(
+              { environmentId: thread.environmentId, id: thread.threadId },
+              newThreadWorkstreamId,
+              () =>
+                void navigate({
+                  to: "/$environmentId/$threadId",
+                  params: buildThreadRouteParams(thread),
+                }),
+            )
+        : undefined,
     onSideChat: sideChat.available ? sendSideChatStable : undefined,
     sideChatDisabledReason,
     handleNewThreadInActiveProject,
@@ -3865,17 +3882,34 @@ export default function ChatView(props: ChatViewProps) {
                                   {...(isServerThread
                                     ? {}
                                     : {
-                                        trailing:
-                                          runtimeMode === defaultRuntimeMode ? null : (
-                                            <ComposerContextPermissions
-                                              environmentId={environmentId}
-                                              runtimeMode={runtimeMode}
-                                              supportedRuntimeModes={
-                                                activeProviderStatus?.supportedRuntimeModes
-                                              }
-                                              onRuntimeModeChange={handleRuntimeModeChangeStable}
-                                            />
-                                          ),
+                                        trailing: (
+                                          <>
+                                            {draftId &&
+                                            isLocalDraftThread &&
+                                            !draftThread?.promotedTo ? (
+                                              <NewThreadWorkstreamPicker
+                                                environmentId={environmentId}
+                                                value={newThreadWorkstreamId}
+                                                onChange={(id) =>
+                                                  useComposerDraftStore
+                                                    .getState()
+                                                    .setNewThreadWorkstream(draftId, id)
+                                                }
+                                                disabled={isSendBusy || isEnvironmentChanging}
+                                              />
+                                            ) : null}
+                                            {runtimeMode === defaultRuntimeMode ? null : (
+                                              <ComposerContextPermissions
+                                                environmentId={environmentId}
+                                                runtimeMode={runtimeMode}
+                                                supportedRuntimeModes={
+                                                  activeProviderStatus?.supportedRuntimeModes
+                                                }
+                                                onRuntimeModeChange={handleRuntimeModeChangeStable}
+                                              />
+                                            )}
+                                          </>
+                                        ),
                                       })}
                                 />
                               </div>

@@ -9,17 +9,12 @@ import {
   type PersonalWorkstreamsState,
   type PersonalWorkstreamsTransport,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import { act, render } from "../../../test/render";
 import { WorkstreamSidebarSection } from "../../components/workstreams/WorkstreamSidebarSection";
 import { ToastProvider, toastManager } from "../../components/ui/toast";
 import { personalGroupCollapsedKey, personalNamedGroupsHiddenKey } from "./personalSidebarOrder";
-import {
-  personalSharedStatusFilterKey,
-  personalStatusFilterKey,
-  readPersonalStatusFilter,
-  readSharedPersonalStatusChoice,
-} from "./personalStatusFilter";
+import { personalSharedStatusFilterKey, personalStatusFilterKey } from "./personalStatusFilter";
 import { personalThreadExpandedKey, personalThreadLimitKey } from "./personalThreadWindow";
 
 const dragType = "application/x-jones-workstream";
@@ -51,7 +46,15 @@ function fixture(put?: PersonalWorkstreamsTransport["put"], memberCount = 0) {
   const registry = AtomRegistry.make();
   const initial: PersonalWorkstreamsState = {
     workstreams: groups,
-    environments: [],
+    environments: [
+      {
+        environmentId: EnvironmentId.make("snooze-fixture"),
+        status: "ready",
+        confirmed: true,
+        workstreamCount: groups.length,
+      },
+    ],
+    canSnooze: true,
     assignmentsByThreadKey: new Map(),
     pendingThreadKeys: new Set(),
     canCreate: true,
@@ -65,6 +68,15 @@ function fixture(put?: PersonalWorkstreamsTransport["put"], memberCount = 0) {
       ok: true as const,
       value: { ...groups.find((entry) => entry.id === id)!, name },
     })),
+    setSnoozedUntil: vi.fn(async (id, snoozedUntil) => {
+      const current = registry.get(state);
+      const value = { ...current.workstreams.find((entry) => entry.id === id)!, snoozedUntil };
+      registry.set(state, {
+        ...current,
+        workstreams: current.workstreams.map((entry) => (entry.id === id ? value : entry)),
+      });
+      return { ok: true as const, value };
+    }),
     setColor: vi.fn<PersonalWorkstreamsController["setColor"]>(async (id, color) => ({
       ok: true as const,
       value: { ...groups.find((entry) => entry.id === id)!, color },
@@ -318,7 +330,7 @@ describe("Workstream options and header ordering", () => {
     await expect
       .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
       .toBeVisible();
-    expect(document.querySelectorAll('[data-slot="menu-separator"]')).toHaveLength(5);
+    expect(document.querySelectorAll('[data-slot="menu-separator"]')).toHaveLength(4);
     await expect
       .element(page.getByRole("menuitem", { name: "Move up", exact: true }))
       .toHaveAttribute("aria-disabled", "true");
@@ -431,68 +443,21 @@ describe("Workstream options and header ordering", () => {
     ).toBeNull();
   });
 
-  it("resets a local exclusion from the menu without collapsing or changing the full summary", async () => {
-    using setup = fixture(undefined, 12);
+  it("opens Workstream actions by right-click and uses the thread snooze presets", async () => {
+    using setup = fixture();
     await using screen = await render(setup.ui);
-    const alpha = section(screen.container, "Alpha");
-    const counter = alpha.querySelector<HTMLButtonElement>('button[aria-label^="Working:"]')!;
-    expect(alpha.querySelector("button button")).toBeNull();
-    for (const at of [1000, 1250]) {
-      await act(() => {
-        const event = new MouseEvent("click", { bubbles: true, detail: 1 });
-        Object.defineProperty(event, "timeStamp", { value: at });
-        counter.dispatchEvent(event);
-      });
-    }
-    expect(readPersonalStatusFilter("menu-Alpha")).toBe("hide-working");
+    const header = section(screen.container, "Alpha").querySelector("[data-workstream-header]")!;
+    await act(() => {
+      header.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    });
+    await expect.element(page.getByRole("menuitem", { name: "Rename", exact: true })).toBeVisible();
+    await expect.element(page.getByRole("menuitem", { name: "Change color" })).toBeVisible();
+    expect(document.body.textContent).not.toContain("Use global status filter");
+    await userEvent.click(page.getByRole("menuitem", { name: "Snooze", exact: true }));
+    await userEvent.click(page.getByRole("menuitem", { name: /^In 1 hour/ }));
+    expect(setup.controller.setSnoozedUntil).toHaveBeenCalledWith("menu-Alpha", expect.any(String));
     await expect
-      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
-      .toHaveAttribute("aria-expanded", "true");
-    await expect.element(page.getByText("12 threads", { exact: true })).toBeVisible();
-    expect(alpha.textContent).not.toContain("5 of 12");
-    expect(alpha.textContent).toContain(
-      "12 threads, 3 working, 2 need attention, 6 done, 1 failed.",
-    );
-    await options();
-    await userEvent.click(
-      page.getByRole("menuitem", { name: "Use global status filter", exact: true }),
-    );
-    expect(readPersonalStatusFilter("menu-Alpha")).toBeNull();
-    expect(counter.getAttribute("aria-pressed")).toBe("false");
-    expect(counter.getAttribute("aria-label")).toContain("using global status filter");
-    await expect
-      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
-      .toHaveAttribute("aria-expanded", "true");
-    expect(alpha.querySelector("input")).toBeNull();
-    expect(setup.controller.rename).not.toHaveBeenCalled();
-    expect(setup.controller.reorder).not.toHaveBeenCalled();
-  });
-
-  it("sends one group to the global filter from its menu while the Workstreams pill selects a status", async () => {
-    using setup = fixture(undefined, 12);
-    await using screen = await render(setup.ui);
-    const bulk = screen.container.querySelector<HTMLElement>("[data-personal-workstreams-header]")!;
-    const working = (root: ParentNode) =>
-      root.querySelector<HTMLButtonElement>('button[aria-label^="Working:"]')!;
-    const alpha = working(section(screen.container, "Alpha"));
-    const beta = working(section(screen.container, "Beta"));
-    await userEvent.click(working(bulk));
-    expect(readSharedPersonalStatusChoice()).toEqual({ filter: "working", rev: 1 });
-    expect(alpha.getAttribute("aria-label")).toContain("selected");
-    expect(beta.getAttribute("aria-label")).toContain("selected");
-    await options();
-    await userEvent.click(
-      page.getByRole("menuitem", { name: "Use global status filter", exact: true }),
-    );
-    expect(readPersonalStatusFilter("menu-Alpha")).toBeNull();
-    expect(alpha.getAttribute("aria-label")).toContain("using global status filter");
-    expect(alpha.getAttribute("aria-pressed")).toBe("false");
-    // The shared choice and the other group keep their status.
-    expect(beta.getAttribute("aria-pressed")).toBe("true");
-    expect(working(bulk).getAttribute("aria-pressed")).toBe("true");
-    expect(readSharedPersonalStatusChoice()).toEqual({ filter: "working", rev: 1 });
-    await expect
-      .element(page.getByRole("button", { name: "Collapse Alpha", exact: true }))
+      .element(page.getByRole("button", { name: "Collapse Alpha" }))
       .toHaveAttribute("aria-expanded", "true");
   });
 

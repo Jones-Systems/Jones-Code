@@ -15,6 +15,7 @@ import {
   visiblePersonalWorkstreamId,
   type PersonalWorkstreamsController,
   type PersonalThreadRef,
+  type PersonalWorkstreamView,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -65,6 +66,7 @@ export function WorkstreamNativeSidebar({
   threads,
   summaryThreads = threads,
   rosterThreads = summaryThreads,
+  snoozedWorkstreams = [],
   renderThread,
   onOpenHistoryThread,
   assignmentMenuRef,
@@ -78,6 +80,7 @@ export function WorkstreamNativeSidebar({
   threads: readonly EnvironmentThreadShell[];
   summaryThreads?: readonly EnvironmentThreadShell[];
   rosterThreads?: readonly EnvironmentThreadShell[];
+  snoozedWorkstreams?: readonly PersonalWorkstreamView[];
   onOpenHistoryThread?: (thread: PersonalThreadRef) => void;
   renderThread: (
     thread: EnvironmentThreadShell,
@@ -101,7 +104,15 @@ export function WorkstreamNativeSidebar({
     after: boolean,
   ) => Promise<boolean>;
 }) {
-  const state = useAtomValue(controller.state);
+  const allWorkstreams = useAtomValue(controller.state);
+  const snoozedIds = new Set(snoozedWorkstreams.map((item) => item.id));
+  const state =
+    snoozedIds.size === 0
+      ? allWorkstreams
+      : {
+          ...allWorkstreams,
+          workstreams: allWorkstreams.workstreams.filter((item) => !snoozedIds.has(item.id)),
+        };
   const openWorkstreams = openPersonalWorkstreams(state);
   const grouping = groupPersonalThreads(state, threads);
   const summaryGrouping = groupPersonalThreads(state, summaryThreads);
@@ -508,6 +519,7 @@ export function WorkstreamNativeSidebar({
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        snoozedIds={snoozedIds}
         onOpenHistoryThread={onOpenHistoryThread}
         rosterTotals={personalSidebarRosterTotals(state, rosterThreads)}
         dropTargetId={drop}
