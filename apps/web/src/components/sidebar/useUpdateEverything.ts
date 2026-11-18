@@ -55,6 +55,7 @@ export type ReportLocalUpdateError = (title: string, description: string) => voi
 export function useUpdateEverything(
   localUpdateVersion: string | null,
   channelSwitch?: ChannelSwitchRelease,
+  desktopJonesTarget?: string,
 ) {
   const targetVersion = localUpdateVersion ?? APP_VERSION;
   const { environments } = useEnvironments();
@@ -70,7 +71,12 @@ export function useUpdateEverything(
     canMaintain: canUpdateServer(sessionStates[index]!),
     updateState: updateStates[index]!,
   }));
-  const jones = useJonesBulkUpdates(machines, targetVersion, localUpdateVersion);
+  const jones = useJonesBulkUpdates(
+    machines,
+    targetVersion,
+    localUpdateVersion,
+    desktopJonesTarget,
+  );
   const { targets: selectedServers, skipped } = channelSwitch
     ? collectChannelSwitchTargets(jones.other, channelSwitch)
     : collectServerUpdateTargets(jones.other, targetVersion);
@@ -101,7 +107,7 @@ export function useUpdateEverything(
 
   const view = describeUpdateEverything({
     localVersion: jones.managesLocal ? null : localUpdateVersion,
-    jonesMachines: jones.targets,
+    jonesMachines: jones.reviewMachines,
     localMachines: machines.filter((machine) => machine.hostedByThisApp),
     servers: moving,
     skipped,

@@ -601,8 +601,10 @@ export function getUpdateEverythingToastView(
 
 export interface UpdateEverythingPlan {
   readonly jonesMachines?: ReadonlyArray<{
-    readonly environmentId: EnvironmentId;
+    readonly environmentId: EnvironmentId | null;
     readonly label: string;
+    readonly hostedByThisApp?: boolean;
+    readonly skipped?: string;
   }>;
   readonly localVersion: string | null;
   /** Machines whose servers this app hosts; this app's update restarts them. */
@@ -649,17 +651,20 @@ export function describeUpdateEverything(plan: UpdateEverythingPlan): {
   readonly summary: string;
   readonly version: string | null;
   readonly providerCount: number;
+  readonly jonesMachineCount: number;
   readonly rows: ReadonlyArray<UpdateEverythingRow>;
 } {
   const providerCount = plan.providerMachines.reduce(
     (count, machine) => count + machine.providers.length,
     0,
   );
+  const jonesMachineCount =
+    plan.jonesMachines?.filter((machine) => machine.skipped === undefined).length ?? 0;
   const summary = `Update ${joinList(
     [
       plan.localVersion ? "this app" : null,
       countLabel(plan.servers.length, "server"),
-      countLabel(plan.jonesMachines?.length ?? 0, "Jones machine"),
+      countLabel(jonesMachineCount, "Jones machine"),
       countLabel(providerCount, "provider"),
     ].filter((part) => part !== null),
   )}`;
@@ -691,9 +696,17 @@ export function describeUpdateEverything(plan: UpdateEverythingPlan): {
     });
   }
   for (const machine of plan.jonesMachines ?? []) {
-    update(machine.environmentId, machine.label, {
-      jonesHandoffNotice: "Install status after Laptop verification; every install needs review",
-    });
+    update(
+      machine.environmentId,
+      machine.label,
+      machine.skipped !== undefined
+        ? { skipped: machine.skipped }
+        : {
+            jonesHandoffNotice: machine.hostedByThisApp
+              ? "Install status on Laptop; review before installing"
+              : "Install status after Laptop verification; every install needs review",
+          },
+    );
   }
   for (const machine of plan.providerMachines) {
     update(machine.environmentId, machine.label, { providers: machine.providers });
@@ -709,6 +722,7 @@ export function describeUpdateEverything(plan: UpdateEverythingPlan): {
       plan.servers.find((server) => server.selfUpdate !== "desktop-managed")?.targetVersion ??
       null,
     providerCount,
+    jonesMachineCount,
     rows: Array.from(rows.values()),
   };
 }
