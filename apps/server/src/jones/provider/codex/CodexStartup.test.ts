@@ -547,6 +547,71 @@ describe("ownerless resume metadata completion", () => {
       runtimeGeneration: generation,
     },
   });
+  it.effect.each(["exact", "wrong-method", "prior-issue"] as const)(
+    "reconciles a stopped resume only with definitive rejection of its sole pending request (%s)",
+    (kind) =>
+      Effect.gen(function* () {
+        const admission = yield* ControlAdmission.ControlAdmission;
+        const producer = yield* makeProducer();
+        const startup = makeCodexStartup(50, admission);
+        const target = targetFor(producer.generation);
+        const sent = yield* Deferred.make<void>();
+        const reply = yield* Deferred.make<void, CodexErrors.CodexAppServerRequestError>();
+        const observed = yield* Deferred.make<void>();
+        const caller = yield* startup
+          .run(
+            "resume",
+            startup.withinPermit(
+              Effect.gen(function* () {
+                if (kind === "prior-issue") {
+                  yield* startup.observe(
+                    producer,
+                    Effect.succeed({ thread: { id: "native-a" } }),
+                    "binding",
+                    "thread/resume",
+                  );
+                }
+                yield* startup.observe(
+                  producer,
+                  Deferred.succeed(sent, undefined).pipe(
+                    Effect.andThen(Deferred.await(reply)),
+                    Effect.ensuring(Deferred.succeed(observed, undefined)),
+                  ),
+                  "binding",
+                  "thread/resume",
+                );
+              }),
+            ),
+            target,
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(sent);
+        yield* Fiber.interrupt(caller);
+        yield* admission.assertOpen(target).pipe(Effect.flip);
+        assert.isTrue(startup.isUncertain(producer));
+
+        yield* Deferred.fail(
+          reply,
+          new CodexErrors.CodexAppServerRequestError({
+            code: -32600,
+            errorMessage: "thread native-a already has an active writer",
+            operation: "receive-response",
+            method: kind === "wrong-method" ? "thread/start" : "thread/resume",
+          }),
+        );
+        yield* Deferred.await(observed);
+        yield* TestClock.adjust(0);
+        const acrossAccounts = { ...target, instanceId: "codex-b", producer: null };
+        if (kind === "exact") {
+          yield* admission.assertOpen(acrossAccounts);
+          assert.isFalse(startup.isUncertain(producer));
+        } else {
+          yield* admission.assertOpen(acrossAccounts).pipe(Effect.flip);
+          assert.isTrue(startup.isUncertain(producer));
+        }
+      }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
+  );
+
   it.effect.each(["success", "replacement", "wrong-native", "retained-publication"] as const)(
     "completes only the captured live unheld resume (%s)",
     (mode) =>
