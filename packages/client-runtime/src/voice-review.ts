@@ -1,14 +1,17 @@
 import {
+  EnvironmentHttpApi,
   ThreadRegistryAssociationPayload,
   VoiceReviewError,
   type VoiceReviewAction,
   type VoiceReviewMutationPayload,
   VoiceReviewEditSavePayload,
   VoiceReviewEditCancelPayload,
+  VoiceReviewSendReviewedPayload,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import { RemoteEnvironmentAuthorization } from "./authorization/service.ts";
 import type { PreparedConnection } from "./connection/model.ts";
 import type { ManagedRelayDpopSigner } from "./relay/managedRelay.ts";
@@ -28,6 +31,11 @@ const isWrappedFetchError = Schema.is(
 );
 const decodeEditSave = Schema.decodeUnknownEffect(VoiceReviewEditSavePayload);
 const decodeEditCancel = Schema.decodeUnknownEffect(VoiceReviewEditCancelPayload);
+const decodeSendReviewed = Schema.decodeUnknownEffect(VoiceReviewSendReviewedPayload);
+const decodeSendOptions = HttpApiClient.decodeResponse(EnvironmentHttpApi, {
+  group: "voiceReview",
+  endpoint: "sendOptions",
+});
 const unwrapReviewError = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.mapError((error) => {
@@ -121,6 +129,67 @@ export const mutateVoiceReviewDraft = Effect.fn("clientRuntime.voiceReview.mutat
     }),
   );
 });
+
+/** Returns null when the environment or its broker lacks the reviewed-send capability. */
+export const fetchVoiceReviewSendOptions = Effect.fn("clientRuntime.voiceReview.sendOptions")(
+  function* (input: VoiceReviewClientOptions & { readonly id: string }) {
+    const params = { id: input.id };
+    return yield* unwrapReviewError(
+      executeAuthenticatedEnvironmentHttpRequest({
+        ...input,
+        remoteAuthorization: yield* authorization(input),
+        group: "voiceReview",
+        method: "GET",
+        timeoutMs: input.timeoutMs ?? 25_000,
+        requestInit: { redirect: "error" },
+        url: (urls) => urls.sendOptions({ params }),
+        request: ({ client, headers }) =>
+          client.sendOptions({ params, headers, responseMode: "response-only" }).pipe(
+            Effect.flatMap((response) => {
+              const headers = response.headers;
+              const contentType = headers["content-type"]?.split(";", 1)[0];
+              // An old server can answer an unmatched GET with a bare 404 or its web shell.
+              if (
+                (response.status === 404 &&
+                  (contentType === undefined || contentType === "text/plain")) ||
+                (response.status === 200 &&
+                  contentType === "text/html" &&
+                  headers["cache-control"] === "no-store" &&
+                  headers["x-content-type-options"] === "nosniff")
+              ) {
+                return Effect.succeed(null);
+              }
+              return decodeSendOptions(response);
+            }),
+          ),
+      }),
+    );
+  },
+);
+
+export const sendReviewedVoiceDraft = Effect.fn("clientRuntime.voiceReview.sendReviewed")(
+  function* (
+    input: VoiceReviewClientOptions & {
+      readonly id: string;
+      readonly payload: VoiceReviewSendReviewedPayload;
+    },
+  ) {
+    const params = { id: input.id };
+    const payload = yield* decodeSendReviewed(input.payload);
+    return yield* unwrapReviewError(
+      executeAuthenticatedEnvironmentHttpRequest({
+        ...input,
+        remoteAuthorization: yield* authorization(input),
+        group: "voiceReview",
+        method: "POST",
+        timeoutMs: input.timeoutMs ?? 25_000,
+        requestInit: { redirect: "error" },
+        url: (urls) => urls.sendReviewed({ params }),
+        request: ({ client, headers }) => client.sendReviewed({ params, headers, payload }),
+      }),
+    );
+  },
+);
 
 export const fetchVoiceReviewRecent = Effect.fn("clientRuntime.voiceReview.recent")(function* (
   input: VoiceReviewClientOptions & { readonly limit?: number },
