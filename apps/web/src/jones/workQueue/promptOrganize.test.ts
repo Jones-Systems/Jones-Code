@@ -42,7 +42,7 @@ describe("organizing prompts", () => {
   it("offers only the groupings and filters each stage supports", () => {
     expect(promptGroupOptions.pending).toEqual(["default", "destination"]);
     expect(promptGroupOptions.queued).toContain("queue-state");
-    expect(promptFilterOptions.sent).toEqual(["all", "needs-you"]);
+    expect(promptFilterOptions.sent).toEqual(["all", "needs-you", "unassigned"]);
   });
   it("orders Pending by band, then soonest release, then oldest", () => {
     bands.clear();

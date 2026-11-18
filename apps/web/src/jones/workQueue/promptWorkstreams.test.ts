@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
+import type { PersonalWorkstreamsState } from "@t3tools/client-runtime/jones/workstreams/personal";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { PromptItem } from "./promptItems";
 import { promptWorkstreams } from "./promptWorkstreams";
 import { configuredHostedAppUrl } from "../../hostedPairing";
 import { promptLink, validatePromptSearch } from "./promptSearch";
+import { sentThreadWorkstream, sentWorkstreamGroup, sentWorkstreamLines } from "./sentWorkstreams";
 
 const threadKey = JSON.stringify(["mini", "thread-1"]);
 const prompt: PromptItem = {
@@ -61,7 +64,88 @@ describe("Prompt Workstream provenance", () => {
   });
 });
 
+describe("Sent Workstream membership", () => {
+  const environmentId = EnvironmentId.make("mini");
+  const threadId = ThreadId.make("thread-1");
+  const source = { environmentId, hostId: "host", expiresAt: 100 };
+  const destination = {
+    ...prompt.destinations[0]!,
+    targetHostId: source.hostId,
+    handoff: {
+      id: "request",
+      target: { threadId, label: null },
+      sentAt: 20,
+      text: null,
+      sourceLabel: null,
+      workstreams: ["requested-by-queue"],
+      confirmation: {
+        status: "confirmed",
+        kind: "handoff-receipt",
+        receiptId: "receipt",
+        source: "queue / host / mini",
+      },
+    },
+  } as const;
+  const state: PersonalWorkstreamsState = {
+    environments: [{ environmentId, status: "ready", confirmed: true, workstreamCount: 0 }],
+    workstreams: [],
+    assignmentsByThreadKey: new Map(),
+    pendingThreadKeys: new Set(),
+    canCreate: true,
+  };
+
+  it("requires a current exact receipt and a live observation of the receiving environment", () => {
+    const live = new Map();
+    expect(sentThreadWorkstream(destination, source, state, live, 99)).toMatchObject({
+      kind: "unassigned",
+      revision: 0,
+    });
+    for (const variant of [
+      { ...destination, targetEnvironmentRef: "other" },
+      { ...destination, targetHostId: "other" },
+      { ...destination, threadId: "other" },
+      { ...destination, handoff: null },
+    ]) {
+      expect(sentThreadWorkstream(variant, source, state, live, 99).kind).toBe("unknown");
+    }
+    expect(sentThreadWorkstream(destination, source, state, live, 100).kind).toBe("unknown");
+    expect(sentThreadWorkstream(destination, source, state, null, 99).kind).toBe("unknown");
+    for (const status of ["sync_failed", "offline", "update_required"] as const) {
+      const stale = { ...state, environments: [{ ...state.environments[0]!, status }] };
+      expect(sentThreadWorkstream(destination, source, stale, live, 99).kind).toBe("unknown");
+    }
+  });
+
+  it("keeps assignments whose group definition is masked, and ignores optimistic moves", () => {
+    const assignment = { threadId, workstreamId: "missing-group", revision: 4, updatedAt: null };
+    const masked = {
+      ...state,
+      assignmentsByThreadKey: new Map([[threadKey, { ...assignment, workstreamId: null }]]),
+    };
+    const observed = sentThreadWorkstream(
+      destination,
+      source,
+      masked,
+      new Map([[threadId, assignment]]),
+      99,
+    );
+    expect(observed).toMatchObject({ kind: "assigned", line: { id: "missing-group", name: null } });
+    expect(sentWorkstreamLines([observed, observed])).toHaveLength(1);
+    expect(sentWorkstreamGroup([observed, observed]).label).toBe("missing-group");
+    expect(sentThreadWorkstream(destination, source, masked, new Map(), 99).kind).toBe("unknown");
+    const pending = { ...masked, pendingThreadKeys: new Set([threadKey]) };
+    expect(sentThreadWorkstream(destination, source, pending, new Map(), 99)).toMatchObject({
+      kind: "unassigned",
+      revision: 0,
+    });
+  });
+});
+
 describe("Prompt deep links", () => {
+  it("accepts Unassigned only on Sent", () => {
+    expect(validatePromptSearch({ stage: "sent", filter: "unassigned" }).filter).toBe("unassigned");
+    expect(validatePromptSearch({ stage: "queued", filter: "unassigned" }).filter).toBeUndefined();
+  });
   it("routes hosted links to live Prompts and preserves the locally served route", () => {
     const search = { source: "mini", stage: "queued", prompt: "queue:request" } as const;
     const hosted = new URL(

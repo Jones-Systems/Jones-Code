@@ -33,6 +33,7 @@ const filterLabels = {
   "needs-you": "Needs you",
   paused: "Paused",
   waiting: "Waiting",
+  unassigned: "Unassigned",
 } as const;
 const groupLabels = {
   destination: "Destination",
@@ -40,7 +41,7 @@ const groupLabels = {
   none: "None",
 } as const;
 const prefsSchema = Schema.Struct({
-  filter: Schema.Literals(["all", "needs-you", "paused", "waiting"]),
+  filter: Schema.Literals(["all", "needs-you", "paused", "waiting", "unassigned"]),
   group: Schema.Literals(["default", "destination", "queue-state", "none"]),
 });
 const defaults: typeof prefsSchema.Type = { filter: "all", group: "default" };
@@ -76,7 +77,10 @@ export function usePromptListView(stage: PromptStage, navigation?: PromptNavigat
     : null;
   const setFilter = (filter: PromptFilter) => {
     setPrefs({ ...prefs, filter });
-    navigation?.replace({ filter, stage });
+    if (filter === "unassigned") setLocalWorkstream(null);
+    navigation?.replace(
+      filter === "unassigned" ? { filter, stage, ws: undefined } : { filter, stage },
+    );
   };
   const setGroup = (group: PromptGroupBy) => {
     setPrefs({ ...prefs, group });
@@ -94,7 +98,12 @@ export function usePromptListView(stage: PromptStage, navigation?: PromptNavigat
     workstream,
     filterWorkstream: (line) => {
       setLocalWorkstream({ key: line.filterKey, label: line.name ?? line.id });
-      navigation?.replace({ ws: line.filterKey });
+      if (filter === "unassigned") {
+        setPrefs({ ...prefs, filter: "all" });
+        navigation?.replace({ filter: "all", stage, ws: line.filterKey });
+      } else {
+        navigation?.replace({ ws: line.filterKey });
+      }
     },
     clear: () => {
       setQuery("");
@@ -206,9 +215,10 @@ export function filteredPromptGroups(
 }
 
 export function PromptFilteredEmpty({ view }: { readonly view: PromptListView }) {
+  const unassigned = view.filter === "unassigned" && !view.query.trim() && !view.workstream;
   return (
     <div className="space-y-2 rounded-md border p-4 text-sm">
-      <p>No prompts match.</p>
+      <p>{unassigned ? "No confirmed unassigned prompts in this sample." : "No prompts match."}</p>
       <Button variant="outline" size="compact" onClick={view.clear}>
         Clear filters
       </Button>
