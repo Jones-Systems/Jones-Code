@@ -432,9 +432,12 @@ describe("Install status receipt fixture", () => {
     expect(
       calls.some((call) => /^fixture-host-operation(Start|Stop|Fence)$/.test(call.action)),
     ).toBe(false);
-    await act(() => fixture.store.open(true));
+    expect(await routeInstallStatusPill(world.bridge, world.desktop(), false)).toBe("opened");
+    await click(screen, "Last update");
     await expect.element(screen.getByText("Closed after manual install")).toBeVisible();
     await expect.element(screen.getByText("VPS: 0.1.0-manual.3 (1111111)")).toBeVisible();
+    await click(screen, "Back to available update");
+    expect(screen.container.querySelector("[data-plan-preview]")).not.toBeNull();
   });
 
   it("keeps the stale plan when manual closure is declined", async () => {

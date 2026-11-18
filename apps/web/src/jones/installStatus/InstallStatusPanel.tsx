@@ -26,7 +26,7 @@ import {
 } from "./presentation";
 import { Elapsed, HeardAgo } from "./Elapsed";
 import { ProgressSteps } from "./ProgressSteps";
-import { selectionFor } from "./entrypoints";
+import { desktopCanPreviewInstallPlan, selectionFor } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
 import {
   inspectPanelCleanup,
@@ -185,6 +185,13 @@ export function InstallStatusPanel({
       : null;
   const overview = focusedDevice === null;
   const gateClosed = plan.laptop.gateClosed !== undefined;
+  const manualHistory = snapshot.native.last?.manualClosure !== undefined;
+  const updatePreview =
+    view.readOnly &&
+    manualHistory &&
+    snapshot.native.current === null &&
+    snapshot.native.laptop.environmentId !== undefined &&
+    desktopCanPreviewInstallPlan(snapshot.desktop);
   const summary = view.readOnly
     ? lastUpdateLabel(plan.dismissedAt ?? plan.createdAt)
     : view.preview
@@ -286,6 +293,13 @@ export function InstallStatusPanel({
               <Button variant="ghost-muted" size="micro" onClick={returnToOverview}>
                 <ChevronLeftIcon aria-hidden className="size-3" />
                 Back to all devices
+              </Button>
+            </div>
+          ) : null}
+          {overview && !editing && manualHistory && (view.preview || updatePreview) ? (
+            <div className="flex min-h-7 items-center px-2 pb-1">
+              <Button variant="ghost-muted" size="micro" onClick={() => store.open(view.preview)}>
+                {view.preview ? "Last update" : "Back to available update"}
               </Button>
             </div>
           ) : null}

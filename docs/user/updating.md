@@ -78,9 +78,10 @@ read-only. The next plan starts with Laptop only.
 If you finished a manual install and the panel still shows an older plan,
 choose **I installed manually**. Jones Code checks the running Laptop build and
 the selected machines before asking you to close the plan. **Last update** keeps
-the observed versions and identifies machines it could not verify. Resolve any
-outstanding update work first. Closing ends the plan's queue and leaves installed
-builds, staged downloads and follower settings in place.
+the observed versions and identifies machines it could not verify. If the update
+button opens an available build, select **Last update** in that panel to see the
+record. Resolve any outstanding update work first. Closing ends the plan's queue
+and leaves installed builds, staged downloads and follower settings in place.
 
 ### Recovery space
 

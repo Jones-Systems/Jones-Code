@@ -63,6 +63,21 @@ export function selectionFor(device: InstallStatusDevice): JonesInstallPlanSelec
     : undefined;
 }
 
+export function desktopCanPreviewInstallPlan(desktop: DesktopUpdateState | null) {
+  return (
+    targetForDesktop(desktop) !== undefined &&
+    [
+      "available",
+      "staged",
+      "downloading",
+      "verifying",
+      "preparing",
+      "installing",
+      "blocked",
+    ].includes(desktop?.jones?.phase ?? "")
+  );
+}
+
 export function canOpenInstallStatusPill(
   native: InstallStatusSnapshot["native"],
   desktop: DesktopUpdateState | null,
@@ -73,18 +88,7 @@ export function canOpenInstallStatusPill(
   return (
     native?.current != null ||
     native?.readOnly !== undefined ||
-    (!hasOtherUpdates &&
-      (native?.last != null ||
-        (targetForDesktop(desktop) !== undefined &&
-          [
-            "available",
-            "staged",
-            "downloading",
-            "verifying",
-            "preparing",
-            "installing",
-            "blocked",
-          ].includes(desktop?.jones?.phase ?? ""))))
+    (!hasOtherUpdates && (native?.last != null || desktopCanPreviewInstallPlan(desktop)))
   );
 }
 
@@ -102,19 +106,7 @@ export async function routeInstallStatusPill(
     store.open();
     return "opened";
   }
-  if (
-    !hasOtherUpdates &&
-    targetForDesktop(desktop) !== undefined &&
-    [
-      "available",
-      "staged",
-      "downloading",
-      "verifying",
-      "preparing",
-      "installing",
-      "blocked",
-    ].includes(desktop?.jones?.phase ?? "")
-  ) {
+  if (!hasOtherUpdates && desktopCanPreviewInstallPlan(desktop)) {
     const source = targetForDesktop(desktop)!.sourceSha;
     if (store.get().previewTargetSource !== source)
       store.update({ previewTargetSource: source, previewSelection: [] });
