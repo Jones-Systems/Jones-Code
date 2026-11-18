@@ -49,9 +49,10 @@ export function snapshotDecision(measurement) {
   const elapsedCrossings = thresholdCrossings.filter(
     ({ field }) => field === "decodeMs" || field === "schemaProjectionMs",
   );
+  const elapsedTrigger = elapsedCrossings.length > 0;
   if (
     measurement.contiguousEncodeTrigger !== encodeTrigger ||
-    measurement.decodeProjectionElapsedTrigger !== (elapsedCrossings.length > 0)
+    measurement.decodeProjectionElapsedTrigger !== elapsedTrigger
   )
     return {
       activationDecision: "unknown",
@@ -64,9 +65,7 @@ export function snapshotDecision(measurement) {
       activationReason: "synchronous-encode",
       thresholdCrossings,
     };
-  if (
-    elapsedCrossings.some(({ window, limitMs }) => samples[window - 1].loopMaxMs >= limitMs)
-  )
+  if (elapsedCrossings.some(({ window, limitMs }) => samples[window - 1].loopMaxMs >= limitMs))
     return {
       activationDecision: "unknown",
       activationReason: "decode-or-projection-attribution",
@@ -80,7 +79,7 @@ export function snapshotDecision(measurement) {
     };
   return {
     activationDecision: "not-activated",
-    activationReason: elapsedCrossings.length > 0 ? "elapsed-phases-bounded" : "within-thresholds",
+    activationReason: elapsedTrigger ? "elapsed-phases-bounded" : "within-thresholds",
     thresholdCrossings,
   };
 }
