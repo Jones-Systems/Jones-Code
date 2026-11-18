@@ -109,18 +109,20 @@ function changedPaths(eventName, event, run) {
 
 function main() {
   let change = { files: null, reason: "Missing event evidence; full qualification" };
+  let event;
   try {
-    change = changedPaths(
-      process.env.GITHUB_EVENT_NAME,
-      JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")),
-      (command, args) =>
-        execFileSync(command, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }),
+    event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+    change = changedPaths(process.env.GITHUB_EVENT_NAME, event, (command, args) =>
+      execFileSync(command, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }),
     );
   } catch (error) {
     console.error(`Could not read event: ${error.message}`);
   }
   console.error(change.reason);
   const outputs = select(change.files, readWorkspace());
+  outputs.server_cache_pilot =
+    event?.pull_request?.head?.repo?.full_name === event?.repository?.full_name &&
+    change.files?.includes("scripts/jones/ci/server-result-cache.mjs") === true;
   const lines =
     Object.entries(outputs)
       .map(([key, value]) => `${key}=${value}`)

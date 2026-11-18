@@ -487,8 +487,8 @@ results and unresolved findings; absence of a bot review is not a failure.
 
 ### Required and advisory checks
 
-The required merge check is **`Check`**, the final job of the `CI` workflow
-(`.github/workflows/ci.yml`). It aggregates every pull-request job in that
+The required merge check is **`Check`**, the final required job of the `CI` workflow
+(`.github/workflows/ci.yml`). It aggregates the required pull-request jobs in that
 workflow and fails on failed or cancelled jobs, failed change detection, and
 unexplained skips. A skip is intentional only when a successful classifier
 explicitly selects that job out. Linux selection preserves full runs for main
@@ -501,6 +501,8 @@ Every other check is advisory:
 - `Jones update qualification`;
 - `Server parallel qualification` (serial Linux/macOS source, bundle, Electron Node
   and installed SEA measurements; failed or unknown evidence is not qualification);
+- `Server Result Cache` cold and warm pilots (one weighted Linux shard against
+  the ordinary fresh run, using GitHub Actions cache);
 - `Native enrollment candidate`;
 - `Linux CLI artifacts`;
 - `Mac Desktop Artifact`, including the opt-in #873 original-worker reproduction job;
@@ -513,6 +515,16 @@ When a workflow or job is added, renamed or moved, update this list in the
 same change. The organization-wide rules live in the Codex V3
 [CI budget and placement](https://github.com/Jones-Systems/Codex-V3/blob/main/docs/design/test-performance-practice.md#ci-budget-and-placement)
 practice.
+
+Run the server result-cache pilot with the `server_cache_pilot` input on a
+manual **CI** run. Same-repository pull requests that change the pilot driver
+also start it automatically. The cold job saves per-file results for that
+run and attempt. The warm job restores them on a separate Linux runner,
+re-executes one hit without caching, and compares every file and case against
+the fresh shard report. The transfer-budget test runs fresh in all three.
+The warm job summary records the comparison and elapsed times. The pilot
+result archive is scoped to the experiment. The normal server matrix still
+qualifies every selected test fresh and supplies the shard weight measurements.
 
 ### Standing delivery and merge contract
 
