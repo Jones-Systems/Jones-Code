@@ -8,6 +8,7 @@ import type { ComputeObservation } from "./observations.ts";
 import type { NativePoolObservation } from "./resourceSamples.ts";
 import {
   NativeGenerationEvidence,
+  PopulationSampling,
   generationIdentity,
   type EvidenceGeneration,
 } from "./nativeGenerationEvidence.ts";
@@ -424,4 +425,41 @@ it("does not confirm a child reply until the supervisor caller accepts its resul
   expect(f.records[0]!.grep).toBeUndefined();
   f.records[0]!.faulted = true;
   expect(() => f.evidence.confirmPositive(f.handles[0]!)).toThrow("empty, stale or unbound");
+});
+
+it("serializes sampling and population changes through failure and duplicate release", async () => {
+  const gate = new PopulationSampling();
+  const releaseSample = await gate.acquire();
+  const order: string[] = [];
+  const transition = gate.acquire().then((release) => {
+    try {
+      order.push("transition");
+      throw new Error("transition failed");
+    } finally {
+      release();
+    }
+  });
+  const sample = gate.acquire().then((release) => {
+    order.push("sample");
+    release();
+  });
+  await Promise.resolve();
+  expect(order).toEqual([]);
+  releaseSample();
+  releaseSample();
+  await expect(transition).rejects.toThrow("transition failed");
+  await sample;
+  expect(order).toEqual(["transition", "sample"]);
+});
+
+it("an aborted population waiter never acquires and does not block later samples", async () => {
+  const gate = new PopulationSampling();
+  const release = await gate.acquire();
+  const controller = new AbortController();
+  const abandoned = gate.acquire(controller.signal);
+  const later = gate.acquire();
+  controller.abort();
+  await expect(abandoned).rejects.toThrow("Sampling drain aborted");
+  release();
+  (await later)();
 });

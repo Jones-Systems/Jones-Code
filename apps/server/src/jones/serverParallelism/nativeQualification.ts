@@ -26,7 +26,11 @@ import {
   qualificationStream,
   qualificationWorkload,
 } from "./qualificationRetention.ts";
-import { NativeGenerationEvidence, type EvidenceGeneration } from "./nativeGenerationEvidence.ts";
+import {
+  NativeGenerationEvidence,
+  PopulationSampling,
+  type EvidenceGeneration,
+} from "./nativeGenerationEvidence.ts";
 import { observeSafely } from "./observations.ts";
 import {
   diagnosticError,
@@ -250,6 +254,48 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
       nonce,
     },
   });
+  const population = new PopulationSampling();
+  const populationTiming = () => ({
+    admitted: 0,
+    uncoordinated: 0,
+    totalWaitMs: 0,
+    maxWaitMs: 0,
+    totalHoldMs: 0,
+    maxHoldMs: 0,
+  });
+  const populationSampling = {
+    start: populationTiming(),
+    exit: populationTiming(),
+    journalRetirement: populationTiming(),
+  };
+  const acquirePopulationTransition = async (kind: keyof typeof populationSampling) => {
+    const timing = populationSampling[kind];
+    const requestedAt = performance.now();
+    let release: () => void;
+    try {
+      release = await population.acquire(options.signal);
+    } catch (cause) {
+      if (!options.signal?.aborted) throw cause;
+      // Cancellation must still reap exact captures and retire their journal rows.
+      samplerFailure = true;
+      timing.uncoordinated++;
+      return () => {};
+    }
+    const acquiredAt = performance.now();
+    const waitMs = acquiredAt - requestedAt;
+    timing.admitted++;
+    timing.totalWaitMs += waitMs;
+    timing.maxWaitMs = Math.max(timing.maxWaitMs, waitMs);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const holdMs = performance.now() - acquiredAt;
+      timing.totalHoldMs += holdMs;
+      timing.maxHoldMs = Math.max(timing.maxHoldMs, holdMs);
+      release();
+    };
+  };
   const journal = await GenerationJournal.acquire(NodePath.join(directory, "journal"), count);
   const supervisor = new ComputeSupervisor({
     count,
@@ -280,29 +326,35 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
       },
       release: journal.release.bind(journal),
       retired: async (slot, generation, nonce, pid) => {
-        const identity = journalIdentity(slot, generation, nonce, pid);
-        emit("retired-begin", identity);
+        const release = await acquirePopulationTransition("journalRetirement");
         try {
-          await journal.retired(slot, generation, nonce, pid);
-          emit("retired-end", identity);
-        } catch (cause) {
-          emit("retired-error", identity, diagnosticError(cause));
-          throw cause;
+          const identity = journalIdentity(slot, generation, nonce, pid);
+          emit("retired-begin", identity);
+          try {
+            await journal.retired(slot, generation, nonce, pid);
+            emit("retired-end", identity);
+          } catch (cause) {
+            emit("retired-error", identity, diagnosticError(cause));
+            throw cause;
+          }
+          const record = generations.find(
+            (item) =>
+              item.pid === pid &&
+              item.bootstrap.slotId === slot &&
+              item.bootstrap.slotGeneration === generation &&
+              item.bootstrap.nonce === nonce,
+          );
+          if (record) record.journalRetiredAt = performance.now();
+          // Keep charging/auditing the old generation until durable retirement, after captured exit.
+          captured.delete(pid);
+        } finally {
+          release();
         }
-        const record = generations.find(
-          (item) =>
-            item.pid === pid &&
-            item.bootstrap.slotId === slot &&
-            item.bootstrap.slotGeneration === generation &&
-            item.bootstrap.nonce === nonce,
-        );
-        if (record) record.journalRetiredAt = performance.now();
-        // Keep charging/auditing the old generation until durable retirement, after captured exit.
-        captured.delete(pid);
       },
     },
     observe,
     start: async (boot, register, onExit) => {
+      const release = await acquirePopulationTransition("start");
       const record: EvidenceGeneration = {
         bootstrap: Object.freeze({ ...boot }),
         startedAt: performance.now(),
@@ -333,6 +385,8 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
           (startingChild) => {
             record.pid = startingChild.pid;
             captured.set(startingChild.pid, startingChild);
+            // Capture binds the synchronous spawn before startup I/O begins.
+            release();
           },
           options.diagnostic ? (event) => diagnosticSink({ ...event, phase }) : undefined,
           probes,
@@ -352,7 +406,10 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
           record.pid = cause.cause.retiredPid;
           record.exitCapturedAt = performance.now();
         }
+        samplerFailure = true;
         throw cause;
+      } finally {
+        release();
       }
       record.runtimeMetadata = child.runtimeMetadata;
       if (boot.slotGeneration > 1) rotations++;
@@ -446,33 +503,37 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
           }
         },
         retire: async () => {
-          // Finish a genuine last-live checkpoint, then atomically close this capture to new reads.
-          // Other generations keep their independent sampling admissions while this one drains.
-          let samplingFailure: unknown;
-          try {
-            await generationEvidence.checkpoint(record, "before-retirement");
-            await untilSamplingAbort(sampleResources(), options.signal);
-          } catch (cause) {
-            samplingFailure = cause;
+          // Take the last-live sample before excluding this generation from future reads.
+          if (!options.signal?.aborted) {
+            try {
+              await generationEvidence.checkpoint(record, "before-retirement");
+              await untilSamplingAbort(sampleResources(), options.signal);
+            } catch {
+              samplerFailure = true;
+            }
           }
+          const release = await acquirePopulationTransition("exit");
           try {
-            await sampling.get(record)!.closeAndDrain(options.signal);
-          } catch (cause) {
-            samplingFailure ??= cause;
+            try {
+              await sampling.get(record)!.closeAndDrain(options.signal);
+            } catch {
+              samplerFailure = true;
+            }
+            record.retirementStartedAt = performance.now();
+            const identity = { pid: child.pid, bootstrap: record.bootstrap };
+            emit("retire-begin", identity);
+            try {
+              await child.retire();
+              emit("retire-resolved", identity);
+            } catch (cause) {
+              emit("retire-error", identity, diagnosticError(cause));
+              throw cause;
+            }
+            record.exitCapturedAt = performance.now();
+            active.delete(child.pid);
+          } finally {
+            release();
           }
-          record.retirementStartedAt = performance.now();
-          const identity = { pid: child.pid, bootstrap: record.bootstrap };
-          emit("retire-begin", identity);
-          try {
-            await child.retire();
-            emit("retire-resolved", identity);
-          } catch (cause) {
-            emit("retire-error", identity, diagnosticError(cause));
-            throw cause;
-          }
-          record.exitCapturedAt = performance.now();
-          active.delete(child.pid);
-          if (samplingFailure !== undefined) throw samplingFailure;
         },
       });
     },
@@ -489,7 +550,13 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
   let previous: ResourceRow | undefined;
   let resourceTail = Promise.resolve();
   const sampleResources = (periodic = false) => {
-    const work = resourceTail.then(() => collectResources(periodic));
+    const work = population.acquire().then(async (release) => {
+      try {
+        await collectResources(periodic);
+      } finally {
+        release();
+      }
+    });
     resourceTail = work;
     return work;
   };
@@ -1078,6 +1145,7 @@ async function runWithSearchProbe(options: NativeQualificationOptions, probes: S
       productiveOverlapSamples,
       executions,
       resourceCoverage,
+      populationSampling,
       threadBudget,
       serializedNegativeControl,
       steadyRotations,
