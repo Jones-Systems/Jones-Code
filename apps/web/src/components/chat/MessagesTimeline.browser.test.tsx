@@ -249,11 +249,9 @@ it("fits expanded assistant tables to their content within the conversation row"
     ),
   ]);
   const [wide, small] = await vi.waitFor(() => {
-    const tables = [
-      ...screen.container.querySelectorAll<HTMLElement>(".chat-markdown-table-container"),
-    ];
+    const tables = screen.container.querySelectorAll<HTMLElement>(".chat-markdown-table-container");
     expect(tables).toHaveLength(2);
-    return tables;
+    return [tables.item(0), tables.item(1)] as const;
   });
   const lane = wide.closest(".chat-content-lane")!.getBoundingClientRect();
   const frame = wide.closest(".messages-timeline-row-frame")!.getBoundingClientRect();
