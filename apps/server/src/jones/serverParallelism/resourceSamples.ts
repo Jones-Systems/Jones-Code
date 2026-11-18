@@ -332,19 +332,17 @@ export function parseMacProcessResources(
   pids: readonly number[],
 ): readonly ProcessResources[] | undefined {
   const [header, ...lines] = output.trimEnd().split("\n");
-  const columns = /\s+JONES_SP_PID\s+JONES_SP_TIME\s+JONES_SP_RSS$/.exec(header ?? "");
-  if (!columns) return undefined;
+  if (!/\s+JONES_SP_PID\s+JONES_SP_TIME\s+JONES_SP_RSS$/.test(header ?? "")) return undefined;
 
   const processes = new Map<number, ProcessResources & { threads: number }>();
   const requested = new Set(pids);
   for (const line of lines) {
-    const fields = line.slice(columns.index).trim().split(/\s+/);
-    const [pidText, time, rssText] = fields;
-    if (fields.length !== 3 || !/^\d+$/.test(pidText!) || !/^\d+$/.test(rssText!))
-      return undefined;
-    const pid = Number(pidText);
-    const cpuMs = cpuTime(time!);
-    const rssBytes = Number(rssText) * 1024;
+    // The earlier USER column can exceed its header width.
+    const fields = /\s+(\d+)\s+(\S+)\s+(\d+)\s*$/.exec(line);
+    if (!fields) return undefined;
+    const pid = Number(fields[1]);
+    const cpuMs = cpuTime(fields[2] ?? "");
+    const rssBytes = Number(fields[3]) * 1024;
     if (!requested.has(pid) || !valid({ pid, cpuMs, rssBytes })) return undefined;
 
     const process = processes.get(pid);

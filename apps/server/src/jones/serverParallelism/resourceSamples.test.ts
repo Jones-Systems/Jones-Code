@@ -57,7 +57,8 @@ const macThreadTable = [
 
 it("combines repeated process totals and counts every captured thread once", () => {
   const requested = [123, 456, 789];
-  const processes = parseMacProcessResources(macThreadTable, requested);
+  const shiftedColumns = macThreadTable.replace("runner  ", "a-very-long-runner-account-name ");
+  const processes = parseMacProcessResources(shiftedColumns, requested);
   expect(processes).toEqual([
     { pid: 123, cpuMs: 250, rssBytes: 64 * 1024 * 1024, threads: 2 },
     { pid: 456, cpuMs: 500, rssBytes: 32 * 1024 * 1024, threads: 3 },
