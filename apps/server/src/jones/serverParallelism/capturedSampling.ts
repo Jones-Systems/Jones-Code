@@ -51,3 +51,21 @@ export class CapturedSampling {
     );
   }
 }
+
+/** Serialize whole-cohort resource reads with changes to the captured worker population. */
+export class PopulationSampling {
+  private tail = Promise.resolve();
+
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    const previous = this.tail;
+    const next = Promise.withResolvers<void>();
+    this.tail = previous.then(() => next.promise);
+    try {
+      await untilSamplingAbort(previous, signal);
+    } catch (cause) {
+      next.resolve();
+      throw cause;
+    }
+    return () => next.resolve();
+  }
+}
