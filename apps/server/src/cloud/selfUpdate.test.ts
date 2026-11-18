@@ -520,6 +520,7 @@ it.layer(NodeServices.layer)("server self update", (it) => {
         });
         yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
         yield* fs.writeFileString(dbPath, "untouched database");
+        const canonicalDbPath = yield* fs.realPath(dbPath);
         let captured = false;
         const result = yield* selfUpdate.installQualified!(
           {
@@ -529,7 +530,7 @@ it.layer(NodeServices.layer)("server self update", (it) => {
               stagedHandle: "12345678-1234-4234-8234-123456789abc",
               binding: {
                 baseDir,
-                dbPath,
+                dbPath: canonicalDbPath,
                 environmentId: "synthetic",
                 activeVersion: "0.0.0-preview.20261002.100",
                 activeSourceSha: "a".repeat(40),

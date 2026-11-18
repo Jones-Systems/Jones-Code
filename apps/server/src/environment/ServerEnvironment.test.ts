@@ -510,7 +510,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
     }),
   );
 
-  it.effect("advertises desktopAppUpdate only with desktop mode and the control fd", () =>
+  it.effect("requires desktop mode and a control fd to advertise desktop app updates", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -527,7 +527,9 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
           Effect.provide(
             ServerEnvironment.layer.pipe(
               Layer.provide(ServerSecretStore.layer),
-              Layer.provide(ServerConfig.layer({ ...serverConfig, ...overrides })),
+              Layer.provide(
+                ServerConfig.layer({ ...serverConfig, desktopAppUpdate: true, ...overrides }),
+              ),
             ),
           ),
         );
@@ -778,7 +780,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
     }),
   );
 
-  it.effect("advertises desktopAppUpdate only with desktop mode and the control fd", () =>
+  it.effect("requires desktop mode and a control fd to advertise desktop app updates", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -795,7 +797,9 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
           Effect.provide(
             ServerEnvironment.layer.pipe(
               Layer.provide(ServerSecretStore.layer),
-              Layer.provide(ServerConfig.layer({ ...serverConfig, ...overrides })),
+              Layer.provide(
+                ServerConfig.layer({ ...serverConfig, desktopAppUpdate: true, ...overrides }),
+              ),
             ),
           ),
         );

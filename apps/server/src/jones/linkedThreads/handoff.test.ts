@@ -10,6 +10,7 @@ import {
   ThreadId,
   RunId,
   OrchestratorMcpFailure,
+  OrchestratorMcpThreadSendInput,
   CommandId,
   type ExecutionEnvironmentDescriptor,
   type RuntimeMode,
@@ -54,6 +55,8 @@ import * as Links from "./LinkedThreads.ts";
 import * as Launch from "./launchTransport.ts";
 import * as Handoff from "./handoff.ts";
 import migration from "../persistence/Migrations/122_JonesThreadLinks.ts";
+import remoteSendReceiptsMigration from "../persistence/Migrations/161_JonesRemoteSendReceipts.ts";
+import { acceptingSendReceipts } from "../remoteDelegation/RemoteDelegation.testkit.ts";
 import { RecordedAppThreadJson } from "../../orchestration-v2/RecordedTypes.ts";
 import {
   encodeLinkedMessageOrigin,
@@ -449,14 +452,30 @@ it.effect("preserves production blocked-send refusal locally and through forward
     commandType: "message.dispatch",
     cause: new Error("Connection closed"),
   });
+  const decodeSend = Schema.decodeUnknownSync(OrchestratorMcpThreadSendInput);
   const check = (error: typeof blocked | typeof ambiguous, remote: boolean) => {
-    const threads = Layer.mock(Threads.ThreadManagementService)({
-      getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
-      getThreadRecords: (id) => Effect.succeed(idleThreadProjection(liveThreadShell(id))),
-      getProjectThreadRecords: ({ threadId }) =>
-        Effect.succeed(idleThreadProjection(liveThreadShell(threadId))),
-      sendToThread: () => Effect.fail(error),
-    });
+    let sendAttempts = 0;
+    const threads = Layer.unwrap(
+      Effect.map(SqlClient.SqlClient, (sql) =>
+        Layer.mock(Threads.ThreadManagementService)({
+          remoteSendReceipts: acceptingSendReceipts(sql).remoteSendReceipts,
+          getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+          getThreadRecords: (id) => Effect.succeed(idleThreadProjection(liveThreadShell(id))),
+          getProjectThreadRecords: ({ threadId }) =>
+            Effect.succeed(idleThreadProjection(liveThreadShell(threadId))),
+          sendToThread: () => {
+            sendAttempts++;
+            return Effect.fail(error);
+          },
+        }),
+      ),
+    ).pipe(
+      Layer.provide(
+        Layer.effectDiscard(remoteSendReceiptsMigration).pipe(
+          Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+        ),
+      ),
+    );
     const mcp = Orchestrator.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -487,6 +506,7 @@ it.effect("preserves production blocked-send refusal locally and through forward
           gate,
         ),
       ).pipe(Effect.provide(f.layer));
+      expect(sendAttempts).toBe(1);
       expect(result.delivery).toBe(error === blocked ? "rejected" : "unknown");
       expect(f.linkIds.size).toBe(error === blocked ? 0 : 1);
       expect(result.link?.acceptance ?? null).toBe(error === blocked ? null : "offered");
@@ -515,21 +535,22 @@ it.effect("preserves production blocked-send refusal locally and through forward
                     : request.tool === "t3_thread_send"
                       ? (Effect.gen(function* () {
                           const service = yield* Orchestrator.OrchestratorMcpService;
-                          return yield* service
-                            .sendToThread(
-                              {
-                                ...scope,
-                                environmentId: away,
-                                thread: undefined,
-                                client: {
-                                  sessionId: "peer",
-                                  label: "Peer",
-                                  access: "full-access",
-                                  linked: true,
-                                },
+                          const receiver = withLinkedMessageOrigin(
+                            {
+                              ...scope,
+                              environmentId: away,
+                              thread: undefined,
+                              client: {
+                                sessionId: "peer",
+                                label: "Peer",
+                                access: "full-access",
+                                linked: true,
                               },
-                              { threadId: target, message: "handoff" },
-                            )
+                            },
+                            encodeLinkedMessageOrigin(request.origin!),
+                          )!;
+                          return yield* service
+                            .sendToThread(receiver, decodeSend(request.arguments))
                             .pipe(
                               Effect.mapError((failure) => decodeFailure(encodeFailure(failure))),
                             );

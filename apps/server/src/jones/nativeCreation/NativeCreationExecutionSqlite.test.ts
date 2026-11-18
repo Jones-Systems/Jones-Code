@@ -84,6 +84,9 @@ import {
 } from "./NativeCreationPreparation.ts";
 import { NativeCreationWholeOperationEvidence } from "./NativeCreationExecutionTypes.ts";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as EventStore from "../../orchestration-v2/EventStore.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import {
   CurrentEffectClaim,
   withActiveEffectClaim,
@@ -96,6 +99,9 @@ const database = Layer.effectDiscard(runMigrations().pipe(Effect.map(() => undef
   Layer.provideMerge(memory),
 );
 const realRepository = RepositorySqlite.layer.pipe(Layer.provideMerge(database));
+const executionEventSink = EventSink.layer.pipe(
+  Layer.provide(Layer.merge(EventStore.layer, ProjectionStore.layer)),
+);
 
 const decodeEffectNativePreparationBinding = Schema.decodeEffect(NativePreparationBinding);
 const decodeEffectNativeCreationHistoricalBinding = Schema.decodeEffect(
@@ -411,7 +417,9 @@ const fixture = Effect.gen(function* () {
       if (Option.isNone(claimed)) return yield* Effect.die("Missing synthetic claim");
       return yield* withActiveEffectClaim(outbox, claimed.value, 10_000, true, run);
     }).pipe(Effect.provide(Outbox.layer));
-  const execute = runClaim(() => executeNativeProviderEffect(effect));
+  const execute = runClaim(() => executeNativeProviderEffect(effect)).pipe(
+    Effect.provide(executionEventSink),
+  );
   return {
     sql,
     repository,
@@ -592,6 +600,7 @@ it.effect.each(["absent", "other-request"] as const)(
       let issues = 0;
       let executions = 0;
       const attempt = executeNativeProviderEffect(effect).pipe(
+        Effect.provide(executionEventSink),
         Effect.provide(
           Layer.merge(
             Layer.mock(Authority.NativeCreationAuthority)({
@@ -1097,6 +1106,7 @@ it.effect(
       };
       const fiber = yield* withActiveEffectClaim(observed, captured, 10_000, true, (claim) =>
         executeNativeProviderEffect(f.effect).pipe(
+          Effect.provide(executionEventSink),
           Effect.andThen(
             claim.settle((current) =>
               outbox.succeed({ effectId: current.id, workerId: "sql-worker", claim: current }),

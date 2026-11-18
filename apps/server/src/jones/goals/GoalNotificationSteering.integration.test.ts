@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import { NodeId, TurnItemId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import {
@@ -21,13 +22,18 @@ it.effect.each(["stopped", "missing-target", "unknown-native-outcome"] as const)
   (scenario) =>
     Effect.gen(function* () {
       const fixture = workModeFixture();
-      const providerThread = fixture.providerThreads[0]!;
+      const providerThread = {
+        ...fixture.providerThreads[0]!,
+        goal: { objective: "Finish the delegated work", status: "active" as const },
+      };
       const providerTurn = { ...fixture.providerTurns[0]!, status: "running" as const };
       const run = { ...fixture.runs[0]!, status: "running" as const };
       const message = {
         ...fixture.messages[0]!,
+        createdBy: "agent" as const,
+        creationSource: "server" as const,
         notification: {
-          source: { kind: "delegated_task" as const, taskIds: [] },
+          source: { kind: "delegated_task" as const, taskIds: [NodeId.make("child-task")] },
           outcome: "completed" as const,
           summary: "Child finished",
         },
@@ -59,15 +65,32 @@ it.effect.each(["stopped", "missing-target", "unknown-native-outcome"] as const)
           }),
         getThreadRecords: () =>
           Effect.succeed({
-            thread: fixture.thread,
+            ...fixture,
+            messages: [message],
             turnItems:
               scenario === "stopped"
-                ? fixture.turnItems.concat({
-                    ...fixture.turnItems[0]!,
-                    type: "run_interrupt_request",
-                  } as never)
+                ? [
+                    {
+                      id: TurnItemId.make("stop-before-notification"),
+                      threadId: fixture.thread.id,
+                      runId: run.id,
+                      nodeId: run.rootNodeId,
+                      providerThreadId: providerThread.id,
+                      providerTurnId: null,
+                      nativeItemRef: null,
+                      parentItemId: null,
+                      ordinal: 1,
+                      status: "completed",
+                      title: "Interrupt requested",
+                      startedAt: fixture.thread.createdAt,
+                      completedAt: fixture.thread.createdAt,
+                      updatedAt: fixture.thread.createdAt,
+                      type: "run_interrupt_request",
+                      message: "User requested Stop",
+                    },
+                  ]
                 : [],
-          } as never),
+          }),
       });
       const sessions = Layer.mock(Sessions.ProviderSessionManagerV2)({
         get: () => Effect.succeedSome(runtime),
