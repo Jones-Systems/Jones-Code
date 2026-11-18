@@ -18,25 +18,28 @@ import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./http.ts";
 import * as VoiceReview from "./bridge.ts";
+import { voiceReviewConfigFromEnv } from "./config.ts";
 
 class TestApi extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.voiceReview) {}
 const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (handler) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    if (!request.headers.authorization)
+    const authorization = request.headers.authorization;
+    const writer = authorization === "Bearer owner";
+    if (!writer && authorization !== "Bearer reader")
       return yield* new EnvironmentAuthInvalidError({
         code: "auth_invalid",
-        reason: "missing_credential",
+        reason: authorization ? "invalid_credential" : "missing_credential",
         traceId: "test",
       });
     return yield* handler.pipe(
       Effect.provideService(EnvironmentAuthenticatedPrincipal, {
-        sessionId: AuthSessionId.make(
-          request.headers.authorization === "Bearer owner" ? "owner" : "other",
-        ),
+        sessionId: AuthSessionId.make(writer ? "owner" : "reader"),
         subject: "generic-subject",
         method: "bearer-access-token",
-        scopes: new Set<AuthEnvironmentScope>(["orchestration:read", "orchestration:operate"]),
+        scopes: new Set<AuthEnvironmentScope>(
+          writer ? ["orchestration:read", "orchestration:operate"] : ["orchestration:read"],
+        ),
       }),
     );
   }),
@@ -144,6 +147,55 @@ it("rejects strict mutation and list-window violations before credential or brok
   }
 });
 
+it("protects both reviewed-send endpoints and rejects malformed reviewed sends before broker access", async () => {
+  const fetcher = vi.fn<typeof fetch>();
+  const config = voiceReviewConfigFromEnv({
+    T3CODE_VOICE_REVIEW_BROKER_URL: "http://127.0.0.1:7000",
+    T3CODE_VOICE_REVIEW_REVIEWER_TOKEN_FILE: "/not-read",
+    T3CODE_VOICE_REVIEW_SOURCE_ID: "microphone",
+  });
+  const app = makeApp(
+    VoiceReview.layer.pipe(
+      Layer.provide(Layer.succeed(VoiceReview.VoiceReviewDependencies, { config, fetcher })),
+    ),
+  );
+  const draftUrl = "http://local/api/voice-review/drafts/capture";
+  const send = (headers: Headers, payload: unknown, action = "send-reviewed") =>
+    app.handler(
+      new Request(`${draftUrl}/${action}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      }),
+    );
+  const valid = { expected_revision: 1, workstream_id: null };
+  try {
+    for (const [authorization, status] of [
+      [null, 401],
+      ["Bearer wrong", 401],
+      ["Bearer reader", 403],
+    ] as const) {
+      const headers = new Headers({ "content-type": "application/json" });
+      if (authorization !== null) headers.set("authorization", authorization);
+      const probe = await app.handler(new Request(`${draftUrl}/send-options`, { headers }));
+      expect(probe.status).toBe(status);
+      expect(probe.headers.get("cache-control")).toBe("no-store");
+      expect((await send(headers, valid)).status).toBe(status);
+    }
+    const owner = new Headers({
+      authorization: "Bearer owner",
+      "content-type": "application/json",
+    });
+    for (const invalid of [{ expected_revision: 1 }, { ...valid, edit_handle: null }]) {
+      expect((await send(owner, invalid)).status).toBe(400);
+    }
+    expect((await send(owner, valid, "send-now")).status).toBe(400);
+    expect(fetcher).not.toHaveBeenCalled();
+  } finally {
+    await app.dispose();
+  }
+});
+
 it("delegates authenticated draft reads to the injected domain service", async () => {
   const fetcher = vi.fn();
   vi.stubGlobal("fetch", fetcher);
@@ -160,6 +212,8 @@ it("delegates authenticated draft reads to the injected domain service", async (
       list,
       get: () => Effect.die("unexpected get"),
       mutate: () => Effect.die("unexpected mutation"),
+      sendOptions: () => Effect.die("unexpected sendOptions"),
+      sendReviewed: () => Effect.die("unexpected sendReviewed"),
     }),
   );
   try {

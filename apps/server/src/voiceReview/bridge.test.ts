@@ -70,6 +70,158 @@ const config = (reviewer_token_file: string) =>
     T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: '["owner-session"]',
   })!;
 
+describe("reviewed send broker transport", () => {
+  const brokerDraftUrl = "http://127.0.0.1:7000/v1/prompt-review/drafts/capture";
+  const options = {
+    schema: "voice.reviewed-send/v1",
+    workstream_ids: ["workstream:fixture"],
+    can_send_without_workstream: false,
+  };
+  const released = { ...draft, state: "released", revision: 2, command_id: "command" };
+
+  it("uses send-now authority and the configured source before probing or sending", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const bridge = makeVoiceReviewBridge(config("/not-read"), fetcher);
+    const reader = { ...principal, scopes: new Set(["orchestration:read"] as const) };
+    await expect(bridge.sendOptions(reader, draft.id)).rejects.toBeInstanceOf(
+      VoiceReviewForbiddenError,
+    );
+    await expect(
+      bridge.sendReviewed(reader, draft.id, { expected_revision: 1, workstream_id: null }),
+    ).rejects.toBeInstanceOf(VoiceReviewForbiddenError);
+    expect(fetcher).not.toHaveBeenCalled();
+
+    await withFixture(async (tokenFile) => {
+      fetcher.mockImplementation(async () => Response.json({ ...draft, source_id: "foreign" }));
+      const bound = makeVoiceReviewBridge(config(tokenFile), fetcher);
+      await expect(bound.sendOptions(principal, draft.id)).rejects.toBeInstanceOf(
+        VoiceReviewNotFoundError,
+      );
+      await expect(
+        bound.sendReviewed(principal, draft.id, { expected_revision: 1, workstream_id: null }),
+      ).rejects.toBeInstanceOf(VoiceReviewNotFoundError);
+      expect(fetcher.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+        [brokerDraftUrl, "GET"],
+        [brokerDraftUrl, "GET"],
+      ]);
+    });
+  });
+
+  it("distinguishes an absent options route from draft errors and malformed capability replies", async () =>
+    withFixture(async (tokenFile) => {
+      const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+        expect(url).toBe(brokerDraftUrl);
+        expect(init?.method).toBe("GET");
+        return Response.json(draft);
+      });
+      const bridge = makeVoiceReviewBridge(config(tokenFile), fetcher);
+      const reply = (body: unknown, status = 200) =>
+        fetcher
+          .mockImplementationOnce(async (url) => {
+            expect(url).toBe(brokerDraftUrl);
+            return Response.json(draft);
+          })
+          .mockImplementationOnce(async (url, init) => {
+            expect(url).toBe(`${brokerDraftUrl}/send-options`);
+            expect(init?.method).toBe("GET");
+            return Response.json(body, { status });
+          });
+
+      reply({ detail: "Not Found" }, 404);
+      await expect(bridge.sendOptions(principal, draft.id)).resolves.toBeNull();
+      reply(options);
+      await expect(bridge.sendOptions(principal, draft.id)).resolves.toEqual(options);
+      reply({ detail: "prompt draft not found" }, 404);
+      await expect(bridge.sendOptions(principal, draft.id)).rejects.toBeInstanceOf(
+        VoiceReviewNotFoundError,
+      );
+      reply({ detail: "conflict" }, 409);
+      await expect(bridge.sendOptions(principal, draft.id)).rejects.toBeInstanceOf(
+        VoiceReviewUnavailableError,
+      );
+      for (const status of [401, 403]) {
+        reply({ detail: "reviewer rejected" }, status);
+        await expect(bridge.sendOptions(principal, draft.id)).rejects.toBeInstanceOf(
+          VoiceReviewUnavailableError,
+        );
+      }
+      for (const invalid of [null, { ...options, can_send_without_workstream: "true" }]) {
+        reply(invalid);
+        await expect(bridge.sendOptions(principal, draft.id)).rejects.toThrow();
+      }
+    }));
+
+  it("sends explicit null and named choices to the exact reviewed-send route", async () =>
+    withFixture(async (tokenFile) => {
+      const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          "Bearer fixture-reviewer-token",
+        );
+        expect(init?.redirect).toBe("error");
+        if (url === brokerDraftUrl && init?.method === "GET") return Response.json(draft);
+        expect(url).toBe(`${brokerDraftUrl}/send-reviewed`);
+        expect(init?.method).toBe("POST");
+        return Response.json({ draft: released, edit_handle: null });
+      });
+      const bridge = makeVoiceReviewBridge(config(tokenFile), fetcher);
+      for (const payload of [
+        { expected_revision: 1, workstream_id: null },
+        {
+          expected_revision: 1,
+          workstream_id: "workstream:fixture",
+          text: "Use this literal text.",
+          additional_instructions: "Keep formatting.",
+          edit_handle: "opaque",
+        },
+      ]) {
+        await expect(bridge.sendReviewed(principal, draft.id, payload)).resolves.toEqual({
+          draft: released,
+          edit_handle: null,
+        });
+        expect(JSON.parse(String(fetcher.mock.lastCall?.[1]?.body))).toEqual(payload);
+      }
+      expect(fetcher).toHaveBeenCalledTimes(4);
+    }));
+
+  it("leaves a lost reviewed-send response to reconciliation on the same draft", async () =>
+    withFixture(async (tokenFile) => {
+      let current = draft;
+      const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+        if (url === brokerDraftUrl && init?.method === "GET") return Response.json(current);
+        expect(url).toBe(`${brokerDraftUrl}/send-reviewed`);
+        expect(init?.method).toBe("POST");
+        current = { ...draft, state: "released", revision: 2, command_id: "command" };
+        throw new TypeError("synthetic response loss after admission");
+      });
+      const bridge = makeVoiceReviewBridge(config(tokenFile), fetcher);
+      await expect(
+        bridge.sendReviewed(principal, draft.id, { expected_revision: 1, workstream_id: null }),
+      ).rejects.toBeInstanceOf(VoiceReviewUnavailableError);
+      await expect(bridge.get(principal, draft.id)).resolves.toEqual(released);
+      expect(fetcher.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+        [brokerDraftUrl, "GET"],
+        [`${brokerDraftUrl}/send-reviewed`, "POST"],
+        [brokerDraftUrl, "GET"],
+      ]);
+    }));
+
+  it("treats a successful status with an unadmitted or mismatched draft as uncertain", async () =>
+    withFixture(async (tokenFile) => {
+      const fetcher = vi.fn<typeof fetch>(async () => Response.json(draft));
+      const bridge = makeVoiceReviewBridge(config(tokenFile), fetcher);
+      for (const unacknowledged of [draft, { ...released, source_id: "foreign" }]) {
+        fetcher.mockImplementationOnce(async () => Response.json(draft));
+        fetcher.mockImplementationOnce(async () =>
+          Response.json({ draft: unacknowledged, edit_handle: null }),
+        );
+        await expect(
+          bridge.sendReviewed(principal, draft.id, { expected_revision: 1, workstream_id: null }),
+        ).rejects.toBeInstanceOf(VoiceReviewUnavailableError);
+      }
+      expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
+    }));
+});
+
 describe("voice review server bridge", () => {
   it("accepts broker configuration without enrollment and ignores stale allowlist variables", () => {
     const env = {
