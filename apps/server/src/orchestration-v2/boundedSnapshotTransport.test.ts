@@ -49,6 +49,7 @@ import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.t
 import { subscribeOrchestrationV2Thread } from "../ws.ts";
 import * as OrchestrationHttp from "./http.ts";
 import * as EventSink from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -399,7 +400,10 @@ const TestLayer = Layer.mergeAll(
     getEnvironmentId: Effect.succeed(EnvironmentId.make("compact-transport")),
   }),
   Layer.effectDiscard(seed),
-  Layer.mock(EventSink.EventSinkV2)({}),
+  // Each build owns its sink trace; no trace state is shared between tests.
+  Layer.suspend(() =>
+    Layer.mock(EventSink.EventSinkV2)({ supersededTerminalTrace: SupersededTerminalTrace.make() }),
+  ),
   Layer.mock(OrchestrationEventStore.OrchestrationEventStore)({}),
   Layer.mock(ProjectStore.ProjectStoreV2)({}),
   Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({}),

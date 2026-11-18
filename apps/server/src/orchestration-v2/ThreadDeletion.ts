@@ -184,7 +184,8 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
   }
 
   for (const session of projection.providerSessions) {
-    if (session.status === "stopped" || session.status === "error") continue;
+    // An errored session can still own a reusable live runtime.
+    if (session.status === "stopped") continue;
     yield* emitEvent({
       type: "provider-session.detached",
       threadId: command.threadId,
@@ -239,7 +240,7 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
   return { events, effects };
 });
 
-export function threadCreationCleanupEffects(effects: ReadonlyArray<OrchestrationEffectV2>) {
+function threadCreationCleanupEffects(effects: ReadonlyArray<OrchestrationEffectV2>) {
   return effects.filter(
     ({ request }) =>
       request.type === "scheduled-tasks.cleanup" ||

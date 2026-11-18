@@ -58,7 +58,7 @@ it.live(
           (entry: { type: string; frame?: { id?: number; method?: string } }) =>
             entry.type === "expect_outbound" &&
             entry.frame?.method === "turn/start" &&
-            entry.frame.id === 4,
+            entry.frame.id === 6,
         );
         const secondEntries = JSON.parse(
           JSON.stringify(queued.entries.slice(secondIndex)).replaceAll(
@@ -66,8 +66,8 @@ it.live(
             nativeThread,
           ),
         );
-        secondEntries[0].frame.id = 6;
-        secondEntries[1].frame.id = 6;
+        secondEntries[0].frame.id = 8;
+        secondEntries[1].frame.id = 8;
         const secondText = secondEntries[0].frame.params.input[0].text;
         for (const [entry, model] of [
           [firstStart, initial.model],
@@ -87,10 +87,12 @@ it.live(
             type: "expect_outbound",
             label: "replacement/resume",
             frame: {
-              id: 5,
+              id: 6,
               method: "thread/resume",
               params: {
                 threadId: nativeThread,
+                cwd,
+                model: selection.model,
                 excludeTurns: true,
                 config: {
                   "tools.update_plan.enabled": true,
@@ -103,7 +105,17 @@ it.live(
           {
             type: "emit_inbound",
             label: "replacement/resume",
-            frame: { id: 5, result: startResult },
+            frame: { id: 6, result: startResult },
+          },
+          {
+            type: "expect_outbound",
+            label: "replacement/config",
+            frame: { id: 7, method: "config/read", params: { cwd, includeLayers: false } },
+          },
+          {
+            type: "emit_inbound",
+            label: "replacement/config",
+            frame: { id: 7, result: { config: {}, origins: {} } },
           },
           ...secondEntries,
         );
@@ -308,7 +320,7 @@ it.live(
           const oldAttempt = before.attempts[0]!;
           const oldTurn = before.providerTurns.find((turn) => turn.runAttemptId === oldAttempt.id)!;
           assert.isNull(oldAttempt.providerTurnId);
-          assert.isNull(oldAttempt.providerSettlement);
+          assert.isNull(oldAttempt.providerSettlement ?? null);
           assert.equal(oldTurn.status, "running");
           let replacementObserved = 0;
           beforeReplacement = Effect.gen(function* () {
@@ -316,7 +328,7 @@ it.live(
             const retired = projection.attempts.find((attempt) => attempt.id === oldAttempt.id)!;
             assert.equal(retired.providerTurnId, oldTurn.id);
             assert.isNull(
-              retired.providerSettlement,
+              retired.providerSettlement ?? null,
               "supersession does not fabricate attempt settlement",
             );
             assert.equal(

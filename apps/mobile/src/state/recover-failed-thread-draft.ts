@@ -48,7 +48,7 @@ export async function recoverFailedThreadDraft(message: QueuedThreadMessage): Pr
       getComposerDraftSnapshot(targetKey).attachments.map((attachment) => attachment.id),
     );
     const added = source.attachments.filter((attachment) => !existingIds.has(attachment.id));
-    appendComposerDraftAttachments(targetKey, added, { allowOverflow: true });
+    appendComposerDraftAttachments(targetKey, added, { restore: true });
     merged = { ...merged, attachments: [...merged.attachments, ...added] };
     // Recovery may exceed caps; preserve every file and leave trimming to the editor.
     await flushComposerDrafts();

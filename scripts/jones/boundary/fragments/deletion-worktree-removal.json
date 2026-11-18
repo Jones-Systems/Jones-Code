@@ -42,7 +42,9 @@
     "apps/server/src/jones/cleanup/RuntimeUseCreationCapture.ts",
     "apps/server/src/jones/cleanup/RuntimeUseCreation.test.ts",
     "apps/server/src/jones/cleanup/RuntimeUsePreparedTerminal.ts",
-    "apps/server/src/jones/cleanup/CompletedNativeCleanup.ts"
+    "apps/server/src/jones/cleanup/CompletedNativeCleanup.ts",
+    "apps/server/src/jones/cleanup/checkedOwnerIntegration/serverOwnership.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeHistory.ts"
   ],
   "hookPaths": [
     "apps/server/src/storageCleanup.ts",
@@ -127,6 +129,14 @@
     {
       "from": "apps/server/src/storageCleanup.ts",
       "to": "apps/server/src/jones/cleanup/CompletedNativeCleanup.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.test.ts",
+      "to": "apps/server/src/jones/cleanup/CheckedRuntimeOwner.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.ts",
+      "to": "apps/server/src/jones/cleanup/CheckedRuntimeOwner.ts"
     }
   ]
 }

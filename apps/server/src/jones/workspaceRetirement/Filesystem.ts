@@ -102,10 +102,30 @@ export async function openAbsolute(path: string, directory = false) {
     await anchor.close();
   }
 }
-export async function readBounded(path: string, limit: number) {
+export async function readBounded(path: string, limit: number, allowLink = false) {
   if (nativePlatform === "darwin") {
-    const value = (await darwinFilesystem({ operation: "read", path, limit })) as { bytes: string };
+    const value = (await darwinFilesystem({ operation: "read", path, limit, allowLink })) as {
+      bytes: string;
+    };
     return Buffer.from(value.bytes, "base64");
+  }
+  if (allowLink) {
+    const parent = await openAbsolute(NodePath.dirname(path), true);
+    try {
+      const leaf = NodePath.join(fdPath(parent.fd), NodePath.basename(path));
+      const before = await NodeFSP.lstat(leaf, { bigint: true });
+      if (before.isSymbolicLink()) {
+        const target = await NodeFSP.readlink(leaf, { encoding: "buffer" });
+        if (
+          target.length > limit ||
+          snapshot(before) !== snapshot(await NodeFSP.lstat(leaf, { bigint: true }))
+        )
+          throw new Error("observation_failed");
+        return target;
+      }
+    } finally {
+      await parent.close();
+    }
   }
   const file = await openAbsolute(path);
   try {

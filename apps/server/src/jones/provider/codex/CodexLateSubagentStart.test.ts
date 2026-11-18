@@ -145,6 +145,12 @@ const transcript = decodeCodexTranscript(
       }),
       outbound({
         id: 3,
+        method: "config/read",
+        params: { cwd: "/workspace", includeLayers: false },
+      }),
+      inbound({ id: 3, result: { config: {}, origins: {} } }),
+      outbound({
+        id: 4,
         method: "turn/start",
         params: {
           threadId: rootThread,
@@ -152,13 +158,21 @@ const transcript = decodeCodexTranscript(
           cwd: "/workspace",
           model: modelSelection.model,
           collaborationMode: { mode: "default", settings: { model: modelSelection.model } },
-          approvalPolicy: "never",
+          approvalPolicy: {
+            granular: {
+              mcp_elicitations: true,
+              request_permissions: false,
+              rules: false,
+              sandbox_approval: false,
+              skill_approval: false,
+            },
+          },
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },
-          summary: "detailed",
+          summary: "auto",
         },
       }),
-      inbound({ id: 3, result: { turn: turn(rootTurn, "inProgress") } }),
+      inbound({ id: 4, result: { turn: turn(rootTurn, "inProgress") } }),
       inbound(
         {
           method: "item/completed",
@@ -190,18 +204,18 @@ const transcript = decodeCodexTranscript(
         params: { threadId: rootThread, turn: turn(rootTurn, "interrupted") },
       }),
       // This read stays pending while the late notification and interrupt arrive.
-      outbound({ id: 4, method: "model/list", params: {} }),
+      outbound({ id: 5, method: "model/list", params: {} }),
       inbound({
         method: "turn/started",
         params: { threadId: childThread, turn: turn(lateTurn, "inProgress") },
       }),
       outbound({
-        id: 5,
+        id: 6,
         method: "turn/interrupt",
         params: { threadId: childThread, turnId: lateTurn },
       }),
-      inbound({ id: 5, result: {} }),
-      inbound({ id: 4, result: { data: [], nextCursor: null } }),
+      inbound({ id: 6, result: {} }),
+      inbound({ id: 5, result: { data: [], nextCursor: null } }),
     ],
   }),
 );

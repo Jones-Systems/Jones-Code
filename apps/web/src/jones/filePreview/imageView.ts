@@ -32,3 +32,7 @@ export function imageFit({
     ),
   );
 }
+
+export function clampImageZoom(value: number, fit: number): number {
+  return Math.min(Math.max(8, 1 / (fit || 1)), Math.max(0.6, value));
+}

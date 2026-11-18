@@ -1,9 +1,15 @@
+import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useRef } from "react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { claimThreadOpen } from "@t3tools/client-runtime/state/thread-search";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { createThreadReadDwell } from "@t3tools/client-runtime/jones/thread-read-dwell";
+import {
+  createThreadReadDwell,
+  type ThreadVisitOutcome,
+} from "@t3tools/client-runtime/jones/thread-read-dwell";
+import { AsyncResult } from "effect/reactivity";
 import { resolveThreadLastVisitedAt } from "../../components/Sidebar.logic";
+import { environmentCatalog } from "../../connection/catalog";
 import { useUiStateStore } from "../../uiStateStore";
 import { threadEnvironment } from "../../state/threads";
 import { useThreadShell } from "../../state/entities";
@@ -16,6 +22,10 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const localLastVisitedAt = useUiStateStore((store) => store.threadLastVisitedAtById[threadKey]);
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
+  // A rejected visit retries once a new session is up, behind the same dwell and unread rules.
+  const sessionGeneration = useAtomValue(
+    environmentCatalog.sessionGenerationAtom(props.threadRef.environmentId),
+  );
   const openedThreadRef = useRef<string | null>(null);
   const shouldRecordOpenRef = useRef(false);
   const controllerRef = useRef<ReturnType<typeof createThreadReadDwell> | null>(null);
@@ -64,6 +74,7 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
             ),
             completedAt: serverThread.latestRun?.completedAt ?? null,
             visible: document.visibilityState === "visible" && document.hasFocus(),
+            sessionGeneration,
             onVisit: (visitedAt) => {
               if (serverThread.lastVisitedAt === undefined) {
                 markThreadVisited(threadKey, visitedAt);
@@ -71,17 +82,34 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
               }
               const opened = shouldRecordOpenRef.current;
               shouldRecordOpenRef.current = false;
-              void visitThread({
+              return visitThread({
                 environmentId: serverThread.environmentId,
                 input: {
                   threadId: serverThread.id,
                   visitedAt,
                   ...(opened ? { opened: true } : {}),
                 },
+              }).then((result): ThreadVisitOutcome => {
+                if (!AsyncResult.isFailure(result)) return { accepted: true };
+                if (!opened) return { accepted: false };
+                // The server never recorded this open, so it rides on the retry.
+                return {
+                  accepted: false,
+                  restore: () => {
+                    shouldRecordOpenRef.current = true;
+                  },
+                };
               });
             },
           },
     );
-  }, [localLastVisitedAt, markThreadVisited, serverThread, threadKey, visitThread]);
+  }, [
+    localLastVisitedAt,
+    markThreadVisited,
+    serverThread,
+    sessionGeneration,
+    threadKey,
+    visitThread,
+  ]);
   return null;
 }

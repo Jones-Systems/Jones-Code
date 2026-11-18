@@ -17,6 +17,7 @@ import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as ElectronShell from "../../electron/ElectronShell.ts";
 import {
   companionLinuxIdentity,
+  assertCompanionStorage,
   configureCompanionProduct,
   isCompanionPackage,
   readDesktopProductMetadata,
@@ -214,4 +215,22 @@ describe("companion product boot", () => {
         }).pipe(Effect.provide(layer), Effect.scoped);
       }),
   );
+});
+
+it("refuses a companion session namespace mismatch without relocating ordinary state", () => {
+  const bound = {
+    companion: true,
+    appDataDirectory: "/fixture/app-data",
+    userDataDirectory: "/fixture/app-data/Jones Preview Companion",
+    sessionDataDirectory: "/fixture/app-data/Jones Preview Companion/Session",
+    join: (...parts: string[]) => parts.join("/"),
+  };
+  expect(() => assertCompanionStorage(bound)).not.toThrow();
+  for (const wrong of [
+    { userDataDirectory: "/fixture/ordinary" },
+    { sessionDataDirectory: "/fixture/ordinary/Session" },
+  ]) {
+    expect(() => assertCompanionStorage({ ...bound, ...wrong })).toThrow("not bound");
+    expect(() => assertCompanionStorage({ ...bound, ...wrong, companion: false })).not.toThrow();
+  }
 });

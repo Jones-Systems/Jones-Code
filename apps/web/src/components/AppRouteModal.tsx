@@ -35,16 +35,26 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
       open={open}
       // Portaled layers outside this tree (toasts, Clerk, confirm dialogs) are not backdrop presses.
       disablePointerDismissal
-      onOpenChange={(nextOpen, details) => {
+      onOpenChange={(nextOpen, eventDetails) => {
         if (nextOpen) return;
         if (
-          details.reason === "escape-key" &&
-          ownsProviderReorderKey("Escape", details.event.target)
+          eventDetails.reason === "escape-key" &&
+          ownsProviderReorderKey("Escape", eventDetails.event.target)
         ) {
           // Let the document-owned drag sensor cancel before a later Esc dismisses Settings.
-          details.cancel();
-          details.allowPropagation();
+          eventDetails.cancel();
+          eventDetails.allowPropagation();
           return;
+        }
+        // Esc from a layer outside Base UI (Clerk's modals) is that layer's to handle.
+        const target = eventDetails.event.target;
+        if (
+          eventDetails.reason === "escape-key" &&
+          target !== document.body &&
+          target instanceof Node &&
+          !popupRef.current?.contains(target)
+        ) {
+          return eventDetails.cancel();
         }
         // Closing unmounts a focused field without a blur, so commit-on-blur rows would
         // drop what was typed. Blur first so they commit.
@@ -66,7 +76,9 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
               "--app-modal-sm-top": `max(1.5rem, ${nativeTitlebarHeight}px)`,
             } as CSSProperties
           }
-          className="fixed inset-0 z-50 flex items-center justify-center sm:p-6 sm:pt-(--app-modal-sm-top) lg:p-10"
+          // Electron hit-tests drag regions under the backdrop regardless of z-index; without
+          // this, presses above the modal move the window instead of dismissing it.
+          className="fixed inset-0 z-50 flex items-center justify-center [-webkit-app-region:no-drag] sm:p-6 sm:pt-(--app-modal-sm-top) lg:p-10"
           onPointerDown={(event) => {
             backdropPressRef.current = event.target === event.currentTarget;
           }}

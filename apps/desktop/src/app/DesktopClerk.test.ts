@@ -305,11 +305,18 @@ describe("DesktopClerk", () => {
         events.push("createClerkBridge");
         return { cleanup: vi.fn(), isPrimaryInstance: true };
       });
-      const noProfileAccess = FileSystem.layerNoop({
+      const profile = "/isolated/client-profile";
+      const cacheMarker = `${profile}/gpu-cache-electron-version`;
+      const isolatedProfile = FileSystem.layerNoop({
         exists: () => Effect.die("must not inspect a default profile"),
-        readFileString: () => Effect.die("must not copy Windows Local State"),
-        makeDirectory: () => Effect.die("boot owns profile directory creation"),
-        writeFileString: () => Effect.die("must not migrate default profile state"),
+        readFileString: (path) =>
+          Effect.sync(() => {
+            assert.equal(path, cacheMarker);
+            return "previous-electron-version";
+          }),
+        remove: (path) => Effect.sync(() => assert.equal(NodePath.posix.dirname(path), profile)),
+        makeDirectory: (path) => Effect.sync(() => assert.equal(path, profile)),
+        writeFileString: (path) => Effect.sync(() => assert.equal(path, cacheMarker)),
       });
       return Effect.gen(function* () {
         yield* Effect.scoped(
@@ -318,10 +325,10 @@ describe("DesktopClerk", () => {
               false,
               events,
               "win32",
-              noProfileAccess,
+              isolatedProfile,
               undefined,
               undefined,
-              Option.some("/isolated/client-profile"),
+              Option.some(profile),
             ),
           ),
         );
@@ -467,7 +474,7 @@ it.effect.each(["startup", "open-url", "early-second-instance"] as const)(
         ),
         Effect.provideService(DesktopWebLinks.DesktopWebLinks, ignoreWebLinks),
       );
-    }).pipe(Effect.scoped),
+    }),
 );
 
 it.effect("hands web and app links to the renderer and leaves other links alone", () =>
@@ -524,5 +531,5 @@ it.effect("hands web and app links to the renderer and leaves other links alone"
         }),
       ),
     );
-  }).pipe(Effect.scoped),
+  }),
 );

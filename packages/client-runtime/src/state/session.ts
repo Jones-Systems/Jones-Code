@@ -1,7 +1,16 @@
 import { pipe } from "effect/Function";
-import type { AuthSessionState, EnvironmentId, ServerConfig } from "@t3tools/contracts";
-import * as Clock from "effect/Clock";
+import {
+  type AuthEnvironmentScope,
+  AuthSessionState,
+  EnvironmentAuthInvalidError,
+  type EnvironmentId,
+  EnvironmentOperationForbiddenError,
+  EnvironmentScopeRequiredError,
+  type ServerConfig,
+  sessionGrantsScope,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -16,7 +25,11 @@ import type { PreparedConnection } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { ConnectionWakeups } from "../connection/wakeups.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
-import type { RemoteEnvironmentRequestError } from "../rpc/http.ts";
+import {
+  RemoteEnvironmentAuthFetchError,
+  RemoteEnvironmentAuthUndeclaredStatusError,
+  type RemoteEnvironmentRequestError,
+} from "../rpc/http.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "./environmentHttpAuth.ts";
@@ -44,6 +57,39 @@ function initialConfigOption<E>(
 
 const DEFAULT_SESSION_STATE_TIMEOUT_MS = 6_000;
 const MAX_SESSION_STATE_TIMEOUT_MS = 60_000;
+
+const isSessionRejectionError = Schema.is(
+  Schema.Union([
+    EnvironmentAuthInvalidError,
+    EnvironmentScopeRequiredError,
+    EnvironmentOperationForbiddenError,
+  ]),
+);
+const isSessionResponse = Schema.is(AuthSessionState);
+const isUndeclaredStatusError = Schema.is(RemoteEnvironmentAuthUndeclaredStatusError);
+const isAuthFetchError = Schema.is(RemoteEnvironmentAuthFetchError);
+
+/**
+ * True only when the host said no: its session lacks the scope, or it rejected the credential.
+ * A lookup that is still pending or failed on the network is not a denial.
+ */
+export function sessionDeniesScope(
+  result: AsyncResult.AsyncResult<AuthSessionState, unknown>,
+  scope: AuthEnvironmentScope,
+): boolean {
+  if (result._tag === "Success") return !sessionGrantsScope(result.value, scope);
+  return result._tag === "Failure" && isSessionRejection(result.cause);
+}
+
+function isSessionRejection(cause: Cause.Cause<unknown>): boolean {
+  const error = Option.getOrNull(Cause.findErrorOption(cause));
+  if (isUndeclaredStatusError(error)) {
+    return error.status === 401 || error.status === 403;
+  }
+  // A twice-rejected relay credential arrives wrapping the `authenticated: false` response.
+  if (isAuthFetchError(error)) return isSessionResponse(error.cause);
+  return isSessionRejectionError(error);
+}
 
 export const fetchEnvironmentSessionState = Effect.fn(
   "clientRuntime.state.fetchEnvironmentSessionState",

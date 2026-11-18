@@ -5,6 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -29,6 +30,7 @@ import * as EnvironmentSupervisor from "../../connection/supervisor.ts";
 import * as ConnectionWakeups from "../../connection/wakeups.ts";
 import type { WsRpcProtocolClient } from "../../rpc/protocol.ts";
 import * as RpcSession from "../../rpc/session.ts";
+import { withRouteAttemptBudget } from "./routeAttemptBudget.ts";
 
 const environmentId = EnvironmentId.make("route-budget-test");
 const preferred = new SshConnectionTarget({
@@ -351,40 +353,212 @@ describe("route budget ordering seam", () => {
         ["answered", "answered", "answered"],
       ] as const
     ).map((checks) => ({ checks })),
-  )("exempts only the final actual attempt for checks $checks", ({ checks }) =>
+  )(
+    "exempts only the final actual attempt after blocked failures for checks $checks",
+    ({ checks }) =>
+      Effect.gen(function* () {
+        const third = new SshConnectionTarget({
+          environmentId,
+          label: preferred.label,
+          connectionId: "ssh:third",
+        });
+        const routes: ReadonlyArray<ConnectionRoute> = [preferred, fallback, third].map(
+          (target) => ({
+            target,
+            profile: Option.none(),
+          }),
+        );
+        const attempted: Array<{
+          readonly target: ConnectionTarget;
+          readonly hasFallback: boolean;
+        }> = [];
+        // Authentication can differ between routes; unlike a transient failure,
+        // it does not exclude still-silent fallbacks from this traversal.
+        const error = new ConnectionBlockedError({ reason: "authentication", detail: "Refused." });
+        const result = yield* ConnectionDriver.connectOverRoutes(
+          { ...entry, alternateRoutes: routes.slice(1) },
+          (route) =>
+            Effect.succeed(checks[routes.findIndex((saved) => saved.target === route.target)]!),
+          (route, hasFallback) =>
+            Effect.sync(() => attempted.push({ target: route.target, hasFallback })).pipe(
+              Effect.andThen(Effect.fail(error)),
+            ),
+        ).pipe(Effect.flip);
+        expect(result).toBe(error);
+        const actualOrder = [
+          ...routes.filter((_route, index) => checks[index] !== "silent"),
+          ...routes.filter((_route, index) => checks[index] === "silent"),
+        ];
+        expect(attempted).toEqual(
+          actualOrder.map((route, index) => ({ target: route.target, hasFallback: index < 2 })),
+        );
+      }),
+  );
+
+  it.effect.each([
+    { checks: ["silent", "answered", "silent"] as const, expected: [fallback] },
+    { checks: ["answered", "silent", "silent"] as const, expected: [preferred] },
+    { checks: ["silent", "silent", "silent"] as const, expected: [preferred] },
+  ])("preserves transient early retry for checks $checks", ({ checks, expected }) =>
     Effect.gen(function* () {
       const third = new SshConnectionTarget({
         environmentId,
         label: preferred.label,
         connectionId: "ssh:third",
       });
-      const routes: ReadonlyArray<ConnectionRoute> = [preferred, fallback, third].map((target) => ({
-        target,
-        profile: Option.none(),
-      }));
-      const attempted: Array<{
-        readonly target: ConnectionTarget;
-        readonly hasFallback: boolean;
-      }> = [];
+      // Routes carry the full target union, so the lookup list is typed the same way.
+      const targets: ReadonlyArray<ConnectionTarget> = [preferred, fallback, third];
+      const attempted: Array<ConnectionTarget> = [];
       const error = new ConnectionTransientError({ reason: "transport", detail: "Refused." });
       const result = yield* ConnectionDriver.connectOverRoutes(
-        { ...entry, alternateRoutes: routes.slice(1) },
+        {
+          ...entry,
+          alternateRoutes: targets.slice(1).map((target) => ({ target, profile: Option.none() })),
+        },
+        (route) => Effect.succeed(checks[targets.indexOf(route.target)]!),
         (route) =>
-          Effect.succeed(checks[routes.findIndex((saved) => saved.target === route.target)]!),
-        (route, hasFallback) =>
-          Effect.sync(() => attempted.push({ target: route.target, hasFallback })).pipe(
-            Effect.andThen(Effect.fail(error)),
-          ),
+          Effect.sync(() => attempted.push(route.target)).pipe(Effect.andThen(Effect.fail(error))),
       ).pipe(Effect.flip);
       expect(result).toBe(error);
-      const actualOrder = [
-        ...routes.filter((_route, index) => checks[index] !== "silent"),
-        ...routes.filter((_route, index) => checks[index] === "silent"),
-      ];
-      expect(attempted).toEqual(
-        actualOrder.map((route, index) => ({ target: route.target, hasFallback: index < 2 })),
-      );
+      expect(attempted).toEqual(expected);
     }),
+  );
+
+  it.effect.each(
+    (["establishment", "synchronization"] as const).flatMap((stage) =>
+      (["answered", "all-silent"] as const).map((order) => ({ stage, order })),
+    ),
+  )("retains $stage with only timeout-ineligible fallbacks in $order order", ({ stage, order }) =>
+    Effect.gen(function* () {
+      const third = new SshConnectionTarget({
+        environmentId,
+        label: preferred.label,
+        connectionId: "ssh:third",
+      });
+      const targets = [preferred, fallback, third];
+      const started = yield* Deferred.make<void>();
+      const finish = yield* Deferred.make<never, ConnectionAttemptError>();
+      const attempted: Array<ConnectionTarget> = [];
+      const stopped: Array<ConnectionTarget> = [];
+      const error = new ConnectionTransientError({ reason: "transport", detail: "Closed later." });
+      const result = yield* ConnectionDriver.connectOverRoutes(
+        {
+          ...entry,
+          alternateRoutes: targets.slice(1).map((target) => ({ target, profile: Option.none() })),
+        },
+        (route) =>
+          Effect.succeed(order === "answered" && route.target === fallback ? "answered" : "silent"),
+        (route, hasFallback, hasFallbackOnTimeout) => {
+          attempted.push(route.target);
+          const wait = Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(finish)),
+            Effect.ensuring(Effect.sync(() => void stopped.push(route.target))),
+          );
+          return withRouteAttemptBudget(
+            hasFallback,
+            stage === "establishment" ? wait : Effect.void,
+            () => (stage === "synchronization" ? wait : Effect.never),
+            hasFallbackOnTimeout,
+          );
+        },
+      ).pipe(Effect.flip, Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* TestClock.adjust(stage === "establishment" ? 15_001 : 75_001);
+      const first = order === "answered" ? fallback : preferred;
+      expect(attempted).toEqual([first]);
+      expect(stopped).toEqual([]);
+      yield* Deferred.fail(finish, error);
+      expect(yield* Fiber.join(result)).toBe(error);
+      expect(attempted).toEqual([first]);
+      expect(stopped).toEqual([first]);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect.each(
+    (["establishment", "synchronization"] as const).flatMap((stage) =>
+      (["answered", "late"] as const).map((timing) => ({ stage, timing })),
+    ),
+  )(
+    "times out $stage toward an eligible $timing route and gives it the final allowance",
+    ({ stage, timing }) =>
+      Effect.gen(function* () {
+        const third = new SshConnectionTarget({
+          environmentId,
+          label: preferred.label,
+          connectionId: "ssh:third",
+        });
+        const targets = [preferred, fallback, third];
+        const checking = yield* Deferred.make<void>();
+        const firstStarted = yield* Deferred.make<void>();
+        const finalStarted = yield* Deferred.make<void>();
+        const finish = yield* Deferred.make<never, ConnectionAttemptError>();
+        const attempted: Array<{
+          readonly target: ConnectionTarget;
+          readonly hasFallback: boolean;
+        }> = [];
+        const stopped: Array<ConnectionTarget> = [];
+        const result = yield* ConnectionDriver.connectOverRoutes(
+          {
+            ...entry,
+            alternateRoutes: targets.slice(1).map((target) => ({ target, profile: Option.none() })),
+          },
+          (route) => {
+            if (route.target === fallback) {
+              return Effect.succeed<ConnectionDriver.RouteCheck>("unchecked");
+            }
+            const check =
+              timing === "answered"
+                ? Effect.succeed<ConnectionDriver.RouteCheck>(
+                    route.target === third ? "answered" : "silent",
+                  )
+                : Effect.sleep(route.target === preferred ? 700 : 2_500).pipe(
+                    Effect.as<ConnectionDriver.RouteCheck>(
+                      route.target === preferred ? "answered" : "silent",
+                    ),
+                  );
+            return Deferred.succeed(checking, undefined).pipe(Effect.andThen(check));
+          },
+          (route, hasFallback, hasFallbackOnTimeout) => {
+            attempted.push({ target: route.target, hasFallback });
+            const wait = (
+              route.target === fallback
+                ? Deferred.succeed(firstStarted, undefined).pipe(Effect.andThen(Effect.never))
+                : Deferred.succeed(finalStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(finish)),
+                  )
+            ).pipe(Effect.ensuring(Effect.sync(() => void stopped.push(route.target))));
+            return withRouteAttemptBudget(
+              hasFallback,
+              stage === "establishment" ? wait : Effect.void,
+              () => (stage === "synchronization" ? wait : Effect.never),
+              hasFallbackOnTimeout,
+            );
+          },
+        ).pipe(Effect.flip, Effect.forkChild);
+        yield* Deferred.await(checking);
+        if (timing === "late") yield* TestClock.adjust(500);
+        yield* Deferred.await(firstStarted);
+        yield* TestClock.adjust(stage === "establishment" ? 15_000 : 75_000);
+        yield* Deferred.await(finalStarted);
+        expect(attempted).toEqual([
+          { target: fallback, hasFallback: true },
+          { target: timing === "late" ? preferred : third, hasFallback: false },
+        ]);
+        expect(stopped).toEqual([fallback]);
+        yield* TestClock.adjust(stage === "establishment" ? 15_001 : 75_001);
+        expect(stopped).toEqual([fallback]);
+        yield* Deferred.fail(
+          finish,
+          new ConnectionBlockedError({ reason: "authentication", detail: "Refused." }),
+        );
+        expect(yield* Fiber.join(result)).toMatchObject({
+          _tag: "ConnectionTransientError",
+          reason: "timeout",
+        });
+        const expected = [fallback, timing === "late" ? preferred : third];
+        expect(attempted.map(({ target }) => target)).toEqual(expected);
+        expect(stopped).toEqual(expected);
+      }).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("keeps unsupported-server failures terminal", () =>

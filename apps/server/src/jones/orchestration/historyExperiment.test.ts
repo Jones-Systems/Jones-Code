@@ -2,6 +2,7 @@ import { TurnItemId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import {
   historyExperimentLayer,
@@ -26,7 +27,16 @@ it.effect("V2 full/window reads and disjoint message SQL retain ordered decoded 
       { rowLimit: 25, anchorItemId: TurnItemId.make("item-000059") },
       { rowLimit: 25, userTurnLimit: 10, anchorItemId: TurnItemId.make("item-000059") },
     ]) {
-      const window = yield* store.getThreadSnapshotWindow(historyThreadId, options);
+      const observed: Array<readonly [string, ReadonlyArray<unknown>]> = [];
+      const capture: Statement.Transformer = (statement) => {
+        const [text, values] = statement.compile();
+        if (text.includes("CROSS JOIN orchestration_v2_projection_messages AS message"))
+          observed.push([text.replace(/^\s*--[^\n]*$/gm, "").trim(), values]);
+        return Effect.succeed(statement);
+      };
+      const window = yield* store
+        .getThreadSnapshotWindow(historyThreadId, options)
+        .pipe(Effect.provideService(Statement.CurrentTransformer, capture));
       const cohort = window.projection.visibleTurnItems.flatMap(({ item }) =>
         item.type === "user_message" ? [item.messageId] : [],
       );
@@ -41,6 +51,7 @@ it.effect("V2 full/window reads and disjoint message SQL retain ordered decoded 
       );
       assert.deepEqual(window.projection.messages, windowExpected);
       const variants = historyStatements(cohort);
+      assert.deepEqual(observed, [[variants[0].text, variants[0].values]]);
       const results = yield* Effect.forEach(variants, (statement) =>
         sql.unsafe<{ payload_json: string }>(statement.text, statement.values),
       );

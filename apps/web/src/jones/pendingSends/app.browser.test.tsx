@@ -393,7 +393,7 @@ it("shows a first send locally and reconciles lost launch acknowledgement", asyn
   expect(pendingSends.getSnapshot().filter((entry) => entry.threadId === newThreadId)).toHaveLength(
     1,
   );
-  expect(screen.container.querySelectorAll('[data-testid="sidebar-draft-row"]')).toHaveLength(0);
+  expect(screen.container.querySelector(`[data-sidebar-row="draft:${draftId}"]`)).toBeNull();
   await act(async () => {
     await delivery.requests[0]!.commit();
     delivery.requests[0]!.loseAcknowledgement();

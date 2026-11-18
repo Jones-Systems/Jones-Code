@@ -25,7 +25,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import {
   checkOpenCodeProviderStatus,
-  makeOpenCode2ModelLoader,
+  makeOpenCode2CatalogLoader,
   type OpenCode2Model,
 } from "../../../../../../packages/provider-opencode/src/server/status.ts";
 
@@ -109,7 +109,7 @@ describe("OpenCode completed option discovery (Audit 4.5 / R5)", () => {
           mode: "warm" | "error" | "timeout" | "complete";
           reads: number;
         } = { mode: "warm", reads: 0 };
-        const load = yield* makeOpenCode2ModelLoader(
+        const load = yield* makeOpenCode2CatalogLoader(
           Effect.suspend(() => {
             const ordinal = ++progress.reads;
             return Queue.offer(reads, ordinal).pipe(

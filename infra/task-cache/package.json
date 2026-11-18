@@ -5,10 +5,10 @@
   "scripts": {
     "test": "vp test run --config ../../vite.config.ts --dir .",
     "typecheck": "vp run tsrs:typecheck",
-    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "smoke": "node scripts/smoke.ts",
     "deploy": "alchemy deploy --stage prod",
-    "writers": "node scripts/manage.ts"
+    "writers": "node scripts/manage.ts",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit"
   },
   "dependencies": {
     "@alchemy.run/axiom": "catalog:",

@@ -6,6 +6,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import { createModelSelection } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -20,6 +21,7 @@ import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import * as ProviderHostLive from "../ProviderHostLive.ts";
+import * as ProviderInstallationGate from "../ProviderInstallationGate.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { ClaudeDriver } from "./ClaudeDriver.ts";
 
@@ -40,6 +42,7 @@ const layerDeps = ServerConfig.layerTest(process.cwd(), {
   Layer.provideMerge(ServerSettings.layerTest()),
   Layer.provideMerge(ModelManifest.layerTest),
   Layer.provideMerge(ResetCreditCoordinator.layerTest),
+  Layer.provideMerge(ProviderInstallationGate.layer),
   Layer.provideMerge(ProviderLatestVersions.layer),
   Layer.provideMerge(
     Layer.succeed(
@@ -89,8 +92,11 @@ it.layer(layerTest)("ClaudeDriver evaluator capability", (it) => {
   it.effect.each([
     { launchArgs: "", supported: true },
     { launchArgs: "--tools Read Bash --setting-sources user,local", supported: true },
+    { launchArgs: "--chrome --mcp-config ignored.json --plugin-dir ignored", supported: true },
     { launchArgs: "--settings=private-settings-value", supported: false },
     { launchArgs: "--unknown-account-flag private-account-value", supported: false },
+    { launchArgs: "--setting-sources private-unknown-source", supported: false },
+    { launchArgs: '--tools "private-unclosed', supported: false },
   ])(
     "reports evaluator support=$supported without rejecting the provider (case %#)",
     ({ launchArgs, supported }) =>
@@ -114,6 +120,19 @@ it.layer(layerTest)("ClaudeDriver evaluator capability", (it) => {
         expect(snapshot.status).toBe("disabled");
         expect(instance.orchestrationAdapter).toBeDefined();
         expect(instance.textGeneration).toBeDefined();
+        if (!supported) {
+          const generation = instance.textGeneration;
+          if (generation === undefined) return yield* Effect.die("Missing text generation service");
+          const error = yield* generation
+            .evaluateRemoteRequest({
+              cwd: homePath,
+              message: "Fix the parser",
+              modelSelection: createModelSelection(instance.instanceId, "synthetic-evaluator"),
+            })
+            .pipe(Effect.flip);
+          expect(error.operation).toBe("evaluateRemoteRequest");
+          expect(error.detail).not.toContain("private-");
+        }
       }).pipe(Effect.scoped, Effect.provide(NodeCrypto.layer)),
   );
 });

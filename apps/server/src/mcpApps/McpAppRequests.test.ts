@@ -15,6 +15,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -82,6 +83,7 @@ function makeLayer(input: {
             }),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           getTurnItem: () => Effect.succeed(input.item),
         }),
         Layer.mock(ThreadManagementService.ThreadManagementService)({

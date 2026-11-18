@@ -114,6 +114,14 @@ const serviceLayer = (
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({
           delegate: () => Effect.succeed({ taskId }),
+          runStatus: (caller, observedTask) =>
+            Effect.sync(() => {
+              assert.deepEqual(caller, scope);
+              assert.equal(observedTask.id, taskId);
+              assert.deepEqual(observedTask.remoteChild, remoteChild);
+              assert.isNull(observedTask.result);
+              return "running" as const;
+            }),
           observe: (_scope, observedTask) =>
             Effect.succeed({
               observation: {
@@ -152,12 +160,11 @@ const expectedTaskRead: ReadCall = {
   fields: ["subagents"],
   options: { subagentIds: [taskId] },
 };
-const expectedParentRead: ReadCall = {
+const expectedAckRead: ReadCall = {
   threadId: parentId,
-  fields: ["runs", "contextTransfers"],
-  options: undefined,
+  fields: ["runs"],
+  options: { runStatuses: ThreadManagementService.ACTIVE_RUN_STATUSES },
 };
-const expectedAckRead: ReadCall = { threadId: parentId, fields: ["runs"], options: undefined };
 
 describe("MCP task read selection", () => {
   it.effect("exposes a completed Claude task's captured native ID without manual notes", () =>
@@ -271,8 +278,13 @@ describe("MCP task read selection", () => {
             target: { environmentId: remoteChild.environmentId },
           });
         }).pipe(Effect.provide(layer));
-        assert.equal(reads, 2);
-        assert.deepEqual(parentCalls, [expectedTaskRead, expectedTaskRead]);
+        // A question ends the blocking wait and is reread after the wake policy is upgraded.
+        const expectedReads = scenario === "question" ? 3 : 2;
+        assert.equal(reads, expectedReads);
+        assert.deepEqual(
+          parentCalls,
+          Array.from({ length: expectedReads }, () => expectedTaskRead),
+        );
         assert.isTrue(streamClosed);
         assert.equal(result.waitTimedOut, scenario === "siblings");
         assert.equal(result.hasPendingQuestion, scenario === "question");
@@ -303,6 +315,9 @@ describe("MCP task read selection", () => {
       const calls: ReadCall[] = [];
       let controlReads = 0;
       let resultReads = 0;
+      const wakeCommands: Array<
+        Parameters<ThreadManagementService.ThreadManagementService["Service"]["dispatch"]>[0]
+      > = [];
       const layer = serviceLayer({
         getThreadEventSequence: () => Effect.succeed(41),
         getThreadRecords: (threadId, fields, options) =>
@@ -388,6 +403,11 @@ describe("MCP task read selection", () => {
             };
           }),
         delegatedTaskResultPending: () => Effect.succeed(false),
+        dispatch: (command) =>
+          Effect.sync(() => {
+            wakeCommands.push(command);
+            return {} as never;
+          }),
         streamStoredEventsFrom: (input) => {
           assert.equal(input?.afterSequence, 41);
           if (input?.threadId !== childId || input.eventType !== eventType) return Stream.empty;
@@ -419,7 +439,19 @@ describe("MCP task read selection", () => {
           : null,
       );
       assert.isFalse(result.waitTimedOut);
-      assert.equal(parentReads, 4);
+      const waitingForInput = pendingQuestion || pendingApproval;
+      const expectedReads = waitingForInput ? 3 : 2;
+      assert.equal(parentReads, expectedReads);
+      assert.lengthOf(wakeCommands, waitingForInput ? 1 : 0);
+      if (waitingForInput) {
+        const [command] = wakeCommands;
+        assert.equal(command?.type, "delegated_task.wake-policy");
+        if (command?.type === "delegated_task.wake-policy") {
+          assert.equal(command.parentThreadId, parentId);
+          assert.equal(command.taskId, taskId);
+          assert.equal(command.completionWake, "always");
+        }
+      }
       const control: ReadCall = {
         threadId: childId,
         fields: [
@@ -444,18 +476,12 @@ describe("MCP task read selection", () => {
           turnItemTypes: ["assistant_message", "error"],
         },
       };
-      assert.deepEqual(calls, [
-        expectedTaskRead,
-        expectedParentRead,
-        control,
-        resultRead,
-        expectedTaskRead,
-        expectedParentRead,
-        control,
-        resultRead,
-      ]);
-      assert.equal(controlReads, 2);
-      assert.equal(resultReads, 2);
+      assert.deepEqual(
+        calls,
+        Array.from({ length: expectedReads }, () => [expectedTaskRead, control, resultRead]).flat(),
+      );
+      assert.equal(controlReads, expectedReads);
+      assert.equal(resultReads, expectedReads);
     }),
   );
 
@@ -515,7 +541,7 @@ describe("MCP task read selection", () => {
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           return yield* service.taskStatus(scope, taskId);
         }).pipe(Effect.provide(layer));
-        assert.deepEqual(calls, [expectedTaskRead, expectedParentRead]);
+        assert.deepEqual(calls, [expectedTaskRead]);
         const resultRunIds = followupStatus === "running" ? [followupId, originalId] : [followupId];
         assert.deepEqual(childCalls, [
           {

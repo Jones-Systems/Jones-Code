@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import * as Store from "./IntentStore.ts";
+import type { LinkedMessageOrigin } from "../peerTransport/LinkedMessageOrigin.ts";
 import { commandId, envelope, layer } from "./RemoteDelegation.testkit.ts";
 
 it.effect("persists the exact intent before dispatch and recovers it through a new store", () =>
@@ -238,4 +239,77 @@ it.effect("prunes a backlog larger than one batch without touching pending inten
     assert.equal(yield* store.pruneFinished("2026-10-11T12:00:00.000Z"), 450);
     assert.deepEqual(yield* remaining, ["old:pending"]);
   }).pipe(Effect.provide(layer)),
+);
+
+const followUpEnvelope = (id: CommandId, title?: string): Store.FollowUpEnvelope => ({
+  kind: "remote-followup/v1",
+  scope: envelope.scope,
+  environmentId: envelope.environmentId,
+  linkedAt: envelope.linkedAt,
+  label: envelope.label,
+  request: {
+    type: "delegated_task.remote.request",
+    commandId: id,
+    parentThreadId: envelope.scope.thread.threadId,
+    parentRunId: RunId.make("parent:run"),
+    parentNodeId: NodeId.make("parent:node"),
+    task: "Follow up",
+    driver: envelope.request.driver,
+    modelSelection: envelope.request.modelSelection,
+  },
+  previousTaskId: NodeId.make("previous:task"),
+  previousRemoteRunId: RunId.make("previous:remote-run"),
+  linkGeneration: "link-generation-1",
+  requestDigest: "a".repeat(64),
+  targetCreatedAt: "2026-10-21T00:00:00.000Z",
+  send: {
+    arguments: {
+      threadId: "remote-child",
+      message: "Follow up",
+      clientRequestId: `key:${id}`,
+      expectedThreadCreatedAt: "2026-10-21T00:00:00.000Z",
+    },
+    limits: { runtimeMode: "full-access", interactionMode: "default" },
+    origin: {
+      schemaVersion: "t3.linked-message-origin/v1",
+      environmentId: envelope.scope.environmentId,
+      thread:
+        title === undefined
+          ? { threadId: envelope.scope.thread.threadId }
+          : { threadId: envelope.scope.thread.threadId, title },
+    },
+  },
+});
+
+it.effect(
+  "follow-up origins read back from persisted JSON as wire origins, title omitted or present",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* Store.makeFollowUps;
+      const sql = yield* SqlClient.SqlClient;
+      const untitled = CommandId.make("remote:followup:untitled");
+      const titled = CommandId.make("remote:followup:titled");
+      yield* store.prepare(untitled, { key: "untitled" }, followUpEnvelope(untitled));
+      yield* store.prepare(titled, { key: "titled" }, followUpEnvelope(titled, "Parent thread"));
+      const [stored] = yield* sql<{ readonly thread: string; readonly title: string | null }>`
+      SELECT json_extract(envelope_json, '$.send.origin.thread') AS thread,
+        json_extract(envelope_json, '$.send.origin.thread.title') AS title
+      FROM jones_remote_delegation_intents WHERE command_id = ${untitled}
+    `;
+      // An absent title is omitted from the stored JSON, never written as a key.
+      assert.deepEqual(JSON.parse(stored!.thread), { threadId: envelope.scope.thread.threadId });
+      assert.isNull(stored!.title);
+      const restarted = yield* Store.makeFollowUps;
+      // The stored origin is the exact type sent as the peer call's origin.
+      const omitted: LinkedMessageOrigin = (yield* restarted.get(untitled))!.envelope.send.origin;
+      const present: LinkedMessageOrigin = (yield* restarted.get(titled))!.envelope.send.origin;
+      assert.deepEqual(omitted, followUpEnvelope(untitled).send.origin);
+      assert.isFalse("title" in omitted.thread!);
+      assert.equal(present.thread?.title, "Parent thread");
+      // Pending rows share a creation time here and are ordered by command id.
+      assert.deepEqual(
+        (yield* restarted.pending).map((intent) => intent.envelope.send.origin),
+        [present, omitted],
+      );
+    }).pipe(Effect.provide(layer)),
 );

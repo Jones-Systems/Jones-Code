@@ -10,6 +10,7 @@ import { ProviderInstanceId, TextGenerationError, type ServerProvider } from "@t
 import { createModelSelection } from "@t3tools/shared/model";
 
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as TextGenerators from "../../textGeneration/TextGenerators.ts";
@@ -115,6 +116,7 @@ describe("Jones remote evaluation routing", () => {
           Effect.provide(
             Layer.mergeAll(
               ServerSettings.layerTest(),
+              ProviderInstallationGate.layer,
               Layer.mock(TextGenerators.TextGenerators)({ runner: () => Effect.undefined }),
               Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
                 resolveLink: () => Effect.die("Evaluator must not investigate linked content"),

@@ -79,6 +79,22 @@
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/delegatedTaskNativeSession.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/taskContinuation/requiredNativeSession.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/taskContinuation/requiredNativeSession.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+      "to": "apps/server/src/jones/taskContinuation/TaskContinuation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.test.ts",
+      "to": "apps/server/src/jones/taskContinuation/sourceBinding.ts"
     }
   ]
 }

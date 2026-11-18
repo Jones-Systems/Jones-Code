@@ -23,6 +23,7 @@ import { TestClock } from "effect/testing";
 
 import * as GitManager from "../../git/GitManager.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ThreadSettlementService from "../../orchestration-v2/ThreadSettlementService.ts";
@@ -143,6 +144,7 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
       getThreadRecords,
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
+      ...unusedCorePorts(),
       acquireDomainEvents: Effect.succeed(Stream.never),
       streamDomainEvents: Stream.never,
       dispatch: (command) =>

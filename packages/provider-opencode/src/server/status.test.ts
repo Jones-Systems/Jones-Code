@@ -16,6 +16,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { beforeEach } from "vite-plus/test";
+import { buildProviderOptionSelectionsFromDescriptors } from "@t3tools/shared/model";
 import { settingsSecretLiteral } from "@t3tools/contracts";
 
 import { OpenCodeSettings } from "../settings.ts";
@@ -38,35 +39,6 @@ import {
 const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 
 const DEFAULT_VERSION_STDOUT = "opencode 1.14.19\n";
-
-it.effect(
-  "a cached model fallback is incomplete when discovery times out without fresh progress",
-  () =>
-    Effect.gen(function* () {
-      const firstRead = yield* Deferred.make<void>();
-      const blockedRead = yield* Deferred.make<void>();
-      let blocked = false;
-      const models: ReadonlyArray<OpenCode2Model> = [
-        { providerID: "openai", id: "fixture", name: "Fixture", variants: [{ id: "high" }] },
-      ];
-      const load = yield* makeOpenCode2ModelLoader(
-        Effect.suspend(() =>
-          blocked
-            ? Deferred.succeed(blockedRead, undefined).pipe(Effect.andThen(Effect.never))
-            : Deferred.succeed(firstRead, undefined).pipe(Effect.as(models)),
-        ),
-      );
-      const warming = yield* load.pipe(Effect.forkChild);
-      yield* Deferred.await(firstRead);
-      yield* TestClock.adjust(250);
-      NodeAssert.deepEqual(yield* Fiber.join(warming), { models, complete: true });
-      blocked = true;
-      const reading = yield* load.pipe(Effect.forkChild);
-      yield* Deferred.await(blockedRead);
-      yield* TestClock.adjust(5_000);
-      NodeAssert.deepEqual(yield* Fiber.join(reading), { models, complete: false });
-    }),
-);
 
 it.effect("reads Go limits with the instance's XDG credentials and preserves reset times", () =>
   Effect.gen(function* () {
@@ -548,12 +520,9 @@ const checkProvider = Effect.fn("checkProvider")(function* (
         Effect.provideService(HttpClient.HttpClient, server),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, OpenCodeRuntimeTestDouble),
       );
-      return yield* checkOpenCodeProviderStatus(
-        settings,
-        cwd,
-        probe,
-        openCode2Models.pipe(Effect.map((models) => ({ models, complete: true }))),
-      ).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
+      return yield* checkOpenCodeProviderStatus(settings, cwd, probe, openCode2Models).pipe(
+        Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
+      );
     }),
   );
 });
@@ -718,6 +687,52 @@ it.layer(layerTest)("checkOpenCodeProviderStatus", (it) => {
     }),
   );
 
+  it.effect("keeps Agent without inventing Reasoning for models with no variants", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.inventory = {
+        providerList: {
+          connected: ["opencode"],
+          all: [
+            {
+              id: "opencode",
+              name: "OpenCode Zen",
+              models: {
+                "big-pickle": { id: "big-pickle", name: "Big Pickle", variants: {} },
+                "glm-5": { id: "glm-5", name: "GLM-5" },
+              },
+            },
+          ],
+          default: {},
+        },
+        agents: [
+          { name: "build", hidden: false, mode: "primary" },
+          { name: "plan", hidden: false, mode: "primary" },
+        ],
+      };
+      const snapshot = yield* checkProvider(makeOpenCodeSettings());
+      for (const slug of ["opencode/big-pickle", "opencode/glm-5"]) {
+        const model = snapshot.models.find((entry) => entry.slug === slug);
+        NodeAssert.ok(model);
+        const descriptors = model.capabilities?.optionDescriptors;
+        NodeAssert.deepEqual(descriptors, [
+          {
+            id: "agent",
+            label: "Agent",
+            type: "select",
+            options: [
+              { id: "build", label: "Build", isDefault: true },
+              { id: "plan", label: "Plan" },
+            ],
+            currentValue: "build",
+          },
+        ]);
+        NodeAssert.deepEqual(buildProviderOptionSelectionsFromDescriptors(descriptors), [
+          { id: "agent", value: "build" },
+        ]);
+      }
+    }),
+  );
+
   it.effect("includes OpenCode skills in the provider snapshot", () =>
     Effect.gen(function* () {
       runtimeMock.state.inventory = {
@@ -786,37 +801,35 @@ it.layer(layerTest)("checkOpenCodeProviderStatus", (it) => {
   );
 
   it.effect("reports the upgraded CLI without restarting a borrowed OpenCode server", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const settings = makeOpenCodeSettings();
-        const owner = yield* OpenCodeServerOwner.make({
-          binaryPath: settings.binaryPath,
-          directory: process.cwd(),
-        });
-        yield* owner.withServer(() =>
-          Effect.gen(function* () {
-            runtimeMock.state.versionStdout = "opencode 1.14.20\n";
-            const snapshot = yield* checkOpenCodeProviderStatus(
-              settings,
-              process.cwd(),
-              probeOpenCodeRuntime(settings).pipe(
-                Effect.provideService(
-                  HttpClient.HttpClient,
-                  replayOpenCodeServer(OPENCODE_1_RESPONSES, settings.serverPassword),
-                ),
-                Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, OpenCodeRuntimeTestDouble),
+    Effect.gen(function* () {
+      const settings = makeOpenCodeSettings();
+      const owner = yield* OpenCodeServerOwner.make({
+        binaryPath: settings.binaryPath,
+        directory: process.cwd(),
+      });
+      yield* owner.withServer(() =>
+        Effect.gen(function* () {
+          runtimeMock.state.versionStdout = "opencode 1.14.20\n";
+          const snapshot = yield* checkOpenCodeProviderStatus(
+            settings,
+            process.cwd(),
+            probeOpenCodeRuntime(settings).pipe(
+              Effect.provideService(
+                HttpClient.HttpClient,
+                replayOpenCodeServer(OPENCODE_1_RESPONSES, settings.serverPassword),
               ),
-              Effect.succeed({ models: [], complete: true }),
-            ).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, owner));
+              Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, OpenCodeRuntimeTestDouble),
+            ),
+            Effect.succeed([]),
+          ).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, owner));
 
-            NodeAssert.equal(snapshot.version, "1.14.19");
-            NodeAssert.equal(snapshot.installedVersion, "1.14.20");
-            NodeAssert.equal(runtimeMock.state.startCalls, 1);
-            NodeAssert.equal(runtimeMock.state.closeCalls, 0);
-          }),
-        );
-      }),
-    ),
+          NodeAssert.equal(snapshot.version, "1.14.19");
+          NodeAssert.equal(snapshot.installedVersion, "1.14.20");
+          NodeAssert.equal(runtimeMock.state.startCalls, 1);
+          NodeAssert.equal(runtimeMock.state.closeCalls, 0);
+        }),
+      );
+    }),
   );
 
   it.effect("lists a local OpenCode 2 binary's models in Full access only, never via 1.x", () =>
@@ -834,6 +847,12 @@ it.layer(layerTest)("checkOpenCodeProviderStatus", (it) => {
             id: "space-bunny-free",
             name: "Space Bunny Free",
             variants: [{ id: "low" }, { id: "medium" }, { id: "high" }],
+          },
+          {
+            providerID: "opencode-go",
+            id: "deepseek-v4.1-flash",
+            name: "DeepSeek V4.1 Flash",
+            variants: [{ id: "low" }, { id: "high" }, { id: "max" }],
           },
         ]),
       );
@@ -854,13 +873,25 @@ it.layer(layerTest)("checkOpenCodeProviderStatus", (it) => {
       );
       NodeAssert.deepEqual(
         snapshot.models.map((model) => model.slug),
-        ["opencode/big-pickle", "opencode/space-bunny-free"],
+        ["opencode/big-pickle", "opencode-go/deepseek-v4.1-flash", "opencode/space-bunny-free"],
       );
       const variant = snapshot.models.find((model) => model.slug === "opencode/space-bunny-free")
         ?.capabilities?.optionDescriptors?.[0];
       NodeAssert.deepEqual(
         variant?.type === "select" ? variant.options.map((option) => option.id) : [],
         ["low", "medium", "high"],
+      );
+      const goVariant = snapshot.models.find(
+        (model) => model.slug === "opencode-go/deepseek-v4.1-flash",
+      )?.capabilities?.optionDescriptors?.[0];
+      const goVariantIds =
+        goVariant?.type === "select" ? goVariant.options.map((option) => option.id) : [];
+      NodeAssert.deepEqual(goVariantIds, ["low", "high", "max"]);
+      NodeAssert.ok(
+        goVariant?.type === "select" &&
+          goVariant.currentValue !== undefined &&
+          goVariantIds.includes(goVariant.currentValue),
+        "an OpenCode Go model gets a default reasoning variant it lists",
       );
       NodeAssert.equal(runtimeMock.state.sdkClientInputs.length, 0);
     }),
@@ -1100,17 +1131,67 @@ const scanned: OpenCode2Workspace = {
   ],
 };
 
-it.effect("reads a fresh OpenCode 2 directory again once its scan has ended", () =>
+it.effect(
+  "reads a loaded OpenCode 2 directory listing no commands again once its scan has ended",
+  () =>
+    Effect.gen(function* () {
+      const reads: Array<OpenCode2Workspace> = [{ commands: [], skills: [] }, scanned];
+      const scanEnded = yield* Deferred.make<void>();
+      const load = yield* loadOpenCode2Workspace(
+        Effect.sync(() => reads.shift()!),
+        Deferred.await(scanEnded),
+        Effect.succeed(true),
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      NodeAssert.equal(reads.length, 1);
+      yield* Deferred.succeed(scanEnded, undefined);
+      NodeAssert.deepEqual(yield* Fiber.join(load), scanned);
+    }),
+);
+
+it.effect("waits for the scan of a cold OpenCode 2 directory that first lists only built-ins", () =>
   Effect.gen(function* () {
-    const reads: Array<OpenCode2Workspace> = [{ commands: [], skills: [] }, scanned];
-    const scanEnded = yield* Deferred.make<void>();
-    const load = yield* loadOpenCode2Workspace(
-      Effect.sync(() => reads.shift()!),
-      Deferred.await(scanEnded),
-    ).pipe(Effect.forkChild);
-    yield* Effect.yieldNow;
-    NodeAssert.equal(reads.length, 1);
-    yield* Deferred.succeed(scanEnded, undefined);
-    NodeAssert.deepEqual(yield* Fiber.join(load), scanned);
+    const calls: Array<string> = [];
+    const reads: Array<OpenCode2Workspace> = [
+      { commands: builtinCommands, skills: builtinSkills },
+      scanned,
+    ];
+    const workspace = yield* loadOpenCode2Workspace(
+      Effect.sync(() => (calls.push("read"), reads.shift()!)),
+      Effect.sync(() => void calls.push("scanned")),
+      Effect.sync(() => (calls.push("loaded"), false)),
+    );
+    NodeAssert.deepEqual(workspace, scanned);
+    NodeAssert.deepEqual(calls, ["loaded", "read", "scanned", "read"]);
+  }),
+);
+
+it.effect("reads an already loaded OpenCode 2 directory once without waiting for a scan", () =>
+  Effect.gen(function* () {
+    const calls: Array<string> = [];
+    const workspace = yield* loadOpenCode2Workspace(
+      Effect.sync(() => (calls.push("read"), scanned)),
+      Effect.sync(() => void calls.push("scanned")),
+      Effect.succeed(true),
+    );
+    NodeAssert.deepEqual(workspace, scanned);
+    NodeAssert.deepEqual(calls, ["read"]);
+  }),
+);
+
+it.effect("lists a catalog whose cold server start outlasts the settle budget", () =>
+  Effect.gen(function* () {
+    const catalog: ReadonlyArray<OpenCode2Model> = [
+      { providerID: "opencode", id: "big-pickle", name: "Big Pickle", variants: [] },
+    ];
+    let reads = 0;
+    // The loader's read includes spawning the server; a loaded host can take 6s to start it.
+    const read = Effect.suspend(() =>
+      reads++ === 0 ? Effect.sleep("6 seconds").pipe(Effect.as(catalog)) : Effect.succeed(catalog),
+    );
+    const load = yield* makeOpenCode2ModelLoader(read);
+    const fiber = yield* Effect.forkChild(load);
+    yield* TestClock.adjust("10 seconds");
+    NodeAssert.deepEqual(yield* Fiber.join(fiber), catalog);
   }),
 );

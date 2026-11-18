@@ -38,6 +38,7 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
 import * as ApplicationEvents from "../persistence/OrchestrationEventStore.ts";
+import * as SupersededTerminalTrace from "./orchestration/SupersededTerminalTrace.ts";
 import { projectThreadAttention } from "./threadAttention.ts";
 
 const decodeAttention = Schema.decodeUnknownSync(ThreadAttention);
@@ -129,7 +130,7 @@ function fixture(scopes: AuthEnvironmentScope[] = [AuthOrchestrationReadScope]) 
         Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
           getEnvironmentId: Effect.succeed(EnvironmentId.make("attention-test")),
         }),
-        Layer.mock(EventSinkV2)({}),
+        Layer.mock(EventSinkV2)({ supersededTerminalTrace: SupersededTerminalTrace.make() }),
         SqlitePersistence.layerMemory,
         Layer.mock(ThreadManagement.ThreadManagementService)({
           readShellSnapshot: () =>

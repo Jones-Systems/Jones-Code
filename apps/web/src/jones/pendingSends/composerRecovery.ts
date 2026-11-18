@@ -11,13 +11,14 @@ export function createPendingComposerRecovery(
   let restored: { draft: ComposerThreadDraftState | null } | undefined;
   return {
     rejected() {
-      if (restored) return;
+      if (restored) return true;
       const owner = readOwner();
       if (owner && restoreFailedComposerSend(owner)) {
         restored = {
           draft: useComposerDraftStore.getState().getComposerDraft(owner.composerDraftTarget),
         };
       }
+      return restored !== undefined;
     },
     accepted() {
       const owner = readOwner();

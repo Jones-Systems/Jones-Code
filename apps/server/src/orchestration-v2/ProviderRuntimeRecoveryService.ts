@@ -1,3 +1,12 @@
+import { modelSelectionsEqual } from "@t3tools/shared/model";
+import * as CommandReceipts from "./CommandReceiptStore.ts";
+import { makeUnsentStartProof } from "../jones/provider/UnsentStartProof.ts";
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
+import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { continuityAdmissionRefusal } from "../jones/goals/continuity/admission.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -25,7 +34,11 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as OrphanedRunRecords from "../jones/orchestration/OrphanedRunRecords.ts";
-import { restartContinuationRun } from "./RestartContinuation.ts";
+import {
+  restartContinuationBlocked,
+  restartContinuationRun,
+  restartStopRequested,
+} from "./RestartContinuation.ts";
 import { isBufferedProviderNotification } from "./NotificationMailbox.ts";
 import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import {
@@ -54,6 +67,8 @@ export class ProviderRuntimeRecoveryError extends Schema.TaggedError<ProviderRun
 }
 
 const isProviderRuntimeRecoveryError = Schema.is(ProviderRuntimeRecoveryError);
+
+const MAX_RESENDS = 3;
 
 export interface ProviderRuntimeRecoverySummary {
   readonly terminalizedRuns: number;
@@ -113,6 +128,7 @@ function isAppOwnedDelegation(task: {
   readonly remoteChild?: OrchestrationV2Subagent["remoteChild"];
   readonly driver: OrchestrationV2Subagent["driver"];
 }): boolean {
+  // A remote reservation belongs to the app before a child receipt is available.
   return (
     task.origin === "app_owned" &&
     (task.childThreadId !== null || task.remoteChild !== undefined || task.driver === "remote")
@@ -193,6 +209,117 @@ export const make = Effect.gen(function* () {
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const orphanedRunRecords = yield* Effect.serviceOption(OrphanedRunRecords.OrphanedRunRecords);
+  const receipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
+  const prefixEvidence = yield* Effect.serviceOption(StartRefusals.StartRefusals);
+  const restartAdmission = yield* Effect.serviceOption(RestartPreparation.RestartPreparation);
+  const controlAdmission = yield* Effect.serviceOption(ControlAdmission.ControlAdmission);
+  const goalContinuity = yield* Effect.serviceOption(GoalContinuity.GoalContinuity);
+  const environment = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironmentIdentity);
+  const certifiedUnsent = Effect.fn("ProviderRuntimeRecoveryService.certifiedUnsent")(
+    function* (
+      projection: ProjectionStore.ProjectionRuntimeRecoveryState,
+      run: OrchestrationV2ThreadProjection["runs"][number],
+    ) {
+      if (
+        run.activeAttemptId === null ||
+        Option.isNone(receipts) ||
+        Option.isNone(prefixEvidence) ||
+        Option.isNone(restartAdmission) ||
+        Option.isNone(controlAdmission) ||
+        Option.isNone(goalContinuity) ||
+        Option.isNone(environment)
+      )
+        return false;
+      const attempt = projection.attempts.find(
+        (row) => row.id === run.activeAttemptId && row.runId === run.id,
+      );
+      const provider = projection.providerThreads.find((row) => row.id === run.providerThreadId);
+      if (attempt === undefined || provider === undefined || provider.providerSessionId === null)
+        return false;
+      if (
+        !(yield* makeUnsentStartProof({
+          outbox,
+          receipts: receipts.value,
+          sink: eventSink,
+          refusals: prefixEvidence.value,
+        })(run, projection.attempts))
+      )
+        return false;
+      yield* restartAdmission.value.assertThreadOpen(projection.thread.id);
+      yield* eventSink.assertRuntimeStopStartAllowed({
+        threadId: projection.thread.id,
+        runId: run.id,
+      });
+      // Absent runtime or native evidence stays unavailable: no producer key, no native ID.
+      const runtimeGeneration = provider.runtimeIdentity?.runtimeGeneration;
+      yield* controlAdmission.value.assertOpen({
+        instanceId: provider.providerInstanceId,
+        threadId: projection.thread.id,
+        nativeThreadId: provider.nativeThreadRef?.nativeId ?? null,
+        producer:
+          runtimeGeneration === undefined
+            ? null
+            : {
+                instanceId: provider.providerInstanceId,
+                providerSessionId: provider.providerSessionId,
+                runtimeGeneration,
+              },
+      });
+      const fresh = yield* projections.getThreadRecords(projection.thread.id, [
+        "runs",
+        "attempts",
+        "providerThreads",
+      ]);
+      const currentRun = fresh.runs.find((row) => row.id === run.id);
+      const currentAttempt = fresh.attempts.find((row) => row.id === attempt.id);
+      const currentProvider = fresh.providerThreads.find((row) => row.id === provider.id);
+      if (
+        currentRun?.activeAttemptId !== attempt.id ||
+        currentRun.status !== run.status ||
+        currentRun.providerThreadId !== provider.id ||
+        !modelSelectionsEqual(currentRun.modelSelection, run.modelSelection) ||
+        currentAttempt?.runId !== run.id ||
+        currentAttempt.providerThreadId !== attempt.providerThreadId ||
+        currentProvider?.providerSessionId !== provider.providerSessionId ||
+        currentProvider.providerInstanceId !== provider.providerInstanceId ||
+        currentProvider.driver !== provider.driver ||
+        currentProvider.nativeThreadRef?.nativeId !== provider.nativeThreadRef?.nativeId ||
+        currentProvider.runtimeIdentity?.runtimeGeneration !==
+          provider.runtimeIdentity?.runtimeGeneration ||
+        fresh.thread.archivedAt !== null ||
+        fresh.thread.deletedAt !== null ||
+        fresh.thread.settledAt != null
+      )
+        return false;
+      yield* eventSink.assertRuntimeStopStartAllowed({
+        threadId: projection.thread.id,
+        runId: run.id,
+      });
+      const environmentId = yield* environment.value.getEnvironmentId;
+      const requirement = yield* goalContinuity.value.requirementFor(
+        environmentId,
+        projection.thread.id,
+      );
+      // A native binding without its native ID is no continuity owner; a required owner refuses.
+      const nativeThreadId = provider.nativeThreadRef?.nativeId ?? null;
+      return (
+        continuityAdmissionRefusal(
+          requirement,
+          nativeThreadId === null
+            ? null
+            : {
+                environmentId,
+                threadId: projection.thread.id,
+                providerInstanceId: provider.providerInstanceId,
+                providerThreadId: provider.id,
+                driver: provider.driver,
+                nativeThreadId,
+              },
+        ) === undefined
+      );
+    },
+    Effect.catchCause(() => Effect.succeed(false)),
+  );
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
   const sessionsLiveAtStart = (
@@ -210,14 +337,17 @@ export const make = Effect.gen(function* () {
     return [...sessions.values()];
   };
 
+  // An absent provider turn does not prove that the original native prefix was unsent.
+  // Keep the original status/time and let unknown outcomes settle as Interrupted.
   const reconcileProjection = Effect.fn("ProviderRuntimeRecoveryService.reconcileProjection")(
     function* (
-      projection: ProjectionStore.ProjectionRuntimeRecoveryState,
+      stored: ProjectionStore.ProjectionRuntimeRecoveryState,
       trigger: "startup" | "shutdown",
       continueAfterRestart: boolean,
       stoppedThisPass: ReadonlyMap<string, RecoverySession> = new Map(),
     ) {
       const now = yield* DateTime.now;
+      const projection = stored;
       let runs = [] as Array<OrchestrationV2ThreadProjection["runs"][number]>;
       for (const run of nonterminalRuns(projection)) {
         if (run.status === "waiting") {
@@ -333,16 +463,21 @@ export const make = Effect.gen(function* () {
           cancelledBackgroundNativeIds.add(item.nativeItemRef.nativeId);
         }
       };
-      const unstartedRuns = runs.filter(
-        (run) =>
-          run.status === "starting" &&
-          neverStarted(run) &&
-          !projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId) &&
-          !projection.runtimeRequests.some(
-            (request) =>
-              request.status === "pending" &&
-              projection.nodes.some((node) => node.id === request.nodeId && node.runId === run.id),
-          ),
+      const unstartedRuns = yield* Effect.filter(
+        runs.filter(
+          (run) =>
+            run.status === "starting" &&
+            neverStarted(run) &&
+            !projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId) &&
+            !projection.runtimeRequests.some(
+              (request) =>
+                request.status === "pending" &&
+                projection.nodes.some(
+                  (node) => node.id === request.nodeId && node.runId === run.id,
+                ),
+            ),
+        ),
+        (run) => certifiedUnsent(projection, run),
       );
       const queuedRuns = projection.runs.filter((run) => run.status === "queued");
       const pendingRuns = [...unstartedRuns, ...queuedRuns];
@@ -380,11 +515,109 @@ export const make = Effect.gen(function* () {
           )
           .map((message) => message.id),
       );
-      // A saved user message the provider never accepted stays available through the held queue.
+      // Only an original durable no-effect certificate can keep input eligible for replay.
       const retryableRuns = unstartedRuns.filter((run) =>
         retryableMessageIds.has(run.userMessageId),
       );
-      const retryableRunIds = new Set(retryableRuns.map((run) => run.id));
+      // Unattended work shares the same certified no-effect admission as user input.
+      const unattendedRuns = continueAfterRestart
+        ? unstartedRuns.filter((run) =>
+            queuedMessages.some(
+              (message) =>
+                message.id === run.userMessageId &&
+                !retryableMessageIds.has(message.id) &&
+                message.notification === undefined &&
+                message.delegatedCompletion === undefined &&
+                (message.scheduledTaskId !== undefined || message.creationSource === "mcp"),
+            ),
+          )
+        : [];
+      const resentRuns: Array<OrchestrationV2ThreadProjection["runs"][number]> = [];
+      const resends: Array<EffectOutbox.PendingOrchestrationEffectV2> = [];
+      for (const run of unattendedRuns) {
+        if (
+          restartContinuationBlocked(projection, run, now, false) ||
+          (yield* restartStopRequested(projections.getThreadRecords, projection.thread, run).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderRuntimeRecoveryError({
+                  operation: "read-projections",
+                  threadId: projection.thread.id,
+                  cause,
+                }),
+            ),
+          ))
+        )
+          continue;
+        const resendCommandId = CommandId.make(`command:restart-resend:${run.id}`);
+        const earlierResends = yield* outbox.listByCommandId(resendCommandId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderRuntimeRecoveryError({
+                operation: "reconcile",
+                threadId: projection.thread.id,
+                cause,
+              }),
+          ),
+        );
+        // A prompt whose start keeps crashing the server would otherwise be sent forever.
+        if (earlierResends.filter((effect) => effect.attemptCount > 0).length >= MAX_RESENDS) {
+          yield* Effect.logWarning("Not resending a prompt that restarts cut too many times", {
+            threadId: projection.thread.id,
+            runId: run.id,
+          });
+          continue;
+        }
+        resentRuns.push(run);
+        resends.push({
+          id: `effect:restart-resend:${run.id}:${commandId}`,
+          commandId: resendCommandId,
+          threadId: projection.thread.id,
+          request: { type: "provider-turn.start", runId: run.id },
+        });
+      }
+      for (const run of resentRuns) {
+        events.push({
+          id: yield* allocateEventId(),
+          type: "run.updated",
+          threadId: projection.thread.id,
+          runId: run.id,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: run,
+        });
+      }
+      const keptRuns = [...retryableRuns, ...resentRuns];
+      for (const run of keptRuns) {
+        for (const attempt of projection.attempts.filter(
+          (candidate) => candidate.id === run.activeAttemptId && candidate.status === "running",
+        )) {
+          events.push({
+            id: yield* allocateEventId(),
+            type: "run-attempt.updated",
+            threadId: projection.thread.id,
+            runId: run.id,
+            nodeId: attempt.rootNodeId,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...attempt, status: "pending", startedAt: null },
+          });
+        }
+        for (const node of projection.nodes.filter(
+          (candidate) => candidate.id === run.rootNodeId && candidate.status === "running",
+        )) {
+          events.push({
+            id: yield* allocateEventId(),
+            type: "node.updated",
+            threadId: projection.thread.id,
+            runId: run.id,
+            nodeId: node.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...node, status: "pending", startedAt: null },
+          });
+        }
+      }
       const retryableItems =
         retryableRuns.length === 0
           ? []
@@ -421,7 +654,7 @@ export const make = Effect.gen(function* () {
           },
         });
       }
-      runs = runs.filter((run) => !retryableRunIds.has(run.id));
+      runs = runs.filter((run) => !keptRuns.some((kept) => kept.id === run.id));
       const heldRuns = [
         ...retryableRuns,
         ...queuedRunsInDeliveryOrder({ runs: queuedRuns, messages: queuedMessages }),
@@ -447,12 +680,13 @@ export const make = Effect.gen(function* () {
           },
         });
       }
-      const unsentResumeRunIds = runs.flatMap((run) =>
-        run.startedAt === null && run.usageLimitContinuationOfRunId !== undefined ? [run.id] : [],
-      );
+      const unsentResumeRunIds = (yield* Effect.filter(
+        runs.filter((run) => run.usageLimitContinuationOfRunId !== undefined),
+        (run) => certifiedUnsent(projection, run),
+      )).map((run) => run.id);
       const limitRecovery = projection.thread.limitRecovery;
-      // The unsent resume spent the worker's request id, so a fresh one lets it send again. An
-      // untagged resume from an older server stays cancelled: its copy couldn't be hidden.
+      // Rearm only a positively certified original no-effect attempt. A null
+      // startedAt or missing native turn cannot authorize another Resume.
       if (limitRecovery?.autoResume === true && unsentResumeRunIds.length > 0) {
         events.push({
           id: yield* allocateEventId(),
@@ -639,6 +873,36 @@ export const make = Effect.gen(function* () {
             payload: cancelledItem(item, now),
           });
         }
+        // Queued runs and unsent resumes leave no visible turn behind, so there is nothing to explain.
+        if (run.status === "queued" || unsentResumeRunIds.includes(run.id)) continue;
+        events.push({
+          id: yield* allocateEventId(),
+          type: "turn-item.updated",
+          threadId: projection.thread.id,
+          runId: run.id,
+          ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: {
+            id: ids.derive.runSignalTurnItem({ runId: run.id, signal: "server-recovery" }),
+            threadId: projection.thread.id,
+            runId: run.id,
+            nodeId: run.rootNodeId,
+            providerThreadId: run.providerThreadId,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            // EventSink allocates the real position, after the run's existing items.
+            ordinal: 0,
+            status: "completed",
+            title: trigger === "startup" ? "Server restarted" : "Server shut down",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "system_notice",
+            message: detail,
+          },
+        });
       }
       // Blocking waits die with their turn; let child results wake the parent continuation as async tasks.
       const cutRunIds = new Set(runs.map((run) => run.id));
@@ -814,13 +1078,39 @@ export const make = Effect.gen(function* () {
               now,
             )
           : undefined;
+      let processLossCount = 1;
+      // Normal upgrades must not exhaust an unfinished turn's crash allowance.
+      if (
+        continuationRun?.restartContinuationOfRunId !== undefined &&
+        continuationRun.status !== "completed" &&
+        continuationRun.status !== "waiting"
+      ) {
+        const previous = yield* outbox
+          .get(`effect:restart-continuation:${continuationRun.restartContinuationOfRunId}`)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderRuntimeRecoveryError({
+                  operation: "reconcile",
+                  threadId: projection.thread.id,
+                  cause,
+                }),
+            ),
+          );
+        if (Option.isSome(previous) && previous.value.request.type === "provider-runtime.continue")
+          processLossCount += previous.value.request.processLossCount ?? 0;
+      }
       const effects: Array<EffectOutbox.PendingOrchestrationEffectV2> = continuationRun
         ? [
             {
               id: `effect:restart-continuation:${continuationRun.id}`,
               commandId,
               threadId: projection.thread.id,
-              request: { type: "provider-runtime.continue", sourceRunId: continuationRun.id },
+              request: {
+                type: "provider-runtime.continue",
+                sourceRunId: continuationRun.id,
+                processLossCount,
+              },
             },
           ]
         : [];
@@ -880,6 +1170,7 @@ export const make = Effect.gen(function* () {
         closedRequests: requests.length,
         retiredEffects,
         cancelledEffectIds,
+        resends,
       };
     },
   );
@@ -895,10 +1186,19 @@ export const make = Effect.gen(function* () {
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
         ),
       );
+    // Close the original claim fence before inspecting no-effect custody. An
+    // outstanding row is not proof; only its cancelled, never-claimed original
+    // plus accepted birth receipt can survive as genuinely unsent input.
+    const outboxReconciliation = yield* outbox.reconcileAfterProcessLoss.pipe(
+      Effect.mapError(
+        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
+      ),
+    );
     let terminalizedRuns = 0;
     let stoppedSessions = 0;
     let closedRequests = 0;
     let retiredEffects = 0;
+    const resends: Array<EffectOutbox.PendingOrchestrationEffectV2> = [];
     const stoppedThisPass = new Map<string, RecoverySession>();
     const grouped = trigger === "shutdown" && threadIds.length > 1;
     const groupSize = grouped ? 32 : 1;
@@ -928,6 +1228,7 @@ export const make = Effect.gen(function* () {
             }
           }
           cancelledEffectIds.push(...result.cancelledEffectIds);
+          resends.push(...result.resends);
           terminalizedRuns += result.terminalizedRuns;
           stoppedSessions += result.stoppedSessions;
           closedRequests += result.closedRequests;
@@ -954,11 +1255,17 @@ export const make = Effect.gen(function* () {
         ),
       );
     }
-    const outboxReconciliation = yield* outbox.reconcileAfterProcessLoss.pipe(
-      Effect.mapError(
-        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
-      ),
-    );
+    // The original rows were fenced before recovery decisions. Recorded resend
+    // effects still pass their own captured start admission before native work.
+    if (resends.length > 0) {
+      yield* eventSink
+        .writeWithEffects({ events: [], effects: resends })
+        .pipe(
+          Effect.mapError(
+            (cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", cause }),
+          ),
+        );
+    }
     return {
       terminalizedRuns,
       stoppedSessions,
@@ -1005,7 +1312,11 @@ export const make = Effect.gen(function* () {
                 id: `effect:restart-continuation:${run.id}`,
                 commandId,
                 threadId,
-                request: { type: "provider-runtime.continue", sourceRunId: run.id },
+                request: {
+                  type: "provider-runtime.continue",
+                  sourceRunId: run.id,
+                  processLossCount: 0,
+                },
               },
             ],
           });

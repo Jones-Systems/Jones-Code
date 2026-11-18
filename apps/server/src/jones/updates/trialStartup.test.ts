@@ -27,6 +27,7 @@ import {
   readJonesStartupGateProtocol,
 } from "./trialStartup.ts";
 import * as ServiceLauncherClient from "../../cloud/serviceLauncherClient.ts";
+import { SERVICE_LAUNCHER_PROTOCOL } from "../../cloud/serviceProtocol.ts";
 import type { QualifiedTrialRuntimeWitness } from "../cloud/qualifiedStartup.ts";
 import { runOrderedV2StartupPhases, runRuntimeShutdown } from "../../serverRuntimeStartup.ts";
 
@@ -258,7 +259,7 @@ it.live(
         const client = launcher({
           requiresQualifiedTrialGate: false,
           prepareQualifiedTrial: () => Effect.die("Darwin must not prepare a qualified IPC trial."),
-          prepareTrial: Effect.undefined,
+          prepareTrial: () => Effect.undefined,
         });
         const startup = yield* withRuntime(
           root,
@@ -288,7 +289,11 @@ it.live(
               calls.push("legacy");
             }),
             recover: record("provider"),
+            recoverCodexFailover: record("failover"),
+            recoverSelfSettlements: record("self"),
             recoverDelegatedTasks: record("delegated"),
+            recoverRemoteTaskQuestions: record("questions"),
+            recoverPlannedUpdateQueues: record("planned"),
             startEffectWorker: record("worker"),
             autoBootstrap: record("bootstrap"),
           }).pipe(Effect.provideService(ServiceLauncherClient.ServiceLauncherClient, client)),
@@ -318,7 +323,17 @@ it.live(
             }),
           );
           yield* Fiber.join(startup);
-          expect(calls).toEqual(["legacy", "provider", "delegated", "worker", "bootstrap"]);
+          expect(calls).toEqual([
+            "legacy",
+            "provider",
+            "failover",
+            "self",
+            "delegated",
+            "questions",
+            "planned",
+            "worker",
+            "bootstrap",
+          ]);
           const duplicate = yield* withRuntime(
             root,
             {
@@ -365,7 +380,11 @@ it.live("drains scoped cancellation before synthetic cleanup and leaves recovery
           }),
           importLegacyShells: record,
           recover: record,
+          recoverCodexFailover: record,
+          recoverSelfSettlements: record,
           recoverDelegatedTasks: record,
+          recoverRemoteTaskQuestions: record,
+          recoverPlannedUpdateQueues: record,
           startEffectWorker: record,
           autoBootstrap: record,
         }),
@@ -397,6 +416,7 @@ function launcher(
 ) {
   return ServiceLauncherClient.ServiceLauncherClient.of({
     managed: true,
+    protocol: SERVICE_LAUNCHER_PROTOCOL,
     requestUpdate: () => Effect.die("Startup must not request another update."),
     ...input,
   });
@@ -412,7 +432,7 @@ it.live(
         const client = launcher({
           requiresQualifiedTrialGate: true,
           prepareQualifiedTrial: () => Effect.die("Conflicting authority must not prepare IPC."),
-          prepareTrial: Effect.die("Conflicting authority must not prepare legacy IPC."),
+          prepareTrial: () => Effect.die("Conflicting authority must not prepare legacy IPC."),
         });
         const exit = yield* withRuntime(
           root,
@@ -457,7 +477,10 @@ it.live("ordinary and legacy launcher startup keep preparation in the receiving 
         requiresQualifiedTrialGate: false,
         prepareQualifiedTrial: () =>
           Effect.die("A legacy launcher has no qualified trial authority."),
-        prepareTrial: record("legacy-prepare").pipe(Effect.as(undefined)),
+        prepareTrial: ({ baseDir }) =>
+          Effect.sync(() => {
+            expect(baseDir).toBe(root);
+          }).pipe(Effect.andThen(record("legacy-prepare")), Effect.as(undefined)),
       });
       yield* withRuntime(
         root,
@@ -469,18 +492,26 @@ it.live("ordinary and legacy launcher startup keep preparation in the receiving 
           }),
           importLegacyShells: record("legacy"),
           recover: record("provider"),
+          recoverCodexFailover: record("failover"),
+          recoverSelfSettlements: record("self"),
           recoverDelegatedTasks: record("delegated"),
+          recoverRemoteTaskQuestions: record("questions"),
+          recoverPlannedUpdateQueues: record("planned"),
           startEffectWorker: record("worker"),
           autoBootstrap: record("bootstrap"),
         }).pipe(
-          Effect.andThen(client.prepareTrial),
+          Effect.andThen(() => client.prepareTrial({ baseDir: root })),
           Effect.provideService(ServiceLauncherClient.ServiceLauncherClient, client),
         ),
       );
       expect(calls).toEqual([
         "legacy",
         "provider",
+        "failover",
+        "self",
         "delegated",
+        "questions",
+        "planned",
         "worker",
         "bootstrap",
         "legacy-prepare",
@@ -527,11 +558,13 @@ it.live(
                 }),
               ),
             ),
-          prepareTrial: Effect.sync(() => {
-            expect(established).toBe(true);
-            calls.push("outcome-read");
-            return outcome;
-          }),
+          prepareTrial: ({ baseDir }) =>
+            Effect.sync(() => {
+              expect(baseDir).toBe(root);
+              expect(established).toBe(true);
+              calls.push("outcome-read");
+              return outcome;
+            }),
         });
         const record = (label: string) =>
           Effect.sync(() => {
@@ -552,11 +585,15 @@ it.live(
             }),
             importLegacyShells: record("legacy"),
             recover: record("provider"),
+            recoverCodexFailover: record("failover"),
+            recoverSelfSettlements: record("self"),
             recoverDelegatedTasks: record("delegated"),
+            recoverRemoteTaskQuestions: record("questions"),
+            recoverPlannedUpdateQueues: record("planned"),
             startEffectWorker: record("worker"),
             autoBootstrap: record("bootstrap"),
           }).pipe(
-            Effect.andThen(client.prepareTrial),
+            Effect.andThen(() => client.prepareTrial({ baseDir: root })),
             Effect.provideService(ServiceLauncherClient.ServiceLauncherClient, client),
           ),
         ).pipe(Effect.forkScoped);
@@ -605,7 +642,11 @@ it.live(
             "reservation",
             "legacy",
             "provider",
+            "failover",
+            "self",
             "delegated",
+            "questions",
+            "planned",
             "worker",
             "bootstrap",
             "outcome-read",
@@ -635,7 +676,7 @@ it.live("a qualified witness or grant failure holds every receiving recovery pha
           Effect.fail(
             new ServiceLauncherClient.ServiceLauncherClientError({ operation: "qualified-proof" }),
           ),
-        prepareTrial: Effect.die("A failed qualified trial has no established late outcome."),
+        prepareTrial: () => Effect.die("A failed qualified trial has no established late outcome."),
       });
       const exit = yield* withRuntime(
         root,
@@ -649,7 +690,11 @@ it.live("a qualified witness or grant failure holds every receiving recovery pha
           }),
           importLegacyShells: record,
           recover: record,
+          recoverCodexFailover: record,
+          recoverSelfSettlements: record,
           recoverDelegatedTasks: record,
+          recoverRemoteTaskQuestions: record,
+          recoverPlannedUpdateQueues: record,
           startEffectWorker: record,
           autoBootstrap: record,
         }).pipe(
@@ -680,7 +725,7 @@ it.live.each([
         const client = launcher({
           requiresQualifiedTrialGate: qualified,
           prepareQualifiedTrial: () => Effect.die("Shutdown does not grant trial activation."),
-          prepareTrial: Effect.die("Shutdown does not prepare another trial."),
+          prepareTrial: () => Effect.die("Shutdown does not prepare another trial."),
         });
         const result = yield* withRuntime(
           root,

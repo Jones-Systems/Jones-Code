@@ -21,6 +21,16 @@ import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import { isTerminalStatus, terminalRetentionCutoffMillis } from "./shared.ts";
 
 type Questions = RemoteBlockingQuestions["requests"];
+export const questionNoticeKey = (
+  parentThreadId: ThreadId,
+  taskId: NodeId,
+  observation: RemoteTaskObservation,
+  requestId: Questions[number]["requestId"],
+) =>
+  [parentThreadId, taskId, observation.environmentId, observation.threadId, requestId]
+    .map(encodeURIComponent)
+    .join(":");
+
 interface Row {
   readonly observation_json: string;
   readonly notices_json: string;
@@ -190,16 +200,6 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
             isOpen(task) && parent.thread.deletedAt === null && parent.thread.archivedAt === null;
           const questions = open ? observation.blockingQuestions.requests : [];
           const notices = [...(yield* decodeNotices(row.notices_json))];
-          const keyFor = (request: Questions[number]) =>
-            [
-              parentThreadId,
-              taskId,
-              observation.environmentId,
-              observation.threadId,
-              request.requestId,
-            ]
-              .map(encodeURIComponent)
-              .join(":");
           const saveNotices = () =>
             sql.withTransaction(
               Effect.gen(function* () {
@@ -210,7 +210,7 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
             );
           for (const notice of notices.slice()) {
             if (questions.some((request) => request.requestId === notice.requestId)) continue;
-            const key = keyFor(notice);
+            const key = questionNoticeKey(parentThreadId, taskId, observation, notice.requestId);
             const queued = parent.runs.find(
               (run) =>
                 run.status === "queued" && run.userMessageId === `message:remote-question:${key}`,
@@ -239,7 +239,7 @@ export const make = Effect.fn("RemoteTaskObservation.make")(function* <E>(
           )
             return;
           for (const request of questions) {
-            const key = keyFor(request);
+            const key = questionNoticeKey(parentThreadId, taskId, observation, request.requestId);
             // Record notice intent before dispatch; stable command IDs make crash recovery idempotent.
             if (!notices.some((notice) => notice.requestId === request.requestId)) {
               notices.push(request);

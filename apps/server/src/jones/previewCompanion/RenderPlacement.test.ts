@@ -88,6 +88,7 @@ it.effect("unmounts after the 20-second attachment deadline without a local fall
           Layer.mock(DesktopChannel.DesktopBrowserChannel, {
             available: false,
             isShown: () => false,
+            loadFailure: () => undefined,
           }),
         ),
         Layer.provide(

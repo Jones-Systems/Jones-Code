@@ -1,4 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Qualified synthetic harness owns every workspace, journal and captured child.
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as VcsProcess from "../../vcs/VcsProcess.ts";
+import * as SearchGitProbe from "../workspace/SearchGitProbe.ts";
+import { searchProbePort, type SearchProbePort } from "../serverCompute/searchProbeBinding.ts";
 import { CapturedSampling, untilSamplingAbort } from "./capturedSampling.ts";
 import {
   qualificationContent,
@@ -88,7 +94,29 @@ export interface NativeQualificationOptions {
 /** Runs real pinned finders in N productive children; no timer/fake CPU workers.
  * Failure to observe productive overlap is an explicit failed predicate.
  */
-export async function runNativeQualification(options: NativeQualificationOptions) {
+export function withNativeSearchProbePort<A>(
+  run: (port: SearchProbePort) => Promise<A>,
+): Promise<A> {
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const service = yield* SearchGitProbe.make;
+        // The caller's rejection is not an Effect-domain failure: runPromise rethrows
+        // the squashed defect, so callers observe the original rejection unchanged.
+        return yield* Effect.promise(() => run(searchProbePort(service)));
+      }),
+    ).pipe(Effect.provide(VcsProcess.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
+  );
+}
+export function runNativeQualification(
+  options: NativeQualificationOptions,
+  probes?: SearchProbePort,
+) {
+  return probes === undefined
+    ? withNativeSearchProbePort((captured) => runWithSearchProbe(options, captured))
+    : runWithSearchProbe(options, probes);
+}
+async function runWithSearchProbe(options: NativeQualificationOptions, probes: SearchProbePort) {
   const { count, directory, command } = options;
   // Admission precedes fixture creation, journal acquisition and every external collector.
   const workload = qualificationWorkload(options);
@@ -361,6 +389,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
             release();
           },
           options.diagnostic ? (event) => diagnosticSink({ ...event, phase }) : undefined,
+          probes,
         );
       } catch (cause) {
         const failedChild = record.pid === undefined ? undefined : captured.get(record.pid);

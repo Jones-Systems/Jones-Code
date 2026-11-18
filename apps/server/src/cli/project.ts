@@ -39,7 +39,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import {
   clearPersistedServerRuntimeState,
-  readPersistedServerRuntimeState,
+  readLiveServerRuntimeState,
 } from "../serverRuntimeState.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { type CliAuthLocationFlags, projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
@@ -217,6 +217,7 @@ const makeProjectCliRuntimeLayer = (layerProjectService: typeof RuntimeLayer.lay
         Layer.provide(Layer.merge(ServerSecretStore.layer, ManagedPolicy.layer)),
       ),
     ),
+    // Built after acquireServerOwnership; layerCliConfig would contend with this process's own lock.
     Layer.provideMerge(SqlitePersistence.layerConfig),
   );
 
@@ -354,40 +355,21 @@ const getOfflineSnapshot = Effect.fn("getOfflineSnapshot")(function* () {
   return yield* projects.snapshot;
 });
 
-const tryResolveLiveProjectExecutionMode = Effect.fn("tryResolveLiveProjectExecutionMode")(
-  function* (
-    environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"],
-    config: ServerConfig.ServerConfig["Service"],
-  ) {
-    const runtimeState = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
-    if (Option.isNone(runtimeState)) {
-      return Option.none<{ readonly origin: string }>();
-    }
+const probeLiveProjectServer = Effect.fn("probeLiveProjectServer")(function* (
+  environmentAuth: EnvironmentAuth.EnvironmentAuth["Service"],
+  origin: string,
+) {
+  const attempted = yield* withProjectCliSessionToken(environmentAuth, (token) =>
+    fetchLiveOrchestrationSnapshot(origin, token, PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT),
+  ).pipe(Effect.result);
+  if (attempted._tag === "Success") return true;
 
-    const attempt = withProjectCliSessionToken(environmentAuth, (token) =>
-      fetchLiveOrchestrationSnapshot(
-        runtimeState.value.origin,
-        token,
-        PROJECT_CLI_LIVE_SERVER_PROBE_TIMEOUT,
-      ).pipe(
-        Effect.as({
-          origin: runtimeState.value.origin,
-        }),
-      ),
-    );
-
-    const attempted = yield* Effect.result(attempt);
-    if (attempted._tag === "Success") {
-      return Option.some(attempted.success);
-    }
-
-    yield* Effect.logDebug("Failed to connect to the persisted project CLI server.", {
-      origin: runtimeState.value.origin,
-      cause: attempted.failure,
-    });
-    return Option.none<{ readonly origin: string }>();
-  },
-);
+  yield* Effect.logDebug("Failed to connect to the persisted project CLI server.", {
+    origin,
+    cause: attempted.failure,
+  });
+  return false;
+});
 
 const runProjectMutation = Effect.fn("runProjectMutation")(function* (
   flags: CliAuthLocationFlags,
@@ -412,22 +394,36 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
   const minimumLogLevel = config.logLevel;
 
   return yield* Effect.gen(function* () {
-    const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
-    const liveMode = yield* tryResolveLiveProjectExecutionMode(environmentAuth, config);
+    const runtimeState = yield* readLiveServerRuntimeState(config.serverRuntimeStatePath);
+    if (Option.isSome(runtimeState)) {
+      const { origin } = runtimeState.value;
+      // Auth storage can hold the ownership lock while applying pending migrations.
+      // This layer's scope ends before the offline path attempts to acquire ownership.
+      const handled = yield* Effect.gen(function* () {
+        const environmentAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        if (!(yield* probeLiveProjectServer(environmentAuth, origin))) return false;
 
-    if (Option.isSome(liveMode)) {
-      return yield* withProjectCliSessionToken(environmentAuth, (token) =>
-        Effect.gen(function* () {
-          const snapshot = yield* fetchLiveOrchestrationSnapshot(liveMode.value.origin, token);
-          const output = yield* run({
-            snapshot,
-            dispatch: (command) =>
-              dispatchLiveOrchestrationCommand(liveMode.value.origin, token, command),
-            mode: "live",
-          });
-          yield* Console.log(output);
-        }),
+        yield* withProjectCliSessionToken(environmentAuth, (token) =>
+          Effect.gen(function* () {
+            const snapshot = yield* fetchLiveOrchestrationSnapshot(origin, token);
+            const output = yield* run({
+              snapshot,
+              dispatch: (command) => dispatchLiveOrchestrationCommand(origin, token, command),
+              mode: "live",
+            });
+            yield* Console.log(output);
+          }),
+        );
+        return true;
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(EnvironmentAuth.layerRuntime, WorkspacePaths.layer).pipe(
+            Layer.provide(ServerConfig.layer(config)),
+            Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
+          ),
+        ),
       );
+      if (handled) return;
     }
 
     // Before ownership and clearing, so a failed import leaves server state alone.
@@ -454,16 +450,7 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
       });
       yield* Console.log(output);
     }).pipe(Effect.provide(layerOfflineRuntime));
-  }).pipe(
-    Effect.scoped,
-    Effect.provide(
-      Layer.mergeAll(EnvironmentAuth.layerRuntime, WorkspacePaths.layer).pipe(
-        Layer.provideMerge(FetchHttpClient.layer),
-        Layer.provide(ServerConfig.layer(config)),
-        Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
-      ),
-    ),
-  );
+  }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer));
 });
 
 const projectAddCommand = Command.make("add", {
@@ -490,6 +477,20 @@ const projectAddCommand = Command.make("add", {
         const existingProject = snapshot.projects.find(
           (project) => project.deletedAt === null && project.workspaceRoot === workspaceRoot,
         );
+        // Re-adding an archived project's folder restores it, matching the clients.
+        if (existingProject?.archivedAt != null) {
+          const title = Option.isSome(flags.title)
+            ? yield* resolveProjectTitle(workspaceRoot, flags.title.value)
+            : undefined;
+          yield* dispatch({
+            type: "project.update",
+            commandId: CommandId.make(yield* projectCommandUuid),
+            projectId: existingProject.id,
+            archived: false,
+            ...(title === undefined ? {} : { title }),
+          });
+          return `Unarchived project ${existingProject.id} (${title ?? existingProject.title}) at ${workspaceRoot}.`;
+        }
         if (existingProject) {
           return yield* new ProjectAlreadyExistsError({
             operation: "addProject",

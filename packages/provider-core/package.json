@@ -187,39 +187,39 @@
       "types": "./src/server/usageLimits.ts",
       "import": "./src/server/usageLimits.ts"
     },
-    "./server/jones/ProviderEventOrigin": {
-      "types": "./src/server/jones/ProviderEventOrigin.ts",
-      "import": "./src/server/jones/ProviderEventOrigin.ts"
+    "./server/jones/AppIdentity": {
+      "types": "./src/server/jones/AppIdentity.ts",
+      "import": "./src/server/jones/AppIdentity.ts"
     },
     "./server/jones/GoalContinuityContext": {
       "types": "./src/server/jones/GoalContinuityContext.ts",
       "import": "./src/server/jones/GoalContinuityContext.ts"
     },
+    "./server/jones/ProviderEventOrigin": {
+      "types": "./src/server/jones/ProviderEventOrigin.ts",
+      "import": "./src/server/jones/ProviderEventOrigin.ts"
+    },
     "./server/jones/ProviderRuntimeBindingDiagnostics": {
       "types": "./src/server/jones/ProviderRuntimeBindingDiagnostics.ts",
       "import": "./src/server/jones/ProviderRuntimeBindingDiagnostics.ts"
-    },
-    "./server/jones/runtimeTypes": {
-      "types": "./src/server/jones/runtimeTypes.ts",
-      "import": "./src/server/jones/runtimeTypes.ts"
     },
     "./server/jones/ThreadTitleAssessment": {
       "types": "./src/server/jones/ThreadTitleAssessment.ts",
       "import": "./src/server/jones/ThreadTitleAssessment.ts"
     },
-    "./server/jones/AppIdentity": {
-      "types": "./src/server/jones/AppIdentity.ts",
-      "import": "./src/server/jones/AppIdentity.ts"
-    },
     "./server/jones/providerControlOutcome": {
       "types": "./src/server/jones/providerControlOutcome.ts",
       "import": "./src/server/jones/providerControlOutcome.ts"
+    },
+    "./server/jones/runtimeTypes": {
+      "types": "./src/server/jones/runtimeTypes.ts",
+      "import": "./src/server/jones/runtimeTypes.ts"
     }
   },
   "scripts": {
     "typecheck": "vp run tsrs:typecheck",
-    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
-    "test": "vp test run --config ../../vite.config.ts --dir ."
+    "test": "vp test run --config ../../vite.config.ts --dir .",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit"
   },
   "dependencies": {
     "@t3tools/contracts": "workspace:*",

@@ -17,10 +17,8 @@ import {
   DraftId,
   subscribeComposerDraftModelReconciliation,
 } from "../../composerDraftStore";
-import {
-  buildLocalDraftThread,
-  resolveComposerProviderSelection,
-} from "../../components/ChatView.logic";
+import { buildLocalDraftThread } from "../../components/ChatView.logic";
+import { resolveComposerProviderSelection } from "../composer/providerSelection";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
   acknowledgeComposerSelection,

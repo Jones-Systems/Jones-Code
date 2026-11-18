@@ -16,6 +16,90 @@
     {
       "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
       "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/core.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/CheckpointCaptureService.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/CheckpointRestoreSafety.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionControlReads.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerForwarding.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/peer/RemoteDelegation.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
+    },
+    {
+      "from": "apps/server/src/ws.test.ts",
+      "to": "apps/server/src/jones/orchestration/SupersededTerminalTrace.ts"
     }
   ]
 }

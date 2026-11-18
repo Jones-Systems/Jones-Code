@@ -1,3 +1,4 @@
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -58,11 +59,21 @@ export const withLinkedMessageOrigin = (
   if (!Buffer.from(json, "utf8").equals(bytes)) return undefined;
   const decoded = decodeOrigin(json);
   if (Option.isNone(decoded)) return undefined;
+  const sender = decoded.value.thread;
   return {
     ...scope,
     client: {
       ...scope.client,
       remoteOrigin: { ...decoded.value, linkSessionId: scope.client.sessionId },
+      ...(sender === undefined
+        ? {}
+        : {
+            senderThread: {
+              environmentId: EnvironmentId.make(decoded.value.environmentId),
+              threadId: ThreadId.make(sender.threadId),
+              title: sender.title ?? "Untitled thread",
+            },
+          }),
     },
   };
 };

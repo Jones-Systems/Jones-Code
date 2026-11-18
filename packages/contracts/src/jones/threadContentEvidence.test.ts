@@ -44,7 +44,7 @@ describe("thread content evidence wire contract", () => {
     assert.deepEqual<unknown>(decodeRead(input), input);
   });
 
-  it("keeps legacy requests, clamping and item fixtures unchanged", () => {
+  it("keeps legacy selectors and item fixtures with the ordinary 20k clamp", () => {
     const decode = decodeRead;
     assert.deepEqual<unknown>(decode({ threadId: "thread" }), { threadId: "thread" });
     assert.deepEqual<unknown>(decode({ threadId: "thread", textOffset: 99, afterPosition: 1 }), {
@@ -52,7 +52,16 @@ describe("thread content evidence wire contract", () => {
       textOffset: 99,
       afterPosition: 1,
     });
-    assert.equal(decode({ threadId: "thread", maxCharsPerItem: 99_999 }).maxCharsPerItem, 50_000);
+    assert.equal(decode({ threadId: "thread", maxCharsPerItem: 99_999 }).maxCharsPerItem, 20_000);
+    assert.equal(
+      decode({ threadId: "thread", contentEvidence: optIn, maxCharsPerItem: 99_999 })
+        .maxCharsPerItem,
+      50_000,
+    );
+    assert.deepEqual<unknown>(
+      decode({ threadId: "thread", contentEvidence: optIn, beforePosition: 8 }),
+      { threadId: "thread", contentEvidence: optIn, beforePosition: 8 },
+    );
     const item = {
       position: 0,
       visibility: "local",
@@ -89,6 +98,8 @@ describe("thread content evidence wire contract", () => {
       { contentEvidence: optIn, textOffset: 0 },
       { contentEvidence: optIn, itemId: "item", textOffset: 1 },
       { contentEvidence: optIn, itemId: "item", afterPosition: 0 },
+      { contentEvidence: optIn, itemId: "item", afterPosition: -1 },
+      { contentEvidence: optIn, itemId: "item", beforePosition: 1 },
       { contentEvidence: { ...optIn, expectedRevision: digest }, itemId: "item", textOffset: -1 },
     ])
       assert.throws(() => decode({ threadId: "thread", ...selection }));

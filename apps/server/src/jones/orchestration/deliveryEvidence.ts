@@ -23,8 +23,12 @@ type ReceiptReader = Pick<Receipts.CommandReceiptStoreV2["Service"], "getByComma
 type EventReader = Pick<EventSink.EventSinkV2["Service"], "readByCommandId">;
 export type LaunchDeliveryRequest = Pick<
   OrchestrationV2ThreadLaunchInput,
-  "commandId" | "projectId" | "threadId" | "reuseExistingThread" | "initialMessage"
->;
+  "commandId" | "projectId" | "threadId" | "reuseExistingThread"
+> & {
+  readonly initialMessage?:
+    | Pick<NonNullable<OrchestrationV2ThreadLaunchInput["initialMessage"]>, "messageId">
+    | undefined;
+};
 
 const receiptMatches = (
   receipt: Receipts.CommandReceiptV2,
@@ -73,6 +77,30 @@ export function recordedLaunchClaim(
     return event.payload;
 }
 
+/** This request's first user message and the run it created, among one command's own events. */
+function firstMessageIn(
+  input: LaunchDeliveryRequest,
+  events: ReadonlyArray<RecordedStoredEvent>,
+  threadId: ThreadId,
+) {
+  const event = events.find(
+    ({ event }) =>
+      event.type === "message.updated" &&
+      event.threadId === threadId &&
+      event.payload.role === "user" &&
+      (input.initialMessage?.messageId === undefined ||
+        event.payload.id === input.initialMessage.messageId),
+  )?.event;
+  if (event?.type !== "message.updated") return;
+  const run = events.find(
+    ({ event: candidate }) =>
+      candidate.type === "run.created" &&
+      candidate.threadId === threadId &&
+      candidate.payload.userMessageId === event.payload.id,
+  )?.event;
+  if (run?.type === "run.created") return { message: event.payload, run: run.payload };
+}
+
 /** A shell or a receipt for another message is never evidence for this first prompt. */
 export function recordedLaunchMessage(
   input: LaunchDeliveryRequest,
@@ -91,23 +119,87 @@ export function recordedLaunchMessage(
     !eventsMatch(receipt, events)
   )
     return;
-  const event = events.find(
-    ({ event }) =>
-      event.type === "message.updated" &&
-      event.threadId === threadId &&
-      event.payload.role === "user" &&
-      (input.initialMessage?.messageId === undefined ||
-        event.payload.id === input.initialMessage.messageId),
-  )?.event;
-  if (event?.type !== "message.updated") return;
-  const run = events.find(
-    ({ event: candidate }) =>
-      candidate.type === "run.created" &&
-      candidate.threadId === threadId &&
-      candidate.payload.userMessageId === event.payload.id,
-  )?.event;
-  if (run?.type === "run.created") return { message: event.payload, run: run.payload };
+  return firstMessageIn(input, events, threadId);
 }
+
+/** Whether a new thread's own claim recorded any first prompt or run, matching or not. */
+function claimCarriesFirstMessage(
+  input: LaunchDeliveryRequest,
+  events: ReadonlyArray<RecordedStoredEvent>,
+  threadId: ThreadId,
+) {
+  return (
+    input.reuseExistingThread !== true &&
+    events.some(
+      ({ event }) =>
+        (event.type === "run.created" && event.threadId === threadId) ||
+        (event.type === "message.updated" &&
+          event.threadId === threadId &&
+          event.payload.role === "user"),
+    )
+  );
+}
+
+/**
+ * A new thread's `thread.create` claim can carry its first prompt in the same original
+ * command. Only that claim's exact accepted receipt and its own recorded events prove
+ * it; a reused-thread claim never carries one.
+ */
+function recordedClaimMessage(
+  input: LaunchDeliveryRequest,
+  receipt: Receipts.CommandReceiptV2,
+  events: ReadonlyArray<RecordedStoredEvent>,
+  threadId: ThreadId,
+) {
+  if (
+    input.reuseExistingThread === true ||
+    recordedLaunchClaim(input, receipt, events)?.id !== threadId
+  )
+    return;
+  return firstMessageIn(input, events, threadId);
+}
+
+/** Read the two possible carriers of the first message before admitting a retry. */
+export const readLaunchMessage = Effect.fn("jones.orchestration.readLaunchMessage")(function* (
+  receipts: ReceiptReader,
+  events: EventReader,
+  input: LaunchDeliveryRequest,
+  claimReceipt: Receipts.CommandReceiptV2,
+  claimEvents: ReadonlyArray<RecordedStoredEvent>,
+) {
+  const commandId = initialMessageCommandId(input.commandId);
+  const threadId = claimReceipt.threadId;
+  const separate = yield* receipts.getByCommandId(commandId);
+  if (claimCarriesFirstMessage(input, claimEvents, threadId)) {
+    const match =
+      Option.isNone(separate) && recordedClaimMessage(input, claimReceipt, claimEvents, threadId);
+    return match
+      ? {
+          status: "accepted" as const,
+          ...match,
+          storedEvents: claimEvents,
+          sequence: claimReceipt.resultSequence,
+          replayed: true,
+        }
+      : { status: "conflict" as const };
+  }
+  if (Option.isNone(separate)) return { status: "absent" as const };
+  const receipt = separate.value;
+  if (!receiptMatches(receipt, commandId, "message.dispatch", threadId))
+    return { status: "conflict" as const };
+  if (receipt.status === "rejected") return { status: "rejected" as const, receipt };
+  const storedEvents = yield* events.readByCommandId({ commandId }).pipe(Stream.runCollect);
+  const match = recordedLaunchMessage(input, receipt, storedEvents, threadId);
+  return match
+    ? {
+        status: "accepted" as const,
+        ...match,
+        storedEvents,
+        sequence: receipt.resultSequence,
+        replayed: true,
+      }
+    : { status: "conflict" as const };
+});
 
 export const dispatchDeliveryEvidence = Effect.fn("jones.orchestration.dispatchDeliveryEvidence")(
   function* (receipts: ReceiptReader, command: OrchestrationV2Command) {
@@ -181,34 +273,29 @@ export const launchDeliveryEvidence = Effect.fn("jones.orchestration.launchDeliv
     const creation = { status: "accepted", threadId: claim.id } as const;
     const claimed: LaunchDeliveryEvidence = { ...unknown, creation };
     if (input.initialMessage === undefined) return claimed;
+    // The wire names the first prompt by its derived delivery key, whichever command carried it.
     const messageCommandId = initialMessageCommandId(input.commandId);
-    const messageReceipt = yield* receipts
-      .getByCommandId(messageCommandId)
-      .pipe(Effect.catchCause(() => Effect.succeedNone));
-    if (
-      Option.isNone(messageReceipt) ||
-      !receiptMatches(messageReceipt.value, messageCommandId, "message.dispatch", claim.id)
-    )
-      return claimed;
-    if (messageReceipt.value.status === "rejected")
+    const result = yield* readLaunchMessage(
+      receipts,
+      events,
+      input,
+      receipt.value,
+      claimEvents,
+    ).pipe(Effect.catchCause(() => Effect.succeed({ status: "unknown" as const })));
+    if (result.status === "accepted")
+      return {
+        ...claimed,
+        initialMessage: {
+          status: "accepted",
+          commandId: messageCommandId,
+          messageId: result.message.id,
+        },
+      } satisfies LaunchDeliveryEvidence;
+    if (result.status === "rejected")
       return {
         ...claimed,
         initialMessage: { ...initialMessage, status: "rejected", commandId: messageCommandId },
       } satisfies LaunchDeliveryEvidence;
-    const messageEvents = yield* events.readByCommandId({ commandId: messageCommandId }).pipe(
-      Stream.runCollect,
-      Effect.catchCause(() => Effect.succeed([])),
-    );
-    const message = recordedLaunchMessage(input, messageReceipt.value, messageEvents, claim.id);
-    return message === undefined
-      ? claimed
-      : ({
-          ...claimed,
-          initialMessage: {
-            status: "accepted",
-            commandId: messageCommandId,
-            messageId: message.message.id,
-          },
-        } satisfies LaunchDeliveryEvidence);
+    return claimed;
   },
 );

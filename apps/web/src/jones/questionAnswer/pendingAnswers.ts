@@ -31,11 +31,41 @@ export function setPendingUserInputCustomAnswer(
   question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
   customAnswer: string,
+  options?: { notes?: boolean },
+): PendingUserInputDraftAnswer;
+export function setPendingUserInputCustomAnswer(
+  draft: PendingUserInputDraftAnswer | undefined,
+  customAnswer: string,
+  question?: Pick<UserInputQuestion, "initialAnswer" | "multiSelect">,
+  options?: { notes?: boolean },
+): PendingUserInputDraftAnswer;
+export function setPendingUserInputCustomAnswer(
+  questionOrDraft: UserInputQuestion | PendingUserInputDraftAnswer | undefined,
+  draftOrAnswer: PendingUserInputDraftAnswer | string | undefined,
+  answerOrQuestion?: string | Pick<UserInputQuestion, "initialAnswer" | "multiSelect">,
   options: { notes?: boolean } = {},
 ): PendingUserInputDraftAnswer {
+  // Retained callers pass the draft first; current upstream passes the question first.
+  if (typeof draftOrAnswer === "string") {
+    const draft = questionOrDraft as PendingUserInputDraftAnswer | undefined;
+    const question = answerOrQuestion as
+      | Pick<UserInputQuestion, "initialAnswer" | "multiSelect">
+      | undefined;
+    const selectedOptionValues =
+      !(options.notes && !question?.multiSelect) &&
+      (question?.initialAnswer !== undefined || draftOrAnswer.trim().length > 0)
+        ? undefined
+        : [...new Set(draft?.selectedOptionValues ?? [])];
+    return {
+      customAnswer: draftOrAnswer,
+      ...(selectedOptionValues && selectedOptionValues.length > 0 ? { selectedOptionValues } : {}),
+    };
+  }
+  const question = questionOrDraft as UserInputQuestion;
+  const customAnswer = answerOrQuestion as string;
   if (options.notes && !question.multiSelect && question.allowCustomAnswer !== false)
-    return { ...draft, customAnswer };
-  return setUpstreamAnswer(question, draft, customAnswer);
+    return { ...draftOrAnswer, customAnswer };
+  return setUpstreamAnswer(question, draftOrAnswer, customAnswer);
 }
 export function togglePendingUserInputOptionSelection(
   question: UserInputQuestion,

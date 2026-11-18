@@ -24,7 +24,11 @@ vi.mock("electron", () => ({
   },
 }));
 import * as BrowserSession from "../../preview/BrowserSession.ts";
+import * as ElectronApp from "../../electron/ElectronApp.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
+
+// Certificate-error registration is an app listener; clipboard handling never raises one here.
+const layerElectronApp = Layer.mock(ElectronApp.ElectronApp, { on: () => Effect.void });
 
 it.effect(
   "denies clipboard reads on companion guests through both existing permission handlers",
@@ -89,5 +93,5 @@ it.effect(
       expect(check(companion, "clipboard-read", "https://example.test")).toBe(false);
       expect(clipboardDialog).toHaveBeenCalledTimes(1);
       expect(unexpectedDialog).not.toHaveBeenCalled();
-    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, layerElectronApp))),
 );

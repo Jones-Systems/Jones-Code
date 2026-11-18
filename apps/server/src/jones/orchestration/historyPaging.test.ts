@@ -683,6 +683,7 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
             },
           },
         });
+        let revision = 0;
         for (const shape of [
           { target: threadId, source: threadId, anchor: "item:missing", filter: undefined },
           { target: threadId, source: threadId, anchor: itemId(1000), filter: undefined },
@@ -696,6 +697,16 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
             sourceItemId: shape.anchor,
             position: 500,
           });
+          // The fixture's direct projection writes stand in for a commit. Advance
+          // its event revision so every case reaches the fallback with a cold index.
+          revision += 1;
+          yield* sql`INSERT INTO orchestration_events (
+            event_id, aggregate_kind, stream_id, stream_version, event_type,
+            occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+          ) VALUES (
+            ${"event:history-page:fallback:" + revision}, 'thread', ${threadId}, ${revision},
+            'run.updated', ${DateTime.formatIso(now)}, 'user', '{}', '{}', 2
+          )`;
           const observation = observeMetadata();
           const actual = yield* store
             .getThreadHistoryPage(shape.target, shapeCursor, shape.filter)
@@ -710,6 +721,10 @@ it.layer(layer)("direct history-page metadata selection", (it) => {
             selectionMetadata(observation.queries).some(
               ({ rows }) => rows !== null && rows >= 1000,
             ),
+            JSON.stringify({
+              shape,
+              rows: selectionMetadata(observation.queries).map(({ rows }) => rows),
+            }),
           );
         }
         const invalid = yield* store.getThreadHistoryPage(threadId, "invalid").pipe(Effect.flip);

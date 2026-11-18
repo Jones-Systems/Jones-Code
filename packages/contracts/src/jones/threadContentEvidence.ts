@@ -45,6 +45,7 @@ export function isThreadContentEvidenceSelection(input: {
   readonly itemId?: string | undefined;
   readonly textOffset?: number | undefined;
   readonly afterPosition?: number | undefined;
+  readonly beforePosition?: number | undefined;
 }): boolean {
   if (input.contentEvidence === undefined) return true;
   if (input.itemId === undefined) {
@@ -52,6 +53,7 @@ export function isThreadContentEvidenceSelection(input: {
   }
   return (
     input.afterPosition === undefined &&
+    input.beforePosition === undefined &&
     ((input.textOffset ?? 0) === 0 || input.contentEvidence.expectedRevision !== undefined)
   );
 }

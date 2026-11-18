@@ -10,7 +10,7 @@ import {
 } from "../../components/chat/threadContextDrag";
 import { COMPOSER_MENTION_DRAG_TYPE } from "../../components/chat/composerMentionDrag";
 import { readPastedComposerContext } from "../../components/composerInlineTokenPaste";
-import type { PendingUserInputProgress } from "../../pendingUserInput";
+import type { PendingUserInputProgress } from "./answerProgress";
 import type { PendingUserInput } from "../../session-logic";
 import {
   ANSWER_FIELD_MAX_LINES,

@@ -1,6 +1,5 @@
+import * as Schema from "effect/Schema";
 // @effect-diagnostics nodeBuiltinImport:off - node:path.win32 stands in for a Windows host in one test.
-import * as PlatformError from "effect/PlatformError";
-import * as Cause from "effect/Cause";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -9,10 +8,10 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as NodePath from "node:path";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
@@ -22,8 +21,6 @@ import * as ProcessRunner from "../processRunner.ts";
 import {
   isVersionExecutable,
   ensurePinnedRuntimeInstalled,
-  installPinnedRuntimeFromLocalArchive,
-  verifyPinnedRuntimeProvenance,
   isUnpublishedRelease,
   pinnedRuntimeCommand,
   pinnedRuntimePaths,
@@ -103,303 +100,7 @@ const writeProvenance = (
     ),
   );
 
-const localArtifact = Effect.fn(function* (fs: FileSystem.FileSystem, path: Path.Path) {
-  const artifactDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-local-artifact-" });
-  const sha256 = yield* archiveHex(archiveBytes);
-  const metadata = {
-    schema: 1,
-    repository: "Jones-Systems/Jones-Code",
-    source: sourceCommit,
-    version,
-    platform: "linux",
-    architecture: "x64",
-    artifact: archiveName,
-    sha256,
-  };
-  yield* fs.writeFileString(path.join(artifactDir, "ARTIFACT.json"), encodeJson(metadata));
-  yield* fs.writeFileString(path.join(artifactDir, "SOURCE_COMMIT"), `${sourceCommit}\n`);
-  yield* fs.writeFileString(path.join(artifactDir, "SHA256SUMS"), `${sha256}  ${archiveName}\n`);
-  yield* fs.writeFile(path.join(artifactDir, archiveName), archiveBytes);
-  return { artifactDir, metadata };
-});
-
-const localRunner = (fs: FileSystem.FileSystem, path: Path.Path, reportedVersion = version) => {
-  const extractor = extractingRunner(fs, path);
-  return ProcessRunner.ProcessRunner.of({
-    run: (input) =>
-      input.command === "tar"
-        ? extractor.run(input)
-        : Effect.succeed({
-            stdout: `t3 v${reportedVersion}\n`,
-            stderr: "",
-            code: ChildProcessSpawner.ExitCode(0),
-            timedOut: false,
-            stdoutTruncated: false,
-            stderrTruncated: false,
-            stdoutInvalidUtf8: false,
-            stderrInvalidUtf8: false,
-          }),
-  });
-};
-
 it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
-  it.effect.each([true, false])(
-    "refuses an unverified existing runtime and preserves its bytes (complete: %s)",
-    (complete) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-runtime-preserve-" });
-        const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
-        yield* fs.makeDirectory(paths.versionDir, { recursive: true });
-        yield* fs.writeFileString(paths.entryPath, "unknown runtime bytes");
-        if (complete) yield* fs.writeFileString(paths.sentinelPath, `${version}\n`);
-        const requests: string[] = [];
-        const result = yield* ensurePinnedRuntimeInstalled({
-          baseDir,
-          version,
-          fs,
-          path,
-          platform: "linux",
-          arch: "x64",
-          httpClient: releaseHttpClient(yield* validChecksums, requests),
-          runner: extractingRunner(fs, path),
-          validate: () => Effect.void,
-        }).pipe(Effect.result);
-        assert.equal(result._tag, "Failure");
-        if (result._tag === "Failure")
-          assert.include(result.failure.message, "t3 jones host stage-runtime");
-        assert.deepEqual(requests, []);
-        assert.equal(yield* fs.readFileString(paths.entryPath), "unknown runtime bytes");
-        assert.equal(yield* fs.exists(paths.sentinelPath), complete);
-      }),
-  );
-
-  it.effect("refuses the upstream default before creating a runtime tree", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-runtime-default-" });
-      const requests: string[] = [];
-      const result = yield* ensurePinnedRuntimeInstalled({
-        baseDir,
-        version,
-        fs,
-        path,
-        platform: "linux",
-        arch: "x64",
-        httpClient: releaseHttpClient(yield* validChecksums, requests),
-        runner: extractingRunner(fs, path),
-        validate: () => Effect.void,
-      }).pipe(Effect.result);
-      assert.equal(result._tag, "Failure");
-      if (result._tag === "Failure")
-        assert.include(result.failure.message, "t3 jones host stage-runtime");
-      assert.deepEqual(requests, []);
-      assert.isFalse(yield* fs.exists(path.join(baseDir, "runtime")));
-    }),
-  );
-
-  it.effect("uses a verified cache without a release origin and refuses a swapped executable", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-cache-" });
-      const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
-      yield* fs.makeDirectory(paths.versionDir, { recursive: true });
-      yield* fs.writeFileString(paths.entryPath, "verified bytes");
-      yield* fs.writeFileString(paths.sentinelPath, `${version}\n`);
-      yield* writeProvenance(fs, path, paths, "verified bytes");
-      const requests: string[] = [];
-      let validations = 0;
-      const input = {
-        baseDir,
-        version,
-        fs,
-        path,
-        platform: "linux" as const,
-        arch: "x64",
-        httpClient: releaseHttpClient(yield* validChecksums, requests),
-        runner: extractingRunner(fs, path),
-        validate: () =>
-          Effect.sync(() => {
-            validations += 1;
-          }),
-      };
-      assert.deepEqual(yield* ensurePinnedRuntimeInstalled(input), paths);
-      assert.equal(validations, 1);
-      yield* fs.writeFileString(paths.entryPath, "swapped bytes");
-      const error = yield* ensurePinnedRuntimeInstalled(input).pipe(Effect.flip);
-      assert.include(error.message, "t3 jones host stage-runtime");
-      assert.equal(validations, 1);
-      assert.deepEqual(requests, []);
-      assert.equal(yield* fs.readFileString(paths.entryPath), "swapped bytes");
-    }),
-  );
-
-  it.effect("publishes local provenance before the sentinel and reuses the verified cache", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-local-runtime-" });
-      const { artifactDir, metadata } = yield* localArtifact(fs, path);
-      const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
-      let provenanceRecordedBeforeSentinel = false;
-      const observedFs: FileSystem.FileSystem = {
-        ...fs,
-        writeFileString: (target, contents, options) =>
-          Effect.gen(function* () {
-            if (path.basename(target) === ".install-complete") {
-              provenanceRecordedBeforeSentinel = yield* fs.exists(
-                path.join(path.dirname(target), ".jones-provenance.json"),
-              );
-            }
-            yield* fs.writeFileString(target, contents, options);
-          }),
-      };
-      const input = {
-        baseDir,
-        artifactDir,
-        expectSourceCommit: sourceCommit,
-        fs: observedFs,
-        path,
-        platform: "linux" as const,
-        arch: "x64",
-        runner: localRunner(fs, path),
-        validate: (staging: typeof paths) =>
-          Effect.gen(function* () {
-            if (staging.versionDir !== paths.versionDir) {
-              assert.isFalse(yield* fs.exists(staging.sentinelPath));
-              assert.isFalse(yield* fs.exists(paths.versionDir));
-            }
-          }).pipe(Effect.orDie),
-      };
-      assert.deepEqual(yield* installPinnedRuntimeFromLocalArchive(input), paths);
-      assert.isTrue(provenanceRecordedBeforeSentinel);
-      const provenance = yield* verifyPinnedRuntimeProvenance({
-        fs,
-        path,
-        paths,
-        version,
-        platform: "linux",
-        arch: "x64",
-      });
-      assert.deepEqual(provenance, {
-        ...metadata,
-        entrySha256: yield* archiveHex(new TextEncoder().encode("#!/bin/sh\n")),
-      });
-      assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
-      assert.deepEqual(yield* installPinnedRuntimeFromLocalArchive(input), paths);
-      assert.deepEqual(yield* fs.readDirectory(path.dirname(paths.versionDir)), [version]);
-    }),
-  );
-
-  it.effect.each(["tampered", "wrong-version", "different-provenance", "unverified-incomplete"])(
-    "refuses local staging: %s",
-    (scenario) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-local-refusal-" });
-        const { artifactDir, metadata } = yield* localArtifact(fs, path);
-        const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
-        if (scenario === "tampered")
-          yield* fs.writeFile(
-            path.join(artifactDir, archiveName),
-            new TextEncoder().encode("tampered"),
-          );
-        if (scenario === "different-provenance" || scenario === "unverified-incomplete") {
-          yield* fs.makeDirectory(paths.versionDir, { recursive: true });
-          yield* fs.writeFileString(paths.entryPath, "preserve existing bytes");
-          if (scenario === "different-provenance") {
-            yield* fs.writeFileString(paths.sentinelPath, `${version}\n`);
-            yield* fs.writeFileString(
-              path.join(paths.versionDir, ".jones-provenance.json"),
-              encodeJson({
-                ...metadata,
-                source: "d".repeat(40),
-                entrySha256: yield* archiveHex(new TextEncoder().encode("preserve existing bytes")),
-              }),
-            );
-          }
-        }
-        const result = yield* installPinnedRuntimeFromLocalArchive({
-          baseDir,
-          artifactDir,
-          expectSourceCommit: sourceCommit,
-          fs,
-          path,
-          platform: "linux",
-          arch: "x64",
-          runner: localRunner(fs, path, scenario === "wrong-version" ? "9.9.9" : version),
-          validate: () => Effect.void,
-        }).pipe(Effect.result);
-        assert.equal(result._tag, "Failure");
-        if (scenario === "different-provenance" || scenario === "unverified-incomplete") {
-          assert.equal(yield* fs.readFileString(paths.entryPath), "preserve existing bytes");
-          assert.deepEqual(yield* fs.readDirectory(path.dirname(paths.versionDir)), [version]);
-        } else {
-          assert.isFalse(yield* fs.exists(paths.versionDir));
-          if (scenario === "wrong-version")
-            assert.deepEqual(yield* fs.readDirectory(path.dirname(paths.versionDir)), []);
-        }
-      }),
-  );
-
-  it.effect.each([true, false])(
-    "reports staging cleanup failure without hiding an install failure (%s)",
-    (validationFails) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-runtime-cleanup-" });
-        const cleanupTargets: string[] = [];
-        const failingFs: FileSystem.FileSystem = {
-          ...fs,
-          remove: (target, options) => {
-            if (path.basename(target).startsWith(".staging-")) {
-              cleanupTargets.push(target);
-              return Effect.fail(
-                PlatformError.systemError({
-                  _tag: "PermissionDenied",
-                  module: "FileSystem",
-                  method: "remove",
-                  pathOrDescriptor: target,
-                }),
-              );
-            }
-            return fs.remove(target, options);
-          },
-        };
-        const exit = yield* ensurePinnedRuntimeInstalled({
-          baseDir,
-          version,
-          fs: failingFs,
-          path,
-          platform: "linux",
-          arch: "x64",
-          releaseBaseUrl: "https://releases.example/download",
-          httpClient: releaseHttpClient(yield* validChecksums),
-          runner: extractingRunner(fs, path),
-          validate: () =>
-            validationFails
-              ? Effect.fail(
-                  new PinnedRuntimeInstallError({ step: "deliberate validation failure" }),
-                )
-              : Effect.void,
-        }).pipe(Effect.exit);
-        assert.equal(exit._tag, "Failure");
-        if (exit._tag === "Failure") {
-          const message = Cause.pretty(exit.cause);
-          assert.include(message, "cleaning the pinned runtime staging directory");
-          if (validationFails) assert.include(message, "deliberate validation failure");
-        }
-        assert.lengthOf(cleanupTargets, 1);
-        assert.equal(path.dirname(cleanupTargets[0]!), path.join(baseDir, "runtime", "versions"));
-        yield* fs.remove(cleanupTargets[0]!, { recursive: true, force: true });
-      }),
-  );
-
   it.effect("installs the verified release archive as the runtime executable", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -414,8 +115,8 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
-        releaseBaseUrl: "https://releases.example/download",
         httpClient: releaseHttpClient(yield* validChecksums, requests),
+        releaseBaseUrl: "https://releases.example/download",
         runner: extractingRunner(fs, path, commands),
         validate: (staging) =>
           fs.exists(staging.entryPath).pipe(
@@ -433,74 +134,6 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
       assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
     }),
-  );
-
-  it.effect.each([true, false])(
-    "reports bytes before completion, then verifies and extracts (known size: %s)",
-    (knownSize) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-progress-" });
-        const firstChunk = yield* Deferred.make<void>();
-        let archiveController: ReadableStreamDefaultController<Uint8Array> | undefined;
-        const checksums = yield* validChecksums;
-        const progress: PinnedRuntimeProgress[] = [];
-        const client = HttpClient.make((request) =>
-          Effect.succeed(
-            HttpClientResponse.fromWeb(
-              request,
-              request.url.endsWith("/SHA256SUMS")
-                ? new Response(checksums)
-                : new Response(
-                    new ReadableStream({
-                      start(controller) {
-                        archiveController = controller;
-                        controller.enqueue(archiveBytes.slice(0, 4));
-                      },
-                    }),
-                    { headers: knownSize ? { "content-length": String(archiveBytes.length) } : {} },
-                  ),
-            ),
-          ),
-        );
-        const install = yield* ensurePinnedRuntimeInstalled({
-          baseDir,
-          version,
-          fs,
-          path,
-          platform: "linux",
-          arch: "x64",
-          releaseBaseUrl: "https://releases.example/download",
-          httpClient: client,
-          runner: extractingRunner(fs, path),
-          validate: () => Effect.void,
-          onProgress: (event) => {
-            progress.push(event);
-            if (event.stage === "download" && event.received === 4) {
-              Deferred.doneUnsafe(firstChunk, Effect.void);
-            }
-          },
-        }).pipe(Effect.forkScoped);
-        yield* Deferred.await(firstChunk);
-        assert.deepEqual(progress.at(-1), {
-          stage: "download",
-          received: 4,
-          total: knownSize ? archiveBytes.length : undefined,
-        });
-        assert.isFalse(progress.some((event) => event.stage === "extract"));
-        assert.isDefined(archiveController);
-        archiveController!.enqueue(archiveBytes.slice(4));
-        archiveController!.close();
-        const installed = yield* Fiber.join(install);
-        assert.deepEqual(progress.slice(-4), [
-          { stage: "download", received: archiveBytes.length, total: archiveBytes.length },
-          { stage: "verify" },
-          { stage: "extract" },
-          { stage: "validate" },
-        ]);
-        assert.equal(yield* fs.readFileString(installed.sentinelPath), `${version}\n`);
-      }),
   );
 
   it.effect("cleans up an interrupted download without reporting verification or extraction", () =>
@@ -587,7 +220,130 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
           validate: () => Effect.die("must not validate a missing archive"),
         }).pipe(Effect.flip);
       assert.isTrue(isUnpublishedRelease(yield* failsWith(404)));
-      assert.isFalse(isUnpublishedRelease(yield* failsWith(500)));
+      assert.isFalse(isUnpublishedRelease(yield* failsWith(403)));
+    }),
+  );
+
+  it.effect("retries a release download that GitHub answers with a gateway timeout", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-retry-" });
+      const checksums = yield* validChecksums;
+      const requests: string[] = [];
+      const gatewayTimeoutServed = yield* Deferred.make<void>();
+      const install = yield* ensurePinnedRuntimeInstalled({
+        baseDir,
+        version,
+        fs,
+        path,
+        platform: "linux",
+        arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
+        httpClient: HttpClient.make((request) => {
+          requests.push(request.url);
+          const isChecksums = request.url.endsWith("/SHA256SUMS");
+          if (requests.length === 1) {
+            Deferred.doneUnsafe(gatewayTimeoutServed, Effect.void);
+            return Effect.succeed(
+              HttpClientResponse.fromWeb(request, new Response("", { status: 504 })),
+            );
+          }
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(isChecksums ? checksums : archiveBytes),
+            ),
+          );
+        }),
+        runner: extractingRunner(fs, path),
+        validate: () => Effect.void,
+      }).pipe(Effect.forkScoped);
+      yield* Deferred.await(gatewayTimeoutServed);
+      yield* TestClock.adjust(Duration.seconds(2));
+      const paths = yield* Fiber.join(install);
+      assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
+      assert.equal(requests.filter((url) => url.endsWith("/SHA256SUMS")).length, 2);
+    }),
+  );
+
+  it.effect("retries a release archive whose body fails after the host answered", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-retry-body-" });
+      const checksums = yield* validChecksums;
+      let archiveRequests = 0;
+      const archiveRequested = yield* Deferred.make<void>();
+      const install = yield* ensurePinnedRuntimeInstalled({
+        baseDir,
+        version,
+        fs,
+        path,
+        platform: "linux",
+        arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
+        httpClient: HttpClient.make((request) => {
+          const isChecksums = request.url.endsWith("/SHA256SUMS");
+          const response = HttpClientResponse.fromWeb(
+            request,
+            new Response(isChecksums ? checksums : archiveBytes),
+          );
+          if (isChecksums || ++archiveRequests > 1) return Effect.succeed(response);
+          const failingBody = Stream.concat(
+            Stream.make(archiveBytes.slice(0, 4)),
+            Stream.fail(
+              new HttpClientError.HttpClientError({
+                reason: new HttpClientError.DecodeError({ request, response }),
+              }),
+            ),
+          );
+          Deferred.doneUnsafe(archiveRequested, Effect.void);
+          // TestClock follows the work a woken sleep starts, so one adjust reaches the retry wait.
+          return Effect.sleep("1 second").pipe(
+            Effect.as<HttpClientResponse.HttpClientResponse>(
+              Object.create(response, { stream: { value: failingBody } }),
+            ),
+          );
+        }),
+        runner: extractingRunner(fs, path),
+        validate: () => Effect.void,
+      }).pipe(Effect.forkScoped);
+      yield* Deferred.await(archiveRequested);
+      yield* TestClock.adjust(Duration.seconds(3));
+      const paths = yield* Fiber.join(install);
+      assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
+      assert.equal(archiveRequests, 2);
+    }),
+  );
+
+  it.effect("fails at once when the release host cannot be reached", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-offline-" });
+      let requests = 0;
+      const error = yield* ensurePinnedRuntimeInstalled({
+        baseDir,
+        version,
+        fs,
+        path,
+        platform: "linux",
+        arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
+        httpClient: HttpClient.make((request) => {
+          requests += 1;
+          return Effect.fail(
+            new HttpClientError.HttpClientError({
+              reason: new HttpClientError.TransportError({ request }),
+            }),
+          );
+        }),
+        runner: extractingRunner(fs, path),
+        validate: () => Effect.die("must not validate without a download"),
+      }).pipe(Effect.flip);
+      assert.instanceOf(error, PinnedRuntimeInstallError);
+      assert.equal(requests, 1);
     }),
   );
 
@@ -717,7 +473,6 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const cached = pinnedRuntimePaths(path, baseDir, version, "linux");
       yield* fs.makeDirectory(path.dirname(cached.entryPath), { recursive: true });
       yield* fs.writeFileString(cached.entryPath, "#!/bin/sh\n");
-      // Jones reuses a cached runtime only with verified provenance; the mirror gate follows.
       yield* writeProvenance(fs, path, cached, "#!/bin/sh\n");
       yield* fs.writeFileString(cached.sentinelPath, `${version}\n`);
       const install = (checksums: string, requests: string[]) =>
@@ -755,8 +510,8 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const finalPaths = pinnedRuntimePaths(path, baseDir, version, "linux");
       yield* fs.makeDirectory(path.dirname(finalPaths.entryPath), { recursive: true });
       yield* fs.writeFileString(finalPaths.entryPath, "broken\n");
-      yield* fs.writeFileString(finalPaths.sentinelPath, `${version}\n`);
       yield* writeProvenance(fs, path, finalPaths, "broken\n");
+      yield* fs.writeFileString(finalPaths.sentinelPath, `${version}\n`);
 
       let validations = 0;
       const requests: string[] = [];
@@ -783,35 +538,6 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       assert.equal(validations, 1);
       assert.deepEqual(requests, []);
       assert.equal(yield* fs.readFileString(finalPaths.entryPath), "broken\n");
-    }),
-  );
-
-  it.effect("removes staging when installation is interrupted", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-runtime-interrupt-" });
-      const started = yield* Deferred.make<void>();
-      const runner = ProcessRunner.ProcessRunner.of({
-        run: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
-      });
-      const install = yield* ensurePinnedRuntimeInstalled({
-        baseDir,
-        version,
-        fs,
-        path,
-        platform: "linux",
-        arch: "x64",
-        releaseBaseUrl: "https://releases.example/download",
-        httpClient: releaseHttpClient(yield* validChecksums),
-        runner,
-        validate: () => Effect.void,
-      }).pipe(Effect.forkScoped);
-
-      yield* Deferred.await(started);
-      yield* Fiber.interrupt(install);
-      const versionsDir = path.join(baseDir, "runtime", "versions");
-      assert.deepEqual(yield* fs.readDirectory(versionsDir), []);
     }),
   );
 });
@@ -864,111 +590,6 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
     for (const version of versions) yield* install(version);
     return { baseDir, versionsDir, install };
   });
-
-  it.effect.each([
-    { marker: "jones-active-install.json", kind: "file" },
-    { marker: "versions/1.1.0/.jones-runtime-receipt.json", kind: "file" },
-    { marker: "versions/1.1.0/.jones-provenance.json", kind: "file" },
-    { marker: "versions/.pruned-0.8.0/.jones-runtime-receipt.json", kind: "file" },
-    { marker: "service-state.json", kind: "previous-preview" },
-    { marker: "service-state.json", kind: "pending-preview" },
-    { marker: "service-state.json", kind: "malformed-qualified" },
-    { marker: "service-state.json", kind: "unreadable-state" },
-    { marker: "staged-updates", kind: "directory" },
-    { marker: "jones-updates", kind: "directory" },
-    { marker: "unavailable runtime observation", kind: "error" },
-  ])("preserves Jones runtimes without discovery or launcher writes: $marker", ({ marker, kind }) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const { baseDir, versionsDir } = yield* setup(["1.0.0", "1.1.0", ".pruned-0.8.0"]);
-      const runtimeDir = path.join(baseDir, "runtime");
-      const markerPath = path.join(runtimeDir, marker);
-      if (kind === "directory") yield* fs.makeDirectory(markerPath);
-      else if (kind === "file") yield* fs.writeFileString(markerPath, "{}");
-      else if (kind === "previous-preview" || kind === "pending-preview") {
-        yield* fs.writeFileString(
-          markerPath,
-          JSON.stringify({
-            protocol: SERVICE_LAUNCHER_PROTOCOL,
-            activeVersion: kind === "pending-preview" ? "1.0.0-preview.20261021.1" : "1.1.0",
-            update: {
-              id: "legacy-preview",
-              fromVersion: "1.0.0-preview.20261021.1",
-              targetVersion: "1.1.0",
-              dbPath: path.join(baseDir, "userdata/state.sqlite"),
-              status: kind === "pending-preview" ? "pending" : "committed",
-              ...(kind === "pending-preview" ? { phase: "accepted" } : {}),
-            },
-          }),
-        );
-      } else if (kind === "malformed-qualified") {
-        yield* fs.writeFileString(
-          markerPath,
-          JSON.stringify({
-            protocol: SERVICE_LAUNCHER_PROTOCOL,
-            activeVersion: "1.0.0",
-            update: { status: "pending", qualified: {} },
-          }),
-        );
-      } else if (kind === "unreadable-state") yield* fs.makeDirectory(markerPath);
-      const unreadableDirectory = path.join(baseDir, "not-a-directory");
-      yield* fs.writeFileString(unreadableDirectory, "file");
-      const binDir = path.join(baseDir, "bin");
-      yield* fs.makeDirectory(binDir);
-      yield* fs.symlink(path.join(versionsDir, "1.1.0", "t3"), path.join(binDir, "t3"));
-      let processScans = 0;
-      let renames = 0;
-      let removals = 0;
-      let writes = 0;
-      const observedFs = FileSystem.FileSystem.of({
-        ...fs,
-        rename: (from, to) => {
-          renames++;
-          return fs.rename(from, to);
-        },
-        remove: (target, options) => {
-          removals++;
-          return fs.remove(target, options);
-        },
-        writeFileString: (target, data, options) => {
-          writes++;
-          return fs.writeFileString(target, data, options);
-        },
-        readDirectory: (directory, options) => {
-          if (directory === "/proc") {
-            processScans += 1;
-            return Effect.succeed(["123"]);
-          }
-          if (kind === "error" && directory === runtimeDir) {
-            return fs.readDirectory(unreadableDirectory);
-          }
-          return fs.readDirectory(directory, options);
-        },
-        readLink: (link) =>
-          link === "/proc/123/exe" ? Effect.succeed("/usr/bin/node") : fs.readLink(link),
-      });
-
-      const removed = yield* prunePinnedRuntimes({ baseDir, keep: [] }).pipe(
-        Effect.provideService(FileSystem.FileSystem, observedFs),
-        Effect.provideService(ProcessRunner.ProcessRunner, lsofRunner("")),
-        Effect.provideService(HostProcess.Platform, "linux"),
-        Effect.provideService(HostProcess.Environment, { T3CODE_INSTALL_BIN_DIR: binDir }),
-      );
-
-      assert.deepEqual(removed, []);
-      assert.equal(processScans, 0);
-      assert.equal(renames, 0);
-      assert.equal(removals, 0);
-      assert.equal(writes, 0);
-      assert.isFalse(yield* fs.exists(path.join(runtimeDir, "launchers")));
-      assert.deepEqual((yield* fs.readDirectory(versionsDir)).toSorted(), [
-        ".pruned-0.8.0",
-        "1.0.0",
-        "1.1.0",
-      ]);
-    }),
-  );
 
   it.effect("removes only completed runtimes nothing references", () =>
     Effect.gen(function* () {
@@ -1050,6 +671,98 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
         "2.0.0",
         "other",
       ]);
+    }),
+  );
+
+  it.effect.each([
+    { name: "its directory is on PATH", onPath: true, recorded: false, linkedHome: false },
+    {
+      name: "an earlier prune recorded its entry as a launcher",
+      onPath: false,
+      recorded: true,
+      linkedHome: false,
+    },
+    {
+      name: "its real directory in a symlinked home is on PATH",
+      onPath: true,
+      recorded: false,
+      linkedHome: true,
+    },
+  ])("removes a runtime only its own entry names when $name", ({ onPath, recorded, linkedHome }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { baseDir, versionsDir } = yield* setup(["1.0.0", "1.1.0"]);
+      const binDir = path.join(baseDir, "bin");
+      yield* fs.makeDirectory(binDir);
+      yield* fs.symlink(path.join(versionsDir, "1.1.0", "t3"), path.join(binDir, "t3"));
+      const ownDir = path.join(versionsDir, "1.0.0");
+      if (recorded) {
+        yield* fs.writeFileString(
+          path.join(baseDir, "runtime", "launchers"),
+          `${path.join(ownDir, "t3")}\n`,
+        );
+      }
+
+      const home = linkedHome
+        ? path.join(yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-link-" }), "home")
+        : baseDir;
+      if (linkedHome) yield* fs.symlink(baseDir, home);
+
+      // The launch agent puts the running runtime's own directory on PATH.
+      const runtimePath = yield* fs.realPath(ownDir);
+      const removed = yield* prunePinnedRuntimes({ baseDir: home, keep: ["2.0.0"] }).pipe(
+        Effect.provideService(
+          ProcessRunner.ProcessRunner,
+          lsofRunner("p1\nftxt\nn/sbin/launchd\n"),
+        ),
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(HostProcess.Environment, {
+          T3CODE_INSTALL_BIN_DIR: binDir,
+          PATH: onPath ? `${runtimePath}:/usr/bin:/bin` : "/usr/bin:/bin",
+        }),
+      );
+      assert.deepEqual(removed, ["1.0.0"]);
+    }),
+  );
+
+  it.effect.each([
+    { name: "a launcher inside the versions directory", via: "bin" as const },
+    { name: "a PATH directory linked to its version directory", via: "linked dir" as const },
+    {
+      name: "a PATH directory in the versions directory linked to its version directory",
+      via: "linked versions dir" as const,
+    },
+  ])("keeps a runtime $name names", ({ via }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { baseDir, versionsDir } = yield* setup(["1.0.0", "1.1.0"]);
+      let pathDirs = "/usr/bin:/bin";
+      if (via === "bin") {
+        // The installer accepts any bin directory, including one under the versions directory.
+        const binDir = path.join(versionsDir, "bin");
+        yield* fs.makeDirectory(binDir);
+        yield* fs.symlink(path.join(versionsDir, "1.0.0", "t3"), path.join(binDir, "t3"));
+        yield* fs.writeFileString(
+          path.join(baseDir, "runtime", "launchers"),
+          `${path.join(binDir, "t3")}\n`,
+        );
+      } else {
+        const linkedDir = path.join(via === "linked dir" ? baseDir : versionsDir, "current");
+        yield* fs.symlink(path.join(versionsDir, "1.0.0"), linkedDir);
+        pathDirs = `${linkedDir}:${pathDirs}`;
+      }
+
+      const removed = yield* prunePinnedRuntimes({ baseDir, keep: ["2.0.0"] }).pipe(
+        Effect.provideService(
+          ProcessRunner.ProcessRunner,
+          lsofRunner("p1\nftxt\nn/sbin/launchd\n"),
+        ),
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(HostProcess.Environment, { PATH: pathDirs }),
+      );
+      assert.deepEqual(removed, ["1.1.0"]);
     }),
   );
 

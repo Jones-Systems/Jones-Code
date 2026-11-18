@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Statement from "effect/sql/Statement";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
 import * as Reactor from "./DependencyReactor.ts";
 import * as Watch from "./RequestWatch.ts";
@@ -349,6 +350,7 @@ it.effect(
         });
       const ports = Layer.mergeAll(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           acquireDomainEvents: Effect.succeed(Stream.never),
           dispatch: () => unexpected("dispatch"),
           finalizeDelegatedTask: () => unexpected("finalize"),

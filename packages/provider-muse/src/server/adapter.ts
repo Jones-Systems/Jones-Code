@@ -42,6 +42,7 @@ import * as Stream from "effect/Stream";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import { makeProviderEventProducer } from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
 import {
@@ -63,7 +64,11 @@ import {
   museApprovalOptions,
   type MuseItem,
 } from "./protocol.ts";
-import { isMuseUsageLimitFailure, museUsageLimitResetAt } from "./usageLimits.ts";
+import {
+  isMuseUsageLimitFailure,
+  museUsageLimitResetAt,
+  museUsageToLimits,
+} from "./usageLimits.ts";
 import {
   createMuseSdkHostEffect,
   MuseSdkError,
@@ -75,6 +80,7 @@ import {
   type MuseSdkHost,
 } from "./sdk.ts";
 import type * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import {
   providerMessageTextWithAttachmentPaths,
   isProviderNativeImageAttachment,
@@ -202,6 +208,8 @@ export interface MuseAdapterV2Options {
   readonly createHost?: typeof createMuseSdkHost;
   readonly requestTimeoutMs?: number;
   readonly nativeEventLogger?: ProviderEventLoggers.EventNdjsonLogger;
+  /** Receives every account-wide usage report, whichever session's host sent it. */
+  readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
   readonly continuationRequests?: {
     readonly offer: (
       request: ProviderContinuationRequests.ProviderContinuationRequest,
@@ -342,6 +350,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       const eventPermit = yield* Semaphore.make(1);
       let host: MuseSdkHost;
       let hostEpoch = 0;
+      const lifecycle = input.runtimeLifecycle;
+      let producer: ProviderAdapter.RuntimeBindingPublicationInput["producerOrigin"];
+      let reserveHost: Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error> = Effect.void;
+      let retireHost: Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error> = Effect.void;
+      let pendingBinding: ProviderAdapter.RuntimeBindingPublicationInput | undefined;
       let closed = false;
       let broken = false;
       // Only idle host failures can be retried on this runtime.
@@ -596,7 +609,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         const existing = childrenByItemId.get(item.itemId);
         const childSessionId = item.childSessionId;
         if (existing || !childSessionId) return existing;
-        const childThreadId = idAllocator.derive.threadFromProviderThread({
+        const childThreadId = idAllocator.derive.subagentThread({
           driver: MUSE_PROVIDER,
           providerInstanceId: options.instanceId,
           nativeThreadId: childSessionId,
@@ -1378,6 +1391,9 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         // usage/changed is account-wide and carries no session ID.
         if (method === "usage/changed") {
           latestSubscriptionUsage = yield* decode(MuseSubscriptionUsage, params);
+          if (options.onUsageLimits) {
+            yield* options.onUsageLimits(museUsageToLimits(latestSubscriptionUsage));
+          }
           return;
         }
         if (params.sessionId !== nativeSessionId) return;
@@ -1782,6 +1798,17 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           scopeUnit === undefined ? Effect.void : yield* Effect.cached(agentScope.stop(scopeUnit));
         yield* Scope.addFinalizer(scope, stopScope);
         const processExited = yield* Deferred.make<ProcessExit>();
+        let abandonGeneration: Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error> =
+          Effect.void;
+        if (lifecycle)
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.suspend(() =>
+              Deferred.isDoneUnsafe(processExited)
+                ? abandonGeneration.pipe(Effect.orDie)
+                : Effect.void,
+            ),
+          );
         // Observe raw exit before acquisition: inherited stdout can also block startup cleanup.
         yield* Deferred.await(processExited).pipe(Effect.andThen(stopScope), Effect.forkIn(scope));
         const created = yield* Effect.acquireRelease(
@@ -1828,6 +1855,31 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           { interruptible: true },
         ).pipe(Effect.provideService(Scope.Scope, scope));
         host = created;
+        void created.exited.then((exit) => {
+          Deferred.doneUnsafe(processExited, Effect.succeed(exit));
+        });
+        if (lifecycle) {
+          producer = undefined;
+          retireHost = Deferred.await(processExited).pipe(Effect.andThen(() => abandonGeneration));
+          reserveHost = Effect.gen(function* () {
+            if (producer) return;
+            const runtimeGeneration = yield* lifecycle.reserve(input.threadId);
+            abandonGeneration = yield* Effect.cached(lifecycle.abandon(runtimeGeneration));
+            producer = makeProviderEventProducer(
+              {
+                driver: MUSE_PROVIDER,
+                instanceId: options.instanceId,
+                providerSessionId: input.providerSessionId,
+                runtimeGeneration,
+              },
+              Effect.sync(
+                () => epoch === hostEpoch && !closed && !Deferred.isDoneUnsafe(processExited),
+              ),
+            ).origin;
+            // The raw child can exit after scoped SDK shutdown times out.
+            yield* retireHost.pipe(Effect.forkDetach());
+          }).pipe(Effect.uninterruptible);
+        }
         created.connection.onNotification((notification) => {
           Queue.offerUnsafe(inbox, {
             type: "notification",
@@ -1867,7 +1919,6 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             });
           }
         };
-        void created.exited.then(reportExit);
         yield* Deferred.await(processExited).pipe(
           Effect.tap((exit) => Effect.sync(() => reportExit(exit))),
           Effect.forkIn(scope),
@@ -1885,13 +1936,41 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       );
       yield* launchHost();
 
+      const finishBinding = Effect.fnUntraced(function* (
+        publication: ProviderAdapter.RuntimeBindingPublicationInput,
+      ) {
+        if (!lifecycle || !producer || producer !== publication.producerOrigin)
+          return yield* protocolError("The original Muse host is unavailable for publication");
+        const revalidate = producer.revalidateCurrent.pipe(
+          Effect.mapError((cause) =>
+            protocolError("The Muse host changed during publication", cause),
+          ),
+        );
+        yield* revalidate;
+        const bound = yield* lifecycle.bind(publication);
+        yield* revalidate;
+        thread = bound;
+        pendingBinding = undefined;
+        yield* emit({
+          type: "provider_thread.updated",
+          driver: MUSE_PROVIDER,
+          providerThread: bound,
+        });
+        return bound;
+      });
       const register = Effect.fnUntraced(function* (
         args: ProviderAdapter.ProviderAdapterV2EnsureThreadInput,
       ) {
-        if (closed || (broken && !relaunchable))
+        if (closed || (broken && (!relaunchable || pendingBinding !== undefined)))
           return yield* protocolError("Muse host is unavailable; reopen the session");
         if (broken) {
           yield* Effect.logWarning("Relaunching the Muse host after a failure");
+          yield* retireHost.pipe(
+            Effect.timeout(options.requestTimeoutMs ?? 30_000),
+            Effect.catchTags({
+              TimeoutError: () => protocolError("The previous Muse host has not confirmed exit"),
+            }),
+          );
           yield* launchHost();
           broken = false;
           relaunchable = false;
@@ -1916,9 +1995,20 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           thread.appThreadId === args.threadId
         )
           return thread;
+        if (pendingBinding) {
+          if (
+            args.threadId !== pendingBinding.providerThread.appThreadId ||
+            (existing && existing.id !== pendingBinding.providerThread.id) ||
+            (requestedId && requestedId !== pendingBinding.providerThread.nativeThreadRef?.nativeId)
+          )
+            return yield* protocolError("A different Muse session is awaiting publication");
+          return yield* finishBinding(pendingBinding);
+        }
         if (thread) return yield* protocolError("Open a new host to attach another Muse session");
+        yield* reserveHost;
+        const runtimeProducer = producer;
         let missingNativeSession = false;
-        return yield* Effect.gen(function* () {
+        const candidate = yield* Effect.gen(function* () {
           nativeSessionId = requestedId ?? host.connection.mintCommandId();
           const mcpSession = yield* mcpSessions.read(args.threadId);
           if (mcpSession && !host.initializeResult.grantedCapabilities.includes("sessionMcp"))
@@ -1940,6 +2030,17 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             : undefined;
           const startModel = yield* resolveModel(args.modelSelection);
           const permissionProfile = musePermissionProfile(args.runtimePolicy.runtimeMode);
+          if (lifecycle) {
+            if (runtimeProducer?.runtimeGeneration === undefined)
+              return yield* protocolError("The Muse host generation is unavailable");
+            yield* lifecycle.admit({
+              threadId: args.threadId,
+              runtimeGeneration: runtimeProducer.runtimeGeneration,
+            });
+            yield* runtimeProducer.revalidateCurrent.pipe(
+              Effect.mapError((cause) => protocolError("The admitted Muse host has exited", cause)),
+            );
+          }
           const result = yield* request(
             requestedId ? "session/resume" : "session/start",
             requestedId
@@ -1973,7 +2074,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
               mode: museApprovalMode(args.runtimePolicy.runtimeMode),
             });
           const createdAt = yield* DateTime.now;
-          thread = existing
+          const registered: OrchestrationV2ProviderThread = existing
             ? {
                 ...existing,
                 providerSessionId: input.providerSessionId,
@@ -2006,17 +2107,30 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             ...session,
             model: result.session.modelId ?? args.modelSelection.model,
           };
-          yield* emit({
-            type: "provider_thread.updated",
-            driver: MUSE_PROVIDER,
-            providerThread: thread,
-          });
-          return thread;
+          return registered;
         }).pipe(
           Effect.onError((cause) =>
             missingNativeSession ? Effect.void : eventPermit.withPermits(1)(failHost(cause)),
           ),
         );
+        if (lifecycle && runtimeProducer?.runtimeGeneration !== undefined) {
+          pendingBinding = {
+            providerThread: candidate,
+            runtimeGeneration: runtimeProducer.runtimeGeneration,
+            producerOrigin: runtimeProducer,
+            requested: ProviderAdapter.requestedRuntimeIdentity(args.modelSelection, MUSE_PROVIDER),
+            observed: ProviderAdapter.unobservedRuntimeIdentity(),
+          };
+          // bind publishes the row and retains the original input for local recovery.
+          return yield* finishBinding(pendingBinding);
+        }
+        thread = candidate;
+        yield* emit({
+          type: "provider_thread.updated",
+          driver: MUSE_PROVIDER,
+          providerThread: thread,
+        });
+        return thread;
       });
       const prompt = Effect.fnUntraced(function* (
         message: ProviderAdapter.ProviderAdapterV2TurnMessage,
@@ -2266,6 +2380,23 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         providerSession: session,
         events: Stream.fromQueue(events),
         backgroundTasksEndWithProcess: true,
+        reconcileBindingPublication: (args) =>
+          commands.withPermits(1)(
+            Effect.gen(function* () {
+              yield* args.revalidate;
+              const candidate = pendingBinding?.providerThread ?? thread;
+              if (
+                closed ||
+                broken ||
+                !candidate ||
+                candidate.appThreadId !== args.threadId ||
+                candidate.id !== args.providerThreadId ||
+                candidate.nativeThreadRef?.nativeId !== args.nativeThreadId
+              )
+                return yield* protocolError("The original Muse publication is no longer attached");
+              return pendingBinding ? yield* finishBinding(pendingBinding) : candidate;
+            }),
+          ),
         // A running workflow or a held Muse turn keeps the host: idle release must wait.
         hasPendingBackgroundWork: Effect.sync(
           () => observedChildren.size > 0 || wake !== undefined,

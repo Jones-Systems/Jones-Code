@@ -21,22 +21,22 @@ export const sourcePins = {
     "apps/desktop/src/snapShot/DesktopSnapShot.ts":
       "2817c375b8c32820a9a7c3ea82e1d3913a9266aa21cfea842e135f59382dab50",
     "scripts/build-desktop-artifact.ts":
-      "09c18643bb4db2cf6317d2bdb14718de4c186a3e630c8a89a3a0b9b6167e57fc",
+      "4ee0e9d63a28338d31f96b84f54de98e12cac195008edca938f15093470e9873",
   },
   pgrep: {
     "apps/desktop/scripts/electron-launcher.test.mjs":
-      "d2a1f1e46102a7bbf3dca523f4a3b8845751814d51d5d4f8cfe54ae3d1436706",
+      "bb700a999ff5b196c822cb164dba5980fb75c6178e9cafc6f794f32a2c50f61f",
   },
   hyprctl: {
     "apps/desktop/src/app/DesktopPreReadyPlatform.ts":
-      "9614a1eefedc79563d71bbd2423b1a35da7c17a646450ee24ed69ed8b6780141",
+      "6e71e9b21ef42b679f725783b24aad1275eae4255b946019af98ce8a9b1a4300",
     "apps/desktop/src/app/DesktopEarlyElectronStartup.ts":
       "b89a17714fd4dd24061f07dd395e8900a27366e0a6111a4c8c20700076343b9a",
   },
   compiler: {
     "tsconfig.base.json": "68c74b9c2b2295b28221b027a457f3837da638b59d89ee8a88a745cd1c981fe3",
-    "apps/web/tsconfig.json": "b574705bfa6cc489b51b7b04cc85e52bfda34727b7f7010b356780517901c6b5",
-    "apps/web/vite.config.ts": "1cf367544816d5f36a39a467817c5da8365bdaae5ec1cb36da1c44ac31daed45",
+    "apps/web/tsconfig.json": "87733dd7a4202fad909854cabde0a2970d2377578a10b19875d61641474cf4c0",
+    "apps/web/vite.config.ts": "4505e22976f69bfec3f580562ffa5f1ef12491540cb7b168642e2ac9a99fb673",
     "scripts/jones/tsrs/typecheck.ts":
       "b9035485249e0e8c48a28554ea9f250de1efadf6e9b74a9c1e99a667d91bfd77",
     "scripts/jones/tsrs/local-mac-capacity.ts":

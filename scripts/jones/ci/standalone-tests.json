@@ -7,6 +7,11 @@
       "runner": ".github/workflows/ci.yml"
     },
     {
+      "glob": ".github/scripts/mobile-ios-preview-record.test.cjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
       "glob": ".github/scripts/mobile-preview-comment.test.cjs",
       "kind": "ci",
       "runner": ".github/workflows/ci.yml"
@@ -18,6 +23,11 @@
     },
     {
       "glob": ".github/scripts/stage-preview-bundle.test.py",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": ".github/scripts/test-delta.test.cjs",
       "kind": "ci",
       "runner": ".github/workflows/ci.yml"
     },

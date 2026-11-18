@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import type { NotificationHandler } from "@muse-code/sdk";
 import { ProviderInstanceId, type ServerProviderModel } from "@t3tools/contracts";
+import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { MuseSettings } from "../settings.ts";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
@@ -191,6 +192,79 @@ it.layer(NodeServices.layer)("Muse text generation", (it) => {
           expect(test.host.close).toHaveBeenCalledOnce();
         }
       }),
+  );
+
+  it.effect("keeps legacy title output and returns refinement only for assessed titles", () =>
+    Effect.gen(function* () {
+      for (const titleAssessment of [undefined, false, true]) {
+        const test = fixture(
+          finish(
+            encodeReply({
+              title: "Fix login form",
+              needsRefinement: true,
+              grounded: true,
+              specific: true,
+              recognizable: true,
+            }),
+          ),
+        );
+        const service = yield* test.make;
+        expect(
+          yield* service.generateThreadTitle({
+            ...titleInput,
+            titleAssessment,
+            projectTitle: "Example project",
+            previousTitle: "Old login title",
+            forkSource: { title: "Login work", history: "Adopt the login repair." },
+            linkedContext: "Continue the adopted login repair.",
+            instructions: "Use a concrete repair title.",
+          }),
+        ).toEqual({
+          title: "Fix login form",
+          ...(titleAssessment ? { needsRefinement: true, assessment: "insufficient" } : {}),
+        });
+        const turn = vi
+          .mocked(test.host.connection.command)
+          .mock.calls.find(([method]) => method === "turn/start");
+        const { input } = yield* decodeTurnInput(turn?.[1]);
+        for (const text of [
+          "Example project",
+          "Old login title",
+          "Adopt the login repair.",
+          "Continue the adopted login repair.",
+          "Use a concrete repair title.",
+        ]) {
+          expect(input[0]!.text).toContain(text);
+        }
+        expect(test.host.close).toHaveBeenCalledOnce();
+      }
+    }),
+  );
+
+  it.effect("rejects assessed placeholder titles and keeps remote evaluation unsupported", () =>
+    Effect.gen(function* () {
+      const test = fixture(
+        finish(
+          '{"title":"title","needsRefinement":false,"grounded":true,"specific":true,"recognizable":true}',
+        ),
+      );
+      const service = yield* test.make;
+      expect(
+        yield* service
+          .generateThreadTitle({ ...titleInput, titleAssessment: true })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "TextGenerationError", operation: "generateThreadTitle" });
+      expect(test.host.close).toHaveBeenCalledOnce();
+
+      const unsupported = fixture();
+      const evaluator: ProviderTextGeneration = yield* unsupported.make;
+      expect(
+        yield* evaluator
+          .evaluateRemoteRequest({ ...titleInput, message: "Fix the parser" })
+          .pipe(Effect.flip),
+      ).toMatchObject({ _tag: "TextGenerationError", operation: "evaluateRemoteRequest" });
+      expect(unsupported.createHost).not.toHaveBeenCalled();
+    }),
   );
 
   it.effect("uses low effort by default and normalizes stale efforts against the model", () =>

@@ -114,7 +114,7 @@ function start(ready) {
       : Ws.subscribeOrchestrationV2Thread({
           threadId: "synthetic-thread",
           requestCompletionMarker: true,
-          ...(mode === "replay" ? { afterSequence: 0 } : {}),
+          ...(mode === "replay" ? { afterSequence: 0, acceptCompactThreadVisits: true } : {}),
         }).pipe(Effect.provide(dependencies));
   let delivered = 0;
   return stream.pipe(

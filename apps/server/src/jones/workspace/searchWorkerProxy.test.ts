@@ -204,3 +204,52 @@ it.effect("maps saturation into existing operation errors without a retry or hid
     }),
   ),
 );
+
+it.effect.each([false, true])(
+  "preserves content operation error evidence with scanTimedOut=%s",
+  (scanTimedOut) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cause = new ComputeFailure({ reason: "finder-search", scanTimedOut });
+        let calls = 0;
+        const proxy = yield* makeSearchWorkerProxy(handle.key).pipe(
+          Effect.provideService(
+            ServerCompute.ServerCompute,
+            ServerCompute.ServerCompute.of({
+              acquireLogical: () => Effect.succeed(handle),
+              run: () => {
+                calls++;
+                return Effect.fail(cause);
+              },
+            }),
+          ),
+        );
+        const error = yield* proxy
+          .searchContents({
+            query: "λ-needle",
+            limit: 7,
+            caseSensitive: true,
+            wholeWord: false,
+            useRegex: false,
+          })
+          .pipe(Effect.flip);
+        expect(calls).toBe(1);
+        if (scanTimedOut) {
+          expect(error).toMatchObject({
+            _tag: "WorkspaceSearchIndexScanTimedOut",
+            cwd: handle.key.cwd,
+            timeout: "15 seconds",
+          });
+        } else {
+          expect(error).toMatchObject({
+            _tag: "WorkspaceSearchIndexSearchFailed",
+            cwd: handle.key.cwd,
+            queryLength: "λ-needle".length,
+            pageSize: 7,
+            reason: cause.reason,
+          });
+          if (error._tag === "WorkspaceSearchIndexSearchFailed") expect(error.cause).toBe(cause);
+        }
+      }),
+    ),
+);

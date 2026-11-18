@@ -106,7 +106,7 @@ const rowProps: ComponentProps<typeof NonSortableThreadRow> = {
   wokeAt: null,
   isActive: false,
   isRouteThread: false,
-  openPullRequestsInRightPanel: false,
+  readOpensPullRequestsInRightPanel: () => false,
   jumpLabel: null,
   currentEnvironmentId: thread.environmentId,
   environmentLabel: "Synthetic environment",

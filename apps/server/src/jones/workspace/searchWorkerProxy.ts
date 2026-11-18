@@ -67,7 +67,11 @@ export const makeSearchWorkerProxy = Effect.fn("WorkspaceSearchIndex.proxy")(fun
         wholeWord: input.wholeWord,
         useRegex: input.useRegex,
       })
-      .pipe(Effect.mapError((cause) => searchFailure(cause, input.query.length, input.limit))),
+      .pipe(
+        Effect.mapError((cause) =>
+          cause.scanTimedOut ? timeout() : searchFailure(cause, input.query.length, input.limit),
+        ),
+      ),
   );
   const refresh: WorkspaceSearchIndex["Service"]["refresh"] = Effect.fn(
     "WorkspaceSearchIndex.refresh",

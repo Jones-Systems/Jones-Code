@@ -50,7 +50,13 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("CLI deferred imp
   it.effect("runs commands that do not need them without loading them", () =>
     Effect.gen(function* () {
       hooks.importsAttempted.length = 0;
-      for (const args of [["--version"], ["--help"], ["project", "--help"], ["thread", "--help"]]) {
+      for (const args of [
+        ["--version"],
+        ["--help"],
+        ["project", "--help"],
+        ["thread", "--help"],
+        ["workstream", "--help"],
+      ]) {
         yield* runCli(args);
       }
       assert.deepEqual(hooks.importsAttempted, []);
@@ -95,7 +101,6 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("CLI deferred imp
 
       assert.isTrue(Exit.hasDies(exit));
       assert.isTrue(yield* fs.exists(runtimeStatePath));
-      assert.isFalse(yield* fs.exists(NodePath.join(baseDir, "userdata", "server-owner.sqlite")));
     }),
   );
 

@@ -1,6 +1,7 @@
 import { formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { isModelCostUnknown, type ModelTotals } from "@t3tools/shared/usageMerge";
 
+import { UsageModelTokenStats } from "../../jones/usage/UsageModelTokenStats";
 import { mergeAnsweredUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { Button } from "../ui/button";
@@ -15,9 +16,13 @@ import {
 } from "../ui/dialog";
 import { UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
 import { UsageShareBar } from "./UsageShareBar";
-import { costTypeSegments, speedCostSegments, tokenTypeSegments } from "./usageBreakdown";
+import {
+  cacheHitRate,
+  costTypeSegments,
+  speedCostSegments,
+  tokenTypeSegments,
+} from "./usageBreakdown";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
-import { UsageModelTokenStats } from "../../jones/usage/UsageModelTokenStats";
 
 export interface UsageChartWindow {
   readonly days: readonly string[];
@@ -50,6 +55,7 @@ export function UsageModelDialog({
   const providers = [model.provider];
   const presentation = PROVIDER_PRESENTATION[model.provider];
   const costUnknown = isModelCostUnknown(model);
+  const hitRate = cacheHitRate(model);
 
   return (
     <Dialog
@@ -76,6 +82,16 @@ export function UsageModelDialog({
         <DialogPanel>
           <div className="flex flex-col gap-8">
             <UsageModelTokenStats model={model} />
+            {hitRate === null ? null : (
+              <dl>
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <dt className="text-xs text-muted-foreground">Cache hit</dt>
+                  <dd className="text-2xl font-semibold text-foreground">
+                    {formatPercent(hitRate)}
+                  </dd>
+                </div>
+              </dl>
+            )}
 
             {/* Unpriced cost is unknown, not zero, so its trend shows tokens. */}
             <UsageProviderChart

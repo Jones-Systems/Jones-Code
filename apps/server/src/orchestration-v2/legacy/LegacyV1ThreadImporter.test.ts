@@ -19,6 +19,7 @@ import * as Statement from "effect/sql/Statement";
 import { listLinkedPullRequestThreads } from "../../pullRequest/linkedThreads.ts";
 import * as EventSink from "../EventSink.ts";
 import * as EventStore from "../EventStore.ts";
+import * as RetainedRecords from "../../jones/legacyBootstrap/RetainedRecords.ts";
 import * as LegacyV1ThreadImporter from "./LegacyV1ThreadImporter.ts";
 import * as ProjectionReplay from "../testkit/ProjectionReplay.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
@@ -101,7 +102,8 @@ it.effect("routes shell selectors to readers while imports stay writable", () =>
       importedThreadCount: 0,
       importedMessageCount: 0,
     });
-    yield* sql.withTransaction(
+    const sink = yield* EventSink.EventSinkV2;
+    yield* sink.withProviderBatch(
       Effect.gen(function* () {
         yield* sql`
         INSERT INTO projection_threads (
@@ -157,12 +159,16 @@ it.effect(
       const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       yield* seedPendingTranscripts;
-      yield* sql`
-        UPDATE projection_thread_messages SET created_at = '0000-not-a-date'
-        WHERE message_id = 'thread:first:old'
-      `;
 
-      yield* importer.importPendingTranscripts;
+      yield* importer.importPendingTranscripts.pipe(
+        Effect.provideService(Statement.CurrentTransformer, (statement) => {
+          const [query, params] = statement.compile();
+          return query.includes("FROM projection_thread_messages") &&
+            params.includes("thread:first")
+            ? Effect.die("transcript read failed")
+            : Effect.succeed(statement);
+        }),
+      );
 
       const later = yield* projections.getThreadProjection(ThreadId.make("thread:later"));
       assert.deepStrictEqual(
@@ -217,6 +223,53 @@ it.effect("propagates interruption from transcript reads and retry-marker writes
         WHERE transcript_imported_at IS NOT NULL OR last_error IS NOT NULL
       `,
       [],
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+// regression: #30813 a malformed V1 timestamp stopped the server from starting
+it.effect("imports legacy rows with malformed timestamps and keeps the archive marker", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const malformed = "2026-07-13T14:13:00.3NZ";
+    yield* sql`
+      INSERT INTO projection_projects (
+        project_id, title, workspace_root, scripts_json, created_at, updated_at
+      ) VALUES (
+        'project:malformed', 'Legacy project', '/tmp/legacy-malformed', '[]',
+        '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+      )
+    `;
+    yield* sql`
+      INSERT INTO projection_threads (
+        thread_id, project_id, title, model_selection_json, runtime_mode,
+        interaction_mode, created_at, updated_at, archived_at
+      ) VALUES (
+        'thread:malformed', 'project:malformed', 'Legacy thread',
+        '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default',
+        '2026-07-13T14:00:00.000Z', ${malformed}, ${malformed}
+      )
+    `;
+    yield* sql`
+      INSERT INTO projection_thread_messages (
+        message_id, thread_id, role, text, is_streaming, created_at, updated_at
+      ) VALUES (
+        'message:malformed', 'thread:malformed', 'user', 'Question', 0,
+        ${malformed}, '2026-07-13T14:13:00.000Z'
+      )
+    `;
+
+    assert.deepStrictEqual(yield* importer.reconcileShells, {
+      importedThreadCount: 1,
+      importedMessageCount: 1,
+    });
+    const projection = yield* projections.getThreadProjection(ThreadId.make("thread:malformed"));
+    assert.isNotNull(projection.thread.archivedAt);
+    assert.deepStrictEqual(
+      projection.messages.map((message) => message.text),
+      ["Question"],
     );
   }).pipe(Effect.provide(layerTest)),
 );
@@ -776,18 +829,36 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
       };
       delete previousRepairThread.branchPullRequest;
       delete previousRepairThread.activeOrderKey;
-      yield* eventSink.write({
+      const acceptedAt = DateTime.makeUnsafe("2026-01-03T00:00:00.000Z");
+      yield* eventSink.commitCommand({
+        commandId: previousRepairThread.legacyBootstrapClaim.createCommandId,
+        commandType: "thread.metadata.update",
+        threadId,
+        acceptedAt,
+        effects: [],
         events: [
           {
             id: previousRepairId,
             type: "thread.metadata-updated",
             threadId,
             providerInstanceId: previousRepairThread.providerInstanceId,
-            occurredAt: DateTime.makeUnsafe("2026-01-03T00:00:00.000Z"),
+            occurredAt: acceptedAt,
             payload: previousRepairThread,
           },
         ],
       });
+      // Restore the historical inline shape after creating its authenticated anchor.
+      const inlineClaim = JSON.stringify(previousRepairThread.legacyBootstrapClaim);
+      yield* sql`
+        UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_set(payload_json, '$.legacyBootstrapClaim', json(${inlineClaim}))
+        WHERE thread_id = ${threadId}
+      `;
+      yield* sql`
+        UPDATE orchestration_events
+        SET payload_json = json_set(payload_json, '$.legacyBootstrapClaim', json(${inlineClaim}))
+        WHERE event_id = ${previousRepairId}
+      `;
 
       assert.deepStrictEqual(yield* importer.reconcileShells, {
         importedThreadCount: 1,
@@ -801,8 +872,10 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
       assert.deepStrictEqual(repaired.thread.pullRequests, []);
       assert.equal(repaired.thread.branchPullRequest?.number, 9001);
       assert.equal(repaired.thread.activeOrderKey, "az");
+      // The claim is private: it survives the repair in its Jones record, not the public row.
+      const readRetainedRecords = yield* RetainedRecords.make;
       assert.deepStrictEqual(
-        repaired.thread.legacyBootstrapClaim,
+        (yield* readRetainedRecords(threadId)).thread.legacyBootstrapClaim,
         previousRepairThread.legacyBootstrapClaim,
       );
 

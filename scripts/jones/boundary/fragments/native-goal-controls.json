@@ -2,6 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "native-goal-controls",
   "jonesOwnedPaths": [
+    "apps/server/src/jones/goals/GoalNotificationSteering.integration.test.ts",
     "apps/server/src/jones/goals/CodexGoalControl.ts",
     "apps/server/src/jones/goals/CodexGoalControl.test.ts",
     "apps/server/src/jones/goals/GoalControl.ts",
@@ -68,6 +69,10 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
       "to": "apps/server/src/jones/goals/preserveGoalConversation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+      "to": "apps/server/src/jones/goals/GoalNotificationDelivery.ts"
     }
   ]
 }

@@ -12,6 +12,7 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
 import { installDesktopIpcHandlers } from "../ipc/DesktopIpcHandlers.ts";
+import * as CompanionConfig from "../jones/previewCompanion/CompanionConfig.ts";
 import * as DesktopAppActivation from "./DesktopAppActivation.ts";
 import * as DesktopAppIdentity from "./DesktopAppIdentity.ts";
 import * as DesktopClerk from "./DesktopClerk.ts";
@@ -19,7 +20,10 @@ import * as DesktopCliCommand from "./DesktopCliCommand.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as PreviewPasskeys from "../preview/Passkeys.ts";
+import { prepareLocalBackendsForQuit } from "../jones/updates/jonesQuitPreparation.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import * as DesktopHomeOwner from "../backend/DesktopHomeOwner.ts";
+import * as DesktopLocalEnvironmentAuth from "../backend/DesktopLocalEnvironmentAuth.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLegacyLocalStorage from "./DesktopLegacyLocalStorage.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
@@ -29,7 +33,6 @@ import * as DesktopPreReadyPlatform from "./DesktopPreReadyPlatform.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
-import * as CompanionConfig from "../jones/previewCompanion/CompanionConfig.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopStartupRecovery from "./DesktopStartupRecovery.ts";
 import * as DesktopState from "./DesktopState.ts";
@@ -39,7 +42,6 @@ import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { prepareLocalBackendsForQuit } from "../jones/updates/jonesQuitPreparation.ts";
 
 const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
 const MAX_TCP_PORT = 65_535;
@@ -160,7 +162,7 @@ const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances")(
   function* (): Effect.fn.Return<void, never, DesktopBackendPool.DesktopBackendPool> {
     const pool = yield* DesktopBackendPool.DesktopBackendPool;
     const instances = yield* pool.list;
-    // Jones: quit waits for the captured backend to finish (no early deadline), see jonesQuitPreparation.
+    // Preparation is bounded separately; stopping still waits for captured backend teardown.
     yield* Effect.forEach(instances, (instance) => instance.stop(), { concurrency: "unbounded" });
   },
 );
@@ -169,21 +171,18 @@ export const prepareAndStopAllPoolInstances = Effect.fn(
   "desktop.app.prepareAndStopAllPoolInstances",
 )(() => prepareLocalBackendsForQuit().pipe(Effect.ensuring(stopAllPoolInstances())));
 
-export const bootstrapWithIpcRegistration = Effect.fn("desktop.bootstrap")(function* <E, R>(
+// Spawns the local backend as soon as the protocol, IPC, and legacy storage that every window needs exist.
+export const startLocalBackend = Effect.fn("desktop.startLocalBackend")(function* <E, R>(
   registerIpc: Effect.Effect<void, E, R>,
 ) {
   const state = yield* DesktopState.DesktopState;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
-  const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
-  const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
   yield* logBootstrapInfo("bootstrap start");
 
   yield* CompanionConfig.prepareStartup;
   const settings = yield* desktopSettings.get;
-  // The renderer is served from the bundled client (or Vite in development)
-  // rather than through the local backend, so the window can open without one.
   const electronProtocol = yield* ElectronProtocol.ElectronProtocol;
   yield* electronProtocol.registerDesktopProtocol({
     scheme: ElectronProtocol.getDesktopScheme(environment.isDevelopment),
@@ -199,35 +198,33 @@ export const bootstrapWithIpcRegistration = Effect.fn("desktop.bootstrap")(funct
     yield* (yield* DesktopAppIdentity.DesktopAppIdentity).resolveUserDataPath,
   );
 
-  yield* snapShot.initialize;
-  // Only the user's own login shell PATH shows every t3 a new terminal runs; a fresh install has
-  // no cached one. Without it, the command is left to Settings.
-  const installCli = (yield* DesktopCliCommand.DesktopCliCommand).installOnFirstLaunch;
-  yield* Effect.forkScoped(
-    (yield* DesktopShellEnvironment.DesktopShellEnvironment).awaitUserShellDiscovery.pipe(
-      Effect.flatMap((found) =>
-        found || environment.platform === "win32"
-          ? installCli
-          : logBootstrapInfo("skipped installing the t3 command without the shell PATH"),
-      ),
-    ),
-  );
-
   if (!settings.localEnvironmentEnabled) {
     yield* logBootstrapInfo("bootstrap skipping local environment (disabled in settings)");
-    if (!(yield* Ref.get(state.quitting))) {
-      yield* desktopWindow.createMainIfBackendReady;
-    }
-    return;
+    return false;
   }
 
-  const pool = yield* DesktopBackendPool.DesktopBackendPool;
-  const primaryBackend = yield* pool.primary;
+  const primaryBackend = yield* (yield* DesktopBackendPool.DesktopBackendPool).primary;
   const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
-  const wslBackend = yield* DesktopWslBackend.DesktopWslBackend;
 
   if (environment.isDevelopment && Option.isNone(environment.configuredBackendPort)) {
     return yield* new DesktopDevelopmentBackendPortRequiredError();
+  }
+
+  // A backend started while another server holds this home's lock can only exit with code 78.
+  if (
+    !(settings.wslOnly && settings.wslBackendEnabled) &&
+    !(yield* DesktopHomeOwner.awaitHomeOwnershipRelease())
+  ) {
+    const owner = yield* DesktopHomeOwner.readLiveHomeOwner();
+    yield* logBootstrapWarning("bootstrap found another server owning the T3 home", {
+      owner: Option.getOrNull(owner),
+    });
+    yield* (yield* ElectronDialog.ElectronDialog).showErrorBox(
+      "This T3 home is unavailable",
+      DesktopHomeOwner.homeOwnedMessage(owner),
+    );
+    yield* (yield* ElectronApp.ElectronApp).quit;
+    return false;
   }
 
   const backendPortSelection = yield* resolveDesktopBackendPort(environment.configuredBackendPort);
@@ -265,37 +262,71 @@ export const bootstrapWithIpcRegistration = Effect.fn("desktop.bootstrap")(funct
     );
   }
 
-  if (!(yield* Ref.get(state.quitting))) {
-    // The main window awaits its primary backend. Show a Connecting to WSL splash immediately
-    // in wsl-only mode because cold boot can be slow. Dual mode opens from the Windows primary without a splash.
-    if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
-      yield* desktopWindow.showConnectingSplash;
-    }
-    yield* primaryBackend.start;
-    yield* logBootstrapInfo("bootstrap backend start requested");
-    // WSL-only fallback can change the primary endpoint before readiness.
-    const config = yield* primaryBackend.currentConfig;
-    if (
-      !environment.isDevelopment &&
-      !settings.wslOnly &&
-      Option.isSome(config) &&
-      Option.isNone(config.value.preflightFailure)
-    ) {
-      yield* desktopWindow.ensureMain;
-    }
-    yield* appActivation.start.pipe(
-      Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
-      Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
-    );
-    // Bring up the WSL backend if the user previously enabled it. The
-    // primary is already starting; reconcile fires off the WSL register
-    // in parallel rather than blocking primary readiness on a possibly
-    // slow first wsl.exe spawn.
-    yield* Effect.forkScoped(wslBackend.reconcile);
+  if (yield* Ref.get(state.quitting)) {
+    return false;
   }
+  if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
+    yield* desktopWindow.showConnectingSplash;
+  }
+  yield* primaryBackend.start;
+  yield* logBootstrapInfo("bootstrap backend start requested");
+  // The renderer asks for this token first; minting it at readiness saves a round trip.
+  yield* Effect.forkScoped(
+    (yield* DesktopLocalEnvironmentAuth.DesktopLocalEnvironmentAuth).getBearerToken.pipe(
+      Effect.ignore,
+    ),
+  );
+  return true;
 });
 
-const bootstrap = bootstrapWithIpcRegistration(installDesktopIpcHandlers());
+export const bootstrap = Effect.fn("desktop.bootstrap")(function* (backendStarted: boolean) {
+  const state = yield* DesktopState.DesktopState;
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
+  const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  const snapShot = yield* DesktopSnapShot.DesktopSnapShot;
+  const appActivation = yield* DesktopAppActivation.DesktopAppActivation;
+  const settings = yield* desktopSettings.get;
+  if (settings.localEnvironmentEnabled && (!backendStarted || (yield* Ref.get(state.quitting)))) {
+    return;
+  }
+
+  yield* snapShot.initialize;
+  // Only the user's own login shell PATH shows every t3 a new terminal runs; a fresh install has
+  // no cached one. Without it, the command is left to Settings.
+  const installCli = (yield* DesktopCliCommand.DesktopCliCommand).installOnFirstLaunch;
+  yield* Effect.forkScoped(
+    (yield* DesktopShellEnvironment.DesktopShellEnvironment).awaitUserShellDiscovery.pipe(
+      Effect.flatMap((found) =>
+        found || environment.platform === "win32"
+          ? installCli
+          : logBootstrapInfo("skipped installing the t3 command without the shell PATH"),
+      ),
+    ),
+  );
+
+  if (!settings.localEnvironmentEnabled) {
+    if (!(yield* Ref.get(state.quitting))) {
+      yield* desktopWindow.createMainIfBackendReady;
+    }
+    return;
+  }
+
+  const primaryBackend = yield* (yield* DesktopBackendPool.DesktopBackendPool).primary;
+  const config = yield* primaryBackend.currentConfig;
+  if (
+    !environment.isDevelopment &&
+    Option.isSome(config) &&
+    Option.isNone(config.value.preflightFailure)
+  ) {
+    yield* desktopWindow.ensureMain;
+  }
+  yield* appActivation.start.pipe(
+    Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
+    Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
+  );
+  yield* Effect.forkScoped((yield* DesktopWslBackend.DesktopWslBackend).reconcile);
+});
 
 const startup = Effect.gen(function* () {
   const appIdentity = yield* DesktopAppIdentity.DesktopAppIdentity;
@@ -367,14 +398,20 @@ const startup = Effect.gen(function* () {
     });
   }
   yield* appIdentity.configure;
-  yield* previewPasskeys.configure;
-  yield* applicationMenu.configure;
+  // Sets canInstallUpdates, which the backend bootstrap payload reads.
   yield* updates.configure;
   yield* DesktopRemoteUpdates.listen;
   yield* DesktopStartupRecovery.listen;
+  const backendStarted = yield* startLocalBackend(installDesktopIpcHandlers()).pipe(
+    Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)),
+  );
+  yield* previewPasskeys.configure;
+  yield* applicationMenu.configure;
   // Portal identity is prepared pre-ready; MIME helpers must not gate the backend or window.
   yield* linuxUrlHandler.register.pipe(Effect.forkScoped);
-  yield* bootstrap.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
+  yield* bootstrap(backendStarted).pipe(
+    Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)),
+  );
 }).pipe(Effect.withSpan("desktop.startup"));
 
 const scopedProgram = Effect.scoped(
@@ -387,8 +424,7 @@ const scopedProgram = Effect.scoped(
     const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
 
     yield* Effect.addFinalizer(() =>
-      // Stop every pooled backend before electronApp.quit can outrun layer-scope cleanup.
-      // Leaving WSL to its scope finalizer risks an OS hard kill instead of SIGTERM plus grace.
+      // Quit can outrun layer finalizers; stop pooled backends here so they receive SIGTERM before OS teardown.
       prepareAndStopAllPoolInstances().pipe(
         Effect.ensuring(rendererHistory.shutdown),
         Effect.ensuring(shutdown.markComplete),

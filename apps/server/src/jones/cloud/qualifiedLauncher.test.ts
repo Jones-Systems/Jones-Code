@@ -41,7 +41,11 @@ import {
   type QualifiedRuntimeReceipt,
   type StagedQualifiedRuntime,
 } from "./qualifiedRuntime.ts";
-import type { ServiceLauncherChildMessage, ServiceState } from "../../cloud/serviceProtocol.ts";
+import {
+  parseServiceState,
+  type ServiceLauncherChildMessage,
+  type ServiceState,
+} from "../../cloud/serviceProtocol.ts";
 
 import { retainStagedSelection } from "../updates/stagedSelection.ts";
 import {
@@ -65,6 +69,8 @@ const readMarker = (file: string) => {
     database.close();
   }
 };
+
+const preparedClockReads = ["received", "validated", "before-pointer-write"] as const;
 
 async function runScenario(
   mode:
@@ -92,7 +98,10 @@ async function runScenario(
     readonly delayedGracefulClose?: boolean;
     readonly retirementRace?: "accept-first" | "retire-first";
     readonly now?: () => number;
-    readonly pointerWriteFailure?: boolean;
+    readonly preparedClock?: (
+      read: (typeof preparedClockReads)[number],
+      statePath: string,
+    ) => number;
     readonly reserveAfterCleanup?: boolean;
     readonly cleanupFailure?: boolean;
     readonly previous?: "committed" | "rolled-back" | "failed" | "accepted";
@@ -130,7 +139,6 @@ import {
   readFileSync,
   existsSync,
   writeFileSync,
-  renameSync,
   mkdirSync,
 } from "node:fs";
 
@@ -292,10 +300,6 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
   });
   if (${JSON.stringify(options.cleanupFailure === true)}) {
     mkdirSync(${JSON.stringify(NodePath.join(base, "runtime", "db-backup"))} + "/" + context.update.id + "/database-shm");
-  }
-  if (${JSON.stringify(options.pointerWriteFailure === true)}) {
-    renameSync(${JSON.stringify(NodePath.join(base, "runtime", "service-state.json"))}, ${JSON.stringify(NodePath.join(base, "runtime", "before-commit.json"))});
-    mkdirSync(${JSON.stringify(NodePath.join(base, "runtime", "service-state.json"))});
   }
   process.send({type:"prepared", updateId:context.update.id, startupGateProtocol:1, qualified:receipt});
 } else if (${JSON.stringify(options.handoffResume !== undefined)} && context.update?.status === "committed") {
@@ -502,6 +506,19 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
     if (options.launcherHandoff !== undefined)
       await bootstrapLauncherPointer(base, baseline, "[Service]\nExecStart=synthetic-retained\n");
     let reservations = 0;
+    let preparedRead = 0;
+    const preparedClock = options.preparedClock;
+    const now =
+      preparedClock === undefined
+        ? options.now
+        : () => {
+            // The trial sends prepared only after this selection is durable.
+            const state = parseServiceState(NodeFS.readFileSync(statePath, "utf8"));
+            if (state?.update?.status !== "pending" || state.update.phase !== "trial-ready")
+              return 0;
+            const read = preparedClockReads[preparedRead++];
+            return read === undefined ? 0 : preparedClock(read, statePath);
+          };
     const launcher = new Launcher(base, await readServiceState(statePath), {
       ...(options.launcherHandoff === undefined
         ? {}
@@ -532,7 +549,7 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
               },
             },
           }),
-      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(now === undefined ? {} : { now }),
       ...(options.preparedTimeoutMs === undefined
         ? {}
         : { preparedTimeoutMs: options.preparedTimeoutMs }),
@@ -1178,8 +1195,9 @@ it("records stop intent during prepared validation before committing or granting
   let stop: Promise<void> | undefined;
   await runScenario(
     "commit",
-    async (base) => {
+    async (base, failure) => {
       await stop;
+      assert.match(String(failure), /Qualified child liveness or stop intent changed/);
       const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
       assert.equal(state.activeVersion, baseline);
       assert.equal(state.update?.status, "pending");
@@ -1195,16 +1213,13 @@ it("records stop intent during prepared validation before committing or granting
       captured = launcher;
     },
     {
-      now: (() => {
-        let reads = 0;
-        return () => {
-          if (++reads === 5) {
-            if (captured === undefined) throw new Error("missing controlled launcher");
-            stop = captured.stop("SIGTERM");
-          }
-          return 0;
-        };
-      })(),
+      preparedClock: (read) => {
+        if (read === "validated") {
+          if (captured === undefined) throw new Error("missing controlled launcher");
+          stop = captured.stop("SIGTERM");
+        }
+        return 0;
+      },
     },
   );
 });
@@ -1295,7 +1310,6 @@ it("preserves the active child and records the reservation rejected when receipt
 });
 
 it("rolls back instead of committing a pointer after the prepared exchange expired", async () => {
-  let clock = 0;
   await runScenario(
     "commit",
     async (base) => {
@@ -1315,7 +1329,7 @@ it("rolls back instead of committing a pointer after the prepared exchange expir
       );
     },
     undefined,
-    { now: () => (++clock < 5 ? 0 : 60_000) },
+    { preparedClock: (read) => (read === "received" ? 0 : 60_000) },
   );
 });
 
@@ -1401,7 +1415,17 @@ it("names the pointer-write failure and retains the pending pair", async () => {
     },
     undefined,
     {
-      pointerWriteFailure: true,
+      preparedClock: (read, statePath) => {
+        if (read === "before-pointer-write") {
+          // Preserve the pending selection after the lease has re-read it.
+          NodeFS.renameSync(
+            statePath,
+            NodePath.join(NodePath.dirname(statePath), "before-commit.json"),
+          );
+          NodeFS.mkdirSync(statePath);
+        }
+        return 0;
+      },
     },
   );
 });

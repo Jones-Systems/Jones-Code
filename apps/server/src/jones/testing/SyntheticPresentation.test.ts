@@ -1,6 +1,7 @@
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../orchestration/SupersededTerminalTrace.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as Questions from "../../orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import { DEFAULT_SERVER_SETTINGS, EnvironmentId } from "@t3tools/contracts";
@@ -12,6 +13,7 @@ import * as Keybindings from "../../keybindings.ts";
 import * as Legacy from "../../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Recovery from "../../orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "./UnusedCorePorts.testkit.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Worker from "../../orchestration-v2/EffectWorker.ts";
 import * as Relay from "../../relay/AgentAwarenessRelay.ts";
@@ -62,6 +64,8 @@ import * as Projection from "../../orchestration-v2/ProjectionStore.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
 import { workModeCandidate } from "../workMode/Policy.ts";
 import { HeldRuntimeOwner } from "../cleanup/CheckedRuntimeOwner.ts";
+import * as Incarnation from "../cleanup/sharedAdmission/DatabaseIncarnation.ts";
+import { prepareSyntheticOpen } from "../cleanup/sharedAdmission/DatabaseIncarnation.fixture.ts";
 import {
   SyntheticPresentation,
   installSelectedSyntheticPresentation,
@@ -320,9 +324,14 @@ const fixture = <A, E>(
       );
       const workspace = path.join(config.baseDir, "synthetic-workspace");
       yield* fs.makeDirectory(workspace);
-      const persistence = Layer.effectDiscard(runMigrations()).pipe(
-        Layer.provideMerge(NodeSqliteClient.layer({ filename: config.dbPath })),
-      );
+      const { open } = yield* prepareSyntheticOpen(owner.heldRuntimeOwner, config.baseDir);
+      const persistence = Layer.effectDiscard(
+        Effect.gen(function* () {
+          yield* Incarnation.bindOpen(open);
+          yield* runMigrations();
+          yield* Incarnation.revalidateOpen(open);
+        }),
+      ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: config.dbPath })));
       const stores = Layer.mergeAll(Projection.layer, Projects.layer, Outbox.layer).pipe(
         Layer.provideMerge(persistence),
       );
@@ -676,7 +685,9 @@ it.effect.each([
             requeuedEffects: 0,
           };
           const dependencies = Layer.mergeAll(
-            Layer.mock(EventSink.EventSinkV2)({}),
+            Layer.mock(EventSink.EventSinkV2)({
+              supersededTerminalTrace: SupersededTerminalTrace.make(),
+            }),
             Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
             Layer.succeed(Projects.ProjectStoreV2, yield* Projects.ProjectStoreV2),
             Layer.succeed(Outbox.EffectOutboxV2, yield* Outbox.EffectOutboxV2),
@@ -698,12 +709,15 @@ it.effect.each([
               reconcile: () => Effect.succeed(recovery),
             }),
             Layer.mock(Orchestrator.OrchestratorV2)({
+              ...unusedCorePorts(),
               recoverCodexFailover: record("failover"),
+              recoverSelfSettlements: record("self-settlement"),
               recoverDelegatedTasks: record("delegation"),
+              recoverRemoteTaskQuestions: record("remote-questions"),
               recoverPlannedUpdateQueues: record("planned"),
             }),
             Layer.mock(Sessions.ProviderSessionManagerV2)({ shutdown: Effect.void }),
-            Layer.mock(Worker.OrchestrationEffectWorkerV2)({ runOnce: Effect.never }),
+            Layer.mock(Worker.OrchestrationEffectWorkerV2)({ runOnce: () => Effect.never }),
             Layer.mock(Relay.AgentAwarenessRelay)({ start: () => record("relay-registration") }),
             Layer.mock(Lifecycle.ServerLifecycleEvents)({
               publish: (event) =>
@@ -724,8 +738,9 @@ it.effect.each([
             }),
             Layer.mock(Launcher.ServiceLauncherClient)({
               managed: false,
+              protocol: undefined,
               requiresQualifiedTrialGate: false,
-              prepareTrial: record("trial").pipe(Effect.as(undefined)),
+              prepareTrial: () => record("trial").pipe(Effect.as(undefined)),
             }),
             Layer.mock(ProjectService.ProjectService)({
               snapshot: Effect.succeed({ projects: [], updatedAt: "2026-11-04T12:00:00Z" }),
@@ -764,7 +779,9 @@ it.effect.each([
               "legacy",
               "recovery",
               "failover",
+              "self-settlement",
               "delegation",
+              "remote-questions",
               "planned",
               "relay-registration",
               "auxiliary",
@@ -899,14 +916,15 @@ it.effect(
             ),
           ),
         );
-        const claimed = yield* Worker.OrchestrationEffectWorkerV2.use(
-          (service) => service.runOnce,
+        const claimed = yield* Worker.OrchestrationEffectWorkerV2.use((service) =>
+          service.runOnce(),
         ).pipe(Effect.provide(worker));
         assert.isFalse(claimed);
         assert.strictEqual(executions, 0);
         const reactor = Questions.layer.pipe(
           Layer.provide(
             Layer.mock(Orchestrator.OrchestratorV2)({
+              ...unusedCorePorts(),
               dispatch: () => {
                 commands++;
                 return Effect.die("Presentation must not dispatch commands");

@@ -14,11 +14,9 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import * as Stream from "effect/Stream";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as EventSink from "./EventSink.ts";
-import * as EventStore from "./EventStore.ts";
 import * as Threads from "./ThreadManagementService.ts";
 import { canonicalLegacyPayload } from "./LegacyBootstrap.ts";
 
@@ -41,7 +39,6 @@ export const makeLegacyPreflight = Effect.gen(function* () {
   const projects = yield* Projects.ProjectService;
   const threads = yield* Threads.ThreadManagementService;
   const sink = yield* EventSink.EventSinkV2;
-  const store = yield* EventStore.EventStoreV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const lane = yield* Semaphore.make(1);
   return Effect.fn("LegacyBootstrap.preflight")(function* (
@@ -71,14 +68,11 @@ export const makeLegacyPreflight = Effect.gen(function* () {
         payload: binding,
       },
     });
-    const prior = Array.from(
-      yield* store.readByCommandId({ commandId: outcomeId }).pipe(Stream.runCollect),
-    );
-    if (prior.length > 0) {
-      const recorded = prior[0];
+    const prior = yield* sink.readLegacyPreflight(outcomeId);
+    if (Option.isSome(prior)) {
+      const recorded = prior.value;
       if (
-        prior.length !== 1 ||
-        recorded?.event.type !== "legacy-bootstrap.preflight-outcome" ||
+        recorded.event.type !== "legacy-bootstrap.preflight-outcome" ||
         canonicalLegacyPayload(recorded.event.payload.binding) !== canonicalLegacyPayload(binding)
       )
         return yield* new PreflightValidationFailure({
@@ -105,7 +99,7 @@ export const makeLegacyPreflight = Effect.gen(function* () {
         });
       const prepare = payload.bootstrap.prepareWorktree;
       const cwd = binding.fetch.cwd;
-      let canPrepare = yield* git.isRepository(cwd);
+      let canPrepare = (yield* git.repositoryRoot(cwd)) !== null;
       let baseRef = binding.fetch.baseRef;
       if (canPrepare) {
         if (

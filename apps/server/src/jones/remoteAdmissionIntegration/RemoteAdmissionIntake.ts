@@ -133,7 +133,8 @@ const unpack = (record: RemoteAdmissionRecord) => {
 // Pin only display data. Every other invocation field belongs to this attempt
 // and must still participate in the generic admission's digest comparison.
 const pinOriginTitle = (invocation: Invocation, previous: RemoteAdmissionRecord): Invocation => {
-  const original = unpack(previous).invocation.client?.remoteOrigin;
+  const previousClient = unpack(previous).invocation.client;
+  const original = previousClient?.remoteOrigin;
   const client = invocation.client;
   const origin = client?.remoteOrigin;
   if (
@@ -147,10 +148,27 @@ const pinOriginTitle = (invocation: Invocation, previous: RemoteAdmissionRecord)
   )
     return invocation;
   const { title: _title, ...thread } = origin.thread;
+  const sender = client.senderThread;
+  const originalSender = previousClient?.senderThread;
+  const mirrorsOrigin =
+    sender?.environmentId === origin.environmentId &&
+    sender.threadId === origin.thread.threadId &&
+    sender.title === (origin.thread.title ?? "Untitled thread");
+  // The HTTP adapter now mirrors linked origin metadata in senderThread as well.
+  // Earlier records have no mirror, so retain that omission for the same origin.
+  const senderThread = mirrorsOrigin
+    ? originalSender === undefined
+      ? undefined
+      : originalSender.environmentId === sender.environmentId &&
+          originalSender.threadId === sender.threadId
+        ? { ...sender, title: originalSender.title }
+        : sender
+    : sender;
   return {
     ...invocation,
     client: {
       ...client,
+      senderThread,
       remoteOrigin: {
         ...origin,
         thread: {

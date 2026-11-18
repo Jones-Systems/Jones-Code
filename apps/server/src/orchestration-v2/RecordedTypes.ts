@@ -448,7 +448,14 @@ export type LegacyFailureDeleteCommand = Extract<
 > & { readonly legacyNoControl: LegacyNoTerminalControl };
 
 export type RecordedServerCommand =
-  | Exclude<OrchestrationV2ServerCommand, { readonly type: "prepared-run.progress" }>
+  | Exclude<
+      OrchestrationV2ServerCommand,
+      { readonly type: "prepared-run.progress" | "message.dispatch" }
+    >
+  | (Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }> & {
+      readonly legacyBootstrap?: typeof OrchestrationV2LegacyBootstrapPolicy.Type;
+      readonly workspaceRunSetupScript?: boolean;
+    })
   | (Extract<OrchestrationV2ServerCommand, { readonly type: "prepared-run.progress" }> & {
       readonly legacyPreparationUpdate?: LegacyPreparationUpdate;
     });

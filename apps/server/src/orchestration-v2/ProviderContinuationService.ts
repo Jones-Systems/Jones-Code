@@ -1,14 +1,92 @@
-import { CommandId, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
+import {
+  CommandId,
+  type MessageId,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2Run,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
+import * as Stream from "effect/Stream";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import type { CommandReceiptV2 } from "./CommandReceiptStore.ts";
+import { EventSinkStreamError } from "./EventSink.ts";
+import { LiveStreamBufferError } from "./LiveStreamBudget.ts";
+import type * as Orchestrator from "./Orchestrator.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
 
 const CONTINUATION_MESSAGE_TEXT = "Background task completed.";
+
+export function isAcceptedQueuedCancellation(
+  receipt: Option.Option<CommandReceiptV2>,
+  threadId: ThreadId,
+  commandId: CommandId,
+  eventSequence: number,
+): boolean {
+  return (
+    Option.isSome(receipt) &&
+    receipt.value.commandId === commandId &&
+    (receipt.value.commandType === "queued-run.cancel" ||
+      receipt.value.commandType === "thread.stop" ||
+      receipt.value.commandType === "run.interrupt") &&
+    receipt.value.status === "accepted" &&
+    receipt.value.threadId === threadId &&
+    receipt.value.resultSequence >= eventSequence
+  );
+}
+
+const isSinkStreamError = Schema.is(EventSinkStreamError);
+const isBufferOverflow = Schema.is(LiveStreamBufferError);
+
+export const readContinuationTerminal = Effect.fn(
+  "ProviderContinuationService.readContinuationTerminal",
+)(function* (
+  streamEvents: ThreadManagementService.ThreadManagementService["Service"]["streamStoredEventsFrom"],
+  created: OrchestrationV2Run,
+  creationSequence: number,
+) {
+  let afterSequence = creationSequence;
+  let continuouslyQueued = created.status === "queued" && created.startedAt === null;
+  const ended = yield* Effect.suspend(() =>
+    streamEvents({ threadId: created.threadId, afterSequence, eventType: "run.updated" }).pipe(
+      Stream.dropWhile(({ event, sequence }) => {
+        afterSequence = sequence;
+        if (
+          event.type !== "run.updated" ||
+          event.threadId !== created.threadId ||
+          event.payload.id !== created.id
+        )
+          return true;
+        if (ThreadManagementService.isTerminalRunStatus(event.payload.status)) return false;
+        continuouslyQueued &&=
+          event.payload.status === "queued" &&
+          event.payload.startedAt === null &&
+          event.payload.activeAttemptId === created.activeAttemptId &&
+          event.payload.userMessageId === created.userMessageId;
+        return true;
+      }),
+      Stream.runHead,
+    ),
+  ).pipe(
+    Effect.retry({
+      schedule: Schedule.spaced("100 millis"),
+      while: (error) =>
+        error._tag === "OrchestratorDomainEventStreamError" &&
+        isSinkStreamError(error.cause) &&
+        isBufferOverflow(error.cause.cause),
+    }),
+  );
+  return { ended, continuouslyQueued };
+});
 
 function delegatedCompletionText(taskIds: ReadonlyArray<string>): string {
   const taskList = taskIds.join(", ");
@@ -53,9 +131,11 @@ function delegatedCompletionRetryKey(
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const ids = yield* IdAllocator.IdAllocatorV2;
+    const refusalProof = yield* Effect.serviceOption(StartRefusals.StartRefusals);
     const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const retryAttempts = yield* Ref.make(new Map<string, number>());
+    const continuations = yield* KeyedLock.makeRunner<ThreadId>();
 
     const clearRetryAttempt = (key: string) =>
       Ref.update(retryAttempts, (current) => {
@@ -72,6 +152,76 @@ export const layer = Layer.effectDiscard(
         updated.set(key, attempt + 1);
         return [Math.min(100 * 2 ** Math.min(attempt, 6), 5_000), updated] as const;
       });
+
+    // Cancelling or stopping a queued continuation ends it unstarted; only the request can release the adapter's wake latch.
+    const releaseIfNeverStarted = Effect.fn("ProviderContinuationService.releaseIfNeverStarted")(
+      function* (
+        request: ProviderContinuationRequests.ProviderContinuationRequest,
+        messageId: MessageId,
+        dispatched: Orchestrator.OrchestratorV2DispatchResult,
+      ) {
+        const onRunEndedWithoutStarting = request.onRunEndedWithoutStarting;
+        if (onRunEndedWithoutStarting === undefined) return;
+        const [creation] = dispatched.storedEvents.flatMap(({ event, commandId, sequence }) =>
+          event.type === "run.created" &&
+          event.threadId === request.threadId &&
+          commandId === `provider-continuation:${messageId}` &&
+          event.payload.userMessageId === messageId
+            ? [{ run: event.payload, sequence }]
+            : [],
+        );
+        if (creation === undefined) return;
+        const created = creation.run;
+        yield* readContinuationTerminal(
+          threads.streamStoredEventsFrom,
+          created,
+          creation.sequence,
+        ).pipe(
+          Effect.flatMap(({ ended, continuouslyQueued }) =>
+            Effect.gen(function* () {
+              if (
+                Option.isNone(ended) ||
+                ended.value.event.type !== "run.updated" ||
+                ended.value.event.payload.activeAttemptId === null
+              )
+                return;
+              const terminal = ended.value.event.payload;
+              const { commandId, sequence } = ended.value;
+              if (terminal.status === "cancelled") {
+                // Stop can also cancel buffered notifications. Prove the original attempt stayed queued through the receipt.
+                if (
+                  !continuouslyQueued ||
+                  terminal.startedAt !== null ||
+                  terminal.userMessageId !== messageId ||
+                  terminal.activeAttemptId !== created.activeAttemptId ||
+                  commandId === null
+                )
+                  return;
+                const receipt = yield* threads.getCommandReceipt(commandId);
+                if (isAcceptedQueuedCancellation(receipt, request.threadId, commandId, sequence))
+                  yield* onRunEndedWithoutStarting();
+                return;
+              }
+              if (Option.isNone(refusalProof)) return;
+              const proof = yield* refusalProof.value.readPrefix({
+                threadId: request.threadId,
+                runId: terminal.id,
+                attemptId: terminal.activeAttemptId!,
+              });
+              if (proof.state === "refused") yield* onRunEndedWithoutStarting();
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("orchestration-v2.provider-continuation.run-watch-failed", {
+              threadId: request.threadId,
+              providerThreadId: request.providerThreadId,
+              cause,
+            }),
+          ),
+          Effect.forkScoped,
+        );
+      },
+    );
 
     const dispatchContinuation = Effect.fn("ProviderContinuationService.dispatchContinuation")(
       function* (request: ProviderContinuationRequests.ProviderContinuationRequest) {
@@ -186,23 +336,25 @@ export const layer = Layer.effectDiscard(
             ordinal: projection.messages.length + 1,
           }));
         const commandId = CommandId.make(`provider-continuation:${messageId}`);
-        const dispatch = threads.dispatch({
-          type: "message.dispatch",
-          commandId,
-          threadId: request.threadId,
-          messageId,
-          text: request.detail ?? CONTINUATION_MESSAGE_TEXT,
-          notification: request.notification ?? {
-            source: { kind: "background_task" },
-            outcome: "updated",
-            summary: "Background activity updated",
-          },
-          attachments: [],
-          dispatchMode: { type: "queue_after_active" },
-          createdBy: "agent",
-          // Only buffered wakes use creationSource "provider"; Claude would drain an empty buffer instead of prompting message_text.
-          creationSource: request.delivery === "message_text" ? "server" : "provider",
-        });
+        const dispatch = threads
+          .dispatch({
+            type: "message.dispatch",
+            commandId,
+            threadId: request.threadId,
+            messageId,
+            text: request.detail ?? CONTINUATION_MESSAGE_TEXT,
+            notification: request.notification ?? {
+              source: { kind: "background_task" },
+              outcome: "updated",
+              summary: "Background activity updated",
+            },
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "agent",
+            // Only buffered wakes use creationSource "provider"; Claude would drain an empty buffer instead of prompting message_text.
+            creationSource: request.delivery === "message_text" ? "server" : "provider",
+          })
+          .pipe(Effect.tap((dispatched) => releaseIfNeverStarted(request, messageId, dispatched)));
         // Catch after dispatchIfCurrent so adapters see raw failures first; clearIfCurrent is idempotent and covers others.
         const logInstanceDisabled = (
           error: ThreadManagementService.ThreadManagementProviderInstanceDisabledError,
@@ -274,9 +426,13 @@ export const layer = Layer.effectDiscard(
                   ),
                   Effect.forkScoped,
                 );
+              } else if (request.clearIfCurrent !== undefined) {
+                yield* request.clearIfCurrent();
               }
             }),
           ),
+          // A dispatch can wait on its parent's lock, so only its own thread's later requests queue behind it.
+          (handled) => continuations.run(request.threadId, handled),
         ),
       ),
       Effect.forever,

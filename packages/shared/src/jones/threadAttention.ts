@@ -40,6 +40,7 @@ export interface ThreadRunSummary {
   readonly providerActivityStarted?: boolean;
   /** The provider turn ended while the run remains open for settlement. */
   readonly turnEnded?: boolean;
+  readonly providerStartingLabel?: string;
   readonly sourcePlanRef?: {
     readonly threadId: ThreadId;
     readonly planId: PlanId;
@@ -85,7 +86,7 @@ function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary 
   const parkAtIdle =
     backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) &&
     thread.status !== "failed";
-  if (thread.latestRunId === null && thread.activeProviderThreadId === null && !parkAtIdle) {
+  if (thread.latestRunId === null && !parkAtIdle) {
     return null;
   }
   const status = parkAtIdle ? "idle" : (thread.activityRunStatus ?? thread.status);
@@ -382,4 +383,71 @@ export function pendingSubagentGuestAttentionByThread(
     }
   }
   return ancestors;
+}
+
+/** A user-only card keeps its mark through roll-ups; clients see it as user_input. */
+export type RolledUpRequest = PendingSubagentRequest | "user_only_input";
+
+const rolledUpRequest = (
+  thread: OrchestrationV2ThreadShell,
+  request: PendingSubagentRequest | null,
+): RolledUpRequest | null =>
+  request === "user_input" && thread.pendingRuntimeRequest?.userOnly === true
+    ? "user_only_input"
+    : request;
+
+/** A side chat asks its user directly, so questions roll up to the parent as well as approvals. */
+function sideChatRequest(thread: OrchestrationV2ThreadShell): PendingSubagentRequest | null {
+  const kind = thread.pendingRuntimeRequest?.kind;
+  if (kind === undefined || kind === "auth_refresh" || thread.lineage.sideChat !== true) {
+    return null;
+  }
+  return kind === "user_input" ? "user_input" : "approval";
+}
+
+/**
+ * The threads to flag for a subagent's live approval, up its
+ * subagent chain and through a side chat to its parent. `delegated` are tasks this
+ * environment's threads delegated to linked environments, with what each one, or its
+ * own subagents, asks.
+ */
+export function pendingSubagentRequestRollupsByThread(
+  threads: ReadonlyArray<OrchestrationV2ThreadShell>,
+  delegated: ReadonlyArray<{
+    readonly parentThreadId: ThreadId;
+    readonly request: RolledUpRequest;
+  }> = [],
+): ReadonlyMap<ThreadId, RolledUpRequest> {
+  const requests = new Map<ThreadId, RolledUpRequest>();
+  let byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | undefined;
+  const flag = (firstParentId: ThreadId | null, request: RolledUpRequest, seen: Set<ThreadId>) => {
+    // The coordinator answers child questions; approvals and user-only cards need the user.
+    if (request === "user_input") return;
+    byId ??= new Map(threads.map((thread) => [thread.id, thread] as const));
+    let parentId = firstParentId;
+    while (parentId !== null && !seen.has(parentId)) {
+      seen.add(parentId);
+      if (requests.get(parentId) !== "approval") requests.set(parentId, request);
+      const parent = byId.get(parentId);
+      parentId =
+        parent?.lineage.relationshipToParent === "subagent" || parent?.lineage.sideChat === true
+          ? parent.lineage.parentThreadId
+          : null;
+    }
+  };
+  for (const child of threads) {
+    const parentId = child.lineage.parentThreadId;
+    if (child.lineage.sideChat === true) {
+      const request = sideChatRequest(child);
+      if (parentId !== null && request !== null && requests.get(parentId) !== "approval") {
+        requests.set(parentId, request);
+      }
+      continue;
+    }
+    if (child.lineage.relationshipToParent !== "subagent") continue;
+    const request = rolledUpRequest(child, subagentRequest(child));
+    if (request !== null) flag(parentId, request, new Set([child.id]));
+  }
+  for (const task of delegated) flag(task.parentThreadId, task.request, new Set());
+  return requests.size === 0 ? EMPTY_SUBAGENT_REQUESTS : requests;
 }

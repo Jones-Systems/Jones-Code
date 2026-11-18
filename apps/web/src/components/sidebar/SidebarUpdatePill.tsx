@@ -496,6 +496,7 @@ function SidebarUpdateControl() {
       try {
         confirmed = await ensureLocalApi().dialogs.confirm(
           getDesktopUpdateInstallConfirmationMessage(state),
+          { initialFocus: "confirm" },
         );
       } catch (error) {
         setIsActionPending(false);

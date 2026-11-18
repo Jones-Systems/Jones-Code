@@ -9,7 +9,8 @@ import type {
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { FlatList, Pressable, View, useWindowDimensions } from "react-native";
+import { LegendList } from "@legendapp/list/react-native";
+import { Pressable, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AppText } from "../../components/ui/AppText";
@@ -135,7 +136,8 @@ function SettlementBanner(props: { readonly entries: readonly SettlementEntry[] 
           />
         </View>
         {single || expanded ? (
-          <FlatList
+          // oxlint-disable-next-line t3code/require-registered-list-scroll -- The notification overlay sits above navigation and scrolls independently of the screen header.
+          <LegendList
             data={props.entries}
             keyExtractor={(entry) => entry.id}
             renderItem={({ item }) => <SettlementTitle entry={item} />}

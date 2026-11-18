@@ -10,6 +10,7 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as PeerMcpClient from "../../peer/PeerMcpClient.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import { DependencyWakeCommit } from "../threadResultDependencies/DependencyCommit.ts";
 import migration from "../persistence/Migrations/157_JonesRemoteAdmissionReview.ts";
 import * as Coordinator from "./OriginCoordinator.ts";
@@ -240,6 +241,7 @@ const regression = (advanced: "claimed" | "completed", replaceOnReply = false) =
     // The external dispatch fixture commits the production wake hook and receipt
     // in one SQL transaction; it does not mock origin delivery state transitions.
     const orchestrator = Layer.mock(Orchestrator.OrchestratorV2)({
+      ...unusedCorePorts(),
       dispatch: (command) =>
         Effect.gen(function* () {
           const commit = yield* DependencyWakeCommit;

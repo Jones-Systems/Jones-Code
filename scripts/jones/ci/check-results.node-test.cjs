@@ -118,7 +118,7 @@ test("workflow enrolls every job in Check and preserves conditional and always-r
     ["test_web", "web"],
   ])
     assert.ok(jobs[job].includes(`vp run --filter @t3tools/${packageName} test`));
-  assert.match(jobs.test_web, /shard: \[1, 2\]/);
+  assert.match(jobs.test_web, /shard: \[1, 2, 3, 4\]/);
   assert.match(jobs.test_web, /--shard \$\{\{ matrix.shard \}\}\/\$\{\{ strategy.job-total \}\}/);
   for (const node of ["24.22.1", "26.8.2"]) {
     assert.ok(jobs.native_enrollment_qualification.includes(node));

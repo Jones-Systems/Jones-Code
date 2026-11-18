@@ -8,6 +8,8 @@ import * as Option from "effect/Option";
 import * as AuthPairingLinks from "./AuthPairingLinks.ts";
 import AuthAuthorizationScopes from "./Migrations/031_AuthAuthorizationScopes.ts";
 import AuthPairingProofKeyThumbprint from "./Migrations/032_AuthPairingProofKeyThumbprint.ts";
+import AuthConnectDevices from "./Migrations/090_AuthConnectDevices.ts";
+import AuthConnectDeniedRequests from "./Migrations/091_AuthConnectDeniedRequests.ts";
 
 const layer = AuthPairingLinks.layer.pipe(
   Layer.provide(
@@ -15,6 +17,9 @@ const layer = AuthPairingLinks.layer.pipe(
       Effect.gen(function* () {
         yield* AuthAuthorizationScopes;
         yield* AuthPairingProofKeyThumbprint;
+        // The repository's connect-approval columns and device table come from 090 and 091.
+        yield* AuthConnectDevices;
+        yield* AuthConnectDeniedRequests;
       }),
     ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" }))),
   ),
@@ -52,6 +57,9 @@ describe("AuthPairingLinkRepository.consumeAvailable", () => {
         ...pairingLink,
         consumedAt: now,
         revokedAt: null,
+        requiresConnectApproval: 0,
+        connectApproved: 0,
+        requestedClient: null,
       });
       assert.isTrue(Option.isNone(yield* repository.consumeAvailable(consumeInput)));
       const stored = yield* repository.getByCredential({ credential: pairingLink.credential });

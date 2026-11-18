@@ -46,8 +46,6 @@ import { readLocalApi } from "~/localApi";
 import { cn } from "~/lib/utils";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "~/state/server";
 
-const PdfPreview = lazy(() => import("./PdfPreview"));
-
 /**
  * The page reports the keys, and a page script can report any key it likes,
  * so only commands that change what the reader sees are here, never one that
@@ -74,6 +72,8 @@ const HTML_RENDER_SHORTCUT_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
 
 export const isPdfPreviewFile = (path: string): boolean =>
   /\.pdf$/i.test(path.split(/[?#]/, 1)[0] ?? "");
+
+const PdfPreview = lazy(() => import("./PdfPreview"));
 
 const PdfViewer = lazy(() => import("./PdfViewer"));
 
@@ -200,7 +200,8 @@ function FileDocument(props: { readonly src: string; readonly title: string }) {
     <iframe
       src={src}
       title={props.title}
-      className="min-h-0 flex-1 border-0 bg-white"
+      className="min-h-0 flex-1 border-0"
+      style={{ backgroundColor: "Canvas" }}
       sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"
     />
   );
@@ -333,7 +334,7 @@ export function HtmlRenderDocument(props: {
     }
     const imageRequest = readHtmlRenderImageRequest(event.data);
     if (imageRequest !== undefined) {
-      setExpandedImage({ images: [{ src: imageRequest.src, name: imageRequest.name }], index: 0 });
+      setExpandedImage({ images: [...imageRequest.images], index: imageRequest.index });
     }
   });
   // Attach at commit because a fast page may post its initial height before passive effects run.

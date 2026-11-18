@@ -1,0 +1,108 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "legacy-bootstrap-storage",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/legacyBootstrap/Decision.ts",
+    "apps/server/src/jones/legacyBootstrap/Decision.test.ts",
+    "apps/server/src/jones/legacyBootstrap/Integrity.ts",
+    "apps/server/src/jones/legacyBootstrap/Integrity.test.ts",
+    "apps/server/src/jones/legacyBootstrap/LegacyBootstrapLaunch.ts",
+    "apps/server/src/jones/legacyBootstrap/RecordedMetadata.ts",
+    "apps/server/src/jones/legacyBootstrap/RecordedMetadata.test.ts",
+    "apps/server/src/jones/legacyBootstrap/RetainedRecords.ts",
+    "apps/server/src/jones/legacyBootstrap/RetainedRecords.test.ts",
+    "apps/server/src/jones/legacyBootstrap/RetainedRecords.testkit.ts",
+    "apps/server/src/jones/legacyBootstrap/Storage.ts",
+    "apps/server/src/jones/legacyBootstrap/Storage.test.ts",
+    "apps/server/src/jones/legacyBootstrap/StorageSchema.ts",
+    "apps/server/src/jones/legacyBootstrap/StorageSchema.test.ts",
+    "apps/server/src/jones/legacyBootstrap/TerminalCleanupWorker.ts",
+    "apps/server/src/jones/legacyBootstrap/TerminalCleanupWorker.test.ts",
+    "apps/server/src/jones/legacyBootstrap/Transaction.ts",
+    "apps/server/src/jones/legacyBootstrap/Transaction.test.ts",
+    "apps/server/src/jones/legacyBootstrap/Transaction.integration.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/orchestration-v2/testkit/ProjectionReplay.ts",
+    "apps/server/src/orchestration-v2/EventStore.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Storage.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/TerminalCleanupWorker.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Decision.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Storage.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/StorageSchema.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/TerminalCleanupWorker.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Transaction.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventStore.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Storage.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Decision.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Storage.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionMaintenance.test.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Storage.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionMaintenance.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Storage.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Integrity.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Storage.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/LegacyBootstrapLaunch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/RetainedRecords.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.test.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/RetainedRecords.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/TerminalCleanupWorker.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/testkit/ProjectionReplay.ts",
+      "to": "apps/server/src/jones/legacyBootstrap/Storage.ts"
+    }
+  ]
+}
