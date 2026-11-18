@@ -97,6 +97,31 @@ it.effect(
     }),
 );
 
+it.effect.each(["idle", "busy", "unloaded"] as const)(
+  "preserves the native conversation when checkout recovery changes the working directory (%s)",
+  (state) =>
+    Effect.gen(function* () {
+      const fixture = makeFixture("reuse", undefined, false, undefined, state);
+      const result = yield* Effect.result(fixture.start);
+      if (state === "busy") {
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure")
+          assert.equal(result.failure._tag, "WorkspaceRecoveryProviderBusyError");
+        assert.deepEqual(fixture.order, []);
+        return;
+      }
+      assert.equal(result._tag, "Success");
+      if (result._tag !== "Success") return;
+      const old = fixture.projection.providerThreads[0]!;
+      assert.notEqual(result.success.providerSessionId, old.providerSessionId);
+      assert.deepEqual(result.success.nativeThreadRef, old.nativeThreadRef);
+      assert.deepEqual(
+        fixture.order,
+        state === "idle" ? ["detach", "persist", "open"] : ["persist", "open"],
+      );
+    }),
+);
+
 function makeFixture(
   transition: "restart_and_resume" | "create_with_handoff" | "switch_model_in_session" | "reuse",
   fault?:
@@ -118,7 +143,10 @@ function makeFixture(
     readonly stoppedProvider?: OrchestrationV2ProviderThread;
     readonly stopped?: boolean;
   },
+  recoverySession?: "idle" | "busy" | "unloaded",
 ) {
+  const previousWorkspace =
+    recoverySession === undefined ? undefined : "/removed-recovery-checkout";
   const projection = {
     thread: {
       id: ThreadId.make("retirement-thread"),
@@ -165,9 +193,15 @@ function makeFixture(
     ],
     providerSessions: [
       {
-        id: ProviderSessionId.make("retired-session"),
-        providerInstanceId: ProviderInstanceId.make("source"),
+        id: ProviderSessionId.make(
+          recoverySession === undefined ? "retired-session" : "target-session",
+        ),
+        providerInstanceId: ProviderInstanceId.make(
+          recoverySession === undefined ? "source" : "target",
+        ),
         driver: ProviderDriverKind.make("codex"),
+        cwd: previousWorkspace,
+        capabilities: { sessions: { supportsMultipleProviderThreadsPerSession: false } },
       },
     ],
   } as unknown as OrchestrationV2ThreadProjection;
@@ -192,6 +226,7 @@ function makeFixture(
             }),
           )
         : Effect.void,
+    previousWorkspace,
   ).pipe(
     Effect.tap(
       Effect.sync(() => {
@@ -232,8 +267,12 @@ function makeFixture(
                   },
             ),
           awaitThreadRetirement: () => retirement?.wait ?? Effect.void,
-          // No live runtime reports background work, so released sessions detach.
-          get: () => Effect.succeedNone,
+          get: () =>
+            recoverySession === "idle" || recoverySession === "busy"
+              ? Effect.succeedSome({
+                  hasPendingBackgroundWork: Effect.succeed(recoverySession === "busy"),
+                } as never)
+              : Effect.succeedNone,
           hasRetiredWriter: () => Effect.succeed(retirement?.marked ?? false),
           detach: Effect.fn("PrepareExecutionSessionTest.detach")(function* ({
             providerSessionId,

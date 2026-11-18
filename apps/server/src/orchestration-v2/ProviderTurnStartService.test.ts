@@ -213,7 +213,11 @@ function startWithMissingWorktree(
     [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
   },
   native?: RecreationFixtureBinding & { readonly fileSystem: FileSystem.FileSystem },
-  recovery?: { readonly branch: string | null; readonly failedRestore?: boolean },
+  recovery?: {
+    readonly branch: string | null;
+    readonly failedRestore?: boolean;
+    readonly replay?: boolean;
+  },
 ) {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
   const runId = RunId.make("run_provider_turn_start_projection_failure");
@@ -230,6 +234,7 @@ function startWithMissingWorktree(
   const checkpointScopeId = CheckpointScopeId.make(
     "checkpoint_scope_provider_turn_start_projection_failure",
   );
+  const branchAnswer = recovery?.failedRestore === true || recovery?.replay === true;
   let projection = {
     thread: {
       id: threadId,
@@ -275,7 +280,7 @@ function startWithMissingWorktree(
         text: "Continue",
         attachments: [],
         ...(recovery === undefined ? {} : { createdBy: "user", creationSource: "web" }),
-        ...(recovery?.failedRestore !== true
+        ...(!branchAnswer
           ? {}
           : {
               context: {
@@ -303,7 +308,14 @@ function startWithMissingWorktree(
   );
   const startRootRun = vi.fn(() => Effect.void);
   const pruneWorktrees = vi.fn(() => Effect.void);
-  const createWorktree = vi.fn(() => Effect.succeed({} as never));
+  const createWorktree = vi.fn<GitWorkflow.GitWorkflowService["Service"]["createWorktree"]>(
+    (input) =>
+      recovery?.replay === true
+        ? Effect.promise(() =>
+            nativeGit(input.cwd, ["worktree", "add", "--", input.path!, input.refName]),
+          ).pipe(Effect.as({} as never))
+        : Effect.succeed({} as never),
+  );
   const listLocalBranchNames = vi.fn(() => Effect.succeed(["feature/restore"]));
   const recreateCheckout = vi.fn<RecreateCheckout>();
   const recreationLayer = observedRecreationLayer(native, recreateCheckout);
@@ -357,14 +369,16 @@ function startWithMissingWorktree(
             : {
                 hasCommit: () => Effect.succeed(true),
                 resolveWorktreeBaseRemote: () =>
-                  Effect.fail(
-                    new GitCommandError({
-                      cwd: native?.projectRoot ?? "/repo",
-                      operation: "recovery-test",
-                      command: "git fetch",
-                      detail: "fixture remote failure",
-                    }),
-                  ),
+                  recovery.replay === true
+                    ? Effect.succeed(null)
+                    : Effect.fail(
+                        new GitCommandError({
+                          cwd: native?.projectRoot ?? "/repo",
+                          operation: "recovery-test",
+                          command: "git fetch",
+                          detail: "fixture remote failure",
+                        }),
+                      ),
               }),
         }),
         ...(recovery === undefined
@@ -383,23 +397,28 @@ function startWithMissingWorktree(
             } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          ...(recovery?.failedRestore !== true
+          ...(!branchAnswer
             ? {}
             : {
                 getRuntimeRequest: () =>
-                  Effect.succeed({
-                    status: "resolved",
-                    answers: { "checkout-recovery": ["branch"] },
-                    responseCapability: {
-                      type: "message",
-                      checkoutRecovery: {
-                        worktreePath,
-                        branch: recovery.branch,
-                        resumeBranch: recovery.branch,
-                        messageId,
-                      },
-                    },
-                  } as never),
+                  Effect.succeed(
+                    projection.runtimeRequests.find((request) => request.id === recoveryId) ??
+                      ({
+                        id: recoveryId,
+                        nodeId: NodeId.make("earlier-checkout-recovery-node"),
+                        status: "resolved",
+                        answers: { "checkout-recovery": ["branch"] },
+                        responseCapability: {
+                          type: "message",
+                          checkoutRecovery: {
+                            worktreePath,
+                            branch: recovery?.branch,
+                            resumeBranch: recovery?.branch,
+                            messageId,
+                          },
+                        },
+                      } as never),
+                  ),
               }),
           getThreadRecords: () => {
             projectionReadCount += 1;
@@ -445,7 +464,7 @@ function startWithMissingWorktree(
     return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({
       threadId,
       runId,
-      willRetry: recovery === undefined,
+      willRetry: recovery === undefined || recovery.replay === true,
     });
   }).pipe(Effect.provide(layer));
   return {
@@ -498,6 +517,55 @@ effectIt.effect.each([
     expect(harness.startRootRun).not.toHaveBeenCalled();
     expect(harness.createWorktree).not.toHaveBeenCalled();
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+effectIt.effect(
+  "a provider startup retry keeps the recovered binding and does not restore twice",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* startRecreationFixture;
+      const managed = `${f.root}/managed`;
+      const parent = `${managed}/project`;
+      yield* f.fs.makeDirectory(parent, { recursive: true });
+      yield* nativeFixtureOperation(() => nativeGit(f.repo, ["worktree", "remove", f.checkout]));
+      const harness = startWithMissingWorktree(
+        `${parent}/removed`,
+        { [managed]: managed, [parent]: parent },
+        {
+          projectRoot: f.repo,
+          baseDir: `${f.root}/state`,
+          worktreesDir: managed,
+          fileSystem: f.fs,
+        },
+        { branch: "feature/restore", replay: true },
+      );
+      const first = yield* harness.start;
+      expect(first).toMatchObject({
+        cause: { cause: "simulated inherited-background projection failure" },
+      });
+      const { thread, runs, runtimeRequests } = harness.projection();
+      expect(thread.worktreePath).toMatch(/recovered-/);
+      expect(runtimeRequests).toMatchObject([
+        {
+          status: "resolved",
+          responseCapability: {
+            checkoutRecovery: {
+              applied: {
+                runId: runs[0]?.id,
+                path: thread.worktreePath,
+                branch: "feature/restore",
+              },
+            },
+          },
+        },
+      ]);
+      const retry = yield* harness.start;
+      expect(retry).toMatchObject({
+        cause: { cause: "simulated inherited-background projection failure" },
+      });
+      expect(harness.projection().thread.worktreePath).toBe(thread.worktreePath);
+      expect(harness.createWorktree).toHaveBeenCalledTimes(1);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 // Jones exact checkout recreation owns missing managed checkouts. Every row runs on the native

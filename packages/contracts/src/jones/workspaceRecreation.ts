@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { MessageId, RuntimeRequestId } from "../baseSchemas.ts";
+import { MessageId, RunId, RuntimeRequestId } from "../baseSchemas.ts";
 
 // Send only to environments advertising checkoutRecreation. Receipt binding prevents queued requests selecting a newer retirement.
 export const CheckoutRecreationRequest = Schema.Struct({
@@ -18,4 +18,11 @@ export const CheckoutRecoveryOffer = Schema.Struct({
   resumeBranch: Schema.optional(Schema.NonEmptyString),
   previousHead: Schema.optional(Schema.NonEmptyString),
   messageId: MessageId,
+  applied: Schema.optional(
+    Schema.Struct({
+      runId: RunId,
+      path: Schema.NullOr(Schema.NonEmptyString),
+      branch: Schema.NullOr(Schema.NonEmptyString),
+    }),
+  ),
 });

@@ -2962,6 +2962,8 @@
     "apps/server/src/jones/workspaceRecreation/Native.testkit.ts": "jones-owned",
     "apps/server/src/jones/workspaceRecreation/Native.test.ts": "jones-owned",
     "apps/server/src/jones/workspaceRecreation/BindingCommit.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Recovery.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Recovery.ts": "jones-owned",
     "apps/server/src/jones/workspaceRecreation/Runtime.ts": "jones-owned",
     "apps/server/src/jones/workspaceRecreation/Native.ts": "jones-owned",
     "apps/server/src/jones/workspaceRecreation/Native.node-test.mjs": "jones-owned",

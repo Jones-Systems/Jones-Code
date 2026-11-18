@@ -15,6 +15,7 @@ it("binding commits preserve concurrent metadata and refuse a replaced binding o
   const events = [
     {
       type: "thread.metadata-updated",
+      runId: "run",
       threadId: "thread",
       payload: {
         ...current,
@@ -32,6 +33,31 @@ it("binding commits preserve concurrent metadata and refuse a replaced binding o
     branch: null,
     updatedAt: "recreated revision",
   });
+  const applied = {
+    type: "runtime-request.updated",
+    threadId: "thread",
+    payload: {
+      kind: "user_input",
+      status: "resolved",
+      responseCapability: {
+        type: "message",
+        checkoutRecovery: {
+          worktreePath: "/old",
+          branch: "task",
+          applied: { runId: "run", path: "/new", branch: null },
+        },
+      },
+    },
+  } as unknown as OrchestrationV2DomainEvent;
+  expect(
+    bindRecreatedCheckout(current, { worktreePath: "/old", branch: "task" }, [...events, applied]),
+  ).toEqual([result?.[0], applied]);
+  expect(
+    bindRecreatedCheckout(current, { worktreePath: "/old", branch: "task" }, [
+      { ...events[0]!, runId: "another-run" } as OrchestrationV2DomainEvent,
+      applied,
+    ]),
+  ).toBeNull();
   expect(
     bindRecreatedCheckout(
       { ...current, worktreePath: "/owner-replacement" },

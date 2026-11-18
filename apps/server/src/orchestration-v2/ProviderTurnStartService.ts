@@ -1388,10 +1388,31 @@ export const layer: Layer.Layer<
               }),
             ),
         });
-      let recreatedWorkspace = false;
-      const { worktreePath } = projection.thread;
+      const checkoutAnswer = message.context?.checkoutRecovery;
+      const recoveryRequest =
+        checkoutAnswer === undefined
+          ? undefined
+          : yield* projectionStore.getRuntimeRequest(input.threadId, checkoutAnswer.requestId);
+      const offer =
+        recoveryRequest?.responseCapability.type === "message"
+          ? recoveryRequest.responseCapability.checkoutRecovery
+          : undefined;
+      const answer = recoveryRequest?.answers?.[CheckoutRecovery.questionId];
+      const acceptedOffer =
+        checkoutAnswer !== undefined &&
+        recoveryRequest?.status === "resolved" &&
+        offer?.messageId === message.id &&
+        (answer === checkoutAnswer.choice ||
+          (Array.isArray(answer) && answer.length === 1 && answer[0] === checkoutAnswer.choice));
+      const { worktreePath, branch: savedBranch } = projection.thread;
+      const appliedRecovery =
+        acceptedOffer &&
+        offer.applied?.runId === runId &&
+        offer.applied.path === worktreePath &&
+        offer.applied.branch === savedBranch;
+      let recoverySourcePath = appliedRecovery ? offer.worktreePath : undefined;
+      let recreatedWorkspace = appliedRecovery;
       if (worktreePath !== null) {
-        const savedBranch = projection.thread.branch;
         if (input.nativeCreationGuard !== undefined && !(yield* fileSystem.exists(worktreePath)))
           return yield* new ProviderTurnStartError({
             runId,
@@ -1403,7 +1424,7 @@ export const layer: Layer.Layer<
         );
         if (project !== undefined) {
           const managed = yield* beforeSession("preflight", isManagedWorktreePath(worktreePath));
-          const recovery = message.context?.checkoutRecovery;
+          const recovery = appliedRecovery ? undefined : checkoutAnswer;
           const paths = {
             cwd: project.workspaceRoot,
             worktreePath,
@@ -1422,7 +1443,7 @@ export const layer: Layer.Layer<
             missing &&
             input.nativeCreationGuard === undefined &&
             message.createdBy === "user" &&
-            (recovery !== undefined ||
+            (checkoutAnswer !== undefined ||
               message.creationSource === "web" ||
               message.creationSource === "mobile") &&
             message.scheduledTaskId === undefined &&
@@ -1537,26 +1558,13 @@ export const layer: Layer.Layer<
             readonly branch: string | null;
           } | null = null;
           if (recovery !== undefined) {
-            const request = yield* projectionStore.getRuntimeRequest(
-              input.threadId,
-              recovery.requestId,
-            );
-            const offer =
-              request?.responseCapability.type === "message"
-                ? request.responseCapability.checkoutRecovery
-                : undefined;
-            const answer = request?.answers?.[CheckoutRecovery.questionId];
             if (
               !canOfferRecovery ||
-              request?.status !== "resolved" ||
-              offer?.messageId !== message.id ||
+              !acceptedOffer ||
+              offer.applied !== undefined ||
               offer.worktreePath !== worktreePath ||
               offer.branch !== savedBranch ||
-              (recovery.choice === "branch" && offer.resumeBranch === undefined) ||
-              !(
-                answer === recovery.choice ||
-                (Array.isArray(answer) && answer.length === 1 && answer[0] === recovery.choice)
-              )
+              (recovery.choice === "branch" && offer.resumeBranch === undefined)
             ) {
               return yield* admissionError(
                 "The checkout recovery choice no longer matches this message or workspace.",
@@ -1625,7 +1633,29 @@ export const layer: Layer.Layer<
           if (recreated !== null) {
             const recreatedBranch = recreated.branch?.replace(/^refs\/heads\//, "") ?? null;
             const now = yield* DateTime.now;
-            yield* eventSink.writeIfRunCurrent({
+            const stamped =
+              recoveryBinding === null || recoveryRequest === undefined || offer === undefined
+                ? []
+                : [
+                    {
+                      type: "runtime-request.updated" as const,
+                      id: yield* idAllocator.allocate.event({ threadId: input.threadId }),
+                      threadId: input.threadId,
+                      nodeId: recoveryRequest.nodeId,
+                      occurredAt: now,
+                      payload: {
+                        ...recoveryRequest,
+                        responseCapability: {
+                          type: "message" as const,
+                          checkoutRecovery: {
+                            ...offer,
+                            applied: { runId, path: recreated.path, branch: recreatedBranch },
+                          },
+                        },
+                      },
+                    },
+                  ];
+            const committed = yield* eventSink.writeIfRunCurrent({
               threadId: input.threadId,
               runId,
               activeAttemptId: attempt.id,
@@ -1644,8 +1674,11 @@ export const layer: Layer.Layer<
                     updatedAt: now,
                   },
                 },
+                ...stamped,
               ],
             });
+            if (!committed.committed)
+              return yield* admissionError("Checkout recovery lost its turn.");
             projection = yield* beforeSession(
               "preflight",
               projectionStore.getTurnStartContext(input.threadId, runId),
@@ -1664,6 +1697,7 @@ export const layer: Layer.Layer<
                 ),
               );
             recreatedWorkspace = true;
+            if (recoveryBinding !== null) recoverySourcePath = worktreePath;
           }
         }
       }
@@ -1755,6 +1789,7 @@ export const layer: Layer.Layer<
             ),
           ),
         ),
+        recoverySourcePath,
       ).pipe(
         Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, providerSessions),
         Effect.provideService(EventSink.EventSinkV2, eventSink),
@@ -1786,7 +1821,9 @@ export const layer: Layer.Layer<
             expired === undefined
               ? "Previous provider writer could not retire"
               : "Previous provider is still releasing this conversation",
-          ...(expired === undefined ? {} : { message: expired.message }),
+          ...(expired !== undefined || failure._tag === "WorkspaceRecoveryProviderBusyError"
+            ? { message: expired?.message ?? failure.message }
+            : {}),
           error: preparation.failure,
         });
         return;
