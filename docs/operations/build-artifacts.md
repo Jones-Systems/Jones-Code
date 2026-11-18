@@ -177,6 +177,10 @@ changes, launching against a real T3 home outside the updater, and replacing an
 installation by hand each require a separate approved plan. This page does not
 define a verified first-install procedure.
 
+After an approved manual install, [clear any old Install status plan](../user/updating.md#clear-an-old-plan-after-a-manual-install)
+from the Laptop. The closure review shows the running build on each reachable
+machine selected in the old plan.
+
 ### Installed Mac desktop facts
 
 These facts hold for the DMG above and affect any install or update plan:

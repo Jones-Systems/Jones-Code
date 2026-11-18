@@ -75,13 +75,24 @@ after reading the current status. Confirmed partial progress is kept. Other
 downloaded stages and unresolved results keep the plan open. Reopening **Last update** is
 read-only. The next plan starts with Laptop only.
 
-If you finished a manual install and the panel still shows an older plan,
-choose **I installed manually**. Jones Code checks the running Laptop build and
-the selected machines before asking you to close the plan. **Last update** keeps
-the observed versions and identifies machines it could not verify. If the update
-button opens an available build, select **Last update** in that panel to see the
-record. Resolve any outstanding update work first. Closing ends the plan's queue
-and leaves installed builds, staged downloads and follower settings in place.
+### Clear an old plan after a manual install
+
+After a manual install, **Install status** may show **Laptop changed**.
+The device rows still describe the old plan. A row can say **Not updated**
+even when that machine is already running a newer build.
+
+1. Choose **I installed manually** below the device tabs. Jones Code checks
+   the running Laptop build and the machines selected in the old plan.
+2. Review the detected versions and confirm closing the plan. If Jones Code
+   reports outstanding work, open the affected device and choose **Refresh
+   now**. Try again after the operation has settled.
+3. Reopen **Last update** and look for **Closed after manual install**. The
+   record shows the observed versions and which machines could not be verified.
+   If the update button opens an available build, choose **Last update** there.
+
+Closing ends the old plan's queue and leaves installed builds, staged downloads
+and follower settings in place. The next plan starts with **Laptop** only.
+Use **Edit** to include other machines.
 
 ### Recovery space
 
