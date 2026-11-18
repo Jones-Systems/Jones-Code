@@ -102,6 +102,8 @@ const result = await build({
   resolve: { tsconfigPaths: true, dedupe: ["react", "react-dom"] },
   define: {
     "import.meta.env.APP_SOURCE_SHA": JSON.stringify(source),
+    // The hosted renderer mode skips connection discovery on the page origin.
+    "import.meta.env.VITE_HOSTED_APP_CHANNEL": JSON.stringify("latest"),
     "process.env.NODE_ENV": JSON.stringify("production"),
   },
   build: {
