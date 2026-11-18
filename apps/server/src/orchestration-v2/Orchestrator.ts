@@ -13052,18 +13052,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (candidate) => candidate.id === queuedRun.userMessageId,
     );
     const now = yield* DateTime.now;
-    if (queuedMessage?.delegatedCompletion !== undefined) {
+    const ownership = queuedMessage?.delegatedCompletion;
+    if (ownership !== undefined) {
+      const current = projection.runs.find((run) => run.id === ownership.parentRunId)
+        ?.delegatedCompletion?.delivery;
+      // A superseded wake can dispose the last outstanding claims. Read its parent's
+      // exact replacement so cohort disposal can cancel that run alongside the named one.
+      // Settlement already cancels each queued wake itself.
+      const replacement =
+        disposes === "wake" &&
+        current != null &&
+        current.generation > ownership.generation &&
+        current.messageId !== queuedRun.userMessageId
+          ? (yield* loadProjectionForCommand(command, ["messages"], {
+              messageRoles: ["user"],
+              messageIds: [current.messageId],
+            })).messages[0]
+          : undefined;
+      const cancelsReplacement =
+        replacement?.delegatedCompletion?.parentRunId === ownership.parentRunId &&
+        replacement.delegatedCompletion.generation === current?.generation &&
+        projection.runs.some(
+          (run) =>
+            run.id === replacement.runId &&
+            run.userMessageId === replacement.id &&
+            run.status === "queued",
+        );
       yield* disposeDelegatedCompletionCohort({
         command,
         events,
-        projection,
-        parentRunId: queuedMessage.delegatedCompletion.parentRunId,
+        projection: cancelsReplacement ? { ...projection, messages: [replacement] } : projection,
+        parentRunId: ownership.parentRunId,
         disposition: "disposed",
         now,
-        cancelQueuedDelivery: false,
-        ...(disposes === "wake"
-          ? { interruptedWakeTaskIds: queuedMessage.delegatedCompletion.taskIds }
-          : {}),
+        cancelQueuedDelivery: cancelsReplacement,
+        ...(disposes === "wake" ? { interruptedWakeTaskIds: ownership.taskIds } : {}),
       });
     }
     yield* emitQueuedRunCancellation({ command, events, projection, run: queuedRun, now });

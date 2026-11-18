@@ -1,7 +1,5 @@
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
-import * as Option from "effect/Option";
-import * as StartAdmission from "../jones/provider/StartAdmission.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   CheckpointId,
@@ -1424,8 +1422,7 @@ const runForkWithFailingNativeSource = (
   let forkCalls = 0;
   let ensureCalls = 0;
   let runningWrites = 0;
-  let manager: ProviderSessionManager.ProviderSessionManagerV2["Service"];
-  let checkRetainedFork = Effect.void;
+  let checkedRetainedFork = false;
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
     instanceId,
     driver,
@@ -1487,41 +1484,6 @@ const runForkWithFailingNativeSource = (
                     "Session not found: native-deleted-source; authorization=BearerSyntheticSecret",
                 });
               }
-              if (mismatch === "record-native") {
-                const admission = yield* StartAdmission.CurrentRevalidation;
-                const recording = yield* ProviderSessionManager.CurrentForkRecording;
-                checkRetainedFork = Effect.gen(function* () {
-                  const runtime = Option.getOrThrow(yield* manager.get(input.providerSessionId));
-                  const reused = yield* runtime.forkThread(fork);
-                  assert.equal(reused.nativeThreadRef?.nativeId, "native-forked");
-                  const turn = {
-                    id: ProviderTurnId.make("changed-cut"),
-                    providerThreadId: sourceProviderThread.id,
-                    nodeId: NodeId.make("changed-cut-node"),
-                    runAttemptId: null,
-                    nativeTurnRef: null,
-                    ordinal: 1,
-                    status: "completed" as const,
-                    startedAt: now,
-                    completedAt: now,
-                  };
-                  for (const changed of [
-                    { providerTurnId: turn.id },
-                    { sourceProviderTurns: [turn] },
-                  ]) {
-                    const failure = yield* runtime
-                      .forkThread({ ...fork, ...changed })
-                      .pipe(Effect.flip);
-                    assert.equal(failure._tag, "ProviderRuntimeBindingError");
-                    if (failure._tag === "ProviderRuntimeBindingError")
-                      assert.include(failure.detail, "different destination or source point");
-                  }
-                }).pipe(
-                  Effect.provideService(StartAdmission.CurrentRevalidation, admission),
-                  Effect.provideService(ProviderSessionManager.CurrentForkRecording, recording),
-                  Effect.orDie,
-                );
-              }
               return {
                 ...targetProviderThread!,
                 appThreadId: targetThreadId,
@@ -1556,7 +1518,51 @@ const runForkWithFailingNativeSource = (
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const eventSink = yield* EventSink.EventSinkV2;
     const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-    manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    if (mismatch === "record-native") {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const open = manager.open;
+      const spy = vi.spyOn(manager, "open").mockImplementation((request) =>
+        open(request).pipe(
+          Effect.map((runtime) => ({
+            ...runtime,
+            forkThread: (fork) =>
+              Effect.gen(function* () {
+                const reused = yield* runtime.forkThread(fork);
+                if (runningWrites === 1) {
+                  // Probe the retained fork under the retry's admission, before its recording write.
+                  assert.equal(reused.nativeThreadRef?.nativeId, "native-forked");
+                  const now = yield* DateTime.now;
+                  const turn = {
+                    id: ProviderTurnId.make("changed-cut"),
+                    providerThreadId: fork.sourceProviderThread.id,
+                    nodeId: NodeId.make("changed-cut-node"),
+                    runAttemptId: null,
+                    nativeTurnRef: null,
+                    ordinal: 1,
+                    status: "completed" as const,
+                    startedAt: now,
+                    completedAt: now,
+                  };
+                  for (const changed of [
+                    { providerTurnId: turn.id },
+                    { sourceProviderTurns: [turn] },
+                  ]) {
+                    const failure = yield* runtime
+                      .forkThread({ ...fork, ...changed })
+                      .pipe(Effect.flip, Effect.orDie);
+                    assert.equal(failure._tag, "ProviderRuntimeBindingError");
+                    if (failure._tag === "ProviderRuntimeBindingError")
+                      assert.include(failure.detail, "different destination or source point");
+                  }
+                  checkedRetainedFork = true;
+                }
+                return reused;
+              }),
+          })),
+        ),
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+    }
     if (mismatch === "record-native" || mismatch === "reject-portable") {
       const write = eventSink.writeIfRunCurrent;
       const spy = vi.spyOn(eventSink, "writeIfRunCurrent").mockImplementation((request) => {
@@ -1569,15 +1575,11 @@ const runForkWithFailingNativeSource = (
           if (mismatch === "reject-portable")
             return Effect.succeed({ committed: false, storedEvents: [] });
           if (runningWrites === 1)
-            return checkRetainedFork.pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new EventSink.EventSinkWriteError({
-                    eventCount: request.events.length,
-                    cause: "synthetic transient write failure",
-                  }),
-                ),
-              ),
+            return Effect.fail(
+              new EventSink.EventSinkWriteError({
+                eventCount: request.events.length,
+                cause: "synthetic transient write failure",
+              }),
             );
         }
         return write(request);
@@ -1722,6 +1724,7 @@ const runForkWithFailingNativeSource = (
       );
       assert.equal(projection.runs[0]?.status, "running");
     }
+    if (mismatch === "record-native") assert.isTrue(checkedRetainedFork);
     return { projection, started, forkCalls, ensureCalls, runningWrites };
   }).pipe(
     Effect.provide(

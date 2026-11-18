@@ -36,7 +36,7 @@ import { loadOpenCode2Catalog, loadOpenCode2DirectoryCatalog } from "./openCode2
 import {
   checkOpenCodeProviderStatus,
   loadOpenCode2Workspace,
-  makeOpenCode2ModelLoader,
+  makeOpenCode2CatalogLoader,
   makePendingOpenCodeProvider,
   openCode2CommandsToServerProviderSlashCommands,
   openCode2ProviderModels,
@@ -342,7 +342,7 @@ export const OpenCodeDriver: ProviderDriver<
         Effect.provideService(OpenCode2Server.OpenCode2Server, openCode2Server),
       ),
     });
-    const loadOpenCode2Models = yield* makeOpenCode2ModelLoader(
+    const loadOpenCode2Models = yield* makeOpenCode2CatalogLoader(
       openCode2Server.withConnection(
         ({ client }) => loadOpenCode2Catalog(client, host.paths.cwd),
         undefined,

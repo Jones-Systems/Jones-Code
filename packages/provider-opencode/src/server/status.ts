@@ -530,7 +530,12 @@ const settleOpenCode2Catalog = <E>(
 
 const OPENCODE_2_CATALOG_SETTLE_TIMEOUT_MS = 5_000;
 
-export const makeOpenCode2ModelLoader = <E>(
+interface OpenCode2ModelCatalog {
+  readonly models: ReadonlyArray<OpenCode2Model>;
+  readonly complete: boolean;
+}
+
+export const makeOpenCode2CatalogLoader = <E>(
   list: Effect.Effect<ReadonlyArray<OpenCode2Model>, E>,
   environment?: NodeJS.ProcessEnv,
 ) =>
@@ -563,18 +568,27 @@ export const makeOpenCode2ModelLoader = <E>(
                 ),
               ),
         ),
-        Effect.catch((error) =>
-          latest.length > 0 ? Effect.succeedSome(latest) : Effect.fail(error),
-        ),
+        Effect.catch((error) => (latest.length > 0 ? Effect.succeedNone : Effect.fail(error))),
         Effect.map((loaded) => {
           // Fresh progress may still be partial, but a warm cache must not freeze slow catalogs.
           if (loaded._tag === "Some") lastLoaded = loaded.value;
           else if (latest.length > 0) lastLoaded = latest;
-          return lastLoaded;
+          return {
+            models: lastLoaded,
+            complete: Option.isSome(loaded),
+          } satisfies OpenCode2ModelCatalog;
         }),
       );
     });
   });
+
+export const makeOpenCode2ModelLoader = <E>(
+  list: Effect.Effect<ReadonlyArray<OpenCode2Model>, E>,
+  environment?: NodeJS.ProcessEnv,
+) =>
+  makeOpenCode2CatalogLoader(list, environment).pipe(
+    Effect.map((load) => Effect.map(load, (catalog) => catalog.models)),
+  );
 
 /** None when the reads fail or never agree, so a partial catalog never passes for a settled one. */
 export const readSettledOpenCode2Catalog = <E>(
@@ -691,6 +705,7 @@ function openCode2ModelCapabilities(model: OpenCode2Model): ModelCapabilities {
 export function openCode2ProviderModels(
   settings: Pick<OpenCodeSettings, "customModels">,
   catalog: ReadonlyArray<OpenCode2Model>,
+  complete = true,
 ): ReadonlyArray<ServerProviderModel> {
   return providerModelsFromSettings(
     markOpenCodeLegacy(
@@ -702,7 +717,8 @@ export function openCode2ProviderModels(
             name: model.name,
             ...(subProvider ? { subProvider } : {}),
             isCustom: false,
-            capabilities: openCode2ModelCapabilities(model),
+            capabilities:
+              !complete && model.variants.length === 0 ? null : openCode2ModelCapabilities(model),
           },
           release: model,
         };
@@ -717,7 +733,10 @@ const checkOpenCode2 = Effect.fn("checkOpenCode2")(function* (
   settings: OpenCodeSettings,
   version: string,
   checkedAt: string,
-  loadModels: Effect.Effect<ReadonlyArray<OpenCode2Model>, OpenCodeRuntime.OpenCodeRuntimeError>,
+  loadModels: Effect.Effect<
+    OpenCode2ModelCatalog | ReadonlyArray<OpenCode2Model>,
+    OpenCodeRuntime.OpenCodeRuntimeError
+  >,
 ) {
   const result = yield* Effect.exit(loadModels);
   const probe = (status: "ready" | "warning" | "error", message: string) => ({
@@ -747,7 +766,9 @@ const checkOpenCode2 = Effect.fn("checkOpenCode2")(function* (
       probe: probe("error", "OpenCode could not load its model list."),
     });
   }
-  if (result.value.length === 0) {
+  const catalog =
+    "models" in result.value ? result.value : { models: result.value, complete: true };
+  if (catalog.models.length === 0) {
     yield* logDiscoveryFailure({
       phase: "models",
       isExternalServer: settings.serverUrl.trim().length > 0,
@@ -758,13 +779,13 @@ const checkOpenCode2 = Effect.fn("checkOpenCode2")(function* (
     presentation: OPENCODE_2_PRESENTATION,
     enabled: true,
     checkedAt,
-    models: openCode2ProviderModels(settings, result.value),
+    models: openCode2ProviderModels(settings, catalog.models, catalog.complete),
     slashCommands: [COMPACT_SLASH_COMMAND],
     probe:
-      result.value.length > 0
+      catalog.models.length > 0
         ? probe(
             "ready",
-            `OpenCode ${version} lists ${result.value.length} model${result.value.length === 1 ? "" : "s"}.`,
+            `OpenCode ${version} lists ${catalog.models.length} model${catalog.models.length === 1 ? "" : "s"}.`,
           )
         : probe("warning", "OpenCode 2 is running, but it did not list any models yet."),
   });
@@ -775,7 +796,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   cwd: string,
   probeRuntime: Effect.Effect<ProbedOpenCode, OpenCodeRuntime.OpenCodeRuntimeError>,
   loadOpenCode2Models: Effect.Effect<
-    ReadonlyArray<OpenCode2Model>,
+    OpenCode2ModelCatalog | ReadonlyArray<OpenCode2Model>,
     OpenCodeRuntime.OpenCodeRuntimeError
   >,
   environment?: NodeJS.ProcessEnv,
