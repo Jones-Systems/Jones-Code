@@ -303,6 +303,19 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
                 <button
                   type="button"
                   className="rounded border px-2 py-1 text-xs"
+                  data-testid="showcase-manual-install"
+                  onClick={() =>
+                    control(() => {
+                      fixture.plan.showcaseManualInstall();
+                      fixture.plan.store.open();
+                    })
+                  }
+                >
+                  Show manual install recovery
+                </button>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs"
                   data-testid="unsupported-Test"
                   onClick={() => control(() => fixture.plan.setSupported("Test", false))}
                 >

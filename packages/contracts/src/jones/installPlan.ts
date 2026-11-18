@@ -220,6 +220,32 @@ export const JonesInstallPlanLaptop = Schema.Struct({
 });
 export type JonesInstallPlanLaptop = typeof JonesInstallPlanLaptop.Type;
 
+const RunningBuildVersion = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+const RunningBuild = Schema.Struct({
+  version: RunningBuildVersion,
+  sourceSha: JonesSourceSha,
+  sourceTree: JonesSourceSha,
+});
+
+const ManualInstallObservationFields = {
+  environmentId: EnvironmentId,
+  observedAt: Schema.Int,
+  directive: Schema.optionalKey(
+    Schema.Struct({ directiveId: FleetOperationId, targetSource: JonesSourceSha }),
+  ),
+};
+const ManualInstallObservation = Schema.Union([
+  Schema.Struct({
+    ...ManualInstallObservationFields,
+    kind: Schema.Literal("running"),
+    build: Schema.Struct({
+      version: RunningBuildVersion,
+      source: Schema.optionalKey(Schema.Struct({ sha: JonesSourceSha, tree: JonesSourceSha })),
+    }),
+  }),
+  Schema.Struct({ ...ManualInstallObservationFields, kind: Schema.Literal("unverified") }),
+]);
+
 export const JonesInstallPlan = Schema.Struct({
   schema: Schema.Literal(1),
   planId: JonesOperationId,
@@ -235,6 +261,13 @@ export const JonesInstallPlan = Schema.Struct({
   devices: Schema.Array(JonesInstallPlanDevice).check(Schema.isMaxLength(16)),
   dismissedAt: Schema.optionalKey(Schema.String),
   supersededAt: Schema.optionalKey(Schema.String),
+  manualClosure: Schema.optionalKey(
+    Schema.Struct({
+      laptop: RunningBuild,
+      activeGeneration: TrimmedNonEmptyString,
+      devices: Schema.Array(ManualInstallObservation).check(Schema.isMaxLength(16)),
+    }),
+  ),
 });
 export type JonesInstallPlan = typeof JonesInstallPlan.Type;
 
@@ -256,7 +289,15 @@ export const JonesInstallPlanState = Schema.Struct({
   current: Schema.NullOr(JonesInstallPlan),
   last: Schema.NullOr(JonesInstallPlan),
   laptop: JonesInstallPlanLaptopEvidence,
-  view: Schema.Struct({ complete: Schema.Boolean }),
+  view: Schema.Struct({
+    complete: Schema.Boolean,
+    manualClose: Schema.optionalKey(
+      Schema.Struct({
+        laptop: RunningBuild,
+        activeGeneration: TrimmedNonEmptyString,
+      }),
+    ),
+  }),
   clientCommands: Schema.optionalKey(Schema.Literal(1)),
   readOnly: Schema.optionalKey(
     Schema.Struct({ code: Schema.Literals(["newer-schema", "invalid"]), message: Bounded(512) }),
@@ -340,6 +381,14 @@ export const JonesInstallPlanRequest = Schema.Union([
     type: Schema.Literal("dismiss"),
     planId: JonesOperationId,
     expectedRevision: Schema.Number,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("close-after-manual-install"),
+    planId: JonesOperationId,
+    expectedRevision: Schema.Number,
+    laptop: RunningBuild,
+    activeGeneration: TrimmedNonEmptyString,
+    devices: Schema.Array(ManualInstallObservation).check(Schema.isMaxLength(16)),
   }),
 ]);
 export type JonesInstallPlanRequest = typeof JonesInstallPlanRequest.Type;

@@ -1,11 +1,12 @@
-import { useId, useState } from "react";
+import { type Ref, useId, useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesInstallPlanSelection } from "@t3tools/contracts/jones/installPlan";
 import {
+  CheckIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   Clock3Icon,
-  InfoIcon,
   LaptopIcon,
   TriangleAlertIcon,
 } from "lucide-react";
@@ -25,7 +26,7 @@ import {
 } from "./presentation";
 import { Elapsed, HeardAgo } from "./Elapsed";
 import { ProgressSteps } from "./ProgressSteps";
-import { selectionFor } from "./entrypoints";
+import { desktopCanPreviewInstallPlan, selectionFor } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
 import {
   inspectPanelCleanup,
@@ -35,7 +36,8 @@ import {
   type PanelAction,
 } from "./actions";
 import { finishPlan } from "./finishPlan";
-import { INSTALL_PLAN_GO, INSTALL_PLAN_INFO, INSTALL_PLAN_WAIT, lastUpdateLabel } from "./copy";
+import { ManualInstallClosure } from "./ManualInstallClosure";
+import { INSTALL_PLAN_GO, INSTALL_PLAN_WAIT, lastUpdateLabel } from "./copy";
 
 interface EditDraft {
   readonly planId: string;
@@ -51,6 +53,7 @@ export function InstallStatusPanel({
   const snapshot = useInstallPlan(store);
   const [draft, setDraft] = useState<EditDraft | null>(null);
   const [detail, setDetail] = useState<EnvironmentId | "laptop" | null>(null);
+  const allDevicesButton = useRef<HTMLButtonElement>(null);
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [cleanupInspection, setCleanupInspection] = useState<{
     readonly key: string;
@@ -176,6 +179,30 @@ export function InstallStatusPanel({
   const rowClass =
     "flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-sidebar-row-hover focus-visible:outline-2 focus-visible:outline-ring";
   const availableLaptop = view.laptop?.actions;
+  const focusedDevice =
+    detail === "laptop" || choices.some((choice) => choice.environmentId === detail)
+      ? detail
+      : null;
+  const overview = focusedDevice === null;
+  const gateClosed = plan.laptop.gateClosed !== undefined;
+  const manualHistory = snapshot.native.last?.manualClosure !== undefined;
+  const updatePreview =
+    view.readOnly &&
+    manualHistory &&
+    snapshot.native.current === null &&
+    snapshot.native.laptop.environmentId !== undefined &&
+    desktopCanPreviewInstallPlan(snapshot.desktop);
+  const summary = view.readOnly
+    ? lastUpdateLabel(plan.dismissedAt ?? plan.createdAt)
+    : view.preview
+      ? "Laptop first"
+      : gateClosed
+        ? "Laptop changed"
+        : view.summary;
+  const returnToOverview = () => {
+    setDetail(null);
+    allDevicesButton.current?.focus();
+  };
   return (
     <section
       aria-label="Install status"
@@ -186,7 +213,7 @@ export function InstallStatusPanel({
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           setDraft(null);
-          setDetail(null);
+          if (!overview) returnToOverview();
         }
       }}
     >
@@ -201,19 +228,9 @@ export function InstallStatusPanel({
           <TooltipTrigger
             render={<span tabIndex={0} className="truncate text-2xs text-muted-foreground" />}
           >
-            {view.readOnly
-              ? lastUpdateLabel(plan.dismissedAt ?? plan.createdAt)
-              : view.preview
-                ? "Laptop first"
-                : view.summary}
+            {summary}
           </TooltipTrigger>
-          <TooltipPopup>
-            {view.readOnly
-              ? lastUpdateLabel(plan.dismissedAt ?? plan.createdAt)
-              : view.preview
-                ? "Laptop first"
-                : view.summary}
-          </TooltipPopup>
+          <TooltipPopup>{summary}</TooltipPopup>
         </Tooltip>
         <span
           data-install-done-slot
@@ -247,185 +264,254 @@ export function InstallStatusPanel({
       </header>
       {!snapshot.collapsed ? (
         <div className="min-h-0 overflow-y-auto overscroll-contain px-1 pb-1" data-install-body>
-          <button
-            type="button"
-            className={rowClass}
-            onClick={() => setDetail(detail === "laptop" ? null : "laptop")}
-            aria-expanded={detail === "laptop"}
-            aria-label="Laptop update details"
-          >
-            <LaptopIcon className="size-3.5 shrink-0 text-muted-foreground" />
-            <span>Laptop</span>
-            <span className="ml-auto min-w-0 truncate text-right text-muted-foreground">
-              {view.laptop?.text}
-              {view.laptop?.progress?.active ? (
-                <>
-                  {" · "}
-                  <Elapsed
-                    since={view.laptop.progress.stepStartedAt}
-                    skewMs={view.laptop.progress.skewMs}
-                  />
-                </>
-              ) : null}
-            </span>
-            <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
-          </button>
-          {!view.readOnly && !editing ? (
-            <div className="flex min-h-7 flex-wrap gap-1 px-2 pb-2">
-              {availableLaptop?.download ? (
-                <Button
-                  size="micro"
-                  variant="outline"
-                  disabled={pending.has("laptop:download")}
-                  onClick={() => action("laptop", "download")}
-                >
-                  {view.laptop?.downloadLabel}
-                </Button>
-              ) : null}
-              {availableLaptop?.install ? (
-                <Button
-                  size="micro"
-                  variant="outline"
-                  disabled={pending.has("laptop:install")}
-                  onClick={() => action("laptop", "install")}
-                >
-                  Install on Laptop
-                </Button>
-              ) : null}
-              {availableLaptop?.stop ? (
-                <Button
-                  size="micro"
-                  variant="outline"
-                  disabled={pending.has("laptop:stop")}
-                  onClick={() => action("laptop", "stop")}
-                >
-                  Stop download
-                </Button>
-              ) : null}
+          {!editing ? (
+            <nav aria-label="Install status views" className="flex flex-wrap gap-0.5 px-1 pb-1">
+              <DeviceViewButton
+                buttonRef={allDevicesButton}
+                label="All"
+                accessibleLabel="All devices"
+                selected={overview}
+                onClick={() => setDetail(null)}
+              />
+              <DeviceViewButton
+                label="Laptop"
+                selected={focusedDevice === "laptop"}
+                onClick={() => setDetail("laptop")}
+              />
+              {choices.map(({ environmentId, label }) => (
+                <DeviceViewButton
+                  key={environmentId}
+                  label={label}
+                  selected={focusedDevice === environmentId}
+                  onClick={() => setDetail(environmentId)}
+                />
+              ))}
+            </nav>
+          ) : null}
+          {!overview ? (
+            <div className="px-1">
+              <Button variant="ghost-muted" size="micro" onClick={returnToOverview}>
+                <ChevronLeftIcon aria-hidden className="size-3" />
+                Back to all devices
+              </Button>
             </div>
           ) : null}
-          {detail === "laptop" ? (
-            <div className="space-y-1 px-2 pb-2 text-2xs text-muted-foreground">
-              <p>{view.laptop?.text}</p>
-              {view.laptop?.progress ? <ProgressSteps progress={view.laptop.progress} /> : null}
-              {view.laptop?.operationId ? <OperationId value={view.laptop.operationId} /> : null}
-              {plan.laptop.operations.at(-1)?.result?.code ? (
-                <p>Code: {plan.laptop.operations.at(-1)!.result!.code}</p>
-              ) : null}
-              {plan.laptop.operations.at(-1)?.result?.message ? (
-                <p>{plan.laptop.operations.at(-1)!.result!.message}</p>
-              ) : null}
-              {view.laptop?.phase === "held" ? (
-                <p>
-                  Laptop update is on hold while the previous attempt is being verified. Check the
-                  outcome before starting another attempt.
-                </p>
-              ) : null}
-              {!view.readOnly ? (
-                <Button
-                  variant="ghost-muted"
-                  size="micro"
-                  disabled={pending.has("laptop:check")}
-                  onClick={() => action("laptop", "check")}
-                >
-                  {pending.has("laptop:check")
-                    ? "Checking outcome…"
-                    : view.laptop?.phase === "held"
-                      ? "Check update outcome"
-                      : "Refresh now"}
-                </Button>
-              ) : null}
+          {overview && !editing && manualHistory && (view.preview || updatePreview) ? (
+            <div className="flex min-h-7 items-center px-2 pb-1">
+              <Button variant="ghost-muted" size="micro" onClick={() => store.open(view.preview)}>
+                {view.preview ? "Last update" : "Back to available update"}
+              </Button>
             </div>
           ) : null}
-          <div
-            data-install-gate
-            className="flex min-h-8 items-center gap-1.5 border-t border-dashed border-sidebar-border px-2 text-2xs text-muted-foreground"
-          >
-            <Clock3Icon className="size-3 shrink-0" />
-            <span className="min-w-0 flex-1 truncate">
-              {plan.laptop.gate !== undefined && plan.laptop.gateClosed === undefined
-                ? INSTALL_PLAN_GO
-                : INSTALL_PLAN_WAIT}
-            </span>
-            {!view.readOnly ? (
-              <span className="flex shrink-0 items-center text-primary">
-                {editing ? (
-                  <>
+          {!editing && !view.preview ? (
+            <ManualInstallClosure store={store} plan={plan} readOnly={view.readOnly} />
+          ) : null}
+          {overview || focusedDevice === "laptop" ? (
+            <>
+              <button
+                type="button"
+                className={rowClass}
+                disabled={editing}
+                onClick={() => (overview ? setDetail("laptop") : returnToOverview())}
+                aria-expanded={focusedDevice === "laptop"}
+                aria-label="Laptop update details"
+              >
+                <LaptopIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <span>Laptop</span>
+                <span
+                  className={cn(
+                    "ml-auto min-w-0 text-right text-muted-foreground",
+                    overview && "truncate",
+                  )}
+                >
+                  {view.laptop?.text}
+                  {view.laptop?.progress?.active ? (
+                    <>
+                      {" · "}
+                      <Elapsed
+                        since={view.laptop.progress.stepStartedAt}
+                        skewMs={view.laptop.progress.skewMs}
+                      />
+                    </>
+                  ) : null}
+                </span>
+                {overview && !editing ? (
+                  <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
+                ) : null}
+              </button>
+              {!view.readOnly &&
+              !editing &&
+              (availableLaptop?.download || availableLaptop?.install || availableLaptop?.stop) ? (
+                <div className="flex flex-wrap gap-1 px-2 pb-2">
+                  {availableLaptop?.download ? (
                     <Button
-                      variant="link"
                       size="micro"
-                      onClick={() =>
-                        setDraft({
-                          ...draft!,
-                          selected: new Set(
-                            choices
-                              .filter((c) =>
-                                c.locked
-                                  ? selected.has(c.environmentId)
-                                  : c.selection !== undefined,
-                              )
-                              .map((c) => c.environmentId),
-                          ),
-                        })
-                      }
+                      variant="outline"
+                      disabled={pending.has("laptop:download")}
+                      onClick={() => action("laptop", "download")}
                     >
-                      All
+                      {view.laptop?.downloadLabel}
                     </Button>
+                  ) : null}
+                  {availableLaptop?.install ? (
                     <Button
-                      variant="link"
                       size="micro"
-                      onClick={() =>
-                        setDraft({
-                          ...draft!,
-                          selected: new Set(
-                            choices
-                              .filter((c) => c.locked && selected.has(c.environmentId))
-                              .map((c) => c.environmentId),
-                          ),
-                        })
-                      }
+                      variant="outline"
+                      disabled={pending.has("laptop:install")}
+                      onClick={() => action("laptop", "install")}
                     >
-                      None
+                      Install on Laptop
                     </Button>
+                  ) : null}
+                  {availableLaptop?.stop ? (
                     <Button
-                      variant="link"
                       size="micro"
-                      disabled={pending.has("edit")}
-                      onClick={editDone}
+                      variant="outline"
+                      disabled={pending.has("laptop:stop")}
+                      onClick={() => action("laptop", "stop")}
                     >
-                      Done
+                      {pending.has("laptop:stop") ? "Requesting stop…" : "Stop download"}
                     </Button>
-                  </>
-                ) : (
-                  <Button
-                    variant="link"
-                    size="micro"
-                    onClick={() =>
-                      setDraft({
-                        planId: plan.planId,
-                        revision: plan.revision,
-                        selected: new Set(selected),
-                      })
-                    }
-                  >
-                    Edit
-                  </Button>
-                )}
+                  ) : null}
+                </div>
+              ) : null}
+              {focusedDevice === "laptop" ? (
+                <div
+                  aria-label="Laptop update status"
+                  className="space-y-1 px-2 pb-2 text-2xs text-muted-foreground"
+                >
+                  {view.laptop?.progress ? <ProgressSteps progress={view.laptop.progress} /> : null}
+                  {view.laptop?.operationId ? (
+                    <OperationId value={view.laptop.operationId} />
+                  ) : null}
+                  {plan.laptop.operations.at(-1)?.result?.code ? (
+                    <p>Code: {plan.laptop.operations.at(-1)!.result!.code}</p>
+                  ) : null}
+                  {plan.laptop.operations.at(-1)?.result?.message ? (
+                    <p>{plan.laptop.operations.at(-1)!.result!.message}</p>
+                  ) : null}
+                  {view.laptop?.phase === "held" ? (
+                    <p>
+                      Laptop update is on hold while the previous attempt is being verified. Check
+                      the outcome before starting another attempt.
+                    </p>
+                  ) : null}
+                  {!view.readOnly ? (
+                    <Button
+                      variant="ghost-muted"
+                      size="micro"
+                      disabled={pending.has("laptop:check")}
+                      onClick={() => action("laptop", "check")}
+                    >
+                      {pending.has("laptop:check")
+                        ? "Checking outcome…"
+                        : view.laptop?.phase === "held"
+                          ? "Check update outcome"
+                          : "Refresh now"}
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+          {overview ? (
+            <div
+              data-install-gate
+              className="flex min-h-8 items-center gap-1.5 border-t border-dashed border-sidebar-border px-2 text-2xs text-muted-foreground"
+            >
+              <Clock3Icon className="size-3 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">
+                {gateClosed
+                  ? "Other devices won’t start"
+                  : plan.laptop.gate !== undefined
+                    ? INSTALL_PLAN_GO
+                    : INSTALL_PLAN_WAIT}
               </span>
-            ) : null}
-          </div>
+              {!view.readOnly ? (
+                <span className="flex shrink-0 items-center">
+                  {editing ? (
+                    <>
+                      <Button
+                        variant="ghost-muted"
+                        size="micro"
+                        onClick={() =>
+                          setDraft({
+                            ...draft!,
+                            selected: new Set(
+                              choices
+                                .filter((c) =>
+                                  c.locked
+                                    ? selected.has(c.environmentId)
+                                    : c.selection !== undefined,
+                                )
+                                .map((c) => c.environmentId),
+                            ),
+                          })
+                        }
+                      >
+                        All
+                      </Button>
+                      <Button
+                        variant="ghost-muted"
+                        size="micro"
+                        onClick={() =>
+                          setDraft({
+                            ...draft!,
+                            selected: new Set(
+                              choices
+                                .filter((c) => c.locked && selected.has(c.environmentId))
+                                .map((c) => c.environmentId),
+                            ),
+                          })
+                        }
+                      >
+                        None
+                      </Button>
+                      <Button
+                        variant="ghost-muted"
+                        size="micro"
+                        disabled={pending.has("edit")}
+                        onClick={editDone}
+                      >
+                        Done
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      variant="ghost-muted"
+                      size="micro"
+                      onClick={() =>
+                        setDraft({
+                          planId: plan.planId,
+                          revision: plan.revision,
+                          selected: new Set(selected),
+                        })
+                      }
+                    >
+                      Edit
+                    </Button>
+                  )}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
           <ul className="m-0 list-none p-0">
             {choices.map((choice) => {
               const { environmentId, label, row, device, attention } = choice;
+              if (!overview && focusedDevice !== environmentId) return null;
               const included = selected.has(environmentId);
               const silent =
                 attention.kind === "unreachable" || attention.kind === "restart-silent";
               const text = editing
                 ? included
-                  ? "Waits for Laptop"
-                  : "Not included"
-                : (row?.text ??
-                  (choice.reason === undefined ? "Not included" : `Can't join · ${choice.reason}`));
+                  ? "Included"
+                  : "Not in plan"
+                : row?.phase === "not-started" && gateClosed
+                  ? "Not started · queue closed"
+                  : (row?.text ??
+                    (choice.reason === undefined
+                      ? "Not in plan"
+                      : `Can't join · ${choice.reason}`));
               const lineText =
                 !editing &&
                 silent &&
@@ -437,7 +523,8 @@ export function InstallStatusPanel({
                 !editing && !silent && row?.attemptText === undefined && row?.progress?.active
                   ? row.progress
                   : undefined;
-              const open = detail === environmentId && !editing;
+              const open = focusedDevice === environmentId;
+              const updated = row?.phase === "done" || row?.phase === "updated-elsewhere";
               const held = row?.phase === "held" || row?.phase === "unknown";
               const receipt = plan.devices
                 .find((d) => d.environmentId === environmentId)
@@ -474,15 +561,21 @@ export function InstallStatusPanel({
                     ) : null}
                     <Tooltip>
                       <TooltipTrigger
-                        render={<button type="button" className={rowClass} />}
+                        render={
+                          <button type="button" className={rowClass} aria-disabled={editing} />
+                        }
                         aria-label={`${label} update details`}
                         aria-expanded={open}
                         onClick={() => {
-                          if (!editing) setDetail(open ? null : environmentId);
+                          if (editing) return;
+                          if (open) returnToOverview();
+                          else setDetail(environmentId);
                         }}
                       >
                         {held ? (
-                          <TriangleAlertIcon className="size-3 shrink-0 text-warning" />
+                          <TriangleAlertIcon aria-hidden className="size-3 shrink-0 text-warning" />
+                        ) : updated && !editing ? (
+                          <CheckIcon aria-hidden className="size-3 shrink-0 text-success" />
                         ) : (
                           <span
                             aria-hidden
@@ -491,17 +584,23 @@ export function InstallStatusPanel({
                             className={cn(
                               "size-1.5 shrink-0 rounded-full border border-muted-foreground",
                               !included && "bg-muted-foreground opacity-50",
-                              timer !== undefined && "border-primary bg-primary",
+                              !editing &&
+                                row?.activeWork !== undefined &&
+                                !silent &&
+                                "border-foreground bg-foreground opacity-100",
                               silent && "border-warning bg-warning opacity-100",
                             )}
                           />
                         )}
-                        <span className={cn("shrink-0", !included && "text-muted-foreground")}>
+                        <span
+                          className={cn("min-w-0 truncate", !included && "text-muted-foreground")}
+                        >
                           {label}
                         </span>
                         <span
                           className={cn(
-                            "ml-auto min-w-0 truncate text-right text-2xs text-muted-foreground",
+                            "ml-auto min-w-0 flex-1 text-right text-2xs text-muted-foreground",
+                            !open && "truncate",
                             silent && "text-warning",
                           )}
                           data-row-text
@@ -514,13 +613,37 @@ export function InstallStatusPanel({
                             </>
                           ) : null}
                         </span>
-                        <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
+                        {!open && !editing ? (
+                          <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
+                        ) : null}
                       </TooltipTrigger>
                       <TooltipPopup>
                         {editing && choice.reason !== undefined ? choice.reason : lineText}
                       </TooltipPopup>
                     </Tooltip>
                   </div>
+                  {overview && timer !== undefined && timer.steps.length > 0 ? (
+                    <div
+                      role="progressbar"
+                      aria-label={`${label} update steps`}
+                      aria-valuemin={0}
+                      aria-valuemax={timer.steps.length}
+                      aria-valuenow={timer.steps.filter((step) => step.status === "done").length}
+                      aria-valuetext={`Step ${timer.stepIndex} of ${timer.stepCount}: ${timer.stepLabel}`}
+                      className="mx-3 mb-1 ml-7 flex h-0.5 gap-0.5"
+                    >
+                      {timer.steps.map((step) => (
+                        <span
+                          key={step.key}
+                          className={cn(
+                            "flex-1 rounded-full bg-sidebar-border",
+                            step.status === "done" && "bg-muted-foreground",
+                            step.status === "current" && "bg-info/80",
+                          )}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
                   {!editing && (attention.kind === "quiet" || attention.kind === "stalled") ? (
                     <p
                       className="flex items-center gap-1 px-3 pb-1 text-2xs text-muted-foreground"
@@ -549,7 +672,6 @@ export function InstallStatusPanel({
                       className="space-y-1 px-3 pb-2 text-2xs text-muted-foreground"
                       aria-label={`${label} update status`}
                     >
-                      <p>{lineText}</p>
                       {row?.progress ? <ProgressSteps progress={row.progress} /> : null}
                       {row?.attemptText ? <p>{row.attemptText}</p> : null}
                       {device?.observation.freshness !== "fresh" ? (
@@ -641,15 +763,19 @@ export function InstallStatusPanel({
                             <Button
                               variant="outline"
                               size="micro"
+                              disabled={pending.has(`${environmentId}:remove`)}
                               onClick={() => action(environmentId, "remove")}
                             >
-                              Remove from queue
+                              {pending.has(`${environmentId}:remove`)
+                                ? "Removing from queue…"
+                                : "Remove from queue"}
                             </Button>
                           ) : null}
                           {row?.actions.download ? (
                             <Button
                               variant="outline"
                               size="micro"
+                              disabled={pending.has(`${environmentId}:download`)}
                               onClick={() => action(environmentId, "download")}
                             >
                               {row.downloadLabel}
@@ -672,16 +798,21 @@ export function InstallStatusPanel({
                               disabled={pending.has(`${environmentId}:stop`)}
                               onClick={() => action(environmentId, "stop")}
                             >
-                              Stop download on {label}
+                              {pending.has(`${environmentId}:stop`)
+                                ? "Requesting stop…"
+                                : `Stop download on ${label}`}
                             </Button>
                           ) : null}
                           {row?.actions.end ? (
                             <Button
                               variant="ghost-muted"
                               size="micro"
+                              disabled={pending.has(`${environmentId}:end`)}
                               onClick={() => action(environmentId, "end")}
                             >
-                              Stop update
+                              {pending.has(`${environmentId}:end`)
+                                ? "Stopping update…"
+                                : "Stop update"}
                             </Button>
                           ) : null}
                           <Button
@@ -704,12 +835,6 @@ export function InstallStatusPanel({
               );
             })}
           </ul>
-          {editing ? (
-            <p className="flex gap-1.5 px-2 pt-1 text-2xs leading-relaxed text-muted-foreground">
-              <InfoIcon className="mt-0.5 size-3 shrink-0" />
-              {INSTALL_PLAN_INFO}
-            </p>
-          ) : null}
           {snapshot.error ? (
             <p role="status" className="px-2 py-1 text-2xs text-muted-foreground">
               {snapshot.error}
@@ -720,6 +845,37 @@ export function InstallStatusPanel({
     </section>
   );
 }
+
+function DeviceViewButton({
+  buttonRef,
+  label,
+  accessibleLabel = label,
+  selected,
+  onClick,
+}: {
+  readonly buttonRef?: Ref<HTMLButtonElement>;
+  readonly label: string;
+  readonly accessibleLabel?: string;
+  readonly selected: boolean;
+  readonly onClick: () => void;
+}) {
+  return (
+    <span className="grid min-w-0 max-w-24 grid-cols-[minmax(0,1fr)]">
+      <Button
+        ref={buttonRef}
+        variant={selected ? "secondary" : "ghost-muted"}
+        size="micro"
+        aria-label={accessibleLabel}
+        aria-pressed={selected}
+        title={accessibleLabel}
+        onClick={onClick}
+      >
+        <span className="min-w-0 truncate">{label}</span>
+      </Button>
+    </span>
+  );
+}
+
 function OperationId({ value }: { readonly value: string }) {
   return (
     <label className="block">

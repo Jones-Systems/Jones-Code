@@ -67,6 +67,8 @@ async function setup(
     refuseFirstInstall?: boolean;
     loseCleanupReply?: boolean;
     refuseCleanupReport?: boolean;
+    declineManualClosure?: boolean;
+    loseManualClosureReply?: boolean;
   } = {},
 ) {
   let desktop = initialDesktop();
@@ -96,7 +98,10 @@ async function setup(
             message: "Fixture plan storage refused the receipt.",
           },
         };
-      return fixture.request(request);
+      const result = await fixture.request(request);
+      if (options.loseManualClosureReply && request.type === "close-after-manual-install")
+        throw new Error("Fixture lost the closure response.");
+      return result;
     },
     onInstallPlan: fixture.onInstallPlan,
     getUpdateState: async () => desktop,
@@ -115,6 +120,12 @@ async function setup(
   const controller = startInstallPlanController(
     {
       ...services,
+      confirm: async (message) => {
+        const accepted = await services.confirm(message);
+        return !options.declineManualClosure || !message.includes("after your manual install")
+          ? accepted
+          : false;
+      },
       operation: async (id, command) => {
         if (
           refused === undefined &&
@@ -364,6 +375,87 @@ describe("Install status receipt fixture", () => {
     expect(calls.filter((c) => c.action === "fixture-host-operationStop")).toHaveLength(0);
   });
 
+  it("switches between All, Laptop and one device without entering or applying Edit", async () => {
+    await using world = await setup();
+    const { screen, fixture } = world;
+    const body = screen.container.querySelector("[data-install-body]")!;
+    const hasDetails = (label: string) =>
+      body.querySelector(`[aria-label="${label} update status"]`) !== null;
+    const hasRow = (label: string) =>
+      body.querySelector(`[aria-label="${label} update details"]`) !== null;
+    const checkboxes = () => body.querySelectorAll('[role="checkbox"]');
+
+    expect(hasRow("Laptop")).toBe(true);
+    expect(hasRow("VPS")).toBe(true);
+    expect(checkboxes()).toHaveLength(0);
+    await click(screen, "Laptop");
+    expect(hasDetails("Laptop")).toBe(true);
+    expect(hasRow("VPS")).toBe(false);
+    await click(screen, "VPS");
+    expect(hasDetails("VPS")).toBe(true);
+    expect(hasDetails("Laptop")).toBe(false);
+    expect(hasRow("Mini")).toBe(false);
+    await click(screen, "Back to all devices");
+    expect(hasRow("Laptop")).toBe(true);
+    expect(hasRow("Mini")).toBe(true);
+    expect(hasDetails("VPS")).toBe(false);
+    await click(screen, "Mini update details");
+    expect(hasDetails("Mini")).toBe(true);
+    await click(screen, "All devices");
+    expect(hasDetails("Mini")).toBe(false);
+    expect(checkboxes()).toHaveLength(0);
+    expect(fixture.store.get().previewSelection).toHaveLength(0);
+
+    await click(screen, "Edit");
+    expect(visibleDone(screen)).toHaveLength(1);
+    await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+    expect(fixture.store.get().previewSelection).toHaveLength(0);
+    await click(screen, "Done");
+    expect(fixture.store.get().previewSelection.map((device) => device.label)).toEqual(["Mini"]);
+    expect(checkboxes()).toHaveLength(0);
+    expect(visibleDone(screen)).toHaveLength(0);
+  });
+
+  it("checks installed builds, handles a lost reply, and reopens manual closure in history", async () => {
+    await using world = await setup({ loseManualClosureReply: true });
+    const { fixture, screen, calls } = world;
+    await act(() => fixture.showcaseManualInstall());
+    expect(visibleDone(screen)).toHaveLength(0);
+    await click(screen, "I installed manually");
+    await expect.poll(() => fixture.store.get().open).toBe(false);
+    expect(calls.filter((call) => call.action === "fixture-host-status-read")).toHaveLength(3);
+    const confirmation = calls.find((call) => call.action === "fixture-review");
+    expect(confirmation?.input).toEqual({
+      message: expect.stringContaining("Test: Couldn’t verify running build"),
+    });
+    expect(fixture.snapshot().last?.manualClosure?.laptop.version).toBe("0.1.0-manual.3");
+    expect(
+      calls.some((call) => /^fixture-host-operation(Start|Stop|Fence)$/.test(call.action)),
+    ).toBe(false);
+    expect(await routeInstallStatusPill(world.bridge, world.desktop(), false)).toBe("opened");
+    await click(screen, "Last update");
+    await expect.element(screen.getByText("Closed after manual install")).toBeVisible();
+    await expect.element(screen.getByText("VPS: 0.1.0-manual.3 (1111111)")).toBeVisible();
+    await click(screen, "Back to available update");
+    expect(screen.container.querySelector("[data-plan-preview]")).not.toBeNull();
+  });
+
+  it("keeps the stale plan when manual closure is declined", async () => {
+    await using world = await setup({ declineManualClosure: true });
+    const { fixture, screen, calls } = world;
+    await act(() => fixture.showcaseManualInstall());
+    const planId = fixture.snapshot().current?.planId;
+    await click(screen, "I installed manually");
+    await expect
+      .poll(() => calls.filter((call) => call.action === "fixture-review").length)
+      .toBe(1);
+    await expect
+      .element(screen.getByRole("button", { name: "I installed manually" }))
+      .toBeEnabled();
+    expect(fixture.snapshot().current?.planId).toBe(planId);
+    expect(fixture.snapshot().last).toBeNull();
+  });
+
   it("finishes Laptop-only, reserves the header slot, dismisses, reopens read-only and previews a newer build", async () => {
     await using world = await setup();
     const { fixture, screen, calls } = world;
@@ -468,7 +560,7 @@ describe("Install status receipt fixture", () => {
     await click(screen, "Install on VPS");
     await act(() => fixture.settleHost("VPS", "committed"));
     expect(visibleDone(screen)).toHaveLength(0);
-    await click(screen, "Mini update details");
+    await click(screen, "Mini");
     await click(screen, "Install on Mini");
     await act(() => fixture.settleHost("Mini", "committed"));
     expect(visibleDone(screen)).toHaveLength(1);
@@ -1082,7 +1174,7 @@ describe("Install status step progress", () => {
     expect(detail.querySelector('input[aria-label="Operation ID"]')).not.toBeNull();
     expect(detail.textContent).toContain("Refresh now");
 
-    await click(screen, "Mini update details");
+    await click(screen, "Mini");
     const failed = screen.container.querySelector<HTMLElement>(
       '[aria-label="Mini update status"]',
     )!;

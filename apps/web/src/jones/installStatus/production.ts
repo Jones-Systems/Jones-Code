@@ -51,6 +51,16 @@ export function productionInstallPlanServices(
     bridge,
     now: Date.now,
     devices: () => environments().map((e) => device(e.environmentId)),
+    readStatus: async (environmentId) => {
+      const result = await runAtomCommand(
+        appAtomRegistry,
+        jonesUpdates.readStatus,
+        { environmentId, input: undefined },
+        { reportFailure: false, reportDefect: false },
+      );
+      if (result._tag !== "Success") throw new Error("Current running build is unavailable.");
+      return result.value;
+    },
     observe: async (id) => {
       const initial = device(id);
       if (initial.observation.freshness !== "fresh") return initial;

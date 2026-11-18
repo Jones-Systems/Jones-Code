@@ -377,6 +377,10 @@ export function createJonesUpdateAtoms<R, E>(
   const value = Atom.family((environmentId: import("@t3tools/contracts").EnvironmentId) =>
     Atom.make((get) => get(observation(environmentId)).state),
   );
+  const readStatus = createEnvironmentCommand(runtime, {
+    label: "environment:jones-update-status-read",
+    execute: (_input: undefined) => request({ action: "state" }).pipe(Effect.timeout("10 seconds")),
+  });
   const action = createEnvironmentCommand(runtime, {
     label: "environment:jones-update-action",
     concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
@@ -392,7 +396,7 @@ export function createJonesUpdateAtoms<R, E>(
     concurrency: { mode: "serial", key: ({ environmentId }) => `${environmentId}:stop` },
     execute: (input: JonesStopCommand) => request(input),
   });
-  return { value, observation, action, operation, stop, kick };
+  return { value, observation, readStatus, action, operation, stop, kick };
 }
 
 const SETTLEMENT_REFUSALS = {

@@ -1,5 +1,3 @@
-export const INSTALL_PLAN_INFO =
-  "Downloading never installs. Others don't start until Laptop is updated and verified.";
 export const INSTALL_PLAN_WAIT = "After Laptop is verified";
 export const INSTALL_PLAN_GO = "Laptop verified · Others go";
 
