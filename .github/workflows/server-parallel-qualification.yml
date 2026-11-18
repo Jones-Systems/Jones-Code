@@ -268,10 +268,6 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
-      - name: Ensure pinned Electron Node runtime
-        if: env.JONES_SP_SCOPE == 'full'
-        run: vp run --filter @t3tools/desktop ensure:electron
-
       - name: Build the macOS native pool census
         if: matrix.os == 'macos' && (env.JONES_SP_SCOPE == 'source-evidence' || env.JONES_SP_SCOPE == 'full')
         run: |
@@ -339,6 +335,12 @@ jobs:
           test "${#archives[@]}" -eq 1
           mkdir "$TMPDIR/installed"
           tar -xzf "${archives[0]}" -C "$TMPDIR/installed"
+
+      - name: Ensure pinned Electron Node runtime
+        # Only the Electron measurement needs this runtime. Keep its download
+        # and extracted application out of the build and archive storage gates.
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && env.JONES_SP_SCOPE == 'full' }}
+        run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Revalidate original workload and regenerated manifest before control
         id: control_preflight
