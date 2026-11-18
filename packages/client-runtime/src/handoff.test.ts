@@ -206,16 +206,36 @@ describe("model switch change", () => {
     },
   ] as unknown as ServerProvider[];
 
-  it("shows only what changed, reading an unset effort as the default", () => {
+  it("shows recorded effort changes and omits effort when only the model changed", () => {
     expect(
       resolveModelSwitchChange(
-        { from: selection("gpt"), to: selection("gpt", { thought_level: "high" }) },
+        {
+          from: selection("gpt", { thought_level: "medium" }),
+          to: selection("gpt", { thought_level: "high" }),
+        },
         providers,
       ),
     ).toEqual({ modelChanged: false, effort: { from: "Medium", to: "High" } });
     expect(
       resolveModelSwitchChange({ from: selection("gpt"), to: selection("mini") }, providers),
     ).toEqual({ modelChanged: true, effort: null });
+  });
+
+  it("does not infer historical effort from the catalog when a turn inherited its default", () => {
+    const explicit = selection("gpt", { thought_level: "high" });
+    const inherited = selection("mini", { serviceTier: "fast" });
+    for (const [from, to] of [
+      [explicit, inherited],
+      [inherited, explicit],
+    ] as const) {
+      expect(resolveModelSwitchChange({ from, to }, providers)).toEqual({
+        modelChanged: true,
+        effort: null,
+      });
+    }
+    expect(
+      resolveModelSwitchChange({ from: selection("gpt"), to: explicit }, providers),
+    ).toBeNull();
   });
 
   it("ignores changes the user cannot see", () => {
