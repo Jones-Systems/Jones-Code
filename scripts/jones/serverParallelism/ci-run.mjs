@@ -454,13 +454,39 @@ try {
           {
             JONES_SP_COMMAND_MANIFEST: path,
             JONES_SP_PROFILE: profile,
-            JONES_SP_NATIVE_BLOCK_RECEIPT: NodePath.join(blockOutput, "receipt.json"),
+            JONES_SP_NATIVE_BLOCK_RECEIPT: "",
           },
         );
         predicates[`fault-${form}-${profile}`] = fault;
         requireRetirement(
           fault === true && results.at(-1)?.capturedExit === true,
           `fault-${form}-${profile}`,
+        );
+        // This test only reads the retained native-block receipt. Its failure
+        // still fails qualification. Actual process retirement was checked above.
+        const receiptCheck = `native-block-receipt-${form}-${profile}`;
+        predicates[receiptCheck] = await run(
+          receiptCheck,
+          "vp",
+          [
+            "test",
+            "run",
+            "apps/server/src/jones/serverParallelism/nativeProcess.integration.test.ts",
+            "--maxWorkers=1",
+            "--testNamePattern=^guardian native barrier receipts",
+          ],
+          {
+            JONES_SP_COMMAND_MANIFEST: path,
+            JONES_SP_PROFILE: profile,
+            JONES_SP_NATIVE_BLOCK_RECEIPT: NodePath.join(blockOutput, "receipt.json"),
+          },
+        );
+        const receiptTestExit = results.at(-1);
+        requireRetirement(
+          receiptTestExit?.capturedExit === true &&
+            receiptTestExit.signal === null &&
+            (receiptTestExit.code === 0 || receiptTestExit.code === 1),
+          receiptCheck,
         );
       }
     }
