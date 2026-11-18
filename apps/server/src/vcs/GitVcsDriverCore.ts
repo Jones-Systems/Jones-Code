@@ -77,9 +77,9 @@ import {
 } from "../jones/git/listRefsTelemetry.ts";
 import {
   invalidRemoteFetch,
+  makeKeyedGitWriters,
   makeRemoteFetchBinding,
   makeRemoteFetchObservation,
-  makeRemoteFetchWriters,
   remoteFetchWriterKey,
 } from "../jones/git/remoteFetchObservation.ts";
 import {
@@ -1051,7 +1051,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   const serviceScope = yield* Effect.scope;
   const automaticFetchInterval = yield* VcsAutomaticFetchInterval;
   const remoteFetchObservation = makeRemoteFetchObservation();
-  const withRemoteFetchWriter = makeRemoteFetchWriters();
+  const withRemoteFetchWriter = makeKeyedGitWriters();
+  const withCheckoutWriter = makeKeyedGitWriters();
   type StatusFetchState = {
     phase: "queued" | "running" | "claimed";
     claimed: Deferred.Deferred<void>;
@@ -1666,6 +1667,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       : null;
   });
 
+  const withCheckoutLock = <A, E>(cwd: string, effect: Effect.Effect<A, E>) =>
+    readWorktreeRoot(cwd).pipe(
+      Effect.orElseSucceed(() => null),
+      Effect.flatMap((root) => (root === null ? effect : withCheckoutWriter(root, effect))),
+    );
+
   const readCurrentBranch = (operation: string, cwd: string) =>
     executeGit(operation, cwd, ["symbolic-ref", "--quiet", "HEAD"], {
       timeoutMs: 5_000,
@@ -2076,33 +2083,38 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           updateCheckout: (verified, authorize) =>
             checkoutIdentity === null
               ? Effect.succeed(skipRepoFreshnessCheckout("not-checkout-root"))
-              : withCommonGitWriter(
-                  gitCommonDir,
-                  withRemoteFetchWriter(
-                    writerKey,
-                    updateRepoFreshnessCheckout({
-                      execute,
-                      location: bound,
-                      path,
-                      platform: hostPlatform,
-                      verified,
-                      revalidate,
-                      verifyPhysical: captureRepoFreshnessCheckout(cwd, bound, path).pipe(
-                        Effect.map((identity) => identity === checkoutIdentity),
-                      ),
-                      authorize,
-                      invalidate: Effect.suspend(() =>
-                        Effect.all(
-                          [
-                            invalidateListRefsSnapshot(bound.cwd, gitCommonDir).pipe(Effect.ignore),
-                            invalidateStatusStaticCaches(bound.cwd, gitCommonDir).pipe(
-                              Effect.ignore,
-                            ),
-                          ],
-                          { discard: true },
+              : withCheckoutWriter(
+                  path.normalize(bound.cwd),
+                  withCommonGitWriter(
+                    gitCommonDir,
+                    withRemoteFetchWriter(
+                      writerKey,
+                      updateRepoFreshnessCheckout({
+                        execute,
+                        location: bound,
+                        path,
+                        platform: hostPlatform,
+                        verified,
+                        revalidate,
+                        verifyPhysical: captureRepoFreshnessCheckout(cwd, bound, path).pipe(
+                          Effect.map((identity) => identity === checkoutIdentity),
                         ),
-                      ),
-                    }),
+                        authorize,
+                        invalidate: Effect.suspend(() =>
+                          Effect.all(
+                            [
+                              invalidateListRefsSnapshot(bound.cwd, gitCommonDir).pipe(
+                                Effect.ignore,
+                              ),
+                              invalidateStatusStaticCaches(bound.cwd, gitCommonDir).pipe(
+                                Effect.ignore,
+                              ),
+                            ],
+                            { discard: true },
+                          ),
+                        ),
+                      }),
+                    ),
                   ),
                 ),
         } satisfies RepoFreshnessRemote;
@@ -6402,8 +6414,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           // Killing a checkout midway (large or LFS repos) leaves a half-updated working tree.
           timeoutMs: null,
           fallbackErrorDetail: "git checkout failed",
-          // Checkout changes the branch binding used by the primary checkout updater.
-          writesSharedConfig: true,
+          // Creating a branch writes its upstream; Git also guesses a remote branch for a missing name.
+          writesSharedConfig: checkoutArgs[1] === "--track" || (!localInputExists && !remoteExists),
         },
       );
 
@@ -6414,6 +6426,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
       return { refName };
     },
+    (effect, input) => withCheckoutLock(input.cwd, effect),
   );
 
   const createRef: GitVcsDriver.GitVcsDriver["Service"]["createRef"] = Effect.fn("createRef")(
@@ -6539,10 +6552,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       return yield* withListRefsInvalidation(cwd, pushCurrentBranch(cwd, fallbackBranch, options));
     }),
     pullCurrentBranch: Effect.fnUntraced(function* (cwd) {
-      return yield* withListRefsInvalidation(
-        cwd,
-        withSharedConfigLock(cwd, pullCurrentBranch(cwd)),
-      );
+      return yield* withListRefsInvalidation(cwd, withCheckoutLock(cwd, pullCurrentBranch(cwd)));
     }),
     readRangeContext,
     getReviewBranchCommits,
@@ -6566,7 +6576,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     refreshCheckedOutBranch: Effect.fnUntraced(function* (input) {
       return yield* withListRefsInvalidation(
         input.cwd,
-        withSharedConfigLock(input.cwd, refreshCheckedOutBranch(input)),
+        withCheckoutLock(input.cwd, refreshCheckedOutBranch(input)),
       );
     }),
     ensureRemote: Effect.fnUntraced(function* (input) {

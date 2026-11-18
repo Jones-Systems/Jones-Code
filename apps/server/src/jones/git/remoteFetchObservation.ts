@@ -238,8 +238,8 @@ export function makeRemoteFetchBinding(input: {
   return bind;
 }
 
-/** App-owned fetches serialize by Git's shared ref namespace and remote name. */
-export function makeRemoteFetchWriters() {
+/** Share one permit per active Git write target and release idle entries. */
+export function makeKeyedGitWriters() {
   const writers = new Map<string, { readonly lock: Semaphore.Semaphore; users: number }>();
   return <A, E, R>(key: string, effect: Effect.Effect<A, E, R>) =>
     Effect.acquireUseRelease(
