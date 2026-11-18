@@ -38,7 +38,7 @@ it("shares the native slider's persisted value across settings and the live pane
   const sliders = screen.container.querySelectorAll<HTMLInputElement>('input[type="range"]');
   expect(sliders).toHaveLength(2);
   for (const slider of sliders) {
-    expect([slider.min, slider.max, slider.step]).toEqual(["0", "100", "5"]);
+    expect([slider.min, slider.max, slider.step]).toEqual(["0", "100", "1"]);
     expect(slider.getAttribute("aria-label")).toBe("Sidebar thread title brightness");
     expect(slider.value).toBe("50");
   }
@@ -53,11 +53,11 @@ it("shares the native slider's persisted value across settings and the live pane
   expect(localStorage.getItem(SIDEBAR_APPEARANCE_STORAGE_KEY)).toBeNull();
   await act(() => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-    setter.call(sliders[0], "70");
+    setter.call(sliders[0], "71");
     sliders[0]!.dispatchEvent(new Event("input", { bubbles: true }));
     sliders[0]!.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  expect(sliders[1]!.value).toBe("70");
+  expect(sliders[1]!.value).toBe("71");
   await expect
     .poll(
       () =>
@@ -68,7 +68,7 @@ it("shares the native slider's persisted value across settings and the live pane
   await expect.element(page.getByRole("button", { name: "Compare with Original" })).toBeVisible();
   expect(
     JSON.parse(localStorage.getItem(SIDEBAR_APPEARANCE_STORAGE_KEY)!).threadTitleBrightnessBoost,
-  ).toBe(70);
+  ).toBe(71);
   const previews = screen.container.querySelectorAll(
     '[aria-label="Thread title previews"] [data-jones-thread-title]',
   );

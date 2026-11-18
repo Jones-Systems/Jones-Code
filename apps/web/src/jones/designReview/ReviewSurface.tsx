@@ -5,6 +5,7 @@ import { Textarea } from "../../components/ui/textarea";
 import { Toggle, ToggleGroup } from "../../components/ui/toggle-group";
 import { blockedEffectsSnapshot, subscribeBlockedEffects } from "./isolation";
 import { formatDesignReviewSource, type DesignReviewSource } from "./reviewSource";
+import "./reviewSurface.css";
 
 /**
  * Shared chrome for in-thread design reviews: a header, the review's own sections, and a footer
@@ -18,18 +19,14 @@ export function ReviewSurface(props: {
   readonly children: ReactNode;
 }) {
   return (
-    // The attachment page may be transparent and a review can switch theme, so the surface paints its
-    // own background. The frame grows to fit its content, so nothing here sizes from the viewport.
-    <div className="bg-background text-foreground">
-      <main className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-4 py-5 sm:px-6">
-        <header className="flex flex-col gap-1">
-          <h1 className="text-base font-semibold">{props.title}</h1>
-          <p className="text-sm text-muted-foreground">{props.summary}</p>
-        </header>
-        {props.children}
-        <ReviewProvenance source={props.source} components={props.components} />
-      </main>
-    </div>
+    <main className="flex min-w-0 flex-col gap-3">
+      <header className="review-chrome grid gap-1">
+        <h1 className="text-sm font-semibold">{props.title}</h1>
+        <p className="text-sm text-muted-foreground">{props.summary}</p>
+      </header>
+      {props.children}
+      <ReviewProvenance source={props.source} components={props.components} />
+    </main>
   );
 }
 
@@ -39,19 +36,19 @@ function ReviewProvenance(props: {
 }) {
   const blocked = useSyncExternalStore(subscribeBlockedEffects, blockedEffectsSnapshot);
   return (
-    <footer className="flex flex-col gap-1 border-t border-border/60 pt-3 text-xs text-muted-foreground">
-      <p>Real product components: {props.components.join(", ")}.</p>
-      <p className="break-all">
-        Source: <span className="font-mono">{formatDesignReviewSource(props.source)}</span>
-        {props.source.builtAt ? ` (built ${props.source.builtAt})` : null}
-      </p>
-      <p>
-        Isolated preview: synthetic data, no network, temporary storage.
-        {blocked.length > 0
-          ? ` Blocked ${blocked.length} external ${blocked.length === 1 ? "request" : "requests"}.`
-          : null}
-      </p>
-    </footer>
+    <details className="review-chrome text-xs text-muted-foreground">
+      <summary className="w-fit cursor-pointer">Build details</summary>
+      <div className="mt-1 grid gap-1.5">
+        <p>Real product components: {props.components.join(", ")}.</p>
+        <p className="break-all font-mono">{formatDesignReviewSource(props.source)}</p>
+        <p>
+          Synthetic data and temporary choices.
+          {blocked.length > 0
+            ? ` Blocked ${blocked.length} external ${blocked.length === 1 ? "request" : "requests"}.`
+            : null}
+        </p>
+      </div>
+    </details>
   );
 }
 
@@ -64,14 +61,15 @@ export function ReviewChoice<Value extends string>(props: {
 }) {
   const labelId = useId();
   return (
-    <div className="flex min-w-0 flex-col gap-1.5">
+    <div className="grid min-w-0 grid-cols-[4.25rem_minmax(0,1fr)] items-center gap-2">
       <span id={labelId} className="text-xs font-medium text-muted-foreground">
         {props.label}
       </span>
       <ToggleGroup
         aria-labelledby={labelId}
-        variant="segmented"
-        className="max-w-full flex-wrap"
+        variant="default"
+        size="compact"
+        className="max-w-full flex-wrap gap-1"
         value={[props.value]}
         onValueChange={(next) => {
           const option = props.options.find((candidate) => candidate.value === next[0]);
@@ -79,7 +77,12 @@ export function ReviewChoice<Value extends string>(props: {
         }}
       >
         {props.options.map((option) => (
-          <Toggle key={option.value} value={option.value}>
+          <Toggle
+            key={option.value}
+            value={option.value}
+            variant="pill"
+            className="min-h-7 border-border px-2.5 text-xs data-pressed:border-transparent data-pressed:bg-accent"
+          >
             {option.label}
           </Toggle>
         ))}
@@ -88,28 +91,26 @@ export function ReviewChoice<Value extends string>(props: {
   );
 }
 
-/** One side of a comparison. A review lays out two in a `ReviewComparison`. */
-export function ReviewPane(props: {
-  readonly label: string;
-  readonly detail: ReactNode;
+/** A single frame keeps the product surface visually distinct from the walkthrough controls. */
+export function ReviewWindow(props: {
+  readonly caption: string;
   readonly children: ReactNode;
 }) {
   return (
-    <figure className="m-0 flex min-w-0 flex-col gap-2 rounded-lg border border-border/60 p-3">
-      <figcaption className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="font-medium">{props.label}</span>
-        <span className="tabular-nums text-muted-foreground">{props.detail}</span>
-      </figcaption>
-      {props.children}
+    <figure className="m-0 grid min-w-0 gap-1.5">
+      <figcaption className="review-chrome text-xs text-muted-foreground">{props.caption}</figcaption>
+      <div className="overflow-hidden rounded-lg border border-border bg-background text-foreground">
+        <div className="flex items-center gap-2 border-b border-border bg-card px-3 py-1.5 text-xs font-medium">
+          <span aria-hidden="true" className="flex gap-1">
+            <span className="size-1.5 rounded-full bg-muted-foreground/25" />
+            <span className="size-1.5 rounded-full bg-muted-foreground/25" />
+            <span className="size-1.5 rounded-full bg-muted-foreground/25" />
+          </span>
+          Jones Code
+        </div>
+        {props.children}
+      </div>
     </figure>
-  );
-}
-
-export function ReviewComparison(props: { readonly label: string; readonly children: ReactNode }) {
-  return (
-    <section aria-label={props.label} className="grid gap-3 sm:grid-cols-2">
-      {props.children}
-    </section>
   );
 }
 
@@ -145,7 +146,7 @@ export function ReviewActions(props: {
       .then(() => setOutcome({ key, status: "copied", text }), blocked);
   };
   return (
-    <section aria-label="Review actions" className="flex flex-col gap-2">
+    <section aria-label="Review actions" className="review-chrome flex flex-col gap-1">
       <div className="flex flex-wrap gap-2">
         <Button variant="default" size="sm" onClick={copy}>
           <CopyIcon aria-hidden />

@@ -1,0 +1,14 @@
+.review-chrome {
+  --foreground: var(--review-host-foreground, CanvasText);
+  --muted-foreground: var(--review-host-muted-foreground, GrayText);
+  --background: var(--review-host-background, Canvas);
+  --border: var(--review-host-border, GrayText);
+  --input: var(--review-host-border, GrayText);
+  --accent: var(--review-host-accent-surface, Canvas);
+  --accent-foreground: var(--review-host-accent-surface-foreground, CanvasText);
+  --primary: var(--review-host-primary, Highlight);
+  --primary-foreground: var(--review-host-primary-foreground, HighlightText);
+  --ring: var(--review-host-ring, Highlight);
+
+  color: var(--foreground);
+}

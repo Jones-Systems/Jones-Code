@@ -11,7 +11,8 @@ Keep the preview small enough for the decision. For a visual adjustment, show
 the fixed baseline and live candidate on the same theme, state, and viewport.
 Change only the properties under review. For a workflow, include the
 surrounding controls that affect the decision, named starting states, and a
-way to restart. Put review controls outside the product surface. Provide a
+way to restart. Put compact review controls above a framed slice of the product.
+Use the thread viewer's active app palette as the starting theme. Provide a
 copyable summary of the chosen variant, values or flow decisions, and source
 revision. Retain selectable text for clients that deny clipboard access.
 
@@ -31,10 +32,11 @@ the checkout, identifies the source commit, and restricts the page to embedded
 resources. The review uses synthetic threads and in-memory choices.
 
 Before publishing, verify the rendered card and the intended interactions.
-For this preview, use the slider, confirm only the candidate title changes,
-reset to the baseline, and confirm the copied or selectable text reflects the
-current value. Switch card state and theme, then restart the review. Check a
-thread-width layout and a narrow layout. Call
+For this preview, drag the slider inside the sandboxed inline frame and use
+the arrow keys for one-point adjustments. Confirm only the adjustable title
+changes. Test with an app palette that differs from the browser's preferred
+scheme. Check reset, theme and state changes, restart, and the copy fallback at
+thread width and at a narrower width. Call
 `html_preview` with the file, then `html_render` in the requesting thread with
 the observed height. Retain the source revision and result. Use the
 [UI evidence route](contributor-guidance.md#ui-evidence) for interactive

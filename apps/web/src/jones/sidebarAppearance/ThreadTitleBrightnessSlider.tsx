@@ -17,11 +17,11 @@ export function ThreadTitleBrightnessSlider({
       </label>
       <input
         id={id}
-        className="w-full cursor-pointer"
+        className="h-6 w-full cursor-pointer touch-none accent-primary"
         type="range"
         min={THREAD_TITLE_BRIGHTNESS_BOOST.min}
         max={THREAD_TITLE_BRIGHTNESS_BOOST.max}
-        step={5}
+        step={1}
         aria-label="Sidebar thread title brightness"
         value={value}
         aria-valuetext={
@@ -31,7 +31,7 @@ export function ThreadTitleBrightnessSlider({
               ? "Highest contrast"
               : `${value}% toward highest contrast`
         }
-        onChange={(event) => onChange(Number(event.target.value))}
+        onInput={(event) => onChange(event.currentTarget.valueAsNumber)}
       />
       <div className="flex justify-between text-xs text-muted-foreground">
         <span>Current</span>
