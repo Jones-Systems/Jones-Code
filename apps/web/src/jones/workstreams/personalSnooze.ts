@@ -8,8 +8,13 @@ import {
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 
-export function projectWorkstreamSnoozes(state: PersonalWorkstreamsState, now: string) {
-  const nowMs = Date.parse(now);
+export function projectWorkstreamSnoozes(
+  state: PersonalWorkstreamsState,
+  { utcMinute, wakeClockMs }: { readonly utcMinute: string; readonly wakeClockMs: number },
+) {
+  // The minute ticker truncates its UTC ISO timestamp before the zone suffix.
+  const nowMs = Math.max(Date.parse(`${utcMinute}Z`), wakeClockMs);
+  const now = new Date(nowMs).toISOString();
   const snoozed = openPersonalWorkstreams(state).filter((workstream) =>
     isPersonalWorkstreamSnoozed(workstream, nowMs),
   );

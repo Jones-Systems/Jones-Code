@@ -514,10 +514,10 @@ function useSidebarThreads(input: {
     ...threads,
     ...input.personalWorkstreams.workstreams,
   ]);
-  const workstreamSnooze = projectWorkstreamSnoozes(
-    input.personalWorkstreams,
-    new Date(Math.max(Date.parse(nowMinute), snoozeWakeClock)).toISOString(),
-  );
+  const workstreamSnooze = projectWorkstreamSnoozes(input.personalWorkstreams, {
+    utcMinute: nowMinute,
+    wakeClockMs: snoozeWakeClock,
+  });
   const sidebarThreads =
     !input.workstreamsEnabled || workstreamSnooze.snoozed.length === 0
       ? scopedThreads

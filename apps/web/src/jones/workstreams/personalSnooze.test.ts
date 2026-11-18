@@ -12,7 +12,7 @@ it("parks a group while its individually woken members remain unassigned until t
   const before = "2026-11-17T12:00:00.000Z";
   const start = "2026-11-17T13:00:00.000Z";
   const now = "2026-11-17T14:00:00.000Z";
-  const until = "2026-11-17T15:00:00.000Z";
+  const until = "2026-11-17T15:00:00.500Z";
   const hidden = makeThreadFixture({ id: ThreadId.make("hidden") });
   const woken = makeThreadFixture({ id: ThreadId.make("woken"), lastSnoozeWakeAt: now });
   const snoozed = makeThreadFixture({
@@ -43,7 +43,10 @@ it("parks a group while its individually woken members remain unassigned until t
     pendingThreadKeys: new Set(),
     canCreate: true,
   };
-  const during = projectWorkstreamSnoozes(state, now);
+  const during = projectWorkstreamSnoozes(state, {
+    utcMinute: "2026-11-17T14:00",
+    wakeClockMs: Date.parse(now),
+  });
   expect(during.snoozed).toEqual([workstream]);
   expect(during.hidesThread(hidden)).toBe(true);
   expect(during.hidesThread(woken)).toBe(false);
@@ -59,14 +62,18 @@ it("parks a group while its individually woken members remain unassigned until t
       updatedAt: now,
     }),
   };
-  const awake = projectWorkstreamSnoozes(movedState, until);
+  const atWake = { utcMinute: "2026-11-17T15:00", wakeClockMs: Date.parse(until) };
+  expect(
+    projectWorkstreamSnoozes(state, { ...atWake, wakeClockMs: atWake.wakeClockMs - 1 }).snoozed,
+  ).toEqual([workstream]);
+  const awake = projectWorkstreamSnoozes(movedState, atWake);
   expect(awake.snoozed).toEqual([]);
   expect(awake.hidesThread(hidden)).toBe(false);
   expect(
     groupPersonalThreads(awake.visibleState, [hidden, woken]).groups.map((g) => g.threads),
   ).toEqual([[hidden], [woken]]);
   expect(
-    groupPersonalThreads(projectWorkstreamSnoozes(state, until).visibleState, [woken]).groups[0]
+    groupPersonalThreads(projectWorkstreamSnoozes(state, atWake).visibleState, [woken]).groups[0]
       ?.threads,
   ).toEqual([woken]);
 });
