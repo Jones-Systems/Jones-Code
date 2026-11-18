@@ -17,6 +17,8 @@ export interface PersonalWorkstreamView {
   readonly orderKey: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly snoozedAt?: string | null;
+  readonly snoozedUntil?: string | null;
 }
 
 export type PersonalEnvironmentStatus =
@@ -47,6 +49,7 @@ export interface PersonalWorkstreamsState {
   readonly autoAssignedThreadKeys?: ReadonlySet<string>;
   readonly canCreate: boolean; // some environment is writable
   readonly canSetNameIcon?: boolean;
+  readonly canSnooze?: boolean;
 }
 
 export interface PersonalWorkstreamsGrouping<T extends PersonalThreadRef> {
@@ -70,6 +73,8 @@ export type PersonalWorkstreamsAction =
   | "rename"
   | "recolor"
   | "nameIcon"
+  | "snooze"
+  | "unsnooze"
   | "lifecycle"
   | "reorder"
   | "delete"
@@ -114,6 +119,10 @@ export interface PersonalWorkstreamsController {
   setLifecycle(
     id: string,
     lifecycle: PersonalWorkstreamLifecycle,
+  ): Promise<PersonalResult<PersonalWorkstreamView>>;
+  setSnoozedUntil?(
+    id: string,
+    until: string | null,
   ): Promise<PersonalResult<PersonalWorkstreamView>>;
   reorder(
     id: string,

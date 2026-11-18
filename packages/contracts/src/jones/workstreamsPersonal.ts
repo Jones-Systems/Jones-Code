@@ -77,9 +77,18 @@ export const PersonalWorkstream = Schema.Struct({
   rev: PersonalWorkstreamRev,
   // Older definitions start at zero. Crossing the open/closed boundary advances this counter.
   lifecycleRevision: Schema.optionalKey(NonNegativeInt),
+  snoozedAt: Schema.optionalKey(Schema.NullOr(PersonalTimestamp)),
+  snoozedUntil: Schema.optionalKey(Schema.NullOr(PersonalTimestamp)),
   origin: PersonalWorkstreamOrigin,
 });
 export type PersonalWorkstream = typeof PersonalWorkstream.Type;
+
+export function isPersonalWorkstreamSnoozed(
+  workstream: { readonly snoozedUntil?: string | null },
+  nowMs: number,
+): boolean {
+  return workstream.snoozedUntil != null && Date.parse(workstream.snoozedUntil) > nowMs;
+}
 
 export const PersonalWorkstreamAssignment = Schema.Struct({
   threadId: ThreadId,
@@ -117,6 +126,7 @@ export const PersonalWorkstreamsSnapshot = Schema.Struct({
   assignments: Schema.Array(PersonalWorkstreamAssignment),
   importIssue: Schema.NullOr(PersonalWorkstreamsImportIssue),
   supportsNameIcons: Schema.optionalKey(Schema.Literal(true)),
+  supportsSnooze: Schema.optionalKey(Schema.Literal(true)),
   // Optional: older servers omit it and older clients ignore it.
   autoAssignments: Schema.optionalKey(Schema.Array(PersonalWorkstreamAutoAssignment)),
 });
@@ -190,6 +200,7 @@ const personalWorkstreamBaseFields = (workstream: PersonalWorkstream) => [
   workstream.rev,
   workstream.origin,
   workstream.lifecycleRevision ?? 0,
+  ...(workstream.snoozedAt == null ? [] : [workstream.snoozedAt, workstream.snoozedUntil ?? null]),
 ];
 
 export const canonicalPersonalWorkstream = (workstream: PersonalWorkstream): string =>
@@ -199,6 +210,20 @@ export const canonicalPersonalWorkstream = (workstream: PersonalWorkstream): str
       ? [[workstream.nameIcon.projectKey, workstream.nameIcon.updatedAt]]
       : []),
   ]);
+
+/** Keep snooze metadata when a legacy replica submits a definition without the new fields. */
+export function preservePersonalWorkstreamSnooze(
+  candidate: PersonalWorkstream,
+  observed: PersonalWorkstream,
+): PersonalWorkstream {
+  if (observed.snoozedAt == null || (candidate.snoozedAt ?? "") >= observed.snoozedAt)
+    return candidate;
+  return {
+    ...candidate,
+    snoozedAt: observed.snoozedAt,
+    snoozedUntil: observed.snoozedUntil ?? null,
+  };
+}
 
 const compare = (a: string | number, b: string | number): -1 | 0 | 1 =>
   a < b ? -1 : a > b ? 1 : 0;
@@ -258,7 +283,10 @@ export const newPersonalWorkstream = ({
   });
 
 export type PersonalWorkstreamPatch = Partial<
-  Pick<PersonalWorkstream, "name" | "lifecycle" | "color" | "orderKey">
+  Pick<
+    PersonalWorkstream,
+    "name" | "lifecycle" | "color" | "orderKey" | "snoozedAt" | "snoozedUntil"
+  >
 > & { readonly nameIconProjectKey?: string | null };
 
 export const editPersonalWorkstream = (
@@ -292,6 +320,8 @@ export const editPersonalWorkstream = (
     color: patch.color === undefined ? base.color : patch.color,
     ...(nameIcon ? { nameIcon } : {}),
     orderKey: patch.orderKey === undefined ? base.orderKey : patch.orderKey,
+    ...(patch.snoozedAt === undefined ? {} : { snoozedAt: patch.snoozedAt }),
+    ...(patch.snoozedUntil === undefined ? {} : { snoozedUntil: patch.snoozedUntil }),
     updatedAt: now,
     rev: base.rev + 1,
     origin,
@@ -315,10 +345,9 @@ export const mergePersonalWorkstreams = (
   let winner = first;
   for (const copy of copies) {
     if (copy.id !== first.id) throw new Error("Personal Workstream copies must share an id.");
-    winner =
-      comparePersonalWorkstreams(copy, winner) > 0
-        ? preserveWorkstreamNameIcon(copy, winner)
-        : preserveWorkstreamNameIcon(winner, copy);
+    const [preferred, other] =
+      comparePersonalWorkstreams(copy, winner) > 0 ? [copy, winner] : [winner, copy];
+    winner = preserveWorkstreamNameIcon(preservePersonalWorkstreamSnooze(preferred, other), other);
   }
   return winner;
 };

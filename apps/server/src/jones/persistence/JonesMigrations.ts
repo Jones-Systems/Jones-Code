@@ -88,6 +88,7 @@ import JonesMigration0157 from "./Migrations/157_JonesRemoteAdmissionReview.ts";
 import JonesMigration0158 from "./Migrations/158_JonesWorkstreamAutoRoute.ts";
 
 import JonesMigration0159 from "./Migrations/159_JonesWorkstreamLifecycleRevision.ts";
+import JonesMigration0160 from "./Migrations/160_JonesWorkstreamSnooze.ts";
 import JonesMigration0161 from "./Migrations/161_JonesWorkstreamNameIcons.ts";
 
 export const jonesMigrationEntries = [
@@ -151,6 +152,7 @@ export const jonesMigrationEntries = [
   [157, "RemoteAdmissionReview", JonesMigration0157],
   [158, "WorkstreamAutoRoute", JonesMigration0158],
   [159, "WorkstreamLifecycleRevision", JonesMigration0159],
+  [160, "WorkstreamSnooze", JonesMigration0160],
   [161, "WorkstreamNameIcons", JonesMigration0161],
 ] as const;
 

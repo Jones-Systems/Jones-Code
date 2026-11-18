@@ -2,6 +2,13 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "workstreams-personal",
   "jonesOwnedPaths": [
+    "apps/web/src/jones/composer/NewThreadWorkstreamPicker.tsx",
+    "apps/web/src/jones/composer/NewThreadWorkstreamPicker.browser.test.tsx",
+    "apps/web/src/jones/composer/newThreadWorkstream.ts",
+    "apps/web/src/jones/composer/newThreadWorkstream.test.ts",
+    "apps/web/src/jones/workstreams/personalSnooze.ts",
+    "apps/web/src/jones/workstreams/personalSnooze.test.ts",
+    "apps/web/src/jones/workstreams/SnoozedWorkstreamRow.tsx",
     "apps/desktop/src/jones/workstreams/personalStartup.test.ts",
     "apps/mobile/src/features/workstreams/Controls.tsx",
     "apps/mobile/src/features/workstreams/listProjection.test.ts",
@@ -763,6 +770,22 @@
     "scripts/jones/boundary/fragments/workstreams-rebuild-integration.json"
   ],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/composer/NewThreadWorkstreamPicker.tsx"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/composer/newThreadWorkstream.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalSnooze.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/SnoozedWorkstreamRow.tsx"
+    },
     {
       "from": "apps/desktop/src/backend/DesktopBackendConfiguration.ts",
       "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"

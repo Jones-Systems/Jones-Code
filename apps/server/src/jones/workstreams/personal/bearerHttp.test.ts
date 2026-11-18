@@ -35,6 +35,7 @@ import * as Config from "../../../config.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import migration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
 import lifecycleMigration from "../../persistence/Migrations/159_JonesWorkstreamLifecycleRevision.ts";
+import snoozeMigration from "../../persistence/Migrations/160_JonesWorkstreamSnooze.ts";
 import nameIconMigration from "../../persistence/Migrations/161_JonesWorkstreamNameIcons.ts";
 import * as Agent from "./agentService.ts";
 import * as BearerHttp from "./bearerHttp.ts";
@@ -55,6 +56,7 @@ const database = Layer.effectDiscard(
     yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id, deleted_at) VALUES(${deletedThreadId}, ${created})`;
     yield* migration;
     yield* lifecycleMigration;
+    yield* snoozeMigration;
     yield* nameIconMigration;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));

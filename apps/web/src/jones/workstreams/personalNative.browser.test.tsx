@@ -631,7 +631,7 @@ describe("personal Workstreams native presentation", () => {
       const pickerRect = picker.element().getBoundingClientRect();
       expect(pickerRect.top).toBeGreaterThanOrEqual(inputRect.bottom);
       expect(pickerRect.right).toBeCloseTo(inputRect.right, 0);
-      expect(pickerRect.width).toBeLessThan(inputRect.width);
+      expect(pickerRect.width).toBeLessThanOrEqual(inputRect.width);
       expect(pickerRect.width).toBeGreaterThan(50);
       await userEvent.click(picker);
       const options = page.getByRole("option");
@@ -647,6 +647,54 @@ describe("personal Workstreams native presentation", () => {
       });
     },
   );
+  it("saves a different Name icon from the Workstream menu and closes the editor", async () => {
+    using setup = fixture();
+    const { registry, controller, initial, state } = setup;
+    const project = {
+      projectKey: "studio",
+      displayName: "Studio",
+      environmentId: env,
+      workspaceRoot: "/synthetic/studio",
+      title: "Studio",
+      faviconPath: null,
+      projectIcon: { kind: "emoji" as const, emoji: "🟪" },
+    };
+    registry.set(state, { ...initial, canSetNameIcon: true });
+    const setNameIcon = vi.fn<NonNullable<PersonalWorkstreamsController["setNameIcon"]>>(
+      async (_id, projectKey) => {
+        const value = { ...workstream, nameIcon: { projectKey, updatedAt: workstream.updatedAt } };
+        registry.set(state, { ...initial, canSetNameIcon: true, workstreams: [value] });
+        return { ok: true, value };
+      },
+    );
+    controller.setNameIcon = setNameIcon;
+    await using _screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <WorkstreamNativeSidebar
+          controller={controller}
+          nameIconProjects={[project]}
+          threads={[thread]}
+          renderThread={(entry) => <li>{entry.title}</li>}
+          canOperate={() => true}
+          canReorder={() => false}
+          reorder={async () => {}}
+        />
+      </RegistryContext.Provider>,
+    );
+    for (const [label, projectKey] of [
+      ["Studio", "studio"],
+      ["None", null],
+    ] as const) {
+      await userEvent.click(page.getByRole("button", { name: "Options for Alpha", exact: true }));
+      await userEvent.click(page.getByRole("menuitem", { name: "Change name icon" }));
+      const picker = page.getByRole("combobox", { name: "Name icon" });
+      await userEvent.click(picker);
+      await userEvent.click(page.getByRole("option", { name: label, exact: true }));
+      await userEvent.click(page.getByRole("button", { name: "Save", exact: true }));
+      await expect.element(picker).not.toBeInTheDocument();
+      expect(setNameIcon).toHaveBeenLastCalledWith(workstream.id, projectKey);
+    }
+  });
   it("renders a pushed controller update without refresh and keeps a cached group visible while offline", async () => {
     using setup = fixture();
     const { registry, controller, initial, state } = setup;

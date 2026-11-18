@@ -114,7 +114,7 @@ describe("personal Workstreams controller", () => {
     const h = harness();
     try {
       h.controller.setEnvironments([connection("a"), connection("b")]);
-      h.frames[0]!.emit(snapshot("a"));
+      h.frames[0]!.emit({ ...snapshot("a"), supportsSnooze: true });
       expect(h.read().canSetNameIcon).toBe(false);
       expect(
         await h.controller.create({ name: "Icons", nameIconProjectKey: "project:one" }),
@@ -136,9 +136,19 @@ describe("personal Workstreams controller", () => {
       expect(h.puts.map(({ c }) => c.environmentId)).toEqual([env("b"), env("a")]);
       expect(h.puts[1]?.w).not.toHaveProperty("nameIcon");
       expect(h.read().workstreams[0]?.nameIcon?.projectKey).toBe("project:one");
+      const snoozedUntil = "2026-02-01T00:00:00.000Z";
+      expect(await h.controller.setSnoozedUntil?.("new-group", snoozedUntil)).toMatchObject({
+        ok: true,
+      });
+      await flush();
+      expect(h.puts[2]?.w).toMatchObject({ snoozedUntil });
+      expect(h.puts[2]?.w).not.toHaveProperty("nameIcon");
+      expect(h.puts[3]?.w).toMatchObject({ nameIcon: { projectKey: "project:one" } });
+      expect(h.puts[3]?.w).not.toHaveProperty("snoozedUntil");
       expect(await h.controller.setNameIcon?.("new-group", null)).toMatchObject({ ok: true });
       await flush();
       expect(h.read().workstreams[0]?.nameIcon?.projectKey).toBeNull();
+      expect(h.read().workstreams[0]?.snoozedUntil).toBe(snoozedUntil);
     } finally {
       h.close();
     }

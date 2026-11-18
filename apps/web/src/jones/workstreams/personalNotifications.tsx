@@ -13,6 +13,8 @@ const actions = {
   rename: "rename the Workstream",
   recolor: "change the color",
   nameIcon: "change the name icon",
+  snooze: "snooze the Workstream",
+  unsnooze: "unsnooze the Workstream",
   lifecycle: "change the status",
   reorder: "reorder Workstreams",
   delete: "delete the Workstream",
@@ -39,7 +41,10 @@ export function personalFailureMessage(failure: PersonalWorkstreamsFailure, envi
     case "closure_unavailable":
       return "Couldn't verify every environment. Connect and update each environment, then try again.";
     case "changed_elsewhere":
-      return failure.action === "lifecycle" || failure.action === "nameIcon"
+      return failure.action === "lifecycle" ||
+        failure.action === "nameIcon" ||
+        failure.action === "snooze" ||
+        failure.action === "unsnooze"
         ? "This Workstream changed elsewhere. Try again."
         : "This thread was moved somewhere else. Try again.";
     case "unconfirmed":

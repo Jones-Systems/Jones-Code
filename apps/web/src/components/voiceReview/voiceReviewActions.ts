@@ -3,6 +3,9 @@ import type {
   VoiceReviewDraft,
   VoiceReviewMutationPayload,
   VoiceReviewMutationResult,
+  VoiceReviewSendOptions,
+  VoiceReviewSendReviewedPayload,
+  VoiceReviewSendReviewedResult,
   ThreadRegistryAssociationPayload,
   ThreadRegistryMutationReceipt,
 } from "@t3tools/contracts";
@@ -56,6 +59,34 @@ export interface VoiceReviewTransport {
     payload: VoiceReviewMutationPayload,
   ): Promise<VoiceReviewMutationResult>;
   get(id: string): Promise<VoiceReviewDraft>;
+  sendOptions(id: string): Promise<VoiceReviewSendOptions | null>;
+  sendReviewed(
+    id: string,
+    payload: VoiceReviewSendReviewedPayload,
+  ): Promise<VoiceReviewSendReviewedResult>;
+}
+
+export type PendingSendOptions =
+  | { readonly kind: "checking" | "failed" | "unsupported" }
+  | { readonly kind: "available"; readonly options: VoiceReviewSendOptions };
+
+export function reviewedSendBlocker(
+  sendOptions: PendingSendOptions,
+  workstreamId: string | null,
+  availableWorkstreamIds: ReadonlySet<string>,
+) {
+  if (sendOptions.kind === "checking") return "Checking where this prompt can be sent…";
+  if (sendOptions.kind === "failed") return "Could not check this prompt’s destinations.";
+  if (workstreamId !== null) {
+    if (sendOptions.kind !== "available" || !availableWorkstreamIds.has(workstreamId))
+      return "The selected Workstream is unavailable on this source. Choose another option.";
+    return null;
+  }
+  if (sendOptions.kind !== "available" || sendOptions.options.can_send_without_workstream)
+    return null;
+  return availableWorkstreamIds.size > 0
+    ? "Choose a Workstream inbox to send this prompt."
+    : "No receiving thread is available. Check the receiving thread or inbox configuration for this voice source.";
 }
 
 export function voiceReviewError(error: unknown): string {
@@ -90,6 +121,8 @@ interface LegacySave {
 export type PendingReviewAction = Exclude<VoiceReviewAction, "edit-begin">;
 
 const ended = new Set<VoiceReviewDraft["state"]>(["released", "deleted", "expired"]);
+const checkingSendOptions: PendingSendOptions = { kind: "checking" };
+const noWorkstreamIds: ReadonlySet<string> = new Set();
 
 function errorTag(error: unknown) {
   return typeof error === "object" && error !== null && "_tag" in error ? error._tag : null;
@@ -107,6 +140,9 @@ export class VoiceReviewActions {
   error: string | null = null;
   reviewRequired = false;
   observedAt = performance.now();
+  workstreamId: string | null = null;
+  sendOptions: PendingSendOptions = checkingSendOptions;
+  private sendOptionsRequest: object | null = null;
   private localText: string | null = null;
   private localInstructions: string | null = null;
   private savedComposition: LegacySave | null = null;
@@ -159,7 +195,7 @@ export class VoiceReviewActions {
   }
 
   get hasChanges() {
-    return this.localText !== null || this.localInstructions !== null;
+    return this.localText !== null || this.localInstructions !== null || this.workstreamId !== null;
   }
 
   get needsSave() {
@@ -185,7 +221,12 @@ export class VoiceReviewActions {
   }
 
   receive(draft: VoiceReviewDraft) {
-    if (draft.id !== this.draft.id || draft.revision < this.draft.revision) return;
+    if (
+      draft.id !== this.draft.id ||
+      draft.source_id !== this.draft.source_id ||
+      draft.revision < this.draft.revision
+    )
+      return false;
     const lostEdit =
       this.editHandle !== null &&
       (draft.revision !== this.draft.revision || draft.state !== "editing");
@@ -197,6 +238,32 @@ export class VoiceReviewActions {
     }
     this.draft = draft;
     this.observedAt = performance.now();
+    this.notify();
+    return true;
+  }
+
+  async checkSendOptions() {
+    const request = {};
+    this.sendOptionsRequest = request;
+    this.sendOptions = checkingSendOptions;
+    this.notify();
+    try {
+      const options = await this.transport.sendOptions(this.draft.id);
+      if (this.sendOptionsRequest !== request) return;
+      this.sendOptions =
+        options === null ? { kind: "unsupported" } : { kind: "available", options };
+    } catch {
+      if (this.sendOptionsRequest !== request) return;
+      this.sendOptions = { kind: "failed" };
+    }
+    this.sendOptionsRequest = null;
+    this.notify();
+  }
+
+  invalidateSendOptions() {
+    this.sendOptionsRequest = null;
+    if (this.sendOptions === checkingSendOptions) return;
+    this.sendOptions = checkingSendOptions;
     this.notify();
   }
 
@@ -213,6 +280,18 @@ export class VoiceReviewActions {
     this.onInput();
   }
 
+  setWorkstream(workstreamId: string | null) {
+    if (!this.canType || workstreamId === this.workstreamId) return;
+    if (
+      workstreamId !== null &&
+      (this.sendOptions.kind !== "available" ||
+        !this.sendOptions.options.workstream_ids.includes(workstreamId))
+    )
+      return;
+    this.workstreamId = workstreamId;
+    this.onInput();
+  }
+
   get canType() {
     return !ended.has(this.draft.state) && !this.uncertain && (!this.busy || this.acquiringEdit);
   }
@@ -220,7 +299,12 @@ export class VoiceReviewActions {
   private onInput() {
     this.notify();
     // Focus and empty fields leave the default release countdown running.
-    if (this.needsSave && !this.busy && !this.reviewRequired && this.draft.state !== "editing") {
+    if (
+      (this.needsSave || this.workstreamId !== null) &&
+      !this.busy &&
+      !this.reviewRequired &&
+      this.draft.state !== "editing"
+    ) {
       this.acquiringEdit = true;
       void this.perform(async () => {
         try {
@@ -236,20 +320,33 @@ export class VoiceReviewActions {
     action: VoiceReviewAction,
     payload: VoiceReviewMutationPayload = { expected_revision: this.draft.revision },
   ) {
-    const revision = payload.expected_revision;
-    const { id, source_id, text } = this.draft;
+    const { text } = this.draft;
+    return this.commitMutation(
+      payload.expected_revision,
+      () => this.transport.mutate(this.draft.id, action, payload),
+      (result) =>
+        action === "edit-begin"
+          ? result.edit_handle !== null &&
+            result.draft.state === "editing" &&
+            result.draft.revision > payload.expected_revision &&
+            result.draft.text === text
+          : result.edit_handle === null,
+    );
+  }
+
+  private async commitMutation(
+    revision: number,
+    run: () => Promise<VoiceReviewMutationResult>,
+    accepts: (result: VoiceReviewMutationResult) => boolean,
+  ) {
+    const { id, source_id } = this.draft;
     try {
-      const result = await this.transport.mutate(id, action, payload);
+      const result = await run();
       if (
         result.draft.id !== id ||
         result.draft.source_id !== source_id ||
         result.draft.revision < revision ||
-        (action === "edit-begin" &&
-          (result.edit_handle === null ||
-            result.draft.state !== "editing" ||
-            result.draft.revision <= revision ||
-            result.draft.text !== text)) ||
-        (action !== "edit-begin" && result.edit_handle !== null)
+        !accepts(result)
       ) {
         throw new Error("Unmatched voice review acknowledgement");
       }
@@ -289,6 +386,11 @@ export class VoiceReviewActions {
     this.localInstructions = null;
   }
 
+  private discardComposition() {
+    this.clearFields();
+    this.workstreamId = null;
+  }
+
   private recordSave(save: LegacySave) {
     this.savedComposition = save;
     this.unconfirmedSave = null;
@@ -318,7 +420,7 @@ export class VoiceReviewActions {
     return draft.revision;
   }
 
-  async act(action: PendingReviewAction) {
+  async act(action: PendingReviewAction, availableWorkstreamIds = noWorkstreamIds) {
     if (this.busy || this.uncertain) return;
     if (action === "edit-cancel") {
       if (this.editHandle !== null) {
@@ -327,10 +429,10 @@ export class VoiceReviewActions {
             expected_revision: this.draft.revision,
             edit_handle: this.editHandle!,
           });
-          this.clearFields();
+          this.discardComposition();
         });
       } else {
-        this.clearFields();
+        this.discardComposition();
         if (ended.has(this.draft.state)) {
           this.reviewRequired = false;
           this.error = null;
@@ -341,10 +443,20 @@ export class VoiceReviewActions {
     }
     if (ended.has(this.draft.state) || this.reviewRequired) return;
     const editing = this.draft.state === "editing";
-    if (action === "play" && (editing || this.needsSave)) return;
+    if (action === "play" && (editing || this.needsSave || this.workstreamId !== null)) return;
     if (action === "edit-save" || action === "send-now") {
       if ((editing && this.editHandle === null) || this.compositionError) return;
       const composition = this.composition;
+      if (action === "send-now") {
+        const { sendOptions, workstreamId } = this;
+        if (reviewedSendBlocker(sendOptions, workstreamId, availableWorkstreamIds)) return;
+        if (sendOptions.kind === "available") {
+          if (workstreamId !== null && !sendOptions.options.workstream_ids.includes(workstreamId))
+            return;
+          await this.sendReviewed(composition, workstreamId);
+          return;
+        }
+      }
       await this.perform(async () => {
         if (this.editHandle !== null || this.needsSave) {
           const revision = await this.save(composition);
@@ -358,24 +470,53 @@ export class VoiceReviewActions {
     }
     await this.perform(async () => {
       await this.mutate(action);
-      if (action === "delete" && this.draft.state === "deleted") this.clearFields();
+      if (action === "delete" && this.draft.state === "deleted") this.discardComposition();
     });
   }
 
-  private async perform(run: () => Promise<void>) {
+  private async sendReviewed(composition: PendingComposition, workstreamId: string | null) {
+    const { id, revision, text } = this.draft;
+    const payload: VoiceReviewSendReviewedPayload = {
+      expected_revision: revision,
+      workstream_id: workstreamId,
+      ...(composition.text !== (text ?? "") ? { text: composition.text } : {}),
+      ...(composition.instructions ? { additional_instructions: composition.instructions } : {}),
+      ...(this.editHandle === null ? {} : { edit_handle: this.editHandle }),
+    };
+    await this.perform(
+      async () => {
+        await this.commitMutation(
+          revision,
+          () => this.transport.sendReviewed(id, payload),
+          (result) =>
+            result.edit_handle === null &&
+            result.draft.revision > revision &&
+            result.draft.state === "released" &&
+            !!result.draft.command_id,
+        );
+        this.discardComposition();
+      },
+      (error) =>
+        errorTag(error) === "VoiceReviewConflictError"
+          ? "The prompt or its destination changed. Check the current state and available destinations before sending again."
+          : voiceReviewError(error),
+    );
+  }
+
+  private async perform(run: () => Promise<void>, describeError = voiceReviewError) {
     this.busy = true;
     this.error = null;
     this.notify();
     try {
       await run();
     } catch (error) {
-      this.error = voiceReviewError(error);
-      // Observe the same ID. A failed or unconfirmed save never advances to send.
+      // Read the same draft after an unsuccessful mutation without replaying the attempt.
       try {
         this.receive(await this.transport.get(this.draft.id));
       } catch {
         // Retain the last acknowledged state when readback is unavailable.
       }
+      this.error = describeError(error);
     } finally {
       this.busy = false;
       this.notify();
@@ -388,8 +529,7 @@ export class VoiceReviewActions {
     this.notify();
     try {
       const observation = await this.transport.get(this.draft.id);
-      this.receive(observation);
-      if (observation.revision < this.draft.revision) return;
+      if (!this.receive(observation)) return;
       if (this.unconfirmedRevision !== null && observation.revision <= this.unconfirmedRevision)
         return;
       const save = this.unconfirmedSave;

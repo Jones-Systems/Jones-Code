@@ -25,6 +25,7 @@ import * as Config from "../../../config.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import migration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
 import lifecycleMigration from "../../persistence/Migrations/159_JonesWorkstreamLifecycleRevision.ts";
+import snoozeMigration from "../../persistence/Migrations/160_JonesWorkstreamSnooze.ts";
 import nameIconMigration from "../../persistence/Migrations/161_JonesWorkstreamNameIcons.ts";
 import * as Personal from "./service.ts";
 
@@ -45,6 +46,7 @@ const database = Layer.effectDiscard(
     yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
     yield* migration;
     yield* lifecycleMigration;
+    yield* snoozeMigration;
     yield* nameIconMigration;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
@@ -58,18 +60,26 @@ const dependencies = Layer.mergeAll(
 const fixture = Personal.layer.pipe(Layer.provideMerge(dependencies));
 const fresh = Personal.PersonalWorkstreams.pipe(Effect.provide(Personal.layer));
 
-it.effect("persists a name icon and its explicit clear across legacy writes", () =>
+it.effect("persists a name icon, its explicit clear, and a snooze across legacy writes", () =>
   Effect.gen(function* () {
     const service = yield* Personal.PersonalWorkstreams;
     const legacy = w("icons");
-    const selected = P.editPersonalWorkstream(
+    const snoozedUntil = "2026-02-01T00:00:00.000Z";
+    const snoozed = P.editPersonalWorkstream(
       legacy,
+      { snoozedAt: "2026-01-01T00:00:00.000Z", snoozedUntil },
+      "2026-01-01T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(snoozed);
+    const selected = P.editPersonalWorkstream(
+      { ...legacy, rev: snoozed.rev },
       { nameIconProjectKey: "project:one" },
       "2026-01-02T00:00:00.000Z",
       "fixture",
     );
     yield* service.put(selected);
-    const legacyRename = { ...legacy, name: "Renamed", rev: 3 };
+    const legacyRename = { ...legacy, name: "Renamed", rev: selected.rev + 1 };
     yield* service.put(legacyRename, {
       ...legacy,
       rev: selected.rev,
@@ -79,6 +89,7 @@ it.effect("persists a name icon and its explicit clear across legacy writes", ()
     const [renamed] = (yield* reloaded.snapshot()).workstreams;
     assert.equal(renamed?.name, "Renamed");
     assert.deepEqual(renamed?.nameIcon, selected.nameIcon);
+    assert.equal(renamed?.snoozedUntil, snoozedUntil);
     const cleared = P.editPersonalWorkstream(
       renamed!,
       { nameIconProjectKey: null },
@@ -87,7 +98,9 @@ it.effect("persists a name icon and its explicit clear across legacy writes", ()
     );
     yield* service.put(cleared);
     yield* service.put({ ...legacyRename, rev: cleared.rev + 1 });
-    assert.deepEqual((yield* reloaded.snapshot()).workstreams[0]?.nameIcon, cleared.nameIcon);
+    const [persisted] = (yield* reloaded.snapshot()).workstreams;
+    assert.deepEqual(persisted?.nameIcon, cleared.nameIcon);
+    assert.equal(persisted?.snoozedUntil, snoozedUntil);
   }).pipe(Effect.provide(fixture)),
 );
 
@@ -423,10 +436,18 @@ it.effect(
         yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
         yield* migration;
         yield* lifecycleMigration;
+        yield* snoozeMigration;
         yield* nameIconMigration;
         yield* stage();
         const s = yield* fresh;
         yield* s.assign({ threadId, workstream: null, expectedRevision: 1 });
+        const snoozed = {
+          ...w("snoozed"),
+          snoozedAt: "2026-01-01T13:00:00.000Z",
+          snoozedUntil: "2026-01-01T14:00:00.000Z",
+        };
+        yield* s.put(snoozed);
+        yield* s.put({ ...w("snoozed"), name: "Renamed by older client", rev: 2 });
         return yield* s.snapshot();
       });
       const snapshot = yield* setup.pipe(Effect.provide(open()), Effect.scoped);
@@ -435,6 +456,9 @@ it.effect(
         return yield* s.snapshot();
       }).pipe(Effect.provide(open()), Effect.scoped);
       assert.deepEqual(after, snapshot);
+      const snoozed = after.workstreams.find((item) => item.id === "snoozed");
+      assert.equal(snoozed?.name, "Renamed by older client");
+      assert.equal(snoozed?.snoozedUntil, "2026-01-01T14:00:00.000Z");
       assert.equal(after.assignments[0]?.revision, 2);
       assert.equal(after.assignments[0]?.workstreamId, null);
     }).pipe(

@@ -256,6 +256,7 @@ export function createPersonalWorkstreamsController(options: {
       canSetNameIcon: [...entries.values()].some(
         (e) => writable(e) && e.snapshot?.supportsNameIcons,
       ),
+      canSnooze: [...entries.values()].some((e) => writable(e) && e.snapshot?.supportsSnooze),
       environments: [...entries.values()].map((e): PersonalEnvironmentState => {
         const workstreams = e.connection.capable
           ? (e.snapshot?.workstreams.filter((w) => w.deletedAt === null) ?? [])
@@ -308,8 +309,17 @@ export function createPersonalWorkstreamsController(options: {
     };
   };
   const definitionFor = (entry: Entry, workstream: PersonalWorkstream): PersonalWorkstream => {
-    if (entry.snapshot?.supportsNameIcons || workstream.nameIcon === undefined) return workstream;
-    const { nameIcon: _nameIcon, ...legacy } = workstream;
+    let local = workstream;
+    if (!entry.snapshot?.supportsNameIcons && local.nameIcon !== undefined) {
+      const { nameIcon: _nameIcon, ...legacy } = local;
+      local = legacy;
+    }
+    if (
+      entry.snapshot?.supportsSnooze ||
+      (local.snoozedAt === undefined && local.snoozedUntil === undefined)
+    )
+      return local;
+    const { snoozedAt: _started, snoozedUntil: _until, ...legacy } = local;
     return legacy;
   };
   const repair = () => {
@@ -317,13 +327,13 @@ export function createPersonalWorkstreamsController(options: {
     const merged = winners(true);
     for (const e of entries.values()) {
       if (!writable(e)) continue;
-      for (const w of merged.values()) {
+      for (const winner of merged.values()) {
         if (activeRepairs >= 4) return;
-        const key = JSON.stringify([e.connection.environmentId, w.id]);
-        const old = e.snapshot?.workstreams.find((d) => d.id === w.id);
-        const candidate = definitionFor(e, w);
+        const candidate = definitionFor(e, winner);
+        const key = JSON.stringify([e.connection.environmentId, winner.id]);
+        const old = e.snapshot?.workstreams.find((d) => d.id === winner.id);
         if (
-          pendingClosures.has(w.id) ||
+          pendingClosures.has(winner.id) ||
           (old && comparePersonalWorkstreams(old, candidate) >= 0) ||
           repairInFlight.has(key) ||
           repairFailures.has(key)
@@ -377,10 +387,13 @@ export function createPersonalWorkstreamsController(options: {
   ): Promise<PersonalResult<PersonalWorkstream>> => {
     const requireNameIcons =
       action === "nameIcon" || (action === "create" && w.nameIcon !== undefined);
+    const requireSnooze = action === "snooze" || action === "unsnooze";
     const available = [...entries.values()].filter(writable);
-    const targets = requireNameIcons
-      ? available.filter((e) => e.snapshot?.supportsNameIcons)
-      : available;
+    const targets = available.filter(
+      (e) =>
+        (!requireNameIcons || e.snapshot?.supportsNameIcons) &&
+        (!requireSnooze || e.snapshot?.supportsSnooze),
+    );
     if (!targets.length)
       return fail(
         action,
@@ -658,6 +671,16 @@ export function createPersonalWorkstreamsController(options: {
     setColor: (id, color) => edit("recolor", id, { color }),
     setNameIcon: (id, nameIconProjectKey) => edit("nameIcon", id, { nameIconProjectKey }),
     setLifecycle: (id, lifecycle) => edit("lifecycle", id, { lifecycle }),
+    setSnoozedUntil: (id, snoozedUntil) => {
+      const action = snoozedUntil === null ? "unsnooze" : "snooze";
+      const startedAt = now();
+      if (snoozedUntil !== null && !(Date.parse(snoozedUntil) > Date.parse(startedAt)))
+        return Promise.resolve(fail(action, id, "failed"));
+      return edit(action, id, {
+        snoozedAt: startedAt,
+        snoozedUntil,
+      });
+    },
     reorder: (id, { beforeId, afterId }) => {
       const merged = editableWinners();
       const orderKey = pinOrderKeyBetween(

@@ -1,3 +1,6 @@
+import { useClientSettings } from "../../hooks/useSettings";
+import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
+import { requestCustomSnooze } from "../CustomSnoozeDialog";
 import {
   useEffect,
   useId,
@@ -10,11 +13,13 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import {
   openPersonalWorkstreams,
+  type PersonalResult,
   type PersonalThreadRef,
   type PersonalWorkstreamsController,
   type PersonalWorkstreamView,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import {
+  AlarmClockIcon,
   ArrowDownIcon,
   ArrowUpIcon,
   EllipsisVerticalIcon,
@@ -86,6 +91,13 @@ import {
   usePersonalThreadWindow,
   type PersonalThreadLimit,
 } from "../../jones/workstreams/personalThreadWindow";
+
+function currentSnoozePresets(
+  timestampFormat: Parameters<typeof resolveSnoozePresets>[1],
+  environmentId: Parameters<typeof resolveSnoozePresets>[2],
+) {
+  return resolveSnoozePresets(new Date(), timestampFormat, environmentId);
+}
 
 const workstreamDragType = "application/x-jones-workstream";
 const lifecycles = ["planned", "active", "paused", "completed", "deferred", "abandoned"] as const;
@@ -203,12 +215,14 @@ function Group({
   confirmingDelete,
   onDeleteRequested,
   memberCount,
+  snoozedIds,
 }: {
   item: PersonalWorkstreamView;
   nameIconProjects: readonly WorkstreamNameIconProject[];
   controller: PersonalWorkstreamsController;
   children: (window: { limit: PersonalThreadLimit; expanded: boolean }) => ReactNode;
   memberCount: number;
+  snoozedIds: ReadonlySet<string>;
   summary: PersonalThreadSummary;
   rosterTotal: number;
   dragging: boolean;
@@ -238,7 +252,7 @@ function Group({
   );
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
-  const run = async (operation: () => ReturnType<typeof controller.remove>) => {
+  const run = async (operation: () => Promise<PersonalResult<unknown>>) => {
     if (pendingRef.current) return;
     pendingRef.current = true;
     setPending(true);
@@ -246,6 +260,7 @@ function Group({
       .then(operation)
       .then((result) => {
         if (!result.ok) showPersonalFailure(result.failure);
+        return result;
       })
       .finally(() => {
         pendingRef.current = false;
@@ -287,7 +302,34 @@ function Group({
         setPending(false);
       });
   };
-  const openWorkstreams = openPersonalWorkstreams(state);
+  const openWorkstreams = openPersonalWorkstreams(state).filter(
+    (entry) => !snoozedIds.has(entry.id),
+  );
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
+  const snoozeEnvironmentId = state.environments.find(
+    (entry) => entry.status === "ready",
+  )?.environmentId;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null);
+  const [snoozePresets, setSnoozePresets] = useState<readonly SnoozePreset[]>([]);
+  const openMenu = (open: boolean) => {
+    setMenuOpen(open);
+    if (!open) setMenuPoint(null);
+    if (open && snoozeEnvironmentId)
+      setSnoozePresets(currentSnoozePresets(timestampFormat, snoozeEnvironmentId));
+  };
+  const snooze = async (preset: SnoozePreset | "custom") => {
+    if (!controller.setSnoozedUntil || !snoozeEnvironmentId) return;
+    const choice =
+      preset === "custom"
+        ? await requestCustomSnooze("workstream")
+        : pickSnoozePreset(snoozePresets, preset.id, timestampFormat, snoozeEnvironmentId);
+    if (!choice) return;
+    await run(async () => {
+      const result = await controller.setSnoozedUntil!(item.id, choice.snoozedUntil);
+      return result.ok ? { ok: true, value: undefined } : result;
+    });
+  };
   const index = openWorkstreams.findIndex((entry) => entry.id === item.id);
   return (
     <section
@@ -306,6 +348,25 @@ function Group({
         className="flex min-w-0 cursor-pointer"
         draggable={state.canCreate && !pending && !confirmingDelete && !editing}
         onDragStart={onDragStart}
+        onContextMenu={(event) => {
+          if (event.target instanceof HTMLElement && event.target.closest("input")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const bounds = event.currentTarget.getBoundingClientRect();
+          setMenuPoint(
+            event.clientX || event.clientY
+              ? { x: event.clientX, y: event.clientY }
+              : { x: bounds.left, y: bounds.bottom },
+          );
+          openMenu(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+          event.preventDefault();
+          const bounds = event.currentTarget.getBoundingClientRect();
+          setMenuPoint({ x: bounds.left, y: bounds.bottom });
+          openMenu(true);
+        }}
       >
         <PersonalSidebarGroupHeader
           name={item.name}
@@ -351,14 +412,24 @@ function Group({
                 event.stopPropagation();
               }}
             >
-              <Menu>
+              <Menu open={menuOpen} onOpenChange={openMenu}>
                 <MenuTrigger
                   aria-label={`Options for ${item.name}`}
                   render={<PersonalWorkstreamOptionsButton />}
+                  className="opacity-0 focus-visible:opacity-100 pointer-coarse:opacity-100"
                 >
                   <EllipsisVerticalIcon aria-hidden className="size-[12px]" />
                 </MenuTrigger>
-                <MenuPopup align="end">
+                <MenuPopup
+                  align={menuPoint ? "start" : "end"}
+                  {...(menuPoint
+                    ? {
+                        anchor: {
+                          getBoundingClientRect: () => new DOMRect(menuPoint.x, menuPoint.y, 0, 0),
+                        },
+                      }
+                    : {})}
+                >
                   <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
                     <PencilIcon aria-hidden /> Rename
                   </MenuItem>
@@ -382,6 +453,20 @@ function Group({
                       <ImageIcon aria-hidden /> Change name icon
                     </MenuItem>
                   ) : null}
+                  <MenuSub>
+                    <MenuSubTrigger disabled={!state.canSnooze || pending || !snoozeEnvironmentId}>
+                      <AlarmClockIcon aria-hidden /> Snooze
+                    </MenuSubTrigger>
+                    <MenuSubPopup>
+                      {snoozePresets.map((preset) => (
+                        <MenuItem key={preset.id} onClick={() => void snooze(preset)}>
+                          {preset.label} ({preset.whenLabel})
+                        </MenuItem>
+                      ))}
+                      <MenuSeparator />
+                      <MenuItem onClick={() => void snooze("custom")}>Custom…</MenuItem>
+                    </MenuSubPopup>
+                  </MenuSub>
                   <MenuSeparator />
                   <MenuSub>
                     <MenuSubTrigger disabled={!state.canCreate || pending}>
@@ -413,10 +498,6 @@ function Group({
                       </MenuRadioGroup>
                     </MenuSubPopup>
                   </MenuSub>
-                  <MenuSeparator />
-                  <MenuItem onClick={() => setStatusFilter(null)}>
-                    Use global status filter
-                  </MenuItem>
                   <MenuSeparator />
                   <MenuGroup className="flex items-center justify-between">
                     <div className="flex min-w-0 flex-wrap items-baseline">
@@ -602,10 +683,12 @@ export function WorkstreamSidebarSection({
   unassignedSummary = emptySummary,
   memberCounts,
   dropTargetId,
+  snoozedIds = new Set<string>(),
 }: {
   controller: PersonalWorkstreamsController;
   nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
   dropTargetId?: string | null | undefined;
+  snoozedIds?: ReadonlySet<string>;
   onOpenHistoryThread?: ((thread: PersonalThreadRef) => void) | undefined;
   renderMembers: (
     id: string | null,
@@ -629,7 +712,9 @@ export function WorkstreamSidebarSection({
     collapsedSchema,
   );
   const namedGroupsId = useId();
-  const openWorkstreams = openPersonalWorkstreams(state);
+  const openWorkstreams = openPersonalWorkstreams(state).filter(
+    (entry) => !snoozedIds.has(entry.id),
+  );
   const namedIds = openWorkstreams.map((entry) => entry.id);
   const sharedStatus = useSharedPersonalStatusFilter(namedIds);
   const namedSummary = openWorkstreams.reduce(
@@ -852,6 +937,7 @@ export function WorkstreamSidebarSection({
                   summary={summaries?.get(item.id) ?? emptySummary}
                   rosterTotal={rosterTotals?.get(item.id) ?? summaries?.get(item.id)?.total ?? 0}
                   memberCount={memberCounts?.get(item.id) ?? 0}
+                  snoozedIds={snoozedIds}
                   dragging={draggedId === item.id}
                   dropTarget={dropTargetId === item.id}
                   confirmingDelete={deleteTarget?.id === item.id}

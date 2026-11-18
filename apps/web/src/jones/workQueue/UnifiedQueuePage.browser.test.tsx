@@ -87,7 +87,12 @@ vi.mock("../../components/voiceReview/useVoiceReview", async (importOriginal) =>
   useVoiceReview: () => ({
     fetchList: fixture.voiceList,
     fetchSelfIdentity: fixture.selfIdentity,
-    transport: { get: fixture.voiceGet, mutate: fixture.voiceMutation },
+    transport: {
+      get: fixture.voiceGet,
+      mutate: fixture.voiceMutation,
+      sendOptions: async () => null,
+      sendReviewed: vi.fn(),
+    },
     review: {
       recent: async () => {
         if (fixture.recent === null) throw new Error("Recent prompts unavailable");

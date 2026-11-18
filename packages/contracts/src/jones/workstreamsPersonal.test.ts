@@ -119,6 +119,24 @@ describe("personal Workstream convergence", () => {
     );
     expect(mergePersonalWorkstreams([legacy, cleared, selected]).nameIcon?.projectKey).toBeNull();
   });
+
+  it("merges an icon and an independent snooze from different replicas", () => {
+    const snoozed = editPersonalWorkstream(
+      original,
+      { snoozedAt: later, snoozedUntil: "2026-12-01T00:00:00.000Z" },
+      later,
+      "snooze",
+    );
+    const selected = editPersonalWorkstream(
+      original,
+      { nameIconProjectKey: "project:one" },
+      later,
+      "icon",
+    );
+    const expected = { ...snoozed, nameIcon: selected.nameIcon };
+    expect(mergePersonalWorkstreams([snoozed, selected])).toEqual(expected);
+    expect(mergePersonalWorkstreams([selected, snoozed])).toEqual(expected);
+  });
 });
 
 describe("personal Workstream edits", () => {
