@@ -8,6 +8,10 @@ const decoder = new TextDecoder("utf-8", { fatal: true });
 const method = "macos-proc-info" as const;
 const belongsToNativePool = (name: string) =>
   name.startsWith("fff-bg-") || name.startsWith("fff-search-");
+const belongsToWatcher = (name: string) =>
+  name === "fff-watcher-own" ||
+  name === "notify-rs debouncer loop" ||
+  name === "notify-rs fsevents loop";
 
 function unavailable(pid: number, raw = ""): NativePoolObservation {
   return {
@@ -54,6 +58,18 @@ const nativeNames = (observation: NativePoolObservation) =>
     .filter(belongsToNativePool)
     .sort();
 
+function onlyWatchersStarted(before: NativePoolObservation, after: NativePoolObservation) {
+  if (before.threads.length >= after.threads.length) return false;
+  const originalNames = new Map(before.threads.map(({ tid, name }) => [tid, name]));
+  let matched = 0;
+  for (const { tid, name } of after.threads) {
+    const original = originalNames.get(tid);
+    if (original === name) matched++;
+    else if (original !== undefined || !belongsToWatcher(name)) return false;
+  }
+  return matched === before.threads.length;
+}
+
 export function makeMacNativePoolCensus(
   executable: string,
   reference = sampleNativePools,
@@ -67,28 +83,36 @@ export function makeMacNativePoolCensus(
       return { identity: null, observation: unavailable(pid) };
     }
   };
-  const compare = async (pid: number) => {
-    const before = await observe(pid);
+  const compare = async (pid: number, preceding?: Awaited<ReturnType<typeof observe>>) => {
+    const before = preceding ?? (await observe(pid));
     const referenceObservation = await reference(pid);
     const after = await observe(pid);
     const namedPools = nativeNames(referenceObservation);
     const censusPools = nativeNames(before.observation);
-    // The reference uses kernel thread IDs and the census uses opaque handles.
-    // Compare all native names and population sizes across the reference window.
-    const verified =
+    const matchesReference =
       before.identity !== null &&
       before.identity === after.identity &&
-      before.observation.raw === after.observation.raw &&
       referenceObservation.pid === pid &&
       referenceObservation.method === "macos-sample" &&
       referenceObservation.status === "complete" &&
-      before.observation.threads.length === referenceObservation.threads.length &&
       namedPools.filter((name) => /^fff-bg-[0-9]+$/.test(name)).length >= 2 &&
       namedPools.some((name) => /^fff-search-[0-9]+$/.test(name)) &&
       censusPools.length === namedPools.length &&
       censusPools.every((name, index) => name === namedPools[index]);
+    // The reference uses kernel thread IDs and the census uses opaque handles.
+    // Compare all native names and population sizes across the reference window.
+    const verified =
+      matchesReference &&
+      before.observation.raw === after.observation.raw &&
+      before.observation.threads.length === referenceObservation.threads.length;
+    const watchersStarted =
+      matchesReference &&
+      after.observation.threads.length === referenceObservation.threads.length &&
+      onlyWatchersStarted(before.observation, after.observation);
     return {
+      after,
       referenceObservation,
+      watchersStarted,
       receipt: {
         pid,
         verified,
@@ -99,12 +123,30 @@ export function makeMacNativePoolCensus(
       },
     };
   };
-  let comparison: ReturnType<typeof compare> | undefined;
-  let receipt: Awaited<ReturnType<typeof compare>>["receipt"] | undefined;
+  const verify = async (pid: number) => {
+    const initial = await compare(pid);
+    // Finder watches can start during the first reference read. Start a fresh
+    // bracket at the preceding census to keep the same process identity.
+    if (!initial.watchersStarted) return initial;
+    const final = await compare(pid, initial.after);
+    return {
+      ...final,
+      referenceObservation: final.receipt.verified
+        ? final.referenceObservation
+        : initial.referenceObservation,
+      receipt: {
+        ...final.receipt,
+        initial: { ...initial.receipt, reference: initial.referenceObservation.raw },
+        ...(!final.receipt.verified ? { reference: final.referenceObservation.raw } : {}),
+      },
+    };
+  };
+  let comparison: ReturnType<typeof verify> | undefined;
+  let receipt: Awaited<ReturnType<typeof verify>>["receipt"] | undefined;
   return {
     async sample(pid: number) {
       if (!comparison) {
-        comparison = compare(pid);
+        comparison = verify(pid);
         const result = await comparison;
         receipt = result.receipt;
         return result.referenceObservation;
