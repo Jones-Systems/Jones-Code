@@ -1,4 +1,5 @@
 import { WorkspaceRetirementOutcome } from "./jones/workspaceRetirement.ts";
+import { CheckoutRecoveryOffer } from "./jones/workspaceRecreation.ts";
 import { GuardedThreadSettlement } from "./jones/guardedThreadSettlement.ts";
 import {
   OptionalDispatchDeliveryEvidence,
@@ -1350,7 +1351,10 @@ export const OrchestrationV2RuntimeRequest = Schema.Struct({
       providerSessionId: ProviderSessionId,
       supportsFeedback: Schema.optional(Schema.Boolean),
     }),
-    Schema.Struct({ type: Schema.Literal("message") }),
+    Schema.Struct({
+      type: Schema.Literal("message"),
+      checkoutRecovery: Schema.optional(CheckoutRecoveryOffer),
+    }),
     Schema.Struct({ type: Schema.Literal("not_resumable"), reason: Schema.String }),
   ]),
   createdAt: Schema.DateTimeUtc,

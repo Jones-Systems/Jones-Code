@@ -1,10 +1,13 @@
 import { assert, it } from "@effect/vitest";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import {
   CheckpointScopeId,
   CommandId,
   EventId,
   NodeId,
   MessageId,
+  ProviderDriverKind,
   RunId,
   RuntimeRequestId,
   TurnItemId,
@@ -20,6 +23,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
+import { buildUserInputRequestRecord } from "../jones/orchestration/userInputRequestRecord.ts";
+import * as CheckoutRecovery from "../jones/workspaceRecreation/Recovery.ts";
 import { makeQueueHoldStore } from "../jones/orchestration/QueueHoldStore.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
@@ -42,15 +47,22 @@ import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 const isTaskContinuationError = Schema.is(TaskContinuationError);
 const isOrchestratorDispatchError = Schema.is(Orchestrator.OrchestratorDispatchError);
 
-const runtime = ProviderReplayHarness.layerWithRegistryAndServices(
-  { name: "retained-orchestrator-admission" },
-  ProviderAdapterRegistry.layerFromAdapters([]),
-  { runEffectWorker: false, recoverOnStartup: false },
-);
-const layer = Receipts.layer.pipe(Layer.provideMerge(runtime));
 const fixture = workModeFixture();
 const threadId = fixture.thread.id;
 const instanceId = fixture.thread.providerInstanceId;
+const adapter = {
+  instanceId,
+  driver: ProviderDriverKind.make("codex"),
+  getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+  planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+  openSession: () => Effect.die("No provider process needed to record the recovery answer"),
+} as ProviderAdapter.ProviderAdapterV2["Service"];
+const runtime = ProviderReplayHarness.layerWithRegistryAndServices(
+  { name: "retained-orchestrator-admission" },
+  ProviderAdapterRegistry.layerSingle(adapter),
+  { runEffectWorker: false, recoverOnStartup: false },
+);
+const layer = Receipts.layer.pipe(Layer.provideMerge(runtime));
 const seedThread = Effect.gen(function* () {
   const sink = yield* EventSink.EventSinkV2;
   const now = yield* DateTime.now;
@@ -377,6 +389,98 @@ it.effect(
         .pipe(Effect.flip);
       assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).runtimeRequests, 1);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("answering checkout recovery resumes the original message exactly once", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const { run, node, now } = yield* seedRun("running");
+    const projection = yield* orchestrator.getThreadProjection(threadId);
+    const worktreePath = "/missing/feature";
+    const branch = "feature";
+    const message = fixture.messages[0]!;
+    const requestId = RuntimeRequestId.make("checkout-recovery");
+    const record = buildUserInputRequestRecord({
+      command: {
+        type: "user_input_request.record",
+        commandId: CommandId.make("record-recovery"),
+        threadId,
+        runId: run.id,
+        rootNodeId: node.id,
+        providerInstanceId: instanceId,
+        requestId,
+        requestNodeId: NodeId.make("checkout-recovery-node"),
+        turnItemId: TurnItemId.make("checkout-recovery-card"),
+        question: CheckoutRecovery.question({
+          branch: null,
+          conversationAvailable: true,
+        }),
+      },
+      projection,
+      now,
+      ordinal: 2,
+      providerTurnId: null,
+    });
+    if ("error" in record) return yield* Effect.die(record.error);
+    yield* sink.write({
+      events: (
+        [
+          {
+            type: "thread.metadata-updated",
+            payload: { ...projection.thread, worktreePath, branch },
+          },
+          { type: "run.updated", payload: { ...run, status: "failed", completedAt: now } },
+          { type: "message.updated", payload: message },
+          { type: "node.updated", payload: record.node },
+          { type: "turn-item.updated", payload: record.item },
+          {
+            type: "runtime-request.updated",
+            payload: {
+              ...record.request,
+              responseCapability: {
+                type: "message",
+                checkoutRecovery: { worktreePath, branch, messageId: message.id },
+              },
+            },
+          },
+        ] as const
+      ).map((event, index) => ({
+        ...event,
+        id: EventId.make(`seed-recovery:${index}`),
+        threadId,
+        runId: run.id,
+        occurredAt: now,
+      })),
+    });
+    const answer = {
+      type: "runtime-request.respond" as const,
+      commandId: CommandId.make("resume-original"),
+      threadId,
+      requestId,
+      answers: { [CheckoutRecovery.questionId]: ["conversation"] },
+    };
+    yield* orchestrator
+      .dispatch({
+        ...answer,
+        commandId: CommandId.make("unoffered-branch"),
+        answers: { [CheckoutRecovery.questionId]: ["branch"] },
+      })
+      .pipe(Effect.flip);
+    yield* orchestrator.dispatch(answer);
+    assert.isTrue((yield* orchestrator.dispatch(answer)).replayed);
+    const resumed = yield* orchestrator.getThreadProjection(threadId);
+    assert.lengthOf(resumed.messages, 1);
+    assert.equal(resumed.messages[0]?.id, message.id);
+    assert.equal(resumed.messages[0]?.text, message.text);
+    assert.deepEqual(resumed.messages[0]?.context?.checkoutRecovery, {
+      requestId,
+      choice: "conversation",
+    });
+    assert.lengthOf(resumed.runs, 2);
+    assert.equal(resumed.runs[1]?.userMessageId, message.id);
+    assert.equal(resumed.runtimeRequests[0]?.status, "resolved");
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([false, true])(

@@ -47,6 +47,7 @@ import {
   ProviderSetupError,
   RunAttemptId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   ProjectId,
   type OrchestrationV2ThreadProjection,
@@ -212,6 +213,7 @@ function startWithMissingWorktree(
     [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
   },
   native?: RecreationFixtureBinding & { readonly fileSystem: FileSystem.FileSystem },
+  recovery?: { readonly branch: string | null; readonly failedRestore?: boolean },
 ) {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
   const runId = RunId.make("run_provider_turn_start_projection_failure");
@@ -224,6 +226,7 @@ function startWithMissingWorktree(
     "provider_session_provider_turn_start_projection_failure",
   );
   const messageId = MessageId.make("message_provider_turn_start_projection_failure");
+  const recoveryId = RuntimeRequestId.make("earlier-checkout-recovery");
   const checkpointScopeId = CheckpointScopeId.make(
     "checkpoint_scope_provider_turn_start_projection_failure",
   );
@@ -231,7 +234,7 @@ function startWithMissingWorktree(
     thread: {
       id: threadId,
       projectId: ProjectId.make("project_provider_turn_start_projection_failure"),
-      branch: "feature/restore",
+      branch: recovery === undefined ? "feature/restore" : recovery.branch,
       archivedAt: null,
       deletedAt: null,
       settledAt: null,
@@ -255,7 +258,7 @@ function startWithMissingWorktree(
         ordinal: 2,
       },
     ],
-    nodes: [{ id: rootNodeId, checkpointScopeId }],
+    nodes: [{ id: rootNodeId, runId, kind: "root_turn", checkpointScopeId }],
     attempts: [{ id: attemptId }],
     providerThreads: [
       {
@@ -266,11 +269,28 @@ function startWithMissingWorktree(
         nativeThreadRef: null,
       },
     ],
-    messages: [{ id: messageId, text: "Continue", attachments: [] }],
+    messages: [
+      {
+        id: messageId,
+        text: "Continue",
+        attachments: [],
+        ...(recovery === undefined ? {} : { createdBy: "user", creationSource: "web" }),
+        ...(recovery?.failedRestore !== true
+          ? {}
+          : {
+              context: {
+                version: 1,
+                records: [],
+                checkoutRecovery: { requestId: recoveryId, choice: "branch" },
+              },
+            }),
+      },
+    ],
     checkpointScopes: [{ id: checkpointScopeId }],
     contextHandoffs: [],
     contextTransfers: [],
     turnItems: [],
+    runtimeRequests: [],
   } as unknown as OrchestrationV2ThreadProjection;
   let projectionReadCount = 0;
   const writeIfRunCurrent = vi.fn(
@@ -332,7 +352,30 @@ function startWithMissingWorktree(
           pruneWorktrees,
           createWorktree,
           listLocalBranchNames,
+          ...(recovery === undefined
+            ? {}
+            : {
+                hasCommit: () => Effect.succeed(true),
+                resolveWorktreeBaseRemote: () =>
+                  Effect.fail(
+                    new GitCommandError({
+                      cwd: native?.projectRoot ?? "/repo",
+                      operation: "recovery-test",
+                      command: "git fetch",
+                      detail: "fixture remote failure",
+                    }),
+                  ),
+              }),
         }),
+        ...(recovery === undefined
+          ? []
+          : [
+              Layer.mock(ConversationPolicy.ConversationPolicy)({ ownsPath: () => false }),
+              Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+                getCatalogSource: () => undefined,
+                getInstance: () => Effect.succeed({ driverKind: "codex" } as never),
+              }),
+            ]),
         Layer.mock(ProjectService.ProjectService)({
           getById: () =>
             Effect.succeedSome({
@@ -340,6 +383,24 @@ function startWithMissingWorktree(
             } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          ...(recovery?.failedRestore !== true
+            ? {}
+            : {
+                getRuntimeRequest: () =>
+                  Effect.succeed({
+                    status: "resolved",
+                    answers: { "checkout-recovery": ["branch"] },
+                    responseCapability: {
+                      type: "message",
+                      checkoutRecovery: {
+                        worktreePath,
+                        branch: recovery.branch,
+                        resumeBranch: recovery.branch,
+                        messageId,
+                      },
+                    },
+                  } as never),
+              }),
           getThreadRecords: () => {
             projectionReadCount += 1;
             return Effect.succeed(projection);
@@ -380,21 +441,64 @@ function startWithMissingWorktree(
     Layer.provide(NodeCrypto.layer),
   );
 
-  const start = Effect.gen(function* () {
-    return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2)
-      .start({ threadId, runId, willRetry: true })
-      .pipe(Effect.flip);
+  const run = Effect.gen(function* () {
+    return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({
+      threadId,
+      runId,
+      willRetry: recovery === undefined,
+    });
   }).pipe(Effect.provide(layer));
   return {
-    start,
+    start: run.pipe(Effect.flip),
+    run,
     pruneWorktrees,
     createWorktree,
     recreateCheckout,
     writeIfRunCurrent,
     startRootRun,
     projectionReads: () => projectionReadCount,
+    projection: () => projection,
   };
 }
+
+effectIt.effect.each([
+  { branch: "feature/restore", choices: ["conversation", "branch", "default"] },
+  { branch: null, choices: ["conversation", "default"] },
+  { branch: "feature/restore", failedRestore: true, choices: ["conversation", "default"] },
+])("offers native recovery for a missing worktree: %j", (scenario) =>
+  Effect.gen(function* () {
+    const f = yield* startRecreationFixture;
+    const path = `${f.root}/managed/project/removed`;
+    const harness = startWithMissingWorktree(
+      path,
+      {
+        [`${f.root}/managed`]: `${f.root}/managed`,
+        [`${f.root}/managed/project`]: `${f.root}/managed/project`,
+      },
+      {
+        projectRoot: f.repo,
+        baseDir: `${f.root}/state`,
+        worktreesDir: `${f.root}/managed`,
+        fileSystem: f.fs,
+      },
+      scenario,
+    );
+    yield* harness.run;
+    const { runs, messages, turnItems, runtimeRequests, thread } = harness.projection();
+    expect(runs[0]?.status).toBe("failed");
+    expect(messages[0]?.text).toBe("Continue");
+    expect(thread.branch).toBe(scenario.branch);
+    const request = turnItems.find((item) => item.type === "user_input_request");
+    expect(request?.questions[0]?.options.map((option) => option.value)).toEqual(scenario.choices);
+    expect(runtimeRequests).toMatchObject([
+      { status: "pending", responseCapability: { type: "message" } },
+    ]);
+    if (scenario.failedRestore)
+      expect(request?.questions[0]?.question).toMatch(/remote or branch could not be resolved/);
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.createWorktree).not.toHaveBeenCalled();
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 // Jones exact checkout recreation owns missing managed checkouts. Every row runs on the native
 // fixture through the real Git driver. Upstream's logical restore must never create one too, so
@@ -614,6 +718,7 @@ it.each([
 function makeLocalCommandHarness(
   input: ReaderAdmissionHarnessInput & {
     readonly keepWarm?: boolean;
+    readonly unattended?: boolean;
     readonly conversations?: Partial<ConversationPolicy.ConversationPolicy["Service"]>;
     readonly registry?: Partial<ProviderInstanceRegistry.ProviderInstanceRegistry["Service"]>;
     readonly plannedContinuity?: Partial<
@@ -767,7 +872,7 @@ function makeLocalCommandHarness(
     attachments: [],
     streaming: false,
     createdBy: input.keepWarm ? "system" : "user",
-    creationSource: input.keepWarm ? "server" : "web",
+    creationSource: input.keepWarm || input.unattended ? "server" : "web",
     createdAt: now,
     updatedAt: now,
   };
