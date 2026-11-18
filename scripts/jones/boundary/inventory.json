@@ -7,6 +7,8 @@
   },
   "baseline": "4c924ff4e6d0828e0a5810336ec7d7827d752645",
   "paths": {
+    "packages/client-runtime/src/handoff.ts": "accepted-shared",
+    "packages/client-runtime/src/handoff.test.ts": "accepted-shared",
     "apps/web/src/jones/workstreams/WorkstreamNameIconPicker.tsx": "jones-owned",
     "packages/shared/src/markdownPipeline.ts": "hook",
     "apps/web/src/reopenClosedView.ts": "hook",
