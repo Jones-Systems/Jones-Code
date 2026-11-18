@@ -7,6 +7,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import { readSource, resolveSource, objectGit, SOURCE_LIMITS } from "./SourceBroker.ts";
 import {
+  checkConversationDirectoryPlacement,
   createConversationDirectory,
   disposeConversationDirectory,
   resumeConversationDirectory,
@@ -148,6 +149,55 @@ export const sourceCases = {
         process.env.PATH = oldPath;
       }
     }),
+
+  "placement allows broad registrations and refuses checkout, reserved, invalid and temporary roots":
+    () =>
+      fixture(async (root) => {
+        const state = NodePath.join(root, "state");
+        await NodeFSP.mkdir(state);
+        const canonicalState = await NodeFSP.realpath(state);
+        const conversationRoot = NodePath.join(canonicalState, "conversation-workspaces");
+        const planned = await checkConversationDirectoryPlacement(state, [], [root]);
+        NodeAssert.equal(planned, conversationRoot);
+        await NodeAssert.rejects(NodeFSP.lstat(planned), { code: "ENOENT" });
+
+        const alias = NodePath.join(root, "state-alias");
+        await NodeFSP.symlink(state, alias, NodeOS.platform() === "win32" ? "junction" : "dir");
+        await NodeAssert.rejects(checkConversationDirectoryPlacement(state, [alias]), {
+          rule: "excluded_root",
+        });
+        for (const reserved of [conversationRoot, NodePath.join(conversationRoot, "missing")]) {
+          await NodeAssert.rejects(checkConversationDirectoryPlacement(state, [], [reserved]), {
+            rule: "reserved_root_registered",
+          });
+        }
+        await NodeAssert.rejects(
+          checkConversationDirectoryPlacement(
+            state,
+            [],
+            [NodePath.join(alias, "conversation-workspaces", "missing")],
+          ),
+          { rule: "reserved_root_registered" },
+        );
+        await NodeAssert.rejects(checkConversationDirectoryPlacement(NodeOS.tmpdir(), []), {
+          rule: "system_temp",
+        });
+
+        const gitFile = NodePath.join(state, ".git");
+        await NodeFSP.writeFile(gitFile, "gitdir: /elsewhere");
+        await NodeAssert.rejects(checkConversationDirectoryPlacement(state, []), {
+          rule: "git_checkout",
+        });
+        await NodeFSP.unlink(gitFile);
+        await NodeFSP.symlink(
+          root,
+          conversationRoot,
+          NodeOS.platform() === "win32" ? "junction" : "dir",
+        );
+        await NodeAssert.rejects(checkConversationDirectoryPlacement(state, []), {
+          rule: "invalid_root",
+        });
+      }),
 
   "exact empty disposal and same-path resume preserve nonempty content and refuse checkout/temp placement":
     () =>

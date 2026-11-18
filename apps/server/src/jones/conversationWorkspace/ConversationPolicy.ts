@@ -4,6 +4,7 @@ import {
   WorktreeMcpHandoffResult,
   WorktreeMcpSetupScriptStatus,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Path from "effect/Path";
@@ -13,8 +14,12 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../../config.ts";
+import * as ServerSettings from "../../serverSettings.ts";
+import { managedWorktreesDirectories } from "../../worktreesDirectory.ts";
 import {
+  ConversationPlacementError,
   createConversationDirectory,
+  placementRefusals,
   disposeConversationDirectory,
   inspectConversationDirectory,
   resumeConversationDirectory,
@@ -108,17 +113,29 @@ export class ConversationWorkspaceError extends Schema.TaggedError<ConversationW
     reason: Schema.Literals([
       "storage",
       "source",
+      "placement",
       "attach_required",
       "handoff_conflict",
       "handoff_unknown",
       "directory_nonempty",
     ]),
     threadId: Schema.String,
+    placementRule: Schema.optional(
+      Schema.Literals([
+        "excluded_root",
+        "git_checkout",
+        "system_temp",
+        "invalid_root",
+        "reserved_root_registered",
+      ]),
+    ),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message() {
-    return `Conversation workspace: ${this.reason}.`;
+    return this.placementRule === undefined
+      ? `Conversation workspace: ${this.reason}.`
+      : `${placementRefusals[this.placementRule]}.`;
   }
 }
 const isConversationWorkspaceError = Schema.is(ConversationWorkspaceError);
@@ -133,7 +150,15 @@ const io = <A>(
 ) =>
   Effect.tryPromise({
     try: run,
-    catch: (cause) => new ConversationWorkspaceError({ threadId, reason, cause }),
+    catch: (cause) =>
+      cause instanceof ConversationPlacementError
+        ? new ConversationWorkspaceError({
+            threadId,
+            reason: "placement",
+            placementRule: cause.rule,
+            cause,
+          })
+        : new ConversationWorkspaceError({ threadId, reason, cause }),
   });
 
 export const ParentConversation = Context.Reference<string | undefined>(
@@ -229,6 +254,8 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const random = yield* SecureRandom.SecureRandom;
   const paths = yield* Path.Path;
+  const settingsService = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+  const home = yield* HostProcess.HomeDirectory;
   // Registration breaks the construction cycle: ThreadManagement owns the
   // orchestrator which constructs ProviderTurnStart before WorktreeMcpService.
   // No attachment can run until the outer production service layer is ready.
@@ -287,16 +314,22 @@ const make = Effect.gen(function* () {
     const checkoutRoots = yield* sql<{
       root: string | null;
     }>`SELECT json_extract(payload_json, '$.worktreePath') AS root FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL`;
+    const settings =
+      settingsService._tag === "Some"
+        ? yield* settingsService.value.getSettings
+        : { worktreesDirectory: "", previousWorktreesDirectories: [] };
     const excluded = [
       input.projectRoot,
       snapshot.commonDirectory,
-      config.worktreesDir,
-      ...projectRoots.map((row) => row.root),
-      ...checkoutRoots.flatMap((row) => (row.root === null ? [] : [row.root])),
+      ...managedWorktreesDirectories(settings, config.worktreesDir, paths, home),
       ...(input.excluded ?? []),
     ];
+    const registered = [
+      ...projectRoots.map((row) => row.root),
+      ...checkoutRoots.flatMap((row) => (row.root === null ? [] : [row.root])),
+    ];
     const directory = yield* io(input.threadId, "storage", () =>
-      createConversationDirectory(config.stateDir, excluded),
+      createConversationDirectory(config.stateDir, excluded, registered),
     );
     const binding: Binding = {
       ...directory,
