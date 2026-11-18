@@ -7,7 +7,7 @@ import type { PromptItem, PromptStage } from "./promptItems";
  */
 
 export type PromptGroupBy = "default" | "destination" | "queue-state" | "none";
-export type PromptFilter = "all" | "needs-you" | "paused" | "waiting";
+export type PromptFilter = "all" | "needs-you" | "paused" | "waiting" | "unassigned";
 
 export interface PromptGroup {
   readonly key: string;
@@ -23,6 +23,7 @@ export interface PromptOrganizeContext {
     item: PromptItem,
   ) => { readonly key: string; readonly label: string; readonly unrecognized?: boolean } | null;
   readonly queueStateLabel: (item: PromptItem) => string;
+  readonly unassigned?: (item: PromptItem) => boolean;
 }
 
 export const promptGroupOptions: Readonly<Record<PromptStage, readonly PromptGroupBy[]>> = {
@@ -33,7 +34,7 @@ export const promptGroupOptions: Readonly<Record<PromptStage, readonly PromptGro
 export const promptFilterOptions: Readonly<Record<PromptStage, readonly PromptFilter[]>> = {
   pending: ["all", "needs-you", "paused"],
   queued: ["all", "needs-you", "waiting"],
-  sent: ["all", "needs-you"],
+  sent: ["all", "needs-you", "unassigned"],
 };
 
 const bandOrder: readonly PromptBand[] = ["needs-you", "releasing", "paused", "waiting", "other"];
@@ -144,13 +145,14 @@ export function groupPromptItems(
 export function filterPromptItems(
   items: readonly PromptItem[],
   filter: PromptFilter,
-  context: Pick<PromptOrganizeContext, "attention">,
+  context: Pick<PromptOrganizeContext, "attention" | "unassigned">,
   workstreamKey: string | null = null,
   workstreamKeys: (item: PromptItem) => readonly string[] = () => [],
 ) {
   return items.filter((item) => {
     if (workstreamKey !== null && !workstreamKeys(item).includes(workstreamKey)) return false;
     if (filter === "all") return true;
+    if (filter === "unassigned") return context.unassigned?.(item) === true;
     const attention = context.attention(item);
     if (filter === "needs-you") return attention.needsYou;
     if (filter === "paused") return attention.band === "paused";

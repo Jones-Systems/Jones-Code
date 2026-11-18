@@ -10,6 +10,7 @@ import {
 } from "./diagnosticObservation.ts";
 import {
   parseLinuxThreadScheduling,
+  parseMacThreadCounts,
   sampleProcesses,
   sampleCpuStats,
   processResourceSample,
@@ -43,6 +44,30 @@ it("rejects a complete over-budget sample even when other samples are missing", 
   expect(
     resourcePredicates([over, processResourceSample([1, 2, 3], [])], 1, 2).childRssWithinBudget,
   ).toBe(false);
+});
+
+const macThreadTable = [
+  "USER    PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND JONES_SP_PID",
+  "runner  123   ??    0.0 S    31T   0:00.01   0:00.03 node             123",
+  "        123         0.0 S    31T   0:00.00   0:00.00                  123",
+  "runner  456   ??    0.0 S    31T   0:00.01   0:00.03 node             456",
+  "        456         0.0 S    31T   0:00.00   0:00.00                  456",
+  "        456         0.0 S    31T   0:00.00   0:00.00                  456",
+].join("\n");
+
+it("counts attributed macOS thread rows, including each process's main thread", () => {
+  expect([...parseMacThreadCounts(macThreadTable, [123, 456, 789])]).toEqual([
+    [123, 2],
+    [456, 3],
+  ]);
+});
+
+it("leaves macOS thread counts unavailable for an invalid header or unbound row", () => {
+  expect(
+    parseMacThreadCounts(macThreadTable.replace("JONES_SP_PID", "OTHER"), [123, 456]).size,
+  ).toBe(0);
+  expect(parseMacThreadCounts(macThreadTable, [123]).size).toBe(0);
+  expect(parseMacThreadCounts(macThreadTable + "\ntruncated 123", [123, 456]).size).toBe(0);
 });
 
 it("parses only PID-attributed macOS sample thread headers, never stack names", async () => {

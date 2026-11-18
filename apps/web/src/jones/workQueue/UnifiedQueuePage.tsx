@@ -14,7 +14,10 @@ import {
   workQueueDestinationLabel,
 } from "@t3tools/client-runtime/work-queue-metadata";
 import { EnvironmentId, type WorkQueueMetadataResult } from "@t3tools/contracts";
-import { usePersonalWorkstreams } from "../../state/workstreamsPersonal";
+import {
+  useLivePersonalAssignments,
+  usePersonalWorkstreams,
+} from "../../state/workstreamsPersonal";
 import { useQuietThreadShells } from "../../state/entities";
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
 import { isElectron } from "../../env";
@@ -54,6 +57,13 @@ import {
 import { useVoiceReview } from "../../components/voiceReview/useVoiceReview";
 import { WorkQueueMetadataPanel } from "./WorkQueueMetadataPanel";
 import { SentPrompts } from "./SentPrompts";
+import { SentAssignmentDetails } from "./SentWorkstreamAssignment";
+import {
+  sentWorkstreamGroup,
+  sentWorkstreamLines,
+  sentThreadWorkstream,
+  type SentReceiptSource,
+} from "./sentWorkstreams";
 import { useWorkQueueMetadata } from "./useWorkQueueMetadata";
 import { buildPromptItems, type PromptDestination, type PromptItem } from "./promptItems";
 import { promptAttention } from "./promptAttention";
@@ -608,6 +618,18 @@ function EnvironmentPrompts({
       items={kind === "queued" ? built.queued : built.sent}
       nativeEnvironmentId={nativeEnvironmentId}
       queueEnvironmentRef={snapshot?.source.environment_ref ?? null}
+      sentReceiptSource={
+        kind === "sent" &&
+        queueConfigured &&
+        !stale &&
+        built.sourceBound &&
+        snapshot &&
+        metadata &&
+        "snapshot" in metadata
+          ? { environmentId, hostId: snapshot.source.host_id, expiresAt: metadata.expires_at_ms }
+          : null
+      }
+      observedAt={now}
       voice={voiceConfigured ? voice : null}
       correctionSession={correctionSession}
       unavailable={unavailable}
@@ -768,6 +790,8 @@ function PromptStageList({
   items,
   nativeEnvironmentId,
   queueEnvironmentRef,
+  sentReceiptSource,
+  observedAt,
   voice,
   correctionSession,
   unavailable,
@@ -782,6 +806,8 @@ function PromptStageList({
   items: readonly PromptItem[];
   nativeEnvironmentId: string | null;
   queueEnvironmentRef: string | null;
+  sentReceiptSource: SentReceiptSource | null;
+  observedAt: number;
   voice: VoiceReviewMetadata | null;
   correctionSession: VoiceWorkstreamCorrectionSession;
   unavailable: boolean;
@@ -798,6 +824,7 @@ function PromptStageList({
   );
   const formatTime = usePromptTime();
   const { state: personal } = usePersonalWorkstreams();
+  const liveAssignments = useLivePersonalAssignments(stage === "sent" ? environmentId : null);
   const personalNames = new Map(
     personal.environments
       .find((entry) => entry.environmentId === environmentId)
@@ -832,7 +859,29 @@ function PromptStageList({
         : "Voice";
     return requestKindLabel(destination?.queueItem?.request_kind);
   };
-  const linesByItem = new Map(
+  const sentMemberships = new Map(
+    stage === "sent"
+      ? items.map(
+          (item) =>
+            [
+              item.key,
+              item.destinations.map((destination) =>
+                sentThreadWorkstream(
+                  destination,
+                  sentReceiptSource,
+                  personal,
+                  liveAssignments,
+                  observedAt,
+                ),
+              ),
+            ] as const,
+        )
+      : [],
+  );
+  const memberships = (item: PromptItem) => sentMemberships.get(item.key) ?? [];
+  const unassigned = (item: PromptItem) =>
+    memberships(item).some((membership) => membership.kind === "unassigned");
+  const provenanceByItem = new Map(
     items.map((item) => [
       item.key,
       promptWorkstreams(item, {
@@ -846,7 +895,9 @@ function PromptStageList({
       }),
     ]),
   );
-  const lines = (item: PromptItem) => linesByItem.get(item.key) ?? [];
+  const provenance = (item: PromptItem) => provenanceByItem.get(item.key) ?? [];
+  const lines = (item: PromptItem) =>
+    stage === "sent" ? sentWorkstreamLines(memberships(item)) : provenance(item);
   const liveTitles = new Map(
     useQuietThreadShells()
       .filter((shell) => shell.environmentId === environmentId)
@@ -871,7 +922,9 @@ function PromptStageList({
     {
       attention: (item) => promptAttention(item),
       destinationLabel,
+      unassigned,
       workstream: (item) => {
+        if (stage === "sent") return sentWorkstreamGroup(memberships(item));
         const candidates = lines(item);
         const first = candidates.find((line) => line.name !== null) ?? candidates[0];
         return first === undefined
@@ -963,7 +1016,29 @@ function PromptStageList({
               unavailable={unavailable}
               formatTime={formatTime}
               workstreamName={workstreamName}
-              lines={lines(selectedItem)}
+              lines={
+                stage === "sent"
+                  ? [
+                      ...lines(selectedItem),
+                      ...provenance(selectedItem).filter(
+                        (line) =>
+                          line.provenance === "queue_id" ||
+                          line.provenance === "requested_by_queue",
+                      ),
+                    ]
+                  : lines(selectedItem)
+              }
+              sentAssignment={
+                stage === "sent" ? (
+                  <SentAssignmentDetails
+                    item={selectedItem}
+                    memberships={memberships(selectedItem)}
+                    source={sentReceiptSource}
+                    state={personal}
+                    filteredToUnassigned={listView.filter === "unassigned"}
+                  />
+                ) : null
+              }
               namesUnavailable={Boolean(
                 voice?.labelsFailed ||
                 personal.environments.some(
@@ -1004,6 +1079,7 @@ function PromptItemDetail({
   workstreamName,
   lines,
   namesUnavailable,
+  sentAssignment,
 }: {
   environmentId: EnvironmentId;
   item: PromptItem;
@@ -1018,6 +1094,7 @@ function PromptItemDetail({
   workstreamName: (id: string) => string;
   lines: readonly PromptWorkstreamLine[];
   namesUnavailable: boolean;
+  sentAssignment: ReactNode;
 }) {
   const [routingOpen, setRoutingOpen] = useState(false);
   const primary = item.destinations[0] ?? null;
@@ -1107,7 +1184,8 @@ function PromptItemDetail({
           lines={lines}
           namesUnavailable={namesUnavailable}
           corrections={
-            item.entry && item.stage === "queued" && voice ? (
+            sentAssignment ??
+            (item.entry && item.stage === "queued" && voice ? (
               <VoiceWorkstreamCorrections
                 entry={item.entry}
                 thread={thread}
@@ -1118,7 +1196,7 @@ function PromptItemDetail({
                 onRefresh={voice.refresh}
                 unavailable={correctionsBlocked || namesUnavailable}
               />
-            ) : null
+            ) : null)
           }
         />
       }
