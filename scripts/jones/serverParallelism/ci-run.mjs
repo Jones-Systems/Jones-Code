@@ -15,7 +15,7 @@ const diagnosticModes =
     ? ["cadence-standard", "cadence-reduced"]
     : scope === "observer-control"
       ? ["cpu-stat-only"]
-      : scope === "observer-diagnostic"
+      : scope === "observer-diagnostic" || scope === "observer-residency"
         ? ["full"]
         : [];
 const diagnosticScope = diagnosticModes.length > 0;
@@ -153,18 +153,20 @@ async function report(name, path) {
       name,
     );
 }
-async function runBaseline(profile) {
-  const baseline = NodePath.join(output, `baseline-${profile}.json`);
-  await node(`baseline-${profile}`, [
+async function runBaseline(profile, mode) {
+  const name = mode === "bounded-churn" ? `baseline-bounded-${profile}` : `baseline-${profile}`;
+  const baseline = NodePath.join(output, `${name}.json`);
+  await node(name, [
     "scripts/jones/serverParallelism/baseline.mjs",
     baseline,
     profile,
+    ...(mode ? [mode] : []),
   ]);
   try {
     const original = await NodeFSP.readFile(baseline, "utf8"),
       value = JSON.parse(original),
       result = results.at(-1);
-    await NodeFSP.writeFile(NodePath.join(output, `baseline-${profile}.initial.json`), original, {
+    await NodeFSP.writeFile(NodePath.join(output, `${name}.initial.json`), original, {
       flag: "wx",
       mode: 0o600,
     });
@@ -208,12 +210,12 @@ async function runBaseline(profile) {
     );
   } catch (cause) {
     results.push({
-      name: `baseline-cleanup-${profile}`,
+      name: `${name}-cleanup`,
       outcome: "failed",
       error: String(cause),
     });
   }
-  await report(`baseline-${profile}`, baseline);
+  await report(name, baseline);
   return baseline;
 }
 
@@ -331,6 +333,7 @@ try {
       });
       requireRetirement(value?.cleanupProved === true && results.at(-1)?.capturedExit === true, name);
     }
+    if (scope === "observer-residency") await runBaseline("laptop", "bounded-churn");
   } else {
     for (const profile of ["laptop", "vps"]) {
       const baseline = await runBaseline(profile);
