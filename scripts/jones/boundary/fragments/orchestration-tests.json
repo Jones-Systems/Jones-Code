@@ -9,6 +9,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "evals/mcp-tool-use/backgroundWait.ts",
+      "to": "apps/server/src/jones/testing/UnusedCorePorts.testkit.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/ProjectionStore.ts",
       "to": "apps/server/src/jones/orchestration/MemoryProjectionStore.ts"
     },

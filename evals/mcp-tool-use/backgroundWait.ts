@@ -21,23 +21,20 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
 // oxlint-disable-next-line t3code/no-raw-mcp-registration -- the eval calls the tool McpHttpServer registered and registers none.
-import { McpSchema, McpServer } from "effect/ai";
+import { McpSchema, McpServer, Toolkit } from "effect/ai";
 
+import { unusedCorePorts } from "../../apps/server/src/jones/testing/UnusedCorePorts.testkit.ts";
 import * as McpHttpServer from "../../apps/server/src/mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
+import * as McpToolAccess from "../../apps/server/src/mcp/McpToolAccess.ts";
 import { liveThreadShell } from "../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "../../apps/server/src/mcp/OrchestratorMcpService.ts";
-import * as ThreadMetadataMcpService from "../../apps/server/src/mcp/ThreadMetadataMcpService.ts";
 import * as OrchestratorHandlers from "../../apps/server/src/mcp/toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "../../apps/server/src/mcp/toolkits/orchestrator/tools.ts";
 import * as CommandReceiptStore from "../../apps/server/src/orchestration-v2/CommandReceiptStore.ts";
 import * as Orchestrator from "../../apps/server/src/orchestration-v2/Orchestrator.ts";
 import * as ProviderSessionManager from "../../apps/server/src/orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagementService from "../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
-import * as PeerForwarding from "../../apps/server/src/peer/PeerForwarding.ts";
-import * as PeerLinkRequests from "../../apps/server/src/peer/PeerLinkRequests.ts";
-import * as PeerLinks from "../../apps/server/src/peer/PeerLinks.ts";
-import * as RemoteDelegation from "../../apps/server/src/peer/RemoteDelegation.ts";
 import * as SqlitePersistence from "../../apps/server/src/persistence/Sqlite.ts";
 import * as ServerSettings from "../../apps/server/src/serverSettings.ts";
 
@@ -46,6 +43,11 @@ const providerThreadId = ProviderThreadId.make("provider-thread:mcp-tool-use-eva
 const providerSessionId = ProviderSessionId.make("provider-session:mcp-tool-use-eval");
 const providerInstanceId = ProviderInstanceId.make("claudeAgent");
 const driver = ProviderDriverKind.make("claudeAgent");
+
+const backgroundWaitToolkit = Toolkit.make(OrchestratorToolkit.tools.t3_background_wait);
+const backgroundWaitHandlers = McpToolAccess.toLayer(backgroundWaitToolkit, {
+  t3_background_wait: OrchestratorHandlers.handlers.t3_background_wait,
+});
 
 /** Calls T3's `t3_background_wait` with `running` as the session's running background task IDs. */
 export const makeBackgroundWait = Effect.fn("evaluateMcpToolUse.makeBackgroundWait")(function* (
@@ -74,6 +76,7 @@ export const makeBackgroundWait = Effect.fn("evaluateMcpToolUse.makeBackgroundWa
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(Orchestrator.OrchestratorV2)({
+            ...unusedCorePorts(),
             getThreadRecords: () =>
               Effect.succeed({
                 thread: { id: threadId, deletedAt: null, activeProviderThreadId: providerThreadId },
@@ -97,15 +100,10 @@ export const makeBackgroundWait = Effect.fn("evaluateMcpToolUse.makeBackgroundWa
     getThreadShell: () => Effect.succeed({ ...liveThreadShell(threadId), providerInstanceId }),
   });
   const context = yield* Layer.build(
-    McpHttpServer.toolkitRegistration(OrchestratorToolkit, OrchestratorHandlers.layer).pipe(
+    McpHttpServer.toolkitRegistration(backgroundWaitToolkit, backgroundWaitHandlers).pipe(
       Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provide(Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({})),
-      Layer.provide(Layer.mock(ThreadMetadataMcpService.ThreadMetadataMcpService)({})),
       Layer.provide(threads),
-      Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
-      Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
-      Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
-      Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
     ),
   );
   type Entry = Parameters<McpServer.McpServer["Service"]["addTool"]>[0];
