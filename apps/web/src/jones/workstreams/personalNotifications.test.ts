@@ -61,7 +61,7 @@ describe("personal Workstreams notifications", () => {
       expect.objectContaining({
         type: "success",
         title: "Assigned to HQ - Threads and Work",
-        timeout: 2_000,
+        timeout: 1_500,
         description: "This thread remains in Pinned.",
       }),
     );
@@ -70,7 +70,7 @@ describe("personal Workstreams notifications", () => {
       expect.objectContaining({
         type: "success",
         title: "Thread is now Unassigned",
-        timeout: 2_000,
+        timeout: 1_500,
       }),
     );
   });
