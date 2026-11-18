@@ -4,6 +4,9 @@ The sidebar and mobile thread navigation use the shared [personal Workstreams co
 
 Completed and Abandoned groups appear under **Closed Workstreams**. The closed group detail lists its saved thread assignments and offers **Reopen Workstream**. An unsettled historical member appears under **Unassigned** in the sidebar.
 
+In the shared web and desktop sidebar, **Unassigned** is the first group below the
+search and creation toolbar. Thread navigation shortcuts follow the displayed order.
+
 | Journey                                           | Surface                                                                                    | Coverage                                                              |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
 | Create, rename, color, lifecycle, reorder, delete | Sidebar group menu; mobile group controls                                                  | Personal browser and mobile presentation/control tests                |

@@ -763,7 +763,7 @@ export function WorkstreamSidebarSection({
     setDraggedId(null);
     setInsertion(null);
   };
-  const destination = (event: DragEvent<HTMLDivElement>, targetId: string | null) => {
+  const destination = (event: DragEvent<HTMLDivElement>, targetId: string) => {
     const source = draggedRef.current;
     if (
       !source ||
@@ -775,27 +775,19 @@ export function WorkstreamSidebarSection({
     const sourceIndex = openWorkstreams.findIndex((entry) => entry.id === source);
     if (sourceIndex < 0) return null;
     const others = openWorkstreams.filter((entry) => entry.id !== source);
-    let slot: number;
-    if (targetId === null) {
-      // Unassigned is a fixed tail: only its leading gap and header accept a drop.
-      const header = event.currentTarget.querySelector("button");
-      if (!header || event.clientY > header.getBoundingClientRect().bottom) return null;
-      slot = others.length;
-    } else {
-      if (targetId === source) return null;
-      const header = event.currentTarget.querySelector("[data-workstream-header]");
-      if (!header) return null;
-      // Rows can make a group very tall. Header halves must remain reachable
-      // drop targets in both directions regardless of the group's member count.
-      const rect = header.getBoundingClientRect();
-      const index = others.findIndex((entry) => entry.id === targetId);
-      if (index < 0) return null;
-      slot = index + (event.clientY >= rect.top + rect.height / 2 ? 1 : 0);
-    }
+    if (targetId === source) return null;
+    const header = event.currentTarget.querySelector("[data-workstream-header]");
+    if (!header) return null;
+    // Rows can make a group very tall. Header halves must remain reachable
+    // drop targets in both directions regardless of the group's member count.
+    const rect = header.getBoundingClientRect();
+    const index = others.findIndex((entry) => entry.id === targetId);
+    if (index < 0) return null;
+    const slot = index + (event.clientY >= rect.top + rect.height / 2 ? 1 : 0);
     if (slot === sourceIndex) return null;
     return { beforeId: others[slot - 1]?.id ?? null, afterId: others[slot]?.id ?? null };
   };
-  const dragOver = (event: DragEvent<HTMLDivElement>, targetId: string | null) => {
+  const dragOver = (event: DragEvent<HTMLDivElement>, targetId: string) => {
     if (!draggedRef.current) return;
     event.stopPropagation();
     const next = destination(event, targetId);
@@ -807,7 +799,7 @@ export function WorkstreamSidebarSection({
       current?.beforeId === next?.beforeId && current?.afterId === next?.afterId ? current : next,
     );
   };
-  const drop = (event: DragEvent<HTMLDivElement>, targetId: string | null) => {
+  const drop = (event: DragEvent<HTMLDivElement>, targetId: string) => {
     if (!draggedRef.current) return;
     event.preventDefault();
     event.stopPropagation();
@@ -872,11 +864,11 @@ export function WorkstreamSidebarSection({
         setDeletePending(false);
       });
   };
-  const insertionLine = (
+  const insertionLine = (atEnd = false) => (
     <div
       aria-hidden
       data-workstream-insertion
-      className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-primary forced-colors:bg-[Highlight]"
+      className={`pointer-events-none absolute inset-x-0 ${atEnd ? "bottom-0" : "top-0"} z-10 h-0.5 bg-primary forced-colors:bg-[Highlight]`}
     />
   );
   return (
@@ -884,6 +876,9 @@ export function WorkstreamSidebarSection({
       ref={containerRef}
       aria-label="Workstreams"
       onDragEnd={clearDrag}
+      onDragOver={() => {
+        if (draggedRef.current) setInsertion(null);
+      }}
       onDrop={clearDrag}
       onKeyDown={(event) => {
         if (event.key === "Escape") clearDrag();
@@ -906,6 +901,38 @@ export function WorkstreamSidebarSection({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInsertion(null);
       }}
     >
+      <div data-workstream-group-slot className="relative py-1">
+        <section
+          data-native-workstream="null"
+          style={{
+            backgroundColor:
+              dropTargetId === null && unassignedCollapsed
+                ? "color-mix(in oklab, var(--primary) 3.25%, transparent)"
+                : undefined,
+          }}
+          data-thread-drop-target={dropTargetId === null ? "" : undefined}
+          className={`min-w-0 rounded-md ${dropTargetId === null ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
+        >
+          <button
+            type="button"
+            aria-label={`${unassignedCollapsed ? "Expand" : "Collapse"} Unassigned`}
+            aria-description={formatPersonalThreadCount(unassignedSummary.total)}
+            aria-expanded={!unassignedCollapsed}
+            onClick={() => setUnassignedCollapsed((value) => !value)}
+            className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          >
+            <ChevronDownIcon
+              aria-hidden
+              className={`size-4 shrink-0 ${unassignedCollapsed ? "-rotate-90" : ""}`}
+            />
+            <span className="truncate">Unassigned</span>
+            <span className="ml-auto shrink-0 text-xs tabular-nums">
+              {formatPersonalThreadCount(unassignedSummary.total)}
+            </span>
+          </button>
+          {!unassignedCollapsed ? renderMembers(null) : null}
+        </section>
+      </div>
       {openWorkstreams.length > 0 ? (
         <PersonalWorkstreamsHeader
           summary={namedSummary}
@@ -919,7 +946,7 @@ export function WorkstreamSidebarSection({
         />
       ) : null}
       {/* The container stays mounted so the disclosure's aria-controls always resolves. */}
-      <div id={namedGroupsId} hidden={namedHidden}>
+      <div id={namedGroupsId} hidden={namedHidden} className="relative">
         {!namedHidden
           ? openWorkstreams.map((item) => (
               <div
@@ -929,7 +956,7 @@ export function WorkstreamSidebarSection({
                 onDragOver={(event) => dragOver(event, item.id)}
                 onDrop={(event) => drop(event, item.id)}
               >
-                {insertion?.afterId === item.id ? insertionLine : null}
+                {insertion?.afterId === item.id ? insertionLine() : null}
                 <Group
                   item={item}
                   nameIconProjects={nameIconProjects}
@@ -969,40 +996,7 @@ export function WorkstreamSidebarSection({
               </div>
             ))
           : null}
-      </div>
-      <div
-        data-workstream-group-slot
-        className="relative py-1"
-        onDragOver={(event) => dragOver(event, null)}
-        onDrop={(event) => drop(event, null)}
-      >
-        {insertion?.afterId === null ? insertionLine : null}
-        <section
-          data-native-workstream="null"
-          style={{
-            backgroundColor:
-              dropTargetId === null && unassignedCollapsed
-                ? "color-mix(in oklab, var(--primary) 3.25%, transparent)"
-                : undefined,
-          }}
-          data-thread-drop-target={dropTargetId === null ? "" : undefined}
-          className={`min-w-0 rounded-md ${dropTargetId === null ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
-        >
-          <button
-            type="button"
-            aria-label={`${unassignedCollapsed ? "Expand" : "Collapse"} Unassigned`}
-            aria-description={formatPersonalThreadCount(unassignedSummary.total)}
-            aria-expanded={!unassignedCollapsed}
-            onClick={() => setUnassignedCollapsed((value) => !value)}
-            className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-          >
-            <span className="truncate">Unassigned</span>
-            <span className="ml-auto shrink-0 text-xs tabular-nums">
-              {formatPersonalThreadCount(unassignedSummary.total)}
-            </span>
-          </button>
-          {!unassignedCollapsed ? renderMembers(null) : null}
-        </section>
+        {insertion?.afterId === null ? insertionLine(true) : null}
       </div>
       <ClosedWorkstreams controller={controller} state={state} onOpenThread={onOpenHistoryThread} />
       {deleteTarget ? (

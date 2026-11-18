@@ -466,10 +466,10 @@ describe("Workstream options and header ordering", () => {
     await using screen = await render(setup.ui);
     await options();
     await userEvent.click(page.getByRole("menuitem", { name: "Move down", exact: true }));
-    expect(order(screen.container)).toEqual(["menu-Beta", "menu-Alpha", "menu-Gamma", null]);
+    expect(order(screen.container)).toEqual([null, "menu-Beta", "menu-Alpha", "menu-Gamma"]);
     await options();
     await userEvent.click(page.getByRole("menuitem", { name: "Move up", exact: true }));
-    expect(order(screen.container)).toEqual(["menu-Alpha", "menu-Beta", "menu-Gamma", null]);
+    expect(order(screen.container)).toEqual([null, "menu-Alpha", "menu-Beta", "menu-Gamma"]);
     expect(setup.controller.reorder).toHaveBeenNthCalledWith(1, "menu-Alpha", {
       beforeId: "menu-Beta",
       afterId: "menu-Gamma",
@@ -612,7 +612,7 @@ describe("Workstream options and header ordering", () => {
     expect(setup.registry.get(setup.controller.state).workstreams.map((entry) => entry.id)).toEqual(
       ["menu-Beta", "menu-Gamma"],
     );
-    expect(order(screen.container)).toEqual(["menu-Beta", "menu-Gamma", null]);
+    expect(order(screen.container)).toEqual([null, "menu-Beta", "menu-Gamma"]);
     await expect
       .element(page.getByRole("button", { name: "Options for Alpha", exact: true }))
       .not.toBeInTheDocument();
@@ -634,7 +634,7 @@ describe("Workstream options and header ordering", () => {
     await act(() => request.reject(new Error("Delete transport failed")));
     await expect.element(page.getByRole("alertdialog")).toBeVisible();
     await expect.element(page.getByRole("alertdialog")).toHaveAccessibleName("Delete “Alpha”?");
-    expect(order(screen.container)).toEqual(["menu-Alpha", "menu-Beta", "menu-Gamma", null]);
+    expect(order(screen.container)).toEqual([null, "menu-Alpha", "menu-Beta", "menu-Gamma"]);
     await expect.element(page.getByRole("button", { name: "Cancel", exact: true })).toBeEnabled();
     await expect.element(page.getByRole("button", { name: "Cancel", exact: true })).toHaveFocus();
     await expect
@@ -672,7 +672,7 @@ describe("Workstream options and header ordering", () => {
     await deletion();
     expect(request.put).not.toHaveBeenCalled();
     await userEvent.click(page.getByRole("button", { name: "Delete Workstream", exact: true }));
-    expect(order(screen.container)).toEqual(["menu-Beta", "menu-Gamma", null]);
+    expect(order(screen.container)).toEqual([null, "menu-Beta", "menu-Gamma"]);
     await expect.element(page.getByRole("alertdialog")).toBeVisible();
     await expect
       .element(page.getByRole("button", { name: "Deleting…", exact: true }))
@@ -683,7 +683,7 @@ describe("Workstream options and header ordering", () => {
     await expect
       .element(page.getByRole("button", { name: "Collapse Beta", exact: true }))
       .toHaveFocus();
-    expect(order(screen.container)).toEqual(["menu-Beta", "menu-Gamma", null]);
+    expect(order(screen.container)).toEqual([null, "menu-Beta", "menu-Gamma"]);
     await deletion("Gamma");
     await userEvent.click(page.getByRole("button", { name: "Delete Workstream", exact: true }));
     await expect
@@ -741,7 +741,7 @@ describe("Workstream options and header ordering", () => {
       beforeId: "menu-Beta",
       afterId: "menu-Gamma",
     });
-    expect(order(screen.container)).toEqual(["menu-Beta", "menu-Alpha", "menu-Gamma", null]);
+    expect(order(screen.container)).toEqual([null, "menu-Beta", "menu-Alpha", "menu-Gamma"]);
     expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
     expect(getComputedStyle(section(screen.container, "Alpha")).opacity).toBe("1");
   });
@@ -762,47 +762,42 @@ describe("Workstream options and header ordering", () => {
       beforeId: null,
       afterId: "menu-Alpha",
     });
-    expect(order(screen.container)).toEqual(["menu-Beta", "menu-Alpha", "menu-Gamma", null]);
+    expect(order(screen.container)).toEqual([null, "menu-Beta", "menu-Alpha", "menu-Gamma"]);
     expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
   });
 
-  it("accepts the gap above Unassigned as the tail but rejects its body and clears canceled drags", async () => {
+  it("keeps Unassigned fixed and supports dropping after the last named Workstream", async () => {
     using setup = fixture();
     await using screen = await render(setup.ui);
     const transfer = await startDrag(screen.container, "Alpha");
     const unassigned = section(screen.container, null);
-    const bottom = unassigned.getBoundingClientRect().bottom - 1;
-    await act(() => {
-      drag(unassigned, "dragover", transfer, bottom);
-    });
-    expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
-    const top = unassigned.getBoundingClientRect().top - 2;
-    await act(() => {
-      drag(unassigned.parentElement!, "dragover", transfer, top);
-    });
-    expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(1);
-    await act(() => {
-      drag(header(screen.container, "Alpha"), "dragend", transfer);
-    });
-    expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
+    const headerY = unassigned.querySelector("button")!.getBoundingClientRect().top + 2;
+    await act(() => drag(unassigned, "dragover", transfer, headerY));
+    expect(screen.container.querySelector("[data-workstream-insertion]")).toBeNull();
+
+    const gamma = section(screen.container, "Gamma");
+    const rect = gamma.querySelector("[data-workstream-header]")!.getBoundingClientRect();
+    const afterY = rect.top + rect.height * 0.8;
+    await act(() => drag(gamma, "dragover", transfer, afterY));
+    const line = screen.container.querySelector("[data-workstream-insertion]")!;
+    expect(line.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      gamma.getBoundingClientRect().bottom,
+    );
+    await act(() => drag(unassigned, "dragover", transfer, headerY));
+    expect(screen.container.querySelector("[data-workstream-insertion]")).toBeNull();
+    await act(() => drag(gamma, "dragover", transfer, afterY));
+    await act(() => drag(header(screen.container, "Alpha"), "dragend", transfer));
+    expect(screen.container.querySelector("[data-workstream-insertion]")).toBeNull();
     expect(getComputedStyle(section(screen.container, "Alpha")).opacity).toBe("1");
     expect(setup.controller.reorder).not.toHaveBeenCalled();
+
     const again = await startDrag(screen.container, "Alpha");
-    await act(() => {
-      drag(unassigned.parentElement!, "drop", again, top);
-    });
-    expect(setup.controller.reorder).toHaveBeenCalledWith("menu-Alpha", {
+    await act(() => drag(gamma, "drop", again, afterY));
+    expect(setup.controller.reorder).toHaveBeenCalledExactlyOnceWith("menu-Alpha", {
       beforeId: "menu-Gamma",
       afterId: null,
     });
-    expect(order(screen.container)).toEqual(["menu-Beta", "menu-Gamma", "menu-Alpha", null]);
-    const noOp = await startDrag(screen.container, "Alpha");
-    await act(() => {
-      drag(unassigned, "dragover", noOp, unassigned.getBoundingClientRect().top + 10);
-      drag(unassigned, "drop", noOp, unassigned.getBoundingClientRect().top + 10);
-    });
-    expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
-    expect(setup.controller.reorder).toHaveBeenCalledTimes(1);
+    expect(order(screen.container)).toEqual([null, "menu-Beta", "menu-Gamma", "menu-Alpha"]);
   });
 
   it("rejects a header drop when the controller becomes read-only during the drag", async () => {
@@ -821,7 +816,7 @@ describe("Workstream options and header ordering", () => {
     });
     expect(screen.container.querySelectorAll("[data-workstream-insertion]")).toHaveLength(0);
     expect(setup.controller.reorder).not.toHaveBeenCalled();
-    expect(order(screen.container)).toEqual(["menu-Alpha", "menu-Beta", "menu-Gamma", null]);
+    expect(order(screen.container)).toEqual([null, "menu-Alpha", "menu-Beta", "menu-Gamma"]);
     await options();
     await expect
       .element(page.getByRole("menuitem", { name: "Delete Workstream…", exact: true }))
