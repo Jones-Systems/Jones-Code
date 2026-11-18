@@ -81,7 +81,7 @@ it.each([
       const copyFailure = new Error("partial-copy fixture");
       let released = 0;
       let calls = 0;
-      // build-exe now runs two packs, the embedded CLI bundle then the executable, over one asset directory.
+      // Both embedded entries and the executable share one scoped asset directory.
       let cliAssetDir = "";
       for (const override of DEVELOPMENT_ICON_OVERRIDES) {
         const source = NodePath.join(worktree, override.sourceRelativePath);
@@ -108,7 +108,7 @@ it.each([
           expect(command.options.shell).toBe(false);
           expect(command.options.detached).toBe(nativePlatform !== "win32");
           if (executable) {
-            expect(command.options.env?.T3CODE_PACK_EXE).toBe(call === 1 ? "bundle" : "1");
+            expect(command.options.env?.T3CODE_PACK_EXE).toBe(["bundle", "compute", "1"][call - 1]);
             expect(command.options.env?.T3CODE_PACK_EXE_TARGET).toBe("darwin-arm64");
             const assetDir = command.options.env?.T3CODE_CLI_ASSET_DIR;
             if (typeof assetDir !== "string" || assetDir === "")
@@ -129,13 +129,17 @@ it.each([
               await NodeFSP.mkdir(root, { recursive: true });
               if (executable && call === 1) {
                 await NodeFSP.writeFile(NodePath.join(cliAssetDir, "binMain.mjs"), "export {};\n");
-              } else {
+              } else if (executable && call === 2) {
+                const computeDir = NodePath.join(cliAssetDir, "compute");
+                await NodeFSP.mkdir(computeDir);
                 await NodeFSP.writeFile(
-                  NodePath.join(root, "bin.mjs"),
+                  NodePath.join(computeDir, "serverComputeWorker.mjs"),
                   scenario === "validation-failure"
                     ? 'import "fixture-external";\n'
                     : "export {};\n",
                 );
+              } else {
+                await NodeFSP.writeFile(NodePath.join(root, "bin.mjs"), "export {};\n");
               }
             }),
             () =>
@@ -186,7 +190,7 @@ it.each([
           );
         }).pipe(Effect.provide(NodeServices.layer)),
       );
-      expect(calls).toBe(executable ? 2 : 1);
+      expect(calls).toBe(executable ? 3 : 1);
       expect(released).toBe(calls);
       const stored = await records();
       expect(stored).toHaveLength(1);
