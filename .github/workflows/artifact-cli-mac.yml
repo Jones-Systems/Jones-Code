@@ -53,7 +53,7 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: ${{ github.ref == 'refs/heads/main' }}
           run-install: |
             args:
               - --filter=t3...
