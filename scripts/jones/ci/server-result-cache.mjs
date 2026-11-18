@@ -68,7 +68,7 @@ export function verifyCases(expected, results) {
   }
 }
 
-function identity(shard, env) {
+export function pilotCacheIdentity(shard, env) {
   return {
     repository: env.GITHUB_REPOSITORY,
     commit: env.GITHUB_SHA,
@@ -76,7 +76,11 @@ function identity(shard, env) {
     attempt: env.GITHUB_RUN_ATTEMPT,
     shard,
     weights: env.JONES_SERVER_SHARD_WEIGHTS_DIGEST ?? "checked-in",
-    image: env.ImageVersion,
+    // Hosted runners can roll image revisions during the same run. The fresh
+    // control and audit compare outcomes across matching platforms.
+    os: env.RUNNER_OS,
+    architecture: env.RUNNER_ARCH,
+    imageFamily: env.ImageOS,
     node: process.version,
   };
 }
@@ -89,7 +93,7 @@ async function select(env) {
     const shard = index + "/" + count;
     const files = await shardedTestFiles(server, shard);
     if (!files.includes(NodePath.join(server, transferTest))) continue;
-    const state = identity(shard, env);
+    const state = pilotCacheIdentity(shard, env);
     const key = "jones-server-result-pilot-v1-" + digest(JSON.stringify(state));
     NodeFS.writeFileSync(
       NodePath.join(env.JONES_RESULT_CACHE_DIR, "selection.json"),
@@ -208,6 +212,7 @@ function measure(phase, env) {
       schema,
       phase,
       state,
+      runnerImageVersion: env.ImageVersion ?? null,
       elapsedMs,
       archiveRestored: producer !== null,
       cacheHits: hits.length,
@@ -283,6 +288,11 @@ function compare(env) {
     JSON.stringify({
       schema: "jones.server-result-cache-comparison/v1",
       state,
+      runnerImageVersions: {
+        control: header.runner.imageVersion,
+        cold: cold.runnerImageVersion,
+        warm: warm.runnerImageVersion,
+      },
       controlReportSha256: receipt.reportSha256,
       files: Object.keys(warm.files).length,
       cacheHits: warm.cacheHits,

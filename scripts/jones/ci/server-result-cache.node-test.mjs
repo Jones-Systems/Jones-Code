@@ -1,8 +1,30 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeTest from "node:test";
-import { caseResults, verifyCases } from "./server-result-cache.mjs";
+import { caseResults, pilotCacheIdentity, verifyCases } from "./server-result-cache.mjs";
 
 const root = "/workspace/apps/server";
+
+NodeTest.test("image rollouts retain the pilot key but platform changes do not", () => {
+  const runner = {
+    GITHUB_RUN_ID: "123",
+    GITHUB_SHA: "a".repeat(40),
+    RUNNER_OS: "Linux",
+    RUNNER_ARCH: "X64",
+    ImageOS: "ubuntu24",
+    ImageVersion: "20261116.133.1",
+  };
+  const cold = pilotCacheIdentity("4/8", runner);
+  NodeAssert.deepEqual(
+    cold,
+    pilotCacheIdentity("4/8", { ...runner, ImageVersion: "20261111.127.1" }),
+  );
+  NodeAssert.notDeepEqual(cold, pilotCacheIdentity("4/8", { ...runner, RUNNER_ARCH: "ARM64" }));
+  NodeAssert.notDeepEqual(cold, pilotCacheIdentity("4/8", { ...runner, ImageOS: "ubuntu22" }));
+  NodeAssert.notDeepEqual(
+    cold,
+    pilotCacheIdentity("4/8", { ...runner, GITHUB_SHA: "b".repeat(40) }),
+  );
+});
 
 function moduleReport(name, status = "passed", title = "reads") {
   return { name, assertionResults: [{ ancestorTitles: ["git"], title, status }] };
