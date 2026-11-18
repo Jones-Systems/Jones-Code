@@ -525,8 +525,25 @@ the fresh shard report. The transfer-budget test runs fresh in all three.
 If the selected shard includes the system service control test, that test also
 runs fresh because Vite's cache tracer would alter the environment it checks.
 The warm job summary records the comparison and elapsed times. The pilot
-result archive is scoped to the experiment. The normal server matrix still
-qualifies every selected test fresh and supplies the shard weight measurements.
+result archive is scoped to the experiment.
+
+Set the repository Actions variable `JONES_SERVER_RESULT_CACHE=on` to enable
+per-file result reuse on every selected Linux server shard of eligible
+same-repository pull requests to the default branch. Each PR and shard has
+its own archives. A cache hit needs matching inputs and recorded producer
+evidence. Each shard with hits reruns one of them fresh as an audit. The
+transfer-budget and service-control tests always run fresh. Shards using the
+cache path do not contribute timings. Main pushes run fresh and supply the
+shard weights. Manual, stacked, fork and unknown-scope runs also stay fresh.
+New archives require headroom within GitHub's included cache allowance. When
+headroom is low or unknown and there is no usable archive, the shard runs fresh.
+
+For a rollback, go to **Settings → Secrets and variables → Actions → Variables**
+and set `JONES_SERVER_RESULT_CACHE` to `off` or remove it. Re-run the affected
+CI jobs at the same commit. Each restarted server shard reads the switch
+again and uses the original full-shard command when it is off. To replace
+every shard's result with fresh evidence, choose **Re-run all jobs**. Reruns
+that predate the rollout retain their original workflow definition.
 
 ### Standing delivery and merge contract
 
