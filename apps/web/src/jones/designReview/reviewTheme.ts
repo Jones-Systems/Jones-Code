@@ -74,7 +74,9 @@ function colorsFromHost(style: CSSStyleDeclaration, appearance: ThemeAppearance)
     (candidate) =>
       candidate !== null &&
       entries.length > 0 &&
-      entries.every(([role, color]) => (themeColorToHex(candidate[role]) ?? candidate[role]) === color),
+      entries.every(
+        ([role, color]) => (themeColorToHex(candidate[role]) ?? candidate[role]) === color,
+      ),
   );
   if (match) return match;
 

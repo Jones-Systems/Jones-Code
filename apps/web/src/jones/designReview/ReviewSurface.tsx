@@ -20,7 +20,7 @@ export function ReviewSurface(props: {
 }) {
   return (
     <main className="flex min-w-0 flex-col gap-3">
-      <header className="review-chrome grid gap-1">
+      <header data-design-review-chrome className="grid gap-1">
         <h1 className="text-sm font-semibold">{props.title}</h1>
         <p className="text-sm text-muted-foreground">{props.summary}</p>
       </header>
@@ -36,7 +36,7 @@ function ReviewProvenance(props: {
 }) {
   const blocked = useSyncExternalStore(subscribeBlockedEffects, blockedEffectsSnapshot);
   return (
-    <details className="review-chrome text-xs text-muted-foreground">
+    <details data-design-review-chrome className="text-xs text-muted-foreground">
       <summary className="w-fit cursor-pointer">Build details</summary>
       <div className="mt-1 grid gap-1.5">
         <p>Real product components: {props.components.join(", ")}.</p>
@@ -69,7 +69,7 @@ export function ReviewChoice<Value extends string>(props: {
         aria-labelledby={labelId}
         variant="default"
         size="compact"
-        className="max-w-full flex-wrap gap-1"
+        className="max-w-full flex-wrap"
         value={[props.value]}
         onValueChange={(next) => {
           const option = props.options.find((candidate) => candidate.value === next[0]);
@@ -77,12 +77,7 @@ export function ReviewChoice<Value extends string>(props: {
         }}
       >
         {props.options.map((option) => (
-          <Toggle
-            key={option.value}
-            value={option.value}
-            variant="pill"
-            className="min-h-7 border-border px-2.5 text-xs data-pressed:border-transparent data-pressed:bg-accent"
-          >
+          <Toggle key={option.value} value={option.value} variant="pill">
             {option.label}
           </Toggle>
         ))}
@@ -92,13 +87,12 @@ export function ReviewChoice<Value extends string>(props: {
 }
 
 /** A single frame keeps the product surface visually distinct from the walkthrough controls. */
-export function ReviewWindow(props: {
-  readonly caption: string;
-  readonly children: ReactNode;
-}) {
+export function ReviewWindow(props: { readonly caption: string; readonly children: ReactNode }) {
   return (
     <figure className="m-0 grid min-w-0 gap-1.5">
-      <figcaption className="review-chrome text-xs text-muted-foreground">{props.caption}</figcaption>
+      <figcaption data-design-review-chrome className="text-xs text-muted-foreground">
+        {props.caption}
+      </figcaption>
       <div className="overflow-hidden rounded-lg border border-border bg-background text-foreground">
         <div className="flex items-center gap-2 border-b border-border bg-card px-3 py-1.5 text-xs font-medium">
           <span aria-hidden="true" className="flex gap-1">
@@ -146,7 +140,7 @@ export function ReviewActions(props: {
       .then(() => setOutcome({ key, status: "copied", text }), blocked);
   };
   return (
-    <section aria-label="Review actions" className="review-chrome flex flex-col gap-1">
+    <section aria-label="Review actions" data-design-review-chrome className="flex flex-col gap-1">
       <div className="flex flex-wrap gap-2">
         <Button variant="default" size="sm" onClick={copy}>
           <CopyIcon aria-hidden />

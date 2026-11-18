@@ -101,7 +101,7 @@ export function ThreadCardBrightnessReview({
       source={source}
       components={COMPONENTS}
     >
-      <section aria-label="Preview controls" className="review-chrome grid gap-2">
+      <section aria-label="Preview controls" data-design-review-chrome className="grid gap-2">
         <ReviewChoice
           label="Card state"
           options={THREAD_CARD_SCENARIOS}
