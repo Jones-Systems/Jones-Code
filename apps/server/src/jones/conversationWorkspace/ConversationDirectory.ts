@@ -45,6 +45,15 @@ const lstatIfPresent = (path: string) =>
     throw cause;
   });
 
+// Mirrors Git discovery: a gitfile or a `.git` directory holding HEAD marks a
+// checkout. Git ignores an empty `.git` directory, such as a stray one in $HOME.
+async function isGitCheckoutMarker(directory: string): Promise<boolean> {
+  const marker = await lstatIfPresent(NodePath.join(directory, ".git"));
+  if (marker === null) return false;
+  if (!marker.isDirectory()) return true;
+  return (await lstatIfPresent(NodePath.join(directory, ".git", "HEAD"))) !== null;
+}
+
 async function realLocation(path: string): Promise<string> {
   try {
     return await NodeFSP.realpath(path);
@@ -77,22 +86,27 @@ export async function checkConversationDirectoryPlacement(
   if (within(await realLocation(NodeOS.tmpdir()), root)) {
     throw new ConversationPlacementError("system_temp");
   }
-  for (const candidate of excluded) {
-    const location = await realLocation(NodePath.resolve(candidate));
-    if (within(location, root) || within(root, location)) {
-      throw new ConversationPlacementError("excluded_root");
-    }
+  // Registered roots hold every thread checkout: thousands of mostly duplicate
+  // paths. Resolve each distinct path once and concurrently. Serial awaits
+  // wait a full event-loop turn each and stalled launches for minutes.
+  const locate = (paths: readonly string[]) =>
+    Promise.all([...new Set(paths)].map((path) => realLocation(NodePath.resolve(path))));
+  const [excludedLocations, registeredLocations] = await Promise.all([
+    locate(excluded),
+    locate(registered),
+  ]);
+  if (excludedLocations.some((location) => within(location, root) || within(root, location))) {
+    throw new ConversationPlacementError("excluded_root");
   }
-  for (const candidate of registered) {
-    if (within(root, await realLocation(NodePath.resolve(candidate)))) {
-      throw new ConversationPlacementError("reserved_root_registered");
-    }
+  if (registeredLocations.some((location) => within(root, location))) {
+    throw new ConversationPlacementError("reserved_root_registered");
   }
-  for (let ancestor = root; ; ancestor = NodePath.dirname(ancestor)) {
-    if ((await lstatIfPresent(NodePath.join(ancestor, ".git"))) !== null) {
-      throw new ConversationPlacementError("git_checkout");
-    }
-    if (NodePath.dirname(ancestor) === ancestor) break;
+  const ancestors = [root];
+  for (let ancestor = root; NodePath.dirname(ancestor) !== ancestor;) {
+    ancestors.push((ancestor = NodePath.dirname(ancestor)));
+  }
+  if ((await Promise.all(ancestors.map(isGitCheckoutMarker))).some(Boolean)) {
+    throw new ConversationPlacementError("git_checkout");
   }
   return root;
 }

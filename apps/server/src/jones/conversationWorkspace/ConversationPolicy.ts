@@ -321,7 +321,7 @@ const make = Effect.gen(function* () {
     }>`SELECT workspace_root AS root FROM projection_projects WHERE deleted_at IS NULL`;
     const checkoutRoots = yield* sql<{
       root: string | null;
-    }>`SELECT json_extract(payload_json, '$.worktreePath') AS root FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL`;
+    }>`SELECT DISTINCT json_extract(payload_json, '$.worktreePath') AS root FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL`;
     const settings =
       settingsService._tag === "Some"
         ? yield* settingsService.value.getSettings
