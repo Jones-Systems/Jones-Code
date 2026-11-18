@@ -636,9 +636,10 @@ index 7c1d722eabc8d8eb98998eb48c5fe9d70b749d10..0cbe5b4855b945569d935f2bb23d85ee
    /**
     * Check if a scan is currently in progress.
     */
-@@ -1838,7 +2040,8 @@ var FileFinder = class _FileFinder {
+@@ -1838,15 +2040,19 @@ var FileFinder = class _FileFinder {
      if (!guard.ok) return guard;
      const deadline = Date.now() + timeoutMs;
++    let pollMs = 5;
      while (true) {
 -      const progress = this.getScanProgress();
 +      // Patched in T3 Code: the progress read takes the picker lock.
@@ -646,7 +647,19 @@ index 7c1d722eabc8d8eb98998eb48c5fe9d70b749d10..0cbe5b4855b945569d935f2bb23d85ee
        if (!progress.ok) return progress;
        if (!progress.value.isScanning && progress.value.isWarmupComplete) {
          return { ok: true, value: true };
-@@ -1861,6 +2064,14 @@ var FileFinder = class _FileFinder {
+       }
+-      if (Date.now() >= deadline) {
++      const remaining = deadline - Date.now();
++      if (remaining <= 0) {
+         return { ok: true, value: false };
+       }
+-      await new Promise((resolve) => setTimeout(resolve, 50));
++      await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
++      pollMs = Math.min(pollMs * 2, 50);
+     }
+   }
+   /**
+@@ -1861,6 +2067,14 @@ var FileFinder = class _FileFinder {
      if (!guard.ok) return guard;
      return ffiRestartIndex(guard.value, newPath);
    }

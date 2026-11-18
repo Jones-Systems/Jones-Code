@@ -84,6 +84,34 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it.each([
+  { timeout: 40, readyAt: 15, checks: [0, 5, 15], ready: true },
+  { timeout: 132, readyAt: Infinity, checks: [0, 5, 15, 35, 75, 125, 132], ready: false },
+])("polls scan readiness promptly and respects a $timeout ms deadline", async (scenario) => {
+  vi.useFakeTimers({ now: 0 });
+  try {
+    const checks: number[] = [];
+    const finder = {
+      ensureAlive: () => ({ ok: true }),
+      getScanProgressAsync: async () => {
+        const at = vi.getMockedSystemTime()!.getTime();
+        checks.push(at);
+        return {
+          ok: true,
+          value: { isScanning: at < 5, isWarmupComplete: at >= scenario.readyAt },
+        };
+      },
+    } as unknown as FileFinder;
+    const complete = vi.fn();
+    void FileFinder.prototype.waitForIndexReady.call(finder, scenario.timeout).then(complete);
+    await vi.advanceTimersByTimeAsync(scenario.timeout);
+    expect(complete).toHaveBeenCalledExactlyOnceWith({ ok: true, value: scenario.ready });
+    expect(checks).toEqual(scenario.checks);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it.effect.each(["list", "names", "contents"] as const)(
   "retains the triggering %s query/page evidence and immediate probe failure",
   (operation) =>
