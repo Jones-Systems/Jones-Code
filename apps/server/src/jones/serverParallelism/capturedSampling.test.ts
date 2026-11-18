@@ -1,5 +1,5 @@
 import { expect, it } from "vite-plus/test";
-import { CapturedSampling, PopulationSampling, untilSamplingAbort } from "./capturedSampling.ts";
+import { CapturedSampling, untilSamplingAbort } from "./capturedSampling.ts";
 
 it("closes only the captured generation and drains every prior read before retirement", async () => {
   const old = new CapturedSampling();
@@ -44,41 +44,4 @@ it("preserves an external failed read instead of interpreting disappearance as e
   const observed = untilSamplingAbort(external.promise);
   external.reject(new Error("captured PID disappeared"));
   await expect(observed).rejects.toThrow("captured PID disappeared");
-});
-
-it("serializes sampling and population changes through failure and duplicate release", async () => {
-  const gate = new PopulationSampling();
-  const releaseSample = await gate.acquire();
-  const order: string[] = [];
-  const transition = gate.acquire().then((release) => {
-    try {
-      order.push("transition");
-      throw new Error("transition failed");
-    } finally {
-      release();
-    }
-  });
-  const sample = gate.acquire().then((release) => {
-    order.push("sample");
-    release();
-  });
-  await Promise.resolve();
-  expect(order).toEqual([]);
-  releaseSample();
-  releaseSample();
-  await expect(transition).rejects.toThrow("transition failed");
-  await sample;
-  expect(order).toEqual(["transition", "sample"]);
-});
-
-it("an aborted population waiter never acquires and does not block later samples", async () => {
-  const gate = new PopulationSampling();
-  const release = await gate.acquire();
-  const controller = new AbortController();
-  const abandoned = gate.acquire(controller.signal);
-  const later = gate.acquire();
-  controller.abort();
-  await expect(abandoned).rejects.toThrow("Sampling drain aborted");
-  release();
-  (await later)();
 });

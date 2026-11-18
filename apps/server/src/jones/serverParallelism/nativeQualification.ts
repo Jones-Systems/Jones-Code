@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Qualified synthetic harness owns every workspace, journal and captured child.
-import { CapturedSampling, PopulationSampling, untilSamplingAbort } from "./capturedSampling.ts";
+import { CapturedSampling, untilSamplingAbort } from "./capturedSampling.ts";
 import {
   qualificationContent,
   qualificationVariant,
@@ -20,7 +20,11 @@ import {
   qualificationStream,
   qualificationWorkload,
 } from "./qualificationRetention.ts";
-import { NativeGenerationEvidence, type EvidenceGeneration } from "./nativeGenerationEvidence.ts";
+import {
+  NativeGenerationEvidence,
+  PopulationSampling,
+  type EvidenceGeneration,
+} from "./nativeGenerationEvidence.ts";
 import { observeSafely } from "./observations.ts";
 import {
   diagnosticError,
