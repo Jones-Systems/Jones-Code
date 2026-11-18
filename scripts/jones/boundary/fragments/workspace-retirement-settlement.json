@@ -27,6 +27,8 @@
     "apps/server/src/jones/workspaceRetirement/PreserveBranch.test.ts",
     "apps/server/src/jones/workspaceRetirement/PreserveBranch.testkit.ts",
     "apps/server/src/jones/workspaceRetirement/PreserveBranch.ts",
+    "apps/server/src/jones/workspaceRetirement/PreserveOutcome.test.ts",
+    "apps/server/src/jones/workspaceRetirement/PreserveOutcome.ts",
     "apps/server/src/jones/workspaceRetirement/ProcessCoverage.node-test.mjs",
     "apps/server/src/jones/workspaceRetirement/ProcessCoverage.test.ts",
     "apps/server/src/jones/workspaceRetirement/ProcessCoverage.testkit.ts",

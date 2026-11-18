@@ -5,6 +5,8 @@ import { Button, InlineButton } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { formatBytes } from "../../lib/formatBytes";
+import { PreserveReceipt, ProposalRecoverability, ReasonLabels } from "./PreserveDetails";
+import { recoverabilityAllowsRetire } from "./retirementCopy";
 import { cleanupReportSummary, cleanupTimestamp } from "./runStatus";
 
 type CleanupReport = {
@@ -38,10 +40,14 @@ type CleanupEntry = StorageCleanupReport["entries"][number];
 const MAX_RETIRE_COVERED_PATHS = 200;
 
 function retireEligibleExceptPathCount(entry: CleanupEntry) {
-  return Boolean(
-    entry.threadId &&
-    entry.path &&
-    entry.retirement?.fingerprint &&
+  if (!entry.threadId || !entry.path || !entry.retirement?.fingerprint) return false;
+  if (entry.retirement.state === "retired") return false;
+  // The server's recoverability verdict decides when it sent one: a preservable hold is actionable
+  // because Retire saves it to a branch first, and any path no branch may carry keeps it held.
+  const verdict = recoverabilityAllowsRetire(entry.retirement.recoverability);
+  if (verdict === false) return false;
+  return (
+    verdict === true ||
     entry.retirement.reasonCodes.every((reason) =>
       // Retire finishes an interrupted retirement: it deletes nothing when the checkout is gone, and only
       // verified regenerable leftovers when Git deregistered a directory that remains.
@@ -51,8 +57,7 @@ function retireEligibleExceptPathCount(entry: CleanupEntry) {
         "interrupted_retirement_checkout_absent",
         "interrupted_retirement_checkout_unregistered",
       ].includes(reason),
-    ) &&
-    entry.retirement.state !== "retired",
+    )
   );
 }
 
@@ -67,7 +72,8 @@ function canRetire(entry: CleanupEntry) {
 function retireHoldNote(entry: CleanupEntry, retireOffered: boolean) {
   if (entry.retirement?.state === "retired") return null;
   // Disposal refuses untracked files unless "Edited tracked files" is the keep mode, so Retire cannot succeed.
-  if (entry.retirement?.reasonCodes.includes("untracked"))
+  // A preserve plan replaces that setting: the untracked files are saved to a branch instead.
+  if (entry.retirement?.reasonCodes.includes("untracked") && !entry.retirement.recoverability)
     return 'Held: this checkout has untracked files. To allow retirement, set "Keep worktrees with local changes" (Settings → Worktrees) to "Edited tracked files", then propose again.';
   if (
     retireOffered &&
@@ -279,6 +285,15 @@ function CleanupReportRows({
                   {entry.reason}
                 </span>
                 {holdNote && <span className="block">{holdNote}</span>}
+                {entry.retirement && <ReasonLabels codes={entry.retirement.reasonCodes} />}
+                {entry.retirement &&
+                  entry.retirement.state !== "retired" &&
+                  !entry.retirement.preserve && (
+                    <ProposalRecoverability retirement={entry.retirement} />
+                  )}
+                {entry.retirement?.preserve && (
+                  <PreserveReceipt preserve={entry.retirement.preserve} />
+                )}
                 <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-border/60 pl-3">
                   <span>Machine</span>
                   <span className="text-foreground/80">{environmentLabel}</span>

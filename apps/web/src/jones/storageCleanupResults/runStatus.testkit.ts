@@ -71,6 +71,52 @@ export const runStatusCases = {
     NodeAssert.match(summary, /no deletion requested/);
     NodeAssert.doesNotMatch(summary, /removed|recovered|Failed/);
   },
+  "a retire that saved content to preserve branches says how many, before the recovered size":
+    () => {
+      const saved = (): StorageCleanupReport["entries"][number] => ({
+        ...entry("partial"),
+        outcome: "removed",
+        retirement: {
+          ...entry("partial").retirement!,
+          state: "retired",
+          preserve: {
+            branch: "preserve/20261117/mini/feature",
+            sha: "0123456789abcdef0123456789abcdef01234567",
+            remote: null,
+            verification: "local_only",
+            excluded: [],
+            restore: "git worktree add /w/feature preserve/20261117/mini/feature",
+            forced: true,
+          },
+        },
+      });
+      const one = cleanupReportSummary(
+        report({
+          operation: "retire",
+          entries: [saved()],
+          counts: { removed: 1, kept: 0, failed: 0 },
+          bytesFreed: 1024 ** 3,
+        }),
+      );
+      NodeAssert.match(
+        one,
+        /1 removed, 0 kept · 1 saved to a preserve branch · about 1\.00 GB recovered/,
+      );
+      const two = cleanupReportSummary(
+        report({
+          operation: "retire",
+          entries: [saved(), saved()],
+          counts: { removed: 2, kept: 0, failed: 0 },
+        }),
+      );
+      NodeAssert.match(two, /2 saved to preserve branches/);
+      NodeAssert.doesNotMatch(
+        cleanupReportSummary(
+          report({ operation: "retire", counts: { removed: 1, kept: 0, failed: 0 } }),
+        ),
+        /preserve/,
+      );
+    },
   "retire summary shows recovered size": () => {
     const summary = cleanupReportSummary(
       report({
