@@ -3467,7 +3467,6 @@
         "apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
         "apps/web/src/jones/workstreams/personalRail.test.ts",
-        "apps/web/src/jones/workstreams/PersonalWorkstreamColorDialog.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalInlineRename.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadWindow.test.ts",
         "apps/web/src/jones/workstreams/personalThreadWindow.browser.test.tsx",
