@@ -1,8 +1,8 @@
 import * as MacPermissions from "./permissions/MacPermissions.ts";
+import { handleStdioError } from "./app/stdioErrors.ts";
+
 for (const stream of [process.stdout, process.stderr]) {
-  stream.on("error", (err: NodeJS.ErrnoException) => {
-    if (err.code !== "EPIPE") throw err;
-  });
+  stream.on("error", handleStdioError);
 }
 
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
@@ -12,7 +12,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Version output must flush before Electron exits, without acquiring the runtime.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
@@ -43,6 +45,7 @@ import * as DesktopClerk from "./app/DesktopClerk.ts";
 import * as DesktopCliCommand from "./app/DesktopCliCommand.ts";
 import * as DesktopApplicationMenu from "./window/DesktopApplicationMenu.ts";
 import * as DesktopAssets from "./app/DesktopAssets.ts";
+import * as DesktopPrimaryPaste from "./app/DesktopPrimaryPaste.ts";
 import * as DesktopBackendConfiguration from "./backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "./backend/DesktopBackendPool.ts";
 import * as DesktopLocalEnvironmentAuth from "./backend/DesktopLocalEnvironmentAuth.ts";
@@ -61,7 +64,6 @@ import * as DesktopAppSettings from "./settings/DesktopAppSettings.ts";
 import * as DesktopPreReadyFileSystem from "./app/DesktopPreReadyFileSystem.ts";
 import * as DesktopPreReadyPlatform from "./app/DesktopPreReadyPlatform.ts";
 import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
-import * as DesktopDeviceMediaTunnel from "./jones/deviceMedia/DesktopDeviceMediaTunnel.ts";
 import * as DesktopSshEnvironment from "./ssh/DesktopSshEnvironment.ts";
 import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
 import * as DesktopState from "./app/DesktopState.ts";
@@ -76,8 +78,11 @@ import * as BrowserSession from "./preview/BrowserSession.ts";
 import * as DesktopBrowserHost from "./preview/DesktopBrowserHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PreviewPasskeys from "./preview/Passkeys.ts";
+import * as DesktopDeviceMediaTunnel from "./jones/deviceMedia/DesktopDeviceMediaTunnel.ts";
 import * as CompanionConfig from "./jones/previewCompanion/CompanionConfig.ts";
+import * as CompanionProduct from "./jones/previewCompanion/CompanionProduct.ts";
 import * as CompanionUplink from "./jones/previewCompanion/CompanionUplink.ts";
+import { localBrowserHost } from "./jones/previewCompanion/CompanionIsolation.ts";
 import * as DesktopWindow from "./window/DesktopWindow.ts";
 import * as DesktopWslBackend from "./wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "./wsl/DesktopWslEnvironment.ts";
@@ -129,6 +134,15 @@ const layerDesktopSshEnvironment = Layer.unwrap(
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     return DesktopSshEnvironment.layer({
       resolveCliRunner: Effect.succeed(resolveDesktopSshCliRunner(environment)),
+      resolveLauncherId: yield* Effect.cached(
+        DesktopSshEnvironment.readOrCreateLauncherId(
+          environment.path.join(environment.stateDir, "ssh-launcher-id"),
+        ).pipe(
+          Effect.provide(
+            yield* Effect.context<FileSystem.FileSystem | SecureRandom.SecureRandom>(),
+          ),
+        ),
+      ),
     });
   }),
 );
@@ -144,7 +158,12 @@ const layerElectron = Layer.mergeAll(
   ElectronTheme.layer,
   ElectronUpdater.layer,
   ElectronWindow.layer,
-  DesktopIpc.layer(Electron.ipcMain),
+  Layer.effect(
+    DesktopIpc.DesktopIpc,
+    Effect.map(ElectronWindow.ElectronWindow, ({ main }) =>
+      DesktopIpc.make(Electron.ipcMain, DesktopIpc.windowSenderGuard(main)),
+    ),
+  ).pipe(Layer.provide(ElectronWindow.layer)),
 );
 
 const layerDesktopFoundation = Layer.mergeAll(
@@ -157,6 +176,7 @@ const layerDesktopFoundation = Layer.mergeAll(
   DesktopClientSettings.layer,
   DesktopConnectionCatalogStore.layer.pipe(Layer.provideMerge(DesktopSavedEnvironments.layer)),
   DesktopAssets.layer,
+  DesktopPrimaryPaste.layer,
   DesktopObservability.layer,
   DesktopRendererHistory.layer,
 ).pipe(Layer.provideMerge(layerDesktopEnvironment));
@@ -170,17 +190,29 @@ const layerDesktopServerExposure = DesktopServerExposure.layer.pipe(
   Layer.provideMerge(layerDesktopFoundation),
 );
 
-const layerDesktopPreview = Layer.mergeAll(PreviewManager.layer, CompanionUplink.layer).pipe(
-  Layer.provideMerge(CompanionConfig.layer),
-  Layer.provideMerge(DesktopBrowserHost.layer),
-  Layer.provideMerge(DesktopAppIdentity.layer),
-  // Merged rather than provided so the IPC handlers can reach the import
-  // service alongside the manager; both sit on the same BrowserSession.
-  Layer.provideMerge(BrowserImport.layer.pipe(Layer.provide(LinuxBrowserSecret.layer))),
-  Layer.provideMerge(BrowserSession.layer),
-  Layer.provideMerge(PreviewPasskeys.layer),
-  Layer.provideMerge(layerDesktopFoundation),
-);
+const layerDesktopPreview = Layer.unwrap(
+  Effect.gen(function* () {
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    yield* Effect.sync(() =>
+      CompanionProduct.assertCompanionStorage({
+        companion: environment.previewCompanionProduct === true,
+        appDataDirectory: Electron.app.getPath("appData"),
+        userDataDirectory: Electron.app.getPath("userData"),
+        sessionDataDirectory: Electron.app.getPath("sessionData"),
+        join: environment.path.join,
+      }),
+    );
+    return Layer.mergeAll(PreviewManager.layer, CompanionUplink.layer).pipe(
+      Layer.provideMerge(CompanionConfig.layer),
+      Layer.provideMerge(DesktopBrowserHost.layer),
+      Layer.provideMerge(DesktopAppIdentity.layer),
+      // IPC and the uplink share the host-native BrowserSession selected by boot.
+      Layer.provideMerge(BrowserImport.layer.pipe(Layer.provide(LinuxBrowserSecret.layer))),
+      Layer.provideMerge(BrowserSession.layer),
+      Layer.provideMerge(PreviewPasskeys.layer),
+    );
+  }),
+).pipe(Layer.provideMerge(layerDesktopFoundation));
 
 const layerDesktopWindow = DesktopWindow.layer.pipe(
   Layer.provideMerge(layerDesktopServerExposure),
@@ -195,7 +227,14 @@ const layerDesktopAppActivation = DesktopAppActivation.layer.pipe(
   Layer.provide(layerDesktopWindow),
 );
 
+// Only backend process consumers receive the local view; the uplink retains the shared host.
+const layerLocalBrowserHost = Layer.effect(
+  DesktopBrowserHost.DesktopBrowserHost,
+  Effect.map(DesktopBrowserHost.DesktopBrowserHost, localBrowserHost),
+);
+
 const layerDesktopBackend = DesktopBackendPool.layer.pipe(
+  Layer.provide(layerLocalBrowserHost),
   Layer.provideMerge(DesktopAppIdentity.layer),
   Layer.provideMerge(DesktopBackendConfiguration.layer),
   Layer.provideMerge(DesktopWslEnvironment.layer),
@@ -220,8 +259,6 @@ const layerDesktopApplication = Layer.mergeAll(
   DesktopApplicationMenu.layer,
   DesktopLinuxUrlHandler.layer,
   DesktopCliCommand.layer,
-  layerDesktopSsh,
-  DesktopDeviceMediaTunnel.layer,
 ).pipe(
   Layer.provideMerge(layerDesktopSnapShot),
   Layer.provideMerge(
@@ -231,6 +268,9 @@ const layerDesktopApplication = Layer.mergeAll(
       Layer.provide(DesktopManagedPolicy.layer),
     ),
   ),
+  Layer.provideMerge(DesktopDeviceMediaTunnel.layer),
+  // Updates closes the same tunnels the SSH IPC opens before quitAndInstall.
+  Layer.provideMerge(layerDesktopSsh),
   Layer.provideMerge(layerDesktopWslBackend),
   Layer.provideMerge(layerDesktopLocalEnvironmentAuth),
 );

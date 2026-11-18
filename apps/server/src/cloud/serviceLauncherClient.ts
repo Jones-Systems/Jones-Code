@@ -7,13 +7,23 @@ import type { MigrationPlan } from "../jones/updates/migrationPlan.ts";
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as UpdateAdmission from "../jones/updates/UpdateAdmissionFence.ts";
 
 import packageJson from "../../package.json" with { type: "json" };
+import {
+  pinnedRuntimePaths,
+  pinnedRuntimeVersionsDir,
+  readPosixLauncherTarget,
+  writePosixLauncher,
+} from "./pinnedRuntime.ts";
 import {
   assertQualifiedTrialBinding,
   assertQualifiedResumeUnreserved,
@@ -30,6 +40,7 @@ import {
   SERVICE_LAUNCHER_PROTOCOL,
   type ServiceLauncherChildMessage,
   type ServiceLauncherParentMessage,
+  type SupportedLauncherProtocol,
 } from "./serviceProtocol.ts";
 
 export class ServiceLauncherClientError extends Schema.TaggedError<ServiceLauncherClientError>()(
@@ -129,6 +140,9 @@ export class ServiceLauncherClient extends Context.Service<
   ServiceLauncherClient,
   {
     readonly managed: boolean;
+    /** The supervising launcher's protocol. A remote update never replaces the launcher,
+        so it can be older than this runtime's own. */
+    readonly protocol: SupportedLauncherProtocol | undefined;
     readonly requiresQualifiedTrialGate: boolean;
     readonly prepareQualifiedTrial: (
       witness: QualifiedTrialRuntimeWitness,
@@ -197,10 +211,9 @@ export class ServiceLauncherClient extends Context.Service<
       "accepted" | "deferred" | "unavailable",
       ServiceLauncherClientError
     >;
-    readonly prepareTrial: Effect.Effect<
-      ServerSelfUpdateOutcome | undefined,
-      ServiceLauncherClientError
-    >;
+    readonly prepareTrial: (input: {
+      readonly baseDir: string;
+    }) => Effect.Effect<ServerSelfUpdateOutcome | undefined, ServiceLauncherClientError>;
   }
 >()("t3/cloud/serviceLauncherClient") {}
 
@@ -265,10 +278,107 @@ export const resolveServiceLauncherMode = Effect.fn("cloud.service_launcher_clie
   },
 );
 
+export const repointLaunchers = Effect.fn("cloud.service_launcher_client.repoint_launchers")(
+  function* (input: { readonly baseDir: string; readonly targetVersion: string }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const environment = yield* HostProcess.Environment;
+    const platform = yield* HostProcess.Platform;
+    if (platform !== "linux" && platform !== "darwin") return;
+    const installBinDir =
+      environment["T3CODE_INSTALL_BIN_DIR"] ||
+      (environment["HOME"] ? path.join(environment["HOME"], ".local", "bin") : undefined);
+    const candidates = new Set<string>();
+    if (installBinDir !== undefined) candidates.add(path.join(installBinDir, "t3"));
+    for (const directory of (environment["PATH"] ?? "").split(":")) {
+      if (directory.length === 0) continue;
+      const candidate = path.join(directory, "t3");
+      if (
+        yield* fs.exists(candidate).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not check the t3 command on PATH", {
+              launchedAs: candidate,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        )
+      ) {
+        candidates.add(candidate);
+        break;
+      }
+    }
+    const versionsDir = pinnedRuntimeVersionsDir(path, input.baseDir);
+    const target = pinnedRuntimePaths(path, input.baseDir, input.targetVersion, platform);
+    for (const launchedAs of candidates) {
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const linkTarget = yield* fs.readLink(launchedAs).pipe(
+            Effect.asSome,
+            Effect.catchIf(
+              (error) =>
+                error.reason._tag === "NotFound" ||
+                (error.reason.cause as NodeJS.ErrnoException | undefined)?.code === "EINVAL",
+              () => Effect.succeedNone,
+            ),
+          );
+          // A legacy symlink, or the script install.sh and `t3 update` write.
+          const current = Option.isSome(linkTarget)
+            ? path.resolve(path.dirname(launchedAs), linkTarget.value)
+            : yield* readPosixLauncherTarget(launchedAs);
+          if (current === undefined) return;
+          const relative = path.relative(versionsDir, current);
+          if (
+            relative.length === 0 ||
+            relative === ".." ||
+            relative.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relative)
+          )
+            return;
+          yield* writePosixLauncher({
+            launcher: launchedAs,
+            executable: target.entryPath,
+            exclusive: false,
+          });
+        }),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.logWarning("Could not move the t3 command to the updated version", {
+                launchedAs,
+                cause,
+              }),
+        ),
+      );
+    }
+  },
+);
+
+/** Completes when the launcher asks this server to stop, which Windows cannot signal. */
+export const awaitServiceLauncherStop = Effect.fn("cloud.service_launcher_client.await_stop")(
+  function* (options?: { readonly currentVersion?: string }) {
+    const startup = yield* resolveStartup(options).pipe(Effect.option);
+    if (Option.isNone(startup) || !startup.value.managed) return yield* Effect.never;
+    const { host } = startup.value;
+    return yield* Effect.callback<void>((resume) => {
+      const onMessage = (...args: ReadonlyArray<unknown>) => {
+        if (decodeServiceLauncherParentMessage(args[0])?.type === "stop") resume(Effect.void);
+      };
+      host.on("message", onMessage);
+      return Effect.sync(() => host.off("message", onMessage));
+    });
+  },
+);
+
 export const make = Effect.fn("cloud.service_launcher_client.make")(function* (options?: {
   readonly currentVersion?: string;
 }) {
   const { host, context, managed } = yield* resolveStartup(options);
+  // prepareTrial runs later, outside whatever context built the client.
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const environment = yield* HostProcess.Environment;
+  const platform = yield* HostProcess.Platform;
   const qualifiedOperations = yield* QualifiedTrialOperations;
   const updateAdmission = yield* UpdateAdmission.UpdateAdmissionFence;
 
@@ -577,13 +687,27 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
         )
       : Effect.succeed(outcome),
   );
-  const prepareTrial = requiresQualifiedTrialGate
+  const trialOutcome = requiresQualifiedTrialGate
     ? Effect.suspend(() =>
         outcome === undefined
           ? Effect.fail(new ServiceLauncherClientError({ operation: "qualified-proof" }))
           : Effect.succeed(outcome),
       )
     : ordinaryPrepareTrial;
+
+  const prepareTrial: ServiceLauncherClient["Service"]["prepareTrial"] = (input) =>
+    trialOutcome.pipe(
+      Effect.tap((result) =>
+        result?.status === "committed" && pending !== undefined && !qualifiedTransaction
+          ? repointLaunchers({ baseDir: input.baseDir, targetVersion: result.targetVersion }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(HostProcess.Environment, environment),
+              Effect.provideService(HostProcess.Platform, platform),
+            )
+          : Effect.void,
+      ),
+    );
 
   const reconcileFailed = (
     message: Extract<
@@ -611,6 +735,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
 
   return ServiceLauncherClient.of({
     managed,
+    protocol: context?.protocol,
     requiresQualifiedTrialGate,
     prepareQualifiedTrial,
     qualifiedUpdates: context?.qualifiedUpdatesProtocol === 1 && context.startupGateProtocol === 1,

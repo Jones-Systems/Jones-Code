@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../../testing/UnusedCorePorts.testkit.ts";
 import * as ProviderSessionManager from "../../../orchestration-v2/ProviderSessionManager.ts";
 import * as CommandReceiptStore from "../../../orchestration-v2/CommandReceiptStore.ts";
 import * as Sqlite from "../../../persistence/Sqlite.ts";
@@ -30,6 +31,7 @@ it.effect.each(["starting", "running"] as const)(
       };
       const dependencies = Layer.mergeAll(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           getThreadShell: () =>
             Effect.succeed({
               id: threadId,

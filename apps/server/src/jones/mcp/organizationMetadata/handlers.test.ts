@@ -10,6 +10,7 @@ import {
   ThreadId,
   type McpCapabilityUnavailableError,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -290,6 +291,52 @@ it.effect(
       });
       expect(reads).toBe(0);
     }),
+);
+
+it.effect(
+  "offers caller invocation context only to thread callers and builds through the startup guard",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { get_invocation_context, list_organization_thread_metadata } =
+          OrganizationMetadataToolkit.tools;
+        // Startup refuses a caller-bound declaration unless it carries this exact reference.
+        expect(
+          Context.getOrUndefined(get_invocation_context.annotations, McpSchema.EnabledWhen),
+        ).toBe(Invocation.hiddenFromOutsideClients);
+        // Environment-wide metadata does not act as a thread, so outside clients still discover it.
+        expect(
+          Context.getOrUndefined(
+            list_organization_thread_metadata.annotations,
+            McpSchema.EnabledWhen,
+          ),
+        ).toBeUndefined();
+        const offeredTo = (scope: Invocation.McpInvocationScope) =>
+          Effect.sync(() => Invocation.hiddenFromOutsideClients()).pipe(
+            Effect.provideService(Invocation.McpInvocationContext, scope),
+          );
+        expect(yield* offeredTo(invocation)).toBe(true);
+        expect(
+          yield* offeredTo({
+            ...invocation,
+            requestNamespace: "client:synthetic-session",
+            thread: undefined,
+            client: { sessionId: "synthetic-session", label: "synthetic", access: "read-only" },
+          }),
+        ).toBe(false);
+        // The same central guard the server runs at startup accepts the handlers.
+        yield* Layer.build(
+          McpToolAccess.HandlersLayer.layer(OrganizationMetadataHandlersLive).pipe(
+            Layer.provide(
+              Layer.succeed(Metadata.OrganizationMetadataMcpService, {
+                getInvocationContext: () => Effect.die("unused"),
+                listThreadMetadata: () => Effect.die("unused"),
+              }),
+            ),
+          ),
+        );
+      }),
+    ),
 );
 
 it.effect(

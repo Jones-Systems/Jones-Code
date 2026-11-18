@@ -22,6 +22,7 @@ import {
   type ProviderInteractionMode as ProviderInteractionModeType,
   type RuntimeMode as RuntimeModeType,
   type ServerProvider,
+  type ServerProviderModel,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -31,6 +32,7 @@ import {
   queuedThreadTurnMatches,
 } from "../jones/threadConfiguration/outboxDeliveryContract";
 import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
+import { withImplicitFastModeSelection } from "../lib/providerOptions";
 import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
@@ -127,9 +129,16 @@ function resolveProviderInteractionMode(
 export function resolveQueuedThreadSettings(
   message: QueuedThreadMessage,
   thread: ThreadSettingsSnapshot,
-  providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "showInteractionModeToggle">> = [],
+  providers: ReadonlyArray<
+    Pick<ServerProvider, "instanceId" | "showInteractionModeToggle"> & {
+      readonly models: ReadonlyArray<Pick<ServerProviderModel, "slug" | "capabilities">>;
+    }
+  > = [],
 ): ThreadSettingsSnapshot {
-  const modelSelection = resolveQueuedModelSelection(message, thread.modelSelection);
+  const modelSelection = withImplicitFastModeSelection(
+    resolveQueuedModelSelection(message, thread.modelSelection),
+    providers,
+  );
   const provider = providers.find(
     (candidate) => candidate.instanceId === modelSelection.instanceId,
   );

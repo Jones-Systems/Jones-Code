@@ -26,6 +26,7 @@ import { idleThreadProjection, liveThreadShell } from "../../mcp/McpToolAccess.t
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
+import * as SupersededTerminalTrace from "../orchestration/SupersededTerminalTrace.ts";
 import migration from "../persistence/Migrations/121_JonesRemoteTaskObservations.ts";
 import * as ObservationHooks from "./ObservationHooks.ts";
 
@@ -104,6 +105,7 @@ const fixture = Effect.gen(function* () {
         ),
     }),
     Layer.mock(EventSink.EventSinkV2)({
+      supersededTerminalTrace: SupersededTerminalTrace.make(),
       write: ({ events }) =>
         Effect.gen(function* () {
           const rows = yield* sql<{

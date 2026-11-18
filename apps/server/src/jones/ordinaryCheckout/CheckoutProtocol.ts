@@ -240,3 +240,100 @@ export interface LifecycleEvent {
   readonly evidence_json: string;
   readonly recorded_at: string;
 }
+
+// Certificates are sparse Jones evidence; no command body or upstream payload is retained.
+export const TargetSnapshot = Schema.Struct({
+  projectId: id,
+  threadId: id,
+  projectRoot: id,
+  worktreePath: Schema.NullOr(id),
+  threadBranch: Schema.NullOr(id),
+  projectRevision: id,
+  threadRevision: id,
+});
+export type TargetSnapshot = typeof TargetSnapshot.Type;
+const sha256 = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+export const PreparationOrigin = Schema.Struct({
+  version: Schema.Literal(1),
+  originId: id,
+  commandId: id,
+  commandType: id,
+  commandDigest: sha256,
+  receiptThreadId: id,
+  receiptSequence: ordinal,
+  subjectThreadId: id,
+  birth: Birth,
+  runId: id,
+  attemptId: id,
+  nodeId: Schema.NullOr(id),
+  messageId: id,
+  providerThreadId: id,
+  basisEventId: id,
+  basisSequence: ordinal,
+  authorityPlanDigest: sha256,
+  acceptedPlanDigest: sha256,
+  strategyJson: id,
+  strategyDigest: sha256,
+  before: Schema.NullOr(TargetSnapshot),
+  initial: TargetSnapshot,
+  classification: Origin,
+  journalOperationKey: id,
+  journalBindingDigest: sha256,
+  recordedAt: Utc,
+});
+export type PreparationOrigin = typeof PreparationOrigin.Type;
+export const PreparationBinding = Schema.Struct({
+  version: Schema.Literal(1),
+  originId: id,
+  revision: ordinal,
+  predecessorDigest: sha256,
+  before: TargetSnapshot,
+  target: Target,
+  commandId: id,
+  commandType: id,
+  commandDigest: sha256,
+  receiptThreadId: id,
+  receiptSequence: ordinal,
+  authorityPlanDigest: sha256,
+  acceptedPlanDigest: sha256,
+  metadataEventId: id,
+  metadataSequence: ordinal,
+  operationId: id,
+  generation: ordinal,
+  resultDigest: sha256,
+  journalOperationKey: id,
+  journalBindingDigest: sha256,
+  recordedAt: Utc,
+});
+export type PreparationBinding = typeof PreparationBinding.Type;
+export const PreparationRelease = Schema.Struct({
+  version: Schema.Literal(1),
+  originId: id,
+  bindingRevision: ordinal,
+  bindingDigest: sha256,
+  admissionId: id,
+  commandId: id,
+  commandType: Schema.Literal("prepared-run.release"),
+  commandDigest: sha256,
+  receiptThreadId: id,
+  receiptSequence: ordinal,
+  authorityPlanDigest: sha256,
+  acceptedPlanDigest: sha256,
+  basisEventId: id,
+  basisSequence: ordinal,
+  effectId: id,
+  requestDigest: sha256,
+  target: Target,
+  journalOperationKey: id,
+  journalBindingDigest: sha256,
+  recordedAt: Utc,
+});
+export type PreparationRelease = typeof PreparationRelease.Type;
+export const preparationOriginId = (
+  input: Pick<PreparationOrigin, "commandId" | "subjectThreadId" | "birth" | "runId" | "attemptId">,
+): string => `ordinary-origin:${digest(input)}`;
+export const preparedAdmissionId = (
+  originId: string,
+  revision: number,
+  checkoutKey: string,
+): string => `ordinary-prepared:${digest({ originId, revision, checkoutKey })}`;

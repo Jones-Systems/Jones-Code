@@ -12,7 +12,7 @@ import { memo, use, useEffect, useEffectEvent, useState } from "react";
 import { BackgroundThreadContext } from "./backgroundThread";
 import { type PendingUserInput } from "../../session-logic";
 import type { PendingUserInputDraftAnswer } from "@t3tools/client-runtime/state/pending-user-input";
-import { derivePendingUserInputProgress } from "../../pendingUserInput";
+import { derivePendingUserInputProgress } from "../../jones/questionAnswer/answerProgress";
 import { CheckboxMark } from "../ui/checkbox";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { Kbd } from "../ui/kbd";
@@ -149,7 +149,9 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
       }
       if (
         target instanceof HTMLElement &&
-        target.closest('[contenteditable]:not([contenteditable="false"])')
+        target.closest(
+          'select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [aria-modal="true"], [role="menu"], [role="combobox"], [data-slot$="popup"]',
+        )
       ) {
         return;
       }
@@ -303,18 +305,28 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                   </>
                 );
                 return (
-                  <button
-                    key={`${activeQuestion.id}:${optionValue}`}
-                    type="button"
-                    aria-pressed={isSelected}
-                    disabled={responseDisabled}
-                    onClick={() => {
-                      handleOptionSelection(activeQuestion.id, optionValue);
-                    }}
-                    className={className}
-                  >
-                    {content}
-                  </button>
+                  <div key={`${activeQuestion.id}:${optionValue}`}>
+                    <button
+                      type="button"
+                      aria-pressed={isSelected}
+                      disabled={responseDisabled}
+                      onClick={() => {
+                        handleOptionSelection(activeQuestion.id, optionValue);
+                      }}
+                      className={className}
+                    >
+                      {content}
+                    </button>
+                    {option.preview ? (
+                      <ChatMarkdown
+                        text={option.preview}
+                        cwd={cwd}
+                        threadRef={threadRef}
+                        lineBreaks
+                        className="ps-9 pe-2 pb-1.5 text-xs text-foreground/70 sm:ps-8"
+                      />
+                    ) : null}
+                  </div>
                 );
               })}
             </div>
@@ -343,7 +355,7 @@ function OptionRadio({ checked }: { checked: boolean }) {
     <span
       aria-hidden
       className={cn(
-        "relative inline-flex size-4.5 shrink-0 items-center justify-center rounded-full border border-input bg-background not-dark:bg-clip-padding sm:size-4 dark:bg-input/32",
+        "relative inline-flex size-4.5 shrink-0 items-center justify-center rounded-full border border-foreground/55 bg-background not-dark:bg-clip-padding sm:size-4 dark:bg-input/32",
         checked ? "shadow-none" : "shadow-xs/5",
       )}
     >

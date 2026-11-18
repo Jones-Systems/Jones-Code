@@ -2,6 +2,7 @@ import * as ThreadMetadataReads from "../../orchestration/threadMetadataReads.ts
 import * as WorktreeSetupTracker from "../../../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../../../terminal/Manager.ts";
+import * as CheckpointStore from "../../../checkpointing/CheckpointStore.ts";
 import { vi } from "@effect/vitest";
 import {
   ProjectId,
@@ -72,7 +73,9 @@ const adapter = {
 } as ProviderAdapterV2Shape;
 
 interface ClientLaunchHarnessOptions {
+  readonly hasCommit?: GitWorkflow.GitWorkflowService["Service"]["hasCommit"];
   readonly gitDriver?: GitDriver.GitVcsDriver["Service"];
+  readonly isGitRepository?: CheckpointStore.CheckpointStore["Service"]["isGitRepository"];
   readonly projectRecord?: import("@t3tools/contracts").Project;
   readonly readProject?: ProjectService.ProjectService["Service"]["getById"];
   readonly adapters?: ReadonlyArray<ProviderAdapterV2Shape>;
@@ -165,6 +168,9 @@ export function makeClientLaunchHarness(options: ClientLaunchHarnessOptions = {}
       : Layer.succeed(GitDriver.GitVcsDriver, options.gitDriver),
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
+    Layer.mock(CheckpointStore.CheckpointStore)({
+      isGitRepository: options.isGitRepository ?? (() => Effect.succeed(true)),
+    }),
     Layer.succeed(ProjectService.ProjectService, {
       create: () => Effect.die("unused"),
       bootstrap: () => Effect.die("unused"),
@@ -182,16 +188,20 @@ export function makeClientLaunchHarness(options: ClientLaunchHarnessOptions = {}
                 : Option.none(),
           )),
       getByWorkspaceRoot: () => Effect.succeedSome(project),
+      workspaceScanDirectory: () => Effect.die("unused"),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
+      repositoryRoot: (cwd) => Effect.succeed(cwd),
+      listLocalBranchNames: () => Effect.succeed(["main"]),
       createWorktree,
       resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: "main" }),
       fetchWorktreeBaseCommit: () =>
         Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
-      hasCommit: () => Effect.succeed(false),
+      currentBranch: () => Effect.succeed("main"),
+      hasCommit: options.hasCommit ?? (({ refName }) => Effect.succeed(refName === "main")),
       renameBranch,
       fetchRemote: options.fetchRemote ?? (() => Effect.void),
       listRefs:
@@ -229,7 +239,8 @@ export function makeClientLaunchHarness(options: ClientLaunchHarnessOptions = {}
         folderForThread: () => Effect.succeedNone,
       }),
   );
-  const launch = ThreadLaunch.layer.pipe(
+  // The composition production installs: these launches never take ordinary checkout custody.
+  const launch = ThreadLaunch.layerProduction.pipe(
     Layer.provide(ThreadMetadataReads.layer.pipe(Layer.provide(database))),
     Layer.provide(
       Layer.mergeAll(
@@ -250,6 +261,7 @@ export function makeClientLaunchHarness(options: ClientLaunchHarnessOptions = {}
           ? Option.some({
               projectId,
               title: project.title,
+              hasCustomTitle: false,
               workspaceRoot: project.workspaceRoot,
               defaultModelSelection: project.defaultModelSelection,
               defaultThreadEnvMode: null,

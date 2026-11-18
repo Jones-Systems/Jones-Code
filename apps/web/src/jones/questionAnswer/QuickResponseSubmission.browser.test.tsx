@@ -9,12 +9,16 @@ import {
   TurnItemId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
+import { useComposerDraftStore } from "../../composerDraftStore";
 import { useLayoutEffect } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { act, render } from "../../../test/render";
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPendingUserInputPanel";
-import { usePendingThreadRequests } from "../../components/chat/usePendingThreadRequests";
+import {
+  usePendingUserInputDraft,
+  usePendingThreadRequests,
+} from "../../components/chat/usePendingThreadRequests";
 import {
   changeQuestionAttachmentPreparation,
   questionAttachmentDraftId,
@@ -33,7 +37,8 @@ vi.mock(import("../../components/ChatMarkdown"), async (original) => ({
   default: (({ text }: { text: string }) => <p>{text}</p>) as never,
 }));
 
-let requests: ReturnType<typeof usePendingThreadRequests>;
+let requests: ReturnType<typeof usePendingThreadRequests> &
+  ReturnType<typeof usePendingUserInputDraft>;
 let fixture = 0;
 function Questions({
   questions,
@@ -97,11 +102,18 @@ function Questions({
     },
     supportsQuestionAttachments: true,
     composerDraftTarget: { environmentId, threadId },
-    setComposerDraftPrompt: () => {},
+    setComposerDraftPrompt: (target, prompt) =>
+      useComposerDraftStore.getState().setPrompt(target, prompt),
     setThreadError: () => {},
   });
+  const drafts = usePendingUserInputDraft({
+    environmentId,
+    activeThreadId: threadId,
+    activePendingUserInput: state.activePendingUserInput,
+    supportsQuestionAttachments: true,
+  });
   useLayoutEffect(() => {
-    requests = state;
+    requests = { ...state, ...drafts };
   });
   return (
     <ComposerPendingUserInputPanel
@@ -109,8 +121,8 @@ function Questions({
       cwd="/synthetic"
       threadRef={{ environmentId, threadId }}
       respondingRequestIds={state.respondingRequestIds}
-      answers={state.activePendingDraftAnswers}
-      questionIndex={state.activePendingQuestionIndex}
+      answers={drafts.activePendingDraftAnswers}
+      questionIndex={drafts.activePendingQuestionIndex}
       onToggleOption={state.onSelectActivePendingUserInputOption}
       onChangeCustomAnswer={state.onChangeActivePendingUserInputCustomAnswer}
       onPrevious={state.onPreviousActivePendingUserInputQuestion}
@@ -302,3 +314,25 @@ it.each(["Approve", "Deny"])(
     );
   },
 );
+
+it("keeps the ordinary draft separate from written answer edits, choices and undo", async () => {
+  using _fixture = setup();
+  const target = {
+    environmentId: EnvironmentId.make("quick-response-env"),
+    threadId: ThreadId.make(`quick-response-${fixture}`),
+  };
+  useComposerDraftStore.getState().setPrompt(target, "ordinary reply");
+  await using _screen = await render(
+    <Questions questions={[question("action")]} capability="live" />,
+  );
+  await act(() => requests.onChangeActivePendingUserInputCustomAnswer("action", "answer only"));
+  expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).toBe("ordinary reply");
+  // Keep the request open so undo can restore its set-aside text.
+  respond.mockResolvedValue(AsyncResult.failure(Cause.fail(new Error("retry"))));
+  await click("Done");
+  expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).toBe(
+    "ordinary reply\n\nanswer only",
+  );
+  await act(() => requests.onChangeActivePendingUserInputCustomAnswer("action", "answer only"));
+  expect(useComposerDraftStore.getState().getComposerDraft(target)?.prompt).toBe("ordinary reply");
+});

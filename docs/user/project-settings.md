@@ -5,10 +5,12 @@ the project and environment a change applies to. Pages that only hold device pre
 Appearance, don't show it. They start at **All projects** and **All environments**
 and stay selected as you move between categories or search for a setting.
 
-Preferences saved on this device, such as appearance, confirmations and browser profiles, always
-show and ignore the selection. Everything else is stored on a server. Choose one environment to
-edit its settings, or leave **All environments** to edit every connected environment at once.
-Offline environments keep their current values; this is a bulk edit, not a synced global default.
+Preferences saved on this device, such as appearance, confirmations and browser profiles, ignore
+the environment selection. On the Browser page they are read-only while a project is selected,
+though profiles can still be added, renamed and removed. Everything else is stored on a server.
+Choose one environment to edit its settings, or leave **All environments** to edit every connected
+environment at once. Offline environments keep their current values; this is a bulk edit, not a
+synced global default.
 
 Choose a project to override settings for it on the selected environments. A layers icon beside
 each server row's title shows where the value comes from: the built-in default, the environment,
@@ -180,7 +182,8 @@ project crumb.
 The Projects category, under Code, holds the project's name, icon, actions,
 checkouts and removal. Actions belong to a project: editing them creates the project's own list
 on each selected environment, and reset returns to the environment's shared list. A project's
-`t3.json` actions can be imported there.
+`t3.json` actions can be imported there. When a project has several checkouts on one environment,
+choose one in the scope line at the top to see or change only that checkout's settings.
 
 Settings a repository can also declare in `t3.json`, such as the workspace for new threads,
 resolve in one order: a project override, then the environment setting, then `t3.json`, then the
@@ -232,8 +235,9 @@ manually. Custom applies separate worktree rules to the selected project or chec
 captures and log retention remain machine-wide.
 
 Worktrees can be removed after a chosen number of inactive days, after a thread settles, after
-merging, or when they have no commits beyond the default branch. Set settled retention to 0 days
-to remove a worktree at the next cleanup after settlement. In repositories without remotes,
+merging, or when they have no commits beyond the default branch and their thread is settled or
+archived. Set settled retention to 0 days to remove a worktree at the next cleanup after
+settlement. In repositories without remotes,
 unchanged-worktree cleanup compares against the branch checked out in the project workspace;
 if that checkout has a detached HEAD, the worktree is kept. Only T3-managed worktrees are eligible.
 Active sessions and shared worktrees prevent removal. **Keep worktrees with local changes** defaults
@@ -268,6 +272,18 @@ nothing else: tracked files that match the branch, folders the retirement alread
 empty folders. Any other file keeps the checkout held and is named in the result. **Retire** is not
 offered for a checkout that covers more than 200 paths, and the result says so. The status line
 under **Delete now** shows the last run even when no cleanup rule is on.
+
+The inactive and settled retention periods also apply to the folders of
+[threads without a project](./thread-sidebar.md#start-without-a-project). Those folders are not
+Git repositories, so their files are deleted with them and cannot be recovered; the thread stays,
+and its next turn starts in a new, empty folder. A folder is kept when it has a Git repository
+anywhere inside it or when its thread has an enabled scheduled task. Every file in such a folder
+counts as untracked, so only **Edited tracked files** removes a folder that holds anything other
+than `node_modules`; the other two rules remove only empty folders. Folders that no thread uses
+are listed here too.
+
+Browser captures and rotated logs have separate retention periods. Expired capture links stop
+working. Current logs, message attachments, and browser profiles are kept.
 
 ### How Retire treats content that Git does not have
 
@@ -319,9 +335,6 @@ caches, together with the checkout because they can be regenerated. A nested rep
 `.env` or key file inside build output, still holds the checkout. Turn the setting off to keep
 those folders protected. Ignored folders of any other name stay held until you name them in
 the **Retire** confirmation.
-
-Browser captures and rotated logs have separate retention periods. Expired capture links stop
-working. Current logs, message attachments, and browser profiles are kept.
 
 ## Project icons
 

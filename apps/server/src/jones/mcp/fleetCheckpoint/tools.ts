@@ -3,8 +3,11 @@ import {
   FleetCheckpointInput,
   FleetCheckpointResult,
 } from "@t3tools/contracts/jones/fleetCheckpoint";
-import { Tool, Toolkit } from "effect/ai";
-import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
+import {
+  McpInvocationContext,
+  hiddenFromOutsideClients,
+} from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { Checkpoint } from "../../fleetCheckpoint/Checkpoint.ts";
 
@@ -23,7 +26,9 @@ const make = <const Name extends string>(name: Name, description: string, readOn
     .annotate(Tool.Readonly, readOnly)
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
-    .annotate(Tool.OpenWorld, false);
+    .annotate(Tool.OpenWorld, false)
+    // Each acts as its calling thread, so a client from outside, which has none, is not offered it.
+    .annotate(McpSchema.EnabledWhen, hiddenFromOutsideClients);
 
 export const FleetCheckpointToolkit = Toolkit.make(
   make(

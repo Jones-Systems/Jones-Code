@@ -229,13 +229,9 @@ it.live.each([
                 })
               : scenario === "failure after lease" || scenario === "handoff without terminal"
                 ? Effect.void
-                : scenario.startsWith("failure ")
-                  ? Deferred.succeed(failureReached, undefined).pipe(
-                      Effect.andThen(Deferred.await(allowFailureFinalization)),
-                    )
-                  : active === undefined
-                    ? Effect.void
-                    : terminal(active, "interrupted"),
+                : active === undefined
+                  ? Effect.void
+                  : terminal(active, "interrupted"),
           steerTurn: unused,
           compactThread: unused,
           respondToRuntimeRequest: unused,
@@ -295,6 +291,22 @@ it.live.each([
       const settings = yield* ServerSettings.ServerSettingsService;
       const sessions = yield* Sessions.ProviderSessionManagerV2;
       const executor = yield* Executor.ThreadCommandExecutor;
+      if (scenario === "failure before planning" || scenario === "failure after planning") {
+        const writeIfRunCurrent = sink.writeIfRunCurrent;
+        // Once the failed runtime retires, the adapter no longer receives the
+        // interrupt. Pause at the conditional failure write to hold the same race.
+        const failureWrite = vi.spyOn(sink, "writeIfRunCurrent").mockImplementation((input) =>
+          input.events.some(
+            (event) => event.type === "run.updated" && event.payload.status === "failed",
+          )
+            ? Deferred.succeed(failureReached, undefined).pipe(
+                Effect.andThen(Deferred.await(allowFailureFinalization)),
+                Effect.andThen(() => writeIfRunCurrent(input)),
+              )
+            : writeIfRunCurrent(input),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => failureWrite.mockRestore()));
+      }
       if (scenario === "failure after lease") {
         const get = sessions.get;
         const getSpy = vi

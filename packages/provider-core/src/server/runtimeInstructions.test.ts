@@ -3,6 +3,30 @@ import { assert, describe, it } from "@effect/vitest";
 import { buildRuntimeInstructions } from "./runtimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
+  it("keeps runtime labels and file citation guidance with an identified source-less build", () => {
+    const instructions = buildRuntimeInstructions({
+      harness: " \n Codex ",
+      model: " test-model ",
+      modelName: " Test\n Model ",
+      reasoningEffort: " high ",
+      appIdentity: {
+        productId: "jones-code",
+        productName: "Jones Code",
+        version: "0.1.0-test",
+        source: null,
+      },
+      pullRequestLinking: false,
+    });
+    assert.include(
+      instructions,
+      "through the Codex harness, as Test Model (model slug: test-model) with high reasoning effort",
+    );
+    assert.include(instructions, "Build source commit is unavailable");
+    assert.notInclude(instructions, "App identity and build source are unavailable");
+    assert.include(instructions, "[http.ts:42](/abs/path/http.ts:42)");
+    assert.notInclude(instructions, "<pull_request_linking>");
+  });
+
   it("leaves PR linking to a session that already carries it, and keeps runtime identity", () => {
     const instructions = buildRuntimeInstructions({
       harness: "Antigravity",

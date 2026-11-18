@@ -22,14 +22,10 @@ import { readCaller } from "../mcp/threadAccess.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 
-/**
- * A peer's `/mcp` holds a wait open for its whole timeout without sending
- * anything, and T3 Connect's edge drops a request idle for about 100 s, so a
- * forwarded wait goes out in pieces no longer than this.
- */
-export const FORWARDED_WAIT_CHUNK_MS = 50_000;
-const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
+// Match local waits: return before MCP client timeouts and T3 Connect's ~100 s idle drop.
+const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
+const FORWARDED_WAIT_CHUNK_MS = 45_000;
 
 type Scope = McpInvocationContext.McpInvocationScope;
 
@@ -64,7 +60,7 @@ export class PeerForwarding extends Context.Service<
       environmentId: EnvironmentId,
       input: OrchestratorMcpThreadInterruptInput,
     ) => Effect.Effect<OrchestratorMcpThreadInterruptResult, OrchestratorMcpFailure>;
-    /** `t3_thread_wait` there, in pieces short enough to survive any route. */
+    /** `t3_thread_wait` there, bounded like a local wait. */
     readonly waitForThread: (
       scope: Scope,
       environmentId: EnvironmentId,
@@ -93,15 +89,14 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
 
   /**
-   * The caller's own limits, which travel with every forwarded call: the peer sees only the
+   * The caller's own limits and thread, which travel with every forwarded call: the peer sees only the
    * link's credential, so a caller that may not control threads here is refused here. Work a
    * link started never uses this environment's links, since the peer would see this
    * environment's session instead of that link, and its fence could not hold.
    */
-  const callerLimits = (scope: Scope) =>
+  const forwardingCaller = (scope: Scope) =>
     readCaller().pipe(
       Effect.tap((caller) => assertNotLinked(caller, "use this environment's links")),
-      Effect.map((caller) => caller.limits),
       Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
       Effect.provideService(ThreadManagement.ThreadManagementService, threads),
     );
@@ -213,7 +208,7 @@ const make = Effect.gen(function* () {
 
   const listLinks: PeerForwarding["Service"]["links"] = Effect.fn("PeerForwarding.listLinks")(
     function* (scope) {
-      yield* callerLimits(scope);
+      yield* forwardingCaller(scope);
       yield* requireEnabled;
       const listed = yield* links.list.pipe(
         Effect.mapError(

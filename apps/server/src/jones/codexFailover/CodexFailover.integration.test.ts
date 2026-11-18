@@ -255,6 +255,7 @@ const scenario = (mode: "chain" | "all-unavailable") =>
       Layer.provide(Layer.succeed(HostProcess.Environment, environment)),
       Layer.provide(Layer.succeed(HostProcess.HomeDirectory, homePath)),
       Layer.provide(NodeCrypto.layer),
+      Layer.provide(PortScanner.layerTest),
     );
     const runtime = Harness.layerWithRegistryAndServices(
       { name: `codex-failover-${mode}`, runtimePolicyOverride: { cwd } },

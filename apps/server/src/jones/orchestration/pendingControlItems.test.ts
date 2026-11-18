@@ -28,6 +28,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
+import * as Statement from "effect/sql/Statement";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import { buildBoundedThreadProjection } from "../../orchestration-v2/threadHistoryPaging.ts";
@@ -254,7 +255,17 @@ it.layer(layer)("pending control bodies", (it) => {
           input: "synthetic check",
           output: "x".repeat(4_096),
         }));
-        const initial = yield* store.getThreadSnapshotWindow(threadId, { rowLimit: 2 });
+        const pendingCardQueries: Array<ReturnType<Statement.Statement<unknown>["compile"]>> = [];
+        const capturePendingCards: Statement.Transformer = (statement) => {
+          const query = statement.compile();
+          if (query[0].includes("FROM orchestration_v2_projection_runtime_requests AS request")) {
+            pendingCardQueries.push(query);
+          }
+          return Effect.succeed(statement);
+        };
+        const initial = yield* store
+          .getThreadSnapshotWindow(threadId, { rowLimit: 2 })
+          .pipe(Effect.provideService(Statement.CurrentTransformer, capturePendingCards));
         assert.deepEqual(
           initial.projection.visibleTurnItems,
           // Upstream keeps pending controls out of the row window and appends
@@ -404,11 +415,21 @@ it.layer(layer)("pending control bodies", (it) => {
           })),
         );
 
+        assert.lengthOf(pendingCardQueries, 1);
+        const [statement, parameters] = pendingCardQueries[0]!;
         const plan = yield* sql.unsafe<{ detail: string }>(
-          `EXPLAIN QUERY PLAN SELECT item.payload_json FROM json_each(?) AS request CROSS JOIN orchestration_v2_projection_turn_items AS item ON item.node_id = json_extract(request.value, '$.nodeId') WHERE item.thread_id = ? AND item.type = json_extract(request.value, '$.type') AND json_extract(item.payload_json, '$.requestId') = json_extract(request.value, '$.id')`,
-          [JSON.stringify([{ ...controls[0]!.request, type: "user_input_request" }]), threadId],
+          `EXPLAIN QUERY PLAN ${statement}`,
+          parameters,
         );
-        assert.isTrue(plan.some((row) => row.detail.includes("turn_items_node_ordinal_idx")));
+        const detail = plan.map((row) => row.detail);
+        assert.isTrue(
+          detail.some((step) => /^SEARCH request .*thread_id=\?/.test(step)),
+          detail.join("\n"),
+        );
+        assert.isTrue(
+          detail.some((step) => /^SEARCH item .*node_id=\?/.test(step)),
+          detail.join("\n"),
+        );
       }),
   );
 

@@ -3,12 +3,8 @@ import {
   createQueuedSteerBatchSubmission,
   deriveQueuedSteerBatch,
 } from "@t3tools/client-runtime/jones/queue";
-import {
-  CommandId,
-  type EnvironmentId,
-  type OrchestrationV2ThreadProjection,
-  type ThreadId,
-} from "@t3tools/contracts";
+import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
+import { CommandId, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
 import { randomUUID } from "../../lib/utils";
 import { useState } from "react";
 import { serverEnvironment } from "../../state/server";
@@ -18,7 +14,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 export function useQueuedSteerBatch(input: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
-  readonly projection: OrchestrationV2ThreadProjection | undefined;
+  /** Quiet structure is enough; a full projection is assignable to it. */
+  readonly projection: ThreadStructure | undefined;
   readonly editing: boolean;
   readonly hasUnsavedMessages: boolean;
   readonly busy: boolean;

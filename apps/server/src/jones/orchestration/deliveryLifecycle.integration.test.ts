@@ -29,6 +29,7 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Checkpoints from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as Git from "../../git/GitWorkflowService.ts";
 import * as Codex from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -167,6 +168,11 @@ function startTurn(
   return [
     {
       type: "expect_outbound",
+      frame: { id: id - 1, method: "config/read", params: { cwd, includeLayers: false } },
+    },
+    { type: "emit_inbound", frame: { id: id - 1, result: { config: {}, origins: {} } } },
+    {
+      type: "expect_outbound",
       frame: {
         id,
         method: "turn/start",
@@ -179,7 +185,7 @@ function startTurn(
           approvalPolicy: "never",
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },
-          summary: "detailed",
+          summary: "auto",
           collaborationMode: {
             mode: "default",
             settings: { model: target.model, reasoning_effort: effort },
@@ -248,15 +254,15 @@ const fixture = (runEffectWorker: boolean) =>
           type: "emit_inbound",
           frame: { id: 2, result: nativeThread(cwd, home, selection.model) },
         },
-        ...startTurn(3, 1, cwd, selection, "First"),
+        ...startTurn(4, 1, cwd, selection, "First"),
         terminal(1, "completed", "complete-first"),
-        ...startTurn(4, 2, cwd, selection, "Second"),
+        ...startTurn(6, 2, cwd, selection, "Second"),
         terminal(2, "completed", "complete-second"),
         {
           type: "expect_outbound",
-          frame: { id: 5, method: "thread/unsubscribe", params: { threadId: nativeId } },
+          frame: { id: 7, method: "thread/unsubscribe", params: { threadId: nativeId } },
         },
-        { type: "emit_inbound", frame: { id: 5, result: { status: "unsubscribed" } } },
+        { type: "emit_inbound", frame: { id: 7, result: { status: "unsubscribed" } } },
         {
           type: "emit_inbound",
           frame: { method: "thread/closed", params: { threadId: nativeId } },
@@ -285,16 +291,16 @@ const fixture = (runEffectWorker: boolean) =>
           },
         },
         { type: "emit_inbound", frame: { id: 2, result: nativeThread(cwd, home, switched.model) } },
-        ...startTurn(3, 3, cwd, switched, "Third"),
+        ...startTurn(4, 3, cwd, switched, "Third"),
         {
           type: "expect_outbound",
           frame: {
-            id: 4,
+            id: 5,
             method: "turn/interrupt",
             params: { threadId: nativeId, turnId: "delivery-turn-3" },
           },
         },
-        { type: "emit_inbound", frame: { id: 4, result: {} } },
+        { type: "emit_inbound", frame: { id: 5, result: {} } },
         terminal(3, "interrupted"),
       ],
     });
@@ -497,7 +503,12 @@ const fixture = (runEffectWorker: boolean) =>
         isScratchProject: () => Effect.succeed(false),
         folderForThread: () => Effect.succeedNone,
       }),
-      Layer.mock(Git.GitWorkflowService)({ isRepository: () => Effect.succeed(true) }),
+      // Every fixture checkout is its own repository root.
+      Layer.mock(Git.GitWorkflowService)({
+        repositoryRoot: (path) => Effect.succeed(path),
+        currentBranch: () => Effect.succeed(null),
+      }),
+      Layer.mock(Checkpoints.CheckpointStore)({ isGitRepository: () => Effect.succeed(true) }),
       Layer.mock(Setup.ProjectSetupScriptRunner)({
         runForThread: () => Effect.succeed({ status: "no-script" as const }),
       }),
@@ -509,7 +520,8 @@ const fixture = (runEffectWorker: boolean) =>
         getProviders: Ref.update(providerReads, (count) => count + 1).pipe(Effect.as([])),
       }),
     );
-    const launches = Launch.layer.pipe(
+    // The production owner, as runtimeLayer composes it: no ordinary checkout custody.
+    const launches = Launch.layerProduction.pipe(
       Layer.provide(
         Layer.mergeAll(
           runtime,

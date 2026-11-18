@@ -2,6 +2,10 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type {
   Admission,
+  PreparationOrigin,
+  PreparationBinding,
+  PreparationRelease,
+  TargetSnapshot,
   Binding,
   Birth,
   CheckoutError,
@@ -77,6 +81,54 @@ export interface TransitionInput {
   readonly expectedOwner: { readonly epoch: number; readonly revision: number };
 }
 
+export interface CommittedCheckoutOperation {
+  readonly prepared: object;
+  readonly command: unknown;
+  readonly threadId: string;
+  readonly storedEvents: readonly import("@t3tools/contracts").OrchestrationV2StoredEvent[];
+  readonly effects: readonly import("../../orchestration-v2/EffectOutbox.ts").PendingOrchestrationEffectV2[];
+  readonly receipt: import("../../orchestration-v2/CommandReceiptStore.ts").CommandReceiptV2;
+}
+// EventSink issues an invocation-local witness only on its actual new-receipt
+// branch (or guarded worker transaction). No live/default layer exists here.
+export class CheckoutCommitAuthority extends Context.Service<
+  CheckoutCommitAuthority,
+  {
+    readonly assertOrigin: (
+      operation: CommittedCheckoutOperation,
+    ) => Effect.Effect<void, CheckoutError>;
+    readonly assertSwitch: (
+      operation: CommittedCheckoutOperation & { readonly origin: PreparationOrigin },
+    ) => Effect.Effect<void, CheckoutError>;
+    readonly assertRelease: (
+      operation: CommittedCheckoutOperation & { readonly origin: PreparationOrigin },
+    ) => Effect.Effect<void, CheckoutError>;
+    readonly assertDerived: (operation: {
+      readonly storedEvents: CommittedCheckoutOperation["storedEvents"];
+      readonly effects: CommittedCheckoutOperation["effects"];
+    }) => Effect.Effect<void, CheckoutError>;
+  }
+>()("t3/jones/ordinaryCheckout/OrdinaryCheckout/CheckoutCommitAuthority") {}
+
+export interface PreparedAccept {
+  readonly origin: PreparationOrigin;
+  readonly binding: PreparationBinding;
+  readonly release: PreparationRelease;
+  readonly expectedOwner: Accept["expectedOwner"];
+  readonly leaseId: string;
+}
+// CheckoutIntent delegates only one exact operation, after the EventSink witness
+// passes. The callback stays open across repository savepoints, then is revoked.
+export class CheckoutCertificateAuthority extends Context.Service<
+  CheckoutCertificateAuthority,
+  {
+    readonly assertOrigin: (input: PreparationOrigin) => Effect.Effect<void, CheckoutError>;
+    readonly assertBinding: (input: PreparationBinding) => Effect.Effect<void, CheckoutError>;
+    readonly assertAdmission: (input: PreparedAccept) => Effect.Effect<void, CheckoutError>;
+    readonly assertLink: (input: PreparedAccept, link: Link) => Effect.Effect<void, CheckoutError>;
+  }
+>()("t3/jones/ordinaryCheckout/OrdinaryCheckout/CheckoutCertificateAuthority") {}
+
 // DC-B supplies this only while it owns the newly accepted receipt transaction.
 // It validates the complete decoded command, subject/run relation and planned target set.
 // Historical receipt replay never creates this capability.
@@ -122,6 +174,32 @@ type Executed<A> = Effect.Effect<A, CheckoutError, CheckoutExecutorAuthority>;
 export class OrdinaryCheckout extends Context.Service<
   OrdinaryCheckout,
   {
+    readonly readPreparationOrigin: (originId: string) => Result<PreparationOrigin | null>;
+    readonly readPreparationOrigins: (commandId: string) => Result<readonly PreparationOrigin[]>;
+    readonly readPreparationForRun: (
+      threadId: string,
+      runId: string,
+    ) => Result<PreparationOrigin | null>;
+    readonly readPreparationBinding: (originId: string) => Result<PreparationBinding | null>;
+    readonly readPreparationRelease: (originId: string) => Result<PreparationRelease | null>;
+    readonly readTargetSnapshot: (threadId: string) => Result<TargetSnapshot>;
+    readonly validatePreparationOrigin: (
+      origin: PreparationOrigin,
+      phase: "preparing" | "released",
+    ) => Result<void>;
+    readonly recordPreparationOrigin: (
+      input: PreparationOrigin,
+    ) => Effect.Effect<void, CheckoutError, CheckoutCertificateAuthority>;
+    readonly recordPreparationBinding: (
+      input: PreparationBinding,
+    ) => Effect.Effect<void, CheckoutError, CheckoutCertificateAuthority>;
+    readonly acceptPrepared: (
+      input: PreparedAccept,
+    ) => Effect.Effect<Admission, CheckoutError, CheckoutCertificateAuthority>;
+    readonly linkPreparedStart: (
+      input: PreparedAccept,
+      link: Link,
+    ) => Effect.Effect<void, CheckoutError, CheckoutCertificateAuthority>;
     readonly replay: (identity: CommandIdentity) => Result<Replay>;
     readonly accept: (
       input: Accept,

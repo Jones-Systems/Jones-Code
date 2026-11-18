@@ -60,7 +60,7 @@ export function pinOrderKeyBetween(before: string | null, after: string | null):
 
 /** Evenly spaced keys for materializing an order. Wider keys keep a large
     active list from exhausting the space between two-digit keys. */
-export function generateSpreadPinOrderKeys(count: number): string[] {
+function generateSpreadPinOrderKeys(count: number): string[] {
   let width = 2;
   let space = PIN_ORDER_DIGITS.length ** width;
   while (space <= (count + 1) * 2) {

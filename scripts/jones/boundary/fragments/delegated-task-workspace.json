@@ -15,6 +15,10 @@
     {
       "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
       "to": "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts"
     }
   ]
 }

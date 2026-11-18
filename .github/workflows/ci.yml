@@ -207,7 +207,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -320,7 +320,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -396,7 +396,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -479,7 +479,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -521,7 +521,9 @@ jobs:
             apps/server/src/jones/workspaceRecreation/*.node-test.mjs \
             apps/server/src/jones/conversationWorkspace/*.node-test.mjs \
             apps/web/src/jones/storageCleanupResults/*.node-test.mjs \
+            .github/scripts/mobile-ios-preview-record.test.cjs \
             .github/scripts/mobile-preview-comment.test.cjs \
+            .github/scripts/test-delta.test.cjs \
             .github/scripts/thread-transfer-report.test.cjs
 
       - name: Test process placement build custody
@@ -594,7 +596,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -692,7 +694,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -759,7 +761,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -771,7 +773,8 @@ jobs:
       - *test_receipt_upload
       - *test_receipt_cleanup
 
-  # Both shards run the complete web command, including unit and browser projects.
+  # Every shard runs the same unit and browser projects. Smaller shards limit
+  # the lifetime of each Chromium process on the Linux runners.
   test_web:
     needs: linux_changes
     if: ${{ !cancelled() && needs.linux_changes.outputs.test_web != 'false' }}
@@ -779,7 +782,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -831,7 +834,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -930,7 +933,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: false
           run-install: false
 
@@ -1007,7 +1010,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -1206,7 +1209,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: false
           run-install: false
 
@@ -1487,7 +1490,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: |
             args:
@@ -1564,7 +1567,7 @@ jobs:
       - name: Install dependencies on the supported development runtime
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -1683,7 +1686,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: |
             args:

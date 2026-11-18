@@ -2,97 +2,251 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlError from "effect/sql/SqlError";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
-import { runMigrations } from "./Migrations.ts";
+import { runMigrations, migrationManifest } from "./Migrations.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
+import * as ServerConfig from "../config.ts";
+import * as ServerOwnership from "../serverOwnership.ts";
+
+import { holdJonesServerNativeWriterFence } from "../jones/updates/nativeWriterStartup.ts";
+
 import type { SqliteReaderPoolOptions } from "@t3tools/shared/jones/sqliteReaderContracts";
 import { readerPoolOptions } from "../jones/serverParallelism/persistenceOptions.ts";
 import { makePoolObservers } from "../jones/serverParallelism/metrics.ts";
-import * as ServerConfig from "../config.ts";
-import { holdJonesServerNativeWriterFence } from "../jones/updates/nativeWriterStartup.ts";
+import { jonesMigrationEntries } from "../jones/persistence/JonesMigrations.ts";
+import { readMigrationPlan } from "../jones/updates/migrationPlan.ts";
+import * as Option from "effect/Option";
+import * as CheckedOwner from "../jones/cleanup/CheckedRuntimeOwner.ts";
+import * as Incarnation from "../jones/cleanup/sharedAdmission/DatabaseIncarnation.ts";
+import { AdmissionError } from "../jones/cleanup/sharedAdmission/Protocol.ts";
 
 const WAL_SIZE_LIMIT_BYTES = 128 * 1024 * 1024;
 
-const layerSetup = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    // CLI and server write from separate processes; wait rather than fail with SQLITE_BUSY.
-    yield* sql`PRAGMA busy_timeout = 5000;`;
-    yield* sql`PRAGMA foreign_keys = ON;`;
-    // Only an empty file can switch modes here; an existing database needs the
-    // offline VACUUM that `t3 doctor` runs, which rebuilds it with pointer maps.
-    const tables = yield* sql<{
-      readonly count: number;
-    }>`SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table'`;
-    if (tables[0]?.count === 0) yield* sql`PRAGMA auto_vacuum = INCREMENTAL;`;
-    yield* sql`PRAGMA journal_mode = WAL;`;
-    // FULL fsyncs each provider-event commit on the main thread, stalling clients on slow disks.
-    // WAL NORMAL fsyncs checkpoints: app crashes lose no commits or integrity,
-    // but OS crash/power loss can roll back commits since the last checkpoint.
-    yield* sql`PRAGMA synchronous = NORMAL;`;
-    // Checkpoints are now the only sync, and macOS fsync() does not flush the
-    // drive cache. F_FULLFSYNC makes them reach disk; other platforms ignore it.
-    yield* sql`PRAGMA checkpoint_fullfsync = ON;`;
-    // Keep statement journals and sort spills off the main thread's disk path.
-    // Large statements and open savepoints can increase peak memory use.
-    yield* sql`PRAGMA temp_store = MEMORY;`;
-    // PASSIVE checkpoints retain peak WAL size until the last connection closes.
-    yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
-    yield* runMigrations();
-    // Planner statistics read every page and can preserve small-table scan plans after growth.
-    // Without statistics SQLite assumes large tables and uses indexes; exceptions use INDEXED BY.
-    // Clear older builds' statistics, then reload this connection's cached planner state.
-    const statTables = yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`;
-    if (statTables.length > 0) {
-      yield* sql`DELETE FROM sqlite_stat1;`;
-      yield* sql`ANALYZE sqlite_schema;`;
-    }
-  }).pipe(Effect.withSpan("Sqlite.setup")),
-);
-
-export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (
-  dbPath: string,
-  readerPool?: SqliteReaderPoolOptions,
+export class ServerOwnsDatabaseError extends Schema.TaggedError<ServerOwnsDatabaseError>()(
+  "ServerOwnsDatabaseError",
+  { stateDir: Schema.String },
 ) {
-  yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+  override get message(): string {
+    return `Another T3 Code process, usually a running server, owns ${this.stateDir}, and this CLI would change its database schema. Use the \`t3\` that matches the running server, or stop that server, then retry. The database was not changed.`;
+  }
+}
 
-  return Layer.provideMerge(
-    layerSetup,
-    NodeSqliteClient.layer({
-      filename: dbPath,
-      ...(readerPool === undefined ? {} : { readerPool }),
-      readerWorker: true,
-      readerFailureMode: "fail",
-      // Checkpoints sync the database, with F_FULLFSYNC on macOS. Run them off
-      // the event loop so a slow flush cannot stall clients.
-      checkpointWorker: true,
-      spanAttributes: {
-        "db.name": path.basename(dbPath),
-        "service.name": "t3code-server",
-      },
+// SQLITE_CORRUPT and SQLITE_NOTADB; node:sqlite reports extended codes whose low byte is the primary code.
+const DAMAGED_SQLITE_CODES = new Set([11, 26]);
+
+const isDamagedDatabase = (error: SqlError.SqlError): boolean => {
+  const seen = new Set<unknown>();
+  let cause: unknown = error.cause;
+  while (Predicate.isObject(cause) && !seen.has(cause)) {
+    seen.add(cause);
+    if (typeof cause.errcode === "number" && DAMAGED_SQLITE_CODES.has(cause.errcode & 0xff)) {
+      return true;
+    }
+    cause = cause.cause;
+  }
+  return false;
+};
+
+// Keeps the SqlError type so callers' error channels do not change; the original stays as the cause.
+const damagedDatabaseError = (dbPath: string, cause: SqlError.SqlError) =>
+  new SqlError.SqlError({
+    reason: new SqlError.UnknownError({
+      cause,
+      operation: "open",
+      message: `The T3 Code database at ${dbPath} is damaged or is not a SQLite database, so T3 Code cannot start. To recover, quit T3 Code, then move that file and any -wal and -shm files next to it out of the folder, or replace them with a backup. T3 Code creates a new database on the next start.`,
     }),
+  });
+
+const makeLayerSetup = <E, R>(migrate: Effect.Effect<unknown, E, R>, maintenance = true) =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // CLI and server write from separate processes; wait rather than fail with SQLITE_BUSY.
+      yield* sql`PRAGMA busy_timeout = 5000;`;
+      yield* sql`PRAGMA foreign_keys = ON;`;
+      // Existing databases need doctor's offline VACUUM to add pointer maps for this mode.
+      const tables = yield* sql<{
+        readonly count: number;
+      }>`SELECT COUNT(*) AS count FROM sqlite_schema WHERE type = 'table'`;
+      if (maintenance && tables[0]?.count === 0) yield* sql`PRAGMA auto_vacuum = INCREMENTAL;`;
+      if (maintenance) yield* sql`PRAGMA journal_mode = WAL;`;
+      // FULL fsyncs every event commit; NORMAL syncs only at WAL checkpoints.
+      // App crashes lose nothing; OS crashes or power loss can roll back post-checkpoint commits without corruption.
+      yield* sql`PRAGMA synchronous = NORMAL;`;
+      // macOS fsync misses drive caches; F_FULLFSYNC flushes them at checkpoints and is ignored elsewhere.
+      yield* sql`PRAGMA checkpoint_fullfsync = ON;`;
+      // Keep statement journals and sort spills off the disk.
+      // Large statements and open savepoints can increase peak memory use.
+      yield* sql`PRAGMA temp_store = MEMORY;`;
+      // PASSIVE checkpoints retain peak WAL size until the last connection closes.
+      yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
+      yield* migrate;
+      // Collecting stats scans every page, and stale small-table stats cause scans after growth; use indexes by default.
+      // Connections cache stats; reload after deleting them.
+      const statTables = yield* sql`SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1'`;
+      if (maintenance && statTables.length > 0) {
+        yield* sql`DELETE FROM sqlite_stat1;`;
+        yield* sql`ANALYZE sqlite_schema;`;
+      }
+    }).pipe(Effect.withSpan("Sqlite.setup")),
   );
-}, Layer.unwrap);
+
+const layerSetup = makeLayerSetup(runMigrations());
+
+const makeLayerFromPath = <E, R>(
+  makeSetup: (dbPath: string) => Layer.Layer<never, E, R>,
+  managed = false,
+) =>
+  Effect.fn("makeSqlitePersistenceLive")(function* (
+    dbPath: string,
+    readerPool?: SqliteReaderPoolOptions,
+  ) {
+    yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+
+    const infrastructure = yield* Effect.serviceOption(Incarnation.OpenInfrastructure);
+    // Raw paths (including schema-only CLI opens) acquire no managed authority.
+    // Root provides this port only after real account infrastructure admission.
+    const open = Option.isSome(infrastructure)
+      ? yield* Effect.gen(function* () {
+          const owner = yield* Effect.serviceOption(CheckedOwner.HeldRuntimeOwner);
+          if (Option.isNone(owner))
+            return yield* new AdmissionError({ reason: "persistence_held_owner_missing" });
+          const coordinates = yield* Effect.try({
+            try: () => CheckedOwner.inspectHeldDatabaseOwner(owner.value.token),
+            catch: (cause) =>
+              new AdmissionError({ reason: "persistence_owner_unavailable", cause }),
+          });
+          if (coordinates.dbPath !== dbPath)
+            return yield* new AdmissionError({ reason: "persistence_open_coordinate_mismatch" });
+          return yield* Incarnation.prepareOpen(
+            owner.value.token,
+            infrastructure.value.permit,
+          ).pipe(Effect.provideService(Incarnation.OpenInfrastructure, infrastructure.value));
+        })
+      : undefined;
+    let setup: Layer.Layer<never, AdmissionError | E, SqlClient.SqlClient | R> = makeSetup(dbPath);
+    if (open !== undefined) {
+      // Certify the actual client before setup, then revalidate after both migration sets.
+      setup = Layer.effectDiscard(Incarnation.bindOpen(open)).pipe(
+        (before) => Layer.provideMerge(makeSetup(dbPath), before),
+        (migrated) =>
+          Layer.provideMerge(Layer.effectDiscard(Incarnation.revalidateOpen(open)), migrated),
+      );
+    } else if (managed) {
+      // Ordinary servers have a held runtime owner independently of shared enrollment.
+      const owner = yield* Effect.serviceOption(CheckedOwner.HeldRuntimeOwner);
+      if (Option.isSome(owner)) {
+        const bind = yield* CheckedOwner.prepareLocalDatabaseOpen(owner.value.token, dbPath);
+        setup = Layer.provideMerge(setup, Layer.effectDiscard(bind));
+      }
+    }
+
+    return Layer.provideMerge(
+      setup,
+      NodeSqliteClient.layer({
+        filename: dbPath,
+        readerWorker: true,
+        readerFailureMode: "fail",
+        checkpointWorker: true,
+        ...(readerPool === undefined ? {} : { readerPool }),
+        // A slow disk then delays writes instead of freezing every client.
+        writerWorker: true,
+        spanAttributes: {
+          "db.name": path.basename(dbPath),
+          "service.name": "t3code-server",
+        },
+      }),
+    ).pipe(
+      Layer.catchTag("SqlError", (error) =>
+        Layer.effect(
+          SqlClient.SqlClient,
+          Effect.fail(
+            SqlError.isSqlError(error) && isDamagedDatabase(error)
+              ? damagedDatabaseError(dbPath, error)
+              : error,
+          ),
+        ),
+      ),
+    );
+  }, Layer.unwrap);
+
+export const layerFromPath = makeLayerFromPath(() => layerSetup);
 
 export const layerMemory = Layer.provideMerge(
   layerSetup,
   NodeSqliteClient.layer({ filename: ":memory:" }),
 );
 
-export const layerConfig = Layer.unwrap(
-  Effect.gen(function* () {
-    const { dbPath, serverParallelism } = yield* ServerConfig.ServerConfig;
-    const observers = yield* makePoolObservers(serverParallelism.profile);
-    yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
-    yield* initializeV2Database(dbPath);
-    return layerFromPath(
-      dbPath,
-      readerPoolOptions(serverParallelism.readerCount, observers.reader),
-    );
-  }),
+const makeLayerConfig = <E, R>(
+  fromPath: (
+    dbPath: string,
+    readerPool?: SqliteReaderPoolOptions,
+  ) => Layer.Layer<SqlClient.SqlClient, E, R>,
+  cli = false,
+) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const { dbPath, serverParallelism, serverRuntimeStatePath } =
+        yield* ServerConfig.ServerConfig;
+      const observers = yield* makePoolObservers(serverParallelism.profile);
+      yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
+      let cliPending = false;
+      if (cli) {
+        // Inspect before copy/open/setup: a refused CLI must leave the database unchanged.
+        const plan = yield* Effect.sync(() =>
+          readMigrationPlan({
+            databasePath: dbPath,
+            upstream: migrationManifest,
+            jones: jonesMigrationEntries.map(([id, name]) => [id, name]),
+          }),
+        );
+        if (plan.status === "blocked")
+          return yield* new SqlError.SqlError({
+            reason: new SqlError.UnknownError({
+              cause: new Error(plan.reason),
+              operation: "open",
+              message: plan.reason,
+            }),
+          });
+        if (
+          plan.migrationPlan.pendingUpstream.length > 0 ||
+          plan.migrationPlan.pendingJones.length > 0
+        ) {
+          cliPending = true;
+          yield* ServerOwnership.holdServerOwnershipLock(serverRuntimeStatePath).pipe(
+            Effect.catchTags({
+              ServerAlreadyRunningError: ({ stateDir }) =>
+                Effect.fail(new ServerOwnsDatabaseError({ stateDir })),
+            }),
+          );
+          yield* initializeV2Database(dbPath);
+        }
+      } else {
+        yield* initializeV2Database(dbPath);
+      }
+      const readerPool = readerPoolOptions(serverParallelism.readerCount, observers.reader);
+      // Layer.unwrap infers one layer type, so name the union of both open graphs.
+      const layer: Layer.Layer<
+        SqlClient.SqlClient,
+        E | Layer.Error<ReturnType<typeof layerFromPath>>,
+        R | Layer.Services<ReturnType<typeof layerFromPath>>
+      > = cliPending ? layerFromPath(dbPath, readerPool) : fromPath(dbPath, readerPool);
+      return layer;
+    }),
+  );
+
+export const layerConfig = makeLayerConfig(makeLayerFromPath(() => layerSetup, true));
+
+/** For CLI commands: pending migrations run only while no server owns the T3 home. */
+export const layerCliConfig = makeLayerConfig(
+  makeLayerFromPath(() => makeLayerSetup(runMigrations(), false)),
+  true,
 );

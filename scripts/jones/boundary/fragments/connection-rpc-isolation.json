@@ -10,7 +10,7 @@
     "packages/client-runtime/src/jones/connection/betterRouteRecovery.test.ts",
     "packages/client-runtime/src/jones/sync/producerGuard.ts",
     "packages/client-runtime/src/jones/sync/commandIsolation.test.ts",
-    "patches/effect@4.1.2.patch",
+    "patches/effect@4.1.3.patch",
     "packages/client-runtime/src/jones/connection/unusedAuthorization.ts",
     "packages/client-runtime/src/jones/sync/sessionResubscribe.ts",
     "packages/client-runtime/src/jones/sync/sessionResubscribe.test.ts"

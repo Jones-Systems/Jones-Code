@@ -24,21 +24,18 @@ export const importedHistoryHttpApiLayer = HttpApiBuilder.group(
         .handle("review", ({ payload }) =>
           Effect.gen(function* () {
             yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
-            if (threads.reviewImportedHistory === undefined) return yield* unavailable();
             return yield* threads.reviewImportedHistory(payload).pipe(Effect.catch(unavailable));
           }),
         )
         .handle("start", ({ payload }) =>
           Effect.gen(function* () {
             yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
-            if (threads.startWithImportedHistory === undefined) return yield* unavailable();
             return yield* threads.startWithImportedHistory(payload).pipe(Effect.catch(unavailable));
           }),
         )
         .handle("observe", ({ payload }) =>
           Effect.gen(function* () {
             yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
-            if (threads.observeImportedHistoryStart === undefined) return yield* unavailable();
             return yield* threads
               .observeImportedHistoryStart(payload)
               .pipe(Effect.catch(unavailable));

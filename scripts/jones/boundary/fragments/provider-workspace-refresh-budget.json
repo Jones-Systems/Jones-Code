@@ -2,15 +2,22 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "upstream-24899-provider-snapshots-on-demand",
   "jonesOwnedPaths": [
+    "apps/mobile/src/jones/providerWorkspaceRefresh/snapshotRefresh.ts",
+    "apps/mobile/src/jones/providerWorkspaceRefresh/snapshotRefresh.test.ts",
     "packages/client-runtime/src/jones/providerWorkspaceRefresh.ts",
     "packages/client-runtime/src/jones/providerWorkspaceRefresh.test.ts"
   ],
   "hookPaths": [
+    "apps/mobile/src/state/provider-workspace-snapshot-refresh.ts",
     "apps/web/src/components/chat/useProviderWorkspaceSnapshotRefresh.ts",
     "apps/mobile/src/features/threads/use-composer-command-menu.ts"
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/mobile/src/state/provider-workspace-snapshot-refresh.ts",
+      "to": "apps/mobile/src/jones/providerWorkspaceRefresh/snapshotRefresh.ts"
+    },
     {
       "from": "apps/web/src/components/chat/useProviderWorkspaceSnapshotRefresh.ts",
       "to": "packages/client-runtime/src/jones/providerWorkspaceRefresh.ts"

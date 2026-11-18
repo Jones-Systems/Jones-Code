@@ -18,12 +18,18 @@ import {
   type VcsRef,
   ThreadId,
 } from "@t3tools/contracts";
+import {
+  LaunchDeliveryEvidence,
+  initialMessageCommandId,
+} from "@t3tools/contracts/jones/deliveryEvidence";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as GitWorkflow from "../../git/GitWorkflowService.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
@@ -36,6 +42,7 @@ import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -44,6 +51,7 @@ import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "../../orchestration-v2/ThreadTitleRegenerationService.ts";
 import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import { launchDeliveryEvidence } from "./deliveryEvidence.ts";
 
 const projectId = ProjectId.make("project:launch-test");
 const otherProjectId = ProjectId.make("project:launch-other");
@@ -136,6 +144,8 @@ function makeHarness(options: HarnessOptions = {}) {
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
+    // The project at /repo is a Git repository, as the Git workflow below reports.
+    Layer.mock(CheckpointStore.CheckpointStore)({ isGitRepository: () => Effect.succeed(true) }),
     Layer.succeed(ProjectService.ProjectService, {
       create: () => Effect.die("unused"),
       bootstrap: () => Effect.die("unused"),
@@ -151,13 +161,19 @@ function makeHarness(options: HarnessOptions = {}) {
               : Option.none(),
         ),
       getByWorkspaceRoot: () => Effect.succeedSome(project),
+      workspaceScanDirectory: () => Effect.die("unused"),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
+      repositoryRoot: () => Effect.succeed(project.workspaceRoot),
+      currentBranch: () => Effect.succeed(null),
+      listLocalBranchNames: () => Effect.succeed([]),
       createWorktree,
-      hasCommit: () => Effect.succeed(false),
+      // Every named base exists in this repository; no local branch occupies a
+      // generated branch's parent path, so neither the fallback base nor flattening applies.
+      hasCommit: ({ refName }) => Effect.succeed(!refName.startsWith("refs/heads/")),
       renameBranch,
       resolveWorktreeBaseRemote:
         options.resolveWorktreeBaseRemote ??
@@ -176,6 +192,7 @@ function makeHarness(options: HarnessOptions = {}) {
             totalCount: 0,
           })),
       removeWorktree,
+      deleteLocalBranch: () => Effect.void,
     }),
     Layer.succeed(ProjectSetupScriptRunner.ProjectSetupScriptRunner, {
       runForThread: runSetup,
@@ -194,7 +211,8 @@ function makeHarness(options: HarnessOptions = {}) {
       }),
   );
   const metadata = ThreadMetadataReads.layer.pipe(Layer.provide(database));
-  const launch = ThreadLaunch.layer.pipe(
+  // The production owner, as runtimeLayer composes it: no ordinary checkout custody.
+  const launch = ThreadLaunch.layerProduction.pipe(
     Layer.provide(metadata),
     Layer.provide(
       Layer.mergeAll(
@@ -204,6 +222,7 @@ function makeHarness(options: HarnessOptions = {}) {
         IdAllocator.layer,
         outbox,
         orchestrator,
+        database,
         EventStore.layer.pipe(Layer.provide(database)),
       ),
     ),
@@ -218,6 +237,7 @@ function makeHarness(options: HarnessOptions = {}) {
               workspaceRoot: project.workspaceRoot,
               defaultModelSelection: project.defaultModelSelection,
               defaultThreadEnvMode: null,
+              hasCustomTitle: false,
               autoPull: false,
               pinnedAt: null,
               archivedAt: null,
@@ -852,11 +872,16 @@ it.effect(
         Effect.gen(function* () {
           const launches = yield* ThreadLaunch.ThreadLaunchService;
           assert.isFalse(yield* launches.preparationActive(commandId));
+          // Setup runs only in a checkout; an existing worktree holds preparation there.
           yield* launches.launch(
             launchInput({
               command: commandId,
               thread: "thread:reservation-observer",
               message: "Observe",
+              workspace: {
+                type: "existing_worktree",
+                worktreePath: "/repo-worktrees/reservation-observer",
+              },
             }),
           );
           yield* Deferred.await(entered);
@@ -891,11 +916,15 @@ it.effect.each([
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
       const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      // Setup runs only in a checkout; an existing worktree holds preparation there.
+      const worktreePath = "/repo-worktrees/hold-progress";
       const input = launchInput({
         command: "command:hold-progress",
         thread: "thread:hold-progress",
         message: "Prepare",
+        workspace: { type: "existing_worktree", worktreePath },
       });
+      // An earlier attempt's claim and split first message, before it scheduled preparation.
       yield* threads.dispatch({
         type: "thread.create",
         commandId: input.commandId,
@@ -906,7 +935,7 @@ it.effect.each([
         runtimeMode: input.runtimeMode,
         interactionMode: input.interactionMode,
         branch: null,
-        worktreePath: null,
+        worktreePath,
         createdBy: "user",
         creationSource: "web",
       });
@@ -950,6 +979,302 @@ it.effect.each([
     }).pipe(Effect.provide(harness.layer));
   }),
 );
+
+const launchEvidenceCodec = Schema.toCodecJson(LaunchDeliveryEvidence);
+const userMessageIds = (
+  messages: ReadonlyArray<{ readonly id: MessageId; readonly role: string }>,
+) => messages.filter((message) => message.role === "user").map((message) => message.id);
+
+it.effect(
+  "a combined first-message claim proves delivery only from its own exact receipt and events",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const input = launchInput({
+        command: "command:combined-evidence",
+        thread: "thread:combined-evidence",
+        message: "Combined first prompt",
+      });
+      const messageId = input.initialMessage!.messageId;
+      const derived = initialMessageCommandId(input.commandId);
+      const launched = yield* launches.launch(input);
+      assert.isFalse(launched.resumed);
+      // The new thread's own claim carried its first prompt; the derived key holds no command.
+      const claim = yield* receipts.getByCommandId(input.commandId);
+      assert.isTrue(Option.isSome(claim));
+      assert.deepInclude(Option.getOrThrow(claim), {
+        commandType: "thread.create",
+        status: "accepted",
+        threadId: launched.threadId,
+      });
+      assert.isTrue(Option.isNone(yield* receipts.getByCommandId(derived)));
+      const claimEvents = Array.from(
+        yield* eventSink.readByCommandId({ commandId: input.commandId }).pipe(Stream.runCollect),
+      );
+      assert.isTrue(claimEvents.some(({ event }) => event.type === "thread.created"));
+      assert.isTrue(
+        claimEvents.some(
+          ({ event }) =>
+            event.type === "message.updated" &&
+            event.payload.role === "user" &&
+            event.payload.id === messageId,
+        ),
+      );
+      assert.isTrue(
+        claimEvents.some(
+          ({ event }) => event.type === "run.created" && event.payload.userMessageId === messageId,
+        ),
+      );
+      const expected: LaunchDeliveryEvidence = {
+        kind: "launch",
+        commandId: input.commandId,
+        projectId,
+        creation: { status: "accepted", threadId: launched.threadId },
+        initialMessage: { status: "accepted", commandId: derived, messageId },
+      };
+      const evidence = yield* launches.getDeliveryEvidence(input);
+      assert.deepEqual(evidence, expected);
+      // The wire contract names the first prompt by its derived key.
+      assert.deepEqual(
+        yield* Schema.decodeEffect(launchEvidenceCodec)(
+          yield* Schema.encodeEffect(launchEvidenceCodec)(evidence),
+        ),
+        expected,
+      );
+
+      // Another first prompt, project, thread or claim type is never this launch's evidence.
+      const unknownMessage = { status: "unknown", commandId: derived, messageId } as const;
+      const otherMessageId = MessageId.make("combined-evidence:another-first");
+      const otherMessage = yield* launches.getDeliveryEvidence({
+        ...input,
+        initialMessage: { ...input.initialMessage!, messageId: otherMessageId },
+      });
+      assert.deepEqual(otherMessage.creation, expected.creation);
+      assert.deepEqual(otherMessage.initialMessage, {
+        status: "unknown",
+        commandId: derived,
+        messageId: otherMessageId,
+      });
+      for (const mismatched of [
+        { ...input, projectId: otherProjectId },
+        { ...input, threadId: ThreadId.make("thread:combined-evidence:other") },
+        { ...input, reuseExistingThread: true },
+      ]) {
+        const refused = yield* launches.getDeliveryEvidence(mismatched);
+        assert.deepEqual(refused.creation, { status: "unknown" });
+        assert.deepEqual(refused.initialMessage, unknownMessage);
+      }
+      const { initialMessage: _firstMessage, ...withoutMessage } = input;
+      assert.deepEqual((yield* launches.getDeliveryEvidence(withoutMessage)).initialMessage, {
+        status: "not-requested",
+      });
+
+      // The claim's own events must carry the run; another command's events prove nothing.
+      const withoutRun = yield* launchDeliveryEvidence(
+        receipts,
+        {
+          readByCommandId: (request) =>
+            eventSink
+              .readByCommandId(request)
+              .pipe(Stream.filter(({ event }) => event.type !== "run.created")),
+        },
+        input,
+      );
+      assert.deepEqual(withoutRun.initialMessage, unknownMessage);
+      const other = launchInput({
+        command: "command:combined-evidence:foreign",
+        thread: "thread:combined-evidence:foreign",
+        message: "Another thread's prompt",
+      });
+      yield* launches.launch(other);
+      const foreign = yield* launchDeliveryEvidence(
+        receipts,
+        { readByCommandId: () => eventSink.readByCommandId({ commandId: other.commandId }) },
+        input,
+      );
+      assert.deepEqual(foreign.creation, { status: "unknown" });
+      assert.deepEqual(foreign.initialMessage, unknownMessage);
+
+      // A same-key replay returns the recorded claim: one first message, one run, same evidence.
+      const replayed = yield* launches.launch(input);
+      assert.isTrue(replayed.resumed);
+      assert.equal(replayed.threadId, launched.threadId);
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.deepEqual(userMessageIds(projection.messages), [messageId]);
+      assert.lengthOf(projection.runs, 1);
+      assert.isTrue(Option.isNone(yield* receipts.getByCommandId(derived)));
+      assert.deepEqual(yield* launches.getDeliveryEvidence(input), expected);
+
+      // An unreadable or occupied derived key can neither confirm nor rule out another delivery.
+      const unreadable = yield* launchDeliveryEvidence(
+        {
+          getByCommandId: (commandId) =>
+            commandId === derived
+              ? Effect.fail(new CommandReceiptStore.CommandReceiptStoreReadError({ commandId }))
+              : receipts.getByCommandId(commandId),
+        },
+        eventSink,
+        input,
+      );
+      assert.deepEqual(unreadable.creation, expected.creation);
+      assert.deepEqual(unreadable.initialMessage, unknownMessage);
+      yield* receipts.insertIfAbsent({
+        commandId: derived,
+        commandType: "message.dispatch",
+        threadId: launched.threadId,
+        status: "accepted",
+        acceptedAt: yield* DateTime.now,
+        resultSequence: 0,
+        error: null,
+      });
+      const conflicting = yield* launches.getDeliveryEvidence(input);
+      assert.deepEqual(conflicting.creation, expected.creation);
+      assert.deepEqual(conflicting.initialMessage, unknownMessage);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect("a shell claim proves its first message only through its derived dispatch", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+    const input = launchInput({
+      command: "command:split-evidence",
+      thread: "thread:split-evidence",
+      message: "Split first prompt",
+    });
+    const messageId = input.initialMessage!.messageId;
+    const derived = initialMessageCommandId(input.commandId);
+    // A claim recorded without its first prompt, as an interrupted or older launch left it.
+    yield* threads.dispatch({
+      type: "thread.create",
+      commandId: input.commandId,
+      threadId: input.threadId,
+      projectId,
+      title: input.title,
+      modelSelection,
+      runtimeMode: input.runtimeMode,
+      interactionMode: input.interactionMode,
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const shell = yield* launches.getDeliveryEvidence(input);
+    assert.deepEqual(shell.creation, { status: "accepted", threadId: input.threadId });
+    assert.deepEqual(shell.initialMessage, { status: "unknown", commandId: derived, messageId });
+
+    const resumed = yield* launches.launch(input);
+    assert.isFalse(resumed.resumed);
+    const messageReceipt = yield* receipts.getByCommandId(derived);
+    assert.isTrue(Option.isSome(messageReceipt));
+    assert.deepInclude(Option.getOrThrow(messageReceipt), {
+      commandType: "message.dispatch",
+      status: "accepted",
+      threadId: input.threadId,
+    });
+    const expected: LaunchDeliveryEvidence = {
+      kind: "launch",
+      commandId: input.commandId,
+      projectId,
+      creation: { status: "accepted", threadId: input.threadId },
+      initialMessage: { status: "accepted", commandId: derived, messageId },
+    };
+    assert.deepEqual(yield* launches.getDeliveryEvidence(input), expected);
+    const otherMessageId = MessageId.make("split-evidence:another-first");
+    assert.deepEqual(
+      (yield* launches.getDeliveryEvidence({
+        ...input,
+        initialMessage: { ...input.initialMessage!, messageId: otherMessageId },
+      })).initialMessage,
+      { status: "unknown", commandId: derived, messageId: otherMessageId },
+    );
+
+    // A same-key replay reuses both receipts: one first message, one run, same evidence.
+    const replayed = yield* launches.launch(input);
+    assert.isTrue(replayed.resumed);
+    const projection = yield* threads.getThreadProjection(input.threadId);
+    assert.deepEqual(userMessageIds(projection.messages), [messageId]);
+    assert.lengthOf(projection.runs, 1);
+    assert.deepEqual(yield* launches.getDeliveryEvidence(input), expected);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("a reused empty thread takes its first message in its own command, not its claim", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+    const draftCommandId = CommandId.make("command:reuse-evidence:draft");
+    const threadId = ThreadId.make("thread:reuse-evidence");
+    yield* threads.dispatch({
+      type: "thread.create",
+      commandId: draftCommandId,
+      threadId,
+      projectId,
+      title: "Draft",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const input = {
+      ...launchInput({
+        command: "command:reuse-evidence",
+        thread: threadId,
+        message: "Reuse first prompt",
+      }),
+      reuseExistingThread: true,
+    };
+    const messageId = input.initialMessage!.messageId;
+    const derived = initialMessageCommandId(input.commandId);
+    yield* launches.launch(input);
+    assert.deepInclude(Option.getOrThrow(yield* receipts.getByCommandId(input.commandId)), {
+      commandType: "thread.metadata.update",
+      status: "accepted",
+      threadId,
+    });
+    assert.deepInclude(Option.getOrThrow(yield* receipts.getByCommandId(derived)), {
+      commandType: "message.dispatch",
+      status: "accepted",
+      threadId,
+    });
+    const expected: LaunchDeliveryEvidence = {
+      kind: "launch",
+      commandId: input.commandId,
+      projectId,
+      creation: { status: "accepted", threadId },
+      initialMessage: { status: "accepted", commandId: derived, messageId },
+    };
+    assert.deepEqual(yield* launches.getDeliveryEvidence(input), expected);
+    // The same key read as a new-thread claim, or the draft's own creation, is not this claim.
+    for (const mismatched of [
+      { ...input, reuseExistingThread: false },
+      { ...input, commandId: draftCommandId },
+    ]) {
+      const refused = yield* launches.getDeliveryEvidence(mismatched);
+      assert.deepEqual(refused.creation, { status: "unknown" });
+      assert.equal(refused.initialMessage.status, "unknown");
+    }
+
+    const replayed = yield* launches.launch(input);
+    assert.isTrue(replayed.resumed);
+    const projection = yield* threads.getThreadProjection(threadId);
+    assert.deepEqual(userMessageIds(projection.messages), [messageId]);
+    assert.lengthOf(projection.runs, 1);
+    assert.deepEqual(yield* launches.getDeliveryEvidence(input), expected);
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.live(
   "rename discovers only matching IDs across passes and continues after a guarded child rejects",

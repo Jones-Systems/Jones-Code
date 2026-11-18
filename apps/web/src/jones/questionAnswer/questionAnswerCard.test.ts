@@ -1,6 +1,6 @@
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { describe, expect, it } from "vite-plus/test";
-import { derivePendingUserInputProgress } from "../../pendingUserInput";
+import { derivePendingUserInputProgress } from "./answerProgress";
 import { handleComposerEnter, submitComposerDraft } from "../../components/chat/composerSubmission";
 import { resolveComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import {
@@ -139,6 +139,7 @@ describe("normal message delivery while a question is pending", () => {
       event,
       intent: {
         keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+        context: {},
         isSoftwareKeyboardOpen: false,
         isDraftThread: false,
         isRunning: true,

@@ -189,7 +189,7 @@ function setup(): Disposable {
   const { draftsByThreadKey } = useComposerDraftStore.getState();
   detailError = null;
   refresh.mockReset();
-  invalidate.mockReset().mockResolvedValue(undefined);
+  invalidate.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
   useComposerDraftStore.setState({ draftsByThreadKey: {} });
   newThread
     .mockReset()

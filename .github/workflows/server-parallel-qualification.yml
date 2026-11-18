@@ -90,7 +90,9 @@ jobs:
     env:
       # One serial qualification lane per OS shares setup and all build outputs.
       T3CODE_DEV_SEED: "0"
-      VP_NODE_VERSION: "26.12.1"
+      # Ordinary scopes run the checked-out engines.node. The observer control replays the
+      # pinned 8e20d00f workload, whose engines.node and prior evidence are Node 26.12.1.
+      VP_NODE_VERSION: ${{ github.event.inputs.scope == 'observer-control' && '26.12.1' || '26.13.1' }}
       JONES_SP_SCOPE: ${{ github.event.inputs.scope || 'source-evidence' }}
     steps:
       - name: Select exact workload revision

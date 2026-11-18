@@ -59,6 +59,7 @@ vi.mock(import("~/state/query"), async (original) => ({
   // Serves both the VCS status and the source-control discovery queries.
   useEnvironmentQuery: ((atom: unknown) => {
     state.queries.push(atom);
+    if (atom === null) return { data: null };
     return {
       data: {
         sourceControlProviders: [],
@@ -115,7 +116,11 @@ vi.mock(import("~/state/use-atom-command"), async (original) => {
 vi.mock(import("~/state/server"), async (original) => {
   const actual = await original();
   const { Atom } = await import("effect/reactivity");
-  const config = Atom.make(() => ({ availableEditors: ["cursor"] }));
+  const { DEFAULT_SERVER_SETTINGS } = await import("@t3tools/contracts");
+  const config = Atom.make(() => ({
+    availableEditors: ["cursor"],
+    settings: DEFAULT_SERVER_SETTINGS,
+  }));
   return {
     ...actual,
     serverEnvironment: { ...actual.serverEnvironment, configValueAtom: (() => config) as never },

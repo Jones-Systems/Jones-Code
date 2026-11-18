@@ -7,6 +7,7 @@ import * as DocumentText from "../provider/DocumentText.ts";
 import * as Threads from "./ThreadManagementService.ts";
 import * as Launch from "./ThreadLaunchService.ts";
 import * as Sink from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as Outbox from "./EffectOutbox.ts";
 import * as Bridge from "./QueueCompatibility.ts";
 import {
@@ -74,7 +75,10 @@ function fixture(
         }),
         Layer.mock(Projects.ProjectService)({ getById: () => unexpected("project-read") }),
         Layer.mock(Clones.ProjectCloneTracker)({ get: () => unexpected("clone-read") }),
-        Layer.mock(Sink.EventSinkV2)({ latestSequence: () => unexpected("sequence-read") }),
+        Layer.mock(Sink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
+          latestSequence: () => unexpected("sequence-read"),
+        }),
         Layer.mock(Outbox.EffectOutboxV2)({ listByThreadId: () => unexpected("cleanup-read") }),
       ),
     ),

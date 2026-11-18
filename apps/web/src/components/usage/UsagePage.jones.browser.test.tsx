@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { saveUsagePagePreferences } from "./usagePagePreferences";
 import type { UsageView } from "../../state/usage";
+import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 
 const testState = vi.hoisted(() => ({
   useUsage: vi.fn(),
@@ -184,6 +185,37 @@ async function usageDialog(): Promise<HTMLElement> {
 }
 
 describe("UsagePage Jones exact ranges", () => {
+  it("refreshes a custom selection without replacing its endpoints with a rolling day window", async () => {
+    const fixture = usageFixture();
+    using _state = setupUsage(fixture);
+    await using _timezone = await browserTimeZone("UTC");
+    await using _screen = await render(<UsagePage />, { router: "/usage" });
+    const container = await usageDialog();
+    using _clock = fixedTime(new Date("2026-09-20T12:00:00.000Z"));
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Additional usage ranges"]',
+    )!;
+    await act(() => trigger.click());
+    const threeHours = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "3h",
+    )!;
+    await act(() => threeHours.click());
+    const rollingInput = testState.useUsage.mock.calls.at(-1)?.[0];
+    await act(() => trigger.click());
+    const apply = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Apply range",
+    )!;
+    expect(apply.disabled).toBe(false);
+    await act(() => apply.click());
+    expect(testState.useUsage.mock.calls.at(-1)?.[0]).toEqual(rollingInput);
+
+    vi.setSystemTime(new Date("2026-09-20T13:00:00.000Z"));
+    const refresh = container.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!;
+    await act(() => refresh.click());
+    expect(fixture.refresh).toHaveBeenCalledExactlyOnceWith(rollingInput);
+    expect(testState.useUsage.mock.calls.at(-1)?.[0]).toEqual(rollingInput);
+  });
+
   it("selects an exact three-hour range from the overflow panel", async () => {
     using _state = setupUsage();
     await using _screen = await render(<UsagePage />, { router: "/usage" });
@@ -416,6 +448,34 @@ function usageFixture(includeCodex = true, environmentId = "test-environment") {
 }
 
 describe("UsagePage provider and model details", () => {
+  it("opens the model dialog through the page row with retained token counters", async () => {
+    using _state = setupUsage(usageFixture());
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <UsagePage />
+      </AppAtomRegistryProvider>,
+      { router: "/usage" },
+    );
+    const container = await usageDialog();
+    const model = [...container.querySelectorAll("tbody button")].find(
+      (button) => button.textContent?.trim() === "codex-known",
+    ) as HTMLButtonElement | undefined;
+    expect(model).toBeDefined();
+    await act(() => model!.click());
+    const dialog = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find(
+      (element) =>
+        element.querySelector('[data-slot="dialog-title"]')?.textContent === "codex-known",
+    );
+    expect(dialog).toBeDefined();
+    const counter = (label: string) =>
+      [...dialog!.querySelectorAll("dt")].find((element) => element.textContent === label)
+        ?.nextElementSibling?.textContent;
+    expect(counter("Cache read")).toBe("200");
+    expect(counter("Cache write")).toBe("30");
+    expect(counter("Cache %")).toBe("54.1%");
+    expect(dialog!.textContent).toContain("Zero does not establish complete coverage.");
+  });
+
   async function clickLabel(container: HTMLElement, label: string) {
     const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
     expect(button).not.toBeNull();

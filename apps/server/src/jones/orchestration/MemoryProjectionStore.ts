@@ -1,3 +1,29 @@
+import * as Schema from "effect/Schema";
+import {
+  OrchestrationV2DomainEvent,
+  type OrchestrationV2AppThread,
+  type OrchestrationV2Run,
+  RunId,
+} from "@t3tools/contracts";
+import {
+  RecordedAppThread,
+  RecordedRun,
+  RecordedLifecycleEvent,
+} from "../../orchestration-v2/RecordedTypes.ts";
+import * as LegacyIntegrity from "../legacyBootstrap/Integrity.ts";
+import * as LegacyMetadata from "../legacyBootstrap/RecordedMetadata.ts";
+import {
+  LegacyStorageError,
+  type ThreadMetadata,
+  type RunMetadata,
+} from "../legacyBootstrap/StorageSchema.ts";
+
+export interface LegacyMemoryRecords {
+  readonly thread: (
+    thread: OrchestrationV2AppThread,
+  ) => Effect.Effect<RecordedAppThread, LegacyStorageError>;
+  readonly run: (run: OrchestrationV2Run) => Effect.Effect<RecordedRun, LegacyStorageError>;
+}
 import type {
   ProjectionStoreV2Shape,
   ProjectionOperatingCountsCandidate,
@@ -10,11 +36,16 @@ import type {
 } from "../../orchestration-v2/ProjectionStore.ts";
 import { projectTurnItemForWire } from "../../orchestration-v2/WireProjection.ts";
 import * as Stream from "effect/Stream";
-import { findProjectedThreadItems } from "../../orchestration-v2/ThreadFind.ts";
+import { searchableMessageSegments, searchablePlanSegments } from "@t3tools/shared/threadFindText";
+import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";
+import { htmlRenderFromToolItem, mcpAppFromToolItem } from "@t3tools/shared/toolOutput";
 import {
-  type RecordedEvent as OrchestrationV2RecordedEvent,
-  type RecordedThreadProjection as OrchestrationV2ThreadProjection,
-} from "../../orchestration-v2/RecordedTypes.ts";
+  type OrchestrationV2DomainEvent as OrchestrationV2RecordedEvent,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ProjectedTurnItem,
+  type OrchestrationV2SearchThreadInput,
+  type OrchestrationV2SearchThreadResult,
+} from "@t3tools/contracts";
 import { latestUnheldRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
   ThreadId,
@@ -32,22 +63,171 @@ import * as Semaphore from "effect/Semaphore";
 import { threadHtmlRenderAttachmentIds } from "../../attachmentStore.ts";
 import { threadPullRequestsOf } from "../../sourceControl/threadPullRequests.ts";
 import {
-  isThreadHistoryUserTurn,
   isConversationHistoryItem,
-  threadHistoryTurnStarts,
-  THREAD_HISTORY_MAX_RAW_TURNS,
   missingInterruptRequests,
   selectHistoryPageFromCursor,
   deferWorkHistoryRows,
   selectDeferredWorkPage,
   THREAD_HISTORY_PAGE_POLICY,
+  isThreadHistoryUserTurn,
+  THREAD_HISTORY_MAX_RAW_TURNS,
   THREAD_HISTORY_TURN_SNAPSHOT_ROW_LIMIT,
 } from "../../orchestration-v2/threadHistoryPaging.ts";
+
+const decodeRecordedLifecycleEvent = Schema.decodeSync(RecordedLifecycleEvent);
+const decodePublicDomainEvent = Schema.decodeSync(OrchestrationV2DomainEvent);
+const decodeRecordedThread = Schema.decodeEffect(RecordedAppThread);
+const decodeRecordedRun = Schema.decodeEffect(RecordedRun);
+
+interface FindDocument {
+  readonly entryId: string;
+  readonly runId: OrchestrationV2ProjectedTurnItem["item"]["runId"];
+  readonly count: number;
+}
+
+function selectMatch(
+  documents: readonly FindDocument[],
+  input: Pick<OrchestrationV2SearchThreadInput, "index" | "start" | "offset">,
+) {
+  const totalMatches = documents.reduce((sum, doc) => sum + doc.count, 0);
+  let requestedIndex = input.index ?? 0;
+  if (input.index === undefined && input.start) {
+    const startIndex = documents.findIndex((doc) => doc.entryId === input.start?.entryId);
+    if (startIndex >= 0) {
+      requestedIndex =
+        documents.slice(0, startIndex).reduce((sum, doc) => sum + doc.count, 0) +
+        Math.min(input.start.occurrence, documents[startIndex]!.count);
+      if (requestedIndex >= totalMatches) requestedIndex = 0;
+    }
+  }
+  const activeIndex =
+    input.index === undefined && totalMatches > 0
+      ? (((requestedIndex + (input.offset ?? 0)) % totalMatches) + totalMatches) % totalMatches
+      : Math.min(requestedIndex, Math.max(0, totalMatches - 1));
+  let occurrence = activeIndex;
+  for (const document of documents) {
+    if (occurrence < document.count) return { totalMatches, activeIndex, document, occurrence };
+    occurrence -= document.count;
+  }
+  return { totalMatches, activeIndex, document: null, occurrence: 0 };
+}
+
+function findProjectedThreadItems(
+  items: readonly OrchestrationV2ProjectedTurnItem[],
+  input: OrchestrationV2SearchThreadInput,
+  snapshotSequence: number,
+  cwd?: string,
+): OrchestrationV2SearchThreadResult {
+  const foldedAnswers = new Map<string, FindDocument["runId"]>(
+    items.flatMap(({ item }) =>
+      item.type === "user_input_request" && item.questionAnswer
+        ? [[`async-answer:${item.questionAnswer.requestId}`, item.runId] as const]
+        : [],
+    ),
+  );
+  const embeddedResultRunIds = new Set(
+    items.flatMap(({ item }) =>
+      item.type === "dynamic_tool" &&
+      ((item.status === "completed" && htmlRenderFromToolItem(item)) || mcpAppFromToolItem(item))
+        ? [item.runId]
+        : [],
+    ),
+  );
+  const docs = items
+    .filter(
+      ({ item }) =>
+        ["user_message", "assistant_message", "proposed_plan"].includes(item.type) &&
+        !(item.type === "user_message" && foldedAnswers.get(item.messageId) === item.runId),
+    )
+    .map((row) => {
+      const item = row.item;
+      const segments =
+        item.type === "proposed_plan"
+          ? searchablePlanSegments(item.markdown, cwd)
+          : item.type === "user_message" || item.type === "assistant_message"
+            ? item.type === "assistant_message" &&
+              item.text === "" &&
+              embeddedResultRunIds.has(item.runId)
+              ? []
+              : (searchableMessageSegments(
+                  {
+                    role: item.type === "user_message" ? "user" : "assistant",
+                    text: item.text,
+                    streaming: item.type === "assistant_message" && item.streaming,
+                    context: item.type === "user_message" ? item.context : undefined,
+                  },
+                  cwd,
+                  input.skills ?? [],
+                ) ?? [])
+            : [];
+      return {
+        entryId:
+          item.type === "user_message" || item.type === "assistant_message"
+            ? item.messageId
+            : item.id,
+        runId: item.runId,
+        count: segments.reduce(
+          (sum, text) => sum + countThreadSearchOccurrences(text, input.query),
+          0,
+        ),
+      };
+    });
+  return resultForSelection(selectMatch(docs, input), docs, snapshotSequence);
+}
+
+function resultForSelection(
+  selected: ReturnType<typeof selectMatch>,
+  documents: readonly FindDocument[],
+  snapshotSequence: number,
+): OrchestrationV2SearchThreadResult {
+  let startIndex = 0;
+  const entries = documents.flatMap(({ entryId, runId, count }) => {
+    const entry = { entryId, runId, count, startIndex };
+    startIndex += count;
+    return count > 0 ? [entry] : [];
+  });
+  const selectedEntry = entries.findIndex((entry) => entry.entryId === selected.document?.entryId);
+  const navigation =
+    entries.length <= 17
+      ? entries
+      : Array.from(
+          { length: 17 },
+          (_, i) => entries[(selectedEntry + i - 8 + entries.length) % entries.length]!,
+        );
+  return {
+    snapshotSequence,
+    totalMatches: selected.totalMatches,
+    activeIndex: selected.activeIndex,
+    navigation,
+    match:
+      selected.document === null
+        ? null
+        : {
+            entryId: selected.document.entryId,
+            runId: selected.document.runId,
+            occurrence: selected.occurrence,
+          },
+  };
+}
 
 type ProjectionNode = OrchestrationV2ThreadProjection["nodes"][number];
 type ProjectionRun = OrchestrationV2ThreadProjection["runs"][number];
 interface ProjectionReplayState {
   readonly projections: Map<ThreadId, OrchestrationV2ThreadProjection>;
+  readonly legacyThreads: Map<
+    ThreadId,
+    { readonly projectId: ProjectId; readonly createdAt: string; readonly metadata: ThreadMetadata }
+  >;
+  readonly legacyRuns: Map<
+    RunId,
+    {
+      readonly threadId: ThreadId;
+      readonly userMessageId: string;
+      readonly requestedAt: string;
+      readonly metadata: RunMetadata;
+    }
+  >;
+
   readonly providerSessionThreadIds: Map<ProviderSessionId, ReadonlySet<ThreadId>>;
   readonly providerThreadInstanceIds: Map<ProviderThreadId, ProviderInstanceId>;
 }
@@ -61,17 +241,21 @@ export const makeMemoryLayer = (
     ProjectionStoreReadError,
     ProjectionStoreThreadNotFoundError,
     ProjectionStoreV2,
-    activeRunStatuses,
     applyToProjection,
     buildVisibleTurnItems,
     emptyProjection,
     inheritsForkConversation,
     isActivityRunForShell,
-    isPublicOrchestrationEvent,
     threadShellFromProjection,
     upsertById,
     withLocalVisibleTurnItems,
   } = internals;
+  const activeRunStatuses: ReadonlySet<ProjectionRun["status"]> = new Set([
+    "preparing",
+    "starting",
+    "running",
+    "waiting",
+  ]);
   const settledLeafNodeKinds: ReadonlySet<ProjectionNode["kind"]> = new Set([
     "tool_call",
     "assistant_message",
@@ -188,6 +372,8 @@ export const makeMemoryLayer = (
   function makeProjectionReplayState(): ProjectionReplayState {
     return {
       projections: new Map(),
+      legacyThreads: new Map(),
+      legacyRuns: new Map(),
       providerSessionThreadIds: new Map(),
       providerThreadInstanceIds: new Map(),
     };
@@ -197,7 +383,41 @@ export const makeMemoryLayer = (
     state: ProjectionReplayState,
     event: OrchestrationV2RecordedEvent,
   ): boolean {
-    if (!isPublicOrchestrationEvent(event)) return true;
+    const recorded = decodeRecordedLifecycleEvent(event);
+    if (
+      recorded.type === "thread.created" ||
+      recorded.type === "thread.metadata-updated" ||
+      recorded.type === "thread.deleted"
+    ) {
+      const metadata = LegacyMetadata.threadMetadata(recorded.payload);
+      if (LegacyMetadata.hasMetadata(metadata))
+        state.legacyThreads.set(recorded.threadId, {
+          projectId: recorded.payload.projectId,
+          createdAt: DateTime.formatIso(recorded.payload.createdAt),
+          metadata,
+        });
+    }
+    if (recorded.type === "run.created" || recorded.type === "run.updated") {
+      if (LegacyMetadata.hasMetadata(LegacyMetadata.runMetadata(recorded.payload))) {
+        const previous = state.legacyRuns.get(recorded.payload.id);
+        const publicRun = state.projections
+          .get(recorded.threadId)
+          ?.runs.find((run) => run.id === recorded.payload.id);
+        // Receiving's merge and provenance checks, against the run recorded before this event.
+        const metadata = LegacyIntegrity.retainRunMetadata(
+          publicRun === undefined ? undefined : { ...publicRun, ...previous?.metadata },
+          recorded.payload,
+          recorded,
+        );
+        state.legacyRuns.set(recorded.payload.id, {
+          threadId: recorded.threadId,
+          userMessageId: recorded.payload.userMessageId,
+          requestedAt: DateTime.formatIso(recorded.payload.requestedAt),
+          metadata,
+        });
+      }
+    }
+    event = decodePublicDomainEvent(event);
     if (event.type === "thread.created" && !state.projections.has(event.threadId)) {
       state.projections.set(event.threadId, emptyProjection(event));
       return true;
@@ -288,7 +508,127 @@ export const makeMemoryLayer = (
       const sequence = yield* Ref.make(0);
       const censusPermit = yield* Semaphore.make(1);
 
+      const legacyRecords: LegacyMemoryRecords = {
+        thread: (thread) =>
+          Ref.get(replayState).pipe(
+            Effect.flatMap((state) => {
+              const retained = state.legacyThreads.get(thread.id);
+              if (
+                retained !== undefined &&
+                (retained.projectId !== thread.projectId ||
+                  retained.createdAt !== DateTime.formatIso(thread.createdAt))
+              )
+                return Effect.fail(
+                  new LegacyStorageError({ reason: "memory_thread_incarnation_changed" }),
+                );
+              return decodeRecordedThread({
+                ...thread,
+                ...retained?.metadata,
+              }).pipe(
+                Effect.mapError(
+                  (cause) => new LegacyStorageError({ reason: "memory_thread_decode", cause }),
+                ),
+              );
+            }),
+          ),
+        run: (run) =>
+          Ref.get(replayState).pipe(
+            Effect.flatMap((state) => {
+              const retained = state.legacyRuns.get(run.id);
+              if (
+                retained !== undefined &&
+                (retained.threadId !== run.threadId ||
+                  retained.userMessageId !== run.userMessageId ||
+                  retained.requestedAt !== DateTime.formatIso(run.requestedAt))
+              )
+                return Effect.fail(
+                  new LegacyStorageError({ reason: "memory_run_incarnation_changed" }),
+                );
+              return decodeRecordedRun({ ...run, ...retained?.metadata }).pipe(
+                Effect.mapError(
+                  (cause) => new LegacyStorageError({ reason: "memory_run_decode", cause }),
+                ),
+              );
+            }),
+          ),
+      };
       const service: ProjectionStoreV2Shape = {
+        legacyRecords,
+        listActiveThreads: (projectId) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) =>
+              [...state.projections.values()]
+                .map(({ thread }) => thread)
+                .filter(
+                  (thread) =>
+                    thread.deletedAt === null &&
+                    thread.archivedAt === null &&
+                    (projectId === undefined || thread.projectId === projectId),
+                )
+                .toSorted(
+                  (a, b) =>
+                    DateTime.toEpochMillis(a.updatedAt) - DateTime.toEpochMillis(b.updatedAt) ||
+                    a.id.localeCompare(b.id),
+                )
+                .map((thread) => ({
+                  id: thread.id,
+                  projectId: thread.projectId,
+                  title: thread.title,
+                  lineage: thread.lineage,
+                  ...(thread.delegatedFrom === undefined
+                    ? {}
+                    : { delegatedFrom: thread.delegatedFrom }),
+                  settledOverride: thread.settledOverride,
+                  settledAt: thread.settledAt,
+                  snoozedUntil: thread.snoozedUntil ?? null,
+                  updatedAt: thread.updatedAt,
+                })),
+            ),
+          ),
+        hasPendingDelegatedCompletion: (childThreadId) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) =>
+              [...state.projections.values()].some((projection) =>
+                projection.subagents.some((task) => {
+                  const owner = projection.runs.find((run) => run.id === task.runId);
+                  return (
+                    task.childThreadId === childThreadId &&
+                    task.origin === "app_owned" &&
+                    (task.result == null ||
+                      (task.completionDelivery?.state === "claimed" &&
+                        owner?.delegatedCompletion?.disposition === "open" &&
+                        owner.delegatedCompletion.delivery != null))
+                  );
+                }),
+              ),
+            ),
+          ),
+        getTranscriptByteFloor: (threadId, limit) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) => {
+              const projection = state.projections.get(threadId);
+              if (projection === undefined) return 0;
+              const stringBytes = (value: unknown): number => {
+                if (typeof value === "string") return Buffer.byteLength(value);
+                if (value === null || typeof value !== "object") return 0;
+                return Object.values(value).reduce<number>(
+                  (sum, child) => sum + stringBytes(child),
+                  0,
+                );
+              };
+              const bytes = projection.turnItems.reduce(
+                (sum, item) =>
+                  (item.type === "command_execution" || item.type === "dynamic_tool") &&
+                  !projection.runs.some(
+                    (run) => run.id === item.runId && run.status === "rolled_back",
+                  )
+                    ? sum + stringBytes(item.output)
+                    : sum,
+                0,
+              );
+              return bytes <= limit ? 0 : bytes;
+            }),
+          ),
         getSubagentCount: (threadId) =>
           Ref.get(replayState).pipe(
             Effect.map((state) => state.projections.get(threadId)?.subagents.length ?? 0),
@@ -336,8 +676,15 @@ export const makeMemoryLayer = (
                     lineage: thread.lineage,
                     settledOverride: thread.settledOverride,
                     settledAt: thread.settledAt,
-                    pinnedAt: thread.pinnedAt,
-                    snoozedUntil: thread.snoozedUntil,
+                    pinnedAt: thread.pinnedAt ?? null,
+                    pinOrderKey: thread.pinOrderKey ?? null,
+                    snoozedUntil: thread.snoozedUntil ?? null,
+                    hasRemoteTasks: projection.subagents.some(
+                      (task) =>
+                        task.origin === "app_owned" &&
+                        task.childThreadId === null &&
+                        task.remoteChild != null,
+                    ),
                     mayBeLive:
                       projection.runs.some((run) =>
                         ["queued", "preparing", "starting", "running", "waiting"].includes(
@@ -454,6 +801,8 @@ export const makeMemoryLayer = (
                 ] => {
                   const next: ProjectionReplayState = {
                     projections: new Map(existing.projections),
+                    legacyThreads: new Map(existing.legacyThreads),
+                    legacyRuns: new Map(existing.legacyRuns),
                     providerSessionThreadIds: new Map(existing.providerSessionThreadIds),
                     providerThreadInstanceIds: new Map(existing.providerThreadInstanceIds),
                   };
@@ -565,6 +914,7 @@ export const makeMemoryLayer = (
                 thread.deletedAt !== null ||
                 thread.archivedAt !== null ||
                 thread.lineage.relationshipToParent === "subagent" ||
+                thread.lineage.sideChat === true ||
                 thread.settledOverride !== "settled" ||
                 thread.settledAt === null ||
                 (projectIds !== undefined && !projectIds.includes(thread.projectId))
@@ -670,7 +1020,24 @@ export const makeMemoryLayer = (
               ),
             ),
           ),
-        getOpenRemoteDelegatedTasks: Effect.succeed([]),
+        getOpenRemoteDelegatedTasks: Ref.get(replayState).pipe(
+          Effect.map((state) =>
+            [...state.projections.values()].flatMap((projection) =>
+              projection.subagents
+                .filter(
+                  (task) =>
+                    task.origin === "app_owned" &&
+                    task.childThreadId === null &&
+                    task.remoteChild != null &&
+                    (task.result == null ||
+                      ((task.status === "cancelled" || task.status === "interrupted") &&
+                        task.remoteChild.stoppedThere !== true) ||
+                      task.remoteChild.stoppedThere === false),
+                )
+                .map((task) => ({ parentThreadId: projection.thread.id, taskId: task.id })),
+            ),
+          ),
+        ),
         getThreadsWithPullRequests: (threadId) =>
           Ref.get(replayState).pipe(
             Effect.map((state) =>
@@ -762,10 +1129,16 @@ export const makeMemoryLayer = (
                   branch: thread.branch,
                   worktreePath: thread.worktreePath,
                   archivedAt: thread.archivedAt,
+                  createdAt: thread.createdAt,
+                  updatedAt: thread.updatedAt,
                   settledOverride: thread.settledOverride,
                   settledAt: thread.settledAt,
-                  linkedPullRequest: thread.linkedPullRequest,
-                  branchPullRequest: thread.branchPullRequest,
+                  ...(thread.linkedPullRequest === undefined
+                    ? {}
+                    : { linkedPullRequest: thread.linkedPullRequest }),
+                  ...(thread.branchPullRequest === undefined
+                    ? {}
+                    : { branchPullRequest: thread.branchPullRequest }),
                   pullRequests: threadPullRequestsOf(thread),
                 })),
             })),
@@ -807,6 +1180,9 @@ export const makeMemoryLayer = (
                   latestRunCompletedAt: shell.latestRunCompletedAt,
                   latestRunStopRequested: shell.latestRunStopRequested,
                   pendingRuntimeRequest: shell.pendingRuntimeRequest,
+                  pendingGuestMessageCount: shell.pendingGuestMessageCount,
+                  snoozedAt: shell.snoozedAt,
+                  snoozedUntil: shell.snoozedUntil,
                   pendingBackgroundTasks: shell.pendingBackgroundTasks,
                 })),
             })),
@@ -854,26 +1230,33 @@ export const makeMemoryLayer = (
                 .toSorted((left, right) => left.id.localeCompare(right.id)),
             ),
           ),
-        getRecoveryThreadIds: Effect.fn("ProjectionStore.getRecoveryThreadIds")(function* (kind) {
-          const projections = (yield* Ref.get(replayState)).projections;
-          return [...projections.values()]
-            .filter((projection) =>
-              needsRecovery(
-                projection,
-                kind,
-                projection.thread.lineage.parentThreadId === null
-                  ? undefined
-                  : projections.get(projection.thread.lineage.parentThreadId),
-              ),
-            )
-            .toSorted(
-              (left, right) =>
-                DateTime.toEpochMillis(left.thread.updatedAt) -
-                  DateTime.toEpochMillis(right.thread.updatedAt) ||
-                left.thread.id.localeCompare(right.thread.id),
-            )
-            .map((projection) => projection.thread.id);
-        }),
+        getRecoveryThreadIds: Effect.fn("ProjectionStore.getRecoveryThreadIds")(
+          function* (kind, projects) {
+            const projections = (yield* Ref.get(replayState)).projections;
+            return [...projections.values()]
+              .filter(
+                (projection) =>
+                  (projects?.include === undefined ||
+                    projects.include.includes(projection.thread.projectId)) &&
+                  (projects?.exclude === undefined ||
+                    !projects.exclude.includes(projection.thread.projectId)) &&
+                  needsRecovery(
+                    projection,
+                    kind,
+                    projection.thread.lineage.parentThreadId === null
+                      ? undefined
+                      : projections.get(projection.thread.lineage.parentThreadId),
+                  ),
+              )
+              .toSorted(
+                (left, right) =>
+                  DateTime.toEpochMillis(left.thread.updatedAt) -
+                    DateTime.toEpochMillis(right.thread.updatedAt) ||
+                  left.thread.id.localeCompare(right.thread.id),
+              )
+              .map((projection) => projection.thread.id);
+          },
+        ),
         getUnreadableThreadIds: () => Effect.succeed([]),
         getPendingNativeUserInputs: Effect.fn("ProjectionStore.getPendingNativeUserInputs")(
           function* (threadId, providerTurnId) {
@@ -913,6 +1296,51 @@ export const makeMemoryLayer = (
             );
           },
         ),
+        hasRunInterruptRequest: (threadId, runId) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) =>
+              (state.projections.get(threadId)?.turnItems ?? []).some(
+                (item) => item.type === "run_interrupt_request" && item.runId === runId,
+              ),
+            ),
+          ),
+        getRun: (threadId, runId) =>
+          Ref.get(replayState).pipe(
+            Effect.map((state) =>
+              state.projections.get(threadId)?.runs.find((run) => run.id === runId),
+            ),
+          ),
+        getRunProviderRecords: (threadId, runId, nodeId) =>
+          service.getThreadProjection(threadId).pipe(
+            Effect.map((projection) => {
+              const runs = projection.runs.filter((run) => run.id === runId);
+              const run = runs[0];
+              const attempts = projection.attempts.filter(
+                (attempt) => attempt.id === run?.activeAttemptId,
+              );
+              const attemptTurns =
+                run?.activeAttemptId == null
+                  ? []
+                  : projection.providerTurns.filter(
+                      (turn) => turn.runAttemptId === run.activeAttemptId,
+                    );
+              return {
+                thread: projection.thread,
+                runs,
+                attempts,
+                nodes: projection.nodes.filter((node) => node.id === nodeId),
+                providerThreads: projection.providerThreads.filter(
+                  (thread) => thread.id === run?.providerThreadId,
+                ),
+                providerTurns:
+                  attemptTurns.length > 0
+                    ? attemptTurns
+                    : projection.providerTurns.filter(
+                        (turn) => turn.id === attempts[0]?.providerTurnId,
+                      ),
+              };
+            }),
+          ),
         isNodeStored: (node) =>
           Ref.get(replayState).pipe(
             Effect.map((state) => {
@@ -1159,10 +1587,12 @@ export const makeMemoryLayer = (
               providerThread: projection.providerThreads.find(
                 (candidate) => candidate.id === run?.providerThreadId,
               ),
-              readyCheckpointOrdinals: projection.checkpoints
+              preservedCheckpointOrdinals: projection.checkpoints
                 .filter(
                   (candidate) =>
-                    candidate.scopeId === target.scopeId && candidate.status === "ready",
+                    candidate.scopeId === target.scopeId &&
+                    (candidate.status === "ready" ||
+                      (candidate.status === "missing" && candidate.runId !== null)),
                 )
                 .map((candidate) => candidate.ordinalWithinScope),
             };
@@ -1507,21 +1937,40 @@ export const makeMemoryLayer = (
           service.getThreadSnapshot(threadId).pipe(
             Effect.map(({ projection, snapshotSequence }) =>
               selections.map((options) => {
-                const matching = projection.visibleTurnItems.filter((row) =>
-                  options.itemId === undefined
-                    ? row.position > (options.afterPosition ?? -1) &&
-                      (options.view === "activity" ||
+                const visible = projection.visibleTurnItems.map((row, position) => ({
+                  ...row,
+                  position,
+                }));
+                const inView = visible.filter(
+                  (row) =>
+                    (options.itemId === undefined
+                      ? options.view === "activity" ||
                         ["user_message", "assistant_message", "proposed_plan"].includes(
                           row.item.type,
-                        ))
-                    : row.sourceItemId === options.itemId,
+                        )
+                      : row.sourceItemId === options.itemId) &&
+                    (options.attachmentId === undefined ||
+                      (row.item.type === "user_message" &&
+                        row.item.attachments.some(
+                          (attachment) => attachment.id === options.attachmentId,
+                        ))),
                 );
+                const before = options.beforePosition ?? Number.POSITIVE_INFINITY;
+                const backward = options.tail === true || options.beforePosition !== undefined;
+                const matching =
+                  options.itemId === undefined
+                    ? inView.filter(
+                        (row) =>
+                          row.position > (options.afterPosition ?? -1) && row.position < before,
+                      )
+                    : inView;
+                const items = !backward
+                  ? matching.slice(0, options.limit)
+                  : matching.slice(Math.max(0, matching.length - options.limit));
                 return {
-                  items: options.tail
-                    ? matching.slice(Math.max(0, matching.length - options.limit))
-                    : matching.slice(0, options.limit),
-                  totalItems: projection.visibleTurnItems.length,
-                  ...(options.tail
+                  items,
+                  totalItems: visible.length,
+                  ...(options.tail === true
                     ? {
                         snapshotSequence,
                         inProgress: projection.runs.some((run) =>
@@ -1529,7 +1978,15 @@ export const makeMemoryLayer = (
                         ),
                       }
                     : {}),
-                  hasMore: matching.length > options.limit,
+                  hasMore:
+                    options.tail === true
+                      ? matching.length > items.length
+                      : options.beforePosition === undefined
+                        ? matching.length > items.length
+                        : (inView.at(-1)?.position ?? -1) >= before,
+                  hasEarlier:
+                    (inView[0]?.position ?? Number.POSITIVE_INFINITY) <
+                    (items[0]?.position ?? (options.afterPosition ?? -1) + 1),
                 };
               }),
             ),
@@ -1541,10 +1998,21 @@ export const makeMemoryLayer = (
                 options.anchorItemId === undefined
                   ? snapshot.projection.visibleTurnItems.length
                   : snapshot.projection.visibleTurnItems.findIndex(
-                      (row) => row.sourceItemId === options.anchorItemId,
+                      (row) =>
+                        row.sourceItemId === options.anchorItemId &&
+                        (options.anchorThreadId === undefined ||
+                          row.sourceThreadId === options.anchorThreadId),
                     ) + 1;
               const candidates = snapshot.projection.visibleTurnItems.slice(0, anchorIndex);
-              const turnStarts = threadHistoryTurnStarts(candidates.map((row) => row.item));
+              const startedRuns = new Set<string>();
+              const turnStarts = candidates.map(({ item }) => {
+                if (item.type !== "user_message" && item.type !== "notification") return false;
+                const firstInput = item.runId != null && !startedRuns.has(item.runId);
+                if (item.runId != null) startedRuns.add(item.runId);
+                return item.type === "notification"
+                  ? firstInput
+                  : item.inputIntent === "turn_start" || item.inputIntent === "queued_turn";
+              });
               const turnAnchors =
                 options.userTurnLimit === undefined
                   ? []

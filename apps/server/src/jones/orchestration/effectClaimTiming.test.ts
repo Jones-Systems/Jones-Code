@@ -67,7 +67,7 @@ it.effect("attributes availability-to-claim wait before the durable cancellation
         Layer.provide(Layer.merge(outbox, executor)),
       );
       const run = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
-        Effect.flatMap((worker) => worker.runOnce),
+        Effect.flatMap((worker) => worker.runOnce()),
         Effect.provide(layer),
         Effect.withTracer(tracer),
         Effect.forkScoped,

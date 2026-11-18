@@ -60,6 +60,7 @@ it.effect(
       let observationWrites = 0;
       let guardCalls = 0;
       let physicalCalls = 0;
+      const guardedGenerations: Array<string | null> = [];
       const reservation: PublicationReservation = {
         previous: new Map(),
         bindings: new Map(),
@@ -127,7 +128,13 @@ it.effect(
               return [row];
             }),
         },
-        revalidateGuard: () => Effect.void,
+        revalidateGuard: (_threadId, proof) =>
+          Effect.sync(() => {
+            assert.equal(proof.previousGeneration, null);
+            assert.equal(proof.binding.threadId, threadId);
+            assert.equal(proof.binding.providerThreadId, providerThread.id);
+            guardedGenerations.push(current?.runtimeIdentity?.runtimeGeneration ?? null);
+          }),
         forgetTransfers: () => Effect.void,
         bindGuard: () =>
           Effect.gen(function* () {
@@ -184,6 +191,8 @@ it.effect(
       stored[0] = originalBoundary;
       assert.isTrue(Exit.isFailure(yield* Effect.exit(publication.complete)));
       yield* publication.complete;
+      assert.include(guardedGenerations, null);
+      assert.include(guardedGenerations, "generation");
       assert.equal(allocated, 2);
       assert.equal(stored.length, 2);
       assert.equal(observationWrites, 1);

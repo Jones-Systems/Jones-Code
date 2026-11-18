@@ -39,7 +39,7 @@ resuming them. An empty replacement directory does not restore a Git checkout.
 ### Setup
 
 Install `vp` using the [root README](../../README.md#install-vp). The checkout
-requires Node `26.12.1` and declares `pnpm@12.14.0`; Bun is optional.
+requires Node `26.13.1` and declares `pnpm@12.14.0`; Bun is optional.
 For an authorized dependency install and development run, use the repository root:
 
 ```sh

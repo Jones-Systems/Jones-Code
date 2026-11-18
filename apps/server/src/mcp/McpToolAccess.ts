@@ -1,5 +1,5 @@
-import * as PersonalForward from "../jones/mcp/workstreams/personalForward.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import * as PersonalForward from "../jones/mcp/workstreams/personalForward.ts";
 import * as RemoteAdmissionMcp from "../jones/remoteAdmissionIntegration/mcp.ts";
 import {
   type EnvironmentId,
@@ -10,6 +10,7 @@ import {
   type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -17,6 +18,7 @@ import * as Ref from "effect/Ref";
 import * as Struct from "effect/Struct";
 import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
+import { McpSchema } from "effect/ai";
 import type { Tool, Toolkit } from "effect/ai";
 
 import {
@@ -49,6 +51,7 @@ const refuseOutsideConstruction = (token: symbol) => {
 let declare: <P, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
   remote: RemoteCheck<P> | undefined,
+  forwarded?: Forwarded<P, A, E, R>,
 ) => Declaration<(params: P) => Effect.Effect<A, E, R>>;
 
 /**
@@ -60,6 +63,16 @@ type RemoteCheck<P> = (
   params: P,
 ) => Effect.Effect<unknown, OrchestratorMcpFailure, Effect.Services<typeof writingCaller>>;
 let remoteCheckOf: <Handler>(declaration: Declaration<Handler>) => RemoteCheck<never> | undefined;
+
+/** What a call answered in a linked environment does here before it returns. */
+type Forwarded<P, A, E, R> = (
+  params: P,
+  environmentId: EnvironmentId,
+  result: A,
+) => Effect.Effect<A, E, R>;
+let forwardedOf: <Handler>(
+  declaration: Declaration<Handler>,
+) => Forwarded<never, unknown, unknown, unknown> | undefined;
 
 type CheckedHandlerOf<D> = D extends Declaration<infer Handler> ? Handler : never;
 
@@ -77,19 +90,29 @@ let handlersLayer: <Tools extends Record<string, Tool.Any>, EX, RX>(
 export class Declaration<out Handler> {
   readonly #handle: Handler;
   readonly #remote: RemoteCheck<never> | undefined;
+  readonly #forwarded: Forwarded<never, unknown, unknown, unknown> | undefined;
   private constructor(
     token: typeof builtHere,
     handle: Handler,
     remote: RemoteCheck<never> | undefined,
+    forwarded: Forwarded<never, unknown, unknown, unknown> | undefined,
   ) {
     refuseOutsideConstruction(token);
     this.#handle = handle;
     this.#remote = remote;
+    this.#forwarded = forwarded;
   }
   static {
-    declare = (handle, remote) => new Declaration(builtHere, handle, remote);
+    declare = (handle, remote, forwarded) =>
+      new Declaration(
+        builtHere,
+        handle,
+        remote,
+        forwarded as Forwarded<never, unknown, unknown, unknown> | undefined,
+      );
     checkedHandler = Struct.lambda<CheckedHandler>((declaration) => declaration.#handle);
     remoteCheckOf = (declaration) => declaration.#remote;
+    forwardedOf = (declaration) => declaration.#forwarded;
   }
 }
 
@@ -125,13 +148,13 @@ const assertCheckoutAttached = Effect.fn("McpToolAccess.assertCheckoutAttached")
 });
 
 const writingCaller = refuseReadOnlyClient.pipe(
-  Effect.andThen(() => loadCaller()),
+  Effect.andThen(loadCaller()),
   Effect.tap(assertLiveCaller),
   Effect.tap(assertCheckoutAttached),
 );
 
 const orchestratingCaller = refuseReadOnlyClient.pipe(
-  Effect.andThen(() => readCaller()),
+  Effect.andThen(readCaller()),
   Effect.tap(assertLiveCaller),
   Effect.tap(assertCheckoutAttached),
 );
@@ -149,7 +172,7 @@ export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>)
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
 
-/** The domain service checks immutable receipts before its locked execution guard. */
+/** The domain checks immutable receipts before invoking this fresh liveness guard. */
 export const actsAsCallerWithReceipt = <P, A, E, R>(
   handle: (
     params: P,
@@ -261,10 +284,7 @@ export const writesThreads = <P, A, E, R>(
     () => writingCaller,
   );
 
-/** Operation-aware tools keep inspection available to read-only clients while
- * every mutation passes the same caller, mode and link checks as writesThreads.
- * The domain still checks the target and its exact binding at commit.
- */
+/** Inspection stays readable; mutations use the same caller, mode and link checks as thread writes. */
 export const readsOrWritesThreads = <P, A, E, R>(
   isRead: (params: P) => boolean,
   threads: (params: P) => ReadonlyArray<ThreadId | undefined>,
@@ -331,34 +351,12 @@ export const startsThreads = <P, A, E, R>(
   );
 };
 
-/** One tool with two access rules, picked per call, such as create versus update. */
-export const either = <P, A, E, R, A2, E2, R2>(
-  useFirst: (params: P) => boolean,
-  first: Declaration<(params: P) => Effect.Effect<A, E, R>>,
-  second: Declaration<(params: P) => Effect.Effect<A2, E2, R2>>,
-) => {
-  const remotes = [remoteCheckOf(first), remoteCheckOf(second)] as ReadonlyArray<
-    RemoteCheck<P> | undefined
-  >;
-  return declare(
-    (params: P): Effect.Effect<A | A2, E | E2, R | R2> =>
-      useFirst(params) ? checkedHandler(first)(params) : checkedHandler(second)(params),
-    (params) =>
-      remotes[useFirst(params) ? 0 : 1]?.(params) ??
-      Effect.fail(
-        new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "This action acts as the calling thread, which is here. Omit environmentId.",
-        }),
-      ),
-  );
-};
-
-// Jones hook: spec.jones-client-launch; defer start resolution until after keyed capability checks.
 export interface ThreadStartGate {
   readonly start: Effect.Effect<StartedModes, OrchestratorMcpFailure>;
   readonly continueWithin: <A, E, R>(
     target: {
+      /** An existing thread names itself in the refusal; requested launch modes have no thread yet. */
+      readonly id?: ThreadId | undefined;
       readonly runtimeMode: RuntimeMode;
       readonly interactionMode: ProviderInteractionMode;
     },
@@ -397,7 +395,13 @@ export const startsOrContinuesThreads = <P, A, E, R>(
         const gate: ThreadStartGate = {
           start: started(caller, params),
           continueWithin: Effect.fn("McpToolAccess.continueWithin")(function* (target, effect) {
-            yield* assertTargetWithinLimits(limits, target);
+            const { id, runtimeMode, interactionMode } = target;
+            yield* id === undefined
+              ? resolveRuntimeMode(limits.runtimeMode, runtimeMode).pipe(
+                  Effect.andThen(resolveInteractionMode(limits.interactionMode, interactionMode)),
+                  Effect.asVoid,
+                )
+              : assertTargetWithinLimits(limits, { id, runtimeMode, interactionMode });
             const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
             return yield* effect.pipe(
               Effect.provideService(DispatchModeLimit, { ...limits, refused }),
@@ -414,6 +418,43 @@ export const startsOrContinuesThreads = <P, A, E, R>(
     (params: P) => Effect.flatMap(writingCaller, (caller) => started(caller, params)),
   );
 };
+
+/** One tool with two access rules, picked per call, such as create versus update. */
+export const either = <P, A, E, R, A2, E2, R2>(
+  useFirst: (params: P) => boolean,
+  first: Declaration<(params: P) => Effect.Effect<A, E, R>>,
+  second: Declaration<(params: P) => Effect.Effect<A2, E2, R2>>,
+) => {
+  const remotes = [remoteCheckOf(first), remoteCheckOf(second)] as ReadonlyArray<
+    RemoteCheck<P> | undefined
+  >;
+  return declare(
+    (params: P): Effect.Effect<A | A2, E | E2, R | R2> =>
+      useFirst(params) ? checkedHandler(first)(params) : checkedHandler(second)(params),
+    (params) =>
+      remotes[useFirst(params) ? 0 : 1]?.(params) ??
+      Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "This action acts as the calling thread, which is here. Omit environmentId.",
+        }),
+      ),
+  );
+};
+
+/**
+ * `declaration`, whose result from a linked environment then goes through
+ * `forwarded` here, for what this environment records about the call.
+ */
+export const afterForwarding = <P, A, E, R, E2, R2>(
+  declaration: Declaration<(params: P) => Effect.Effect<A, E, R>>,
+  forwarded: Forwarded<P, A, E2, R2>,
+) =>
+  declare(
+    checkedHandler(declaration) as (params: P) => Effect.Effect<A, E | E2, R | R2>,
+    remoteCheckOf(declaration) as RemoteCheck<P> | undefined,
+    forwarded,
+  );
 
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";
@@ -491,10 +532,11 @@ const checkedHandlers = <Handlers>(declarations: Declarations<Handlers>): Handle
  */
 const takesLinkedEnvironment = (tool: Tool.Any) => {
   const parameters: unknown = tool.parametersSchema;
+  const wire = Predicate.hasProperty(parameters, "from") ? parameters.from : parameters;
   return (
-    Predicate.hasProperty(parameters, "fields") &&
-    Predicate.hasProperty(parameters.fields, "environmentId") &&
-    parameters.fields.environmentId === OrchestratorMcpEnvironmentTarget
+    Predicate.hasProperty(wire, "fields") &&
+    Predicate.hasProperty(wire.fields, "environmentId") &&
+    wire.fields.environmentId === OrchestratorMcpEnvironmentTarget
   );
 };
 
@@ -524,8 +566,19 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
       tool,
       handlers[name] as (params: object) => Effect.Effect<unknown, OrchestratorMcpFailure>,
     );
-    if (!takesLinkedEnvironment(tool)) continue;
     const remote = remoteCheckOf(declaration);
+    if (
+      remote === undefined &&
+      Context.getOrUndefined(tool.annotations, McpSchema.EnabledWhen) !==
+        McpInvocationContext.hiddenFromOutsideClients
+    )
+      return yield* Effect.die(
+        `${name} acts as its calling thread, so outside clients must not be offered it.`,
+      );
+    if (!takesLinkedEnvironment(tool)) continue;
+    const forwarded = forwardedOf(declaration) as
+      | Forwarded<object, unknown, Tool.Failure<Tools[keyof Tools]>, never>
+      | undefined;
     if (remote === undefined)
       return yield* Effect.die(
         `${name} takes a linked environment, but it acts as its calling thread, which is here.`,
@@ -553,7 +606,11 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
                 ),
               )
             : params;
-        return yield* forwarding.value.call(scope, tool, target, { ...enriched, environmentId });
+        const result = yield* forwarding.value.call(scope, tool, target, {
+          ...enriched,
+          environmentId,
+        });
+        return forwarded === undefined ? result : yield* forwarded(params, target, result);
       });
   }
   return handlers as Toolkit.HandlersFrom<Tools>;

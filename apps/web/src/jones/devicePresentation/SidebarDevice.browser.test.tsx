@@ -75,7 +75,7 @@ it("keeps the local device subtitle, propagates names and exposes attached workt
     wokeAt: null,
     isActive: false,
     isRouteThread: false,
-    openPullRequestsInRightPanel: false,
+    readOpensPullRequestsInRightPanel: () => false,
     jumpLabel: null,
     currentEnvironmentId: thread.environmentId,
     environmentLabel: "Synthetic environment",

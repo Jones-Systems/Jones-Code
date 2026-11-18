@@ -8,8 +8,11 @@ export const workspace = "/var/lib/jones-ci-apt";
 const pockets = ["noble", "noble-updates", "noble-backports", "noble-security"];
 const components = ["main", "restricted", "universe", "multiverse"];
 const keyring = "/usr/share/keyrings/ubuntu-archive-keyring.gpg";
-const mirrorLines = [
+const primaryMirrorLines = [
   "http://azure.archive.ubuntu.com/ubuntu/ priority:1",
+  "http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ priority:1",
+];
+const fallbackMirrorLines = [
   "https://archive.ubuntu.com/ubuntu/ priority:2",
   "https://security.ubuntu.com/ubuntu/ priority:3",
 ];
@@ -64,20 +67,29 @@ export function validateSources({ osRelease, architecture, mirrors, sources }) {
   if (!/^VERSION_CODENAME=(?:noble|"noble")$/m.test(osRelease) || architecture.trim() !== "amd64") {
     throw fail("config", "candidate requires noble amd64");
   }
-  const actualMirrors = mirrors
+  const [primary, ...fallbacks] = mirrors
     .trim()
     .split("\n")
     .map((line) => line.trim().replace(/\s+/g, " "));
-  if (JSON.stringify(actualMirrors) !== JSON.stringify(mirrorLines))
+  if (
+    !primaryMirrorLines.includes(primary) ||
+    fallbacks.length !== fallbackMirrorLines.length ||
+    !fallbackMirrorLines.every((line, index) => line === fallbacks[index])
+  ) {
     throw fail("config", "unexpected mirror list");
+  }
   const stanzas = records(sources);
   if (stanzas.length !== 2) throw fail("config", "expected two Ubuntu source stanzas");
   const suites = [];
   for (const stanza of stanzas) {
+    const usesRunnerMirror = stanza.URIs === "mirror+file:/etc/apt/apt-mirrors.txt";
+    const usesUbuntuSecurity =
+      stanza.Suites === "noble-security" &&
+      /^https?:\/\/security\.ubuntu\.com\/ubuntu\/?$/.test(stanza.URIs);
     if (
       !sameSet(Object.keys(stanza), ["Types", "URIs", "Suites", "Components", "Signed-By"]) ||
       stanza.Types !== "deb" ||
-      stanza.URIs !== "mirror+file:/etc/apt/apt-mirrors.txt" ||
+      (!usesRunnerMirror && !usesUbuntuSecurity) ||
       stanza["Signed-By"] !== keyring ||
       !sameSet(stanza.Components.split(/\s+/), components)
     ) {

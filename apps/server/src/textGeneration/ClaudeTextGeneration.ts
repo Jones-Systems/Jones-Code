@@ -1,7 +1,9 @@
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -32,6 +34,7 @@ import {
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
 } from "../provider/Drivers/ClaudeHome.ts";
+import { readClaudeLaunchArgSettings } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { classifyClaudeEvaluatorLaunchArgs } from "./jones/claudeEvaluatorLaunch.ts";
 import { claudeCommandFailure } from "./jones/claudeCommandFailure.ts";
 
@@ -106,9 +109,14 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
   claudeSettings: ClaudeSettings,
   environment?: NodeJS.ProcessEnv,
   modelCatalog: Effect.Effect<ClaudeModelCatalog> = Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG),
+  routeModelCatalog: (
+    catalog: ClaudeModelCatalog,
+    cwd: string,
+  ) => Effect.Effect<ClaudeModelCatalog> = Effect.succeed,
 ) {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
   const scopedModelCatalog = modelCatalog.pipe(
     Effect.map((catalog) => scopeClaudeModelCatalog(catalog, claudeSettings.customModels)),
@@ -155,24 +163,42 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
   }: TextGenerationOperations.Request<S>): Effect.fn.Return<
     S["Type"],
     TextGenerationError,
-    S["DecodingServices"]
+    S["DecodingServices"] | Scope.Scope
   > {
-    const evaluatorLaunch =
-      operation === "evaluateRemoteRequest"
-        ? classifyClaudeEvaluatorLaunchArgs(claudeSettings.launchArgs)
-        : undefined;
+    const isEvaluation = operation === "evaluateRemoteRequest";
+    const evaluatorLaunch = isEvaluation
+      ? classifyClaudeEvaluatorLaunchArgs(claudeSettings.launchArgs)
+      : undefined;
     if (evaluatorLaunch?.qualified === false) {
       return yield* new TextGenerationError({ operation, detail: evaluatorLaunch.detail });
     }
-    const catalog = yield* scopedModelCatalog;
+    const workingDirectory =
+      operation === "generateThreadTitle" || isEvaluation
+        ? yield* fileSystem
+            .makeTempDirectoryScoped({
+              prefix: isEvaluation ? "t3code-claude-evaluation-" : "t3code-claude-title-",
+            })
+            .pipe(
+              Effect.mapError((cause) =>
+                normalizeCliError(
+                  "claude",
+                  operation,
+                  cause,
+                  isEvaluation
+                    ? "Failed to create evaluation directory"
+                    : "Failed to create title directory",
+                ),
+              ),
+            )
+        : cwd;
+    const catalog = yield* routeModelCatalog(yield* scopedModelCatalog, workingDirectory);
     const resolvedModelSelection = {
       ...modelSelection,
       model: resolveClaudeModelSlug(catalog, modelSelection.model),
     };
-    const jsonSchema = toJsonSchemaObject(outputSchemaJson);
     const jsonSchemaStr = yield* encodeJsonForOperation(
       operation,
-      jsonSchema,
+      toJsonSchemaObject(outputSchemaJson),
       "Failed to encode structured output schema.",
     );
     const caps = getClaudeCatalogModelCapabilities(catalog, resolvedModelSelection.model);
@@ -202,7 +228,20 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         : undefined;
     const fastMode =
       fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
+    const launchArgSettings = isEvaluation
+      ? undefined
+      : yield* readClaudeLaunchArgSettings({
+          settings: claudeSettings,
+          cwd,
+          fileSystem,
+          path,
+        }).pipe(
+          Effect.mapError(
+            (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
+          ),
+        );
     const settings = {
+      ...launchArgSettings,
       disableAllHooks: true,
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
@@ -217,16 +256,6 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
       noSessionPersistence: boolean,
     ) {
-      const workingDirectory =
-        operation === "generateThreadTitle" || operation === "evaluateRemoteRequest"
-          ? yield* fileSystem
-              .makeTempDirectoryScoped({ prefix: "t3code-claude-title-" })
-              .pipe(
-                Effect.mapError((cause) =>
-                  normalizeCliError("claude", operation, cause, "Failed to create title directory"),
-                ),
-              )
-          : cwd;
       const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
       const spawnCommand = yield* resolveSpawnCommand(
         claudeSettings.binaryPath || "claude",
@@ -241,7 +270,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ...(cliEffort ? ["--effort", cliEffort] : []),
           "--settings",
           settingsJson,
-          ...(investigate
+          ...(!isEvaluation && investigate
             ? [
                 "--tools",
                 CLAUDE_INVESTIGATION_TOOLS,
@@ -251,7 +280,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
                 CLAUDE_INVESTIGATION_DENIED,
               ]
             : ["--tools", ""]),
-          ...(operation === "evaluateRemoteRequest" ? ["--disallowedTools", "mcp__*"] : []),
+          ...(isEvaluation ? ["--disallowedTools", "mcp__*"] : []),
           "--disable-slash-commands",
           ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
           // managed-mcp.json already isolates servers and makes Claude reject this flag.
@@ -307,14 +336,16 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           stdout,
           stderr,
           exitCode,
-          reportedError: claudeErrorResult(stdout, operation !== "evaluateRemoteRequest"),
+          reportedError: claudeErrorResult(stdout, !isEvaluation),
         });
         return detail === undefined
           ? Effect.succeed(stdout)
           : Effect.fail(new TextGenerationError({ operation, detail }));
       }),
       Effect.scoped,
-      Effect.timeoutOption(investigate?.timeoutMs ?? CLAUDE_TIMEOUT_MS),
+      Effect.timeoutOption(
+        isEvaluation ? CLAUDE_TIMEOUT_MS : (investigate?.timeoutMs ?? CLAUDE_TIMEOUT_MS),
+      ),
       Effect.flatMap(
         Option.match({
           onNone: () =>
@@ -357,7 +388,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
   });
 
-  return TextGenerationOperations.fromRunner("ClaudeTextGeneration", runClaudeJson, {
-    remoteRequestEvaluation: "tool-less",
-  });
+  return TextGenerationOperations.fromRunner(
+    "ClaudeTextGeneration",
+    <S extends Schema.Top>(request: TextGenerationOperations.Request<S>) =>
+      Effect.scoped(runClaudeJson(request)),
+    { remoteRequestEvaluation: "tool-less" },
+  );
 });

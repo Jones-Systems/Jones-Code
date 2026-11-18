@@ -28,10 +28,12 @@ import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as LegacyV1ThreadImporter from "../../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
+import { ThreadWorktreeRestore } from "../../workspace/restoreMissingWorktree.ts";
 import { encodeThreadHistoryCursor } from "../../orchestration-v2/threadHistoryPaging.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as OrchestrationEventStore from "../../persistence/OrchestrationEventStore.ts";
@@ -102,6 +104,7 @@ const layerOrchestratorReads = Layer.unwrap(
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     return Layer.mock(Orchestrator.OrchestratorV2)({
+      ...unusedCorePorts(),
       getThreadSnapshot: (threadId) =>
         asOrchestratorRead(threadId, projections.getThreadSnapshot(threadId)),
       getThreadSnapshotWindow: (threadId, options) =>
@@ -119,6 +122,8 @@ const layerSuite = ThreadManagementService.layerWithLegacyImporter.pipe(
     Layer.mergeAll(
       layerOrchestratorReads,
       Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+      // Only sends restore a worktree; these reads must never reach it.
+      Layer.mock(ThreadWorktreeRestore)({}),
       ServerSettings.layerTest(),
       CommandReceiptStore.layer,
     ),

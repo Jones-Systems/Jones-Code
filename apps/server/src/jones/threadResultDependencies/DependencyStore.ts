@@ -13,6 +13,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 import type { JonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import type { McpThreadInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import type { OpenRequest, WakeCommit } from "./DependencyCommit.ts";
@@ -138,6 +139,19 @@ export function makeDependencyStore(
       generation: number;
     }>`SELECT generation FROM jones_thread_result_fences WHERE origin_environment_id = 'local-waiter' AND operation_id = ${threadId}`.pipe(
       Effect.map((rows) => rows[0]?.generation ?? 0),
+    );
+  // The active shell index needs the same waiter states as the shell roster.
+  const pendingWaiterExists = (threadId: Statement.Fragment) =>
+    available.pipe(
+      Effect.map((present) =>
+        present
+          ? sql`EXISTS (
+              SELECT 1 FROM jones_thread_result_dependencies d
+              WHERE d.waiter_thread_id = ${threadId}
+                AND d.state IN ('sending', 'awaiting', 'resolved')
+            )`
+          : sql.literal("0"),
+      ),
     );
   const dependencies = Effect.fn("DependencyStore.dependencies")(function* (threadId?: ThreadId) {
     if (!(yield* available)) return [];
@@ -504,6 +518,7 @@ export function makeDependencyStore(
     waiterGeneration,
     prune,
     dependencies,
+    pendingWaiterExists,
     requests,
     get,
     duties,

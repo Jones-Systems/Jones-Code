@@ -625,6 +625,13 @@ it.effect(
             getThreadShell: () => Effect.succeed(shell),
             getProjectThreadRecords: () => Effect.succeed(projection),
             listProjectThreads: () => Effect.succeed([shell]),
+            getShellSnapshot: (options) =>
+              Effect.succeed({
+                schemaVersion: 1,
+                snapshotSequence: 0,
+                threads: options?.threadIds?.includes(shell.id) ? [shell] : [],
+                archivedThreads: [],
+              }),
             ...(blocked === undefined
               ? {}
               : {
@@ -635,7 +642,8 @@ it.effect(
                       backgroundStatus: "known" as const,
                     }),
                 }),
-            getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+            getTimelinePage: () =>
+              Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
           }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({}),
           Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),

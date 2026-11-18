@@ -170,6 +170,8 @@ it.effect("keeps real browser-launch failures out of local and delegated traces"
           serializedRecords.push(JSON.stringify(record));
         },
         flush: Effect.void,
+        // push records synchronously, so nothing is buffered for exit.
+        flushSync: () => {},
         close: () => Effect.void,
       },
       delegate: Tracer.make({

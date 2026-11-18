@@ -101,7 +101,7 @@ describe("Jones install handoff in the composed update dialog", () => {
     );
     const dialog = page.getByRole("alertdialog");
     await expect.element(dialog.getByRole("heading", { name: "Update 1 machine?" })).toBeVisible();
-    await expect.element(dialog.getByText("Laptop", { exact: true })).toBeVisible();
+    await expect.element(dialog.getByRole("cell", { name: "Laptop", exact: true })).toBeVisible();
     await expect.element(dialog.getByText("Install status", { exact: true })).toBeVisible();
     await expect
       .element(

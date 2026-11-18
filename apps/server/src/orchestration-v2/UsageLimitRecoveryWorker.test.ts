@@ -11,6 +11,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
@@ -40,6 +41,7 @@ it.effect("idle sweeps skip SQL until the next wake time or a relevant event", (
           }),
           Layer.mock(ThreadManagement.ThreadManagementService)({}),
           Layer.mock(Orchestrator.OrchestratorV2)({
+            ...unusedCorePorts(),
             streamDomainEvents: Stream.fromQueue(events),
           }),
           Layer.mock(ServerSettings.ServerSettingsService)({

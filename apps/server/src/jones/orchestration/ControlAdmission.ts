@@ -1,4 +1,4 @@
-import type { ProviderRuntimeBinding } from "@t3tools/contracts";
+import type { OrchestrationV2ProviderThread, ProviderRuntimeBinding } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -30,6 +30,26 @@ declare const startupHoldBrand: unique symbol;
 export interface StartupHold {
   readonly [startupHoldBrand]: true;
 }
+
+// A provider can use the hold it owns only while completing its binding publication.
+export const CurrentStartupPublication = Context.Reference<StartupHold | undefined>(
+  "jones/orchestration/CurrentStartupPublication",
+  { defaultValue: () => undefined },
+);
+
+export const startupPublicationFor = Effect.fn("ControlAdmission.startupPublicationFor")(function* (
+  binding: ProviderRuntimeBinding | undefined,
+  original: OrchestrationV2ProviderThread,
+) {
+  const hold = yield* CurrentStartupPublication;
+  return hold !== undefined &&
+    binding !== undefined &&
+    binding.providerThreadId === original.id &&
+    binding.providerSessionId === original.providerSessionId &&
+    binding.driver === original.driver
+    ? { hold, binding }
+    : undefined;
+});
 
 export interface ControlDispatchBinding extends ControlProducerKey {
   readonly threadId: string;
@@ -84,6 +104,14 @@ const sameProducer = (left: ControlProducerKey | null, right: ControlProducerKey
   left.instanceId === right.instanceId &&
   left.providerSessionId === right.providerSessionId &&
   left.runtimeGeneration === right.runtimeGeneration;
+const matchesPublishedBinding = (target: ControlAdmissionTarget, binding: ProviderRuntimeBinding) =>
+  target.nativeThreadId === binding.nativeThreadId &&
+  target.threadId === binding.threadId &&
+  sameProducer(target.producer, {
+    instanceId: binding.providerInstanceId,
+    providerSessionId: binding.providerSessionId,
+    runtimeGeneration: binding.runtimeGeneration,
+  });
 const validTarget = (target: ControlAdmissionTarget) => {
   const selector = (id: string | null) =>
     id === null || (typeof id === "string" && id.trim().length > 0);
@@ -110,6 +138,7 @@ export class ControlAdmission extends Context.Service<
   {
     readonly assertOpen: (
       target: ControlAdmissionTarget,
+      publication?: { readonly hold: StartupHold; readonly binding: ProviderRuntimeBinding },
     ) => Effect.Effect<void, ControlAdmissionHeld>;
     readonly begin: (
       binding: ControlDispatchBinding,
@@ -145,16 +174,32 @@ export class ControlAdmission extends Context.Service<
 export const layer = Layer.sync(ControlAdmission, () => {
   const dispatches = new Map<ControlDispatch, boolean>();
   const startups = new Map<StartupHold, ControlAdmissionTarget>();
-  const blocked = (target: ControlAdmissionTarget) =>
+  const blocked = (target: ControlAdmissionTarget, publishing?: StartupHold) =>
     !validTarget(target) ||
     Array.from(dispatches).some(
       ([dispatch, unknown]) => unknown && conflicts(targetFromDispatch(dispatch.binding), target),
     ) ||
-    Array.from(startups.values()).some((held) => conflicts(held, target));
+    Array.from(startups).some(([hold, held]) => hold !== publishing && conflicts(held, target));
   const fail = (instanceId: string) => Effect.fail(new ControlAdmissionHeld({ instanceId }));
   return ControlAdmission.of({
-    assertOpen: Effect.fn("ControlAdmission.assertOpen")((target) =>
-      Effect.suspend(() => (blocked(target) ? fail(target.instanceId) : Effect.void)),
+    assertOpen: Effect.fn("ControlAdmission.assertOpen")((target, publication) =>
+      Effect.suspend(() => {
+        if (publication === undefined)
+          return blocked(target) ? fail(target.instanceId) : Effect.void;
+        const { hold, binding } = publication;
+        const held = startups.get(hold);
+        if (
+          held === undefined ||
+          target.instanceId !== binding.providerInstanceId ||
+          target.threadId !== binding.threadId ||
+          (target.nativeThreadId !== null && target.nativeThreadId !== binding.nativeThreadId) ||
+          !matchesPublishedBinding(held, binding) ||
+          blocked(target, hold) ||
+          blocked(held, hold)
+        )
+          return fail(target.instanceId);
+        return Effect.void;
+      }),
     ),
     begin: Effect.fn("ControlAdmission.begin")((binding) =>
       Effect.suspend(() => {
@@ -217,19 +262,8 @@ export const layer = Layer.sync(ControlAdmission, () => {
       Effect.suspend(() => {
         const target = startups.get(hold);
         if (target === undefined) return fail("unknown");
-        if (resolution.kind === "bound") {
-          const binding = resolution.binding;
-          if (
-            target.nativeThreadId !== binding.nativeThreadId ||
-            target.threadId !== binding.threadId ||
-            !sameProducer(target.producer, {
-              instanceId: binding.providerInstanceId,
-              providerSessionId: binding.providerSessionId,
-              runtimeGeneration: binding.runtimeGeneration,
-            })
-          )
-            return fail(target.instanceId);
-        }
+        if (resolution.kind === "bound" && !matchesPublishedBinding(target, resolution.binding))
+          return fail(target.instanceId);
         startups.delete(hold);
         return Effect.void;
       }),

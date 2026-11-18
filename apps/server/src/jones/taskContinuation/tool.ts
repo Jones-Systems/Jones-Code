@@ -1,5 +1,5 @@
 import { TaskContinueInput, TaskContinueResult, OrchestratorMcpFailure } from "@t3tools/contracts";
-import { Tool } from "effect/ai";
+import { McpSchema, Tool } from "effect/ai";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Access from "../../mcp/McpToolAccess.ts";
@@ -16,6 +16,7 @@ export const TaskContinueTool = Tool.make("t3_task_continue", {
   failureMode: "return",
   dependencies: [Invocation.McpInvocationContext, Threads.ThreadManagementService],
 })
+  .annotate(McpSchema.EnabledWhen, Invocation.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Continue a Claude task conversation")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)

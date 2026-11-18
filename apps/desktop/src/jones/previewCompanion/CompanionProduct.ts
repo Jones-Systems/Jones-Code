@@ -69,3 +69,20 @@ export function companionLinuxIdentity(
         linuxWmClass: COMPANION_PRODUCT.packageName,
       };
 }
+
+/** Check the namespace boot selected; never relocate a running host's profile to repair it. */
+export function assertCompanionStorage(input: {
+  readonly companion: boolean;
+  readonly appDataDirectory: string;
+  readonly userDataDirectory: string;
+  readonly sessionDataDirectory: string;
+  readonly join: (...parts: string[]) => string;
+}): void {
+  if (!input.companion) return;
+  const userData = input.join(input.appDataDirectory, COMPANION_PRODUCT.name);
+  if (
+    input.userDataDirectory !== userData ||
+    input.sessionDataDirectory !== input.join(userData, "Session")
+  )
+    throw new Error("Preview companion storage was not bound before browser initialization.");
+}

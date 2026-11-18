@@ -104,8 +104,8 @@ import { useUsageWindow } from "../../jones/usage/useUsageWindow";
 import { useUsageProviderDetails } from "../../jones/usage/useUsageProviderDetails";
 import { UsageProviderDetails, UsageProviderSummary } from "../../jones/usage/UsageProviderDetails";
 import { UsageModelRow } from "../../jones/usage/UsageModelRow";
-import { UsageTotals } from "../../jones/usage/UsageTotals";
 import { UsageModelTableHead } from "../../jones/usage/UsageModelTableHead";
+import { UsageTotals } from "../../jones/usage/UsageTotals";
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
@@ -388,7 +388,7 @@ export function UsagePage() {
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {!showingLimits ? (
-        <span className="hidden min-w-0 truncate text-xs text-muted-foreground 2xl:block">
+        <span className="hidden min-w-0 truncate text-xs text-muted-foreground @7xl/usage-header:block">
           {desktopWindowLabel}
         </span>
       ) : null}
@@ -449,7 +449,11 @@ export function UsagePage() {
               className="w-auto min-w-0"
             >
               <SelectValue>
-                {WINDOW_OPTIONS.find((option) => option.days === windowDays)?.label}
+                {windowSelection.kind === "day"
+                  ? WINDOW_OPTIONS.find((option) => option.days === windowDays)?.label
+                  : windowSelection.kind === "hours"
+                    ? `Past ${windowSelection.hours}h`
+                    : "Custom range"}
               </SelectValue>
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
@@ -519,7 +523,7 @@ export function UsagePage() {
                 aria-label="Applied custom usage range"
                 className="mb-4 text-xs text-muted-foreground"
               >
-                Custom range: {windowLabel} ({window.timeZone}; end exclusive)
+                Custom range: {windowLabel} ({shownWindow.timeZone}; end exclusive)
               </p>
             ) : null}
             {selectedEnvironments.length === 0 ? (
@@ -676,7 +680,6 @@ function UsageOverview({
   );
   const rankedProviders = rankProvidersByMetric(activeProviders, merged.providers, metric);
   const breakdownProviders = focusedProvider === null ? activeProviders : [focusedProvider];
-  const timeValueColumnWidth = `${60 / (breakdownProviders.length + 2)}%`;
 
   return (
     <div aria-busy={loadingPartial} className="flex flex-col gap-6">
@@ -688,15 +691,15 @@ function UsageOverview({
       <section className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
         <div className="flex min-w-0 flex-col gap-5">
           <div className="flex flex-col gap-1">
-            <span
+            <p
               className={cn(
                 "text-4xl font-semibold text-foreground tabular-nums",
                 figureClass(loadingPartial),
               )}
             >
               {metric === "cost" ? formatUsd(merged.costUsd) : formatTokens(merged.totalTokens)}
-            </span>
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+            </p>
+            <p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <span>
                 <span className={figureClass(loadingPartial)}>
                   {formatCount(merged.sessions)} sessions
@@ -718,7 +721,7 @@ function UsageOverview({
                   </PopoverPopup>
                 </Popover>
               )}
-            </span>
+            </p>
           </div>
 
           {showChatGptSharing ? (
@@ -950,11 +953,6 @@ function UsageOverview({
             <table className="w-full text-sm whitespace-nowrap">
               <colgroup>
                 <col className="w-2/5" />
-                {breakdownProviders.map((provider) => (
-                  <col key={provider} style={{ width: timeValueColumnWidth }} />
-                ))}
-                <col style={{ width: timeValueColumnWidth }} />
-                <col style={{ width: timeValueColumnWidth }} />
               </colgroup>
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
@@ -1356,7 +1354,7 @@ function UsageSkeleton() {
 
 function MetricSkeletons({ labels }: { readonly labels: readonly string[] }) {
   return (
-    <div className="flex flex-wrap justify-between gap-x-6 gap-y-4 py-1">
+    <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
       {labels.map((label) => (
         <div key={label} className="flex flex-col gap-0.5">
           <span className="text-xs text-muted-foreground">{label}</span>

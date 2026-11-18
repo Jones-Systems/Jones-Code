@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   qualify:
-    name: Candidate Node 26.12.1 (${{ matrix.platform }}, ${{ matrix.architecture }})
+    name: Candidate Node 26.13.1 (${{ matrix.platform }}, ${{ matrix.architecture }})
     strategy:
       fail-fast: false
       matrix:
@@ -81,14 +81,14 @@ jobs:
       - name: Install on the supported development runtime
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
       - name: Select the exact candidate runtime
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
 
       - name: Allocate qualification scratch
         id: scratch
@@ -105,8 +105,8 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
-          assert.equal(process.versions.node, '26.12.1');
-          assert.equal(process.versions.sqlite, '3.54.0');
+          assert.equal(process.versions.node, '26.13.1');
+          assert.equal(process.versions.sqlite, '3.54.1');
           assert.equal(process.platform, process.env.QUALIFICATION_PLATFORM);
           assert.equal(process.arch, process.env.QUALIFICATION_ARCHITECTURE);
           NODE

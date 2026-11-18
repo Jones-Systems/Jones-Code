@@ -7,8 +7,10 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as LegacyStorage from "../../jones/legacyBootstrap/Storage.ts";
 import * as EventStore from "../EventStore.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
+import { isPublicStoredOrchestrationEvent } from "../WireProjection.ts";
 
 export interface ProjectionReplayVerification {
   readonly valid: boolean;
@@ -50,6 +52,7 @@ export const layer: Layer.Layer<
   ProjectionReplay,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const legacyStorage = LegacyStorage.make(sql);
     const eventStore = yield* EventStore.EventStoreV2;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
 
@@ -103,6 +106,10 @@ export const layer: Layer.Layer<
       yield* sql.withTransaction(
         Effect.gen(function* () {
           const throughSequence = yield* eventStore.latestSequence();
+          // Jones hook, as in ProjectionMaintenance: retain historical inline values before deleting rows.
+          yield* legacyStorage
+            .preserveInlineProjection()
+            .pipe(Effect.provideService(SqlClient.SqlClient, sql));
           yield* sql`DELETE FROM orchestration_v2_projection_context_transfers`;
           yield* sql`DELETE FROM orchestration_v2_projection_context_handoffs`;
           yield* sql`DELETE FROM orchestration_v2_projection_checkpoints`;
@@ -129,22 +136,25 @@ export const layer: Layer.Layer<
               .read({ afterSequence: lastSequence, throughSequence, limit: pageSize })
               .pipe(Stream.runCollect);
             for (const stored of page) {
-              yield* projectionStore.apply(stored.event);
-              if (stored.event.type === "turn-item.updated") {
-                yield* sql`
-                INSERT INTO orchestration_v2_turn_item_positions (
-                  thread_id,
-                  turn_item_id,
-                  ordinal
-                )
-                VALUES (
-                  ${stored.event.threadId},
-                  ${stored.event.payload.id},
-                  ${stored.event.payload.ordinal}
-                )
-                ON CONFLICT(thread_id, turn_item_id) DO UPDATE SET
-                  ordinal = excluded.ordinal
-                `;
+              // Retained private preflight rows keep their sequence but never reach projections.
+              if (isPublicStoredOrchestrationEvent(stored)) {
+                yield* projectionStore.apply(stored.event);
+                if (stored.event.type === "turn-item.updated") {
+                  yield* sql`
+                  INSERT INTO orchestration_v2_turn_item_positions (
+                    thread_id,
+                    turn_item_id,
+                    ordinal
+                  )
+                  VALUES (
+                    ${stored.event.threadId},
+                    ${stored.event.payload.id},
+                    ${stored.event.payload.ordinal}
+                  )
+                  ON CONFLICT(thread_id, turn_item_id) DO UPDATE SET
+                    ordinal = excluded.ordinal
+                  `;
+                }
               }
               lastSequence = stored.sequence;
             }

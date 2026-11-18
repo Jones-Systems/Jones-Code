@@ -39,6 +39,8 @@ const layerFailingSessionLookupRepository = Layer.succeed(AuthSessions.AuthSessi
   revoke: () => Effect.fail(repositoryFailure),
   revokeAllExcept: () => Effect.fail(repositoryFailure),
   setLastConnectedAt: () => Effect.void,
+  getProofKeyThumbprint: () => Effect.fail(repositoryFailure),
+  revokeByProofKey: () => Effect.fail(repositoryFailure),
 });
 
 const layerServerConfig = (overrides?: Partial<ServerConfig.ServerConfig["Service"]>) =>

@@ -6,7 +6,10 @@ import {
 
 import { mergeEnvironmentSettings } from "../../hooks/useSettings";
 import { scopedModelDisabledReason } from "../../jones/settings/modelSelectionCorrespondence";
-import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import {
+  getCustomModelOptionsByInstance,
+  getTextGenerationModelOptionsByInstance,
+} from "../../modelSelection";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -18,7 +21,7 @@ import { useSettingsScope } from "./SettingsScopeContext";
 export function useScopedModelDisabledReason(
   settings: UnifiedSettings,
   entries: readonly ProviderInstanceEntry[],
-  options: { readonly textGeneration?: boolean } = { textGeneration: true },
+  textGeneration = false,
 ) {
   const { target, targets } = useSettingsScope();
   const { environments } = useEnvironments();
@@ -33,7 +36,7 @@ export function useScopedModelDisabledReason(
           candidate,
           { instanceId, model },
           mergeEnvironmentSettings(candidate.settings, settings),
-          options.textGeneration,
+          textGeneration,
         );
         if (reason) return reason;
         continue;
@@ -61,14 +64,17 @@ export function useScopedModelDisabledReason(
         candidate.settings,
         candidate.projectId,
       ).find((option) => option.instanceId === instanceId);
-      const modelOptions = getCustomModelOptionsByInstance(
+      const optionsForInstance = textGeneration
+        ? getTextGenerationModelOptionsByInstance
+        : getCustomModelOptionsByInstance;
+      const modelOptions = optionsForInstance(
         mergeEnvironmentSettings(candidate.settings, settings),
         providers,
       ).get(instanceId);
       if (
         !entry?.enabled ||
         !entry.isAvailable ||
-        (options.textGeneration && entry.snapshot.supportsTextGeneration === false) ||
+        (textGeneration && entry.snapshot.supportsTextGeneration === false) ||
         entry.driverKind !== sourceEntry?.driverKind ||
         !modelOptions?.some((option) => option.slug === model && !option.isUnavailable)
       ) {

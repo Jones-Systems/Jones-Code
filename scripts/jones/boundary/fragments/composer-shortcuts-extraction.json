@@ -23,9 +23,15 @@
     "apps/web/src/jones/composer/useWorktreeSetupRoute.browser.test.tsx",
     "apps/web/src/jones/composer/useComposerCardViewport.ts",
     "apps/web/src/jones/composer/useComposerCardViewport.browser.test.tsx",
-    "apps/web/src/jones/subagents/accountGlyph.browser.test.tsx"
+    "apps/web/src/jones/subagents/accountGlyph.browser.test.tsx",
+    "apps/web/src/jones/composer/firstSendWorktree.ts",
+    "apps/web/src/jones/composer/messageContext.ts",
+    "apps/web/src/jones/composer/providerSelection.ts"
   ],
   "hookPaths": [
+    "apps/web/src/components/chat/useComposerProviderModel.ts",
+    "apps/web/src/components/chat/useComposerSend.ts",
+    "apps/web/src/components/chat/useMultipleModelSend.ts",
     "apps/web/src/components/ChatView.tsx",
     "apps/web/src/components/chat/ChatComposer.tsx",
     "apps/web/src/components/chat/ModelPickerContent.tsx",
@@ -111,6 +117,26 @@
     {
       "from": "apps/web/src/components/chat/ChatComposer.tsx",
       "to": "apps/web/src/jones/composer/useComposerCardViewport.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/composer/providerSelection.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerProviderModel.ts",
+      "to": "apps/web/src/jones/composer/providerSelection.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/jones/composer/messageContext.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useMultipleModelSend.ts",
+      "to": "apps/web/src/jones/composer/messageContext.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/jones/composer/firstSendWorktree.ts"
     }
   ]
 }

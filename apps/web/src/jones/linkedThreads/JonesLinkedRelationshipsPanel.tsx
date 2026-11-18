@@ -113,7 +113,7 @@ function ThreadLineageRowList(props: {
       {/* ScrollArea's max-height viewport measures badly inside this scrolling panel. */}
       <ul
         aria-label="Related threads"
-        className="m-0 max-h-[13.5rem] list-none overflow-y-auto overscroll-contain p-0 has-data-workflow-expanded:max-h-[min(28rem,55dvh)]"
+        className="m-0 max-h-[13.5rem] list-none overflow-y-auto p-0 has-data-workflow-expanded:max-h-[min(28rem,55dvh)]"
       >
         {props.children}
       </ul>
@@ -253,7 +253,6 @@ export function JonesLinkedRelationshipsPanel(props: {
 }) {
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const projection = useThreadProjection(ref)?.projection ?? null;
-  const parentLink = useParentLink(props.environmentId, projection?.thread);
   const providersByEnvironment = useEnvironmentProviders();
   const environment = useEnvironment(props.environmentId);
   const machine = useMachineLocation(props.environmentId);
@@ -267,6 +266,7 @@ export function JonesLinkedRelationshipsPanel(props: {
     relationshipShells.find((thread) => thread.id === props.threadId) ??
     archivedShells?.find((thread) => thread.id === props.threadId);
   const currentThread = projection?.thread ?? currentShell;
+  const parentLink = useParentLink(props.environmentId, currentThread);
   const linked = useLinkedThreads(
     ref,
     currentShell?.activityRunStatus != null ||
@@ -780,28 +780,26 @@ export function JonesLinkedRelationshipsPanel(props: {
                             className={THREAD_DETAILS_PANEL_SPLIT_SEPARATOR_CLASS}
                           />
                           <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <ThreadDetailsControl
-                                  size="sm"
-                                  variant="ghost"
-                                  part="secondary"
-                                  aria-label={
-                                    parentTitle
-                                      ? `Merge back to ${parentTitle}`
-                                      : "Merge back to source conversation"
-                                  }
-                                  disabled={!canMerge || busyAction !== null}
-                                  onClick={() => void merge()}
-                                >
-                                  {busyAction === "merge" ? (
-                                    <LoaderCircleIcon className="size-3 animate-spin" />
-                                  ) : (
-                                    <PullRequestGlyph.merged className="size-3" />
-                                  )}
-                                </ThreadDetailsControl>
-                              }
-                            />
+                            <TooltipTrigger render={<span className="inline-flex shrink-0" />}>
+                              <ThreadDetailsControl
+                                size="sm"
+                                variant="ghost"
+                                part="secondary"
+                                aria-label={
+                                  parentTitle
+                                    ? `Merge back to ${parentTitle}`
+                                    : "Merge back to source conversation"
+                                }
+                                disabled={!canMerge || busyAction !== null}
+                                onClick={() => void merge()}
+                              >
+                                {busyAction === "merge" ? (
+                                  <LoaderCircleIcon className="size-3 animate-spin" />
+                                ) : (
+                                  <PullRequestGlyph.merged className="size-3" />
+                                )}
+                              </ThreadDetailsControl>
+                            </TooltipTrigger>
                             <TooltipPopup side="left">
                               {latestMergeBackRun === null
                                 ? "Complete a run in this fork before merging it back"

@@ -40,6 +40,7 @@ it.effect("completes a recovered Codex capacity run and dispatches its queued fo
       { type: "expect_outbound" }
     >;
     const startFrame = start.frame as { id: number; params: Record<string, unknown> };
+    const retryRequestId = startFrame.id + 1;
     const started = recorded.entries[startedIndex] as Extract<
       ProviderReplayEntry,
       { type: "emit_inbound" }
@@ -97,21 +98,29 @@ it.effect("completes a recovered Codex capacity run and dispatches its queued fo
               ...start,
               frame: {
                 ...startFrame,
-                id: 4,
+                id: retryRequestId,
                 params: { ...startFrame.params, input: [] },
               },
             },
-            remapTurn({ ...retryAck, frame: { ...(retryAck.frame as object), id: 4 } }),
+            remapTurn({
+              ...retryAck,
+              frame: { ...(retryAck.frame as object), id: retryRequestId },
+            }),
             remapTurn(started),
             ...recorded.entries.slice(startedIndex + 1, completedIndex + 1).map(remapTurn),
-            ...recorded.entries
-              .slice(completedIndex + 1)
-              .map((entry) =>
-                (entry.type === "expect_outbound" || entry.type === "emit_inbound") &&
-                (entry.frame as { id?: number }).id === 4
-                  ? { ...entry, frame: { ...(entry.frame as object), id: 5 } }
-                  : entry,
-              ),
+            ...recorded.entries.slice(completedIndex + 1).map((entry) => {
+              if (entry.type === "runtime_exit") return entry;
+              const frame = entry.frame;
+              if (
+                typeof frame !== "object" ||
+                frame === null ||
+                !("id" in frame) ||
+                typeof frame.id !== "number" ||
+                frame.id < retryRequestId
+              )
+                return entry;
+              return { ...entry, frame: { ...frame, id: frame.id + 1 } };
+            }),
           ],
         },
         workspace,

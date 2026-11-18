@@ -86,7 +86,7 @@ jobs:
           JS
       - name: Build credential-free CLI archive inputs
         env:
-          VP_NODE_VERSION: "26.12.1"
+          VP_NODE_VERSION: "26.13.1"
         run: |
           test "$(uname -m)" = arm64
           rustup target add aarch64-apple-darwin
@@ -164,7 +164,7 @@ jobs:
       - name: Build CLI public inputs before credential import
         if: matrix.target == 'cli'
         env:
-          VP_NODE_VERSION: "26.12.1"
+          VP_NODE_VERSION: "26.13.1"
         run: |
           vp run --filter t3 build
           node apps/server/scripts/cli.ts build-exe --target darwin-arm64 --verbose

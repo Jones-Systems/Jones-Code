@@ -553,6 +553,8 @@ const attachRunningTurn = (cwd: string, queueOnly: boolean) =>
       providerSessionId: sessionId,
       modelSelection: selection,
       runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd },
+      // This fixture installs a synthetic running turn before exercising MCP admission.
+      revalidateStartAdmission: Effect.void,
     });
     yield* sink.write({
       events: [

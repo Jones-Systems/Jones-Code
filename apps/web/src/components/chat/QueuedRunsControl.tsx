@@ -1,3 +1,6 @@
+import { derivePendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
+import { derivePendingUserInputs } from "../../session-logic";
+import { pendingQuestionBlocksSteering } from "../../jones/questionAnswer/questionAnswerCard";
 import { useAtomValue } from "@effect/atom-react";
 import { serverEnvironment } from "../../state/server";
 import { GripVerticalIcon, ListOrderedIcon } from "lucide-react";
@@ -51,9 +54,10 @@ import {
 
 import { useAssetUrls } from "../../assets/assetUrls";
 import { threadEnvironment } from "../../state/threads";
-import { useQuietThreadShell, useThreadProjection } from "../../state/entities";
+import { useQuietThreadProjection, useQuietThreadShell } from "../../state/entities";
+import { useEnvironment } from "../../state/environments";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { isImageAttachment, type ChatMessage } from "../../types";
+import { isImageAttachment, type ChatImageAttachment, type ChatMessage } from "../../types";
 import { cn } from "~/lib/utils";
 import { Button, InlineButton } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -61,18 +65,13 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { GuestMessageName } from "./guestMessageStyle";
 import { TimelineRowTimestamp } from "./TimelineRowParts";
 import { FoldedMessageHeader, useScheduledTaskTitle } from "./TimelineUserMessageRow";
+import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 
 export interface EditQueuedRunRequest {
   readonly runId: RunId;
   readonly messageId: MessageId;
   readonly text: string;
   readonly attachments: ReadonlyArray<ContractChatAttachment>;
-}
-
-interface QueuedRowThumbnail {
-  readonly key: string;
-  readonly name: string;
-  readonly url: string | null;
 }
 
 // A longer queue shows its first messages and a button that shows the rest.
@@ -90,7 +89,7 @@ function queuedImageResources(projection: ThreadQueueProjection | undefined) {
   if (!projection) return [];
   return deriveThreadQueueWorkflowState(projection).queuedRuns.flatMap(({ attachments }) =>
     attachments.flatMap((attachment) =>
-      attachment.type === "image"
+      isImageAttachment(attachment)
         ? [{ _tag: "attachment" as const, attachmentId: attachment.id }]
         : [],
     ),
@@ -121,9 +120,10 @@ export function QueuedRunsControl({
     prepared: PreparedImportedHistoryChoice | null;
   }) => void;
   readonly timestampFormat: TimestampFormat;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
+  readonly onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
-  const projection = useThreadProjection(
+  const projection = useQuietThreadProjection(
     scopeThreadRef(props.environmentId, props.threadId),
   )?.projection;
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
@@ -131,6 +131,11 @@ export function QueuedRunsControl({
     reportFailure: false,
   });
   const importedEligible = importedHistoryContinuationEligible(projection);
+  const liveQuestion = projection
+    ? pendingQuestionBlocksSteering(
+        derivePendingUserInputs(derivePendingThreadRequests(projection).userInputs),
+      )
+    : false;
   const [dragState, setDragState] = useState<{
     readonly runId: RunId;
     readonly insertIndex: number | null;
@@ -254,10 +259,10 @@ export function QueuedRunsControl({
     projection,
     editing: props.editingRunId !== null,
     hasUnsavedMessages: optimisticQueued.length > 0,
-    busy: busyRunId !== null || removals.busy || dragState !== null,
+    busy: liveQuestion || busyRunId !== null || removals.busy || dragState !== null,
     mutationLock: {
       acquire: () => {
-        if (steerInFlightRef.current || removals.isBusy()) return false;
+        if (liveQuestion || steerInFlightRef.current || removals.isBusy()) return false;
         steerInFlightRef.current = true;
         return true;
       },
@@ -274,7 +279,7 @@ export function QueuedRunsControl({
     (!freshContext || workflow.promoteSkipsCompaction === true);
   const canDispatchRun = (freshContext: boolean) =>
     canDispatchQueuedRun({
-      busy: queueBusy,
+      busy: liveQuestion || queueBusy,
       importedHistory: importedEligible,
       canStart: workflow?.canSendNow === true,
       canSteer: canSteerRun(freshContext),
@@ -292,13 +297,14 @@ export function QueuedRunsControl({
       // A guest's message keeps the guest's words; the owner can cancel it, not rewrite it.
       editable: context?.guest === undefined,
       attachments,
-      thumbnails: attachments
-        .filter((attachment) => attachment.type === "image")
-        .map<QueuedRowThumbnail>((attachment) => ({
-          key: attachment.id,
-          name: attachment.name,
-          url: queuedImageUrlById.get(attachment.id) ?? null,
-        })),
+      thumbnails: attachments.filter(isImageAttachment).map<ChatImageAttachment>((attachment) => {
+        const previewUrl = queuedImageUrlById.get(attachment.id);
+        return {
+          ...attachment,
+          type: "image",
+          ...(previewUrl ? { previewUrl } : {}),
+        };
+      }),
       pending: false,
     })),
     ...optimisticQueued.map((message) => ({
@@ -311,13 +317,7 @@ export function QueuedRunsControl({
       text: message.text,
       editable: true,
       attachments: [] as ReadonlyArray<ContractChatAttachment>,
-      thumbnails: (message.attachments ?? [])
-        .filter(isImageAttachment)
-        .map<QueuedRowThumbnail>((attachment) => ({
-          key: attachment.id,
-          name: attachment.name,
-          url: attachment.previewUrl ?? null,
-        })),
+      thumbnails: (message.attachments ?? []).filter(isImageAttachment),
       pending: true,
     })),
   ];
@@ -450,9 +450,7 @@ export function QueuedRunsControl({
           const previewText = isAttachmentOnlyBootstrapPrompt(item.text)
             ? ""
             : assistantCitationsToPlainText(
-                replaceComposerContextReferences(item.text, (reference) =>
-                  reference.kind === "image" && item.thumbnails.length > 0 ? "" : reference.label,
-                ),
+                replaceComposerContextReferences(item.text, (reference) => reference.label),
               ).trim();
           const rowRunId = item.runId;
           const rowServerIndex = item.serverIndex;
@@ -509,6 +507,7 @@ export function QueuedRunsControl({
                 isEditing={isEditing}
                 timestampFormat={props.timestampFormat}
                 onOpenThread={props.onOpenThread}
+                onImageExpand={props.onImageExpand}
               >
                 {canReorder && rowRunId !== null && rowServerIndex !== null ? (
                   <Button
@@ -695,22 +694,26 @@ function QueuedMessage(props: {
   readonly environmentId: EnvironmentId;
   readonly message: QueuedRunMessage | undefined;
   readonly previewText: string;
-  readonly thumbnails: ReadonlyArray<QueuedRowThumbnail>;
+  readonly thumbnails: ReadonlyArray<ChatImageAttachment>;
   readonly isEditing: boolean;
   readonly timestampFormat: TimestampFormat;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
   readonly children: ReactNode;
+  readonly onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
   const presentation = props.message ? resolveUserMessagePresentation(props.message) : null;
   const attribution = presentation?.attribution ?? null;
   const scheduledTaskId = presentation?.scheduledTaskId;
   const senderThreadId = props.message?.senderThreadId;
+  // A linked environment's agent sent it from a thread there.
+  const senderRef =
+    props.message?.linkedSender ??
+    (senderThreadId === undefined ? null : scopeThreadRef(props.environmentId, senderThreadId));
   const [expanded, setExpanded] = useState(false);
   const taskTitle = useScheduledTaskTitle(props.environmentId, scheduledTaskId);
-  const senderShell = useQuietThreadShell(
-    attribution === "agent" && senderThreadId
-      ? { environmentId: props.environmentId, threadId: senderThreadId }
-      : null,
+  const senderShell = useQuietThreadShell(attribution === "agent" ? senderRef : null);
+  const linkedSenderEnvironment = useEnvironment(
+    props.message?.linkedSender?.environmentId ?? null,
   );
   const fold =
     attribution === "automation"
@@ -722,7 +725,8 @@ function QueuedMessage(props: {
       : attribution === "agent"
         ? {
             icon: MessagesSquareIcon,
-            label: senderShell?.title.trim() || "Agent",
+            label:
+              senderShell?.title.trim() || props.message?.linkedSender?.title.trim() || "Agent",
             summary: props.previewText.split(/\r?\n/).find((line) => line.trim()) ?? "",
           }
         : null;
@@ -768,20 +772,28 @@ function QueuedMessage(props: {
             {props.thumbnails.length > 0 ? (
               <span className="flex flex-wrap items-center gap-1">
                 {props.thumbnails.map((thumbnail) => (
-                  <span
-                    key={thumbnail.key}
-                    className="size-8 overflow-hidden rounded-md border border-border/70 bg-background"
+                  <button
+                    key={thumbnail.id}
+                    type="button"
+                    aria-label={`Preview ${thumbnail.name}`}
+                    disabled={!thumbnail.previewUrl}
+                    className="size-8 overflow-hidden rounded-md border border-border/70 bg-background enabled:cursor-zoom-in"
+                    onPointerDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      const preview = buildExpandedImagePreview(props.thumbnails, thumbnail.id);
+                      if (preview) props.onImageExpand(preview);
+                    }}
                   >
-                    {thumbnail.url ? (
+                    {thumbnail.previewUrl ? (
                       <img
-                        src={thumbnail.url}
+                        src={thumbnail.previewUrl}
                         alt={thumbnail.name}
                         className="size-full object-cover"
                       />
                     ) : (
                       <span aria-label={thumbnail.name} className="block size-full bg-muted/60" />
                     )}
-                  </span>
+                  </button>
                 ))}
               </span>
             ) : null}
@@ -795,8 +807,14 @@ function QueuedMessage(props: {
       <div className="flex max-w-full flex-wrap items-center justify-end gap-x-0.5 gap-y-1 pe-1 text-xs text-muted-foreground">
         {props.message ? (
           <span className="me-1 flex items-center gap-2 px-1 opacity-0 transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/queued:opacity-100">
-            {attribution === "agent" && senderThreadId ? (
-              <InlineButton tone="muted" onClick={() => props.onOpenThread(senderThreadId)}>
+            {attribution === "agent" &&
+            senderRef &&
+            // Only an environment this client is connected to can open the sender's thread there.
+            (props.message?.linkedSender === undefined || linkedSenderEnvironment !== null) ? (
+              <InlineButton
+                tone="muted"
+                onClick={() => props.onOpenThread(senderRef.threadId, senderRef.environmentId)}
+              >
                 Open thread
               </InlineButton>
             ) : null}

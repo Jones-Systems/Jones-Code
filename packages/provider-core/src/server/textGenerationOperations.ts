@@ -1,18 +1,20 @@
 import * as Effect from "effect/Effect";
-import { threadTitleVerdict } from "./jones/ThreadTitleAssessment.ts";
 import * as Schema from "effect/Schema";
 
 import { type ChatAttachment, type ModelSelection, TextGenerationError } from "@t3tools/contracts";
 import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
+import { threadTitleVerdict } from "./jones/ThreadTitleAssessment.ts";
 import {
   buildRemoteRequestEvaluationPrompt,
   RemoteRequestEvaluationResult,
   remoteRequestEvaluationUnsupported,
 } from "./jones/remoteRequestEvaluation.ts";
-export { remoteRequestEvaluationUnsupported } from "./jones/remoteRequestEvaluation.ts";
-export { buildRemoteRequestEvaluationPrompt } from "./jones/remoteRequestEvaluation.ts";
+export {
+  buildRemoteRequestEvaluationPrompt,
+  remoteRequestEvaluationUnsupported,
+} from "./jones/remoteRequestEvaluation.ts";
 
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {
@@ -80,7 +82,20 @@ export const decodeJsonReply = <S extends Schema.Top>(
   );
 };
 
-const compiledDecodeUnknownEffect1 = Schema.decodeUnknownEffect(RemoteRequestEvaluationResult);
+export const generatedThreadTitle = (raw: string) => {
+  const title = sanitizeThreadTitle(raw);
+  // Some models echo the output schema's key instead of a title.
+  return title.toLowerCase() === "title"
+    ? Effect.fail(
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: 'The model returned the placeholder title "title".',
+        }),
+      )
+    : Effect.succeed(title);
+};
+
+const decodeRemoteRequestEvaluation = Schema.decodeUnknownEffect(RemoteRequestEvaluationResult);
 
 export function fromRunner(
   name: string,
@@ -101,7 +116,7 @@ export function fromRunner(
       modelSelection: input.modelSelection,
       ...prompt,
     });
-    return yield* compiledDecodeUnknownEffect1(generated).pipe(
+    return yield* decodeRemoteRequestEvaluation(generated).pipe(
       Effect.mapError(
         (cause) =>
           new TextGenerationError({
@@ -186,6 +201,7 @@ export function fromRunner(
       ...buildThreadTitlePrompt({
         titleAssessment: input.titleAssessment,
         message: input.message,
+        projectTitle: input.projectTitle,
         previousTitle: input.previousTitle,
         forkSource: input.forkSource,
         linkedContext: input.linkedContext,
@@ -194,7 +210,7 @@ export function fromRunner(
       }),
     });
     return {
-      title: sanitizeThreadTitle(generated.title),
+      title: yield* generatedThreadTitle(generated.title),
       ...(generated.needsRefinement === true ? { needsRefinement: true } : {}),
       ...(input.titleAssessment ? { assessment: threadTitleVerdict(generated) } : {}),
     };

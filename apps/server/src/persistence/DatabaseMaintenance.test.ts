@@ -26,6 +26,7 @@ import { jonesMigrationEntries } from "../jones/persistence/JonesMigrations.ts";
 import * as DatabaseMaintenance from "./DatabaseMaintenance.ts";
 import * as Sqlite from "./Sqlite.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
+import { makeOwnedFixture } from "../jones/cleanup/sharedAdmission/DatabaseIncarnation.fixture.ts";
 
 const encodeNativeProviderEnrollment = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -92,7 +93,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         yield* fs.writeFileString(dbPath, "not a database");
         const failure = yield* Effect.flip(maintenance.inspect(dbPath));
         assert.equal(failure._tag, "DatabaseInspectError");
-      }).pipe(Effect.scoped),
+      }),
     );
 
     it.effect("reports and deletes only the database from before 0.1.0", () =>
@@ -162,7 +163,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
           assert.deepEqual(yield* sql`SELECT value FROM retained_data`, [{ value: "keep" }]);
         }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath, readonly: true })));
         assert.isNull((yield* maintenance.inspect(dbPath)).legacyDatabaseBytes);
-      }).pipe(Effect.scoped),
+      }),
     );
 
     it.effect("runs a repair requested from Settings once and keeps its failure for Settings", () =>
@@ -217,7 +218,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
           yield* fs.readFileString(broken.failure),
           new DatabaseMaintenance.DatabaseCompactError({ path: brokenPath, cause: null }).message,
         );
-      }).pipe(Effect.scoped),
+      }),
     );
 
     it.effect("refuses a repair whose copies would not fit on disk", () =>
@@ -233,7 +234,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         const shortfall = yield* DatabaseMaintenance.reclaimSpaceShortfall(dbPath, huge);
         assert.isAtLeast(shortfall?.neededBytes ?? 0, huge);
         assert.isBelow(shortfall?.freeBytes ?? Infinity, huge);
-      }).pipe(Effect.scoped),
+      }),
     );
 
     it.effect(
@@ -446,18 +447,22 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
         const clock = yield* Clock.Clock;
         const pauses: number[] = [];
         let activeNanos = 0n;
-        const result = yield* maintenance.compact(dbPath).pipe(
-          Effect.provideService(Clock.Clock, {
-            ...clock,
-            // Exceed the background budget whenever the compactor checks elapsed time.
-            monotonicTimeNanos: Effect.sync(() => (activeNanos += 30_000_000n)),
-            sleep: (duration) =>
-              Effect.sync(() => {
-                pauses.push(Duration.toMillis(duration));
-              }),
-          }),
-        );
+        const steps: string[] = [];
+        const result = yield* maintenance
+          .compact(dbPath, (step) => Effect.sync(() => steps.push(step)))
+          .pipe(
+            Effect.provideService(Clock.Clock, {
+              ...clock,
+              // Exceed the background budget whenever the compactor checks elapsed time.
+              monotonicTimeNanos: Effect.sync(() => (activeNanos += 30_000_000n)),
+              sleep: (duration) =>
+                Effect.sync(() => {
+                  pauses.push(Duration.toMillis(duration));
+                }),
+            }),
+          );
         assert.deepEqual(pauses, [], "offline doctor must not throttle compaction");
+        assert.deepEqual(steps, ["prune-events", "vacuum", "rebuild-search", "checkpoint"]);
         assert.equal(result.deletedReceiptCount, 51);
         assert.isBelow(result.afterBytes, result.beforeBytes - 3 * 1024 * 1024);
         yield* Effect.gen(function* () {
@@ -475,7 +480,36 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
             [{ messageId: "message-1" }],
           );
         }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath, readonly: true })));
-      }).pipe(Effect.scoped),
+      }),
     );
   },
+);
+
+// The owner lock is checked before an application connection can compact or
+// remove even an idle participating store; SQLite exclusion is still retained.
+it.effect(
+  "maintenance refuses the existing owner before opening or changing application files",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* makeOwnedFixture;
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const legacy = path.join(f.stateDir, "state.sqlite");
+        yield* fs.writeFileString(legacy, "synthetic sentinel; must not be opened as SQLite");
+        const before = yield* fs.readFile(f.dbPath);
+        const maintenance = yield* DatabaseMaintenance.DatabaseMaintenance;
+        const compact = yield* Effect.result(maintenance.compact(f.dbPath));
+        const remove = yield* Effect.result(maintenance.removeLegacyDatabase(f.dbPath));
+        assert.equal(compact._tag, "Failure");
+        assert.equal(remove._tag, "Failure");
+        if (compact._tag === "Failure") assert.equal(compact.failure._tag, "DatabaseInUseError");
+        if (remove._tag === "Failure") assert.equal(remove.failure._tag, "DatabaseInUseError");
+        assert.deepEqual(yield* fs.readFile(f.dbPath), before);
+        assert.equal(
+          yield* fs.readFileString(legacy),
+          "synthetic sentinel; must not be opened as SQLite",
+        );
+      }),
+    ).pipe(Effect.provide(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
 );

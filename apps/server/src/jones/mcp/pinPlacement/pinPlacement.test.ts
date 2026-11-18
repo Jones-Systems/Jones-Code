@@ -25,6 +25,7 @@ import * as ThreadHandlers from "../../../mcp/toolkits/thread/handlers.ts";
 import { ThreadToolkit } from "../../../mcp/toolkits/thread/tools.ts";
 import { emptyProjection } from "../../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import { OrchestratorProjectionError } from "../../../orchestration-v2/Orchestrator.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import { v2PullRequestThread } from "../../../orchestration-v2/testkit/pullRequestFixtures.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
@@ -75,6 +76,7 @@ const shell = (id: string, options: ShellOptions = {}): OrchestrationV2ThreadShe
 const makeEnvironment = (
   threads: ReadonlyArray<OrchestrationV2ThreadShell>,
   callerMode: RuntimeMode = "full-access",
+  options: { readonly indexUnavailable?: boolean; readonly unpinBeforeDispatch?: ThreadId } = {},
 ) => {
   const shells = new Map<ThreadId, OrchestrationV2ThreadShell>(
     threads.map((thread) => [thread.id, thread]),
@@ -136,9 +138,24 @@ const makeEnvironment = (
     Layer.mock(ThreadManagement.ThreadManagementService)({
       getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
       getProjectThreadRecords: ({ threadId }) => Effect.succeed(records(threadId)),
+      listActiveShellIndex: () =>
+        options.indexUnavailable
+          ? Effect.fail(new OrchestratorProjectionError({ threadId: callerId }))
+          : Effect.succeed(
+              [...shells.values()].map((thread) => ({
+                ...thread,
+                mayBeLive: false,
+                hasRemoteTasks: false,
+              })),
+            ),
       dispatch: (command) =>
         Effect.sync(() => {
           commands.push(command);
+          // Simulate an unpin committing after the handler read the pinned target.
+          if (command.type === "thread.pin" && command.threadId === options.unpinBeforeDispatch) {
+            const current = shells.get(command.threadId)!;
+            shells.set(command.threadId, { ...current, pinnedAt: null, pinOrderKey: null });
+          }
           apply(command);
           return { sequence: commands.length, storedEvents: [] };
         }),
@@ -468,15 +485,97 @@ describe("t3_thread_organize placement", () => {
     }),
   );
 
-  it.effect("keeps a pin without placement unchanged", () =>
+  it.effect("plain new pins join the top without rewriting other pins", () =>
     Effect.gen(function* () {
-      const env = makeEnvironment([shell("anchor", { pinOrderKey: "m" }), shell("target")]);
+      const env = makeEnvironment([
+        shell("anchor", { pinOrderKey: "m" }),
+        shell("later", { pinOrderKey: "t" }),
+        shell("keyless", { pinned: true }),
+        { ...shell("stale-unpinned"), pinOrderKey: "b" },
+        shell("target"),
+      ]);
       const result = yield* env.invoke({ action: "pin", threadId: "target" });
+      expect(result.isFailure).toBe(false);
       expect(result.result).toEqual({ sequence: 1 });
+      expect(result.encodedResult).toEqual({ sequence: 1 });
+      expect(env.commands).toEqual([
+        { type: "thread.pin", commandId: expect.any(String), threadId: "target", orderKey: "g" },
+      ]);
+      expect(env.keyOf("target")).toBe("g");
+      expect(env.keyOf("anchor")).toBe("m");
+      expect(env.keyOf("later")).toBe("t");
+      expect(env.keyOf("keyless")).toBeNull();
+      expect(env.pinnedOrder()).toEqual(["target", "anchor", "later", "keyless"]);
+    }),
+  );
+
+  it.effect(
+    "plain re-pins preserve existing keyed and keyless pins even when offered a new key",
+    () =>
+      Effect.gen(function* () {
+        const env = makeEnvironment([
+          shell("anchor", { pinOrderKey: "g" }),
+          shell("keyed", { pinOrderKey: "t" }),
+          shell("keyless", { pinned: true }),
+        ]);
+        const before = env.pinnedOrder();
+        for (const [index, id] of ["keyed", "keyless"].entries()) {
+          const pinnedAt = env.shells.get(ThreadId.make(id))!.pinnedAt;
+          const result = yield* env.invoke({ action: "pin", threadId: id });
+          expect(result.isFailure).toBe(false);
+          expect(result.result).toEqual({ sequence: index + 1 });
+          expect(result.encodedResult).toEqual(result.result);
+          expect(env.commands[index]).toEqual({
+            type: "thread.pin",
+            commandId: expect.any(String),
+            threadId: id,
+            orderKey: "d",
+          });
+          expect(env.shells.get(ThreadId.make(id))!.pinnedAt).toEqual(pinnedAt);
+        }
+        expect(env.keyOf("keyed")).toBe("t");
+        expect(env.keyOf("keyless")).toBeNull();
+        expect(env.pinnedOrder()).toEqual(before);
+        expect(env.commands).toHaveLength(2);
+      }),
+  );
+
+  it.effect("plain re-pin supplies a top key if an unpin commits after the projection read", () =>
+    Effect.gen(function* () {
+      const env = makeEnvironment(
+        [shell("anchor", { pinOrderKey: "g" }), shell("target", { pinOrderKey: "t" })],
+        "full-access",
+        { unpinBeforeDispatch: ThreadId.make("target") },
+      );
+      const result = yield* env.invoke({ action: "pin", threadId: "target" });
+      expect(result.isFailure).toBe(false);
+      expect(result.result).toEqual({ sequence: 1 });
+      expect(result.encodedResult).toEqual({ sequence: 1 });
+      expect(env.commands).toEqual([
+        { type: "thread.pin", commandId: expect.any(String), threadId: "target", orderKey: "d" },
+      ]);
+      expect(env.keyOf("target")).toBe("d");
+      expect(env.pinnedOrder()).toEqual(["target", "anchor"]);
+    }),
+  );
+
+  it.effect("plain pin still dispatches keyless when the index read fails", () =>
+    Effect.gen(function* () {
+      const env = makeEnvironment(
+        [shell("anchor", { pinOrderKey: "m" }), shell("target")],
+        "full-access",
+        { indexUnavailable: true },
+      );
+      const result = yield* env.invoke({ action: "pin", threadId: "target" });
+      expect(result.isFailure).toBe(false);
+      expect(result.result).toEqual({ sequence: 1 });
+      expect(result.encodedResult).toEqual({ sequence: 1 });
       expect(env.commands).toEqual([
         { type: "thread.pin", commandId: expect.any(String), threadId: "target" },
       ]);
+      expect(env.shells.get(ThreadId.make("target"))!.pinnedAt).not.toBeNull();
       expect(env.keyOf("target")).toBeNull();
+      expect(env.pinnedOrder()).toEqual(["anchor", "target"]);
     }),
   );
 });

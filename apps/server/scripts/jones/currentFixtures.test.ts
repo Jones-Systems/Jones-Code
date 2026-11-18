@@ -7,7 +7,9 @@ import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Bind canonical fixture paths synchronously before runtime acquisition.
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import { describe, it, vi } from "@effect/vitest";
+import type * as NodeWorkerThreads from "node:worker_threads";
+import { describe, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { produceCurrentFixture } from "./currentFixtures.ts";
@@ -22,6 +24,29 @@ import {
   withClosedSyntheticFixture,
 } from "../../../../scripts/jones/performance/fixtures.mjs";
 import { currentDatabaseSource } from "../../../../scripts/jones/performance/sources.mjs";
+
+type WorkerExit = { readonly writer: boolean; exitCode?: number };
+const observedWorkers = vi.hoisted(() => new Map<string, WorkerExit[]>());
+
+// The production connection lives in workers, whose native closes run in separate isolates.
+vi.mock("node:worker_threads", async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeWorkerThreads>();
+  class ObservedWorker extends actual.Worker {
+    constructor(...args: ConstructorParameters<typeof actual.Worker>) {
+      super(...args);
+      const data: { filename?: unknown; readOnly?: unknown } | undefined = args[1]?.workerData;
+      const workers =
+        typeof data?.filename === "string" ? observedWorkers.get(data.filename) : undefined;
+      if (workers === undefined) return;
+      const observation: WorkerExit = { writer: data?.readOnly === false };
+      workers.push(observation);
+      this.once("exit", (code) => {
+        observation.exitCode = code;
+      });
+    }
+  }
+  return { ...actual, Worker: ObservedWorker };
+});
 
 const worktree = NodeFS.realpathSync(NodePath.resolve(import.meta.dirname, "../../../.."));
 async function invocation<A>(
@@ -103,7 +128,11 @@ describe("receiving V2 synthetic fixtures", () => {
     async (profile) => {
       await invocation(async (options, observe) => {
         const lifetime: string[] = [];
+        const databasePath = NodePath.join(options.parentPath, options.childName, "statev2.sqlite");
+        const workers: WorkerExit[] = [];
+        observedWorkers.set(databasePath, workers);
         let recordLifetime = false;
+        let workersExitedBeforeMaintenance = true;
         const nativeClose = NodeSqlite.DatabaseSync.prototype.close;
         const nativePrepare = NodeSqlite.DatabaseSync.prototype.prepare;
         const close = vi
@@ -118,8 +147,11 @@ describe("receiving V2 synthetic fixtures", () => {
             if (
               recordLifetime &&
               (sql === "PRAGMA wal_checkpoint(TRUNCATE)" || sql === "PRAGMA journal_mode=DELETE")
-            )
+            ) {
+              workersExitedBeforeMaintenance &&=
+                workers.length > 0 && workers.every(({ exitCode }) => exitCode !== undefined);
               lifetime.push(sql);
+            }
             return nativePrepare.call(this, sql);
           });
         let result: CurrentProductionResult<void>;
@@ -129,15 +161,22 @@ describe("receiving V2 synthetic fixtures", () => {
           });
           observe(result);
         } finally {
+          observedWorkers.delete(databasePath);
           prepare.mockRestore();
           close.mockRestore();
         }
         NodeAssert.equal(result.error, undefined);
         NodeAssert.deepEqual(
+          workers.filter(({ writer }) => writer).map(({ exitCode }) => exitCode),
+          [0],
+        );
+        NodeAssert.ok(workers.every(({ exitCode }) => exitCode !== undefined));
+        NodeAssert.ok(workersExitedBeforeMaintenance);
+        NodeAssert.deepEqual(
           lifetime,
           profile === "health-offline-delete"
-            ? ["closed", "PRAGMA wal_checkpoint(TRUNCATE)", "PRAGMA journal_mode=DELETE", "closed"]
-            : ["closed"],
+            ? ["PRAGMA wal_checkpoint(TRUNCATE)", "PRAGMA journal_mode=DELETE", "closed"]
+            : [],
         );
         NodeAssert.equal(result.closeKnown, true);
         NodeAssert.equal(result.receipt?.schema, "jones-performance-fixture/v2");
@@ -220,6 +259,9 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 159, name: "WorkstreamLifecycleRevision" },
           { id: 160, name: "WorkstreamSnooze" },
           { id: 161, name: "WorkstreamNameIcons" },
+          { id: 162, name: "OrdinaryPreparation" },
+          { id: 163, name: "RemoteSendReceipts" },
+          { id: 164, name: "LegacyBootstrap" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

@@ -29,6 +29,32 @@ const invalid = (message: string) =>
 const realPath = (path: string) =>
   Effect.tryPromise(() => NodeFSP.realpath(path)).pipe(Effect.orElseSucceed(() => path));
 
+/** Return the registered canonical path so an alternate input spelling is never persisted. */
+export const registeredDelegatedWorktree = Effect.fn(
+  "jones.delegatedTaskWorkspace.registeredWorktree",
+)(function* (
+  git: DelegatedTaskWorkspaceInput["git"],
+  project: { readonly id: ProjectId; readonly workspaceRoot: string },
+  worktreePath: string,
+) {
+  const worktrees = yield* git.listWorktreePaths(project.workspaceRoot).pipe(
+    Effect.mapError(
+      (error) =>
+        new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message: `Could not list the git worktrees of project ${project.id}, so worktreePath was not checked: ${error.message} No task was created.`,
+        }),
+    ),
+    Effect.flatMap((paths) => Effect.forEach(paths, realPath)),
+  );
+  const requested = yield* realPath(worktreePath);
+  if (!worktrees.includes(requested))
+    return yield* invalid(
+      `worktreePath must be one of the git worktrees of project ${project.id}. t3_worktree_list shows them. No task was created.`,
+    );
+  return requested;
+});
+
 export interface DelegatedTaskProjectInput {
   readonly request: Pick<OrchestratorMcpDelegateTaskInput, "projectId" | "workspaceStrategy">;
   readonly parentProjectId: ProjectId;
@@ -87,25 +113,12 @@ export const resolveExplicitDelegatedTaskWorkspace = Effect.fn(
     );
   const project = yield* input.project;
   if (strategy.type === "existing_worktree") {
-    // Same admission as t3_thread_launch: without it a child could be pointed
-    // at any directory on the machine.
-    // A listing failure still refuses the request, but names the git failure
-    // instead of claiming the path is not a worktree.
-    const worktrees = yield* input.git.listWorktreePaths(project.workspaceRoot).pipe(
-      Effect.mapError(
-        (error) =>
-          new OrchestratorMcpFailure({
-            code: "orchestration_error",
-            message: `Could not list the git worktrees of project ${project.id}, so worktreePath was not checked: ${error.message} No task was created.`,
-          }),
-      ),
-      Effect.flatMap((paths) => Effect.forEach(paths, realPath)),
+    const worktreePath = yield* registeredDelegatedWorktree(
+      input.git,
+      project,
+      strategy.worktreePath,
     );
-    if (!worktrees.includes(yield* realPath(strategy.worktreePath)))
-      return yield* invalid(
-        `worktreePath must be one of the git worktrees of project ${project.id}. t3_worktree_list shows them. No task was created.`,
-      );
-    return strategy;
+    return { ...strategy, worktreePath };
   }
   // The child is accepted before its worktree is provisioned, so a base that
   // cannot resolve is refused while the caller can still correct it.

@@ -131,6 +131,10 @@
       "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
       "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
     },

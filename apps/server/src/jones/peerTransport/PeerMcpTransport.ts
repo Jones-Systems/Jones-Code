@@ -152,6 +152,13 @@ const linkedEnvironmentsOffThere = new OrchestratorMcpFailure({
     "The linked environment has Linked environments turned off. Turn it on in its Settings → Labs.",
 });
 
+/** A handshake that outlived its bound. No tool was dispatched, so nothing needs reconciling. */
+const stoppedAnswering = () =>
+  new OrchestratorMcpFailure({
+    code: "orchestration_error",
+    message: "The linked environment stopped answering.",
+  });
+
 const readEnvelope = Effect.fn("PeerMcpTransport.readEnvelope")(function* (
   response: { readonly headers: Readonly<Record<string, string>>; readonly text: string },
   id: number,
@@ -282,52 +289,57 @@ export const make = Effect.gen(function* () {
         }),
       );
 
-  const openSession = Effect.fn("PeerMcpTransport.openSession")(function* (
-    url: string,
-    token: string,
-    limitHeader: Record<string, string>,
-  ) {
-    const id = yield* nextId;
-    const initialized = yield* post(
-      url,
-      token,
-      {
-        jsonrpc: "2.0",
-        id,
-        method: "initialize",
-        params: {
-          protocolVersion: PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: { name: "t3code-peer", version: "1" },
+  const openSession = Effect.fn("PeerMcpTransport.openSession")(
+    function* (url: string, token: string, limitHeader: Record<string, string>) {
+      const id = yield* nextId;
+      const initialized = yield* post(
+        url,
+        token,
+        {
+          jsonrpc: "2.0",
+          id,
+          method: "initialize",
+          params: {
+            protocolVersion: PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: { name: "t3code-peer", version: "1" },
+          },
         },
-      },
-      limitHeader,
-    );
-    const sessionId = initialized.headers["mcp-session-id"];
-    if (initialized.status !== 200 || !sessionId)
-      return yield* new OrchestratorMcpFailure({
-        code: "orchestration_error",
-        message: `The linked environment refused to start an MCP session (HTTP ${initialized.status}).`,
-      });
-    const envelope = yield* readEnvelope(initialized, id);
-    yield* decodeInitialization(envelope.result).pipe(Effect.mapError(malformed));
-    const notified = yield* post(
-      url,
-      token,
-      { jsonrpc: "2.0", method: "notifications/initialized" },
-      {
-        ...limitHeader,
-        "mcp-session-id": sessionId,
-        "mcp-protocol-version": PROTOCOL_VERSION,
-      },
-    );
-    if (notified.status !== 200 && notified.status !== 202)
-      return yield* new OrchestratorMcpFailure({
-        code: "orchestration_error",
-        message: `The linked environment refused MCP initialization (HTTP ${notified.status}).`,
-      });
-    return { id: sessionId };
-  });
+        limitHeader,
+      );
+      const sessionId = initialized.headers["mcp-session-id"];
+      if (initialized.status !== 200 || !sessionId)
+        return yield* new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message: `The linked environment refused to start an MCP session (HTTP ${initialized.status}).`,
+        });
+      const envelope = yield* readEnvelope(initialized, id);
+      yield* decodeInitialization(envelope.result).pipe(Effect.mapError(malformed));
+      const notified = yield* post(
+        url,
+        token,
+        { jsonrpc: "2.0", method: "notifications/initialized" },
+        {
+          ...limitHeader,
+          "mcp-session-id": sessionId,
+          "mcp-protocol-version": PROTOCOL_VERSION,
+        },
+      );
+      if (notified.status !== 200 && notified.status !== 202)
+        return yield* new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message: `The linked environment refused MCP initialization (HTTP ${notified.status}).`,
+        });
+      return { id: sessionId };
+    },
+    // Only the handshake is bounded by the route's probe time: a tool call keeps its own
+    // per-request deadline, which covers a supported remote wait.
+    (effect, url) =>
+      Effect.timeoutOrElse(effect, {
+        duration: PeerLinks.probeTimeout(url),
+        orElse: () => Effect.fail(stoppedAnswering()),
+      }),
+  );
 
   const openings = yield* InFlight.make<
     { readonly id: string },
@@ -447,6 +459,17 @@ export const make = Effect.gen(function* () {
         yield* requireCurrent(input.environmentId, resolved.generation);
         const headers: Record<string, string> = {
           ...limitHeader,
+          ...(input.sender === undefined
+            ? {}
+            : {
+                [McpInvocationContext.SENDER_THREAD_HEADER]: [
+                  input.sender.environmentId,
+                  input.sender.threadId,
+                  Array.from(input.sender.title).slice(0, 200).join(""),
+                ]
+                  .map((part) => encodeURIComponent(part.toWellFormed()))
+                  .join("/"),
+              }),
           ...(input.origin === undefined
             ? {}
             : { [LINKED_MESSAGE_ORIGIN_HEADER]: encodeLinkedMessageOrigin(input.origin) }),

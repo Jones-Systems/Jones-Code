@@ -94,6 +94,64 @@ describe("OpenCode protocol source identity", () => {
 });
 
 describe("OpenCode admission freshness", () => {
+  it.effect("keeps an explicit online probe inside the source fence and shared cache", () =>
+    Effect.gen(function* () {
+      let offlineCalls = 0;
+      let onlineCalls = 0;
+      const probe = yield* makeOpenCodeRuntimeProbe(
+        Effect.sync(() => {
+          offlineCalls += 1;
+        }).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new OpenCodeRuntime.OpenCodeRuntimeError({
+                operation: "offline",
+                detail: "Synthetic offline shim cannot install",
+              }),
+            ),
+          ),
+        ),
+      );
+      const online = Effect.sync(() => {
+        onlineCalls += 1;
+        return v2;
+      });
+      assert.deepStrictEqual(yield* probe.admit(online), v2);
+      assert.deepStrictEqual(yield* probe.get, v2);
+      assert.strictEqual(offlineCalls, 0);
+      assert.strictEqual(onlineCalls, 1);
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(probe.observe)));
+      assert.deepStrictEqual(yield* probe.get, v2);
+      assert.strictEqual(onlineCalls, 1);
+    }),
+  );
+
+  it.effect("refuses a changed source during an online admission without caching it", () =>
+    Effect.gen(function* () {
+      let source = "before";
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const probe = yield* makeOpenCodeRuntimeProbe(
+        Effect.succeed(v1),
+        Effect.sync(() => source),
+      );
+      const admission = yield* probe
+        .admit(
+          Deferred.succeed(started, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as(v2),
+          ),
+        )
+        .pipe(Effect.exit, Effect.forkChild);
+      yield* Deferred.await(started);
+      source = "after";
+      yield* Deferred.succeed(release, undefined);
+      assert.isTrue(Exit.isFailure(yield* Fiber.join(admission)));
+      assert.isTrue(Option.isNone(yield* probe.lastSuccess));
+      assert.deepStrictEqual(yield* probe.admit(Effect.succeed(v2)), v2);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps unchanged admissions cached until exactly the 60 second age bound", () =>
     Effect.gen(function* () {
       let calls = 0;

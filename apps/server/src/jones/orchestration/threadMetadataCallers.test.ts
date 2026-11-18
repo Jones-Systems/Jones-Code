@@ -12,6 +12,7 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ServerCommand,
 } from "@t3tools/contracts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -32,7 +33,10 @@ import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
+import * as LegacyV1ThreadImporter from "../../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../testing/UnusedCorePorts.testkit.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -44,14 +48,18 @@ import * as ThreadPullRequestService from "../../orchestration-v2/ThreadPullRequ
 import * as RemoteDelegation from "../../peer/RemoteDelegation.ts";
 import * as OrchestrationEventStore from "../../persistence/OrchestrationEventStore.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as ProjectEnrichmentService from "../../project/ProjectEnrichmentService.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
 import * as PullRequestService from "../../pullRequest/PullRequestService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
+import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
+import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
+import * as SupersededTerminalTrace from "./SupersededTerminalTrace.ts";
 import * as ThreadMetadataReads from "./threadMetadataReads.ts";
 
 const now = DateTime.makeUnsafe("2026-10-01T00:00:00.000Z");
@@ -141,6 +149,7 @@ it.effect(
       const commands: OrchestrationV2ServerCommand[] = [];
       const statements: string[] = [];
       let legacyReads = 0;
+      let linkedThreadNotifications = 0;
       const capture: Statement.Transformer = (statement) => {
         statements.push(statement.compile()[0]);
         return Effect.succeed(statement);
@@ -190,6 +199,7 @@ it.effect(
             }),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           streamDomainEvents: Stream.fromEffectRepeat(
             Queue.offer(pulls, undefined).pipe(Effect.andThen(Queue.take(events))),
           ),
@@ -239,7 +249,11 @@ it.effect(
               updatedAt: null,
             }),
         }),
-        Layer.mock(PullRequestService.PullRequestService)({}),
+        Layer.mock(PullRequestService.PullRequestService)({
+          notifyLinkedThreadsChanged: Effect.sync(() => {
+            linkedThreadNotifications += 1;
+          }),
+        }),
         Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
           resolve: () => Effect.succeed(identity),
         }),
@@ -312,6 +326,7 @@ it.effect(
         Effect.provide(dependencies),
         Effect.provideService(Statement.CurrentTransformer, capture),
       );
+      assert.equal(linkedThreadNotifications, 2);
       assert.equal(legacyReads, 0);
       const selects = statements.filter((query) => /SELECT/i.test(query));
       assert.isTrue(selects.some((query) => query.includes("orchestration_v2_projection_threads")));
@@ -325,7 +340,7 @@ const fileDatabase = Layer.unwrap(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-metadata-callers-" });
-    return stores.pipe(
+    return Layer.merge(stores, ProjectStore.layer).pipe(
       Layer.provideMerge(SqlitePersistence.layerFromPath(path.join(directory, "state.sqlite"))),
     );
   }),
@@ -353,7 +368,54 @@ it.live(
         thread("metadata-list:archive", { archivedAt: now }),
         thread("metadata-list:deleted", { deletedAt: now }),
       ]);
+      const projects = yield* ProjectStore.ProjectStoreV2;
+      const projectCreatedAt = DateTime.formatIso(now);
+      yield* sql.withTransaction(
+        projects.apply({
+          sequence: 1,
+          eventId: EventId.make("metadata-list:project-created"),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          occurredAt: projectCreatedAt,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created",
+          payload: {
+            projectId,
+            title: "Metadata list",
+            workspaceRoot: "/synthetic/project",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: projectCreatedAt,
+            updatedAt: projectCreatedAt,
+          },
+        }),
+      );
       const settings = ServerSettings.layerTest();
+      const projectServices = ProjectService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ServerConfig.layerTest(process.cwd(), { prefix: "jones-metadata-callers-project-" }),
+            settings,
+            Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({
+              getAvailable: () =>
+                Effect.succeed({
+                  repositoryIdentity: null,
+                  faviconPath: null,
+                  repositoryIdentityResolved: false,
+                }),
+            }),
+            Layer.mock(WorkspacePaths.WorkspacePaths)({}),
+            Layer.mock(EventSink.EventSinkV2)({
+              supersededTerminalTrace: SupersededTerminalTrace.make(),
+            }),
+            IdAllocator.layer,
+            Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({}),
+          ),
+        ),
+      );
       const threadServices = ThreadManagement.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
@@ -361,6 +423,16 @@ it.live(
             Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
             Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({}),
             Layer.mock(Orchestrator.OrchestratorV2)({
+              ...unusedCorePorts(),
+              listActiveThreads: (projectId) =>
+                projections
+                  .listActiveThreads(projectId)
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new Orchestrator.OrchestratorProjectionError({ threadId: first.id, cause }),
+                    ),
+                  ),
               getShellSnapshot: (query) =>
                 projections
                   .getShellSnapshot(query)
@@ -377,13 +449,14 @@ it.live(
       const dependencies = Layer.mergeAll(
         NodeCrypto.layer,
         settings,
-        // Keep the real listProjectThreads method. Native activity observation is
+        // Keep the real list and shell reads. Native activity observation is
         // a separate read path outside this marker's scope.
         Layer.unwrap(
           Effect.gen(function* () {
             const threads = yield* ThreadManagement.ThreadManagementService;
             return Layer.mock(ThreadManagement.ThreadManagementService)({
               listProjectThreads: threads.listProjectThreads,
+              getShellSnapshot: threads.getShellSnapshot,
             });
           }),
         ).pipe(Layer.provide(threadServices)),
@@ -392,7 +465,7 @@ it.live(
         Layer.mock(ProviderRegistry.ProviderRegistry)({}),
         Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        Layer.mock(ProjectService.ProjectService)({}),
+        projectServices,
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(RemoteDelegation.RemoteDelegation)({}),
       );

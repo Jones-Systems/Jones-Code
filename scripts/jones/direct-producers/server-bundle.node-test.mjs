@@ -77,7 +77,10 @@ assert.equal(config.pack.outputOptions,undefined);
 assert.equal(config.pack.exe,undefined);
 assert.deepEqual(config.pack.entry,["src/bin.ts","src/claude-history-worker.ts"]);
 assert.equal(config.pack.sourcemap,true);
-assert.deepEqual(config.pack.plugins.map(p=>p.name),["jones-server-compute-build-identity"]);
+assert.deepEqual(config.pack.plugins.map(p=>p.name),[
+  "t3code:source-build-version",
+  "jones-server-compute-build-identity",
+]);
 const root=path.resolve("dist");
 const gitDir=fs.readFileSync(path.resolve("../../.git"),"utf8").trim().slice(8);
 const directory=path.join(gitDir,"workspace-output-obligations");

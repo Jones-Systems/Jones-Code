@@ -1,3 +1,5 @@
+import { MISSING_FILE_ACCESS_MESSAGE } from "@t3tools/client-runtime/state/assets";
+
 function fileOptions(container: HTMLElement) {
   return [...container.querySelectorAll("button")]
     .map((button) => button.getAttribute("aria-label"))
@@ -16,11 +18,12 @@ import "../index.css";
 
 import { filesystemEnvironment } from "../state/filesystem";
 import { useRightPanelStore } from "../rightPanelStore";
-import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
+import { remarkEnableOrderedListNumbers } from "@t3tools/shared/markdownPipeline";
 import { MarkdownFindContext } from "./chat/markdownFindContext";
 import { useThreadFindHighlights } from "./chat/threadFindHighlights";
 import { setMarkdownTaskChecked } from "@t3tools/shared/markdownTaskList";
 import { HostImageUrlContext } from "./chat/hostImageUrl";
+import { getSyntaxHighlighterPromise } from "~/lib/syntaxHighlighting";
 
 const { workspaceSearch, filesystemMetadata } = vi.hoisted(() => ({
   workspaceSearch: vi.fn(),
@@ -50,6 +53,7 @@ vi.mock(import("../state/server"), async (original) => {
   const { Atom } = await import("effect/reactivity");
   const noConfig = Atom.make(null);
   const modelsConfig = Atom.make({
+    environment: { platform: { os: "darwin" } },
     availableEditors: [],
     settings: { providerInstances: {} },
     providers: [
@@ -79,6 +83,17 @@ vi.mock(import("../state/session"), async (original) => {
     ...(await original()),
     useEnvironmentScope: hasScope as never,
     readEnvironmentScope: hasScope as never,
+  };
+});
+const deniedEnvironmentId = vi.hoisted(() => "denied-environment");
+vi.mock(import("../state/filesystem"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    useFilesystemReadAccess: ((environmentId: EnvironmentId | null) =>
+      environmentId === deniedEnvironmentId
+        ? { canReadFiles: false, isPending: false, error: null }
+        : actual.useFilesystemReadAccess(environmentId)) as never,
   };
 });
 vi.mock(import("../remoteOpen"), async (original) => ({
@@ -128,6 +143,7 @@ vi.mock(import("../hooks/useSettings"), async (original) => {
 });
 
 import ChatMarkdown from "./ChatMarkdown";
+import { chatMarkdownClipboardPayload } from "../markdown-clipboard";
 import { AudioPreview } from "./files/AudioPreview";
 
 it("keeps compact audio playback loaded across signed URL renewals", async () => {
@@ -179,6 +195,38 @@ function buttonsLabelled(container: HTMLElement, label: string) {
   );
 }
 
+const SOURCE_NUMBER_PLUGINS = [remarkEnableOrderedListNumbers];
+
+it("keeps decimal markers in nested user lists while documents keep their counter styles", async () => {
+  using _fixture = setup();
+  const text = "1. Outer\n   1. Nested\n   7. Skipped\n      1. Deeper\n      4. Fourth";
+  await using screen = await render(
+    <div className="grid grid-cols-2 gap-8 p-8">
+      <section>
+        <h2>User message</h2>
+        <ChatMarkdown
+          cwd={undefined}
+          text={text}
+          className="user-message-markdown"
+          extraRemarkPlugins={SOURCE_NUMBER_PLUGINS}
+        />
+      </section>
+      <section>
+        <h2>Markdown preview</h2>
+        <ChatMarkdown cwd={undefined} text={text} />
+      </section>
+    </div>,
+  );
+  await expect.element(screen.getByText("User message", { exact: true })).toBeVisible();
+  const [message, preview] = screen.container.querySelectorAll(".chat-markdown");
+  expect(
+    [...message!.querySelectorAll("ol")].map((list) => getComputedStyle(list).listStyleType),
+  ).toEqual(["decimal", "decimal", "decimal"]);
+  expect(
+    [...preview!.querySelectorAll("ol")].map((list) => getComputedStyle(list).listStyleType),
+  ).toEqual(["decimal", "lower-alpha", "lower-roman"]);
+});
+
 function observeCodeTokenization(
   highlighter: Awaited<ReturnType<typeof getSyntaxHighlighterPromise>>,
 ) {
@@ -203,7 +251,7 @@ function observeCodeTokenization(
 }
 
 it("shows unavailable audio when a workspace embed has no thread", async () => {
-  setup();
+  using _fixture = setup();
   await using screen = await renderText("![recording](clip.wav)");
   expect(screen.container.textContent).toContain("Audio unavailable");
   expect(screen.container.textContent).not.toContain("Loading audio");
@@ -211,7 +259,7 @@ it("shows unavailable audio when a workspace embed has no thread", async () => {
 });
 
 it("loads a host image through the page's own route when there is no environment", async () => {
-  setup();
+  using _fixture = setup();
   const pixel =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
   const hostImageUrl = vi.fn((_path: string) => pixel);
@@ -227,7 +275,7 @@ it("loads a host image through the page's own route when there is no environment
 });
 
 it("loads the <picture> source for the current theme through the image route", async () => {
-  setup();
+  using _fixture = setup();
   const pixel =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
   const hostImageUrl = (path: string) => `${pixel}#${path}`;
@@ -254,13 +302,40 @@ it("loads the <picture> source for the current theme through the image route", a
     .toHaveAttribute("src", `${pixel}#/work/dark.png`);
 });
 
+it("sizes a raw HTML image by width and height written with px units", async () => {
+  using _fixture = setup();
+  const largeImage = `data:image/svg+xml,${encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"/>',
+  )}`;
+  await using screen = await render(
+    <HostImageUrlContext value={() => largeImage}>
+      <ChatMarkdown
+        cwd={undefined}
+        parseRawHtml
+        text={
+          '### PR Review in progress <img src="/work/spinner.gif" alt="spinner" width="14px" height="7px" />'
+        }
+      />
+    </HostImageUrlContext>,
+  );
+  const image = screen.getByAltText("spinner");
+  await expect.element(image).toHaveAttribute("src", largeImage);
+  const element = image.element() as HTMLImageElement;
+  await element.decode();
+  const { width, height } = element.getBoundingClientRect();
+  expect({ width, height }).toEqual({ width: 14, height: 7 });
+});
+
 it("reuses the parse of a streaming reply's finished blocks when it remounts", async () => {
-  setup();
+  using _fixture = setup();
   const message = (
     <ChatMarkdown cwd="/tmp/project" text={"Finished block\n\nStill growing"} isStreaming />
   );
   {
-    await using _first = await render(message);
+    await using first = await render(
+      <ChatMarkdown cwd="/tmp/project" text={"Finished block\n\n"} isStreaming />,
+    );
+    await first.rerender(message);
   }
   await using screen = await render(message);
   await expect.element(screen.getByText("Still growing")).toBeVisible();
@@ -268,18 +343,52 @@ it("reuses the parse of a streaming reply's finished blocks when it remounts", a
 });
 
 it("reuses the parse of a remounted message that has stable extra plugins", async () => {
-  setup();
+  using _fixture = setup();
   const parsed = vi.fn();
   const countingPlugins = [() => () => void parsed()];
   const message = (
     <ChatMarkdown cwd="/tmp/project" text="Cached text" extraRemarkPlugins={countingPlugins} />
   );
   {
-    await using _first = await render(message);
+    await using first = await render(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text="Cached text"
+        extraRemarkPlugins={countingPlugins}
+        isStreaming
+      />,
+    );
+    await first.rerender(message);
   }
   await using screen = await render(message);
   await expect.element(screen.getByText("Cached text")).toBeVisible();
   expect(parsed).toHaveBeenCalledTimes(1);
+  const changed = vi.fn();
+  await screen.rerender(
+    <ChatMarkdown
+      cwd="/tmp/project"
+      text="Cached text"
+      extraRemarkPlugins={[() => () => void changed()]}
+    />,
+  );
+  expect(changed).toHaveBeenCalledTimes(1);
+});
+
+it("highlights a code block's own source when an earlier block of the same length was cached", async () => {
+  using _fixture = setup();
+  const highlightedText = (container: HTMLElement) =>
+    container.querySelector(".chat-markdown-shiki")?.textContent?.trim();
+  // These two lines share a 32-bit FNV-1a hash and a length.
+  const first = 'const commitSha = "f36a6d8fe0aa";';
+  const second = 'const commitSha = "cb06f8d135b3";';
+  // The block suspends until the shared highlighter loads, which can outlast vi.waitFor on a busy runner.
+  await getSyntaxHighlighterPromise("ts");
+  {
+    await using screen = await renderText(`\`\`\`ts\n${first}\n\`\`\``);
+    await vi.waitFor(() => expect(highlightedText(screen.container)).toBe(first));
+  }
+  await using screen = await renderText(`\`\`\`ts\n${second}\n\`\`\``);
+  await vi.waitFor(() => expect(highlightedText(screen.container)).toBe(second));
 });
 
 describe("ChatMarkdown shell identity", () => {
@@ -422,6 +531,23 @@ describe("ChatMarkdown favicon privacy", () => {
   });
 });
 
+describe("ChatMarkdown external link labels", () => {
+  it("keeps a leading emoji whole", async () => {
+    using _fixture = setup();
+    await using screen = await render(
+      <ChatMarkdown cwd="/tmp/project" text="[😀 Read the documentation](https://example.com)" />,
+    );
+    await vi.waitFor(() => {
+      const link = screen.container.querySelector("a");
+      expect(link?.textContent).toContain("😀 Read");
+      const walker = document.createTreeWalker(link!, NodeFilter.SHOW_TEXT);
+      const textNodes: string[] = [];
+      while (walker.nextNode()) textNodes.push(walker.currentNode.nodeValue ?? "");
+      expect(textNodes.filter((node) => /\p{Surrogate}/u.test(node))).toEqual([]);
+    });
+  });
+});
+
 describe("ChatMarkdown streaming", () => {
   it("runs only a complete single-line shell block after a click", async () => {
     using _fixture = setup();
@@ -553,7 +679,7 @@ describe("ChatMarkdown streaming", () => {
     const details = container.querySelector<HTMLElement>("[data-markdown-details]")!;
     expect(details.dataset.markdownDetailsOpen).toBe("true");
     expect(container.textContent).toContain("Details content");
-    expect(writeText).toHaveBeenCalledWith("First code block\n");
+    expect(writeText).toHaveBeenCalledWith("First code block");
     expect(highlight).toHaveBeenCalledTimes(1);
 
     for (let index = 0; index < 10; index += 1) {
@@ -577,7 +703,7 @@ describe("ChatMarkdown streaming", () => {
       ...buttonsLabelled(container, "Copy code"),
     ][0]!;
     await act(async () => copy.click());
-    expect(writeText).toHaveBeenLastCalledWith("Updated code block\n");
+    expect(writeText).toHaveBeenLastCalledWith("Updated code block");
     expect(highlight).toHaveBeenCalledTimes(2);
   });
 
@@ -617,7 +743,7 @@ describe("ChatMarkdown streaming", () => {
   ])(
     "unchecks the remaining %s task when the checked row above it is removed",
     async (_, onTaskListChange) => {
-      setup();
+      using _fixture = setup();
       const message = (text: string) => (
         <ChatMarkdown cwd="/tmp/project" text={text} onTaskListChange={onTaskListChange} />
       );
@@ -674,7 +800,7 @@ describe("ChatMarkdown workspace file opens", () => {
 
 describe("ChatMarkdown skill chips", () => {
   it("shows the skill's details and opens its instructions", async () => {
-    setup();
+    using _fixture = setup();
     const threadRef = {
       environmentId: EnvironmentId.make("workspace"),
       threadId: ThreadId.make("thread"),
@@ -703,7 +829,7 @@ describe("ChatMarkdown skill chips", () => {
   });
 
   it("names a mentioned model as its provider does, without a thread", async () => {
-    setup();
+    using _fixture = setup();
     await using screen = await renderText("Ask (model:codex/gpt-6.1), not model:openai/gpt-4o.", {
       environmentId: EnvironmentId.make("models"),
     });
@@ -717,6 +843,40 @@ describe("ChatMarkdown skill chips", () => {
 });
 
 describe("ChatMarkdown headings", () => {
+  it("keeps insight streaming, reference links, and heading anchors in one message", async () => {
+    using _fixture = setup();
+    const rule = "─".repeat(20);
+    const text = `## Setup\n\nBefore [source][src].\n\n★ Insight ${rule}\nA **streaming** note.`;
+    const message = (text: string, isStreaming: boolean) => (
+      <ChatMarkdown
+        cwd={undefined}
+        text={text}
+        renderInsights
+        lineBreaks
+        isStreaming={isStreaming}
+      />
+    );
+    await using screen = await render(message(text, true));
+    await expect.element(screen.getByRole("note")).toHaveTextContent("Insight A streaming note.");
+    await screen.rerender(
+      message(
+        `${text}\n${rule}\n\n## Setup\n\nAfter [source][src].\n\n[src]:\n  https://example.com`,
+        false,
+      ),
+    );
+    await expect.element(screen.getByRole("note")).toHaveTextContent("Insight A streaming note.");
+    expect([...screen.container.querySelectorAll("h2")].map((heading) => heading.id)).toEqual([
+      "user-content-setup",
+      "user-content-setup-1",
+    ]);
+    expect(
+      [...screen.container.querySelectorAll("a")].filter(
+        (link) => link.href === "https://example.com/",
+      ),
+    ).toHaveLength(2);
+    await expect.element(screen.getByRole("note")).not.toHaveTextContent("After");
+  });
+
   it("exposes headings below the host heading without changing their tags", async () => {
     using _fixture = setup();
     await using screen = await renderText("# Top\n\n## Section\n\n###### Fine print", {
@@ -757,24 +917,146 @@ describe("ChatMarkdown headings", () => {
 });
 
 describe("ChatMarkdown inline code selection", () => {
-  it("selects the whole inline code span on double-click, but only a word in fenced code", async () => {
-    setup();
+  it("selects only a word on double-click in inline and fenced code", async () => {
+    using _fixture = setup();
     await using screen = await renderText(
       "Run `migration-gate --dry-run` first.\n\n```txt\nfenced-block word\n```",
     );
-    await userEvent.dblClick(screen.getByText("migration-gate --dry-run"));
-    expect(window.getSelection()?.toString()).toBe("migration-gate --dry-run");
+    await userEvent.dblClick(screen.getByText("migration-gate --dry-run"), {
+      position: { x: 12, y: 8 },
+    });
+    expect(window.getSelection()?.toString()).toBe("migration");
 
     window.getSelection()?.removeAllRanges();
     const fenced = screen.container.querySelector("pre code")!;
     await userEvent.dblClick(fenced, { position: { x: 4, y: 4 } });
     expect(window.getSelection()?.toString()).toBe("fenced");
   });
+
+  it("selects the whole line on triple-click beside a favicon link or a file chip", async () => {
+    using _fixture = setup();
+    await using screen = await renderText(
+      "Before [docs](https://example.com/docs) after words\n\nBefore [App.tsx](/tmp/project/src/App.tsx) after words",
+    );
+    const tripleClickWord = async (paragraph: HTMLElement, word: string) => {
+      const text = [...paragraph.childNodes].find((node) => node.textContent?.includes(word))!;
+      const range = document.createRange();
+      range.setStart(text, text.textContent!.indexOf(word));
+      range.setEnd(text, text.textContent!.indexOf(word) + word.length);
+      const wordBox = range.getBoundingClientRect();
+      const paragraphBox = paragraph.getBoundingClientRect();
+      window.getSelection()?.removeAllRanges();
+      await userEvent.tripleClick(paragraph, {
+        position: {
+          x: wordBox.left - paragraphBox.left + wordBox.width / 2,
+          y: wordBox.top - paragraphBox.top + wordBox.height / 2,
+        },
+      });
+      return window.getSelection()?.toString().trim();
+    };
+
+    const paragraphs = screen.container.querySelectorAll("p");
+    expect(paragraphs).toHaveLength(2);
+    const selections = [];
+    const lines = [];
+    for (const paragraph of paragraphs) {
+      lines.push(paragraph.textContent?.trim(), paragraph.textContent?.trim());
+      selections.push(
+        await tripleClickWord(paragraph, "Before"),
+        await tripleClickWord(paragraph, "after"),
+      );
+    }
+    expect(selections).toEqual(lines);
+  });
+});
+
+describe("ChatMarkdown copy", () => {
+  it("copies a fully selected callout as alert Markdown and a partial one as text", async () => {
+    using _fixture = setup();
+    await using screen = await renderText("> [!WARNING]\n> Back up first.");
+    const [label, body] = screen.container.querySelectorAll('[role="note"] > p');
+    const select = (startNode: Node, endNode: Node, endOffset: number) => {
+      const range = document.createRange();
+      range.setStart(startNode, 0);
+      range.setEnd(endNode, endOffset);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return chatMarkdownClipboardPayload(selection)?.text;
+    };
+    const labelText = label!.lastChild!;
+    const bodyText = body!.firstChild!;
+
+    expect(select(labelText, bodyText, bodyText.textContent!.length)).toBe(
+      "> [!WARNING]\n> Back up first.",
+    );
+    expect(select(labelText, bodyText, "Back up".length)).toBe("Warning\n\nBack up");
+  });
+
+  it("copies part of inline code without prose escapes", async () => {
+    using _fixture = setup();
+    await using screen = await renderText("Read `items[0]*_x` and a*b*c.");
+    const code = screen.container.querySelector("p code")!.firstChild!;
+    const range = document.createRange();
+    range.setStart(code, 0);
+    range.setEnd(code, "items[0]*_".length);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    expect(chatMarkdownClipboardPayload(selection)?.text).toBe("items[0]*_");
+  });
+
+  it.each([
+    {
+      source: "10. First\n11. Second\n12. Third\n\nAfter.",
+      from: "Second",
+      text: "11. Second\n12. Third\n\nAfter.",
+    },
+    {
+      source: "1. A\n2. B\n7. C\n8. D\n\nAfter.",
+      from: "D",
+      userMessage: true,
+      text: "8. D\n\nAfter.",
+    },
+    {
+      source: "1. Outer\n2. Next\n   1. Inner\n   2. Deeper\n\nAfter.",
+      from: "Deeper",
+      text: "2. 2. Deeper\n\nAfter.",
+    },
+  ])(
+    "keeps the shown numbers when a copy starts at $from and ends past the list",
+    async ({ source, from, userMessage, text }) => {
+      using _fixture = setup();
+      await using screen = await renderText(
+        source,
+        userMessage ? { extraRemarkPlugins: SOURCE_NUMBER_PLUGINS } : {},
+      );
+      const start = [...screen.container.querySelectorAll("li")]
+        .flatMap((item) => [...item.childNodes])
+        .find((node) => node.nodeType === Node.TEXT_NODE && node.textContent === from)!;
+      const after = [...screen.container.querySelectorAll("p")].at(-1)!.firstChild!;
+      const range = document.createRange();
+      range.setStart(start, 0);
+      range.setEnd(after, after.textContent!.length);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const payload = chatMarkdownClipboardPayload(selection);
+      expect(payload?.text).toBe(text);
+      // Rich paste numbers its list from the same start.
+      expect(
+        new DOMParser()
+          .parseFromString(payload!.html, "text/html")
+          .querySelector("li")
+          ?.closest("ol")?.start,
+      ).toBe(Number(text.split(".")[0]));
+    },
+  );
 });
 
 describe("ChatMarkdown file chip tooltips", () => {
   it("wraps a long path so its file name stays inside the tooltip", async () => {
-    setup();
+    using _fixture = setup();
     const path =
       "/tmp/project/packages/client-runtime/src/state/generated/environment-connection-handshake-retry-policy-fixtures.ts";
     await using screen = await renderText(`See [the fixtures](${path}).`);
@@ -797,7 +1079,7 @@ describe("ChatMarkdown editor deep links", () => {
     [...container.querySelectorAll("a")].map((link) => link.getAttribute("href"));
 
   it("keeps local editor file links", async () => {
-    setup();
+    using _fixture = setup();
     await using screen = await renderText(
       "[file.md line 3](cursor://file/Users/me/repo/file.md:3) and [same](vscode://file/Users/me/repo/file.md:3:7)",
     );
@@ -808,7 +1090,7 @@ describe("ChatMarkdown editor deep links", () => {
   });
 
   it("still drops other editor links and unknown schemes", async () => {
-    setup();
+    using _fixture = setup();
     await using screen = await renderText(
       "[prompt](cursor://anysphere.cursor-deeplink/prompt?text=hi) [user](cursor://me@file/Users/me/file.md) [unknown](foo://file/Users/me/file.md)",
     );
@@ -892,6 +1174,22 @@ describe("ChatMarkdown Windows file links", () => {
   });
 });
 
+describe("ChatMarkdown host media", () => {
+  it("explains a host video the connection cannot read instead of offering a retry", async () => {
+    using _fixture = setup();
+    await using screen = await renderText("![Demo](/tmp/demo.mp4)", {
+      threadRef: {
+        environmentId: EnvironmentId.make(deniedEnvironmentId),
+        threadId: ThreadId.make("thread"),
+      },
+    });
+    await vi.waitFor(() =>
+      expect(screen.container.textContent).toContain(MISSING_FILE_ACCESS_MESSAGE),
+    );
+    expect(screen.container.textContent).not.toContain("Retry video");
+  });
+});
+
 describe("ChatMarkdown skill chips", () => {
   it("updates digit-leading skill labels when discovered skills change", async () => {
     using _fixture = setup();
@@ -941,13 +1239,14 @@ describe("ChatMarkdown file citations", () => {
 
   it("leaves an unfinished streaming citation visible until it is complete", async () => {
     using _fixture = setup();
-    await using screen = await renderText(
-      'Created :codex-file-citation{path="/tmp/project/outputs/report.xlsx"',
-      { isStreaming: true },
-    );
+    const incomplete = 'Created :codex-file-citation{path="/tmp/project/outputs/report.xlsx"';
+    await using screen = await renderText(incomplete, { isStreaming: true });
     const { container } = screen;
-    expect(container.textContent).toContain(":codex-file-citation");
+    expect(container.textContent).toContain(incomplete);
     expect(fileOptions(container)).toEqual([]);
+
+    await screen.rerender(<ChatMarkdown cwd="/tmp/project" text={incomplete + "}"} isStreaming />);
+    expect(fileOptions(container)).toEqual(["File options for report.xlsx"]);
   });
 
   it.each([

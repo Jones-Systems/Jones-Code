@@ -30,7 +30,10 @@ export class WorkspaceSearchIndex extends Context.Service<
     ) => Effect.Effect<ProjectSearchEntriesResult, WorkspaceSearchIndexSearchFailed>;
     readonly searchContents: (
       input: Omit<ProjectSearchContentsInput, "cwd">,
-    ) => Effect.Effect<ProjectSearchContentsResult, WorkspaceSearchIndexSearchFailed>;
+    ) => Effect.Effect<
+      ProjectSearchContentsResult,
+      WorkspaceSearchIndexSearchFailed | WorkspaceSearchIndexScanTimedOut
+    >;
     readonly refreshContent: () => Effect.Effect<
       void,
       WorkspaceSearchIndexRefreshFailed | WorkspaceSearchIndexScanTimedOut

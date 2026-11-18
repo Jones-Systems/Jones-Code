@@ -39,9 +39,11 @@ import * as Keybindings from "./keybindings.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
 import * as EffectOutbox from "./orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "./orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "./jones/orchestration/SupersededTerminalTrace.ts";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "./jones/testing/UnusedCorePorts.testkit.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
@@ -61,6 +63,7 @@ it.effect.each([
   "disabled-default",
   "launch-failure",
   "project-failure",
+  "project-refused",
   "existing-root",
   "subagent-only",
   "count-failure",
@@ -85,6 +88,7 @@ it.effect.each([
         settledOverride: null,
         settledAt: null,
         createdAt: DateTime.makeUnsafe("2026-10-01T00:00:00Z"),
+        updatedAt: DateTime.makeUnsafe("2026-10-01T00:00:00Z"),
         pinnedAt: null,
         pinOrderKey: null,
         deletedAt: null,
@@ -150,7 +154,9 @@ it.effect.each([
         Path.layer,
         Layer.succeed(SqlClient.SqlClient, sql),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({}),
+        Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
+        }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({}),
         Layer.mock(ServerConfig.ServerConfig)({
           ...(yield* ServerConfig.deriveServerPaths("/bootstrap-project", undefined).pipe(
@@ -198,13 +204,16 @@ it.effect.each([
           reconcile: () => Effect.succeed(recovery),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           recoverCodexFailover: Effect.void,
+          recoverSelfSettlements: Effect.void,
           recoverDelegatedTasks: Effect.void,
+          recoverRemoteTaskQuestions: Effect.void,
           recoverPlannedUpdateQueues: Effect.void,
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ shutdown: Effect.void }),
         Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({ start: () => Effect.void }),
-        Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.never }),
+        Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: () => Effect.never }),
         Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
           publish: (event) =>
             Effect.sync(() => {
@@ -243,24 +252,28 @@ it.effect.each([
           bootstrap: () =>
             scenario === "project-failure"
               ? Effect.die("project bootstrap failed")
-              : Effect.succeed({
-                  created: true,
-                  project: {
-                    id: projectId,
-                    title: "Project",
-                    workspaceRoot: "/bootstrap-project",
-                    repositoryIdentity: null,
-                    faviconPath: null,
-                    scripts: [],
-                    createdAt: "2026-01-01T00:00:00Z",
-                    updatedAt: "2026-01-01T00:00:00Z",
-                    deletedAt: null,
-                    defaultModelSelection:
-                      scenario === "disabled-default"
-                        ? { instanceId, model: "custom-model" }
-                        : null,
-                  },
-                }),
+              : scenario === "project-refused"
+                ? Effect.fail(
+                    new ProjectService.ProjectInvalidError({ projectId, detail: "refused folder" }),
+                  )
+                : Effect.succeed({
+                    created: true,
+                    project: {
+                      id: projectId,
+                      title: "Project",
+                      workspaceRoot: "/bootstrap-project",
+                      repositoryIdentity: null,
+                      faviconPath: null,
+                      scripts: [],
+                      createdAt: "2026-01-01T00:00:00Z",
+                      updatedAt: "2026-01-01T00:00:00Z",
+                      deletedAt: null,
+                      defaultModelSelection:
+                        scenario === "disabled-default"
+                          ? { instanceId, model: "custom-model" }
+                          : null,
+                    },
+                  }),
         }),
         Layer.mock(ThreadManagement.ThreadManagementService)({
           countThreads: () => Effect.succeed(0),
@@ -290,8 +303,9 @@ it.effect.each([
         }),
         Layer.mock(ServiceLauncherClient.ServiceLauncherClient)({
           managed: false,
+          protocol: undefined,
           requiresQualifiedTrialGate: false,
-          prepareTrial: Effect.undefined,
+          prepareTrial: () => Effect.undefined,
         }),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(AnalyticsService.AnalyticsService)({
@@ -326,13 +340,16 @@ it.effect.each([
         } else {
           assert.isDefined(welcome);
           if (welcome?.type === "welcome") {
-            assert.equal(welcome.payload.bootstrapProjectId, projectId);
+            assert.equal(
+              welcome.payload.bootstrapProjectId,
+              scenario === "project-refused" ? undefined : projectId,
+            );
             if (scenario === "existing-root")
               assert.equal(welcome.payload.bootstrapThreadId, existingId);
             else assert.isUndefined(welcome.payload.bootstrapThreadId);
           }
         }
-        if (scenario !== "project-failure") {
+        if (scenario !== "project-failure" && scenario !== "project-refused") {
           assert.deepEqual(queries, [{ projectId, location: "active" }]);
           assert.equal(launchCalls, scenario === "existing-root" ? 0 : 1);
           const counts = yield* Deferred.await(heartbeat);
@@ -350,66 +367,60 @@ it.effect.each([
 );
 
 it.effect("interrupts the effect worker when awareness relay startup fails", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const workerInterrupted = yield* Ref.make(false);
-      const workerFiberRef = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
+  Effect.gen(function* () {
+    const workerInterrupted = yield* Ref.make(false);
+    const workerFiberRef = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
 
-      const exit = yield* ServerRuntimeStartup.startEffectWorkerWithRelay({
-        runWorker: Effect.never.pipe(Effect.ensuring(Ref.set(workerInterrupted, true))),
-        startRelay: Effect.yieldNow.pipe(
-          Effect.andThen(Effect.die("awareness relay startup failed")),
-        ),
-        workerFiberRef,
-      }).pipe(Effect.exit);
+    const exit = yield* ServerRuntimeStartup.startEffectWorkerWithRelay({
+      runWorker: Effect.never.pipe(Effect.ensuring(Ref.set(workerInterrupted, true))),
+      startRelay: Effect.yieldNow.pipe(
+        Effect.andThen(Effect.die("awareness relay startup failed")),
+      ),
+      workerFiberRef,
+    }).pipe(Effect.exit);
 
-      assert.isTrue(Exit.isFailure(exit));
-      assert.isTrue(yield* Ref.get(workerInterrupted));
-      assert.isNull(yield* Ref.get(workerFiberRef));
-    }),
-  ),
+    assert.isTrue(Exit.isFailure(exit));
+    assert.isTrue(yield* Ref.get(workerInterrupted));
+    assert.isNull(yield* Ref.get(workerFiberRef));
+  }),
 );
 
 it.effect("queues commands until startup signals readiness", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const gate = yield* ServerRuntimeStartup.makeCommandGate;
-      const count = yield* Ref.make(0);
-      const queued = yield* gate
-        .enqueueCommand(Ref.updateAndGet(count, (value) => value + 1))
-        .pipe(Effect.forkScoped);
+  Effect.gen(function* () {
+    const gate = yield* ServerRuntimeStartup.makeCommandGate;
+    const count = yield* Ref.make(0);
+    const queued = yield* gate
+      .enqueueCommand(Ref.updateAndGet(count, (value) => value + 1))
+      .pipe(Effect.forkScoped);
 
-      yield* Effect.yieldNow;
-      assert.equal(yield* Ref.get(count), 0);
-      yield* gate.signalCommandReady;
-      assert.equal(yield* Fiber.join(queued), 1);
-    }),
-  ),
+    yield* Effect.yieldNow;
+    assert.equal(yield* Ref.get(count), 0);
+    yield* gate.signalCommandReady;
+    assert.equal(yield* Fiber.join(queued), 1);
+  }),
 );
 
 it.effect("enqueueCommand fails queued work when readiness fails", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const commandGate = yield* ServerRuntimeStartup.makeCommandGate;
-      const failure = yield* Deferred.make<void, never>();
+  Effect.gen(function* () {
+    const commandGate = yield* ServerRuntimeStartup.makeCommandGate;
+    const failure = yield* Deferred.make<void, never>();
 
-      const queuedCommandFiber = yield* commandGate
-        .enqueueCommand(Deferred.await(failure).pipe(Effect.as("should-not-run")))
-        .pipe(Effect.forkScoped);
+    const queuedCommandFiber = yield* commandGate
+      .enqueueCommand(Deferred.await(failure).pipe(Effect.as("should-not-run")))
+      .pipe(Effect.forkScoped);
 
-      yield* commandGate.failCommandReady(
-        new ServerRuntimeStartup.ServerRuntimeStartupError({
-          mode: "web",
-          host: "127.0.0.1",
-          port: 3773,
-          cause: new Error("test startup failure"),
-        }),
-      );
+    yield* commandGate.failCommandReady(
+      new ServerRuntimeStartup.ServerRuntimeStartupError({
+        mode: "web",
+        host: "127.0.0.1",
+        port: 3773,
+        cause: new Error("test startup failure"),
+      }),
+    );
 
-      const error = yield* Effect.flip(Fiber.join(queuedCommandFiber));
-      assert.equal(error.message, "Server runtime startup failed before command readiness.");
-    }),
-  ),
+    const error = yield* Effect.flip(Fiber.join(queuedCommandFiber));
+    assert.equal(error.message, "Server runtime startup failed before command readiness.");
+  }),
 );
 
 it.effect("automatic pull only updates enabled, behind, clean default-branch checkouts", () =>
@@ -494,7 +505,10 @@ it.effect("holds recovery, activation and queued commands before the trial grant
         importLegacyShells: record("legacy"),
         recover: record("provider"),
         recoverCodexFailover: record("codex-failover"),
+        recoverSelfSettlements: record("self-settlements"),
         recoverDelegatedTasks: record("delegated"),
+        recoverRemoteTaskQuestions: record("remote-questions"),
+        recoverPlannedUpdateQueues: record("planned-queues"),
         startEffectWorker: record("worker"),
         autoBootstrap: record("bootstrap"),
       }).pipe(
@@ -512,7 +526,10 @@ it.effect("holds recovery, activation and queued commands before the trial grant
         "legacy",
         "provider",
         "codex-failover",
+        "self-settlements",
         "delegated",
+        "remote-questions",
+        "planned-queues",
         "worker",
         "bootstrap",
         "activation",
@@ -539,7 +556,11 @@ it.effect("a failed native trial fails readiness and leaves every recovery step 
         awaitTrialCommit: Effect.fail(failure),
         importLegacyShells: record,
         recover: record,
+        recoverCodexFailover: record,
+        recoverSelfSettlements: record,
         recoverDelegatedTasks: record,
+        recoverRemoteTaskQuestions: record,
+        recoverPlannedUpdateQueues: record,
         startEffectWorker: record,
         autoBootstrap: record,
       }).pipe(
@@ -584,4 +605,61 @@ it.effect(
       });
       assert.deepEqual(yield* Ref.get(calls), ["prepare", "cleanup", "reconcile"]);
     }),
+);
+
+it.effect.each([
+  "trial",
+  "legacy",
+  "provider",
+  "failover",
+  "self-settlements",
+  "delegated",
+  "remote-questions",
+  "planned-queues",
+] as const)("does not start workers or bootstrap when %s recovery fails", (failedPhase) =>
+  Effect.gen(function* () {
+    const phases: string[] = [];
+    const phase = (name: string) =>
+      Effect.sync(() => {
+        phases.push(name);
+      }).pipe(Effect.andThen(name === failedPhase ? Effect.fail(failedPhase) : Effect.void));
+    const result = yield* ServerRuntimeStartup.runOrderedV2StartupPhases({
+      awaitTrialCommit: phase("trial"),
+      importLegacyShells: phase("legacy"),
+      recover: phase("provider"),
+      recoverCodexFailover: phase("failover"),
+      recoverSelfSettlements: phase("self-settlements"),
+      recoverDelegatedTasks: phase("delegated"),
+      recoverRemoteTaskQuestions: phase("remote-questions"),
+      recoverPlannedUpdateQueues: phase("planned-queues"),
+      startEffectWorker: phase("worker"),
+      autoBootstrap: phase("bootstrap"),
+    }).pipe(Effect.result);
+    assert.equal(result._tag, "Failure");
+    assert.deepEqual(
+      phases,
+      [
+        "trial",
+        "legacy",
+        "provider",
+        "failover",
+        "self-settlements",
+        "delegated",
+        "remote-questions",
+        "planned-queues",
+      ].slice(
+        0,
+        [
+          "trial",
+          "legacy",
+          "provider",
+          "failover",
+          "self-settlements",
+          "delegated",
+          "remote-questions",
+          "planned-queues",
+        ].indexOf(failedPhase) + 1,
+      ),
+    );
+  }),
 );

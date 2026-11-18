@@ -9,8 +9,8 @@ const { DatabaseSync } = require("node:sqlite");
 const { isSea } = require("node:sea");
 
 assert.equal(isSea(), true);
-assert.equal(process.versions.node, "26.12.1");
-assert.equal(process.versions.sqlite, "3.54.0");
+assert.equal(process.versions.node, "26.13.1");
+assert.equal(process.versions.sqlite, "3.54.1");
 const identity = {
   node: process.versions.node,
   sqlite: process.versions.sqlite,

@@ -139,7 +139,8 @@ describe("listRefs span telemetry", () => {
         expect(hit).toMatchObject({
           "vcs.list_refs.refresh": false,
           "vcs.list_refs.snapshot": "hit",
-          "vcs.list_refs.git_commands": 0,
+          // A cached snapshot still reads this checkout's current branch once.
+          "vcs.list_refs.git_commands": 1,
           "vcs.list_refs.git_execution_ms": 0,
         });
         expect(refresh).toMatchObject({

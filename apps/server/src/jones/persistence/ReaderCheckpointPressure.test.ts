@@ -28,7 +28,12 @@ import { readerPoolOptions } from "../serverParallelism/persistenceOptions.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 
 const workers = vi.hoisted(
-  (): Array<{ worker: NodeWorkerThreads.Worker; checkpoint: boolean; filename: string }> => [],
+  (): Array<{
+    worker: NodeWorkerThreads.Worker;
+    checkpoint: boolean;
+    reader: boolean;
+    filename: string;
+  }> => [],
 );
 
 vi.mock("node:worker_threads", async (importOriginal) => {
@@ -41,6 +46,7 @@ vi.mock("node:worker_threads", async (importOriginal) => {
         worker: this,
         filename: data?.filename,
         checkpoint: typeof data?.backpressureFrames === "number",
+        reader: data?.requireWal === true && data?.readOnly === true,
       });
     }
   }
@@ -130,7 +136,7 @@ it.effect.each([128, 32] as const)(
         );
         assert.deepEqual(yield* count, [{ count: 1 }]);
         const readers = () =>
-          workers.filter((entry) => entry.filename === filename && !entry.checkpoint);
+          workers.filter((entry) => entry.filename === filename && entry.reader);
         assert.lengthOf(readers(), 1, "the baseline must use a pooled worker");
         const reader = yield* Effect.acquireRelease(
           Effect.sync(() => new NodeSqlite.DatabaseSync(filename, { readOnly: true })),

@@ -1,3 +1,11 @@
+import * as Outbox from "./EffectOutbox.ts";
+import * as Receipts from "./CommandReceiptStore.ts";
+import * as EventSink from "./EventSink.ts";
+import * as StartRefusals from "../jones/startRefusal/Store.ts";
+import {
+  makeUnreleasedStartProof,
+  makeUnsentStartProof,
+} from "../jones/provider/UnsentStartProof.ts";
 import {
   executionProjection,
   executionWorkspace,
@@ -78,6 +86,10 @@ export const layer: Layer.Layer<
   ProviderSwitchServiceV2,
   Effect.gen(function* () {
     const adapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
+    const outbox = yield* Effect.serviceOption(Outbox.EffectOutboxV2);
+    const receipts = yield* Effect.serviceOption(Receipts.CommandReceiptStoreV2);
+    const sink = yield* Effect.serviceOption(EventSink.EventSinkV2);
+    const refusals = yield* Effect.serviceOption(StartRefusals.StartRefusals);
     return ProviderSwitchServiceV2.of({
       plan: Effect.fn("ProviderSwitchService.plan")(
         function* ({ projection, targetModelSelection, beforeStartEvidence, rebindPreparing }) {
@@ -137,6 +149,41 @@ export const layer: Layer.Layer<
                   thread.ownerNodeId === null &&
                   thread.providerInstanceId === current.instanceId,
               )?.driver ?? currentSessions[0]?.driver);
+          const certifiedUnsent = new Set<string>();
+          if (
+            beforeStartEvidence !== undefined &&
+            Option.isSome(outbox) &&
+            Option.isSome(receipts) &&
+            Option.isSome(sink) &&
+            Option.isSome(refusals)
+          ) {
+            const proveUnsent = makeUnsentStartProof({
+              outbox: outbox.value,
+              receipts: receipts.value,
+              sink: sink.value,
+              refusals: refusals.value,
+            });
+            const readBirth = sink.value.readUnreleasedStartBirth;
+            const proveUnreleased =
+              rebindPreparing === true &&
+              beforeStartEvidence.runs.some((run) => run.status === "preparing") &&
+              readBirth !== undefined
+                ? makeUnreleasedStartProof({
+                    outbox: outbox.value,
+                    refusals: refusals.value,
+                    readBirth,
+                  })
+                : undefined;
+            for (const run of beforeStartEvidence.runs) {
+              if (run.activeAttemptId === null) continue;
+              const proved =
+                run.status === "preparing" || run.status === "queued"
+                  ? proveUnreleased !== undefined &&
+                    (yield* proveUnreleased(run, beforeStartEvidence.attempts))
+                  : yield* proveUnsent(run, beforeStartEvidence.attempts);
+              if (proved) certifiedUnsent.add(run.activeAttemptId);
+            }
+          }
           const rebindPendingProviderThread =
             instanceChanged &&
             Option.isSome(currentInstance) &&
@@ -144,11 +191,15 @@ export const layer: Layer.Layer<
             currentInstance.value.driver === targetInstance.value.driver &&
             targetInstance.value.enabled
               ? ((currentInstance.value.driver === "codex"
-                  ? interruptedPendingProviderThread(projection, beforeStartEvidence)
+                  ? interruptedPendingProviderThread(
+                      projection,
+                      beforeStartEvidence,
+                      certifiedUnsent,
+                    )
                   : undefined) ??
                 (rebindPreparing === true &&
                 beforeStartEvidence?.providerThreads[0]?.driver === targetInstance.value.driver
-                  ? preparingPendingProviderThread(projection, beforeStartEvidence)
+                  ? preparingPendingProviderThread(projection, beforeStartEvidence, certifiedUnsent)
                   : undefined))
               : undefined;
           const hasCurrentHistory =
@@ -205,12 +256,24 @@ export const layer: Layer.Layer<
             Option.isSome(targetAdapter) &&
             Option.isSome(currentInstance) &&
             (currentSession !== undefined || currentProviderThread !== undefined)
-              ? yield* targetAdapter.value.planSelectionTransition({
-                  current,
-                  target: targetModelSelection,
-                  sessionCapabilities: negotiatedCapabilities ?? currentInstance.value.capabilities,
-                })
+              ? negotiatedCapabilities === undefined &&
+                modelSelectionsEqual(
+                  { ...current, model: targetModelSelection.model },
+                  targetModelSelection,
+                )
+                ? // A detached session can apply a model-only change when it opens.
+                  ({ type: "apply_on_next_turn" } as const)
+                : yield* targetAdapter.value.planSelectionTransition({
+                    current,
+                    target: targetModelSelection,
+                    sessionCapabilities:
+                      negotiatedCapabilities ?? currentInstance.value.capabilities,
+                  })
               : undefined;
+          // A selection change keeps the thread where it is. A shared session's cwd is the
+          // workspace of whichever thread opened it, not a move of this thread.
+          const workspace =
+            projection.thread.worktreePath ?? currentSession?.cwd ?? "<unresolved-workspace>";
           const transition =
             Option.isNone(targetInstance) || Option.isNone(targetAdapter)
               ? ({
@@ -245,10 +308,7 @@ export const layer: Layer.Layer<
                     modelSelection: targetModelSelection,
                     runtimeMode: projection.thread.runtimeMode,
                     interactionMode: projection.thread.interactionMode,
-                    workspace:
-                      projection.thread.worktreePath ??
-                      currentSession?.cwd ??
-                      "<unresolved-workspace>",
+                    workspace,
                     available: targetInstance.value.enabled,
                   },
                   ...(selectionTransition === undefined ? {} : { selectionTransition }),

@@ -1,7 +1,6 @@
-import * as Option from "effect/Option";
-import * as ThreadSelfConfiguration from "../../../jones/threadConfiguration/ThreadSelfConfiguration.ts";
-import * as Invocation from "../../McpInvocationContext.ts";
 import { toMcpFailure } from "../../../jones/threadConfiguration/tools.ts";
+import * as JonesPinPlacement from "../../../jones/mcp/pinPlacement/pinPlacement.ts";
+import * as SelfSettlementCaller from "../../../jones/mcp/SelfSettlementCaller.ts";
 import {
   type CommandId,
   type RuntimeRequestId,
@@ -12,7 +11,11 @@ import {
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as ThreadSelfConfiguration from "../../../jones/threadConfiguration/ThreadSelfConfiguration.ts";
+import type { ProjectionRecordField } from "../../../orchestration-v2/ProjectionStore.ts";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
+import { topOfPinnedRunOrderKey } from "@t3tools/shared/pinOrderKey";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -20,11 +23,10 @@ import {
   dispatchFailure,
   newCommandId,
   readCaller,
-  readMessageWritableThread,
   readThread,
   unavailable,
 } from "../../threadAccess.ts";
-import * as JonesPinPlacement from "../../../jones/mcp/pinPlacement/pinPlacement.ts";
+import type * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
@@ -45,6 +47,24 @@ function queueEntry(
     truncated: characters.length > limit,
   };
 }
+// Jones content guard stays local while threadAccess follows the upstream read API.
+const readMessageWritableThread = Effect.fn("mcp.readMessageWritableThread")(function* <
+  K extends ProjectionRecordField = never,
+>(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
+  const context = yield* readThread(threadId, fields);
+  if (
+    (context.scope.client?.linked === true ||
+      (context.caller !== undefined && context.caller.id !== context.projection.thread.id)) &&
+    context.projection.thread.threadMessagesBlocked === true
+  ) {
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: `Thread ${context.projection.thread.id} is blocking messages from other threads.`,
+    });
+  }
+  return context;
+});
+
 const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
   threadId: ThreadId | undefined,
   command: (common: { commandId: CommandId; threadId: ThreadId }) => OrchestrationV2Command,
@@ -62,6 +82,20 @@ const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
     )
     .pipe(Effect.mapError(dispatchFailure));
   return { sequence: result.sequence };
+});
+
+/**
+ * Places an agent pin at the top of the Pinned section, as a client pin is placed.
+ * Without a key the sidebar sorts the pin below every keyed pin. Ordering is
+ * best effort: if the index cannot be read, the pin still lands, keyless.
+ */
+const topOfPinnedRunKey = Effect.fn("mcp.topOfPinnedRunKey")(function* (
+  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "listActiveShellIndex">,
+) {
+  const index = yield* threads.listActiveShellIndex().pipe(Effect.orElseSucceed(() => null));
+  if (index === null) return undefined;
+  const pinnedKeys = index.flatMap((entry) => (entry.pinnedAt == null ? [] : [entry.pinOrderKey]));
+  return topOfPinnedRunOrderKey(pinnedKeys) ?? undefined;
 });
 
 const readQuestion = Effect.fn("mcp.readQuestion")(function* (
@@ -137,6 +171,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
               link: McpInvocationContext.threadLinkFor(scope, threadId),
             }),
         lastRunStatus: task.lastRunStatus,
+        lastRunError: task.lastRunError,
         runCount: task.runCount,
         nextRunAt: task.nextRunAt,
       };
@@ -151,6 +186,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         .searchThreads({ ...input, projectId: input.projectId ?? caller?.projectId })
         .pipe(Effect.mapError(unavailable));
       return {
+        currentThreadId: scope.thread?.threadId ?? null,
         matches: matches.map((match) => ({
           ...match,
           link: McpInvocationContext.threadLinkFor(scope, match.threadId, match.title),
@@ -234,7 +270,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           ...(Option.isNone(configuration)
             ? {}
             : yield* configuration.value
-                .read(thread.id, yield* Invocation.McpInvocationContext)
+                .read(thread.id, yield* McpInvocationContext.McpInvocationContext)
                 .pipe(Effect.mapError(toMcpFailure))),
         };
       }),
@@ -246,7 +282,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           threads,
           projection: { thread },
         } = yield* readThread(input.threadId);
-        const scope = yield* Invocation.McpInvocationContext;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
         if (scope.thread?.threadId === thread.id)
           return yield* new OrchestratorMcpFailure({
             code: "invalid_request",
@@ -307,7 +343,16 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     (input) => input.action === "list" || input.action === "read",
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
-        const { projection } = yield* readThread(input.threadId, ["runs", "messages"]);
+        const { threads, projection: queued } = yield* readThread(input.threadId, ["runs"], {
+          runStatuses: ["queued"],
+        });
+        const messages = yield* threads
+          .getMessagesById(
+            queued.thread.id,
+            queued.runs.map((run) => run.userMessageId),
+          )
+          .pipe(Effect.mapError(unavailable));
+        const projection = { runs: queued.runs, messages: [...messages.values()] };
         if (input.action === "list") {
           const runs = queuedRunsInDeliveryOrder(projection);
           const cursor = input.cursor ?? 0;
@@ -400,18 +445,23 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     Effect.gen(function* () {
       const { threads, projection, caller } = yield* readThread(input.threadId);
       if (input.placement !== undefined) {
-        const { action, placement } = input;
         return yield* JonesPinPlacement.pinWithPlacement({
           threads,
-          action,
-          placement,
+          action: input.action,
+          placement: input.placement,
           target: projection.thread,
         });
       }
       const common = { commandId: yield* newCommandId(), threadId: projection.thread.id };
       if (input.action === "settle") {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const selfSettlementCaller = SelfSettlementCaller.capture(scope, projection.thread.id);
         return yield* threads
-          .settleThread({ ...common, byOwnAgent: caller?.id === projection.thread.id })
+          .settleThread({
+            ...common,
+            byOwnAgent: caller?.id === projection.thread.id,
+            ...(selfSettlementCaller === undefined ? {} : { selfSettlementCaller }),
+          })
           .pipe(Effect.mapError(dispatchFailure));
       }
       let command: OrchestrationV2Command;
@@ -432,6 +482,14 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         case "mark_unread":
           command = { ...common, type: "thread.mark-unread" };
           break;
+        case "pin": {
+          // Always send a key, as the client does: the reducer ignores it for a
+          // thread that is already pinned, and a projection read before this
+          // command can be stale if an unpin commits in between.
+          const orderKey = yield* topOfPinnedRunKey(threads);
+          command = { ...common, type: "thread.pin", ...(orderKey ? { orderKey } : {}) };
+          break;
+        }
         default:
           command = { ...common, type: `thread.${input.action}` };
       }

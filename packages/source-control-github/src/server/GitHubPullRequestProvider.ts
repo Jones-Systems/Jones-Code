@@ -63,6 +63,7 @@ const CAPABILITIES: PullRequestCapabilities = {
   // Statuses and check runs land on the head commit itself and are read whole, so an empty list
   // after a push is CI that never started rather than a read that saw nothing.
   checksAlwaysReport: true,
+  withheldFileDiff: true,
 };
 
 const UNAVAILABLE_REQUIREMENT = {
@@ -187,6 +188,9 @@ function withAvatar(
   return avatarUrl === null ? actor : { ...actor, avatarUrl };
 }
 
+const workflowRunIdOf = (url: string | null) =>
+  url?.match(/\/actions\/runs\/(\d+)(?:\/|$)/)?.[1] ?? null;
+
 function withWorkflowApprovals(
   checks: ReadonlyArray<PullRequestCheck>,
   runs: ReadonlyArray<GitHubWorkflowRunApproval>,
@@ -195,8 +199,8 @@ function withWorkflowApprovals(
   const representedRunIds = new Set<number>();
   for (const check of checks) {
     if (check.status !== "action-required" || check.url === null) continue;
-    const id = check.url.match(/\/actions\/runs\/(\d+)(?:\/|$)/)?.[1];
-    if (id !== undefined) representedRunIds.add(Number(id));
+    const id = workflowRunIdOf(check.url);
+    if (id !== null) representedRunIds.add(Number(id));
   }
   const approvalChecks = runs
     .filter((run) => !representedRunIds.has(run.id))
@@ -220,6 +224,30 @@ function withWorkflowApprovals(
           },
         ]
       : []),
+  ];
+}
+
+// GitHub adds a run's check runs only as its jobs start, so a queued run can have none yet.
+function withUnfinishedWorkflowRuns(
+  checks: ReadonlyArray<PullRequestCheck>,
+  runs: ReadonlyArray<GitHubWorkflowRunApproval>,
+): ReadonlyArray<PullRequestCheck> {
+  const runningRunIds = new Set<number>();
+  for (const check of checks) {
+    if (check.status !== "pending" && check.status !== "action-required") continue;
+    const id = workflowRunIdOf(check.url);
+    if (id !== null) runningRunIds.add(Number(id));
+  }
+  return [
+    ...checks,
+    ...runs
+      .filter((run) => !runningRunIds.has(run.id))
+      .map((run): PullRequestCheck => ({
+        name: run.name,
+        status: "pending",
+        description: "This workflow run has not finished.",
+        url: run.url,
+      })),
   ];
 }
 
@@ -337,6 +365,7 @@ export const make = Effect.gen(function* () {
         ): Effect.Effect<
           GitHubPullRequestCore & {
             readonly jonesCheckObservation?: PullRequestCheckObservation | undefined;
+            readonly unfinishedWorkflowRuns?: ReadonlyArray<GitHubWorkflowRunApproval>;
           },
           GitHubPullRequestApi.GitHubPullRequestApiError
         > =>
@@ -352,7 +381,7 @@ export const make = Effect.gen(function* () {
                 })
                 .pipe(Effect.map((observation) => ({ ...pullRequest, ...observation }))),
       ),
-      Effect.flatMap((pullRequest) =>
+      Effect.flatMap(({ unfinishedWorkflowRuns, ...pullRequest }) =>
         (pullRequest.state !== "open" || pullRequest.isCrossRepository !== true
           ? Effect.succeed({
               runs: [] as ReadonlyArray<GitHubWorkflowRunApproval>,
@@ -385,11 +414,26 @@ export const make = Effect.gen(function* () {
                   }),
                 )
         ).pipe(
-          Effect.map((workflowApprovals) => ({
+          Effect.zip(
+            unfinishedWorkflowRuns !== undefined ||
+              pullRequest.state !== "open" ||
+              pullRequest.headSha == null
+              ? Effect.succeed(unfinishedWorkflowRuns ?? [])
+              : cli.listUnfinishedWorkflowRuns({ ...input, headSha: pullRequest.headSha }).pipe(
+                  Effect.catchIf(
+                    (error) =>
+                      error._tag !== "GitHubApiRateLimitError" &&
+                      error._tag !== "SourceControlRateLimitPausedError",
+                    () => Effect.succeed([] as ReadonlyArray<GitHubWorkflowRunApproval>),
+                  ),
+                ),
+            { concurrent: true },
+          ),
+          Effect.map(([workflowApprovals, unfinishedRuns]) => ({
             ...pullRequest,
             author: withAvatar(pullRequest.author, new Map(), input.host),
             checks: withWorkflowApprovals(
-              pullRequest.checks,
+              withUnfinishedWorkflowRuns(pullRequest.checks, unfinishedRuns),
               workflowApprovals.runs,
               workflowApprovals.unavailable,
             ),
@@ -406,6 +450,7 @@ export const make = Effect.gen(function* () {
     capabilities: CAPABILITIES,
     unavailableRequirement: UNAVAILABLE_REQUIREMENT,
     readsPublicHostWithoutCheckout: true,
+    batchesReads: true,
     mergeMessageRewrite: removeAgentCredits,
     getRoutingIdentity: (input) =>
       cli.getRoutingIdentity(input).pipe(Effect.mapError(fail("routeIdentity"))),
@@ -500,6 +545,8 @@ export const make = Effect.gen(function* () {
         .getPullRequestWatchFingerprint(input)
         .pipe(Effect.mapError(fail("getChangeRequestWatchFingerprint"))),
 
+    changeRequestEvents: (input) => cli.pullRequestEvents(input),
+
     getChangeRequestPreview: (input) =>
       cli.getPullRequestPreview(input).pipe(Effect.mapError(fail("getChangeRequestPreview"))),
 
@@ -547,12 +594,14 @@ export const make = Effect.gen(function* () {
         Effect.mapError(fail("getChangeRequest")),
       ),
 
-    getChangeRequestActivity: (input) =>
-      Effect.all(
-        [
-          cli.getPullRequestActivity(input),
-          cli.listReviewThreadComments(input).pipe(
-            Effect.orElseSucceed(() => ({
+    getChangeRequestActivity: (input) => {
+      const threadRead = cli.listReviewThreadComments(input).pipe(
+        Effect.catchIf(
+          (error) =>
+            error._tag !== "GitHubApiRateLimitError" &&
+            error._tag !== "SourceControlRateLimitPausedError",
+          () =>
+            Effect.succeed({
               comments: [],
               dismissalsByReviewId: new Map<string, string>(),
               reactions: [],
@@ -567,11 +616,12 @@ export const make = Effect.gen(function* () {
               botLogins: new Set<string>(),
               commits: [],
               viewer: { canUpdate: true, didAuthor: false },
-            })),
-          ),
-        ],
-        { concurrency: 2 },
-      ).pipe(
+            }),
+        ),
+      );
+      return Effect.all([cli.getPullRequestActivity(input), threadRead], {
+        concurrency: 2,
+      }).pipe(
         Effect.mapError(fail("getChangeRequestActivity")),
         Effect.map(([pullRequest, reviewThreads]): ProviderChangeRequestActivity => {
           const commitStats = new Map(
@@ -626,7 +676,7 @@ export const make = Effect.gen(function* () {
               }))
               .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt)),
             commentCount: pullRequest.comments.length + reviewThreads.commentCount,
-            commentsTruncated: reviewThreads.truncated,
+            commentsTruncated: pullRequest.truncated || reviewThreads.truncated,
             reviewThreadsTruncated: reviewThreads.reviewThreadsTruncated,
             reviewThreads: reviewThreads.reviewThreads.map((thread) => ({
               ...thread,
@@ -642,7 +692,8 @@ export const make = Effect.gen(function* () {
             })),
           };
         }),
-      ),
+      );
+    },
 
     getReviewThreadComments: (input) =>
       cli.getReviewThreadComments(input).pipe(Effect.mapError(fail("getReviewThreadComments"))),

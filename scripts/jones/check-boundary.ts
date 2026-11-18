@@ -106,13 +106,14 @@ function object(value: unknown, keys: string[]): Record<string, unknown> {
     throw new Error(`Expected exactly: ${keys.join(", ")}`);
   return record;
 }
+// Repository names are literal POSIX paths, never shell arguments, globs or URL paths.
 export function safePath(value: unknown, directory = false): string {
   if (
     typeof value !== "string" ||
     !value ||
     value.startsWith("-") ||
     value.includes("\\") ||
-    /[\x00-\x1f\x7f:*?#[\]{}]/.test(value) ||
+    /[\x00-\x1f\x7f:]/.test(value) ||
     NodePath.posix.isAbsolute(value)
   )
     throw new Error(`Unsafe repository path: ${String(value)}`);
@@ -133,6 +134,8 @@ function paths(value: unknown, directory = false): string[] {
 function ownedPaths(value: unknown): string[] {
   const result = paths(value, true);
   for (const entry of result) {
+    // Ownership declarations have no glob syntax; keep ambiguous patterns out of exemptions.
+    if (/[*?#[\]{}]/.test(entry)) throw new Error(`Unsafe ownership path: ${entry}`);
     if (
       entry.endsWith("/") &&
       !/^(?:apps\/[^/]+\/src\/(?:jones\/[^/]+|(?:components\/)?[^/]+)|packages\/[^/]+\/src\/(?:jones\/[^/]+|[^/]+)|scripts\/jones|apps\/desktop\/scripts\/ui-evidence)\/$/.test(
@@ -549,7 +552,7 @@ function git(root: string, args: string[]): string {
 export function boundaryExit(strict: boolean, violations: readonly Violation[]): number {
   return strict && violations.length ? 1 : 0;
 }
-function regularPath(root: string, name: string): string {
+export function regularPath(root: string, name: string): string {
   safePath(name);
   let full = root;
   for (const part of name.split("/")) {
@@ -610,8 +613,7 @@ export function runCli(args: string[]): number {
   const tree = new Map<string, string>();
   for (const name of new Set(files)) {
     if (!/^(?:apps|packages|scripts)\//.test(name) && !requiredSnapshots.has(name)) continue;
-    // Non-source files (such as Astro `[...locale]` routes) are never read, so only scanned names
-    // need the safe-path check.
+    // Scan only source, package metadata and explicitly bound resolution anchors.
     if (
       !sourcePattern.test(name) &&
       !/^(?:(?:apps|packages)\/[^/]+|apps\/mobile\/modules\/[^/]+)\/package\.json$/.test(name) &&
@@ -632,6 +634,7 @@ export function runCli(args: string[]): number {
   }
   // Presence, including non-source tombstones, is independent of import scanning.
   for (const name of files) {
+    safePath(name);
     if (tree.has(name)) continue;
     try {
       NodeFS.lstatSync(NodePath.join(root, name));

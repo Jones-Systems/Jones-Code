@@ -10,7 +10,7 @@ import * as NodeURL from "node:url";
 import * as NodeReadline from "node:readline";
 import * as NodeTimersPromises from "node:timers/promises";
 import { expect, it } from "vite-plus/test";
-import { runNativeQualification } from "./nativeQualification.ts";
+import { runNativeQualification, withNativeSearchProbePort } from "./nativeQualification.ts";
 import { minimalWorkerEnvironment } from "../serverCompute/workerCommand.ts";
 import { proveAbsent, GenerationJournal } from "../serverCompute/journal.ts";
 import { ComputeSupervisor } from "../serverCompute/supervisor.ts";
@@ -52,32 +52,39 @@ const writeNativeCaseReport = async (
 const manifestPath = process.env.JONES_SP_COMMAND_MANIFEST;
 const parentLossCount = process.env.JONES_SP_PROFILE === "vps" ? 3 : 2;
 // Missing packaging inputs are an explicit skip/unknown, never passing evidence.
-const native = it.skipIf(!manifestPath);
+const native = (
+  title: string,
+  run: (probes: import("../serverCompute/searchProbeBinding.ts").SearchProbePort) => Promise<void>,
+  timeout?: number,
+) => it.skipIf(!manifestPath)(title, () => withNativeSearchProbePort(run), timeout);
 for (const count of [2, 3] as const)
   native(
     `real native ${count}-way combined load and whole-cohort retirement`,
-    async () => {
+    async (probes) => {
       const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
       const scratch = await NodeFSP.realpath(
         await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-native-test-")),
       );
       let retired = false;
       try {
-        const report = await runNativeQualification({
-          count,
-          onShutdown: () => {
-            retired = true;
+        const report = await runNativeQualification(
+          {
+            count,
+            onShutdown: () => {
+              retired = true;
+            },
+            directory: NodePath.join(scratch, "fixture"),
+            command: {
+              ...manifest,
+              env: await isolatedWorkerEnvironment(
+                scratch,
+                manifest.runtimeForm === "sea",
+                manifest.runtimeForm === "electron",
+              ),
+            },
           },
-          directory: NodePath.join(scratch, "fixture"),
-          command: {
-            ...manifest,
-            env: await isolatedWorkerEnvironment(
-              scratch,
-              manifest.runtimeForm === "sea",
-              manifest.runtimeForm === "electron",
-            ),
-          },
-        });
+          probes,
+        );
         retired = report.shutdownProved;
         await writeNativeCaseReport(count, report);
         expect(report.productiveOverlapSamples).toBeGreaterThan(0);
@@ -99,7 +106,7 @@ for (const count of [2, 3] as const)
 
 native(
   "guardian retires productive native children after captured parent SIGKILL",
-  async () => {
+  async (probes) => {
     const scratch = await NodeFSP.realpath(
       await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-parent-loss-")),
     );
@@ -169,7 +176,17 @@ native(
         count: parentLossCount,
         build: command.build,
         journal,
-        start: (boot, register, onExit) => ProcessSlot.start(command, boot, register, onExit),
+        start: (boot, register, onExit) =>
+          ProcessSlot.start(
+            command,
+            boot,
+            register,
+            onExit,
+            undefined,
+            undefined,
+            undefined,
+            probes,
+          ),
       });
       proved = false;
       try {
@@ -467,7 +484,7 @@ it("private dispatch observer accepts only a drained natural rejection", async (
 
 native(
   "private dispatch admits matching build and useful work",
-  async () => {
+  async (probes) => {
     const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
     const scratch = await NodeFSP.realpath(
       await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-matching-build-")),
@@ -496,7 +513,17 @@ native(
         count: parentLossCount,
         build: command.build,
         journal,
-        start: (boot, register, onExit) => ProcessSlot.start(command, boot, register, onExit),
+        start: (boot, register, onExit) =>
+          ProcessSlot.start(
+            command,
+            boot,
+            register,
+            onExit,
+            undefined,
+            undefined,
+            undefined,
+            probes,
+          ),
       });
       retired = false;
       const handle = supervisor.register({ cwd: workspace, variant: "paths" });
@@ -534,7 +561,7 @@ native(
 
 native(
   "strict content refresh exposes successive real source-worker writes and retires its generation",
-  async () => {
+  async (probes) => {
     const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
     const scratch = await NodeFSP.realpath(
       await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-content-writes-")),
@@ -561,7 +588,17 @@ native(
         count: 2,
         build: command.build,
         journal,
-        start: (boot, register, onExit) => ProcessSlot.start(command, boot, register, onExit),
+        start: (boot, register, onExit) =>
+          ProcessSlot.start(
+            command,
+            boot,
+            register,
+            onExit,
+            undefined,
+            undefined,
+            undefined,
+            probes,
+          ),
       });
       retired = false;
       const handle = pool.register({ cwd: workspace, variant: "content" });
@@ -636,7 +673,7 @@ native(
 
 native(
   "private dispatch fails closed for wrong-build",
-  async () => {
+  async (_probes) => {
     const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
     const boot = {
       version: 1,
@@ -663,7 +700,7 @@ native(
 for (const invalid of ["bootstrap", "missing-fd3"] as const)
   native(
     `private dispatch fails closed for ${invalid}`,
-    async () => {
+    async (_probes) => {
       const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
       const boot =
         invalid === "bootstrap"

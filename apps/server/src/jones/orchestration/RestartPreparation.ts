@@ -1,10 +1,11 @@
 import {
   EventId,
+  OrchestrationV2ProviderRef,
+  ProviderRuntimeBinding,
   ThreadId,
   TurnItemId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
-  type ProviderRuntimeBinding,
 } from "@t3tools/contracts";
 import { runtimeBinding } from "@t3tools/provider-core/server/ProviderAdapter";
 import type {
@@ -29,9 +30,14 @@ import * as EventStore from "../../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import type * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import type { ProviderTurnControlError } from "../../orchestration-v2/ProviderTurnControlService.ts";
-import type { ProviderTurnStartError } from "../../orchestration-v2/ProviderTurnStartService.ts";
+import type {
+  ProviderTurnStartError,
+  ProviderTurnStartRunStateMissingError,
+} from "../../orchestration-v2/ProviderTurnStartService.ts";
 import type { ProviderSessionManagerV2Error } from "../../orchestration-v2/ProviderSessionManager.ts";
 import { findSteerFailure } from "./LateSteer.ts";
+
+type RestartStartError = ProviderTurnStartError | ProviderTurnStartRunStateMissingError;
 
 export const RESTART_TERMINAL_TIMEOUT_MS = 30_000;
 
@@ -60,6 +66,8 @@ export class RestartThreadHeld extends Schema.TaggedError<RestartThreadHeld>()(
 }
 const isRestartPreparationError = Schema.is(RestartPreparationError);
 const isRestartThreadHeld = Schema.is(RestartThreadHeld);
+const sameBinding = Schema.toEquivalence(ProviderRuntimeBinding);
+const sameNativeRef = Schema.toEquivalence(OrchestrationV2ProviderRef);
 
 export function findRestartPreparationFailure(
   value: unknown,
@@ -164,7 +172,7 @@ export class RestartPreparation extends Context.Service<
       readonly effect: RestartEffect;
       readonly interrupt: Effect.Effect<void, ProviderTurnControlError | RestartPreparationError>;
       readonly detach: Effect.Effect<void, ProviderSessionManagerV2Error | RestartPreparationError>;
-      readonly start: Effect.Effect<void, ProviderTurnStartError>;
+      readonly start: Effect.Effect<void, RestartStartError>;
       readonly captureStop?: (
         providerThread: OrchestrationV2ProviderThread,
       ) => Effect.Effect<
@@ -178,7 +186,7 @@ export class RestartPreparation extends Context.Service<
       void,
       | RestartPreparationError
       | RestartThreadHeld
-      | ProviderTurnStartError
+      | RestartStartError
       | ProjectionStore.ProjectionStoreV2Error
       | EventStore.EventStoreV2Error
     >;
@@ -321,7 +329,15 @@ const make = Effect.gen(function* () {
         providerTurnId: request.providerTurnId,
         attemptId: request.interruptedAttemptId,
       });
-      const generation = old.providerThread?.runtimeIdentity?.runtimeGeneration;
+      const replacement = request.sessionTransition;
+      const separateAccount =
+        replacement?.type === "replace" && run.providerThreadId !== request.providerThreadId;
+      const destination = separateAccount
+        ? committed.find(
+            ({ event }) =>
+              event.type === "provider-thread.updated" && event.payload.id === run.providerThreadId,
+          )?.event
+        : undefined;
       const oldThread =
         old.providerThread !== undefined && old.attempt !== undefined
           ? {
@@ -330,10 +346,48 @@ const make = Effect.gen(function* () {
               providerInstanceId: old.attempt.providerInstanceId,
             }
           : undefined;
+      if (
+        separateAccount &&
+        (destination?.type !== "provider-thread.updated" ||
+          old.providerThread === undefined ||
+          old.attempt?.providerThreadId !== request.providerThreadId ||
+          old.attempt.runId !== request.runId ||
+          old.providerThread.providerSessionId !== request.providerSessionId ||
+          old.providerThread.providerInstanceId !== old.attempt.providerInstanceId ||
+          destination.threadId !== threadId ||
+          destination.payload.appThreadId !== threadId ||
+          destination.payload.id !== attempt.providerThreadId ||
+          destination.payload.id !== node.providerThreadId ||
+          destination.payload.driver !== old.providerThread.driver ||
+          destination.payload.providerSessionId !== replacement.replacementProviderSessionId ||
+          destination.payload.providerInstanceId !== run.providerInstanceId ||
+          destination.payload.providerInstanceId === old.providerThread.providerInstanceId ||
+          destination.payload.runtimeIdentity !== undefined ||
+          destination.payload.nativeThreadRef === null ||
+          old.providerThread.nativeThreadRef === null ||
+          !sameNativeRef(destination.payload.nativeThreadRef, old.providerThread.nativeThreadRef))
+      )
+        return yield* new RestartPreparationError({
+          threadId,
+          stage: "admission",
+          cause: "The recorded account restart does not match its source and destination.",
+        });
+      const generation = oldThread?.runtimeIdentity?.runtimeGeneration;
       const binding =
-        oldThread !== undefined && generation !== undefined
-          ? runtimeBinding(oldThread, generation)
-          : undefined;
+        oldThread === undefined
+          ? undefined
+          : generation !== undefined
+            ? runtimeBinding(oldThread, generation)
+            : separateAccount
+              ? ((yield* sink
+                  .readStoppedRuntime(oldThread)
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new RestartPreparationError({ threadId, stage: "admission", cause }),
+                    ),
+                  )) ?? undefined)
+              : undefined;
       const candidate =
         captureStop !== undefined && oldThread !== undefined
           ? yield* captureStop(oldThread).pipe(
@@ -347,11 +401,7 @@ const make = Effect.gen(function* () {
             )
           : null;
       const capture =
-        candidate !== null &&
-        binding !== undefined &&
-        Object.entries(binding).every(
-          ([key, value]) => candidate.binding[key as keyof ProviderRuntimeBinding] === value,
-        )
+        candidate !== null && binding !== undefined && sameBinding(binding, candidate.binding)
           ? candidate
           : null;
       const readRetirement =
@@ -359,13 +409,7 @@ const make = Effect.gen(function* () {
           ? Effect.succeed(null)
           : captureRetirement(binding).pipe(
               Effect.map((retirement) =>
-                retirement !== null &&
-                Object.entries(binding).every(
-                  ([key, value]) =>
-                    retirement.binding[key as keyof ProviderRuntimeBinding] === value,
-                )
-                  ? retirement
-                  : null,
+                retirement !== null && sameBinding(binding, retirement.binding) ? retirement : null,
               ),
               Effect.catchCause((cause) =>
                 Cause.hasInterruptsOnly(cause)
@@ -404,15 +448,115 @@ const make = Effect.gen(function* () {
                     : Effect.failCause(cause),
                 ),
               );
-              if (
-                !Object.entries(binding).every(
-                  ([key, value]) => receipt.binding[key as keyof ProviderRuntimeBinding] === value,
-                )
-              )
-                return yield* Effect.failCause(cause);
+              if (!sameBinding(binding, receipt.binding)) return yield* Effect.failCause(cause);
             }),
           ),
         );
+        if (destination?.type === "provider-thread.updated" && oldThread !== undefined) {
+          retirement ??= yield* readRetirement;
+          const receipt =
+            retirement === null
+              ? null
+              : yield* retirement.awaitRetired.pipe(Effect.timeout("2 minutes"));
+          if (
+            binding === undefined ||
+            (receipt === null
+              ? !(yield* sink.hasStoppedRuntime(binding))
+              : !sameBinding(binding, receipt.binding))
+          )
+            return yield* new RestartPreparationError({
+              threadId,
+              stage: "detach",
+              cause: "The original account writer has no exact retirement proof.",
+            });
+
+          stage = "admission";
+          const recorded = destination.payload;
+          const fresh = yield* projections.getThreadRecords(
+            threadId,
+            ["runs", "providerThreads", "providerSessions"],
+            { runIds: [run.id] },
+          );
+          const currentRun = fresh.runs.find((row) => row.id === run.id);
+          if (currentRun?.activeAttemptId !== attempt.id || currentRun.status !== "starting")
+            return false;
+          const current = fresh.providerThreads.find((row) => row.id === recorded.id);
+          const activeId = fresh.thread.activeProviderThreadId;
+          if (
+            currentRun.providerThreadId !== recorded.id ||
+            currentRun.providerInstanceId !== recorded.providerInstanceId ||
+            current === undefined ||
+            current.appThreadId !== recorded.appThreadId ||
+            current.driver !== recorded.driver ||
+            current.providerInstanceId !== recorded.providerInstanceId ||
+            current.providerSessionId !== recorded.providerSessionId ||
+            current.runtimeIdentity !== undefined ||
+            current.nativeThreadRef === null ||
+            recorded.nativeThreadRef === null ||
+            !sameNativeRef(current.nativeThreadRef, recorded.nativeThreadRef) ||
+            (activeId !== current.id && activeId !== oldThread.id)
+          )
+            return yield* new RestartPreparationError({
+              threadId,
+              stage: "admission",
+              cause: "The recorded account restart no longer owns its destination.",
+            });
+
+          // An update from the interrupted writer may have briefly become the active row.
+          // Its captured attachment is fenced now, so restore the current attempt's destination.
+          const occurredAt = yield* DateTime.now;
+          const successorEvents: Array<OrchestrationV2DomainEvent> = [];
+          if (fresh.providerSessions.some((session) => session.id === request.providerSessionId))
+            successorEvents.push({
+              id: EventId.make(`${effect.id}:preparation:source-detached`),
+              type: "provider-session.detached",
+              threadId,
+              runId: run.id,
+              driver: oldThread.driver,
+              providerInstanceId: oldThread.providerInstanceId,
+              occurredAt,
+              payload: {
+                providerSessionId: request.providerSessionId,
+                detachedAt: occurredAt,
+                reason: "Account switch retired the previous writer.",
+              },
+            });
+          if (activeId !== current.id)
+            successorEvents.push({
+              id: EventId.make(`${effect.id}:preparation:destination`),
+              type: "provider-thread.updated",
+              threadId,
+              runId: run.id,
+              driver: current.driver,
+              providerInstanceId: current.providerInstanceId,
+              occurredAt,
+              payload: current,
+            });
+          if (successorEvents.length > 0) {
+            const activation = yield* sink.writeIfRunCurrent({
+              threadId,
+              runId: run.id,
+              activeAttemptId: attempt.id,
+              expectedStatus: "starting",
+              ...(activeId === current.id
+                ? {}
+                : {
+                    runtimeIdentityBoundary: {
+                      expectedGeneration: null,
+                      expectedProviderThreadIdentity: current,
+                    },
+                  }),
+              events: successorEvents,
+            });
+            if (!activation.committed)
+              return yield* new RestartPreparationError({
+                threadId,
+                stage: "admission",
+                cause: "The account restart changed before the destination could be activated.",
+              });
+          }
+        }
+        return true;
       });
       const result = yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
@@ -440,10 +584,7 @@ const make = Effect.gen(function* () {
                     if (
                       holds.get(effect.id) === hold &&
                       binding !== undefined &&
-                      Object.entries(binding).every(
-                        ([key, value]) =>
-                          receipt.binding[key as keyof ProviderRuntimeBinding] === value,
-                      )
+                      sameBinding(binding, receipt.binding)
                     )
                       holds.delete(effect.id);
                   }),
@@ -540,7 +681,7 @@ const make = Effect.gen(function* () {
           stage: findRestartPreparationFailure(result.cause)?.stage ?? stage,
           cause: result.cause,
         });
-      yield* start;
+      if (result.value) yield* start;
     }),
     recordSteerFailure: Effect.fn("RestartPreparation.recordSteerFailure")(function* (
       effect: EffectOutbox.OrchestrationEffectV2,

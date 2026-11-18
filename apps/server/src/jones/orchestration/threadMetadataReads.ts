@@ -39,6 +39,7 @@ export type ThreadMetadata = Pick<
   | "settledOverride"
   | "settledAt"
   | "createdAt"
+  | "updatedAt"
   | "pinnedAt"
   | "pinOrderKey"
   | "deletedAt"
@@ -158,6 +159,7 @@ const make = Effect.gen(function* () {
             settledOverride: thread.settledOverride,
             settledAt: thread.settledAt,
             createdAt: thread.createdAt,
+            updatedAt: thread.updatedAt,
             pinnedAt: thread.pinnedAt ?? null,
             pinOrderKey: thread.pinOrderKey ?? null,
             deletedAt: thread.deletedAt,
