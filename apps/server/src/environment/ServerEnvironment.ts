@@ -239,6 +239,7 @@ export const make = Effect.gen(function* () {
       queueDispatch: QUEUE_DISPATCH_CAPABILITY,
       threadAttention: THREAD_ATTENTION_CAPABILITY,
       linkedThreads: LINKED_THREADS_CAPABILITY,
+      repoFreshness: true,
       workQueueMetadata: true,
       workstreamsPersonal: { version: 1 },
       workstreamsPersonalHttp: { version: 1 },

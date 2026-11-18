@@ -129,6 +129,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   threadAttention: Schema.optionalKey(ThreadAttentionCapability),
   linkedThreads: Schema.optionalKey(LinkedThreadsCapability),
+  repoFreshness: Schema.optionalKey(Schema.Boolean),
   nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
   currentRuntimeStop: Schema.optionalKey(
     Schema.Struct({

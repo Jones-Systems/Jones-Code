@@ -51,6 +51,7 @@ import {
 } from "./ProjectFaviconPickerDialog";
 import { ProjectActionsSettings } from "./ProjectActionsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
+import { RepoFreshnessSettings } from "../../jones/repoFreshness/RepoFreshnessSettings";
 import {
   defaultProjectIcon,
   hasDefaultProjectIcon,
@@ -665,6 +666,7 @@ function ProjectDetail({
           ) : null}
         </SettingsSection>
         <ProjectDefaultsSettings category="project" />
+        <RepoFreshnessSettings members={group.memberProjects} />
         <ProjectActionsSettings />
         {checkoutChoices}
         <SettingsSection title="Danger">

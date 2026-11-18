@@ -711,6 +711,10 @@
       "types": "./src/jones/remoteAdmission/controller.ts",
       "default": "./src/jones/remoteAdmission/controller.ts"
     },
+    "./jones/repo-freshness": {
+      "types": "./src/jones/repoFreshness.ts",
+      "default": "./src/jones/repoFreshness.ts"
+    },
     "./jones/remoteAdmission/adapter": {
       "types": "./src/jones/remoteAdmission/adapter.ts",
       "default": "./src/jones/remoteAdmission/adapter.ts"

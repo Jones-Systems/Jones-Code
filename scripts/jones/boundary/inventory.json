@@ -2720,6 +2720,7 @@
     "scripts/jones/boundary/fragments/timeline-payload-batching.json": "jones-owned",
     "scripts/jones/boundary/fragments/tsrs-typecheck.json": "jones-owned",
     "scripts/jones/boundary/fragments/remote-fetch-observation.json": "jones-owned",
+    "scripts/jones/boundary/fragments/repo-freshness-controls.json": "jones-owned",
     "scripts/jones/boundary/fragments/update-continuity.json": "jones-owned",
     "scripts/jones/boundary/fragments/vcs-cache-efficiency.json": "jones-owned",
     "scripts/jones/boundary/fragments/vitest-scratch-cleanup.json": "jones-owned",

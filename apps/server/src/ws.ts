@@ -5,6 +5,7 @@ import { withClientSettlementOrigin } from "./jones/settlementOrigins/clientIngr
 import { withOwnerSelectionIngress } from "./jones/threadConfiguration/ownerIngress.ts";
 import { QueueDispatchCommand } from "@t3tools/contracts";
 import * as RetainedWsHandlers from "./jones/ws/retainedHandlers.ts";
+import * as RepoFreshnessWs from "./jones/repoFreshness/wsHandlers.ts";
 import * as WorktreeMcpService from "./mcp/WorktreeMcpService.ts";
 import { TerminalCwdStatError } from "@t3tools/contracts";
 import { readRemoteTaskOwnerIds } from "./jones/remoteDelegation/ShellRetention.ts";
@@ -2081,6 +2082,7 @@ export const layerWsRpc = (
 
       const personalWorkstreams = yield* PersonalWorkstreams.PersonalWorkstreams;
       const handlers = ServerWsRpcGroup.of({
+        ...(yield* RepoFreshnessWs.make()),
         "workstreamsPersonal.subscribe": () => personalWorkstreams.changes,
         "workstreamsPersonal.members": ({ workstreamId }) =>
           personalWorkstreams.members(workstreamId),

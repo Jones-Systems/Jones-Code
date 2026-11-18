@@ -1,0 +1,30 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "repo-freshness-controls",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/repoFreshness/",
+    "apps/web/src/jones/repoFreshness/",
+    "packages/client-runtime/src/jones/repoFreshness.ts",
+    "packages/client-runtime/src/jones/repoFreshness.test.ts"
+  ],
+  "hookPaths": ["apps/web/src/components/chat/ThreadDetailsPanel.tsx"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/repoFreshness/wsHandlers.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadDetailsPanel.tsx",
+      "to": "apps/web/src/jones/repoFreshness/RepoFreshnessControl.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/ProjectSettingsPanel.tsx",
+      "to": "apps/web/src/jones/repoFreshness/RepoFreshnessSettings.tsx"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/jones/repoFreshnessRpc.ts"
+    }
+  ]
+}

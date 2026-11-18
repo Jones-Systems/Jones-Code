@@ -2276,6 +2276,16 @@
       "scope": "Server-owned project-ID status, awaitable live refresh, server-activated polling and optional project cadence. Physical Git targets share a single in-flight check, which selects the remote-advertised default branch and materializes its exact SHA without moving tracking refs or a checkout. Status retains prior success through failures until it becomes stale, and binds it to the current configured remote."
     },
     {
+      "id": "repo-freshness-controls",
+      "tests": [
+        "apps/server/src/jones/repoFreshness/wsHandlers.test.ts",
+        "apps/web/src/jones/repoFreshness/repoFreshness.browser.test.tsx",
+        "packages/client-runtime/src/jones/repoFreshness.test.ts",
+        "packages/contracts/src/jones/repoFreshness.test.ts"
+      ],
+      "scope": "Project-ID repository freshness RPCs advertise an optional capability and use read scope for status and source-control write for live refresh. The shared client checks the selected session's descriptor. Web and Electron renderer controls read only while visible, age the last verification locally, report the manual attempt separately, and edit the cadence for the exact registered checkout. Shared hooks register the RPC and capability and place the controls in the existing project Git settings and thread Version Control section."
+    },
+    {
       "id": "vcs-cache-efficiency",
       "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
       "scope": "VCS status cache updates mutate the private directory map synchronously while replacing snapshot values, preserving deduplication, remote ordering and existing retention. A small accepted shared-file edit and colocated regression preserve private cache ownership without adding an extraction interface."
