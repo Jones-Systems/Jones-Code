@@ -84,7 +84,7 @@ it.effect("routes verified launch to status and only fetches on explicit request
           requests.push("refresh");
           return {
             status: cachedStatus,
-            checkout: { status: "skipped", reason: "checkout-update-deferred" },
+            checkout: { status: "skipped", reason: "auto-pull-disabled" },
           };
         }),
     }),

@@ -84,12 +84,22 @@ export const make = Effect.fn("RepoFreshnessLaunch.make")(function* () {
         ? { status: "failed", detail: "Repository freshness is unavailable on this server." }
         : { status: "local", detail: "Repository freshness is unavailable. Using the local base." };
     }
+    if (mode === "fetch-now" && syncPrimary && requestedBase === undefined) {
+      const { status, checkout } = yield* service.value.refresh(projectId);
+      const base = chooseFreshWorktreeBase(mode, requestedBase, status);
+      if (base.status !== "selected") return base;
+      const checkoutDetail =
+        checkout.status === "updated"
+          ? "Primary checkout fast-forwarded."
+          : checkout.status === "already-current"
+            ? "Primary checkout is current."
+            : "Primary checkout update skipped.";
+      return { ...base, detail: `${base.detail} ${checkoutDetail}` };
+    }
     const current =
-      mode !== "fetch-now"
-        ? yield* service.value.status(projectId)
-        : syncPrimary && requestedBase === undefined
-          ? (yield* service.value.refresh(projectId)).status
-          : yield* service.value.checkForLaunch(projectId);
+      mode === "fetch-now"
+        ? yield* service.value.checkForLaunch(projectId)
+        : yield* service.value.status(projectId);
     return chooseFreshWorktreeBase(mode, requestedBase, current);
   });
 });

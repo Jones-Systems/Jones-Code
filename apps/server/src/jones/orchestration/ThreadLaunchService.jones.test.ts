@@ -662,7 +662,7 @@ it.effect.each([
     const refresh = vi.fn(() =>
       Effect.succeed({
         status: checked,
-        checkout: { status: "skipped" as const, reason: "checkout-update-deferred" as const },
+        checkout: { status: "skipped" as const, reason: "auto-pull-disabled" as const },
       }),
     );
     const ordinaryFetch = vi.fn(() => Effect.die("must use the selected freshness mode"));
