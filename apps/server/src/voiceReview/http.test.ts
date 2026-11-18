@@ -160,7 +160,7 @@ it("protects both reviewed-send endpoints and rejects malformed reviewed sends b
     ),
   );
   const draftUrl = "http://local/api/voice-review/drafts/capture";
-  const send = (headers: RequestInit["headers"], payload: unknown, action = "send-reviewed") =>
+  const send = (headers: Headers, payload: unknown, action = "send-reviewed") =>
     app.handler(
       new Request(`${draftUrl}/${action}`, {
         method: "POST",
@@ -182,7 +182,10 @@ it("protects both reviewed-send endpoints and rejects malformed reviewed sends b
       expect(probe.headers.get("cache-control")).toBe("no-store");
       expect((await send(headers, valid)).status).toBe(status);
     }
-    const owner = { authorization: "Bearer owner", "content-type": "application/json" };
+    const owner = new Headers({
+      authorization: "Bearer owner",
+      "content-type": "application/json",
+    });
     for (const invalid of [{ expected_revision: 1 }, { ...valid, edit_handle: null }]) {
       expect((await send(owner, invalid)).status).toBe(400);
     }
