@@ -1,4 +1,3 @@
-import { parseServiceState } from "../cloud/serviceProtocol.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   CLI_RELEASE_BASE_URL_ENV,
@@ -23,8 +22,11 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
+import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
+import * as SystemBootService from "../jones/hostService/systemBootService.ts";
 import {
   ensurePinnedRuntimeInstalled,
+  findPosixLauncher,
   launcherOwnsVersionsDir,
   pinnedRuntimeCommand,
   isUnpublishedRelease,
@@ -33,7 +35,9 @@ import {
   pinnedRuntimeVersionsDir,
   prunePinnedRuntimes,
   recordPinnedRuntimeLauncher,
+  resolveLauncherPath,
   windowsShimTarget,
+  writePosixLauncher,
 } from "../cloud/pinnedRuntime.ts";
 import { compareExactServiceVersions, isExactServiceVersion } from "../cloud/serviceProtocol.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -43,12 +47,11 @@ import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntim
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { createUpdateProgress } from "./updateProgress.ts";
 import * as CliService from "./service.ts";
-import { jonesBootServiceLayer } from "./service.ts";
-import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
-import * as SystemBootService from "../jones/hostService/systemBootService.ts";
+import { classifyJonesManagedRuntime } from "../jones/cli/managedRuntime.ts";
 
 export class CliUpdateError extends Schema.TaggedError<CliUpdateError>()("CliUpdateError", {
   reason: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
 }) {
   override get message(): string {
     return this.reason;
@@ -195,53 +198,23 @@ export const repointLauncher = Effect.fn("cli.update.repoint_launcher")(function
     return Option.some(shimPath);
   }
 
-  const linkTarget = yield* fs.readLink(input.launchedAs).pipe(Effect.option);
-  if (Option.isNone(linkTarget)) return Option.none<string>();
-  const resolvedTarget = path.resolve(path.dirname(input.launchedAs), linkTarget.value);
-  if (!ownsTarget(resolvedTarget)) return Option.none<string>();
-  yield* remember(input.launchedAs);
-  const tempLink = `${input.launchedAs}.${process.pid}.tmp`;
-  yield* fs.symlink(input.targetEntryPath, tempLink).pipe(
-    Effect.andThen(fs.rename(tempLink, input.launchedAs)),
+  const launcher = yield* findPosixLauncher({ launchedAs: input.launchedAs, versionsDir });
+  if (launcher === undefined) return Option.none<string>();
+  yield* remember(launcher);
+  yield* writePosixLauncher({
+    launcher,
+    executable: input.targetEntryPath,
+    exclusive: false,
+  }).pipe(
     Effect.mapError(
-      () =>
-        new CliUpdateError({ reason: `Could not repoint the t3 launcher at ${input.launchedAs}.` }),
+      (cause) =>
+        new CliUpdateError({ reason: `Could not repoint the t3 launcher at ${launcher}.`, cause }),
     ),
   );
-  return Option.some(input.launchedAs);
+  return Option.some(launcher);
 });
 
-/**
- * Node keeps the shell's spelling in argv0: a launcher symlink or `./t3` resolves against the
- * working directory, while a bare `t3` was found on PATH and has to be looked up there again, or
- * the launcher symlink is never seen.
- */
-export const resolveLauncherPath = Effect.gen(function* () {
-  const path = yield* Path.Path;
-  const fs = yield* FileSystem.FileSystem;
-  const invokedAs = yield* HostProcess.InvokedAs;
-  const cwd = yield* HostProcess.WorkingDirectory;
-  const environment = yield* HostProcess.Environment;
-  const platform = yield* HostProcess.Platform;
-  if (invokedAs.includes("/") || invokedAs.includes("\\")) {
-    return path.resolve(cwd, invokedAs);
-  }
-  const delimiter = platform === "win32" ? ";" : ":";
-  for (const directory of (environment["PATH"] ?? "").split(delimiter)) {
-    if (directory.length === 0) continue;
-    const candidate = path.join(directory, invokedAs);
-    if (yield* fs.exists(candidate).pipe(Effect.orElseSucceed(() => false))) {
-      return candidate;
-    }
-  }
-  return undefined;
-});
-
-/**
- * On Windows a `.cmd` shim is what PATH resolves, but the executable it runs
- * only ever sees its own path. Walk PATH for a `t3.cmd` whose target is the
- * running executable; that is the launcher the install script wrote.
- */
+/** Windows executables see their own path, so find the installer shim by matching t3.cmd targets on PATH. */
 export const findWindowsShim = Effect.fn("cli.update.find_windows_shim")(function* (
   executablePath: string,
 ) {
@@ -331,34 +304,13 @@ export const updateCommand = Command.make("update", {
 /** Release updates cannot replace a source-qualified Jones runtime through a version-only request. */
 export const assertReleaseUpdateAllowed = Effect.fn("cli.update.assert_release_update_allowed")(
   function* (baseDir: string, version: string) {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const managed = yield* fs.exists(path.join(baseDir, "runtime", "jones-active-install.json"));
-    const receipt = yield* fs.exists(
-      path.join(baseDir, "runtime", "versions", version, ".jones-runtime-receipt.json"),
-    );
-    const statePath = path.join(baseDir, "runtime", "service-state.json");
-    let serviceQualified = false;
-    if (yield* fs.exists(statePath)) {
-      const state = parseServiceState(yield* fs.readFileString(statePath));
-      if (state === undefined)
-        return yield* new CliUpdateError({
-          reason:
-            "The existing native service state requires reconciliation before a version-only update.",
-        });
-      serviceQualified =
-        cliReleaseChannelOf(state.activeVersion) === "preview" ||
-        (yield* fs.exists(
-          path.join(
-            baseDir,
-            "runtime",
-            "versions",
-            state.activeVersion,
-            ".jones-runtime-receipt.json",
-          ),
-        ));
-    }
-    if (managed || receipt || serviceQualified || cliReleaseChannelOf(version) === "preview") {
+    const management = yield* classifyJonesManagedRuntime(baseDir, version);
+    if (management === "unreadable-service-state")
+      return yield* new CliUpdateError({
+        reason:
+          "The existing native service state requires reconciliation before a version-only update.",
+      });
+    if (management === "managed") {
       return yield* new CliUpdateError({
         reason:
           "This Jones runtime requires source-qualified staging and an explicit Install through its host updater. A version-only release update is unavailable.",
@@ -368,9 +320,9 @@ export const assertReleaseUpdateAllowed = Effect.fn("cli.update.assert_release_u
 );
 
 const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(function* (input: {
+  readonly baseDir: string;
   readonly serverRuntimeStatePath: string;
   readonly serviceInstalled: boolean;
-  readonly baseDir: string;
 }) {
   const state = yield* readPersistedServerRuntimeState(input.serverRuntimeStatePath);
   if (Option.isNone(state) || state.value.serviceManaged || !isProcessAlive(state.value.pid)) {
@@ -501,16 +453,15 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   }
 
   const status = yield* service.status;
-  // A service unit can belong to another T3 home. Only touch it when it serves
-  // this update's home; restarting another install would take that server down.
+  // Service names are per user, so another home's unit belongs to a different install.
   const servesThisHome =
     status.installedBaseDir !== undefined &&
     path.resolve(status.installedBaseDir) === path.resolve(input.baseDir);
   const serviceInstalled = status.supported && status.installed && servesThisHome;
   const foreground = yield* findForegroundServer({
+    baseDir: input.baseDir,
     serverRuntimeStatePath: input.serverRuntimeStatePath,
     serviceInstalled,
-    baseDir: input.baseDir,
   });
   const serviceVersion = serviceInstalled ? status.installedVersion : undefined;
   const executableCurrent = targetVersion === currentVersion;
@@ -645,10 +596,32 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     );
     servicePlan = yield* BootService.BootService.pipe(
       Effect.flatMap((target) =>
-        target.install({ allowDowngrade: input.allowDowngrade, start: restartService }),
+        Effect.gen(function* () {
+          const targetStatus = yield* target.status;
+          if (
+            !targetStatus.supported ||
+            !targetStatus.installed ||
+            targetStatus.otherBaseDir !== undefined ||
+            targetStatus.installedBaseDir === undefined ||
+            !path.isAbsolute(status.unitPath) ||
+            !path.isAbsolute(targetStatus.unitPath) ||
+            path.resolve(targetStatus.installedBaseDir) !== path.resolve(input.baseDir) ||
+            path.resolve(targetStatus.unitPath) !== path.resolve(status.unitPath)
+          ) {
+            return yield* new BootService.BootServiceInstallError({
+              cause: undefined,
+              reason:
+                "The background service binding changed or could not be verified; reconcile this home's exact service before retrying.",
+            });
+          }
+          return yield* target.install({
+            allowDowngrade: input.allowDowngrade,
+            start: restartService,
+          });
+        }),
       ),
       Effect.provide(
-        jonesBootServiceLayer({
+        CliService.jonesBootServiceLayer({
           baseDir: input.baseDir,
           logsDir: input.logsDir,
           cliVersion: targetVersion,
@@ -682,7 +655,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   }
   if (servicePlan?.handedOff === true) {
     yield* Console.log(
-      `  Background service switching to ${targetVersion} from a separate systemd unit, since this session runs inside it and disconnects when it restarts. Result: ${servicePlan.logPath}`,
+      `  Background service switching to ${targetVersion} outside this session, since this session runs inside it and disconnects when it restarts. Result: ${servicePlan.logPath}`,
     );
   } else if (servicePlan !== undefined && restartService) {
     yield* Console.log(`  Background service restarted on ${targetVersion}`);

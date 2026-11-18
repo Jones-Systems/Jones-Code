@@ -59,6 +59,7 @@ const pending = (
 const makeFixture = Effect.gen(function* () {
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const started = yield* Queue.unbounded<string>();
+  const urgentClaims = yield* Queue.unbounded<void>();
   const attempts = yield* Ref.make({ urgent: 0, action: 0, mixed: 0 });
   const gates = new Map<string, Deferred.Deferred<void>>();
   const gate = (id: string) => {
@@ -77,7 +78,12 @@ const makeFixture = Effect.gen(function* () {
           : input.excludeTitleGeneration === true
             ? { ...counts, action: counts.action + 1 }
             : { ...counts, mixed: counts.mixed + 1 },
-      ).pipe(Effect.andThen(outbox.claimNext(input))),
+      ).pipe(
+        Effect.andThen(
+          input.urgentOnly === true ? Queue.offer(urgentClaims, undefined) : Effect.void,
+        ),
+        Effect.andThen(outbox.claimNext(input)),
+      ),
   });
   const executions = yield* Ref.make({ active: 0, maximum: 0 });
   const executor = EffectWorker.OrchestrationEffectExecutorV2.of({
@@ -108,11 +114,12 @@ const makeFixture = Effect.gen(function* () {
   return {
     outbox,
     attempts,
+    urgentClaims,
     executions,
     started,
     release: (id: string) => Deferred.succeed(gate(id), undefined),
-    start: (concurrency = 4) =>
-      EffectWorker.runDaemonWithOptions({ concurrency, livenessPollIntervalMs: 30_000 }).pipe(
+    start: (concurrency = 4, livenessPollIntervalMs = 30_000) =>
+      EffectWorker.runDaemonWithOptions({ concurrency, livenessPollIntervalMs }).pipe(
         Effect.provideService(EffectWorker.OrchestrationEffectWorkerV2, worker),
         Effect.forkScoped,
       ),
@@ -171,8 +178,8 @@ it.effect(
       yield* f.outbox.enqueue([urgent]);
       yield* f.outbox.notifyAvailable();
       yield* TestClock.adjust("0 millis");
-      assert.equal(Option.getOrThrow(yield* f.outbox.get(urgent.id)).status, "running");
       assert.equal(yield* Queue.take(f.started), urgent.id);
+      assert.equal(Option.getOrThrow(yield* f.outbox.get(urgent.id)).status, "running");
       assert.deepEqual(yield* Ref.get(f.executions), { active: 4, maximum: 4 });
       for (const action of actions.slice(0, 3)) {
         assert.equal(Option.getOrThrow(yield* f.outbox.get(action.id)).status, "running");
@@ -204,8 +211,8 @@ it.effect("CORE-A4 wakes a mixed worker promptly when the reserved worker is alr
     yield* f.outbox.enqueue([title]);
     yield* f.outbox.notifyAvailable();
     yield* TestClock.adjust("1 millis");
-    assert.equal(Option.getOrThrow(yield* f.outbox.get(title.id)).status, "running");
     assert.equal(yield* Queue.take(f.started), title.id);
+    assert.equal(Option.getOrThrow(yield* f.outbox.get(title.id)).status, "running");
     assert.equal(yield* Ref.get(f.attempts).pipe(Effect.map((counts) => counts.action)), 2);
   }).pipe(Effect.scoped, Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer())))),
 );
@@ -215,12 +222,12 @@ it.effect("CORE-A4 does not poll claims for due titles on the reserved worker", 
     const f = yield* makeFixture;
     const titles = [pending("held-title", "title"), pending("waiting-title", "title")];
     yield* f.outbox.enqueue(titles);
-    yield* f.start(2);
+    yield* f.start(2, 10_000);
     assert.equal(yield* Queue.take(f.started), titles[0]!.id);
     yield* TestClock.adjust("0 millis");
     assert.deepEqual(yield* Ref.get(f.attempts), { urgent: 0, action: 1, mixed: 1 });
 
-    yield* TestClock.adjust("29999 millis");
+    yield* TestClock.adjust("9999 millis");
     assert.deepEqual(yield* Ref.get(f.attempts), { urgent: 0, action: 1, mixed: 1 });
     assert.equal(Option.getOrThrow(yield* f.outbox.get(titles[1]!.id)).attemptCount, 0);
     yield* TestClock.adjust("1 millis");
@@ -366,15 +373,15 @@ it.effect("RES-1 wakes urgent and non-title workers independently with three exe
     yield* f.outbox.enqueue([action]);
     yield* f.outbox.notifyAvailable();
     yield* TestClock.adjust("0 millis");
-    assert.equal(Option.getOrThrow(yield* f.outbox.get(action.id)).status, "running");
     assert.equal(yield* Queue.take(f.started), action.id);
+    assert.equal(Option.getOrThrow(yield* f.outbox.get(action.id)).status, "running");
 
     const urgent = pending("three-urgent-wake", "runtime-response");
     yield* f.outbox.enqueue([urgent]);
     yield* f.outbox.notifyAvailable();
     yield* TestClock.adjust("0 millis");
-    assert.equal(Option.getOrThrow(yield* f.outbox.get(urgent.id)).status, "running");
     assert.equal(yield* Queue.take(f.started), urgent.id);
+    assert.equal(Option.getOrThrow(yield* f.outbox.get(urgent.id)).status, "running");
     assert.deepEqual(yield* Ref.get(f.executions), { active: 3, maximum: 3 });
   }).pipe(Effect.scoped, Effect.provide(layerOutbox.pipe(Layer.provideMerge(TestClock.layer())))),
 );
@@ -503,15 +510,18 @@ it.effect("RES-1 ignores ineligible due rows until a broadcast or liveness wake"
     );
     const blockedUrgent = pending("blocked-urgent", "interrupt", actions[0]!.threadId);
     yield* f.outbox.enqueue([...actions, blockedUrgent]);
-    yield* f.start();
+    yield* f.start(4, 10_000);
     yield* TestClock.adjust("0 millis");
+    yield* Queue.take(f.urgentClaims);
     assert.deepEqual(yield* Ref.get(f.attempts), { urgent: 1, action: 1, mixed: 2 });
-    yield* TestClock.adjust("29999 millis");
+    yield* TestClock.adjust("9999 millis");
     assert.deepEqual(yield* Ref.get(f.attempts), { urgent: 1, action: 1, mixed: 2 });
     yield* TestClock.adjust("1 millis");
+    yield* Queue.take(f.urgentClaims);
     assert.deepEqual(yield* Ref.get(f.attempts), { urgent: 2, action: 1, mixed: 2 });
     yield* f.outbox.notifyAvailable();
     yield* TestClock.adjust("0 millis");
+    yield* Queue.take(f.urgentClaims);
     assert.deepEqual(yield* Ref.get(f.attempts), { urgent: 3, action: 1, mixed: 2 });
     assert.equal(Option.getOrThrow(yield* f.outbox.get(blockedUrgent.id)).attemptCount, 0);
     assert.equal(Option.getOrThrow(yield* f.outbox.get(actions[3]!.id)).attemptCount, 0);

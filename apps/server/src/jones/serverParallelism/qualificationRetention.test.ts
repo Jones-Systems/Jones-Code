@@ -178,9 +178,7 @@ function milestoneController() {
   const samplerReceipts: {
     kind: "retire" | "journal";
     pid: number;
-    from: number;
-    to: number;
-    collections: number[];
+    releasedPeriodicWait: boolean;
   }[] = [];
   const lastLive = new Map<number, number>();
   let changed = deferred();
@@ -189,7 +187,6 @@ function milestoneController() {
   let stableWaits = 0;
   let samplerWaits = 0;
   let collections = 0;
-  let collected = 0;
   let lastCollection: Extract<Milestone, { kind: "collection" }> | undefined;
   let sampler: Edge | undefined;
   let samplerAborted = false;
@@ -248,10 +245,6 @@ function milestoneController() {
     }
     return queue.shift()!;
   };
-  const terminalBefore = (outcome: DriverOutcome, required: string): never => {
-    if (outcome.kind === "rejected") throw outcome.cause;
-    throw new Error(`Driver completed before ${required}`);
-  };
   const advance = async (ms: number) => {
     if (advancing || !Number.isFinite(ms) || ms < 0)
       throw new Error(`Invalid fixture advance: ${ms}`);
@@ -264,7 +257,6 @@ function milestoneController() {
   };
   const acceptSampler = (item: Edge) => {
     if (item.milestone.kind === "collection") {
-      collected = item.milestone.ordinal;
       lastCollection = item.milestone;
       item.release();
       return true;
@@ -282,44 +274,23 @@ function milestoneController() {
     }
     return false;
   };
-  const awaitSampler = async (driver: Promise<DriverOutcome>) => {
-    while (!sampler) {
-      const item = await next(driver);
-      if (closed) return;
-      if (item.milestone.kind === "complete")
-        terminalBefore(item.milestone.outcome, "sampler wait");
-      if (!acceptSampler(item))
-        throw new Error(`Expected sampler wait, saw ${item.milestone.kind}`);
-      if (samplerAborted) throw new Error("Sampler aborted before retirement receipt");
-    }
-    return sampler;
-  };
-  const sampleBoundary = async (driver: Promise<DriverOutcome>, boundary: GenerationMilestone) => {
-    const waiting = await awaitSampler(driver);
-    if (!waiting || closed) return;
-    const first = waiting.milestone;
-    if (first.kind !== "sampler-wait") throw new Error("Missing sampler identity");
-    const before = collected;
+  const sampleBoundary = async (boundary: GenerationMilestone, advanceMs: number) => {
+    if (boundary.kind === "replacement-pool") throw new Error("Unexpected sampler boundary");
+    const before = collections;
+    const waiting = sampler;
     sampler = undefined;
-    waiting.release();
-    const following = await awaitSampler(driver);
-    if (!following || closed) return;
-    const last = following.milestone;
-    if (last.kind !== "sampler-wait") throw new Error("Missing next sampler identity");
-    expect(last.ordinal).toBe(first.ordinal + 1);
-    expect(collected).toBeGreaterThan(before);
+    waiting?.release();
+    // Release a periodic wait while the physical edge is still held. A new
+    // aggregate read must wait even though the cadence timer already fired.
+    await advance(advanceMs);
+    if (closed) return;
+    expect(collections).toBe(before);
     expect(lastLive.has(boundary.pid)).toBe(true);
     expect(lastLive.get(boundary.pid)).toBeLessThanOrEqual(before);
-    // New resource reads exclude the closed capture during retirement AND journal proof;
-    // native exit/journal guards below still own actual retirement and allocation charges.
-    expect(lastCollection?.pids.includes(boundary.pid)).toBe(false);
-    if (boundary.kind === "replacement-pool") throw new Error("Unexpected sampler boundary");
     samplerReceipts.push({
       kind: boundary.kind,
       pid: boundary.pid,
-      from: first.ordinal,
-      to: last.ordinal,
-      collections: Array.from({ length: collected - before }, (_, i) => before + i + 1),
+      releasedPeriodicWait: waiting !== undefined,
     });
   };
   return {
@@ -384,9 +355,10 @@ function milestoneController() {
           expect(clockNow()).toBe(at);
           held(milestone);
         } else if (milestone.kind === "retire" || milestone.kind === "journal") {
-          await sampleBoundary(driver, milestone);
-          if (!closed)
-            await advance(milestone.kind === "journal" && releasedStableWaits === 2 ? 200 : 0);
+          await sampleBoundary(
+            milestone,
+            milestone.kind === "journal" && releasedStableWaits === 2 ? 200 : 0,
+          );
         } else {
           throw new Error(`Unexpected fixture milestone: ${milestone.kind}`);
         }
@@ -705,7 +677,10 @@ it.each([
         acquisitionsPerWindow: case_.acquisitions,
         filesPerKey: case_.files,
         signal: signal.signal,
-        sample: clock.sample,
+        sample: (pids) => {
+          expect(children.some((child) => child.exited && pids.includes(child.pid))).toBe(false);
+          return clock.sample(pids);
+        },
       }),
     );
     const controlling = observed(
@@ -742,6 +717,14 @@ it.each([
       expect(external.registrations).toBe(children.length);
       expect(clock.samplerAborted).toBe(true);
       expect(clock.samplerReceipts).toHaveLength(2 * children.length);
+      expect(clock.samplerReceipts.some((receipt) => receipt.releasedPeriodicWait)).toBe(true);
+      expect(report.populationSampling.start.admitted).toBe(children.length);
+      expect(report.populationSampling.exit.admitted).toBe(children.length);
+      expect(report.populationSampling.journalRetirement.admitted).toBe(children.length);
+      expect(report.populationSampling.journalRetirement.maxHoldMs).toBeGreaterThanOrEqual(200);
+      expect(
+        Object.values(report.populationSampling).every((timing) => timing.uncoordinated === 0),
+      ).toBe(true);
       for (const child of children) {
         expect(
           clock.samplerReceipts

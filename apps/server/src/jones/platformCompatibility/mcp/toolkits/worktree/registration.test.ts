@@ -7,7 +7,9 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as CommandReceipts from "../../../../../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../../../../../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../../../../orchestration/SupersededTerminalTrace.ts";
 import * as Orchestrator from "../../../../../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../../../../testing/UnusedCorePorts.testkit.ts";
 import * as ProjectionStore from "../../../../../orchestration-v2/ProjectionStore.ts";
 import * as DeviceService from "../../../../../device/DeviceService.ts";
 import * as ServerConfig from "../../../../../config.ts";
@@ -28,6 +30,8 @@ import * as ProviderSessionManager from "../../../../../orchestration-v2/Provide
 import * as ThreadManagementService from "../../../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../../../../project/ProjectService.ts";
 import * as PullRequestReviewGuideService from "../../../../../pullRequest/PullRequestReviewGuideService.ts";
+import * as PullRequestService from "../../../../../pullRequest/PullRequestService.ts";
+import * as EnvironmentTheme from "../../../../../environmentTheme.ts";
 import * as ProjectSetupScriptRunner from "../../../../../project/ProjectSetupScriptRunner.ts";
 import * as ProviderRegistry from "../../../../../provider/ProviderRegistry.ts";
 import * as DocumentText from "../../../../../provider/DocumentText.ts";
@@ -35,6 +39,8 @@ import * as ScheduledTaskService from "../../../../../scheduledTasks/ScheduledTa
 import * as SecretRequests from "../../../../../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../../../../../peer/RemoteDelegation.ts";
 import * as RemoteAdmissionIntake from "../../../../remoteAdmissionIntegration/RemoteAdmissionIntake.ts";
+import * as ReceiverInspection from "../../../../remoteAdmissionIntegration/Inspection.ts";
+import * as ReceiverProtocol from "../../../../remoteAdmissionIntegration/protocolTools.ts";
 import * as ServerSettings from "../../../../../serverSettings.ts";
 import * as StorageCleanup from "../../../../../storageCleanup.ts";
 import * as VcsStatusBroadcaster from "../../../../../vcs/VcsStatusBroadcaster.ts";
@@ -60,6 +66,8 @@ type TurnAttachment = Parameters<
 >[0];
 const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
   Layer.mergeAll(
+    Layer.mock(ReceiverInspection.ReceiverInspection)({}),
+    Layer.mock(ReceiverProtocol.ReceiverPeerProtocol)({}),
     Layer.mock(ConversationPolicy.ConversationPolicy)({
       ownsPath: () => false,
       registerTurnAttachment: (attach) => Effect.sync(() => onAttachment(attach)),
@@ -70,8 +78,8 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     McpProviderSessions.layer,
     NodeSqliteClient.layer({ filename: ":memory:" }),
     Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
-    Layer.mock(EventSink.EventSinkV2)({}),
-    Layer.mock(Orchestrator.OrchestratorV2)({}),
+    Layer.mock(EventSink.EventSinkV2)({ supersededTerminalTrace: SupersededTerminalTrace.make() }),
+    Layer.mock(Orchestrator.OrchestratorV2)({ ...unusedCorePorts() }),
     Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
     Layer.mock(DeviceService.DeviceService)({}),
     Layer.mock(ThreadManagementService.ThreadManagementService)({}),
@@ -84,10 +92,16 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.mock(PeerForwarding.PeerForwarding)({}),
     Layer.mock(SecretRequests.SecretRequests)({}),
     Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-    Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
+    Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({
+      isLiveClaim: () => false,
+      register: () => {},
+    }),
     Layer.mock(ProjectService.ProjectService)({}),
     Layer.succeed(DocumentText.DocumentText, { ensure: () => Effect.sync(() => undefined) }),
     Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+    // Listing tools never invokes the pull request or theme handlers.
+    Layer.mock(PullRequestService.PullRequestService)({}),
+    Layer.mock(EnvironmentTheme.EnvironmentThemeService)({}),
     ServerSettings.layerTest({}),
     Layer.mock(StorageCleanup.StorageCleanup)({}),
     Layer.mock(GitWorkflowService.GitWorkflowService)({}),

@@ -1,5 +1,9 @@
+import { useClientSettings } from "../../hooks/useSettings";
+import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
+import { requestCustomSnooze } from "../CustomSnoozeDialog";
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -7,16 +11,21 @@ import {
   type ReactNode,
 } from "react";
 import { useAtomValue } from "@effect/atom-react";
-import type {
-  PersonalWorkstreamsController,
-  PersonalWorkstreamView,
+import {
+  openPersonalWorkstreams,
+  type PersonalResult,
+  type PersonalThreadRef,
+  type PersonalWorkstreamsController,
+  type PersonalWorkstreamView,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import {
+  AlarmClockIcon,
   ArrowDownIcon,
   ArrowUpIcon,
-  EllipsisIcon,
+  EllipsisVerticalIcon,
   ChevronDownIcon,
   PaletteIcon,
+  ImageIcon,
   PencilIcon,
   TrashIcon,
 } from "lucide-react";
@@ -47,24 +56,48 @@ import {
   AlertDialogFooter,
 } from "../ui/alert-dialog";
 import { Dialog, DialogPopup, DialogHeader, DialogTitle } from "../ui/dialog";
+import { ClosedWorkstreams } from "../../jones/workstreams/ClosedWorkstreams";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import {
+  PersonalWorkstreamOptionsButton,
+  PersonalWorkstreamVisibleThreads,
+} from "../../jones/workstreams/PersonalWorkstreamDisplayControls";
 import { PersonalSidebarGroupHeader } from "../../jones/workstreams/PersonalSidebarGroupHeader";
 import {
   formatPersonalThreadCount,
   type PersonalThreadSummary,
 } from "../../jones/workstreams/personalPresentation";
-import { personalWorkstreamRailColor } from "../../jones/workstreams/personalRail";
+import { personalWorkstreamGroupColors } from "../../jones/workstreams/personalRail";
 import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalWorkstreamTitleEditor";
-
-import { usePersonalStatusFilter } from "../../jones/workstreams/personalStatusFilter";
-import { personalGroupCollapsedKey } from "../../jones/workstreams/personalSidebarOrder";
 import {
-  PERSONAL_THREAD_LIMITS,
+  WorkstreamNameIconPicker,
+  type WorkstreamNameIconProject,
+} from "../../jones/workstreams/WorkstreamNameIconPicker";
+import { ProjectFavicon } from "../ProjectFavicon";
+import { PersonalWorkstreamsHeader } from "../../jones/workstreams/PersonalWorkstreamsHeader";
+
+import {
+  usePersonalStatusFilter,
+  useSharedPersonalStatusFilter,
+} from "../../jones/workstreams/personalStatusFilter";
+import {
+  personalGroupCollapsedKey,
+  personalNamedGroupsHiddenKey,
+  setPersonalGroupsCollapsed,
+} from "../../jones/workstreams/personalSidebarOrder";
+import {
   usePersonalThreadWindow,
   type PersonalThreadLimit,
 } from "../../jones/workstreams/personalThreadWindow";
+
+function currentSnoozePresets(
+  timestampFormat: Parameters<typeof resolveSnoozePresets>[1],
+  environmentId: Parameters<typeof resolveSnoozePresets>[2],
+) {
+  return resolveSnoozePresets(new Date(), timestampFormat, environmentId);
+}
 
 const workstreamDragType = "application/x-jones-workstream";
 const lifecycles = ["planned", "active", "paused", "completed", "deferred", "abandoned"] as const;
@@ -80,32 +113,41 @@ const emptySummary: PersonalThreadSummary = {
 };
 export function WorkstreamCreateForm({
   controller,
+  nameIconProjects = [],
+  canSetNameIcon = false,
   open,
   onClose,
   onPendingChange,
 }: {
   controller: PersonalWorkstreamsController;
+  nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
+  canSetNameIcon?: boolean;
   open: boolean;
   onClose: () => void;
   onPendingChange: (pending: boolean) => void;
 }) {
   const [name, setName] = useState("");
+  const [nameIconProjectKey, setNameIconProjectKey] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
   if (!open) return null;
   return (
     <form
-      className="flex gap-1 p-2"
+      className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-start gap-1 p-2"
       onSubmit={async (event) => {
         event.preventDefault();
-        if (pendingRef.current || !name.trim()) return;
+        if (pendingRef.current || !name.trim() || (nameIconProjectKey && !canSetNameIcon)) return;
         pendingRef.current = true;
         setPending(true);
         onPendingChange(true);
         try {
-          const result = await controller.create({ name: name.trim() });
+          const result = await controller.create({
+            name: name.trim(),
+            ...(nameIconProjectKey ? { nameIconProjectKey } : {}),
+          });
           if (result.ok) {
             setName("");
+            setNameIconProjectKey(null);
             onClose();
           } else showPersonalFailure(result.failure);
         } catch (error) {
@@ -121,57 +163,96 @@ export function WorkstreamCreateForm({
     >
       <Input
         autoFocus
+        size="compact"
         aria-label="Workstream name"
+        placeholder="Workstream name"
         maxLength={160}
         value={name}
         onChange={(event) => setName(event.target.value)}
       />
-      <Button type="submit" disabled={pending || !name.trim()}>
+      <Button
+        type="submit"
+        size="compact"
+        disabled={pending || !name.trim() || Boolean(nameIconProjectKey && !canSetNameIcon)}
+      >
         Create
       </Button>
-      <Button type="button" variant="ghost" disabled={pending} onClick={onClose}>
+      <Button
+        type="button"
+        size="compact"
+        variant="ghost"
+        disabled={pending}
+        onClick={() => {
+          setNameIconProjectKey(null);
+          onClose();
+        }}
+      >
         Cancel
       </Button>
+      {canSetNameIcon || nameIconProjectKey !== null ? (
+        <div className="col-start-1 row-start-2 min-w-0">
+          <WorkstreamNameIconPicker
+            projects={nameIconProjects}
+            value={nameIconProjectKey}
+            onChange={setNameIconProjectKey}
+            disabled={pending}
+          />
+        </div>
+      ) : null}
     </form>
   );
 }
 function Group({
   item,
+  nameIconProjects,
   controller,
   children,
   summary,
+  rosterTotal,
   dragging,
+  dropTarget,
   onDragStart,
   confirmingDelete,
   onDeleteRequested,
   memberCount,
+  snoozedIds,
 }: {
   item: PersonalWorkstreamView;
+  nameIconProjects: readonly WorkstreamNameIconProject[];
   controller: PersonalWorkstreamsController;
   children: (window: { limit: PersonalThreadLimit; expanded: boolean }) => ReactNode;
   memberCount: number;
+  snoozedIds: ReadonlySet<string>;
   summary: PersonalThreadSummary;
+  rosterTotal: number;
   dragging: boolean;
+  dropTarget: boolean;
   onDragStart: (event: DragEvent<HTMLDivElement>) => void;
   confirmingDelete: boolean;
   onDeleteRequested: () => void;
 }) {
   const state = useAtomValue(controller.state);
+  const { rail, tint } = personalWorkstreamGroupColors(item);
   const [collapsed, setCollapsed] = useLocalStorage(
     personalGroupCollapsedKey(item.id),
     false,
     collapsedSchema,
   );
-  const [editing, setEditing] = useState<"name" | "color" | null>(null);
+  const [editing, setEditing] = useState<"name" | "color" | "nameIcon" | null>(null);
   const threadWindow = usePersonalThreadWindow(item.id);
   const { filter: statusFilter, setFilter: setStatusFilter } = usePersonalStatusFilter(item.id);
+  const overflowCount = memberCount - threadWindow.limit;
   const shownCount = threadWindow.expanded
     ? memberCount
     : Math.min(memberCount, threadWindow.limit);
   const [draft, setDraft] = useState("");
+  const [draftNameIcon, setDraftNameIcon] = useState<string | null>(null);
+  const nameIconProject = nameIconProjects.find(
+    (project) => project.projectKey === item.nameIcon?.projectKey,
+  );
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
-  const run = async (operation: () => ReturnType<typeof controller.remove>) => {
+  const run = async (operation: () => Promise<PersonalResult<unknown>>) => {
     if (pendingRef.current) return;
     pendingRef.current = true;
     setPending(true);
@@ -179,6 +260,7 @@ function Group({
       .then(operation)
       .then((result) => {
         if (!result.ok) showPersonalFailure(result.failure);
+        return result;
       })
       .finally(() => {
         pendingRef.current = false;
@@ -220,22 +302,75 @@ function Group({
         setPending(false);
       });
   };
-  const index = state.workstreams.findIndex((entry) => entry.id === item.id);
+  const openWorkstreams = openPersonalWorkstreams(state).filter(
+    (entry) => !snoozedIds.has(entry.id),
+  );
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
+  const snoozeEnvironmentId = state.environments.find(
+    (entry) => entry.status === "ready",
+  )?.environmentId;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPoint, setMenuPoint] = useState<{ x: number; y: number } | null>(null);
+  const [snoozePresets, setSnoozePresets] = useState<readonly SnoozePreset[]>([]);
+  const openMenu = (open: boolean) => {
+    setMenuOpen(open);
+    if (!open) setMenuPoint(null);
+    if (open && snoozeEnvironmentId)
+      setSnoozePresets(currentSnoozePresets(timestampFormat, snoozeEnvironmentId));
+  };
+  const snooze = async (preset: SnoozePreset | "custom") => {
+    if (!controller.setSnoozedUntil || !snoozeEnvironmentId) return;
+    const choice =
+      preset === "custom"
+        ? await requestCustomSnooze("workstream")
+        : pickSnoozePreset(snoozePresets, preset.id, timestampFormat, snoozeEnvironmentId);
+    if (!choice) return;
+    await run(async () => {
+      const result = await controller.setSnoozedUntil!(item.id, choice.snoozedUntil);
+      return result.ok ? { ok: true, value: undefined } : result;
+    });
+  };
+  const index = openWorkstreams.findIndex((entry) => entry.id === item.id);
   return (
     <section
       ref={sectionRef}
       data-native-workstream={JSON.stringify(item.id)}
-      className={`min-w-0 rounded-l-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""}`}
-      style={{ borderLeftColor: personalWorkstreamRailColor(item) }}
+      data-thread-drop-target={dropTarget ? "" : undefined}
+      className={`min-w-0 rounded-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
+      style={{
+        borderLeftColor: rail,
+        backgroundColor:
+          dropTarget && collapsed ? "color-mix(in oklab, var(--primary) 3.25%, transparent)" : tint,
+      }}
     >
       <div
         data-workstream-header
-        className="flex min-w-0 cursor-grab active:cursor-grabbing"
+        className="flex min-w-0 cursor-pointer"
         draggable={state.canCreate && !pending && !confirmingDelete && !editing}
         onDragStart={onDragStart}
+        onContextMenu={(event) => {
+          if (event.target instanceof HTMLElement && event.target.closest("input")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const bounds = event.currentTarget.getBoundingClientRect();
+          setMenuPoint(
+            event.clientX || event.clientY
+              ? { x: event.clientX, y: event.clientY }
+              : { x: bounds.left, y: bounds.bottom },
+          );
+          openMenu(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+          event.preventDefault();
+          const bounds = event.currentTarget.getBoundingClientRect();
+          setMenuPoint({ x: bounds.left, y: bounds.bottom });
+          openMenu(true);
+        }}
       >
         <PersonalSidebarGroupHeader
           name={item.name}
+          nameIcon={nameIconProject ? <ProjectFavicon project={nameIconProject} /> : null}
           collapsed={collapsed}
           onToggle={() => {
             threadWindow.setExpanded(false);
@@ -246,6 +381,8 @@ function Group({
             };
           }}
           summary={summary}
+          rosterTotal={rosterTotal}
+          visibleCount={shownCount}
           statusFilter={statusFilter}
           onStatusFilterChange={setStatusFilter}
           {...(state.canCreate && !pending && !confirmingDelete
@@ -275,14 +412,24 @@ function Group({
                 event.stopPropagation();
               }}
             >
-              <Menu>
+              <Menu open={menuOpen} onOpenChange={openMenu}>
                 <MenuTrigger
                   aria-label={`Options for ${item.name}`}
-                  render={<Button variant="ghost" size="icon-sm" />}
+                  render={<PersonalWorkstreamOptionsButton />}
+                  className="opacity-0 focus-visible:opacity-100 pointer-coarse:opacity-100"
                 >
-                  <EllipsisIcon aria-hidden />
+                  <EllipsisVerticalIcon aria-hidden className="size-[12px]" />
                 </MenuTrigger>
-                <MenuPopup align="end">
+                <MenuPopup
+                  align={menuPoint ? "start" : "end"}
+                  {...(menuPoint
+                    ? {
+                        anchor: {
+                          getBoundingClientRect: () => new DOMRect(menuPoint.x, menuPoint.y, 0, 0),
+                        },
+                      }
+                    : {})}
+                >
                   <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
                     <PencilIcon aria-hidden /> Rename
                   </MenuItem>
@@ -295,13 +442,39 @@ function Group({
                   >
                     <PaletteIcon aria-hidden /> Change color
                   </MenuItem>
+                  {state.canSetNameIcon && controller.setNameIcon ? (
+                    <MenuItem
+                      disabled={pending}
+                      onClick={() => {
+                        setDraftNameIcon(item.nameIcon?.projectKey ?? null);
+                        setEditing("nameIcon");
+                      }}
+                    >
+                      <ImageIcon aria-hidden /> Change name icon
+                    </MenuItem>
+                  ) : null}
+                  <MenuSub>
+                    <MenuSubTrigger disabled={!state.canSnooze || pending || !snoozeEnvironmentId}>
+                      <AlarmClockIcon aria-hidden /> Snooze
+                    </MenuSubTrigger>
+                    <MenuSubPopup>
+                      {snoozePresets.map((preset) => (
+                        <MenuItem key={preset.id} onClick={() => void snooze(preset)}>
+                          {preset.label} ({preset.whenLabel})
+                        </MenuItem>
+                      ))}
+                      <MenuSeparator />
+                      <MenuItem onClick={() => void snooze("custom")}>Custom…</MenuItem>
+                    </MenuSubPopup>
+                  </MenuSub>
                   <MenuSeparator />
                   <MenuSub>
                     <MenuSubTrigger disabled={!state.canCreate || pending}>
-                      Lifecycle <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
+                      Workstream state{" "}
+                      <MenuItemDetail>{lifecycleLabel(item.lifecycle)}</MenuItemDetail>
                     </MenuSubTrigger>
                     <MenuSubPopup>
-                      <MenuRadioGroup value={item.lifecycle} aria-label="Workstream lifecycle">
+                      <MenuRadioGroup value={item.lifecycle} aria-label="Workstream state">
                         {lifecycles.map((lifecycle) => (
                           <MenuRadioItem
                             key={lifecycle}
@@ -326,10 +499,6 @@ function Group({
                     </MenuSubPopup>
                   </MenuSub>
                   <MenuSeparator />
-                  <MenuItem onClick={() => setStatusFilter(null)}>
-                    Use global status filter
-                  </MenuItem>
-                  <MenuSeparator />
                   <MenuGroup className="flex items-center justify-between">
                     <div className="flex min-w-0 flex-wrap items-baseline">
                       <MenuGroupLabel>Visible threads</MenuGroupLabel>
@@ -340,26 +509,13 @@ function Group({
                         {shownCount} of {memberCount} shown
                       </span>
                     </div>
-                    <MenuRadioGroup
-                      value={String(threadWindow.limit)}
-                      className="flex mr-2"
-                      aria-label="Default visible threads"
-                    >
-                      {PERSONAL_THREAD_LIMITS.map((limit) => (
-                        <MenuRadioItem
-                          key={limit}
-                          value={String(limit)}
-                          closeOnClick={false}
-                          className="text-center"
-                          onClick={() => {
-                            threadWindow.setLimit(limit);
-                            threadWindow.setExpanded(false);
-                          }}
-                        >
-                          {limit}
-                        </MenuRadioItem>
-                      ))}
-                    </MenuRadioGroup>
+                    <PersonalWorkstreamVisibleThreads
+                      limit={threadWindow.limit}
+                      onChange={(limit) => {
+                        threadWindow.setLimit(limit);
+                        threadWindow.setExpanded(false);
+                      }}
+                    />
                   </MenuGroup>
                   <MenuSeparator />
                   <MenuItem
@@ -367,8 +523,8 @@ function Group({
                     onClick={() =>
                       void run(async () => {
                         const result = await controller.reorder(item.id, {
-                          afterId: state.workstreams[index - 1]!.id,
-                          beforeId: state.workstreams[index - 2]?.id ?? null,
+                          afterId: openWorkstreams[index - 1]!.id,
+                          beforeId: openWorkstreams[index - 2]?.id ?? null,
                         });
                         return result.ok ? { ok: true, value: undefined } : result;
                       })
@@ -377,12 +533,12 @@ function Group({
                     <ArrowUpIcon aria-hidden /> Move up
                   </MenuItem>
                   <MenuItem
-                    disabled={!state.canCreate || pending || index === state.workstreams.length - 1}
+                    disabled={!state.canCreate || pending || index === openWorkstreams.length - 1}
                     onClick={() =>
                       void run(async () => {
                         const result = await controller.reorder(item.id, {
-                          beforeId: state.workstreams[index + 1]!.id,
-                          afterId: state.workstreams[index + 2]?.id ?? null,
+                          beforeId: openWorkstreams[index + 1]!.id,
+                          afterId: openWorkstreams[index + 2]?.id ?? null,
                         });
                         return result.ok ? { ok: true, value: undefined } : result;
                       })
@@ -404,32 +560,62 @@ function Group({
           }
         />
       </div>
+      {editing === "nameIcon" ? (
+        <form
+          className="grid gap-1 px-2 pb-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const change = controller.setNameIcon;
+            if (!change || !state.canSetNameIcon) return;
+            void run(() => change(item.id, draftNameIcon)).then((result) => {
+              if (result?.ok) setEditing(null);
+            });
+          }}
+        >
+          <WorkstreamNameIconPicker
+            projects={nameIconProjects}
+            value={draftNameIcon}
+            onChange={setDraftNameIcon}
+            disabled={pending}
+          />
+          <div className="flex justify-end gap-1">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={pending}
+              onClick={() => setEditing(null)}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" disabled={pending || !state.canSetNameIcon}>
+              Save
+            </Button>
+          </div>
+        </form>
+      ) : null}
       {!collapsed ? (
         <>
           {children(threadWindow)}
-          {memberCount > threadWindow.limit ? (
-            <div data-workstream-window-footer className="flex items-center gap-2 px-2 py-1">
-              <span aria-hidden className="h-px min-w-0 flex-1 bg-sidebar-border/70" />
-              <Button
-                type="button"
-                variant="ghost-muted"
-                size="sm-pill"
-                aria-expanded={threadWindow.expanded}
-                aria-label={
-                  threadWindow.expanded
-                    ? `Show only ${threadWindow.limit} threads in ${item.name}`
-                    : `Show all ${memberCount} threads in ${item.name}`
-                }
-                onClick={() => threadWindow.setExpanded((value) => !value)}
-              >
-                <ChevronDownIcon
-                  aria-hidden
-                  className={`size-3.5 ${threadWindow.expanded ? "rotate-180" : ""}`}
-                />
-                {threadWindow.expanded ? "Show fewer" : `Show all ${memberCount}`}
-              </Button>
-              <span aria-hidden className="h-px min-w-0 flex-1 bg-sidebar-border/70" />
-            </div>
+          {overflowCount > 0 ? (
+            <button
+              data-workstream-window-footer
+              type="button"
+              className="flex h-4 w-full cursor-pointer items-center justify-center gap-1 rounded-sm px-2 text-2xs leading-none font-normal whitespace-nowrap text-sidebar-muted-foreground outline-hidden before:me-1 before:h-px before:min-w-0 before:flex-1 before:bg-sidebar-border/30 after:ms-1 after:h-px after:min-w-0 after:flex-1 after:bg-sidebar-border/30 hover:text-sidebar-foreground focus-visible:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring pointer-coarse:min-h-6"
+              aria-expanded={threadWindow.expanded}
+              aria-label={
+                threadWindow.expanded
+                  ? `Show only ${threadWindow.limit} threads in ${item.name}`
+                  : `Show ${overflowCount} more ${overflowCount === 1 ? "thread" : "threads"} in ${item.name}`
+              }
+              onClick={() => threadWindow.setExpanded((value) => !value)}
+            >
+              <ChevronDownIcon
+                aria-hidden
+                className={`size-2.5 shrink-0 ${threadWindow.expanded ? "rotate-180" : ""}`}
+              />
+              {threadWindow.expanded ? "Show fewer" : `Show ${overflowCount} more`}
+            </button>
           ) : null}
         </>
       ) : null}
@@ -489,18 +675,28 @@ function Group({
 }
 export function WorkstreamSidebarSection({
   controller,
+  nameIconProjects = [],
   renderMembers,
+  onOpenHistoryThread,
   summaries,
+  rosterTotals,
   unassignedSummary = emptySummary,
   memberCounts,
+  dropTargetId,
+  snoozedIds = new Set<string>(),
 }: {
   controller: PersonalWorkstreamsController;
+  nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
+  dropTargetId?: string | null | undefined;
+  snoozedIds?: ReadonlySet<string>;
+  onOpenHistoryThread?: ((thread: PersonalThreadRef) => void) | undefined;
   renderMembers: (
     id: string | null,
     window?: { limit: PersonalThreadLimit; expanded: boolean },
   ) => ReactNode;
   memberCounts?: ReadonlyMap<string, number>;
   summaries?: ReadonlyMap<string, PersonalThreadSummary>;
+  rosterTotals?: ReadonlyMap<string, number>;
   unassignedSummary?: PersonalThreadSummary;
 }) {
   const state = useAtomValue(controller.state);
@@ -508,6 +704,29 @@ export function WorkstreamSidebarSection({
     personalGroupCollapsedKey(null),
     false,
     collapsedSchema,
+  );
+  // Hiding is separate from each group's own collapsed state so showing again restores it exactly.
+  const [namedHidden, setNamedHidden] = useLocalStorage(
+    personalNamedGroupsHiddenKey,
+    false,
+    collapsedSchema,
+  );
+  const namedGroupsId = useId();
+  const openWorkstreams = openPersonalWorkstreams(state).filter(
+    (entry) => !snoozedIds.has(entry.id),
+  );
+  const namedIds = openWorkstreams.map((entry) => entry.id);
+  const sharedStatus = useSharedPersonalStatusFilter(namedIds);
+  const namedSummary = openWorkstreams.reduce(
+    (total, entry) => {
+      const summary = summaries?.get(entry.id) ?? emptySummary;
+      return {
+        running: total.running + summary.running,
+        attention: total.attention + summary.attention,
+        done: total.done + summary.done,
+      };
+    },
+    { running: 0, attention: 0, done: 0 },
   );
   const containerRef = useRef<HTMLDivElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
@@ -544,7 +763,7 @@ export function WorkstreamSidebarSection({
     setDraggedId(null);
     setInsertion(null);
   };
-  const destination = (event: DragEvent<HTMLDivElement>, targetId: string | null) => {
+  const destination = (event: DragEvent<HTMLDivElement>, targetId: string) => {
     const source = draggedRef.current;
     if (
       !source ||
@@ -553,30 +772,22 @@ export function WorkstreamSidebarSection({
       !event.dataTransfer.types.includes(workstreamDragType)
     )
       return null;
-    const sourceIndex = state.workstreams.findIndex((entry) => entry.id === source);
+    const sourceIndex = openWorkstreams.findIndex((entry) => entry.id === source);
     if (sourceIndex < 0) return null;
-    const others = state.workstreams.filter((entry) => entry.id !== source);
-    let slot: number;
-    if (targetId === null) {
-      // Unassigned is a fixed tail: only its leading gap and header accept a drop.
-      const header = event.currentTarget.querySelector("button");
-      if (!header || event.clientY > header.getBoundingClientRect().bottom) return null;
-      slot = others.length;
-    } else {
-      if (targetId === source) return null;
-      const header = event.currentTarget.querySelector("[data-workstream-header]");
-      if (!header) return null;
-      // Rows can make a group very tall. Header halves must remain reachable
-      // drop targets in both directions regardless of the group's member count.
-      const rect = header.getBoundingClientRect();
-      const index = others.findIndex((entry) => entry.id === targetId);
-      if (index < 0) return null;
-      slot = index + (event.clientY >= rect.top + rect.height / 2 ? 1 : 0);
-    }
+    const others = openWorkstreams.filter((entry) => entry.id !== source);
+    if (targetId === source) return null;
+    const header = event.currentTarget.querySelector("[data-workstream-header]");
+    if (!header) return null;
+    // Rows can make a group very tall. Header halves must remain reachable
+    // drop targets in both directions regardless of the group's member count.
+    const rect = header.getBoundingClientRect();
+    const index = others.findIndex((entry) => entry.id === targetId);
+    if (index < 0) return null;
+    const slot = index + (event.clientY >= rect.top + rect.height / 2 ? 1 : 0);
     if (slot === sourceIndex) return null;
     return { beforeId: others[slot - 1]?.id ?? null, afterId: others[slot]?.id ?? null };
   };
-  const dragOver = (event: DragEvent<HTMLDivElement>, targetId: string | null) => {
+  const dragOver = (event: DragEvent<HTMLDivElement>, targetId: string) => {
     if (!draggedRef.current) return;
     event.stopPropagation();
     const next = destination(event, targetId);
@@ -588,7 +799,7 @@ export function WorkstreamSidebarSection({
       current?.beforeId === next?.beforeId && current?.afterId === next?.afterId ? current : next,
     );
   };
-  const drop = (event: DragEvent<HTMLDivElement>, targetId: string | null) => {
+  const drop = (event: DragEvent<HTMLDivElement>, targetId: string) => {
     if (!draggedRef.current) return;
     event.preventDefault();
     event.stopPropagation();
@@ -607,8 +818,8 @@ export function WorkstreamSidebarSection({
       });
   };
   const focusAfterRemoval = (id: string) => {
-    const index = state.workstreams.findIndex((entry) => entry.id === id);
-    const following = state.workstreams.slice(index + 1).map((entry) => entry.id);
+    const index = openWorkstreams.findIndex((entry) => entry.id === id);
+    const following = openWorkstreams.slice(index + 1).map((entry) => entry.id);
     requestAnimationFrame(() => {
       const sections = containerRef.current?.querySelectorAll<HTMLElement>(
         "[data-native-workstream]",
@@ -653,11 +864,11 @@ export function WorkstreamSidebarSection({
         setDeletePending(false);
       });
   };
-  const insertionLine = (
+  const insertionLine = (atEnd = false) => (
     <div
       aria-hidden
       data-workstream-insertion
-      className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-primary forced-colors:bg-[Highlight]"
+      className={`pointer-events-none absolute inset-x-0 ${atEnd ? "bottom-0" : "top-0"} z-10 h-0.5 bg-primary forced-colors:bg-[Highlight]`}
     />
   );
   return (
@@ -665,6 +876,9 @@ export function WorkstreamSidebarSection({
       ref={containerRef}
       aria-label="Workstreams"
       onDragEnd={clearDrag}
+      onDragOver={() => {
+        if (draggedRef.current) setInsertion(null);
+      }}
       onDrop={clearDrag}
       onKeyDown={(event) => {
         if (event.key === "Escape") clearDrag();
@@ -687,62 +901,37 @@ export function WorkstreamSidebarSection({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInsertion(null);
       }}
     >
-      {state.workstreams.map((item) => (
-        <div
-          key={item.id}
-          className="relative py-1"
-          onDragOver={(event) => dragOver(event, item.id)}
-          onDrop={(event) => drop(event, item.id)}
+      {openWorkstreams.length > 0 ? (
+        <PersonalWorkstreamsHeader
+          summary={namedSummary}
+          hidden={namedHidden}
+          onHiddenChange={setNamedHidden}
+          onExpandAll={() => setPersonalGroupsCollapsed(namedIds, false)}
+          onCollapseAll={() => setPersonalGroupsCollapsed(namedIds, true)}
+          statusFilter={sharedStatus.filter}
+          onStatusFilterChange={sharedStatus.setFilter}
+          controlsId={namedGroupsId}
+        />
+      ) : null}
+      <div data-workstream-group-slot className="relative py-1">
+        <section
+          data-native-workstream="null"
+          style={{
+            backgroundColor:
+              dropTargetId === null && unassignedCollapsed
+                ? "color-mix(in oklab, var(--primary) 3.25%, transparent)"
+                : undefined,
+          }}
+          data-thread-drop-target={dropTargetId === null ? "" : undefined}
+          className={`min-w-0 rounded-md ${dropTargetId === null ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
         >
-          {insertion?.afterId === item.id ? insertionLine : null}
-          <Group
-            item={item}
-            controller={controller}
-            summary={summaries?.get(item.id) ?? emptySummary}
-            memberCount={memberCounts?.get(item.id) ?? 0}
-            dragging={draggedId === item.id}
-            confirmingDelete={deleteTarget?.id === item.id}
-            onDeleteRequested={() => {
-              removedRef.current = false;
-              setDeleteTarget({ id: item.id, name: item.name });
-            }}
-            onDragStart={(event) => {
-              if (
-                event.target instanceof Element &&
-                event.target.closest("[data-workstream-header-control]")
-              ) {
-                event.preventDefault();
-                return;
-              }
-              if (!state.canCreate || reorderPending.current) {
-                event.preventDefault();
-                return;
-              }
-              event.dataTransfer.setData(workstreamDragType, item.id);
-              event.dataTransfer.effectAllowed = "move";
-              draggedRef.current = item.id;
-              setDraggedId(item.id);
-              setInsertion(null);
-            }}
-          >
-            {(window) => renderMembers(item.id, window)}
-          </Group>
-        </div>
-      ))}
-      <div
-        className="relative py-1"
-        onDragOver={(event) => dragOver(event, null)}
-        onDrop={(event) => drop(event, null)}
-      >
-        {insertion?.afterId === null ? insertionLine : null}
-        <section data-native-workstream="null" className="min-w-0">
           <button
             type="button"
             aria-label={`${unassignedCollapsed ? "Expand" : "Collapse"} Unassigned`}
             aria-description={formatPersonalThreadCount(unassignedSummary.total)}
             aria-expanded={!unassignedCollapsed}
             onClick={() => setUnassignedCollapsed((value) => !value)}
-            className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            className="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
             <ChevronDownIcon
               aria-hidden
@@ -756,6 +945,60 @@ export function WorkstreamSidebarSection({
           {!unassignedCollapsed ? renderMembers(null) : null}
         </section>
       </div>
+      {/* The container stays mounted so the disclosure's aria-controls always resolves. */}
+      <div id={namedGroupsId} hidden={namedHidden} className="relative">
+        {!namedHidden
+          ? openWorkstreams.map((item) => (
+              <div
+                key={item.id}
+                data-workstream-group-slot
+                className="relative py-1"
+                onDragOver={(event) => dragOver(event, item.id)}
+                onDrop={(event) => drop(event, item.id)}
+              >
+                {insertion?.afterId === item.id ? insertionLine() : null}
+                <Group
+                  item={item}
+                  nameIconProjects={nameIconProjects}
+                  controller={controller}
+                  summary={summaries?.get(item.id) ?? emptySummary}
+                  rosterTotal={rosterTotals?.get(item.id) ?? summaries?.get(item.id)?.total ?? 0}
+                  memberCount={memberCounts?.get(item.id) ?? 0}
+                  snoozedIds={snoozedIds}
+                  dragging={draggedId === item.id}
+                  dropTarget={dropTargetId === item.id}
+                  confirmingDelete={deleteTarget?.id === item.id}
+                  onDeleteRequested={() => {
+                    removedRef.current = false;
+                    setDeleteTarget({ id: item.id, name: item.name });
+                  }}
+                  onDragStart={(event) => {
+                    if (
+                      event.target instanceof Element &&
+                      event.target.closest("[data-workstream-header-control]")
+                    ) {
+                      event.preventDefault();
+                      return;
+                    }
+                    if (!state.canCreate || reorderPending.current) {
+                      event.preventDefault();
+                      return;
+                    }
+                    event.dataTransfer.setData(workstreamDragType, item.id);
+                    event.dataTransfer.effectAllowed = "move";
+                    draggedRef.current = item.id;
+                    setDraggedId(item.id);
+                    setInsertion(null);
+                  }}
+                >
+                  {(window) => renderMembers(item.id, window)}
+                </Group>
+              </div>
+            ))
+          : null}
+        {insertion?.afterId === null ? insertionLine(true) : null}
+      </div>
+      <ClosedWorkstreams controller={controller} state={state} onOpenThread={onOpenHistoryThread} />
       {deleteTarget ? (
         <AlertDialog
           open

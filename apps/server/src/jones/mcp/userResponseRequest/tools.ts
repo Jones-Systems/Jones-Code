@@ -1,10 +1,11 @@
+import { hiddenFromOutsideClients } from "../../../mcp/McpInvocationContext.ts";
 import { McpCapabilityUnavailableError, OrchestratorMcpFailure } from "@t3tools/contracts";
 import {
   UserResponseRequestInput,
   UserResponseRequestResult,
 } from "@t3tools/contracts/jones/userResponseRequest";
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/ai";
+import { Tool, Toolkit, McpSchema } from "effect/ai";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { UserResponseRequestMcpService } from "./UserResponseRequestMcpService.ts";
@@ -22,5 +23,6 @@ export const UserResponseRequestToolkit = Toolkit.make(
     .annotate(Tool.Readonly, false)
     .annotate(Tool.Destructive, false)
     .annotate(Tool.Idempotent, true)
-    .annotate(Tool.OpenWorld, false),
+    .annotate(Tool.OpenWorld, false)
+    .annotate(McpSchema.EnabledWhen, hiddenFromOutsideClients),
 );

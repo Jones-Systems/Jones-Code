@@ -1,3 +1,4 @@
+import { resolveNavigationAttentionPill as resolveThreadStatusPill } from "./attention";
 import * as DateTime from "effect/DateTime";
 import {
   effectiveSnoozed,
@@ -9,7 +10,6 @@ import {
   hasUnseenCompletion,
   resolveSidebarThreadStatus,
   resolveSidebarV2TopStatus,
-  resolveThreadStatusPill,
 } from "../../components/Sidebar.logic";
 
 type ThreadStatus = "working" | "input" | "done";

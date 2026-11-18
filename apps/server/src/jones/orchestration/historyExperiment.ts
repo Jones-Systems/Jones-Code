@@ -50,7 +50,7 @@ const source = NodeFS.readFileSync(
   "utf8",
 );
 const match = source.match(
-  /SELECT payload_json FROM orchestration_v2_projection_messages AS message[\s\S]*?ORDER BY created_at ASC, message_id ASC/,
+  /SELECT payload_json FROM \(\s*SELECT message\.payload_json,[^`]*?FROM json_each\(\$\{cohortMessageIds\}\) AS wanted[^`]*?ORDER BY created_at ASC, message_id ASC(?=\s*`)/,
 );
 NodeAssert.ok(match, "V2 bounded message SQL must still exist");
 const historyBaselineSql = match[0];
@@ -69,7 +69,7 @@ export function historyStatements(ids: ReadonlyArray<string>) {
     return "?";
   });
   return [
-    { name: "production-or", text, values },
+    { name: "production-union", text, values },
     {
       name: "disjoint-union",
       text: `SELECT payload_json FROM (

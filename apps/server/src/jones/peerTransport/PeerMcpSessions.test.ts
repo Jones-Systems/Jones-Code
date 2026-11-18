@@ -303,6 +303,68 @@ it.effect(
     }),
 );
 
+it.effect(
+  "a stalled handshake fails at the link's probe bound, records its generation, and dispatches nothing",
+  () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const outcomes: Array<{ readonly generation: string; readonly error: string | null }> = [];
+      let opens = 0;
+      let calls = 0;
+      const recordingLinks = Layer.mock(PeerLinks.PeerLinks)({
+        resolve: () =>
+          Effect.succeed({
+            url: "https://peer.invalid",
+            token: "synthetic-token",
+            generation: "generation-1",
+            link: {},
+          } as PeerLinks.ResolvedPeerLink),
+        currentGeneration: () => Effect.succeedSome("generation-1"),
+        recordOutcome: (_environmentId, generation, outcome) =>
+          Effect.sync(() => {
+            outcomes.push({ generation, error: outcome.error });
+          }),
+      });
+      const http = HttpClient.make((request) =>
+        Effect.gen(function* () {
+          if (request.body._tag !== "Uint8Array") return yield* Effect.die("Expected JSON request");
+          const body = JSON.parse(new TextDecoder().decode(request.body.body));
+          if (body.method === "initialize") {
+            if (++opens === 1) {
+              yield* Deferred.succeed(started, undefined);
+              return yield* Effect.never;
+            }
+            return HttpClientResponse.fromWeb(request, initialization(body.id, "recovered"));
+          }
+          if (body.method === "notifications/initialized")
+            return HttpClientResponse.fromWeb(request, new Response(null, { status: 202 }));
+          calls++;
+          return HttpClientResponse.fromWeb(request, successfulCall(body.id));
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const client = yield* PeerMcpClient.PeerMcpClient;
+        const stalled = yield* client.call(input).pipe(Effect.flip, Effect.forkChild);
+        yield* Deferred.await(started);
+        // A remote route's handshake bound, well inside the 60-second per-request deadline.
+        yield* TestClock.adjust("10 seconds");
+        expect(yield* Fiber.join(stalled)).toMatchObject({
+          code: "orchestration_error",
+          message: "The linked environment stopped answering.",
+        });
+        expect(calls).toBe(0);
+        expect(outcomes).toEqual([
+          { generation: "generation-1", error: "The linked environment stopped answering." },
+        ]);
+        // The failed opening is not cached: the next call opens afresh and clears the failure.
+        expect(yield* client.call(input)).toEqual({ ok: true });
+        expect(opens).toBe(2);
+        expect(calls).toBe(1);
+        expect(outcomes.at(-1)).toEqual({ generation: "generation-1", error: null });
+      }).pipe(Effect.provide(clientLayer(http, recordingLinks)));
+    }),
+);
+
 it.effect("a link change after initialization is checked again immediately before dispatch", () =>
   Effect.gen(function* () {
     let checks = 0;

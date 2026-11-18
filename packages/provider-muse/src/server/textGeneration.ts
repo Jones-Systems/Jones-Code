@@ -1,4 +1,3 @@
-import { threadTitleVerdict } from "@t3tools/provider-core/server/jones/ThreadTitleAssessment";
 import {
   DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
   MUSE_DEFAULT_MODEL,
@@ -23,7 +22,9 @@ import {
 } from "./sdk.ts";
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
+import { threadTitleVerdict } from "@t3tools/provider-core/server/jones/ThreadTitleAssessment";
 import {
+  generatedThreadTitle,
   investigationUnsupported,
   remoteRequestEvaluationUnsupported,
   TranscriptionPostProcessingOutput,
@@ -37,7 +38,6 @@ import {
 import {
   sanitizeCommitSubject,
   sanitizePrTitle,
-  sanitizeThreadTitle,
   toJsonSchemaObject,
 } from "@t3tools/provider-core/server/textGenerationUtils";
 
@@ -351,7 +351,7 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
       modelSelection: input.modelSelection,
     });
     return {
-      title: sanitizeThreadTitle(generated.title),
+      title: yield* generatedThreadTitle(generated.title),
       ...(input.titleAssessment
         ? {
             assessment: threadTitleVerdict(generated),

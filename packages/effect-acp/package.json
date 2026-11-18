@@ -38,9 +38,9 @@
   },
   "scripts": {
     "typecheck": "vp run tsrs:typecheck",
-    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir .",
-    "generate": "node scripts/generate.ts"
+    "generate": "node scripts/generate.ts",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit"
   },
   "dependencies": {
     "effect": "catalog:"

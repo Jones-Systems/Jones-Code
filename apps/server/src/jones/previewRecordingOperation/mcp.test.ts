@@ -10,6 +10,7 @@ import {
   type PreviewAutomationRequest,
   type PreviewAutomationStreamEvent,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -83,6 +84,10 @@ it("advertises the recording operation read in both actual preview toolkits", ()
     expect(tool).toBeDefined();
     if (tool === undefined) return;
     expect(Tool.getJsonSchema(tool)).toMatchObject({ type: "object", required: ["tabId"] });
+    // It reads as its calling thread: startup requires this exact owner on such a declaration.
+    expect(Context.getOrUndefined(tool.annotations, McpSchema.EnabledWhen)).toBe(
+      McpInvocationContext.hiddenFromOutsideClients,
+    );
   }
 });
 
@@ -175,6 +180,24 @@ it.effect(
             result: { status: "unknown", handle },
           });
         }
+        const readonlyScope = {
+          ...invocation,
+          client: { sessionId: "read-client", label: "test", access: "read-only" as const },
+        };
+        expect((yield* call({ tabId, handle }, readonlyScope)).structuredContent).toMatchObject({
+          result: { status: "unknown", handle },
+        });
+        expect(
+          (yield* call(
+            { tabId, handle },
+            {
+              ...readonlyScope,
+              thread: { ...invocation.thread, providerSessionId: "other-session" },
+            },
+          )).structuredContent,
+        ).toMatchObject({
+          result: { status: "unavailable", reason: "not_retained" },
+        });
         expect({ hostRequests, evidenceCalls }).toEqual(before);
         expect(
           yield* broker
@@ -240,14 +263,17 @@ it.effect("validates selectors and enforces caller access before the broker read
     ]) {
       expect(yield* call(args).pipe(Effect.flip)).toMatchObject({ _tag: "InvalidParams" });
     }
-    for (const scope of [
+    const denied = yield* call(
+      { tabId },
       { ...invocation, capabilities: new Set<McpInvocationContext.McpCapability>() },
-      { ...invocation, thread: undefined },
-    ]) {
-      const result = yield* call({ tabId }, scope);
-      expect(result.isError).toBe(true);
-      expect(JSON.stringify(result)).not.toContain("not_retained");
-    }
+    );
+    expect(denied.isError).toBe(true);
+    expect(JSON.stringify(denied)).not.toContain("not_retained");
+    const hidden = yield* call({ tabId }, { ...invocation, thread: undefined }).pipe(Effect.flip);
+    expect(hidden).toMatchObject({
+      _tag: "InvalidParams",
+      message: "Tool 'preview_recording_operation' not found",
+    });
     const readonly = yield* call(
       { tabId },
       {

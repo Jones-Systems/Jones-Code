@@ -7,7 +7,8 @@
     "apps/web/src/jones/devicePresentation/identityProtection.test.ts",
     "apps/web/src/jones/devicePresentation/SidebarDevice.browser.test.tsx",
     "apps/web/src/jones/devicePresentation/DeviceDisplayNameEditor.browser.test.tsx",
-    "apps/server/src/jones/devicePresentation/settings.test.ts"
+    "apps/server/src/jones/devicePresentation/settings.test.ts",
+    "apps/web/src/jones/devicePresentation/PersonalMachineSymbol.browser.test.tsx"
   ],
   "hookPaths": [],
   "tombstones": [],

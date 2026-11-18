@@ -9,6 +9,7 @@ vi.mock("../../state/workstreamsPersonal", () => ({ usePersonalWorkstreams: vi.f
 vi.mock("../../state/environments", () => ({ useEnvironments: vi.fn() }));
 import {
   showPersonalFailure,
+  showPersonalAssignment,
   reconcilePersonalConditions,
   personalFailureMessage,
 } from "./personalNotifications";
@@ -52,6 +53,26 @@ describe("personal Workstreams notifications", () => {
       canCreate: false,
     });
     expect(manager.close).toHaveBeenCalledWith("toast-id");
+  });
+  it("briefly confirms assignment and unassignment, including the pinned-thread note", () => {
+    manager.add.mockClear();
+    showPersonalAssignment("HQ - Threads and Work", true);
+    expect(manager.add).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "success",
+        title: "Assigned to HQ - Threads and Work",
+        timeout: 2_000,
+        description: "This thread remains in Pinned.",
+      }),
+    );
+    showPersonalAssignment(null, false);
+    expect(manager.add).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "success",
+        title: "Thread is now Unassigned",
+        timeout: 2_000,
+      }),
+    );
   });
   it("maps conflict and uncertain writes to product text", () => {
     expect(

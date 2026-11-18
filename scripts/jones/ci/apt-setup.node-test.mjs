@@ -158,6 +158,32 @@ NodeTest.test(
   },
 );
 
+NodeTest.test("the GitHub AWS runner can fall back after an APT download deadline", async () => {
+  const awsMirrors =
+    "http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\nhttps://security.ubuntu.com/ubuntu/\tpriority:3\n";
+  const s = scenario({
+    files: {
+      "/etc/apt/apt-mirrors.txt": awsMirrors,
+      "/etc/apt/sources.list.d/ubuntu.sources": sources.replace(
+        "URIs: mirror+file:/etc/apt/apt-mirrors.txt\nSuites: noble-security",
+        "URIs: http://security.ubuntu.com/ubuntu\nSuites: noble-security",
+      ),
+    },
+    intercept: (_argv, _settings, count) =>
+      count === 2 ? network({ stderr: "", timedOut: true }) : undefined,
+  });
+  await setupApt(s.options);
+
+  const [, , ...isolated] = aptCalls(s);
+  NodeAssert.equal(isolated.length, 4);
+  for (const { argv } of isolated)
+    NodeAssert.deepEqual(argv.slice(1, 1 + isolation.length), isolation);
+  NodeAssert.ok(s.calls.some(({ argv }) => argv.includes("ubuntu-keyring")));
+  const written = s.calls.find(({ argv }) => argv[0] === "/usr/bin/tee");
+  NodeAssert.equal(written.settings.input, sources.replace(/^URIs:.*$/gm, `URIs: ${candidate}`));
+  NodeAssert.ok(isolated.at(-1).argv.includes("--no-download"));
+});
+
 NodeTest.test(
   "clean deadline may fall back; candidate failure never tries healthy originals",
   async () => {
@@ -231,8 +257,15 @@ NodeTest.test(
     );
     for (const change of [
       { sources: sources.replace("noble-backports", "jammy") },
+      {
+        sources: sources.replace(
+          "mirror+file:/etc/apt/apt-mirrors.txt",
+          "https://security.ubuntu.com/ubuntu/",
+        ),
+      },
       { sources: sources.replaceAll("ubuntu-archive-keyring.gpg", "other.gpg") },
       { mirrors: mirrors.replace("priority:3", "priority:4") },
+      { mirrors: mirrors.replace("azure.archive.ubuntu.com", "other.example") },
       { sources: `${sources}Trusted: yes\n` },
       { sources: `${sources}Check-Valid-Until: no\n` },
       { sources: sources.replace("Components: main", "Snapshot: test\nComponents: main") },

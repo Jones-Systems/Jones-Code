@@ -10,15 +10,23 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 import { qualificationDecision, nativeBlockMatrixDecision } from "./qualificationResult.mjs";
 const [output, installedRoot, scope = "full", priorDirectory] = process.argv.slice(2);
-const diagnosticScope = ["observer-diagnostic", "observer-control"].includes(scope);
+const diagnosticModes =
+  scope === "observer-cadence"
+    ? ["cadence-standard", "cadence-reduced"]
+    : scope === "observer-control"
+      ? ["cpu-stat-only"]
+      : scope === "observer-diagnostic" || scope === "observer-residency"
+        ? ["full"]
+        : [];
+const diagnosticScope = diagnosticModes.length > 0;
 if (
   diagnosticScope &&
-  (HostProcess.Platform.defaultValue() !== "linux" ||
+  (HostProcess.Platform.defaultValue() !== (scope === "observer-cadence" ? "darwin" : "linux") ||
     process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
     (scope === "observer-control" && !NodePath.isAbsolute(priorDirectory ?? "")))
 )
-  throw new Error("Manual Linux diagnostic route requires its bound inputs");
-if (!["full", "source-evidence", "observer-diagnostic", "observer-control"].includes(scope))
+  throw new Error("Manual observer diagnostic requires its selected platform and bound inputs");
+if (!diagnosticScope && !["full", "source-evidence"].includes(scope))
   throw new Error("Unknown qualification scope");
 if (!NodePath.isAbsolute(output ?? "") || !NodePath.isAbsolute(installedRoot ?? ""))
   throw new Error("ci-run.mjs <absolute reports directory> <absolute extracted archive directory>");
@@ -145,18 +153,20 @@ async function report(name, path) {
       name,
     );
 }
-async function runBaseline(profile) {
-  const baseline = NodePath.join(output, `baseline-${profile}.json`);
-  await node(`baseline-${profile}`, [
+async function runBaseline(profile, mode) {
+  const name = mode === "bounded-churn" ? `baseline-bounded-${profile}` : `baseline-${profile}`;
+  const baseline = NodePath.join(output, `${name}.json`);
+  await node(name, [
     "scripts/jones/serverParallelism/baseline.mjs",
     baseline,
     profile,
+    ...(mode ? [mode] : []),
   ]);
   try {
     const original = await NodeFSP.readFile(baseline, "utf8"),
       value = JSON.parse(original),
       result = results.at(-1);
-    await NodeFSP.writeFile(NodePath.join(output, `baseline-${profile}.initial.json`), original, {
+    await NodeFSP.writeFile(NodePath.join(output, `${name}.initial.json`), original, {
       flag: "wx",
       mode: 0o600,
     });
@@ -200,12 +210,12 @@ async function runBaseline(profile) {
     );
   } catch (cause) {
     results.push({
-      name: `baseline-cleanup-${profile}`,
+      name: `${name}-cleanup`,
       outcome: "failed",
       error: String(cause),
     });
   }
-  await report(`baseline-${profile}`, baseline);
+  await report(name, baseline);
   return baseline;
 }
 
@@ -231,48 +241,50 @@ try {
     sourceManifest,
   ]);
   const manifests = [{ form: "source", path: sourceManifest }];
-  const requireDesktop = NodeModule.createRequire(NodePath.join(root, "apps/desktop/package.json"));
-  let electron;
-  try {
-    electron = requireDesktop("electron");
-  } catch {
-    /* The attempted manifest below records missing runtime as a failure. */
-  }
-  const roots = await NodeFSP.readdir(installedRoot).catch(() => []);
-  const sea =
-    roots.length === 1
-      ? NodePath.join(installedRoot, roots[0], "t3")
-      : NodePath.join(installedRoot, "MISSING-INSTALLED-LAYOUT");
-  for (const [form, executable, entry] of scope === "full"
-    ? [
-        ["bundle", process.execPath, NodePath.join(root, "apps/server/dist/bin.mjs")],
-        [
-          "electron",
-          electron ?? NodePath.join(output, "MISSING-ELECTRON"),
-          NodePath.join(root, "apps/server/dist/bin.mjs"),
-        ],
-        ["sea", sea, "-"],
-      ]
-    : []) {
-    const path = NodePath.join(output, `${form}-command.json`);
-    await node(`manifest-${form}`, [
-      "scripts/jones/serverParallelism/artifact-command.mjs",
-      form,
-      executable,
-      entry,
-      path,
-    ]);
-    manifests.push({ form, path });
+  if (scope === "full") {
+    // Loading Electron can download its runtime, which only the full matrix measures.
+    const requireDesktop = NodeModule.createRequire(
+      NodePath.join(root, "apps/desktop/package.json"),
+    );
+    let electron;
+    try {
+      electron = requireDesktop("electron");
+    } catch {
+      /* The attempted manifest below records missing runtime as a failure. */
+    }
+    const roots = await NodeFSP.readdir(installedRoot).catch(() => []);
+    const sea =
+      roots.length === 1
+        ? NodePath.join(installedRoot, roots[0], "t3")
+        : NodePath.join(installedRoot, "MISSING-INSTALLED-LAYOUT");
+    for (const [form, executable, entry] of [
+      ["bundle", process.execPath, NodePath.join(root, "apps/server/dist/bin.mjs")],
+      [
+        "electron",
+        electron ?? NodePath.join(output, "MISSING-ELECTRON"),
+        NodePath.join(root, "apps/server/dist/bin.mjs"),
+      ],
+      ["sea", sea, "-"],
+    ]) {
+      const path = NodePath.join(output, `${form}-command.json`);
+      await node(`manifest-${form}`, [
+        "scripts/jones/serverParallelism/artifact-command.mjs",
+        form,
+        executable,
+        entry,
+        path,
+      ]);
+      manifests.push({ form, path });
+    }
   }
   if (diagnosticScope) {
-    const mode = scope === "observer-control" ? "cpu-stat-only" : "full";
+    const { verifyDiagnosticArtifacts } = await import("./observer-diagnostic.mjs");
     let baseline;
     let prior;
-    if (mode === "full") baseline = await runBaseline("laptop");
+    if (scope !== "observer-control") baseline = await runBaseline("laptop");
     else {
       baseline = NodePath.join(output, "baseline-laptop.json");
       prior = NodePath.join(priorDirectory, "observer-full.json");
-      const { verifyDiagnosticArtifacts } = await import("./observer-diagnostic.mjs");
       const value = JSON.parse(await NodeFSP.readFile(prior, "utf8"));
       if (
         value.mode !== "full" ||
@@ -287,37 +299,44 @@ try {
         { flag: "wx", mode: 0o600 },
       );
     }
-    const name = mode === "full" ? "observer-full" : "observer-cpu-stat-only";
-    const diagnosticOutput = NodePath.join(output, `${name}.json`);
-    const succeeded = await node(name, [
-      "scripts/jones/serverParallelism/observer-diagnostic.mjs",
-      sourceManifest,
-      diagnosticOutput,
-      baseline,
-      mode,
-      ...(prior ? [prior] : []),
-    ]);
-    let value;
-    try {
-      value = JSON.parse(await NodeFSP.readFile(diagnosticOutput, "utf8"));
-    } catch {
-      /* Missing evidence remains incomplete and closes native admission. */
+    diagnosticComplete = true;
+    for (const mode of diagnosticModes) {
+      const name = `observer-${mode}`;
+      const diagnosticOutput = NodePath.join(output, `${name}.json`);
+      const succeeded = await node(name, [
+        "scripts/jones/serverParallelism/observer-diagnostic.mjs",
+        sourceManifest,
+        diagnosticOutput,
+        baseline,
+        mode,
+        ...(prior ? [prior] : []),
+      ]);
+      let value;
+      try {
+        value = JSON.parse(await NodeFSP.readFile(diagnosticOutput, "utf8"));
+      } catch {
+        /* Missing evidence remains incomplete and closes native admission. */
+      }
+      const complete =
+        succeeded &&
+        value?.source === source &&
+        value?.sourceTree === sourceTree &&
+        value?.mode === mode &&
+        (await verifyDiagnosticArtifacts(value, diagnosticOutput));
+      diagnosticComplete = diagnosticComplete && complete;
+      reports.push({
+        name,
+        path: diagnosticOutput,
+        eligible: false,
+        outcome: value?.outcome ?? "unknown",
+        cleanupProved: value?.cleanupProved ?? null,
+      });
+      requireRetirement(
+        value?.cleanupProved === true && results.at(-1)?.capturedExit === true,
+        name,
+      );
     }
-    const { verifyDiagnosticArtifacts } = await import("./observer-diagnostic.mjs");
-    diagnosticComplete =
-      succeeded &&
-      value?.source === source &&
-      value?.sourceTree === sourceTree &&
-      value?.mode === mode &&
-      (await verifyDiagnosticArtifacts(value, diagnosticOutput));
-    reports.push({
-      name,
-      path: diagnosticOutput,
-      eligible: false,
-      outcome: value?.outcome ?? "unknown",
-      cleanupProved: value?.cleanupProved ?? null,
-    });
-    requireRetirement(value?.cleanupProved === true && results.at(-1)?.capturedExit === true, name);
+    if (scope === "observer-residency") await runBaseline("laptop", "bounded-churn");
   } else {
     for (const profile of ["laptop", "vps"]) {
       const baseline = await runBaseline(profile);
@@ -465,7 +484,8 @@ try {
       !admissionClosed &&
       reports.length > 0 &&
       reports.every((value) => value.cleanupProved === true) &&
-      results.filter((value) => value.name.startsWith("observer-")).length === 1 &&
+      results.filter((value) => value.name.startsWith("observer-")).length ===
+        diagnosticModes.length &&
       results
         .filter((value) => value.name.startsWith("observer-"))
         .every((value) => value.capturedExit === true);

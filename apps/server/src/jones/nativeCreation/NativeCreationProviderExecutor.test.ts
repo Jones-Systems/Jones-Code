@@ -25,6 +25,7 @@ import packageJson from "../../../package.json" with { type: "json" };
 import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { NativeCreationExecutionReferenceV2 } from "./NativeCreationExecutionTypes.ts";
@@ -309,6 +310,9 @@ const fixture = Effect.gen(function* () {
           revoke: () => Effect.succeed(false),
           revokeAllExcept: () => Effect.succeed([]),
           setLastConnectedAt: () => Effect.void,
+          // The fixture session is not bound to a proof key.
+          getProofKeyThumbprint: () => Effect.succeedNone,
+          revokeByProofKey: () => Effect.succeed([]),
         }),
       ),
     ),
@@ -507,7 +511,7 @@ function codexReplayPreamble(input: {
           approvalPolicy: "never",
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },
-          summary: "detailed",
+          summary: "auto",
         },
       },
     },
@@ -674,12 +678,21 @@ const scenario = (mode: Mode) =>
               },
             },
             { type: "emit_inbound", frame: { id: 3, result: {} } },
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 4,
+                method: "config/read",
+                params: { cwd: resources.worktreePath, includeLayers: false },
+              },
+            },
+            { type: "emit_inbound", frame: { id: 4, result: { config: {}, origins: {} } } },
             ...preamble.slice(startIndex).map((entry) =>
               (entry.type === "expect_outbound" || entry.type === "emit_inbound") &&
               Predicate.isObject(entry.frame)
                 ? {
                     ...entry,
-                    frame: { ...entry.frame, ...(entry.label === "turn/start" ? { id: 4 } : {}) },
+                    frame: { ...entry.frame, ...(entry.label === "turn/start" ? { id: 5 } : {}) },
                   }
                 : entry,
             ),
@@ -688,15 +701,15 @@ const scenario = (mode: Mode) =>
             const index = entries.findIndex(
               (entry) => entry.type === "emit_inbound" && entry.label === "turn/start",
             );
-            entries[index] = {
+            entries.splice(index, entries.length - index, {
               type: "emit_inbound",
               label: "turn/start",
-              frame: { id: 4, error: { code: -32000, message: "Synthetic start rejected" } },
-            };
+              frame: { id: 5, error: { code: -32000, message: "Synthetic start rejected" } },
+            });
           }
-          const factory = makeCodexReplayClientFactory({
-            transcript: makeCodexReplayTranscript({ scenario: `native-${mode}`, entries }),
-          });
+          const transcript = makeCodexReplayTranscript({ scenario: `native-${mode}`, entries });
+          const replay = yield* CodexReplay.makeReplayDriver(transcript);
+          const factory = makeCodexReplayClientFactory({ transcript, driver: replay });
           let opened = 0;
           const requests: Array<string> = [];
           const settings = yield* decodeEffectCodexSettings({});
@@ -854,6 +867,11 @@ const scenario = (mode: Mode) =>
               modelSelection: original.history.intent.binding.providerModelSelection,
               runtimePolicy: policy,
               nativeCreationGuard: guard,
+              revalidateStartAdmission: Guard.assertNativeProviderStartOperation(
+                guard,
+                f.command.threadId,
+                f.command.runId,
+              ),
             });
             const acknowledgement = Guard.readNativeProviderAcknowledgement(guard);
             if (acknowledgement === undefined)
@@ -873,8 +891,13 @@ const scenario = (mode: Mode) =>
           )
             expected.push("thread/inject_items");
           if (mode === "transport-success" || mode === "transport-failure")
-            expected.push("turn/start");
+            expected.push("config/read", "turn/start");
           assert.deepEqual(requests, expected);
+          const replayState = yield* Ref.get(replay.state);
+          assert.isNull(replayState.failure, replayState.failure?.message);
+          if (mode === "transport-success" || mode === "transport-failure") {
+            assert.strictEqual(replayState.cursor, transcript.entries.length);
+          }
           if (mode !== "transport-success")
             assert.isUndefined(Guard.readNativeProviderAcknowledgement(guard));
           if (result._tag === "Failure") return yield* result.failure;
@@ -894,6 +917,9 @@ const scenario = (mode: Mode) =>
       Start.ProviderTurnStartServiceV2,
       Start.ProviderTurnStartServiceV2.of({
         start: () => Effect.void,
+        // Only the effect worker fails a starting run; this executor never does.
+        failStartingRun: () =>
+          Effect.die("Unexpected failStartingRun in the native executor fixture"),
         startNative: (input) =>
           Effect.gen(function* () {
             const receipts = yield* f.sql`SELECT 1 FROM orchestration_command_receipts

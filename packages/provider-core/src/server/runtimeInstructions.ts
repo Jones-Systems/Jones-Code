@@ -1,14 +1,16 @@
+import type { JonesAppIdentity } from "@t3tools/contracts/jones/organizationMetadata";
+
 import { buildAppIdentityInstructions } from "./jones/AppIdentity.ts";
 
 /** Session-invariant; harnesses with a native system-prompt append can carry it once per session. */
 export const PULL_REQUEST_LINKING_INSTRUCTIONS = `<pull_request_linking>
-Link each PR you create, take over, or push to: link_pull_request, or link_pull_requests for several, full URL, every stack layer, as your next call. Host tools do not link for you. If linking fails, say so. Skip PRs you only read or review, and PRs named only as background. Call watch_pull_request when asked to monitor or babysit, or when work you were asked to do, such as a merge, still waits on checks or reviews, even after an earlier unwatch. Finish any needed branch update and push first, then watch and end your turn. Otherwise act now or hand back. Delegated children never watch, even if the brief says babysit. After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>. Links and watches persist across pushes. For PR waits, no sleep, loops, gh --watch, Monitor or ScheduleWakeup. Before finishing PR work, call list_thread_pull_requests and link any PR from your work that is missing. Do not link unrelated PRs mentioned only as background. Before handback, call unwatch_pull_request on any PR you watch.
+Link each PR you create, take over, or push to: link_pull_request, or link_pull_requests for several, full URL, every stack layer, as your next call. Host tools don't link for you. If linking fails, say so. Skip PRs you only read or review and PRs named only as background. Call watch_pull_request when asked to monitor or babysit, or when work you were asked to do, such as a merge, still waits on checks or reviews, even after an earlier unwatch. Finish any needed branch update and push first, then watch and end your turn. Otherwise act now or hand back. Delegated children never watch, even if the brief says babysit. After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>. Links and watches persist across pushes. For PR waits, no sleep, loops, gh --watch, Monitor or ScheduleWakeup. Before finishing PR work, call list_thread_pull_requests and link any PR from your work that is missing. Do not link unrelated PRs mentioned only as background. Before handback, call unwatch_pull_request on any PR you watch.
 </pull_request_linking>`;
 
 /** Omit model and effort when the harness manages them dynamically. */
 export function buildRuntimeInstructions(runtime: {
   readonly harness: string;
-  readonly appIdentity?: import("@t3tools/contracts/jones/organizationMetadata").JonesAppIdentity;
+  readonly appIdentity?: JonesAppIdentity;
   readonly model?: string | undefined;
   readonly modelName?: string | undefined;
   readonly reasoningEffort?: string | undefined;
@@ -23,7 +25,11 @@ export function buildRuntimeInstructions(runtime: {
     modelName && modelName !== model ? `${modelName} (model slug: ${model})` : model;
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
-  const runtimeInfo = `<runtime_info>In case you're asked: you are running ${runtime.appIdentity === undefined ? "" : `in ${runtime.appIdentity.productName} `}through the ${harness} harness${modelInfo}${effortInfo}. ${buildAppIdentityInstructions(runtime.appIdentity)} No need to mention this otherwise. You can embed images, video, and audio in your response using Markdown image syntax with absolute file paths. Link any other file you produce using its absolute path so the user can open it in the app files viewer.</runtime_info>`;
+  const remoteFileLinks =
+    runtime.appIdentity?.productId === "jones-code"
+      ? " For a file on another Jones Code computer, use Markdown `[name](t3-file://v1/<encoded environment ID>/<encoded absolute path>)`, percent-encoding each segment separately. Use the exact environment ID of the computer holding the file."
+      : "";
+  const runtimeInfo = `<runtime_info>In case you're asked: you are running ${runtime.appIdentity === undefined ? "" : `in ${toSingleLine(runtime.appIdentity.productName)} `}through the ${harness} harness${modelInfo}${effortInfo}. ${buildAppIdentityInstructions(runtime.appIdentity)} No need to mention this otherwise. You can embed images, video, and audio using Markdown image syntax with absolute file paths. Link every other file you cite or produce by its absolute path, as in [http.ts:42](/abs/path/http.ts:42), so the user can open it in the app files viewer.${remoteFileLinks}</runtime_info>`;
   return runtime.pullRequestLinking === false
     ? runtimeInfo
     : `${runtimeInfo}\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`;

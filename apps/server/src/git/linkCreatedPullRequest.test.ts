@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "../jones/testing/UnusedCorePorts.testkit.ts";
 import {
   type PullRequestTestThread,
   v2PullRequestThread,
@@ -81,6 +82,7 @@ const layerDependenciesFor = (
       getShell: () => Effect.succeedSome(project),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
+      ...unusedCorePorts(),
       getThreadShell: () => Effect.succeed(threadShell ? v2PullRequestThread(threadShell) : null),
       dispatch,
     }),
@@ -169,18 +171,19 @@ it.effect(
   "refreshes PR readers after a push from a thread or project, but not a local commit",
   () =>
     Effect.gen(function* () {
-      const refreshed: string[] = [];
+      const refreshed: Array<[string, boolean | undefined]> = [];
       const layerDependencies = Layer.mergeAll(
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           getThreadShell: () => Effect.succeed(v2PullRequestThread(thread)),
         }),
         Layer.mock(ProjectStore.ProjectStoreV2)({
           listShells: () => Effect.succeed([project]),
         }),
         Layer.mock(PullRequestService.PullRequestService)({
-          refreshAfterTurn: (id) =>
+          refreshAfterTurn: (id, options) =>
             Effect.sync(() => {
-              refreshed.push(id);
+              refreshed.push([id, options?.pushed]);
             }),
         }),
       );
@@ -203,6 +206,10 @@ it.effect(
         { cwd: "/draft-worktree", projectId: PROJECT_ID },
         { push: { status: "pushed" } },
       ).pipe(Effect.provide(layerDependencies));
-      expect(refreshed).toEqual([PROJECT_ID, PROJECT_ID, PROJECT_ID]);
+      expect(refreshed).toEqual([
+        [PROJECT_ID, true],
+        [PROJECT_ID, true],
+        [PROJECT_ID, true],
+      ]);
     }),
 );

@@ -42,6 +42,12 @@ const workstream = P.newPersonalWorkstream({
 });
 const threadId = ThreadId.make("thread");
 const assignment = { threadId, workstreamId: null, revision: 0, updatedAt: null };
+const autoRoute = {
+  state: "abstained" as const,
+  code: "ambiguous",
+  workstreamId: null,
+  decidedAt: "2026-01-01T00:00:00.000Z",
+};
 const backend = (calls: unknown[]) =>
   Layer.mergeAll(
     Layer.mock(Personal.PersonalWorkstreams)({
@@ -60,7 +66,7 @@ const backend = (calls: unknown[]) =>
       readThread: (id) =>
         Effect.sync(() => {
           calls.push(["read", { threadId: id }]);
-          return { assignment: { ...assignment, threadId: id }, workstream: null };
+          return { assignment: { ...assignment, threadId: id }, workstream: null, autoRoute };
         }),
     }),
     Layer.mock(Agent.AgentWorkstreams)({
@@ -101,22 +107,23 @@ const routedInputs: ReadonlyArray<readonly [WorkstreamToolName, Record<string, u
   ["t3_thread_workstream_read", { threadId }],
   ["t3_workstream_update", { id: workstream.id, name: "Renamed" }],
 ];
+// The toolkit decodes JSON parameters itself: a routed call validates its
+// arguments against the tool's schema and passes their canonical JSON form.
+const routedParams = <S extends Schema.Constraint>(schema: S) => {
+  const codec = Schema.toCodecJson(schema);
+  return (args: unknown) =>
+    Schema.decodeUnknownEffect(codec)(args).pipe(Effect.flatMap(Schema.encodeEffect(codec)));
+};
 const routedDecoders = {
-  t3_workstreams_list: Schema.decodeUnknownEffect(
-    WorkstreamToolkit.tools.t3_workstreams_list.parametersSchema,
-  ),
-  t3_workstream_create: Schema.decodeUnknownEffect(
-    WorkstreamToolkit.tools.t3_workstream_create.parametersSchema,
-  ),
-  t3_thread_workstream_set: Schema.decodeUnknownEffect(
+  t3_workstreams_list: routedParams(WorkstreamToolkit.tools.t3_workstreams_list.parametersSchema),
+  t3_workstream_create: routedParams(WorkstreamToolkit.tools.t3_workstream_create.parametersSchema),
+  t3_thread_workstream_set: routedParams(
     WorkstreamToolkit.tools.t3_thread_workstream_set.parametersSchema,
   ),
-  t3_thread_workstream_read: Schema.decodeUnknownEffect(
+  t3_thread_workstream_read: routedParams(
     WorkstreamToolkit.tools.t3_thread_workstream_read.parametersSchema,
   ),
-  t3_workstream_update: Schema.decodeUnknownEffect(
-    WorkstreamToolkit.tools.t3_workstream_update.parametersSchema,
-  ),
+  t3_workstream_update: routedParams(WorkstreamToolkit.tools.t3_workstream_update.parametersSchema),
 };
 const routedCall = (
   toolkit: Effect.Success<ReturnType<typeof build>>,
@@ -292,7 +299,14 @@ it.effect(
       const f = yield* routingFixture();
       for (const [name, args] of routedInputs) {
         const original = structuredClone(args);
-        yield* routedCall(f.sending, name, { ...args, environmentId: remoteEnvironment });
+        const results = yield* routedCall(f.sending, name, {
+          ...args,
+          environmentId: remoteEnvironment,
+        });
+        if (name === "t3_thread_workstream_read")
+          expect(results.at(-1)?.result).toMatchObject({ autoRoute });
+        if (name === "t3_thread_workstream_set")
+          expect(results.at(-1)?.result).not.toHaveProperty("autoRoute");
         expect(args).toEqual(original);
       }
       expect(f.localCalls).toEqual([]);

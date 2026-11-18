@@ -1,10 +1,20 @@
 // @effect-diagnostics nodeBuiltinImport:off - Exercises the generated host program with synthetic filesystem and process services.
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeModule from "node:module";
+import * as NodePath from "node:path";
 import * as NodeVM from "node:vm";
 import { remoteDeviceScript } from "../../device/sshDeviceScript.ts";
 
 const nodeRequire = NodeModule.createRequire(import.meta.url);
+// Android is offered only for a complete SDK, so every case supplies one and Xcode alone varies.
+const sdk = "/test/sdk";
+const sdkAdb = NodePath.join(sdk, "platform-tools", "adb");
+const sdkExecutables = new Set([
+  sdkAdb,
+  NodePath.join(sdk, "emulator", "emulator"),
+  NodePath.join(sdk, "cmdline-tools", "latest", "bin", "avdmanager"),
+]);
+const X_OK = 1;
 
 const invoke = async (
   mode: Parameters<typeof remoteDeviceScript>[1],
@@ -18,6 +28,11 @@ const invoke = async (
     throw Object.assign(new Error("absent"), { code: "ENOENT" });
   };
   const fs = {
+    constants: { X_OK },
+    accessSync: (path: string, mode: number) => {
+      if (mode !== X_OK || !sdkExecutables.has(path)) absent();
+    },
+    statSync: (path: string) => (sdkExecutables.has(path) ? { isFile: () => true } : absent()),
     readdirSync: () => [],
     readFileSync: absent,
     existsSync: () => false,
@@ -37,7 +52,7 @@ const invoke = async (
       pid: 123,
       versions: { node: "26.12.1" },
       execPath: "/test/node",
-      env: {},
+      env: { ANDROID_HOME: sdk },
       exitCode: 0,
     },
     console: {
@@ -105,7 +120,7 @@ describe("SSH Xcode readiness", () => {
     expect(commands.map((command) => command.command)).toEqual([
       "xcodebuild",
       "xcrun",
-      "adb",
+      sdkAdb,
       "npm",
     ]);
   });

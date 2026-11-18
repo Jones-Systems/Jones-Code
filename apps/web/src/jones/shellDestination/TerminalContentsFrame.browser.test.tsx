@@ -28,6 +28,8 @@ it("copies current terminal contents on each click and shows the message-copy co
         },
         visible: true,
         onData: () => {},
+        onBinary: () => {},
+        onReply: () => {},
         onResize: () => {},
         onSelectionChange: () => {},
         beforeKey: () => false,

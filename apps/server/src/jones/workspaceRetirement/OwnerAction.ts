@@ -19,12 +19,60 @@ import { withOperation } from "../workspaceLifecycle/NativeOperation.ts";
 import { RetirementError } from "./Receipts.ts";
 import { TargetObservation, presenceOutcome } from "./TargetPresence.ts";
 import { evaluate } from "./Runtime.ts";
+import { holdsAbsentCheckout } from "./InterruptedRetirement.ts";
 
 const compiledMain3acaCodec22 = Schema.is(ServerSettingsError);
 
 const compiledMain3acaCodec21 = Schema.is(RetirementError);
 
 const compiledMain3acaCodec20 = Schema.is(RetirementError);
+
+export interface OwnerActionOptions {
+  /** Bytes a checkout occupies, or null when it cannot be measured. */
+  readonly measure?: (worktreePath: string) => Effect.Effect<number | null>;
+}
+
+const heldEntry = (input: {
+  readonly reason: string;
+  readonly nextAction: string;
+  readonly outcome: StorageCleanupReportEntry["outcome"];
+  readonly path: string | null;
+  readonly projectPath: string | null;
+  readonly threadId: StorageCleanupReportEntry["threadId"];
+  readonly threadTitle: string | null;
+  readonly bytes: number | null;
+  readonly summary: string;
+}) =>
+  ({
+    kind: "worktree",
+    outcome: input.outcome,
+    reason: input.summary,
+    path: input.path,
+    projectPath: input.projectPath,
+    threadId: input.threadId,
+    threadTitle: input.threadTitle,
+    bytes: input.bytes,
+    files: null,
+    retirement: {
+      state: "held",
+      reasonCodes: [input.reason],
+      receiptId: null,
+      fingerprint: null,
+      paths: [],
+      details: [
+        {
+          reason: input.reason,
+          target: input.path ?? "checkout",
+          root: input.path ?? "checkout",
+          fact: input.reason,
+          missingFact: input.reason,
+          lineage: input.threadId === null ? [] : [{ threadId: input.threadId }],
+          nextAction: input.nextAction,
+        },
+      ],
+      outputObligations: [],
+    },
+  }) satisfies StorageCleanupReportEntry;
 
 export const make = Effect.gen(function* () {
   const context = yield* Effect.context<
@@ -36,17 +84,54 @@ export const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService,
     config = yield* Config.ServerConfig;
   return Effect.fn("WorkspaceRetirement.ownerAction")(
-    function* (input: WorkspaceRetirementAction) {
+    function* (input: WorkspaceRetirementAction, options?: OwnerActionOptions) {
       const now = yield* DateTime.now,
         entries: StorageCleanupReportEntry[] = [];
+      let omitted = 0;
+      const finish = Effect.fn("WorkspaceRetirement.ownerAction.finish")(function* () {
+        return {
+          operation: input.action,
+          trigger: "manual",
+          startedAt: DateTime.formatIso(now),
+          finishedAt: DateTime.formatIso(yield* DateTime.now),
+          entries,
+          counts: {
+            removed: entries.filter((e) => e.outcome === "removed").length,
+            kept: entries.filter((e) => e.outcome === "kept").length,
+            failed: entries.filter((e) => e.outcome === "failed").length,
+          },
+          omittedCount: omitted,
+          bytesFreed: entries.reduce(
+            (total, e) => total + (e.outcome === "removed" ? (e.bytes ?? 0) : 0),
+            0,
+          ),
+        } satisfies StorageCleanupReport;
+      });
+      // A stale or incomplete retire is a result for its checkout, not a settings failure.
+      const refused = (reason: "exact_proposal_required" | "binding_changed") => {
+        entries.push(
+          heldEntry({
+            reason,
+            nextAction:
+              reason === "binding_changed"
+                ? "This checkout's thread binding changed after the proposal. Propose again, then retire."
+                : "Retire needs the thread, checkout path and fingerprint from a current proposal. Propose again, then retire.",
+            outcome: "kept",
+            path: input.worktreePath ?? null,
+            projectPath: null,
+            threadId: input.threadId ?? null,
+            threadTitle: null,
+            bytes: null,
+            summary: reason,
+          }),
+        );
+        return finish();
+      };
       if (
         input.action === "retire" &&
         (!input.threadId || !input.worktreePath || !input.expectedFingerprint)
       )
-        return yield* new RetirementError({
-          target: input.worktreePath ?? "checkout",
-          reason: "exact_proposal_required",
-        });
+        return yield* refused("exact_proposal_required");
       const candidates = yield* projections.getThreadWorktreePaths({ includeArchived: true });
       const selected = [
         ...new Map(
@@ -59,18 +144,15 @@ export const make = Effect.gen(function* () {
         input.action === "retire" &&
         (selected.length !== 1 || selected[0]?.worktreePath !== input.worktreePath)
       )
-        return yield* new RetirementError({
-          target: input.worktreePath!,
-          reason: "binding_changed",
-        });
+        return yield* refused("binding_changed");
       const serverSettings = yield* settings.getSettings;
-      let evaluated = 0,
-        omitted = 0;
+      let evaluated = 0;
       for (const item of selected) {
         let threadTitle: string | null = null;
         let projectPath: string | null = null;
         let failureReason = "thread_metadata_unavailable";
         let nextAction = "Restore this thread's metadata lookup, then repeat the proposal.";
+        let bytes: number | null = null;
         const entry = yield* Effect.gen(function* () {
           const thread = yield* projections.getThread(item.threadId);
           threadTitle = thread.title;
@@ -90,7 +172,12 @@ export const make = Effect.gen(function* () {
           const presence = yield* Effect.promise(() =>
             observeTarget(item.worktreePath, project.value.workspaceRoot),
           );
-          if (presence.status !== "present") {
+          // An interrupted retirement whose checkout is gone is settled by evaluation, not reported absent.
+          const interrupted =
+            (presence.status === "absent_unregistered" ||
+              presence.status === "absent_registered") &&
+            (yield* holdsAbsentCheckout(item.worktreePath).pipe(Effect.provide(context)));
+          if (presence.status !== "present" && !interrupted) {
             return {
               kind: "worktree",
               outcome: "kept",
@@ -112,6 +199,11 @@ export const make = Effect.gen(function* () {
           failureReason = "candidate_evaluation_unavailable";
           nextAction = "Restore this checkout's retirement observations, then repeat the proposal.";
           const rules = resolveWorktreeCleanup(serverSettings, thread.projectId);
+          // Measure before removal; a failed measurement leaves bytes null and never blocks it.
+          if (input.action === "retire" && options?.measure)
+            bytes = yield* options
+              .measure(item.worktreePath)
+              .pipe(Effect.orElseSucceed(() => null));
           const revalidate = Effect.gen(function* () {
             const fresh = yield* projections.getThread(item.threadId);
             if (
@@ -224,59 +316,28 @@ export const make = Effect.gen(function* () {
             projectPath: project.value.workspaceRoot,
             threadId: item.threadId,
             threadTitle: thread.title,
-            bytes: null,
+            bytes,
             files: null,
             retirement: result.outcome,
           } satisfies StorageCleanupReportEntry;
         }).pipe(
-          Effect.orElseSucceed(() => {
-            return {
-              kind: "worktree",
+          Effect.orElseSucceed(() =>
+            heldEntry({
+              reason: failureReason,
+              nextAction,
               outcome: "failed",
-              reason: `${failureReason}: ${nextAction}`,
               path: item.worktreePath,
               projectPath,
               threadId: item.threadId,
               threadTitle,
-              bytes: null,
-              files: null,
-              retirement: {
-                state: "held",
-                reasonCodes: [failureReason],
-                receiptId: null,
-                fingerprint: null,
-                paths: [],
-                details: [
-                  {
-                    reason: failureReason,
-                    target: item.worktreePath,
-                    root: item.worktreePath,
-                    fact: failureReason,
-                    missingFact: failureReason,
-                    lineage: [{ threadId: item.threadId }],
-                    nextAction,
-                  },
-                ],
-                outputObligations: [],
-              },
-            } satisfies StorageCleanupReportEntry;
-          }),
+              bytes,
+              summary: `${failureReason}: ${nextAction}`,
+            }),
+          ),
         );
         if (entry !== null) entries.push(entry);
       }
-      return {
-        trigger: "manual",
-        startedAt: DateTime.formatIso(now),
-        finishedAt: DateTime.formatIso(yield* DateTime.now),
-        entries,
-        counts: {
-          removed: entries.filter((e) => e.outcome === "removed").length,
-          kept: entries.filter((e) => e.outcome === "kept").length,
-          failed: entries.filter((e) => e.outcome === "failed").length,
-        },
-        omittedCount: omitted,
-        bytesFreed: 0,
-      } satisfies StorageCleanupReport;
+      return yield* finish();
     },
     Effect.mapError((cause) =>
       compiledMain3acaCodec22(cause)

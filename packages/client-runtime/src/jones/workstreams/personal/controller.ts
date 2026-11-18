@@ -1,12 +1,15 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   comparePersonalWorkstreams,
+  isClosedPersonalWorkstream,
+  mergePersonalWorkstreams,
   newPersonalWorkstream,
   editPersonalWorkstream,
   deletePersonalWorkstream,
   type PersonalWorkstream,
   type PersonalWorkstreamAssignment,
   type PersonalWorkstreamsSnapshot,
+  type PersonalWorkstreamMembers,
   type PutResult,
   type AssignResult,
   type AssignPersonalWorkstreamInput,
@@ -23,15 +26,35 @@ import type {
   PersonalResult,
   PersonalWorkstreamsFailureReason,
   PersonalEnvironmentState,
+  PersonalWorkstreamHistory,
 } from "./types.ts";
 
 export const personalThreadKey = (t: PersonalThreadRef): string =>
   JSON.stringify([t.environmentId, t.id]);
+export const openPersonalWorkstreams = (state: PersonalWorkstreamsState) =>
+  state.workstreams.filter((workstream) => !isClosedPersonalWorkstream(workstream.lifecycle));
+
+export function visiblePersonalWorkstreamId(
+  state: PersonalWorkstreamsState,
+  thread: PersonalThreadRef,
+): string | null {
+  const id = state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId;
+  return id &&
+    state.workstreams.some(
+      (workstream) => workstream.id === id && !isClosedPersonalWorkstream(workstream.lifecycle),
+    )
+    ? id
+    : null;
+}
+
 export function groupPersonalThreads<T extends PersonalThreadRef>(
   state: PersonalWorkstreamsState,
   threads: readonly T[],
 ): PersonalWorkstreamsGrouping<T> {
-  const groups = state.workstreams.map((workstream) => ({ workstream, threads: [] as T[] }));
+  const groups = openPersonalWorkstreams(state).map((workstream) => ({
+    workstream,
+    threads: [] as T[],
+  }));
   const byId = new Map(groups.map((g) => [g.workstream.id, g]));
   const ungrouped: T[] = [];
   const workstreamIdByThreadKey = new Map<string, string>();
@@ -64,7 +87,12 @@ export interface PersonalWorkstreamsTransport {
     onSnapshot: (snapshot: PersonalWorkstreamsSnapshot) => void,
     onError: (error: unknown) => void,
   ): () => void;
-  put(connection: PersonalConnection, workstream: PersonalWorkstream): Promise<PersonalPutResult>;
+  members?(connection: PersonalConnection, id: string): Promise<PersonalWorkstreamMembers>;
+  put(
+    connection: PersonalConnection,
+    workstream: PersonalWorkstream,
+    expected?: PersonalWorkstream,
+  ): Promise<PersonalPutResult>;
   assign(connection: PersonalConnection, input: PersonalAssignInput): Promise<PersonalAssignResult>;
 }
 interface Entry {
@@ -91,13 +119,20 @@ const empty = (): PersonalWorkstreamsState => ({
   environments: [],
   assignmentsByThreadKey: new Map(),
   pendingThreadKeys: new Set(),
+  autoAssignedThreadKeys: new Set(),
   canCreate: false,
 });
 const compareString = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const errorReason = (error: unknown): PersonalWorkstreamsFailureReason => {
   const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
   if (code === "precondition_failed") return "changed_elsewhere";
-  if (code === "thread_not_found" || code === "workstream_deleted") return code;
+  if (
+    code === "thread_not_found" ||
+    code === "workstream_deleted" ||
+    code === "workstream_closed" ||
+    code === "unsettled_threads"
+  )
+    return code;
   return "unconfirmed";
 };
 export function createPersonalWorkstreamsController(options: {
@@ -115,6 +150,10 @@ export function createPersonalWorkstreamsController(options: {
   const state = Atom.make(empty());
   const entries = new Map<EnvironmentId, Entry>();
   const overlays = new Map<number, Overlay>();
+  const pendingClosures = new Map<
+    string,
+    { base: PersonalWorkstream; candidate: PersonalWorkstream }
+  >();
   const lanes = new Map<string, Promise<AssignmentLaneResult>>();
   const repairInFlight = new Set<string>();
   // A failed candidate is retried only after a connection/permission change.
@@ -138,7 +177,7 @@ export function createPersonalWorkstreamsController(options: {
       if (!e.connection.capable || (confirmedOnly && !e.confirmed)) continue;
       for (const w of e.snapshot?.workstreams ?? []) {
         const old = result.get(w.id);
-        if (!old || comparePersonalWorkstreams(w, old) > 0) result.set(w.id, w);
+        result.set(w.id, old ? mergePersonalWorkstreams([old, w]) : w);
       }
     }
     return result;
@@ -183,32 +222,61 @@ export function createPersonalWorkstreamsController(options: {
         });
       }
     }
+    for (const [id, { base, candidate }] of pendingClosures) {
+      const copy = merged.get(id);
+      if (copy && comparePersonalWorkstreams(copy, candidate) === 0) merged.set(id, base);
+    }
     for (const [key, a] of assignments)
       if (a.workstreamId && merged.get(a.workstreamId)?.deletedAt !== null)
         assignments.set(key, { ...a, workstreamId: null });
+    const autoAssigned = new Set<string>();
+    for (const e of entries.values())
+      if (e.connection.capable)
+        for (const auto of e.snapshot?.autoAssignments ?? []) {
+          const key = personalThreadKey({
+            environmentId: e.connection.environmentId,
+            id: auto.threadId,
+          });
+          const effective = assignments.get(key);
+          if (
+            !pending.has(key) &&
+            effective?.workstreamId === auto.workstreamId &&
+            effective.revision === auto.revision
+          )
+            autoAssigned.add(key);
+        }
     options.registry.set(state, {
       workstreams: [...merged.values()]
         .filter((w) => w.deletedAt === null)
         .sort((a, b) => compareString(a.orderKey, b.orderKey) || compareString(a.id, b.id)),
       assignmentsByThreadKey: assignments,
       pendingThreadKeys: pending,
+      autoAssignedThreadKeys: autoAssigned,
       canCreate: [...entries.values()].some(writable),
-      environments: [...entries.values()].map((e): PersonalEnvironmentState => ({
-        environmentId: e.connection.environmentId,
-        status: !e.connection.capable
-          ? "update_required"
-          : !e.connection.connected
-            ? "offline"
-            : !e.connection.writable
-              ? "read_only"
-              : e.failed || e.snapshot?.importIssue
-                ? "sync_failed"
-                : "ready",
-        confirmed: e.confirmed,
-        workstreamCount: e.connection.capable
-          ? (e.snapshot?.workstreams.filter((w) => w.deletedAt === null).length ?? 0)
-          : 0,
-      })),
+      canSetNameIcon: [...entries.values()].some(
+        (e) => writable(e) && e.snapshot?.supportsNameIcons,
+      ),
+      canSnooze: [...entries.values()].some((e) => writable(e) && e.snapshot?.supportsSnooze),
+      environments: [...entries.values()].map((e): PersonalEnvironmentState => {
+        const workstreams = e.connection.capable
+          ? (e.snapshot?.workstreams.filter((w) => w.deletedAt === null) ?? [])
+          : [];
+        return {
+          environmentId: e.connection.environmentId,
+          status: !e.connection.capable
+            ? "update_required"
+            : !e.connection.connected
+              ? "offline"
+              : !e.connection.writable
+                ? "read_only"
+                : e.failed || e.snapshot?.importIssue
+                  ? "sync_failed"
+                  : "ready",
+          confirmed: e.confirmed,
+          workstreamCount: workstreams.length,
+          workstreams,
+        };
+      }),
     });
   };
   // Mutation replies are partial observations, so do not advance the full-snapshot
@@ -240,17 +308,33 @@ export function createPersonalWorkstreamsController(options: {
       assignments: [...assignments.values()],
     };
   };
+  const definitionFor = (entry: Entry, workstream: PersonalWorkstream): PersonalWorkstream => {
+    let local = workstream;
+    if (!entry.snapshot?.supportsNameIcons && local.nameIcon !== undefined) {
+      const { nameIcon: _nameIcon, ...legacy } = local;
+      local = legacy;
+    }
+    if (
+      entry.snapshot?.supportsSnooze ||
+      (local.snoozedAt === undefined && local.snoozedUntil === undefined)
+    )
+      return local;
+    const { snoozedAt: _started, snoozedUntil: _until, ...legacy } = local;
+    return legacy;
+  };
   const repair = () => {
     if (disposed) return;
     const merged = winners(true);
     for (const e of entries.values()) {
       if (!writable(e)) continue;
-      for (const w of merged.values()) {
+      for (const winner of merged.values()) {
         if (activeRepairs >= 4) return;
-        const key = JSON.stringify([e.connection.environmentId, w.id]);
-        const old = e.snapshot?.workstreams.find((d) => d.id === w.id);
+        const candidate = definitionFor(e, winner);
+        const key = JSON.stringify([e.connection.environmentId, winner.id]);
+        const old = e.snapshot?.workstreams.find((d) => d.id === winner.id);
         if (
-          (old && comparePersonalWorkstreams(old, w) >= 0) ||
+          pendingClosures.has(winner.id) ||
+          (old && comparePersonalWorkstreams(old, candidate) >= 0) ||
           repairInFlight.has(key) ||
           repairFailures.has(key)
         )
@@ -258,11 +342,11 @@ export function createPersonalWorkstreamsController(options: {
         repairInFlight.add(key);
         activeRepairs++;
         void Promise.resolve()
-          .then(() => options.transport.put(e.connection, w))
+          .then(() => options.transport.put(e.connection, candidate))
           .then((reply) => {
             if (!current(e)) return;
             mergeReply(e, reply);
-            if (comparePersonalWorkstreams(reply.workstream, w) < 0)
+            if (comparePersonalWorkstreams(reply.workstream, candidate) < 0)
               throw new Error("Invalid canonical reply");
           })
           .catch(() => {
@@ -301,8 +385,21 @@ export function createPersonalWorkstreamsController(options: {
     action: PersonalWorkstreamsAction,
     w: PersonalWorkstream,
   ): Promise<PersonalResult<PersonalWorkstream>> => {
-    const targets = [...entries.values()].filter(writable);
-    if (!targets.length) return fail(action, w.id, unavailable(entries.values().next().value));
+    const requireNameIcons =
+      action === "nameIcon" || (action === "create" && w.nameIcon !== undefined);
+    const requireSnooze = action === "snooze" || action === "unsnooze";
+    const available = [...entries.values()].filter(writable);
+    const targets = available.filter(
+      (e) =>
+        (!requireNameIcons || e.snapshot?.supportsNameIcons) &&
+        (!requireSnooze || e.snapshot?.supportsSnooze),
+    );
+    if (!targets.length)
+      return fail(
+        action,
+        w.id,
+        available.length ? "update_required" : unavailable(entries.values().next().value),
+      );
     const id = ++actionId;
     overlays.set(id, { definition: w });
     publish();
@@ -311,13 +408,14 @@ export function createPersonalWorkstreamsController(options: {
     await Promise.all(
       targets.map(async (e) => {
         try {
-          const reply = await options.transport.put(e.connection, w);
+          const candidate = definitionFor(e, w);
+          const reply = await options.transport.put(e.connection, candidate);
           if (!current(e)) return;
           replied = true;
           mergeReply(e, reply);
           if (
             reply.outcome !== "superseded" &&
-            comparePersonalWorkstreams(reply.workstream, w) === 0
+            comparePersonalWorkstreams(reply.workstream, candidate) === 0
           )
             confirmed = true;
         } catch {
@@ -332,6 +430,97 @@ export function createPersonalWorkstreamsController(options: {
       ? { ok: true, value: w }
       : fail(action, w.id, replied ? "changed_elsewhere" : "unconfirmed");
   };
+  const close = async (
+    base: PersonalWorkstream,
+    candidate: PersonalWorkstream,
+  ): Promise<PersonalResult<PersonalWorkstream>> => {
+    const id = candidate.id;
+    if (pendingClosures.has(id)) return fail("lifecycle", id, "changed_elsewhere");
+    const targets = [...entries.values()];
+    if (!targets.length || !targets.every(writable) || !options.transport.members)
+      return fail("lifecycle", id, "closure_unavailable");
+
+    pendingClosures.set(id, { base, candidate });
+    try {
+      const history = await readHistory(id);
+      if (!history.complete || entries.size !== targets.length || !targets.every(writable))
+        return fail("lifecycle", id, "closure_unavailable");
+      if (history.members.some(({ settled }) => !settled))
+        return fail("lifecycle", id, "unsettled_threads");
+      const latest = editableWinners().get(id);
+      if (!latest || comparePersonalWorkstreams(base, latest) !== 0)
+        return fail("lifecycle", id, "changed_elsewhere");
+      if (
+        !targets.every((entry) => {
+          const copy = entry.snapshot?.workstreams.find((workstream) => workstream.id === id);
+          return copy && comparePersonalWorkstreams(copy, definitionFor(entry, base)) === 0;
+        })
+      )
+        return fail("lifecycle", id, "closure_unavailable");
+
+      const results = await Promise.all(
+        targets.map(async (entry) => {
+          try {
+            const local = definitionFor(entry, candidate);
+            const reply = await options.transport.put(
+              entry.connection,
+              local,
+              definitionFor(entry, base),
+            );
+            if (!current(entry)) return { entry, reason: "unconfirmed" } as const;
+            mergeReply(entry, reply);
+            return comparePersonalWorkstreams(reply.workstream, local) === 0
+              ? ({ entry, applied: true } as const)
+              : ({ entry, reason: "changed_elsewhere" } as const);
+          } catch (error) {
+            return { entry, reason: errorReason(error) };
+          }
+        }),
+      );
+      const failed = results.filter((result) => "reason" in result);
+      if (!failed.length) return { ok: true, value: candidate };
+
+      // Restore only copies that still hold our exact candidate. A newer edit
+      // stays intact, even if it arrived before all close replies came back.
+      const restore = editPersonalWorkstream(
+        candidate,
+        { lifecycle: base.lifecycle },
+        now(),
+        options.origin,
+      );
+      const restored = await Promise.all(
+        results
+          .filter((result) => "applied" in result)
+          .map(async ({ entry }) => {
+            try {
+              if (!current(entry)) return false;
+              const local = definitionFor(entry, restore);
+              const reply = await options.transport.put(
+                entry.connection,
+                local,
+                definitionFor(entry, candidate),
+              );
+              if (!current(entry)) return false;
+              mergeReply(entry, reply);
+              return comparePersonalWorkstreams(reply.workstream, local) === 0;
+            } catch {
+              return false;
+            }
+          }),
+      );
+      const reason =
+        failed.some((result) => result.reason === "unconfirmed") || !restored.every(Boolean)
+          ? "unconfirmed"
+          : failed.some((result) => result.reason === "unsettled_threads")
+            ? "unsettled_threads"
+            : "changed_elsewhere";
+      return fail("lifecycle", id, reason);
+    } finally {
+      pendingClosures.delete(id);
+      publish();
+      repair();
+    }
+  };
   const edit = async (
     action: PersonalWorkstreamsAction,
     id: string,
@@ -341,7 +530,12 @@ export function createPersonalWorkstreamsController(options: {
     if (!base || base.deletedAt !== null)
       return fail<PersonalWorkstream>(action, id, "workstream_deleted");
     try {
-      return await put(action, editPersonalWorkstream(base, patch, now(), options.origin));
+      const candidate = editPersonalWorkstream(base, patch, now(), options.origin);
+      return action === "lifecycle" &&
+        isClosedPersonalWorkstream(candidate.lifecycle) &&
+        candidate.lifecycle !== base.lifecycle
+        ? await close(base, candidate)
+        : await put(action, candidate);
     } catch {
       return fail<PersonalWorkstream>(action, id, "failed");
     }
@@ -372,11 +566,13 @@ export function createPersonalWorkstreamsController(options: {
       const w = target === null ? null : winners(true).get(target);
       if (target !== null && (!w || w.deletedAt !== null))
         return fail(action, key, "workstream_deleted", thread.environmentId);
+      if (w && isClosedPersonalWorkstream(w.lifecycle))
+        return fail(action, key, "workstream_closed", thread.environmentId);
       const expectedRevision = previous?.confirmedRevision ?? submittedRevision;
       try {
         const reply = await options.transport.assign(e.connection, {
           threadId: thread.id,
-          workstream: w ?? null,
+          workstream: w === null || w === undefined ? null : definitionFor(e, w),
           expectedRevision,
         });
         if (!current(e)) return fail(action, key, "unconfirmed", thread.environmentId);
@@ -416,19 +612,45 @@ export function createPersonalWorkstreamsController(options: {
     });
     return lane.then((completed) => completed.result);
   };
+  const readHistory = async (id: string): Promise<PersonalWorkstreamHistory> => {
+    const results = await Promise.all(
+      [...entries.values()].map(async (entry) => {
+        if (!entry.connection.connected || !entry.connection.capable || !options.transport.members)
+          return null;
+        try {
+          const members = await options.transport.members(entry.connection, id);
+          return current(entry)
+            ? members.map((member) => ({
+                ...member,
+                environmentId: entry.connection.environmentId,
+                id: member.threadId,
+              }))
+            : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return {
+      members: results.flatMap((members) => members ?? []),
+      complete: results.every(Boolean),
+    };
+  };
   const controller: ReturnType<typeof createPersonalWorkstreamsController> = {
     state,
+    readHistory,
     canAssign: (thread) => {
       const e = entries.get(thread.environmentId);
       return !!e && writable(e);
     },
-    create: async ({ name }) => {
+    create: async ({ name, nameIconProjectKey }) => {
       try {
         return await put(
           "create",
           newPersonalWorkstream({
             id: uuid(),
             name: name.trim(),
+            ...(nameIconProjectKey === undefined ? {} : { nameIconProjectKey }),
             orderKey:
               pinOrderKeyBetween(
                 [...editableWinners().values()]
@@ -447,7 +669,18 @@ export function createPersonalWorkstreamsController(options: {
     },
     rename: (id, name) => edit("rename", id, { name: name.trim() }),
     setColor: (id, color) => edit("recolor", id, { color }),
+    setNameIcon: (id, nameIconProjectKey) => edit("nameIcon", id, { nameIconProjectKey }),
     setLifecycle: (id, lifecycle) => edit("lifecycle", id, { lifecycle }),
+    setSnoozedUntil: (id, snoozedUntil) => {
+      const action = snoozedUntil === null ? "unsnooze" : "snooze";
+      const startedAt = now();
+      if (snoozedUntil !== null && !(Date.parse(snoozedUntil) > Date.parse(startedAt)))
+        return Promise.resolve(fail(action, id, "failed"));
+      return edit(action, id, {
+        snoozedAt: startedAt,
+        snoozedUntil,
+      });
+    },
     reorder: (id, { beforeId, afterId }) => {
       const merged = editableWinners();
       const orderKey = pinOrderKeyBetween(

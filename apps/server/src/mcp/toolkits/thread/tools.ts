@@ -21,6 +21,7 @@ import {
   RunId,
   NonNegativeInt,
   ProjectId,
+  clampedPositiveInt,
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Schema from "effect/Schema";
@@ -35,7 +36,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
-    'Pin, snooze, settle, archive, or mark a thread unread. Omit threadId for this thread. snooze requires snoozedUntil. Existing thread lifecycle rules apply. Settling this thread takes effect when your turn completes, returning settlesWhenTurnEnds=true; a turn that fails or is interrupted, or a queued message, leaves it active. For pin, placement chooses the slot in the pinned list: position top or bottom, or above or below anchorThreadId, which must be a pinned thread (threads sharing the anchor\'s order key stay together with it). An already pinned thread moves to that slot. To pin an ordered run under a thread, pin each one below the previous: A with placement {position:"below",anchorThreadId:<anchor>}, then B below A, and so on. To restore a pin recorded earlier from list_organization_thread_metadata, use placement {position:"exact",orderKey:<recorded pinOrderKey>}; it rewrites no other thread and is refused when another pinned thread holds that key. A placed pin returns its pinOrderKey and any other threads whose keys were rewritten to keep their order. Without placement, a new pin joins the unarranged pins below every arranged one.',
+    'Pin, snooze, settle, archive, or mark a thread unread. Omit threadId for this thread. snooze requires snoozedUntil. Existing thread lifecycle rules apply. Settling this thread takes effect when your turn completes, returning settlesWhenTurnEnds=true; a turn that fails or is interrupted, or a queued message, leaves it active. For pin, placement chooses the slot in the pinned list: position top or bottom, or above or below anchorThreadId, which must be a pinned thread (threads sharing the anchor\'s order key stay together with it). An already pinned thread moves to that slot. To pin an ordered run under a thread, pin each one below the previous: A with placement {position:"below",anchorThreadId:<anchor>}, then B below A, and so on. To restore a pin recorded earlier from list_organization_thread_metadata, use placement {position:"exact",orderKey:<recorded pinOrderKey>}; it rewrites no other thread and is refused when another pinned thread holds that key. A placed pin returns its pinOrderKey and any other threads whose keys were rewritten to keep their order. Without placement, a new pin joins the top of the pinned section, following the client default.',
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
@@ -110,7 +111,7 @@ const QueueTool = Tool.make("t3_queue", {
       Schema.Array(RunId).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
     ),
     cursor: Schema.optional(NonNegativeInt),
-    limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+    limit: Schema.optional(clampedPositiveInt(100)),
   }),
   success: Schema.Union([
     Schema.Struct({ items: Schema.Array(queueEntry), nextCursor: Schema.NullOr(NonNegativeInt) }),
@@ -134,6 +135,7 @@ const question = Schema.Struct({
       label: Schema.String,
       description: Schema.String,
       value: Schema.optional(Schema.String),
+      preview: Schema.optional(Schema.String),
     }),
   ),
   multiSelect: Schema.optional(Schema.Boolean),
@@ -222,6 +224,7 @@ const ThreadSearchTool = Tool.make("t3_thread_search", {
     projectId: Schema.optional(ProjectId),
   }),
   success: Schema.Struct({
+    currentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
     matches: Schema.Array(
       Schema.Struct({
         threadId: OrchestrationThreadSearchMatch.fields.threadId,
@@ -252,6 +255,7 @@ const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
     threadId: ScheduledTask.fields.threadId,
     link: Schema.optional(Schema.String),
     lastRunStatus: ScheduledTask.fields.lastRunStatus,
+    lastRunError: ScheduledTask.fields.lastRunError,
     runCount: NonNegativeInt,
     nextRunAt: ScheduledTask.fields.nextRunAt,
   }),

@@ -2,6 +2,7 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type {
   PersonalWorkstreamLifecycle,
   PersonalWorkstreamAssignment,
+  PersonalWorkstreamMembers,
 } from "@t3tools/contracts/jones/workstreamsPersonal";
 import type { Atom } from "effect/reactivity";
 
@@ -12,9 +13,12 @@ export interface PersonalWorkstreamView {
   readonly name: string;
   readonly lifecycle: PersonalWorkstreamLifecycle;
   readonly color: string | null;
+  readonly nameIcon?: { readonly projectKey: string | null; readonly updatedAt: string };
   readonly orderKey: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly snoozedAt?: string | null;
+  readonly snoozedUntil?: string | null;
 }
 
 export type PersonalEnvironmentStatus =
@@ -29,6 +33,8 @@ export interface PersonalEnvironmentState {
   readonly status: PersonalEnvironmentStatus;
   readonly confirmed: boolean; // false while showing a cached snapshot
   readonly workstreamCount: number; // live definitions on that environment
+  /** Live definitions reported by this environment, including its cached snapshot when offline. */
+  readonly workstreams?: readonly PersonalWorkstreamView[];
 }
 
 export interface PersonalWorkstreamsState {
@@ -36,7 +42,14 @@ export interface PersonalWorkstreamsState {
   readonly environments: readonly PersonalEnvironmentState[];
   readonly assignmentsByThreadKey: ReadonlyMap<string, PersonalWorkstreamAssignment>;
   readonly pendingThreadKeys: ReadonlySet<string>; // local actions in flight
+  /**
+   * Threads the server assigned automatically whose effective assignment (including a local
+   * optimistic move) is still that exact assignment. Optional so hand-built states stay valid.
+   */
+  readonly autoAssignedThreadKeys?: ReadonlySet<string>;
   readonly canCreate: boolean; // some environment is writable
+  readonly canSetNameIcon?: boolean;
+  readonly canSnooze?: boolean;
 }
 
 export interface PersonalWorkstreamsGrouping<T extends PersonalThreadRef> {
@@ -48,10 +61,20 @@ export interface PersonalWorkstreamsGrouping<T extends PersonalThreadRef> {
   readonly workstreamIdByThreadKey: ReadonlyMap<string, string>;
 }
 
+export type PersonalWorkstreamMember = PersonalWorkstreamMembers[number] & PersonalThreadRef;
+
+export interface PersonalWorkstreamHistory {
+  readonly members: readonly PersonalWorkstreamMember[];
+  readonly complete: boolean;
+}
+
 export type PersonalWorkstreamsAction =
   | "create"
   | "rename"
   | "recolor"
+  | "nameIcon"
+  | "snooze"
+  | "unsnooze"
   | "lifecycle"
   | "reorder"
   | "delete"
@@ -63,6 +86,9 @@ export type PersonalWorkstreamsFailureReason =
   | "update_required"
   | "thread_not_found"
   | "workstream_deleted"
+  | "workstream_closed"
+  | "unsettled_threads"
+  | "closure_unavailable"
   | "changed_elsewhere"
   | "unconfirmed"
   | "failed";
@@ -78,13 +104,25 @@ export type PersonalResult<A> =
 
 export interface PersonalWorkstreamsController {
   readonly state: Atom.Atom<PersonalWorkstreamsState>;
+  readHistory?(id: string): Promise<PersonalWorkstreamHistory>;
   canAssign(thread: PersonalThreadRef): boolean;
-  create(input: { name: string }): Promise<PersonalResult<PersonalWorkstreamView>>;
+  create(input: {
+    name: string;
+    nameIconProjectKey?: string;
+  }): Promise<PersonalResult<PersonalWorkstreamView>>;
   rename(id: string, name: string): Promise<PersonalResult<PersonalWorkstreamView>>;
   setColor(id: string, color: string | null): Promise<PersonalResult<PersonalWorkstreamView>>;
+  setNameIcon?(
+    id: string,
+    projectKey: string | null,
+  ): Promise<PersonalResult<PersonalWorkstreamView>>;
   setLifecycle(
     id: string,
     lifecycle: PersonalWorkstreamLifecycle,
+  ): Promise<PersonalResult<PersonalWorkstreamView>>;
+  setSnoozedUntil?(
+    id: string,
+    until: string | null,
   ): Promise<PersonalResult<PersonalWorkstreamView>>;
   reorder(
     id: string,

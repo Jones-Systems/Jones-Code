@@ -38,12 +38,18 @@
         "linux-after-pack.ts",
         "mobile-behavior/run.ts",
         "mobile-native-client.ts",
+        // e2e loads its config and scenarios by path.
+        "e2e.config.ts",
+        "prove-scenario.ts",
+        "scenarios/*.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
         "jones/ci-test-progress-reporter.ts",
         "jones/serverParallelism/*.mjs",
         "jones/ci/chromium-setup.mjs",
         "jones/ci/chromium-setup.node-test.mjs",
+        // Companion declarations for the CommonJS selection module check-changed.ts imports.
+        "jones/ci/local-selection.d.cts",
         "jones/server-shard-weights/select.ts",
         "jones/server-shard-weights/aggregate-cli.ts",
         // Xvfb invokes this native Chromium qualifier through a wrapper command.
@@ -97,6 +103,9 @@
         "integration/jones-e2e/physicalHost.worker.ts",
         "integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
         "src/provider/testFixtures/*.mjs",
+        // Journal tests start these fixtures in isolated subprocesses.
+        "src/jones/cleanup/sharedAdmission/bootstrap-race.fixture.ts",
+        "src/jones/cleanup/sharedAdmission/contender.fixture.ts",
         "src/jones/workstreams/operations/fullAppFixture.ts",
         // Staged native creation substrate is consumed by the deferred L39 execution slice.
         // Analyzer entries preserve these APIs without registering runtime authority or launch.

@@ -65,6 +65,7 @@ export const NativeDutyOwnerJson = Schema.fromJsonString(
     Schema.Struct({
       schema: Schema.Literal("workspace-duty-owner/v1"),
       type: Schema.Literal("unresolved"),
+      host: Schema.optionalKey(host),
       reason: Schema.String,
       nextAction: Schema.String,
     }),
@@ -104,6 +105,68 @@ const detail = Schema.Struct({
   lineage: Schema.Array(fields),
   nextAction: Schema.String,
 });
+const count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const processPolicy = Schema.Struct({
+  policy: Schema.Literal("linux-systemd-user-manager-main/v1"),
+  provenance: Schema.Literal("local-system-manager-and-proc-metadata"),
+  assurance: Schema.Literal("accepted-exclusion-not-non-use"),
+  rawStatus: Schema.Literals(["complete", "partial", "unavailable"]),
+  effectiveStatus: Schema.Literals(["complete", "partial", "unavailable"]),
+  deniedInstances: count,
+  verifiedExclusions: count,
+  unclassifiedInstances: count,
+  nonExemptErrors: count,
+  classes: Schema.Struct({ "system-user-manager-main": count }),
+  reasons: Schema.Struct({
+    unavailable: Schema.optionalKey(count),
+    identity: Schema.optionalKey(count),
+    provenance: Schema.optionalKey(count),
+    changed: Schema.optionalKey(count),
+    bounds: Schema.optionalKey(count),
+    timeout: Schema.optionalKey(count),
+  }),
+  basisDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+}).check(
+  Schema.makeFilter(
+    (value) =>
+      value.verifiedExclusions <= 16 &&
+      value.deniedInstances === value.verifiedExclusions + value.unclassifiedInstances &&
+      value.classes["system-user-manager-main"] === value.verifiedExclusions &&
+      Object.values(value.reasons).reduce((sum, n) => sum + n, 0) === value.unclassifiedInstances &&
+      (value.effectiveStatus !== "complete" ||
+        value.rawStatus === "complete" ||
+        (value.rawStatus === "partial" &&
+          value.deniedInstances > 0 &&
+          value.unclassifiedInstances === 0 &&
+          value.nonExemptErrors === 0)),
+  ),
+);
+// Both fields are optional so a receipt written before preservation planning still decodes.
+const preservePlan = Schema.Struct({
+  schema: Schema.Literal("workspace-preserve-plan/v1"),
+  selected: strings,
+  deletions: strings,
+  excluded: Schema.mutable(
+    Schema.Array(
+      Schema.Struct({
+        path: Schema.String,
+        reason: Schema.String,
+        origin: Schema.Literals(["tracked", "untracked"]),
+      }),
+    ),
+  ),
+  selectedBytes: count,
+  excludedBytes: count,
+});
+const recoverability = Schema.Struct({
+  schema: Schema.Literal("workspace-recoverability/v1"),
+  verdict: Schema.Literals(["recreatable", "retirable_after_preserve", "held", "unknown"]),
+  reasons: Schema.Record(
+    Schema.String,
+    Schema.Literals(["preservable", "unrecreatable", "liveness", "unobserved"]),
+  ),
+  regenerable: strings,
+});
 const qualification = Schema.Struct({
   schema: Schema.Literal("workspace-qualification/v1"),
   authority_effect: Schema.Literal("none"),
@@ -133,6 +196,8 @@ const qualification = Schema.Struct({
       ),
     ),
   ),
+  recoverability: Schema.optionalKey(recoverability),
+  preservePlan: Schema.optionalKey(preservePlan),
   consumers: Schema.optionalKey(
     Schema.Struct({
       holds: strings,
@@ -140,6 +205,7 @@ const qualification = Schema.Struct({
       coverage: Schema.Record(
         Schema.String,
         Schema.Struct({
+          processPolicy: Schema.optionalKey(processPolicy),
           status: Schema.String,
           ageMs: Schema.Number,
           limits: Schema.Array(Schema.String),
@@ -163,6 +229,24 @@ const qualification = Schema.Struct({
     Schema.Struct({
       status: Schema.Literals(["available", "partial", "unavailable"]),
       lineage: Schema.mutable(Schema.Array(fields)),
+    }),
+  ),
+});
+// Optional on the receipt, so a receipt written before preserve branches still decodes.
+const preserve = Schema.Struct({
+  branch: Schema.String,
+  sha: Schema.String,
+  remote: Schema.NullOr(Schema.String),
+  verification: Schema.Literals(["remote_verified", "local_only"]),
+  excluded: Schema.mutable(
+    Schema.Array(Schema.Struct({ path: Schema.String, reason: Schema.String })),
+  ),
+  restore: Schema.String,
+  forced: Schema.Boolean,
+  readback: Schema.optionalKey(
+    Schema.Struct({
+      local: Schema.Literals(["verified", "failed"]),
+      remote: Schema.Literals(["verified", "failed", "not_applicable"]),
     }),
   ),
 });
@@ -194,5 +278,6 @@ export const RetirementReceiptJson = Schema.fromJsonString(
       allocated: Schema.NullOr(Schema.Number),
       statvfs_delta: Schema.NullOr(Schema.Number),
     }),
+    preserve: Schema.optionalKey(preserve),
   }),
 ) satisfies Schema.Codec<RetirementReceipt, string>;

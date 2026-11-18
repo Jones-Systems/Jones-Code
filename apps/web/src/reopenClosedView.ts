@@ -109,6 +109,10 @@ export async function reopenClosedView(
       ...(url === undefined ? {} : { url }),
       ...(view.snapshot.viewport === undefined ? {} : { viewport: view.snapshot.viewport }),
       ...(view.snapshot.profileId === undefined ? {} : { profileId: view.snapshot.profileId }),
+      ...(view.snapshot.zoomFactor === undefined ? {} : { zoomFactor: view.snapshot.zoomFactor }),
+      ...(view.snapshot.colorScheme === undefined
+        ? {}
+        : { colorScheme: view.snapshot.colorScheme }),
     });
     if (result._tag === "Failure") return false;
     panels.openBrowser(ref, result.value.tabId);
@@ -124,6 +128,9 @@ export async function reopenClosedView(
     case "preview":
       if (surface.resourceId !== null) return false;
       panels.openBrowser(ref, null);
+      break;
+    case "remote-file":
+      panels.openRemoteFile(ref, surface.href);
       break;
     case "file":
       if (surface.attachment) panels.openAttachment(ref, surface.attachment);

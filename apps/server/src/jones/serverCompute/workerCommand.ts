@@ -12,7 +12,7 @@ import { computeFailure } from "./failure.ts";
 // Hashing only bin.js would not bind a code-split worker chunk in bundled Node/Electron.
 declare const __JONES_SERVER_COMPUTE_BUILD_ID__: string | undefined;
 
-const sourceFiles = [
+export const sourceFiles = [
   "jones/serverCompute/worker.ts",
   "jones/serverCompute/guardian.ts",
   "jones/serverCompute/protocol.ts",
@@ -28,6 +28,12 @@ const sourceFiles = [
   "jones/serverParallelism/observations.ts",
   "jones/workspace/nativeSearchRuntime.ts",
   "jones/workspace/contentSearchPages.ts",
+  "jones/workspace/SearchGitProbe.ts",
+  "jones/serverCompute/searchProbeProtocol.ts",
+  "jones/serverCompute/searchProbeClient.ts",
+  "jones/serverCompute/searchProbeBinding.ts",
+  "vcs/VcsProcess.ts",
+  "processRunner.ts",
 ];
 export interface WorkerCommand {
   readonly file: string;

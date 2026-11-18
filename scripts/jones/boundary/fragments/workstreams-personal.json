@@ -2,6 +2,13 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "workstreams-personal",
   "jonesOwnedPaths": [
+    "apps/web/src/jones/composer/NewThreadWorkstreamPicker.tsx",
+    "apps/web/src/jones/composer/NewThreadWorkstreamPicker.browser.test.tsx",
+    "apps/web/src/jones/composer/newThreadWorkstream.ts",
+    "apps/web/src/jones/composer/newThreadWorkstream.test.ts",
+    "apps/web/src/jones/workstreams/personalSnooze.ts",
+    "apps/web/src/jones/workstreams/personalSnooze.test.ts",
+    "apps/web/src/jones/workstreams/SnoozedWorkstreamRow.tsx",
     "apps/desktop/src/jones/workstreams/personalStartup.test.ts",
     "apps/mobile/src/features/workstreams/Controls.tsx",
     "apps/mobile/src/features/workstreams/listProjection.test.ts",
@@ -20,14 +27,18 @@
     "apps/server/src/jones/mcp/workstreams/personalForward.ts",
     "apps/server/src/jones/workstreams/nativeProvider/settlementProof.ts",
     "apps/server/src/jones/workstreams/personal/agentService.ts",
+    "apps/server/src/jones/workstreams/personal/bearerHttp.test.ts",
+    "apps/server/src/jones/workstreams/personal/bearerHttp.ts",
     "apps/server/src/jones/workstreams/personal/http.ts",
     "apps/server/src/jones/workstreams/personal/service.test.ts",
     "apps/server/src/jones/workstreams/personal/service.ts",
     "apps/server/src/jones/workstreamsLegacyHttp.test.ts",
     "apps/web/src/components/workstreams/WorkstreamNativeSidebar.tsx",
     "apps/web/src/components/workstreams/WorkstreamSidebarSection.tsx",
+    "apps/web/src/jones/workstreams/ClosedWorkstreams.tsx",
     "apps/web/src/jones/workstreams/PersonalSidebarGroupHeader.tsx",
     "apps/web/src/jones/workstreams/PersonalWorkstreamTitleEditor.tsx",
+    "apps/web/src/jones/workstreams/WorkstreamNameIconPicker.tsx",
     "apps/web/src/jones/workstreams/personalInlineRename.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalThreadWindow.ts",
     "apps/web/src/jones/workstreams/personalThreadWindow.test.ts",
@@ -44,6 +55,7 @@
     "apps/web/src/jones/workstreams/personalSidebarOrder.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalSidebarOrder.ts",
     "apps/web/src/jones/workstreams/personalThreadDrag.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalThreadAssignmentMenu.ts",
     "apps/web/src/jones/workstreams/personalThreadDrag.ts",
     "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
     "apps/web/src/jones/workstreams/personalThreadPlacement.ts",
@@ -75,7 +87,14 @@
     "apps/web/src/jones/workstreams/personalStatusFilter.ts",
     "apps/web/src/jones/workstreams/personalStatusFilter.test.ts",
     "apps/web/src/jones/workstreams/personalStatusFilter.browser.test.tsx",
-    "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx"
+    "apps/web/src/jones/workstreams/personalHeaderControls.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalBulkControls.browser.test.tsx",
+    "apps/web/src/jones/workstreams/PersonalStatusPill.tsx",
+    "apps/web/src/jones/workstreams/PersonalWorkstreamsHeader.tsx",
+    "apps/web/src/jones/workstreams/PersonalWorkstreamDisplayControls.tsx",
+    "apps/web/src/jones/workstreams/sidebarDragAutoScroll.ts",
+    "apps/web/src/jones/workstreams/sidebarDragAutoScroll.browser.test.ts",
+    "apps/web/src/jones/workstreams/threadMenuBridge.ts"
   ],
   "hookPaths": [
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
@@ -116,7 +135,8 @@
     "packages/contracts/src/desktopBootstrap.ts",
     "packages/shared/src/atomicWrite.test.ts",
     "packages/shared/src/atomicWrite.ts",
-    "vite.config.ts"
+    "vite.config.ts",
+    "apps/web/test/fakeEnvironment.ts"
   ],
   "tombstones": [
     "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
@@ -752,6 +772,22 @@
   ],
   "allowedImports": [
     {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/composer/NewThreadWorkstreamPicker.tsx"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/composer/newThreadWorkstream.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalSnooze.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/SnoozedWorkstreamRow.tsx"
+    },
+    {
       "from": "apps/desktop/src/backend/DesktopBackendConfiguration.ts",
       "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"
     },
@@ -910,6 +946,34 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/jones/workstreams/personalStatusFilter.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/threadMenuBridge.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalThreadAssignmentMenu.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/WorkstreamPicker.tsx"
+    },
+    {
+      "from": "apps/web/src/hooks/useThreadActionMenu.ts",
+      "to": "apps/web/src/jones/workstreams/threadMenuBridge.ts"
+    },
+    {
+      "from": "apps/web/src/hooks/useThreadActionMenu.test.ts",
+      "to": "apps/web/src/jones/workstreams/threadMenuBridge.ts"
+    },
+    {
+      "from": "apps/server/src/cli/thread.test.ts",
+      "to": "apps/server/src/cli/workstream.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalPresentation.ts"
     }
   ]
 }

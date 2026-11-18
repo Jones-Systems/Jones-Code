@@ -30,10 +30,10 @@
   },
   "scripts": {
     "typecheck": "vp run tsrs:typecheck",
-    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir .",
     "generate": "node scripts/generate.ts",
-    "probe": "node test/examples/codex-app-server-probe.ts"
+    "probe": "node test/examples/codex-app-server-probe.ts",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit"
   },
   "dependencies": {
     "effect": "catalog:"

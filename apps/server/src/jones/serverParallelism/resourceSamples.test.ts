@@ -10,6 +10,7 @@ import {
 } from "./diagnosticObservation.ts";
 import {
   parseLinuxThreadScheduling,
+  parseMacProcessResources,
   sampleProcesses,
   sampleCpuStats,
   processResourceSample,
@@ -43,6 +44,38 @@ it("rejects a complete over-budget sample even when other samples are missing", 
   expect(
     resourcePredicates([over, processResourceSample([1, 2, 3], [])], 1, 2).childRssWithinBudget,
   ).toBe(false);
+});
+
+const macThreadTable = [
+  "USER    PID   TT   %CPU STAT PRI     STIME     UTIME COMMAND JONES_SP_PID JONES_SP_TIME JONES_SP_RSS",
+  "runner  123   ??    0.0 S    31T   0:00.01   0:00.03 node             123       0:00.25        65536",
+  "        123         0.0 S    31T   0:00.00   0:00.00                  123       0:00.25        65536",
+  "runner  456   ??    0.0 S    31T   0:00.01   0:00.03 node             456       0:00.50        32768",
+  "        456         0.0 S    31T   0:00.00   0:00.00                  456       0:00.50        32768",
+  "        456         0.0 S    31T   0:00.00   0:00.00                  456       0:00.50        32768",
+].join("\n");
+
+it("combines repeated process totals and counts every captured thread once", () => {
+  const requested = [123, 456, 789];
+  const shiftedColumns = macThreadTable.replace("runner  ", "a-very-long-runner-account-name ");
+  const processes = parseMacProcessResources(shiftedColumns, requested);
+  expect(processes).toEqual([
+    { pid: 123, cpuMs: 250, rssBytes: 64 * 1024 * 1024, threads: 2 },
+    { pid: 456, cpuMs: 500, rssBytes: 32 * 1024 * 1024, threads: 3 },
+  ]);
+  expect(processResourceSample(requested, processes ?? []).missingPids).toEqual([789]);
+});
+
+it("rejects a malformed header, unbound rows or inconsistent process totals", () => {
+  for (const invalid of [
+    macThreadTable.replace("JONES_SP_PID", "OTHER"),
+    macThreadTable.replace("0:00.25", "0:00.30"),
+    macThreadTable.replace("65536", "00000"),
+    macThreadTable + "\ntruncated 123",
+  ]) {
+    expect(parseMacProcessResources(invalid, [123, 456])).toBeUndefined();
+  }
+  expect(parseMacProcessResources(macThreadTable, [123])).toBeUndefined();
 });
 
 it("parses only PID-attributed macOS sample thread headers, never stack names", async () => {

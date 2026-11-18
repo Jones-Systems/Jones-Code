@@ -28,6 +28,7 @@ export interface TextGeneratorDriver {
     connection: TextGeneratorConnection,
     model: string,
     prompt: string,
+    requireTextOnly?: boolean,
   ) => Effect.Effect<string, TextGeneratorRequestError, HttpClient.HttpClient>;
   readonly listModels: (
     connection: TextGeneratorConnection,
@@ -127,7 +128,11 @@ const ChatCompletion = Schema.Struct({
   choices: Schema.Array(
     Schema.Struct({
       finish_reason: Schema.NullOr(Schema.String),
-      message: Schema.Struct({ content: Schema.NullOr(Schema.String) }),
+      message: Schema.Struct({
+        content: Schema.NullOr(Schema.String),
+        tool_calls: Schema.optional(Schema.NullOr(Schema.Array(Schema.Unknown))),
+        function_call: Schema.optional(Schema.Unknown),
+      }),
     }),
   ),
 });
@@ -137,7 +142,7 @@ const OpenAIModelList = Schema.Struct({
 
 const openAICompatible: TextGeneratorDriver = {
   kind: "openaiCompatible",
-  generate: (connection, model, prompt) => {
+  generate: (connection, model, prompt, requireTextOnly) => {
     const { label } = connection;
     let request = HttpClientRequest.post(endpoint(connection, "/chat/completions")).pipe(
       HttpClientRequest.bodyJsonUnsafe({ model, messages: [{ role: "user", content: prompt }] }),
@@ -152,6 +157,15 @@ const openAICompatible: TextGeneratorDriver = {
             new TextGeneratorRequestError({ detail: `${label} reached its output limit.` }),
           );
         }
+        if (
+          requireTextOnly &&
+          (choice?.finish_reason !== "stop" ||
+            choice.message.tool_calls?.length ||
+            choice.message.function_call != null)
+        )
+          return Effect.fail(
+            new TextGeneratorRequestError({ detail: `${label} did not finish with text only.` }),
+          );
         return text
           ? Effect.succeed(text)
           : Effect.fail(new TextGeneratorRequestError({ detail: `${label} returned no text.` }));
@@ -193,7 +207,7 @@ const anthropicRequest = (request: HttpClientRequest.HttpClientRequest, apiKey: 
 
 const anthropic: TextGeneratorDriver = {
   kind: "anthropic",
-  generate: (connection, model, prompt) => {
+  generate: (connection, model, prompt, requireTextOnly) => {
     const { label } = connection;
     const request = anthropicRequest(
       HttpClientRequest.post(endpoint(connection, "/messages")).pipe(
@@ -212,6 +226,14 @@ const anthropic: TextGeneratorDriver = {
             new TextGeneratorRequestError({ detail: `${label} reached its output limit.` }),
           );
         }
+        if (
+          requireTextOnly &&
+          (message.stop_reason !== "end_turn" ||
+            message.content.some((block) => block.type !== "text"))
+        )
+          return Effect.fail(
+            new TextGeneratorRequestError({ detail: `${label} did not finish with text only.` }),
+          );
         const text = message.content
           .flatMap((block) => (block.type === "text" && block.text ? [block.text] : []))
           .join("")

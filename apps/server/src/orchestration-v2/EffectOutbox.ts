@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -51,6 +52,8 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
 
 export const PROCESS_BOUND_EFFECT_TYPES = [
+  "provider-session.apply-model-selection",
+  "provider-session.apply-thread-title",
   "provider-turn.start",
   "provider-turn.interrupt",
   "provider-turn.steer",
@@ -128,10 +131,12 @@ export interface EffectOutboxV2Shape {
   readonly claimNext: (input: {
     readonly workerId: string;
     readonly excludeRestartContinuations?: boolean;
+    readonly maxRunningTitleGenerations?: number;
     readonly excludeTitleGeneration?: boolean;
     readonly urgentOnly?: boolean;
   }) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
   readonly nextClaimableAt: (input?: {
+    readonly maxRunningTitleGenerations?: number;
     readonly excludeTitleGeneration?: boolean;
     readonly urgentOnly?: boolean;
   }) => Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
@@ -295,6 +300,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
+      maxRunningTitleGenerations?: number,
       excludeTitleGeneration = false,
       urgentOnly = false,
     ) => {
@@ -378,6 +384,19 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               )
             )
         )
+        AND ${
+          maxRunningTitleGenerations === undefined
+            ? sql`1 = 1`
+            : sql`(
+                candidate.effect_type != 'thread-title.generate'
+                OR (
+                  SELECT COUNT(*)
+                  FROM orchestration_v2_effect_outbox AS running_title
+                  WHERE running_title.status = 'running'
+                    AND running_title.effect_type = 'thread-title.generate'
+                ) < ${maxRunningTitleGenerations}
+              )`
+        }
       `;
       const titlePredicate = excludeTitleGeneration
         ? sql`${predicate} AND candidate.effect_type != 'thread-title.generate'`
@@ -592,6 +611,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         function* ({
           workerId,
           excludeRestartContinuations = false,
+          maxRunningTitleGenerations,
           excludeTitleGeneration = false,
           urgentOnly = false,
         }) {
@@ -611,7 +631,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = (
               SELECT candidate.effect_id
               FROM orchestration_v2_effect_outbox AS candidate
-              WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations, excludeTitleGeneration, urgentOnly)}
+              WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations, maxRunningTitleGenerations, excludeTitleGeneration, urgentOnly)}
                 AND ${allowed}
                 AND ${excludeRestartContinuations ? sql`candidate.effect_type != 'provider-runtime.continue'` : sql`1 = 1`}
               ORDER BY candidate.available_at ASC, candidate.created_at ASC, candidate.effect_id ASC
@@ -620,16 +640,35 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             RETURNING *
           `,
           );
-          const rows = yield* claimStatement.pipe(Effect.withTracerEnabled(false));
-          const row = rows[0];
-          if (row === undefined) return Option.none();
-          cancellationSignals.set(row.effect_id, Deferred.makeUnsafe<void>());
-          return Option.some(yield* rowToEffect(row));
+          while (true) {
+            const rows = yield* claimStatement.pipe(Effect.withTracerEnabled(false));
+            const row = rows[0];
+            if (row === undefined) return Option.none();
+            const decoded = yield* Effect.result(rowToEffect(row));
+            if (Result.isSuccess(decoded)) {
+              cancellationSignals.set(row.effect_id, Deferred.makeUnsafe<void>());
+              return Option.some(decoded.success);
+            }
+            // Left running, an unreadable row would block every later effect on its thread.
+            yield* Effect.logWarning("Failing an orchestration effect this build cannot decode", {
+              effectId: row.effect_id,
+              effectType: row.effect_type,
+              cause: decoded.failure,
+            });
+            yield* service.fail({
+              effectId: row.effect_id,
+              workerId,
+              error: `This server build cannot decode the ${row.effect_type} effect.`,
+            });
+          }
         },
-        Effect.mapError((cause) => new EffectOutboxError({ operation: "claim", cause })),
+        Effect.mapError((cause) =>
+          isEffectOutboxError(cause) ? cause : new EffectOutboxError({ operation: "claim", cause }),
+        ),
       ),
       nextClaimableAt: Effect.fnUntraced(
         function* (input?: {
+          readonly maxRunningTitleGenerations?: number;
           readonly excludeTitleGeneration?: boolean;
           readonly urgentOnly?: boolean;
         }) {
@@ -638,7 +677,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             (allowed) => sql<{ readonly available_at: string | null }>`
             SELECT MIN(candidate.available_at) AS available_at
             FROM orchestration_v2_effect_outbox AS candidate
-            WHERE ${claimableCandidatePredicate(undefined, false, input?.excludeTitleGeneration, input?.urgentOnly)}
+            WHERE ${claimableCandidatePredicate(undefined, false, input?.maxRunningTitleGenerations, input?.excludeTitleGeneration, input?.urgentOnly)}
               AND ${allowed}
           `,
           ).pipe(NodeSqliteClient.readOnly, Effect.withTracerEnabled(false));
@@ -796,6 +835,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         const cutoff = DateTime.formatIso(
           DateTime.subtractDuration(yield* DateTime.now, SETTLED_EFFECT_RETENTION),
         );
+        // Live continuations retain their preceding intent's cumulative crash budget.
         // Separate batch statements release the write lock between batches.
         const deleteBatch = guardedRows(
           sql`settled.thread_id`,
@@ -806,6 +846,16 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             FROM orchestration_v2_effect_outbox AS settled
             WHERE status IN ('succeeded', 'cancelled')
               AND completed_at < ${cutoff}
+              AND NOT (
+                effect_type = 'provider-runtime.continue'
+                AND EXISTS (
+                  SELECT 1 FROM orchestration_v2_projection_runs AS recovery_run
+                  WHERE recovery_run.thread_id = settled.thread_id
+                    AND recovery_run.status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+                    AND json_extract(recovery_run.payload_json, '$.restartContinuationOfRunId') =
+                      json_extract(settled.payload_json, '$.sourceRunId')
+                )
+              )
               AND ${allowed}
             LIMIT ${PRUNE_BATCH_SIZE}
           )

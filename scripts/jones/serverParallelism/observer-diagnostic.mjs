@@ -8,6 +8,8 @@ import * as NodeChildProcess from "node:child_process";
 import {
   classifyCpuEnvelope,
   classifyResourceInterval,
+  observerModes,
+  periodicResourceGapMs,
 } from "../../../apps/server/src/jones/serverParallelism/diagnosticObservation.ts";
 
 const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
@@ -34,13 +36,15 @@ export function validateDiagnosticAdmission(input) {
     baselineHash,
   } = input;
   if (
-    platform !== "linux" ||
+    !Object.hasOwn(observerModes, mode) ||
+    observerModes[mode].platform !== platform ||
     parallelism < 2 ||
-    !["full", "cpu-stat-only"].includes(mode) ||
     !/^[0-9a-f]{40}$/.test(source ?? "") ||
     !/^[0-9a-f]{40}$/.test(sourceTree ?? "")
   )
-    throw new Error("Diagnostic requires Linux source N2/W3/A500/F512 and an exact source/tree");
+    throw new Error(
+      "Diagnostic requires its selected host platform, source N2/W3/A500/F512, and exact source/tree",
+    );
   if (
     !manifest ||
     manifest.schema !== "jones.server-parallelism.command/v1" ||
@@ -81,8 +85,8 @@ export function validateDiagnosticAdmission(input) {
     ].every(positive)
   )
     throw new Error("Unbound or incomplete unchanged baseline");
-  if (mode === "full" && prior !== undefined)
-    throw new Error("Full run cannot consume a prior diagnostic");
+  if (mode !== "cpu-stat-only" && prior !== undefined)
+    throw new Error("Only the pinned CPU control can consume a prior diagnostic");
   if (
     mode === "cpu-stat-only" &&
     (!prior ||
@@ -145,6 +149,7 @@ export function summarizeDiagnostic(report, events) {
     .map((row) => ({
       readId: row.readId,
       phase: row.phase,
+      periodic: begins.get(row.readId)?.periodic ?? null,
       startMs: begins.get(row.readId)?.atMs ?? null,
       endMs: row.atMs,
       cpu: row.cpu ?? null,
@@ -220,7 +225,7 @@ export function summarizeDiagnostic(report, events) {
         diagnosticCpu: row.diagnosticCpu,
       })) ?? null,
     churnWindows: report?.churnWindows ?? null,
-    nominalSamplingGapMs: 10,
+    nominalSamplingGapMs: report?.diagnostic?.nominalSamplingGapMs ?? periodicResourceGapMs,
     cadenceMs,
     resourceSpans: spans,
     writerIntervals: writers,
@@ -474,15 +479,15 @@ export async function assertNewDiagnosticPaths(output, inputs) {
 async function main(args) {
   const [manifestPath, output, baselinePath, mode, priorPath] = args;
   if (
-    (mode === "full" ? args.length !== 4 : args.length !== 5) ||
-    !["full", "cpu-stat-only"].includes(mode) ||
+    !Object.hasOwn(observerModes, mode) ||
+    args.length !== (mode === "cpu-stat-only" ? 5 : 4) ||
     ![manifestPath, output, baselinePath, ...(priorPath ? [priorPath] : [])].every(
       (path) => typeof path === "string" && NodePath.isAbsolute(path),
     ) ||
     !output.endsWith(".json")
   )
     throw new Error(
-      "observer-diagnostic.mjs <absolute source manifest> <absolute output.json> <absolute bound baseline> <full|cpu-stat-only> [absolute inspected full receipt]",
+      "observer-diagnostic.mjs <absolute source manifest> <absolute output.json> <absolute bound baseline> <full|cpu-stat-only|cadence-standard|cadence-reduced> [absolute inspected full receipt]",
     );
   const root = NodePath.resolve(import.meta.dirname, "../../.."),
     entry = NodePath.join(root, "apps/server/src/bin.ts");
@@ -678,6 +683,7 @@ async function main(args) {
       churnSets: [9, 16],
       churnRounds: 3,
       workloadMs: 600_000,
+      nominalSamplingGapMs: observerModes[mode].resourceGapMs,
       fullRuns: 1,
       controlRunsMaximum: 1,
     },

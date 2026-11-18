@@ -191,6 +191,7 @@ vi.mock("../../state/use-thread-outbox", async () => {
   const { appAtomRegistry } = await import("../../state/atom-registry");
   await import("../../state/thread-outbox");
   return {
+    retryingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
     editingQueuedMessageIdsAtom: Atom.make({}).pipe(Atom.keepAlive),
     dispatchingQueuedMessageIdAtom: Atom.make<MessageId | null>(null).pipe(Atom.keepAlive),
     useThreadOutboxMessages: () => appAtomRegistry.get(state.manager.queuedMessagesByThreadKeyAtom),

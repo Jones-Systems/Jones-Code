@@ -1,11 +1,4 @@
-import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
-import * as EventSink from "../orchestration-v2/EventSink.ts";
-import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
-import * as Sqlite from "../persistence/Sqlite.ts";
-import { Tool } from "effect/ai";
-import * as PeerMcpClient from "./PeerMcpClient.ts";
-import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
-import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
+import { legacyCapabilities } from "../jones/remoteAdmissionOrigin/capabilities.testkit.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -23,15 +16,25 @@ import {
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import { McpSchema, McpServer } from "effect/ai";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
+import { McpSchema, McpServer, Tool } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
+import { acceptingSendReceipts } from "../jones/remoteDelegation/RemoteDelegation.testkit.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -46,9 +49,12 @@ import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
+import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
+import * as PeerMcpClient from "./PeerMcpClient.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 
 const laptop = descriptorOf("environment-laptop", "Laptop");
@@ -82,9 +88,20 @@ const usersThread = ThreadId.make("thread:box-users-own");
 /**
  * B's threads: one `auto` thread in `boxProject` that the laptop's link
  * started, whose run finishes on the third wait, and the box user's own.
- * Every send and wait is recorded.
+ * Every send and wait is recorded. A linked send is accepted as the box's
+ * orchestrator accepts one: its receipt is kept in the box's own database.
  */
-const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
+const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
+  Layer.unwrap(
+    Effect.map(SqlClient.SqlClient, (sql) =>
+      boxThreadsWith(seen, linkSession, acceptingSendReceipts(sql)),
+    ),
+  );
+const boxThreadsWith = (
+  seen: Ref.Ref<Seen>,
+  linkSession: Ref.Ref<string>,
+  receipts: ReturnType<typeof acceptingSendReceipts>,
+) => {
   const base = { ...liveThreadShell(boxThread, { runtimeMode: "auto" }), projectId: boxProject };
   const linked = Ref.get(linkSession).pipe(
     Effect.map((sessionId) => ({ ...base, linkOrigin: { sessionId, label: "T3 Code · Laptop" } })),
@@ -101,8 +118,8 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
     rootNodeId: null,
     activeAttemptId: null,
     status,
-    requestedAt: base.updatedAt,
-    startedAt: base.updatedAt,
+    requestedAt: base.createdAt,
+    startedAt: base.createdAt,
     completedAt: status === "completed" ? base.updatedAt : null,
     checkpointId: null,
     contextHandoffId: null,
@@ -111,22 +128,33 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
     threadId === boxThread ? linked : Effect.succeed(threadId === usersThread ? users : null);
   const projectionOf = (threadId: ThreadId) =>
     shellOf(threadId).pipe(
-      Effect.flatMap((thread) =>
-        thread === null
-          ? Effect.die(new Error(`Unknown peer fixture thread: ${threadId}`))
-          : Effect.succeed({ ...idleThreadProjection(thread), runs: [run("running")] }),
+      Effect.flatMap((shell) =>
+        shell === null
+          ? Effect.die(`Unexpected fixture thread ${threadId}`)
+          : Effect.succeed({ ...idleThreadProjection(shell), runs: [run("running")] }),
       ),
     );
   return Layer.mock(ThreadManagement.ThreadManagementService)({
+    remoteSendReceipts: receipts.remoteSendReceipts,
     getThreadShell: shellOf,
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
-    getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
+    getTimelinePage: () =>
+      Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
+    getShellSnapshot: () => linked.pipe(Effect.map((shell) => ({ threads: [shell] }) as never)),
     sendToThread: (input) =>
-      Ref.update(seen, (current) => ({ ...current, sends: [...current.sends, input] })).pipe(
-        Effect.as({ run: run("running"), delivery: "started" } as never),
-      ),
+      Effect.gen(function* () {
+        const shell = yield* shellOf(input.threadId);
+        if (shell === null) return yield* Effect.die(`The box has no thread ${input.threadId}`);
+        return yield* receipts.accept(
+          shell.createdAt,
+          { runId: boxRun, status: "running", delivery: "started" },
+          Ref.update(seen, (current) => ({ ...current, sends: [...current.sends, input] })).pipe(
+            Effect.as({ run: run("running"), delivery: "started" } as never),
+          ),
+        );
+      }),
     dispatch: (command) =>
       Ref.update(seen, (current) => ({
         ...current,
@@ -160,12 +188,8 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
         stops: [...current.stops, `delegated-tasks.stop ${input.threadId}`],
       })),
     waitForThread: (input) =>
-      Ref.updateAndGet(seen, (current) => ({ ...current, waits: [...current.waits, input] })).pipe(
-        Effect.map(({ waits }) => ({
-          threadId: input.threadId,
-          run: run(waits.length < 3 ? "running" : "completed"),
-          timedOut: waits.length < 3,
-        })),
+      Ref.update(seen, (current) => ({ ...current, waits: [...current.waits, input] })).pipe(
+        Effect.as({ threadId: input.threadId, run: run("completed"), timedOut: false }),
       ),
   });
 };
@@ -195,7 +219,21 @@ const boxLaunches = (seen: Ref.Ref<Seen>) =>
 const boxProjects = (seen: Ref.Ref<Seen>) =>
   Layer.merge(
     Layer.mock(ProjectService.ProjectService)({
-      getById: () => Effect.succeedNone,
+      getById: (id) =>
+        Effect.succeed(
+          id === boxProject
+            ? Option.some({
+                id,
+                title: "t3code",
+                workspaceRoot: "/box/t3code",
+                defaultModelSelection: null,
+                scripts: [],
+                createdAt: "2026-10-18T00:00:00.000Z",
+                updatedAt: "2026-10-18T00:00:00.000Z",
+                deletedAt: null,
+              })
+            : Option.none(),
+        ),
       create: (input) =>
         Ref.update(seen, (current) => ({
           ...current,
@@ -225,6 +263,30 @@ const boxProjects = (seen: Ref.Ref<Seen>) =>
     }),
   );
 
+const unreachedPort = () =>
+  Effect.die(new Error("No orchestrator runs here; its remote command ports are never reached."));
+/**
+ * Toolkits capture the orchestrator only as they are built. Neither environment's
+ * threads are an orchestrator's here, so these ports fail fast if a test ever reaches them.
+ */
+const noOrchestratorPorts: Pick<
+  Orchestrator.OrchestratorV2Shape,
+  "remoteSendReceipts" | "followUpCommandOwner"
+> = {
+  remoteSendReceipts: {
+    available: Effect.succeed(false),
+    lookup: unreachedPort,
+    withSendCommit: unreachedPort,
+    pruneBefore: unreachedPort,
+    guardPreparation: unreachedPort,
+  },
+  followUpCommandOwner: {
+    inParentTransaction: unreachedPort,
+    assertParentCaller: unreachedPort,
+    dispatch: unreachedPort,
+  },
+};
+
 /**
  * The orchestrator and project toolkits on B's real `/mcp`, behind its real
  * OAuth. `linkSession` is filled in once A links, so B's fixture thread reads
@@ -241,17 +303,19 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       .pipe(
         Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
         Layer.provide(NodeCrypto.layer),
-        Layer.provide(Sqlite.layerMemory),
+        // Its threads keep linked-send receipts in the same database as the toolkits' state.
+        Layer.provide(boxThreads(seen, linkSession)),
+        // The box's own database, where its toolkits keep continuity, task, goal and launch state.
+        Layer.provide(CommandReceiptStore.layer.pipe(Layer.provideMerge(Sqlite.layerMemory))),
+        // No orchestrator runs on the box; its threads are this fixture's, so neither is reached.
         Layer.provide(
-          Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
-            getByCommandId: () => Effect.succeedNone,
+          Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
           }),
         ),
-        Layer.provide(Layer.mock(EventSink.EventSinkV2)({})),
-        Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)({})),
+        Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)(noOrchestratorPorts)),
       )
       .pipe(
-        Layer.provide(boxThreads(seen, linkSession)),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
         Layer.provide(boxLaunches(seen)),
         Layer.provide(
@@ -270,7 +334,11 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
         Layer.provide(
           Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
         ),
-        Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+        Layer.provide(
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([]),
+          }),
+        ),
         Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
         Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
         Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
@@ -322,6 +390,8 @@ const makeLaptop = Effect.gen(function* () {
     ),
     Layer.provide(NodeServices.layer),
     Layer.provide(PeerForwarding.layer),
+    // Launch receipts, like the toolkits' other state, live in the laptop's one database.
+    Layer.provide(CommandReceiptStore.layer),
     Layer.provide(Layer.succeedContext(linking)),
     Layer.provide(NodeCrypto.layer),
     Layer.provideMerge(
@@ -342,27 +412,37 @@ const makeLaptop = Effect.gen(function* () {
                 ),
           ),
         getProjectThreadRecords: ({ threadId }) =>
-          Effect.succeed({
-            thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
-          } as never),
+          Effect.succeed(
+            idleThreadProjection(liveThreadShell(threadId, { runtimeMode: "full-access" })),
+          ),
+        // Before a send there, forwarding reads the caller's tasks: a finished one there
+        // would make the send a follow-up. No thread here delegated to the box.
+        getThreadRecords: (threadId) =>
+          Effect.succeed(
+            idleThreadProjection(liveThreadShell(threadId, { runtimeMode: "full-access" })),
+          ),
       }),
     ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderRegistry.ProviderRegistry)({}),
-        Sqlite.layerMemory,
-        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
-          getByCommandId: () => Effect.succeedNone,
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([]),
         }),
-        Layer.mock(EventSink.EventSinkV2)({}),
-        Layer.mock(Orchestrator.OrchestratorV2)({}),
-        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         ServerSettings.layerTest(),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        // Its local threads never matter here, so no orchestrator runs.
+        Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
+        }),
+        Layer.mock(Orchestrator.OrchestratorV2)(noOrchestratorPorts),
+        // No thread here delegated to the box, so a send there is no follow-up.
+        Layer.mock(RemoteDelegation.RemoteDelegation)({
+          followUp: (_scope, _environmentId, _request, sent) => Effect.succeed(sent),
+        }),
         Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
       ),
     ),
@@ -444,8 +524,14 @@ it.effect("an agent here works on a linked environment's threads within its own 
         message: "Carry on there.",
         clientRequestId: "send-1",
       });
-      expect(sent.isError).toBe(false);
+      expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
       expect(sent.structuredContent).toMatchObject({ threadId: boxThread, delivery: "started" });
+      // The box records which thread here sent it.
+      expect((yield* Ref.get(seen)).sends[0]?.linkedSender).toEqual({
+        environmentId: laptop.environmentId,
+        threadId: "thread:laptop-full",
+        title: "thread:laptop-full",
+      });
 
       // A plan-mode agent here may not steer that thread there: the box
       // refuses it, because the call carries the agent's own modes.
@@ -499,15 +585,8 @@ it.effect("keeps a forwarded wait short and its retries scoped to the caller", (
         status: "completed",
         timedOut: false,
       });
-      // Three pieces of at most 50 s each, the later ones pinned to the run
-      // the first one found.
-      expect(
-        (yield* Ref.get(seen)).waits.map(({ timeoutMs, runId }) => [timeoutMs, runId]),
-      ).toEqual([
-        [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, undefined],
-        [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, boxRun],
-        [PeerForwarding.FORWARDED_WAIT_CHUNK_MS, boxRun],
-      ]);
+      // One capped piece, so the caller's MCP request returns before its client times out.
+      expect((yield* Ref.get(seen)).waits.map(({ timeoutMs }) => timeoutMs)).toEqual([45_000]);
 
       const send = (caller: string, clientRequestId: string) =>
         a.call(caller, "t3_thread_send", {
@@ -870,17 +949,19 @@ it.effect(
                 Effect.sync(() => {
                   calls.push(input);
                   return (
-                    input.tool === "t3_thread_wait"
-                      ? { timedOut: false }
-                      : input.tool === "t3_thread_read" && supportsPolicy
-                        ? {
-                            remoteMessagePolicy: {
-                              schemaVersion: "t3.linked-message-policy/v1",
-                              authenticatedOrigin: true,
-                              incomingAcceptance: true,
-                            },
-                          }
-                        : {}
+                    input.tool === "orchestrator_capabilities"
+                      ? legacyCapabilities
+                      : input.tool === "t3_thread_wait"
+                        ? { timedOut: false }
+                        : input.tool === "t3_thread_read" && supportsPolicy
+                          ? {
+                              remoteMessagePolicy: {
+                                schemaVersion: "t3.linked-message-policy/v1",
+                                authenticatedOrigin: true,
+                                incomingAcceptance: true,
+                              },
+                            }
+                          : {}
                   ) as never;
                 }),
             }),
@@ -889,4 +970,37 @@ it.effect(
       ),
     );
   },
+);
+
+it.effect("refuses a launch there above the link's access, naming the link", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const seen = yield* Ref.make<Seen>(nothingSeen);
+      const linkSession = yield* Ref.make("");
+      const b = yield* serveBox(seen, linkSession);
+      const a = yield* makeLaptop;
+      yield* linkTo(a.links, b, "auto");
+      yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
+
+      // A full-access agent here asks for more than the link allows there.
+      const launchAboveLink = a.call("thread:laptop-full", "t3_thread_launch", {
+        environmentId: box.environmentId,
+        projectId: boxProject,
+        title: "Run the suite there",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        message: "Run the suite.",
+        runtimeMode: "full-access",
+      });
+      const { message } = failureOf(yield* launchAboveLink);
+      expect(message).toContain('"Box"');
+      expect(message).toContain("auto");
+      expect(message).toContain("full-access");
+      expect(message).not.toContain("parent mode");
+      expect((yield* Ref.get(seen)).launches).toEqual([]);
+
+      // Once the link has expired, that is what the agent needs to hear.
+      yield* TestClock.adjust(Duration.days(31));
+      expect(failureOf(yield* launchAboveLink).message).toContain("expired");
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

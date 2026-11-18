@@ -1,10 +1,3 @@
-import {
-  completionSentinel,
-  completionSentinelPattern,
-  stripTerminalControl,
-  wrapCommandForCompletion,
-  type CompletionShell,
-} from "../jones/workspaceRetirement/ScriptCompletionProtocol.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
 import type { TerminalError, TerminalSessionSnapshot } from "@t3tools/contracts";
@@ -223,10 +216,26 @@ export class ProjectSetupScriptRunner extends Context.Service<
 
 /** @public */
 // Random per-run tokens prevent script output from spoofing completion.
+const COMPLETION_SENTINEL_PREFIX = "__T3_SETUP_DONE__";
 const OUTPUT_LINE_MAX_LENGTH = 400;
 const PARTIAL_LINE_MAX_LENGTH = 4_096;
 
-// Line editors (zsh, fish, bash 5.1+) enable bracketed paste when they start reading a command.
+function completionSentinel(token: string): string {
+  return `${COMPLETION_SENTINEL_PREFIX}_${token}:`;
+}
+
+function completionSentinelPattern(token: string): RegExp {
+  return new RegExp(`${COMPLETION_SENTINEL_PREFIX}_${token}:(-?\\d+)`);
+}
+
+// ECMA-48: CSI, OSC, then any other escape as intermediates (0x20-0x2F) and one final byte.
+function stripTerminalControl(text: string): string {
+  return text
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[ -/]*[0-~]/g, "")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+}
+
+// Line editors (zsh, fish, nu, bash 5.1+) enable bracketed paste when they start reading a command.
 const BRACKETED_PASTE_ON = "\x1b[?2004h";
 const BRACKETED_PASTE_OFF = "\x1b[?2004l";
 // Longer than one subprocess poll plus its ps timeout, so a startup prompt is seen as busy first.
@@ -238,12 +247,96 @@ function lineEditorReading(text: string, previous: boolean): boolean {
   return on === off ? previous : on > off;
 }
 
+type CompletionShell = "posix" | "fish" | "nushell" | "powershell";
+
 function resolveCompletionShell(shell: string): CompletionShell | null {
   const name = (shell.split(/[/\\]/).at(-1) ?? shell).toLowerCase().replace(/\.exe$/, "");
   if (name === "cmd") return null;
   if (name === "fish") return "fish";
+  if (name === "nu") return "nushell";
   if (name === "pwsh" || name === "powershell") return "powershell";
   return "posix";
+}
+
+const utf8 = new TextEncoder();
+// Canonical TTY input (before a line editor starts reading) caps a line below 1 KiB on Linux.
+const POSIX_MAX_LINE_BYTES = 1_023;
+const POSIX_APPEND = '__t3_command="$__t3_command"';
+
+function encodePosixScript(text: string): string {
+  let encoded = "";
+  for (const character of text) {
+    const code = character.charCodeAt(0);
+    if (character === "'") {
+      encoded += "'\\''";
+    } else if (character === "\\" || code <= 0x1f || code === 0x7f) {
+      encoded += `\\0${code.toString(8).padStart(3, "0")}`;
+    } else {
+      encoded += character;
+    }
+  }
+  return encoded;
+}
+
+// Line editors run each submitted line on its own, so every line must be a complete command.
+function wrapPosixCommand(command: string, sentinel: string): string {
+  const normalized = command.replace(/\r\n/g, "\n");
+  // The `_` suffix keeps trailing newlines; the subshell contains exits and syntax errors.
+  const evaluate = (payload: string) =>
+    `( __t3_command=$(printf '%b_' ${payload}); eval "\${__t3_command%_}" ); printf '\\n${sentinel}%s\\n' "$?"`;
+  const inline = evaluate(`'${encodePosixScript(normalized)}'`);
+  if (utf8.encode(` ${inline}\r`).byteLength <= POSIX_MAX_LINE_BYTES) return inline;
+
+  const maxChunkBytes = POSIX_MAX_LINE_BYTES - utf8.encode(` ${POSIX_APPEND}''\r`).byteLength;
+  const lines: string[] = [];
+  let prefix = "__t3_command=";
+  let chunk = "";
+  let chunkBytes = 0;
+  for (const character of normalized) {
+    const encoded = encodePosixScript(character);
+    const bytes = utf8.encode(encoded).byteLength;
+    if (chunkBytes + bytes > maxChunkBytes) {
+      lines.push(`${prefix}'${chunk}'`);
+      prefix = POSIX_APPEND;
+      chunk = "";
+      chunkBytes = 0;
+    }
+    chunk += encoded;
+    chunkBytes += bytes;
+  }
+  lines.push(`${prefix}'${chunk}'`, `${evaluate('"$__t3_command"')}; unset __t3_command`);
+  // The leading space gives every line the history suppression a short command gets.
+  return lines.join("\r ");
+}
+
+function wrapCommandForCompletion(
+  command: string,
+  shell: CompletionShell,
+  sentinel: string,
+): string {
+  const body = command.replace(/\r?\n/g, "\r");
+  switch (shell) {
+    case "powershell":
+      return `$global:LASTEXITCODE = $null; & {\r${body}\r}; if ($null -ne $LASTEXITCODE) { $__t3c = $LASTEXITCODE } elseif ($?) { $__t3c = 0 } else { $__t3c = 1 }; Write-Host "${sentinel}$__t3c"`;
+    case "fish":
+      return `begin\r${body}\rend; printf '\\n${sentinel}%s\\n' $status`;
+    case "nushell": {
+      const escaped = command.replace(/["\\\x00-\x1f]/g, (char) =>
+        char === '"' || char === "\\" ? `\\${char}` : `\\u{${char.charCodeAt(0).toString(16)}}`,
+      );
+      // Nu resolves imports before running cd; source a file rooted in the worktree.
+      return [
+        "$env.LAST_EXIT_CODE = 0",
+        "let __t3f = try { mktemp --tmpdir-path $env.T3CODE_WORKTREE_PATH --suffix .nu .t3-setup-XXXXXXXX } catch {|e| print -e $e.msg; null }",
+        `if $__t3f == null { $env.LAST_EXIT_CODE = 1 } else { try { [$"rm --permanent ($__t3f | to nuon)" "${escaped}"] | str join (char newline) | save --force --raw $__t3f; ^$nu.current-exe --login --commands $"cd $env.T3CODE_WORKTREE_PATH; source ($__t3f | to nuon)" } catch {|e| if $e != null and $e.exit_code? == null { print -e $e.msg }; if $env.LAST_EXIT_CODE == 0 { $env.LAST_EXIT_CODE = 1 } } }`,
+        "let __t3c = $env.LAST_EXIT_CODE",
+        "try { if $__t3f != null and ($__t3f | path exists) { rm --permanent $__t3f } } catch {|e| print -e $e.msg }",
+        `print $"\\n${sentinel}($__t3c)"`,
+      ].join("; ");
+    }
+    case "posix":
+      return wrapPosixCommand(command, sentinel);
+  }
 }
 
 /** @public */

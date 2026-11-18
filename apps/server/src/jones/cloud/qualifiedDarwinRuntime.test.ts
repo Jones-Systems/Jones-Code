@@ -14,6 +14,17 @@ import {
 } from "./qualifiedDarwinRuntime.ts";
 import { QualifiedRuntimeBlockedError, recentQualifiedDigestTimings } from "./qualifiedRuntime.ts";
 
+// Staging imports Node timers directly. Route those timers through the clock controlled by Vitest.
+vi.mock(import("node:timers"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  get setTimeout() {
+    return globalThis.setTimeout;
+  },
+  get clearTimeout() {
+    return globalThis.clearTimeout;
+  },
+}));
+
 const version = "0.0.44-preview.20261002.100.1";
 const source = "a".repeat(40);
 const tree = "b".repeat(40);
@@ -53,7 +64,9 @@ function asar(
   return Buffer.concat([prefix, json, Buffer.alloc(padded - json.length), packageJson, server]);
 }
 async function fixture<A>(body: (root: string) => Promise<A>) {
-  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-darwin-fixture-"));
+  // hdiutil receives the canonical image path, including the /private prefix on macOS.
+  const tempDir = await NodeFSP.realpath(NodeOS.tmpdir());
+  const root = await NodeFSP.mkdtemp(NodePath.join(tempDir, "jones-darwin-fixture-"));
   try {
     await NodeFSP.writeFile(NodePath.join(root, "candidate.dmg"), "synthetic DMG");
     return await body(root);

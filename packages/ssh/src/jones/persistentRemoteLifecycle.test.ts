@@ -48,11 +48,19 @@ esac
         NodePath.join(state, "run-t3.sh"),
         changed ? "old runner" : SshTunnel.buildRemoteT3RunnerScript(ARCHIVE) + "\n",
       );
-      // Synthetic PIDs never reach the OS. Any signal or duplicate launch is observable.
+      // Synthetic PIDs never reach the OS: kill and ps answer for the recorded
+      // server as its own serve process. Any signal or duplicate launch is observable.
       const script =
         `kill() {
   if [ "$1" = "-0" ]; then return 0; fi
   echo "kill $*" >> "$HOME/events"
+}
+ps() {
+  if [ "$*" = "-ww -o args= -p 4242" ]; then
+    printf '%s serve --host 127.0.0.1 --port 3773 --base-dir %s\\n' "$HOME/.t3/ssh-launch/fixture/run-t3.sh" "$HOME/.t3"
+    return 0
+  fi
+  command ps "$@"
 }
 sleep() { :; }
 ` + SshTunnel.buildRemoteLaunchScript(ARCHIVE);
@@ -92,6 +100,8 @@ case "$1 $2" in
   "__ssh-helper runtime-port") exit 1 ;;
   "__ssh-helper wait-ready") exit 1 ;;
   "__ssh-helper pick-port") echo 3773 ;;
+  # No server or boot service holds the fixture home, so this launch starts one.
+  "__ssh-helper home-owned") exit 1 ;;
 esac
 `,
           { mode: 0o700 },

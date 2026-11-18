@@ -16,6 +16,8 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Ownership from "../../serverOwnership.ts";
+import * as Incarnation from "./sharedAdmission/DatabaseIncarnation.ts";
+import { prepareSyntheticOpen } from "./sharedAdmission/DatabaseIncarnation.fixture.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as Manager from "../../terminal/Manager.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
@@ -60,7 +62,14 @@ const fixture = <A, E>(
         const owner = yield* Ownership.acquireServerOwnership(
           NodePath.join(stateDir, "server-runtime.json"),
         );
-        const persistence = Layer.effectDiscard(runMigrations()).pipe(
+        const { open } = yield* prepareSyntheticOpen(owner.heldRuntimeOwner, root);
+        const persistence = Layer.effectDiscard(
+          Effect.gen(function* () {
+            yield* Incarnation.bindOpen(open);
+            yield* runMigrations();
+            yield* Incarnation.revalidateOpen(open);
+          }),
+        ).pipe(
           Layer.provideMerge(
             NodeSqliteClient.layer({ filename: NodePath.join(stateDir, "statev2.sqlite") }),
           ),

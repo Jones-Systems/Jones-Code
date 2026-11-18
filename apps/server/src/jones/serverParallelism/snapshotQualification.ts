@@ -1,6 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Synthetic snapshot codec qualification at an explicit runtime boundary.
+// @effect-diagnostics nodeBuiltinImport:off -- Synthetic snapshot codec qualification at an explicit runtime boundary.
 import * as NodeZlib from "node:zlib";
 import * as NodePerfHooks from "node:perf_hooks";
+import * as NodeTimers from "node:timers";
+import * as NodeTimersPromises from "node:timers/promises";
 import { ThreadId, OrchestrationV2ShellSnapshotJson } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -11,6 +13,22 @@ import * as Fixture from "../threadResultDependencies/testkit.ts";
  * and existing wire schema before root decides whether to activate that slice.
  */
 const compiledEncodeEffect1 = Schema.encodeEffect(OrchestrationV2ShellSnapshotJson);
+const loopResolutionMs = 10;
+const maxPhaseLoopTicks = 4_096;
+const waitForLoopSamples = Effect.promise(() =>
+  NodeTimersPromises.setTimeout(3 * loopResolutionMs),
+);
+
+function startPhaseLoopTrace() {
+  // Observe Node's timer turns directly, independently of the measured Effect scheduler.
+  const trace = { ticksMs: [] as number[], overflow: false };
+  // @effect-diagnostics-next-line globalTimers:off -- Measure the native event loop independently of Effect scheduling.
+  const timer = NodeTimers.setInterval(() => {
+    if (trace.ticksMs.length < maxPhaseLoopTicks) trace.ticksMs.push(performance.now());
+    else trace.overflow = true;
+  }, loopResolutionMs);
+  return { trace, stop: () => NodeTimers.clearInterval(timer) };
+}
 
 export async function measureSnapshotPipeline(threadCount = 2_000) {
   if (!Number.isSafeInteger(threadCount) || threadCount < 100 || threadCount > 10_000)
@@ -37,21 +55,26 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
       }
       const samples = [];
       for (let window = 0; window < 3; window++) {
-        const loop = NodePerfHooks.monitorEventLoopDelay({ resolution: 10 });
+        const loop = NodePerfHooks.monitorEventLoopDelay({ resolution: loopResolutionMs });
         loop.enable();
+        const phaseLoop = startPhaseLoopTrace();
         try {
+          // Arm the timer before the work. A new monitor can miss an entire synchronous block.
+          yield* waitForLoopSamples;
+          // Resetting the histogram also loses the timer's preceding timestamp on Node.
+          const loopWarmupSampleCount = loop.count;
           const capturedAt = performance.now();
           const decode = yield* fixture.sql.withTransaction(fixture.projection.readShellSnapshot());
-          const captureMs = performance.now() - capturedAt;
+          const captureFinishedAt = performance.now();
           const decodedAt = performance.now(),
             shell = yield* decode;
-          const decodeMs = performance.now() - decodedAt;
+          const decodeFinishedAt = performance.now();
           const projectedAt = performance.now();
           const projected = yield* compiledEncodeEffect1({
             ...shell,
             projects: [],
           });
-          const schemaProjectionMs = performance.now() - projectedAt;
+          const projectionFinishedAt = performance.now();
           const encodedAt = performance.now();
           // @effect-diagnostics-next-line preferSchemaOverJson:off -- Measure the actual synchronous wire stringify separately from schema projection.
           const bytes = JSON.stringify(projected);
@@ -59,21 +82,36 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           const compressedAt = performance.now(),
             compressed = NodeZlib.gzipSync(bytes);
           const compressionMs = performance.now() - compressedAt;
-          // Let the loop monitor observe this pipeline's blocking interval.
-          yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+          // A later tick must close the interval that includes the final synchronous phase.
+          const loopWorkEndSampleCount = loop.count;
+          yield* waitForLoopSamples;
+          const loopFinalSampleCount = loop.count;
+          const loopSampleCount = loopFinalSampleCount - loopWarmupSampleCount;
           samples.push({
-            captureMs,
-            decodeMs,
-            schemaProjectionMs,
+            captureMs: captureFinishedAt - capturedAt,
+            decodeMs: decodeFinishedAt - decodedAt,
+            schemaProjectionMs: projectionFinishedAt - projectedAt,
+            phaseLoopTrace: {
+              ...phaseLoop.trace,
+              capture: { startMs: capturedAt, endMs: captureFinishedAt },
+              decode: { startMs: decodedAt, endMs: decodeFinishedAt },
+              schemaProjection: { startMs: projectedAt, endMs: projectionFinishedAt },
+            },
             encodeMs,
             compressionMs,
             bytes: Buffer.byteLength(bytes),
             compressedBytes: compressed.byteLength,
-            loopP99Ms: loop.percentile(99) / 1e6,
-            loopMaxMs: loop.max / 1e6,
+            loopWarmupSampleCount,
+            loopWorkEndSampleCount,
+            loopFinalSampleCount,
+            loopExceededCount: loop.exceeds,
+            loopSampleCount,
+            loopP99Ms: loopSampleCount > 0 ? loop.percentile(99) / 1e6 : null,
+            loopMaxMs: loopSampleCount > 0 ? loop.max / 1e6 : null,
             watermark: shell.snapshotSequence,
           });
         } finally {
+          phaseLoop.stop();
           loop.disable();
         }
       }
@@ -82,7 +120,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
         snapshotOffloadActivated: false,
         // JSON.stringify is synchronous, so this is a demonstrated contiguous block.
         contiguousEncodeTrigger: samples.some((sample) => sample.encodeMs >= 50),
-        decodeProjectionAttributionRequired: samples.some(
+        decodeProjectionElapsedTrigger: samples.some(
           (sample) => sample.decodeMs >= 50 || sample.schemaProjectionMs >= 50,
         ),
         compressionReportedSeparately: true,

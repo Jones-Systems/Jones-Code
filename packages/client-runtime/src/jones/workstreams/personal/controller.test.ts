@@ -110,6 +110,152 @@ function harness(overrides: Partial<PersonalWorkstreamsTransport> = {}) {
   };
 }
 describe("personal Workstreams controller", () => {
+  it("confirms icon-aware creation before replicating a compatible definition to older servers", async () => {
+    const h = harness();
+    try {
+      h.controller.setEnvironments([connection("a"), connection("b")]);
+      h.frames[0]!.emit({ ...snapshot("a"), supportsSnooze: true });
+      expect(h.read().canSetNameIcon).toBe(false);
+      expect(
+        await h.controller.create({ name: "Icons", nameIconProjectKey: "project:one" }),
+      ).toMatchObject({
+        ok: false,
+        failure: { reason: "update_required" },
+      });
+      h.frames[1]!.emit({ ...snapshot("b"), supportsNameIcons: true });
+      expect(h.read().canSetNameIcon).toBe(true);
+      const result = await h.controller.create({
+        name: "Icons",
+        nameIconProjectKey: "project:one",
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        value: { nameIcon: { projectKey: "project:one" } },
+      });
+      await flush();
+      expect(h.puts.map(({ c }) => c.environmentId)).toEqual([env("b"), env("a")]);
+      expect(h.puts[1]?.w).not.toHaveProperty("nameIcon");
+      expect(h.read().workstreams[0]?.nameIcon?.projectKey).toBe("project:one");
+      const snoozedUntil = "2026-02-01T00:00:00.000Z";
+      expect(await h.controller.setSnoozedUntil?.("new-group", snoozedUntil)).toMatchObject({
+        ok: true,
+      });
+      await flush();
+      expect(h.puts[2]?.w).toMatchObject({ snoozedUntil });
+      expect(h.puts[2]?.w).not.toHaveProperty("nameIcon");
+      expect(h.puts[3]?.w).toMatchObject({ nameIcon: { projectKey: "project:one" } });
+      expect(h.puts[3]?.w).not.toHaveProperty("snoozedUntil");
+      expect(await h.controller.setNameIcon?.("new-group", null)).toMatchObject({ ok: true });
+      await flush();
+      expect(h.read().workstreams[0]?.nameIcon?.projectKey).toBeNull();
+      expect(h.read().workstreams[0]?.snoozedUntil).toBe(snoozedUntil);
+    } finally {
+      h.close();
+    }
+  });
+
+  it("keeps a woken member in history while showing it in Unassigned until explicit reopen", async () => {
+    const h = harness({
+      members: async () => [{ threadId: thread.id, title: "Finished work", settled: true }],
+    });
+    h.controller.setEnvironments([connection("a")]);
+    h.frames[0]!.emit({
+      ...snapshot("a", [definition()]),
+      assignments: [{ threadId: thread.id, workstreamId: "group", revision: 1, updatedAt: null }],
+    });
+    expect(await h.controller.setLifecycle("group", "completed")).toMatchObject({ ok: true });
+    expect(groupPersonalThreads(h.read(), [thread])).toMatchObject({
+      groups: [],
+      ungrouped: [thread],
+    });
+    expect(h.read().assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId).toBe(
+      "group",
+    );
+    expect(await h.controller.readHistory?.("group")).toMatchObject({
+      complete: true,
+      members: [{ ...thread, title: "Finished work" }],
+    });
+    expect(await h.controller.setLifecycle("group", "active")).toMatchObject({ ok: true });
+    expect(groupPersonalThreads(h.read(), [thread]).groups[0]?.threads).toEqual([thread]);
+    h.close();
+  });
+
+  it("checks every configured environment before writing a close", async () => {
+    const h = harness({
+      members: async (c) =>
+        c.environmentId === "b"
+          ? [{ threadId: thread.id, title: "Still open on B", settled: false }]
+          : [],
+    });
+    h.controller.setEnvironments([connection("a"), connection("b")]);
+    h.frames[0]!.emit(snapshot("a", [definition()]));
+    h.frames[1]!.emit(snapshot("b", [definition()]));
+    expect(await h.controller.setLifecycle("group", "completed")).toMatchObject({
+      ok: false,
+      failure: { reason: "unsettled_threads" },
+    });
+    expect(h.puts).toEqual([]);
+    expect(h.read().workstreams[0]?.lifecycle).toBe("active");
+    h.controller.setEnvironments([connection("a"), connection("b", { connected: false })]);
+    expect(await h.controller.setLifecycle("group", "abandoned")).toMatchObject({
+      ok: false,
+      failure: { reason: "closure_unavailable" },
+    });
+    expect(h.puts).toEqual([]);
+    h.close();
+  });
+
+  it("restores an accepted copy when another environment detects a racing wake", async () => {
+    const firstWrite = deferred<void>();
+    const wakeChecked = deferred<void>();
+    const restorationTargets: string[] = [];
+    const h = harness({
+      members: async () => [],
+      put: async (c, w, expected) => {
+        if (w.lifecycle !== "active") {
+          if (c.environmentId === "b") {
+            await wakeChecked.promise;
+            throw { code: "unsettled_threads" };
+          }
+          firstWrite.resolve();
+          return { outcome: "applied", workstream: w, sequence: 1 };
+        }
+        if (expected) {
+          expect(expected.lifecycle).toBe("abandoned");
+          restorationTargets.push(c.environmentId);
+        }
+        return { outcome: "applied", workstream: w, sequence: 2 };
+      },
+    });
+    h.controller.setEnvironments([connection("a"), connection("b")]);
+    h.frames[0]!.emit(snapshot("a", [definition()]));
+    h.frames[1]!.emit(snapshot("b", [definition()]));
+    const result = h.controller.setLifecycle("group", "abandoned");
+    await firstWrite.promise;
+    expect(h.read().workstreams[0]?.lifecycle).toBe("active");
+    wakeChecked.resolve();
+    expect(await result).toMatchObject({ ok: false, failure: { reason: "unsettled_threads" } });
+    expect(restorationTargets).toEqual(["a"]);
+    expect(h.read().workstreams[0]?.lifecycle).toBe("active");
+    h.close();
+  });
+  it("keeps source definitions separate from the merged Workstream winner", () => {
+    const h = harness();
+    h.controller.setEnvironments([
+      connection("a", { writable: false }),
+      connection("b", { writable: false }),
+    ]);
+    h.frames[0]!.emit(snapshot("a"));
+    h.frames[1]!.emit(snapshot("b", [definition({ name: "Only on B" })]));
+    expect(h.read().workstreams[0]?.name).toBe("Only on B");
+    expect(h.read().environments[0]?.workstreams).toEqual([]);
+    h.frames[0]!.emit(snapshot("a", [definition({ name: "Reported by A" })], 1));
+    expect(h.read().environments.map((entry) => entry.workstreams?.[0]?.name)).toEqual([
+      "Reported by A",
+      "Only on B",
+    ]);
+    h.close();
+  });
   it("converges across deterministic random interleavings, including equal-tuple payload ties", async () => {
     const records = Array.from({ length: 12 }, (_, i) =>
       definition({ name: `Name ${i}`, rev: 1 + (i % 3), origin: `writer${i % 2}` }),
@@ -513,4 +659,53 @@ describe("CORE-01 queued revision dependencies", () => {
       }
     },
   );
+});
+
+describe("automatically assigned threads", () => {
+  const key = personalThreadKey(thread);
+  const assigned = (revision: number, workstreamId: string | null = "group", sequence = 1) => ({
+    ...snapshot("a", [definition(), definition({ id: "other", name: "Other" })], sequence),
+    assignments: [{ threadId: thread.id, workstreamId, revision, updatedAt: null }],
+  });
+  const auto = [
+    {
+      threadId: thread.id,
+      workstreamId: "group",
+      revision: 1,
+      decidedAt: "2026-01-01T00:00:00.000Z",
+    },
+  ];
+  it("exposes the key while the assignment matches and drops it on a remote move", () => {
+    const h = harness();
+    h.controller.setEnvironments([connection("a")]);
+    h.frames[0]!.emit(assigned(1));
+    expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(false);
+    h.frames[0]!.emit({ ...assigned(1, "group", 2), autoAssignments: auto });
+    expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(true);
+    // A stale entry beside a newer assignment revision is not shown.
+    h.frames[0]!.emit({ ...assigned(2, "other", 3), autoAssignments: auto });
+    expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(false);
+    h.close();
+  });
+  it("drops the key during and after a local move or remove", async () => {
+    for (const target of ["other", null]) {
+      const pending = deferred<PersonalAssignResult>();
+      const h = harness({ assign: () => pending.promise });
+      h.controller.setEnvironments([connection("a")]);
+      h.frames[0]!.emit({ ...assigned(1), autoAssignments: auto });
+      expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(true);
+      const moved = h.controller.assign(thread, target);
+      await flush();
+      expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(false);
+      pending.resolve({
+        outcome: "applied",
+        assignment: { threadId: thread.id, workstreamId: target, revision: 2, updatedAt: null },
+        workstream: target === null ? null : definition({ id: "other", name: "Other" }),
+        sequence: 2,
+      });
+      expect((await moved).ok).toBe(true);
+      expect(h.read().autoAssignedThreadKeys?.has(key)).toBe(false);
+      h.close();
+    }
+  });
 });

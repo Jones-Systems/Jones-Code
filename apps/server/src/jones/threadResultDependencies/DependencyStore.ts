@@ -13,9 +13,11 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 import type { JonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import type { McpThreadInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import type { OpenRequest, WakeCommit } from "./DependencyCommit.ts";
+import { admitOriginWake } from "../remoteAdmissionOrigin/OriginStore.ts";
 import { makeWakeObligations, wakeEligible, type WakeHoldState } from "./WakeObligations.ts";
 import type { StartRefusals } from "../startRefusal/Store.ts";
 import { forThread } from "./DependencyDuties.ts";
@@ -137,6 +139,19 @@ export function makeDependencyStore(
       generation: number;
     }>`SELECT generation FROM jones_thread_result_fences WHERE origin_environment_id = 'local-waiter' AND operation_id = ${threadId}`.pipe(
       Effect.map((rows) => rows[0]?.generation ?? 0),
+    );
+  // The active shell index needs the same waiter states as the shell roster.
+  const pendingWaiterExists = (threadId: Statement.Fragment) =>
+    available.pipe(
+      Effect.map((present) =>
+        present
+          ? sql`EXISTS (
+              SELECT 1 FROM jones_thread_result_dependencies d
+              WHERE d.waiter_thread_id = ${threadId}
+                AND d.state IN ('sending', 'awaiting', 'resolved')
+            )`
+          : sql.literal("0"),
+      ),
     );
   const dependencies = Effect.fn("DependencyStore.dependencies")(function* (threadId?: ThreadId) {
     if (!(yield* available)) return [];
@@ -437,6 +452,11 @@ export function makeDependencyStore(
     for (const message of messages) yield* disposeRequests(threadId, outcome, message.message_id);
   });
   const admitWake = Effect.fn("DependencyStore.admitWake")(function* (input: WakeCommit) {
+    if ("kind" in input && input.kind === "remote_admission_origin") {
+      const waiter = yield* admitOriginWake(sql, input);
+      yield* changed(waiter);
+      return;
+    }
     const live =
       yield* sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${input.waiterThreadId} AND archived_at IS NULL AND deleted_at IS NULL`;
     if (live.length === 0) return yield* conflict();
@@ -498,6 +518,7 @@ export function makeDependencyStore(
     waiterGeneration,
     prune,
     dependencies,
+    pendingWaiterExists,
     requests,
     get,
     duties,

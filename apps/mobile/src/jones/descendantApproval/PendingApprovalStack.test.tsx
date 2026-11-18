@@ -1,5 +1,5 @@
 import type { SharedValue } from "react-native-reanimated";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { RuntimeRequestId } from "@t3tools/contracts";
@@ -13,6 +13,7 @@ type NativeProps = {
   accessibilityLabel?: string;
   onPress?: () => void;
 };
+vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
   View: ({ children, className, style }: NativeProps) => (
@@ -107,6 +108,8 @@ const derived = (value: number) => ({ value }) as DerivedValue<number>;
 function questionProps(): PendingUserInputCardProps {
   return {
     environmentId: EnvironmentId.make("parent-environment"),
+    threadId: ThreadId.make("parent-thread"),
+    workspaceRoot: "/workspace/parent",
     cardProgress: { value: 1 } as SharedValue<number>,
     cardCoverage: { value: 0 } as SharedValue<number>,
     canOperateThread: true,

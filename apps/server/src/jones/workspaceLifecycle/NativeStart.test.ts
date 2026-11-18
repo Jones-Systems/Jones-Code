@@ -9,6 +9,8 @@ import * as Option from "effect/Option";
 import * as GitWorkflow from "../../git/GitWorkflowService.ts";
 import * as ContextHandoff from "../../orchestration-v2/ContextHandoffService.ts";
 import * as Start from "../../orchestration-v2/ProviderTurnStartService.ts";
+import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
+import { layerNativeStartAdmission } from "../../orchestration-v2/runtimeLayer.ts";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as RunExecution from "../../orchestration-v2/RunExecutionService.ts";
 import * as RuntimePolicy from "../../orchestration-v2/RuntimePolicy.ts";
@@ -20,6 +22,8 @@ import * as Guard from "../nativeCreation/NativeCreationProviderGuard.ts";
 import * as Admission from "../orchestration/ControlAdmission.ts";
 import * as Restart from "../orchestration/RestartPreparation.ts";
 import * as ContinuityAdmissionTestkit from "../goals/continuity/admission.testkit.ts";
+import * as StartRefusals from "../startRefusal/Store.ts";
+import { withActiveEffectClaim } from "./ActiveEffectClaim.ts";
 import * as Boundary from "./NativeBoundary.ts";
 import { fixture } from "./ManagedConsumer.testkit.ts";
 import { nativeStartFixture } from "./NativeStart.testkit.ts";
@@ -44,6 +48,8 @@ it.effect.each(["current", "revoked", "retired"] as const)(
           });
           if (mode === "revoked") f.state.afterResume = native.revoke;
           const startLayer = Layer.fresh(Start.layer).pipe(
+            Layer.provide(layerNativeStartAdmission),
+            Layer.provide(StartRefusals.layer),
             Layer.provide(ContinuityAdmissionTestkit.layerAbsent),
             Layer.provide(Admission.layer),
             Layer.provide(IdAllocator.layer),
@@ -75,8 +81,10 @@ it.effect.each(["current", "revoked", "retired"] as const)(
             ),
             Layer.provide(
               Layer.mock(RunExecution.RunExecutionServiceV2)({
-                startRootRun: (input) =>
-                  input.session
+                forkBaseline: () => Effect.succeed(Effect.void),
+                startRootRun: (input) => {
+                  expect(input.nativeCreationGuard).toBe(guard);
+                  return input.session
                     .startTurn({
                       nativeCreationGuard: guard,
                       appThread: input.appThread,
@@ -100,7 +108,8 @@ it.effect.each(["current", "revoked", "retired"] as const)(
                             cause,
                           }),
                       ),
-                    ),
+                    );
+                },
               }),
             ),
             Layer.provide(RuntimePolicy.layer),
@@ -112,24 +121,31 @@ it.effect.each(["current", "revoked", "retired"] as const)(
               }),
             ),
           );
-          const start = Effect.flatMap(Start.ProviderTurnStartServiceV2, (service) =>
-            service.startNative!({
-              threadId: native.command.threadId,
-              runId: native.command.runId,
-              guard,
-            }),
-          ).pipe(
-            (effect) =>
-              Boundary.withOriginalTransition(
-                `effect:${native.reference.effectId}`,
-                {
-                  commandId: native.command.commandId,
-                  threadId: native.command.threadId,
-                  request: { type: "provider-turn.start", runId: native.command.runId },
-                },
-                effect,
-              ),
-            Effect.provide(startLayer),
+          const outbox = yield* Outbox.EffectOutboxV2;
+          const claimed = yield* outbox.get(native.reference.effectId);
+          if (Option.isNone(claimed))
+            return yield* Effect.die("Missing synthetic native effect claim");
+          const start = withActiveEffectClaim(outbox, claimed.value, 10_000, true, () =>
+            Effect.flatMap(Start.ProviderTurnStartServiceV2, (service) =>
+              service.startNative!({
+                threadId: native.command.threadId,
+                runId: native.command.runId,
+                guard,
+              }),
+            ).pipe(
+              (effect) =>
+                Boundary.withOriginalTransition(
+                  `effect:${native.reference.effectId}`,
+                  {
+                    commandId: native.command.commandId,
+                    threadId: native.command.threadId,
+                    request: { type: "provider-turn.start", runId: native.command.runId },
+                  },
+                  effect,
+                ),
+              Effect.provide(startLayer),
+              Effect.provideService(Guard.CurrentNativeGuard, guard),
+            ),
           );
           const result = yield* Effect.exit(start);
           expect(Exit.isSuccess(result)).toBe(mode !== "revoked");

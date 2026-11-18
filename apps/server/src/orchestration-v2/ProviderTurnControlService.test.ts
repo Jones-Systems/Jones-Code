@@ -1,7 +1,7 @@
-import * as EventSink from "./EventSink.ts";
 import { assert, it } from "@effect/vitest";
 import {
   type ModelSelection,
+  MessageId,
   NodeId,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ThreadProjection,
@@ -27,6 +27,8 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
+import * as EventSink from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import {
@@ -37,6 +39,10 @@ import {
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import { STOP_CHILD_BUDGET_MS } from "../jones/provider/stopBudgets.ts";
+import {
+  GoalNotificationNotDelivered,
+  GoalNotificationDeliveryUnknown,
+} from "../jones/goals/GoalNotificationDelivery.ts";
 
 const driver = ProviderDriverKind.make("codex");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -246,8 +252,6 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         ProjectionStore.ProjectionStoreV2,
         ProjectionStore.ProjectionStoreV2.of({
           apply: () => Effect.void,
-          hasQueuedToolBoundaryWork: () => Effect.die("unused hasQueuedToolBoundaryWork"),
-          getQueuedToolBoundaryContext: () => Effect.die("unused getQueuedToolBoundaryContext"),
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
           getLimitRecoveryWakeAt: () => Effect.die("unused getLimitRecoveryWakeAt"),
           getOpenRemoteDelegatedTasks: Effect.die("unused getOpenRemoteDelegatedTasks"),
@@ -256,6 +260,7 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
           listActiveSubagentThreadIds: () => Effect.die("unused listActiveSubagentThreadIds"),
           countThreads: () => Effect.die("unused countThreads"),
           listActiveShellIndex: () => Effect.die("unused listActiveShellIndex"),
+          listActiveThreads: () => Effect.die("unused listActiveThreads"),
           listOlderSettledThreads: () => Effect.die("unused listOlderSettledThreads"),
           readShellSnapshot: () => Effect.die("unused readShellSnapshot"),
           getThreadShell: () => Effect.die("unused getThreadShell"),
@@ -272,13 +277,17 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
           getRuntimeRecoveryProjection: () => Effect.die("unused getRuntimeRecoveryProjection"),
           getPlan: () => Effect.die("unused"),
           hasUnpairedRunInterruptRequest: () => Effect.die("unused interrupt read"),
+          hasRunInterruptRequest: () => Effect.die("unused stop read"),
+          getRunProviderRecords: () => Effect.die("unused run provider read"),
           getThreadAttachmentIds: () => Effect.die("Unused attachment lookup"),
           searchThread: () => Effect.die("unused"),
           searchThreadStream: () => Stream.empty,
           getThreadHistoryPage: () => Effect.die("unused"),
           getTimelinePage: () => Effect.die("Unused timeline read"),
-          getTimelinePages: () => Effect.die("Unused timeline read"),
+          getTimelinePages: () => Effect.die("Unused timeline pages read"),
           getMessageCount: () => Effect.die("unused message count"),
+          getTranscriptByteFloor: () => Effect.die("unused transcript byte floor"),
+          hasPendingDelegatedCompletion: () => Effect.die("unused hasPendingDelegatedCompletion"),
           getSubagentCount: () => Effect.die("unused subagent count"),
           listAppOwnedChildThreadIds: () => Effect.die("unused listAppOwnedChildThreadIds"),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
@@ -308,6 +317,7 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
           getCheckpointRollbackContext: () => Effect.die("unused rollback context"),
           getCheckpointCaptureContext: () => Effect.die("not used"),
           getRunMessage: () => Effect.die("not used"),
+          getRun: () => Effect.die("not used"),
           isNodeStored: () => Effect.die("not used"),
           canStartQueuedRun: () => Effect.die("not used"),
           getHeldQueuedRuns: () => Effect.die("not used"),
@@ -316,13 +326,15 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
           getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
           getThreadSnapshotWindow: () => Effect.die("unused getThreadSnapshotWindow"),
           getPullRequestSnapshot: () => Effect.die("unused getPullRequestSnapshot"),
+          hasQueuedToolBoundaryWork: () => Effect.die("unused queued tool-boundary read"),
+          getQueuedToolBoundaryContext: () => Effect.die("unused queued tool-boundary context"),
         }),
       );
       const layerSessionManager = Layer.succeed(
         ProviderSessionManager.ProviderSessionManagerV2,
         ProviderSessionManager.ProviderSessionManagerV2.of({
-          isMcpCallerAttached: () => Effect.succeed(false),
           shutdown: Effect.void,
+          isMcpCallerAttached: () => Effect.die("unused MCP attachment proof"),
           open: () => Effect.die("unused open"),
           get: (providerSessionId) =>
             Effect.succeed(
@@ -340,12 +352,16 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
       );
       const layerControl = ProviderTurnControlService.layer.pipe(
         Layer.provide(
-          Layer.mock(EventSink.EventSinkV2)({
-            latestSequence: () => Effect.succeed(0),
-            stream: () => Stream.never,
-          }),
+          Layer.mergeAll(
+            layerProjection,
+            layerSessionManager,
+            Layer.mock(EventSink.EventSinkV2)({
+              supersededTerminalTrace: SupersededTerminalTrace.make(),
+              latestSequence: () => Effect.succeed(0),
+              stream: () => Stream.never,
+            }),
+          ),
         ),
-        Layer.provide(Layer.merge(layerProjection, layerSessionManager)),
       );
 
       const [ordinaryInterrupt, unrelatedRestart] = yield* Effect.gen(function* () {
@@ -449,6 +465,174 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
     }),
 );
 
+it.effect.each([
+  "current",
+  "binding_changed",
+  "model_changed",
+  "batch_changed",
+  "runtime_replaced",
+  "stop_during_reads",
+  "goal_changed",
+  "delivery_unknown",
+  "not_delivered",
+] as const)("steer retains original target and notification delivery evidence: %s", (scenario) =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("steer-original");
+    const sessionId = ProviderSessionId.make("steer-original-session");
+    const providerThreadId = ProviderThreadId.make("steer-original-provider-thread");
+    const providerTurnId = ProviderTurnId.make("steer-original-turn");
+    const attemptId = RunAttemptId.make("steer-original-attempt");
+    const runId = RunId.make("steer-original-run");
+    const messageId = MessageId.make("steer-original-notification");
+    const providerThread = {
+      id: providerThreadId,
+      appThreadId: threadId,
+      providerSessionId: sessionId,
+      providerInstanceId,
+      driver,
+      nativeThreadRef: { driver, nativeId: "original-native", strength: "strong" },
+      goal: { status: "active" },
+      runtimeIdentity: { runtimeGeneration: "original-generation", evidenceRevision: 1 },
+    } as OrchestrationV2ProviderThread;
+    const projection = makeProjection({ now, threadId, providerThread, providerTurnId, attemptId });
+    const run = {
+      id: runId,
+      status: "running",
+      activeAttemptId: attemptId,
+      modelSelection,
+      providerThreadId,
+    } as OrchestrationV2ThreadProjection["runs"][number];
+    const message: OrchestrationV2ThreadProjection["messages"][number] = {
+      id: messageId,
+      threadId,
+      runId,
+      text: "Captured notification",
+      attachments: [],
+      createdBy: "agent",
+      creationSource: "server",
+      nodeId: null,
+      role: "user",
+      streaming: false,
+      createdAt: now,
+      updatedAt: now,
+      notification: {
+        source: { kind: "delegated_task", taskIds: [NodeId.make("steer-original-task")] },
+        outcome: "completed",
+        summary: "Child finished",
+      },
+    };
+    const turn = { ...projection.providerTurns[0]!, runAttemptId: attemptId };
+    let reads = 0;
+    let runtimeReads = 0;
+    let stopReads = 0;
+    let sent = 0;
+    const runtime = {
+      steerTurn: (input: ProviderAdapter.ProviderAdapterV2SteerInput) =>
+        Effect.gen(function* () {
+          sent++;
+          assert.equal(input.providerThread.nativeThreadRef?.nativeId, "original-native");
+          assert.equal(input.message.text, message.text);
+          if (scenario === "delivery_unknown" || scenario === "not_delivered")
+            return yield* new ProviderAdapter.ProviderAdapterSteerRunError({
+              driver,
+              providerThreadId,
+              providerTurnId,
+              cause:
+                scenario === "not_delivered"
+                  ? new GoalNotificationNotDelivered()
+                  : new Error("native delivery unknown"),
+            });
+        }),
+    } as ProviderAdapter.ProviderAdapterV2SessionRuntime;
+    const layer = ProviderTurnControlService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(EventSink.EventSinkV2)({
+            supersededTerminalTrace: SupersededTerminalTrace.make(),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            get: () =>
+              Effect.sync(() =>
+                Option.some(
+                  scenario === "runtime_replaced" && ++runtimeReads > 1 ? { ...runtime } : runtime,
+                ),
+              ),
+          }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getProviderControlContext: () =>
+              Effect.sync(() => {
+                const changed = ++reads > 2;
+                return {
+                  providerThread:
+                    changed && scenario === "binding_changed"
+                      ? {
+                          ...providerThread,
+                          nativeThreadRef: {
+                            driver,
+                            nativeId: "replacement",
+                            strength: "strong" as const,
+                          },
+                        }
+                      : changed && scenario === "goal_changed"
+                        ? { ...providerThread, goal: { status: "paused" } as never }
+                        : providerThread,
+                  providerTurn: turn,
+                  attempt: projection.attempts[0],
+                  message,
+                  run:
+                    changed && scenario === "model_changed"
+                      ? { ...run, modelSelection: { ...modelSelection, model: "other" } }
+                      : run,
+                };
+              }),
+            getThreadRecords: (_id, sections) =>
+              Effect.succeed({
+                ...projection,
+                messages:
+                  sections.some((section) => section === "messages") && scenario === "batch_changed"
+                    ? [{ ...message, text: "Changed after capture" }]
+                    : [message],
+                turnItems:
+                  sections.some((section) => section === "turnItems") &&
+                  ++stopReads > 1 &&
+                  scenario === "stop_during_reads"
+                    ? [{ type: "run_interrupt_request" } as never]
+                    : [],
+              }),
+          }),
+        ),
+      ),
+    );
+    const result = yield* Effect.gen(function* () {
+      const controls = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+      return yield* controls
+        .steer({
+          threadId,
+          providerSessionId: sessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId,
+        })
+        .pipe(Effect.result);
+    }).pipe(Effect.provide(layer));
+    const attempted = ["current", "delivery_unknown", "not_delivered"].includes(scenario);
+    assert.equal(sent, attempted ? 1 : 0);
+    if (scenario === "current") assert.equal(result._tag, "Success");
+    else {
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        if (scenario === "delivery_unknown") {
+          assert.instanceOf(result.failure.cause, GoalNotificationDeliveryUnknown);
+          assert.isFalse(result.failure.turnCompleted === true);
+        }
+        if (scenario === "not_delivered") assert.isTrue(result.failure.turnCompleted);
+      }
+    }
+  }),
+);
+
+// Restored from receiving: the Stop budget contract of the restored production bound.
 const makeStopFixture = (
   interruptTurn: ProviderAdapter.ProviderAdapterV2SessionRuntime["interruptTurn"],
 ) =>
@@ -511,6 +695,7 @@ const makeStopFixture = (
     const layer = ProviderTurnControlService.layer.pipe(
       Layer.provide(
         Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
           latestSequence: () => Effect.succeed(0),
           stream: () => Stream.never,
         }),

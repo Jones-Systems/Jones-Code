@@ -20,7 +20,7 @@ import {
 // network, writer contention, cold-cache, or production-capacity claims.
 describe("V2 history query characterization", () => {
   for (const count of [1_000, 10_000]) {
-    test(`${count} messages: full, window, source OR and disjoint UNION`, async ({ bench }) => {
+    test(`${count} messages: full, window, UNION and disjoint UNION ALL`, async ({ bench }) => {
       await bench("controlled history query experiment", async () => {
         const runtime = ManagedRuntime.make(historyExperimentLayer);
         try {
@@ -118,7 +118,7 @@ describe("V2 history query characterization", () => {
                 decodeMs: decodeSamples,
                 projectionMs: projectionSamples,
                 limits:
-                  "in-memory migrated schema; active run retains one third of messages; UNION is benchmark-only; outer benchmark includes setup",
+                  "in-memory migrated schema; active run retains one third of messages; disjoint UNION ALL is benchmark-only; outer benchmark includes setup",
               }),
             );
           }

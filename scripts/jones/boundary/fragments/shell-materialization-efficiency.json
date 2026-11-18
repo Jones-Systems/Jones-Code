@@ -1,10 +1,14 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "shell-materialization-efficiency",
-  "jonesOwnedPaths": [],
-  "hookPaths": [],
+  "jonesOwnedPaths": ["apps/web/src/jones/navigation/steadySidebar.ts"],
+  "hookPaths": ["apps/web/src/components/Sidebar.tsx"],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/navigation/steadySidebar.ts"
+    },
     {
       "from": "apps/server/src/ws.ts",
       "to": "apps/server/src/jones/orchestration/shellDelivery.ts"

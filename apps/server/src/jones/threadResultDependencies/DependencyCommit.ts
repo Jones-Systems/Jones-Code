@@ -22,12 +22,24 @@ export const DependencyCommit = Context.Reference<OpenRequest | undefined>(
   "jones/threadResultDependencies/DependencyCommit",
   { defaultValue: () => undefined },
 );
-export interface WakeCommit {
+export interface DependencyResultWakeCommit {
   readonly dependencyId: string;
   readonly generation: number;
   readonly waiterThreadId: ThreadId;
   readonly messageId: MessageId;
 }
+export interface OriginWakeCommit {
+  readonly kind: "remote_admission_origin";
+  readonly dependencyId: string;
+  readonly observationKey: string;
+  readonly generation: number;
+  readonly waiterThreadId: ThreadId;
+  readonly messageId: MessageId;
+  readonly linkGeneration: string;
+  readonly sessionId: string;
+  readonly committedAt: string;
+}
+export type WakeCommit = DependencyResultWakeCommit | OriginWakeCommit;
 export const DependencyWakeCommit = Context.Reference<WakeCommit | undefined>(
   "jones/threadResultDependencies/DependencyWakeCommit",
   { defaultValue: () => undefined },

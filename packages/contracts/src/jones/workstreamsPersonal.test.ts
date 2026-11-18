@@ -91,6 +91,52 @@ describe("personal Workstream convergence", () => {
     expect(() => mergePersonalWorkstreams([])).toThrow();
     expect(() => mergePersonalWorkstreams([original, { ...original, id: "other" }])).toThrow();
   });
+
+  it("keeps selections and clears through newer legacy definitions in either arrival order", () => {
+    const selected = editPersonalWorkstream(
+      original,
+      { nameIconProjectKey: "project:one" },
+      later,
+      "two",
+    );
+    const legacy = editPersonalWorkstream(
+      { ...original, rev: selected.rev },
+      { name: "Renamed" },
+      later,
+      "three",
+    );
+    expect(mergePersonalWorkstreams([selected, legacy])).toEqual({
+      ...legacy,
+      nameIcon: selected.nameIcon,
+    });
+    expect(mergePersonalWorkstreams([legacy, selected])).toEqual({
+      ...legacy,
+      nameIcon: selected.nameIcon,
+    });
+    const cleared = editPersonalWorkstream(selected, { nameIconProjectKey: null }, later, "two");
+    expect(comparePersonalWorkstreams({ ...cleared, nameIcon: selected.nameIcon! }, cleared)).toBe(
+      -1,
+    );
+    expect(mergePersonalWorkstreams([legacy, cleared, selected]).nameIcon?.projectKey).toBeNull();
+  });
+
+  it("merges an icon and an independent snooze from different replicas", () => {
+    const snoozed = editPersonalWorkstream(
+      original,
+      { snoozedAt: later, snoozedUntil: "2026-12-01T00:00:00.000Z" },
+      later,
+      "snooze",
+    );
+    const selected = editPersonalWorkstream(
+      original,
+      { nameIconProjectKey: "project:one" },
+      later,
+      "icon",
+    );
+    const expected = { ...snoozed, nameIcon: selected.nameIcon };
+    expect(mergePersonalWorkstreams([snoozed, selected])).toEqual(expected);
+    expect(mergePersonalWorkstreams([selected, snoozed])).toEqual(expected);
+  });
 });
 
 describe("personal Workstream edits", () => {
@@ -128,6 +174,7 @@ describe("personal Workstream edits", () => {
       ...base,
       name: "Renamed",
       lifecycle: "completed",
+      lifecycleRevision: 1,
       color: "#ABCDEF",
       orderKey: "p",
       rev: 8,
@@ -234,5 +281,31 @@ describe("personal Workstream wire validation", () => {
         workstream: null,
       }),
     ).toBe(false);
+  });
+});
+
+describe("automatic assignment snapshot field", () => {
+  const base = {
+    environmentId: EnvironmentId.make("synthetic-env"),
+    sequence: 3,
+    workstreams: [original],
+    assignments: [
+      { threadId: ThreadId.make("t1"), workstreamId: original.id, revision: 1, updatedAt: now },
+    ],
+    importIssue: null,
+  };
+  const autoAssignments = [
+    { threadId: ThreadId.make("t1"), workstreamId: original.id, revision: 1, decidedAt: later },
+  ];
+  it("round-trips with and without autoAssignments", () => {
+    expect(decodeSnapshot({ ...base, autoAssignments }).autoAssignments).toEqual(autoAssignments);
+    expect(decodeSnapshot(base)).not.toHaveProperty("autoAssignments");
+  });
+  it("a decoder for the pre-change shape accepts a payload that carries it", () => {
+    const { autoAssignments: _omitted, ...fields } = PersonalWorkstreamsSnapshot.fields;
+    const previous = Schema.decodeUnknownSync(Schema.Struct(fields));
+    const decoded = previous({ ...base, autoAssignments });
+    expect(decoded.assignments).toEqual(base.assignments);
+    expect(decoded).not.toHaveProperty("autoAssignments");
   });
 });

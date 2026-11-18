@@ -109,7 +109,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const f = yield* prepare;
-      yield* f.start.start({ threadId: f.threadId, runId: f.run.id }).pipe(Effect.result);
+      yield* f.startRun(f.run.id).pipe(Effect.result);
       assert.equal((yield* f.store.get("peer"))?.wakeHold, "held");
       assert.equal((yield* f.store.duties(f.threadId)).outgoing, 1);
       assert.lengthOf(yield* f.sql`SELECT * FROM jones_peer_wake_bindings`, 1);
@@ -249,7 +249,7 @@ it.effect(
             commandId: CommandId.make("promote:peer"),
             threadId: f.threadId,
           });
-        yield* f.start.start({ threadId: f.threadId, runId: successorRun.id }).pipe(Effect.result);
+        yield* f.startRun(successorRun.id).pipe(Effect.result);
         assert.equal((yield* f.store.get("peer"))?.wakeHold, "held");
         assert.equal((yield* f.store.get("peer"))?.generation, 2);
         const recoveredHistory = yield* projectionStore.getTurnStartHistory(f.threadId);

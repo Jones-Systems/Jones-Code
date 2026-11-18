@@ -11,6 +11,7 @@ import {
 import { ComputeSupervisor } from "../../../apps/server/src/jones/serverCompute/supervisor.ts";
 import { ProcessSlot } from "../../../apps/server/src/jones/serverCompute/processSlot.ts";
 import { minimalWorkerEnvironment } from "../../../apps/server/src/jones/serverCompute/workerCommand.ts";
+import { withNativeSearchProbePort } from "../../../apps/server/src/jones/serverParallelism/nativeQualification.ts";
 import {
   NATIVE_BLOCK_PHASE,
   NATIVE_BLOCK_SCHEMA,
@@ -267,26 +268,37 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
           count,
         );
         sameJournalRecovered = recovered.claim.authorityId !== candidate.subject.authorityId;
-        const replacement = new ComputeSupervisor({
-          count,
-          build: manifest.build,
-          journal: recovered,
-          start: (boot, register, onExit) => {
-            replacementAdmissions++;
-            return ProcessSlot.start(command, boot, register, onExit);
-          },
-        });
-        try {
-          const handle = replacement.register({
-            cwd: NodePath.join(directory, "workspace-0"),
-            variant: "paths",
+        await withNativeSearchProbePort(async (probes) => {
+          const replacement = new ComputeSupervisor({
+            count,
+            build: manifest.build,
+            journal: recovered,
+            start: (boot, register, onExit) => {
+              replacementAdmissions++;
+              return ProcessSlot.start(
+                command,
+                boot,
+                register,
+                onExit,
+                undefined,
+                undefined,
+                undefined,
+                probes,
+              );
+            },
           });
-          await replacement.ensure(handle);
-          const result = await replacement.run(handle, "search", { query: "file", limit: 8 });
-          replacementUseful = result.entries.length > 0;
-        } finally {
-          await replacement.shutdown();
-        }
+          try {
+            const handle = replacement.register({
+              cwd: NodePath.join(directory, "workspace-0"),
+              variant: "paths",
+            });
+            await replacement.ensure(handle);
+            const result = await replacement.run(handle, "search", { query: "file", limit: 8 });
+            replacementUseful = result.entries.length > 0;
+          } finally {
+            await replacement.shutdown();
+          }
+        });
         cleanupProved = true;
       }
     }

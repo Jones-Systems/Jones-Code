@@ -26,6 +26,8 @@ grouped global notifications and configuration-only Connections. Its source
 journeys are runtime `unverified`; they do not qualify live provider accounts or
 packaged OS notifications.
 
+The [Prompts entry](prompts.md) covers Pending, Queued and Sent voice and queue prompts.
+
 The [usage metrics entry](usage.md) covers totals, model percentages, cache-write
 details, and their focused shared-renderer verification.
 

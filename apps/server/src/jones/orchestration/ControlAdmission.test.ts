@@ -69,6 +69,30 @@ describe("control admission", () => {
       }).pipe(Effect.provide(ControlAdmission.layer)),
   );
 
+  it.effect("admits only the exact publication through its own hold", () =>
+    Effect.gen(function* () {
+      const admission = yield* ControlAdmission.ControlAdmission;
+      const hold = yield* admission.holdStartup(target);
+      const publication = { hold, binding: nativeBinding };
+      const predecessor = { ...target, producer: null, nativeThreadId: null };
+      yield* admission.assertOpen(predecessor).pipe(Effect.flip);
+      yield* admission.assertOpen(predecessor, publication);
+      yield* admission.assertOpen(target, publication);
+      yield* admission
+        .assertOpen(predecessor, {
+          hold,
+          binding: { ...nativeBinding, runtimeGeneration: "another-generation" },
+        })
+        .pipe(Effect.flip);
+      const other = yield* admission.holdStartup(target);
+      yield* admission.assertOpen(predecessor, publication).pipe(Effect.flip);
+      yield* admission.resolveStartup(other, { kind: "not_applied" });
+      yield* admission.resolveStartup(hold, { kind: "bound", binding: nativeBinding });
+      yield* admission.assertOpen(predecessor, publication).pipe(Effect.flip);
+      yield* admission.assertOpen(target);
+    }).pipe(Effect.provide(ControlAdmission.layer)),
+  );
+
   it.effect("requires every routing component and the original dispatch object", () =>
     Effect.gen(function* () {
       const admission = yield* ControlAdmission.ControlAdmission;

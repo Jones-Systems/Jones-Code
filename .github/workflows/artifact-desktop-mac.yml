@@ -55,6 +55,8 @@ jobs:
       T3CODE_DESKTOP_UPDATE_REPOSITORY: Jones-Systems/Jones-Code
       T3CODE_DESKTOP_SIGNED: "false"
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # Seal the whole app with an ad-hoc signature. It authenticates no publisher.
+      T3CODE_DESKTOP_MAC_ADHOC_SIGN: "true"
     steps:
       - name: Checkout public artifact source
         shell: bash
@@ -188,6 +190,7 @@ jobs:
 
       - name: Build unsigned preview DMG
         env:
+          T3CODE_DESKTOP_UNTRUSTED_BUNDLE: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
           BUILD_VERSION: ${{ steps.version.outputs.value }}
           CARGO_BUILD_JOBS: ${{ steps.build_capacity.outputs.jobs }}
           CMAKE_BUILD_PARALLEL_LEVEL: ${{ steps.build_capacity.outputs.jobs }}
@@ -218,7 +221,7 @@ jobs:
               repository: "Jones-Systems/Jones-Code", source: fs.readFileSync("SOURCE_COMMIT", "utf8").trim(),
               version: process.env.BUILD_VERSION, platform: "darwin", architecture: "arm64", artifact,
               sha256: fs.readFileSync(`${artifact}.sha256`, "utf8").split(/\s+/)[0],
-              publicConfigSource: ".env.example", signed: false, notarized: false,
+              publicConfigSource: ".env.example", signing: "ad-hoc", signed: false, notarized: false,
               updateFeed: null, connectLogin: "untested", peerConnection: "untested",
               schema: 1, tree: process.env.JONES_SOURCE_TREE,
               workflow: process.env.GITHUB_WORKFLOW_REF.split("@")[0].replace(`${process.env.GITHUB_REPOSITORY}/`, ""),
@@ -229,10 +232,38 @@ jobs:
           {
             echo "Artifact: $dmg"
             echo "Source revision: $(git rev-parse HEAD)"
-            echo 'Unsigned preview for Apple Silicon; no Developer ID signing or notarization.'
+            echo 'Preview for Apple Silicon; no Developer ID signing or notarization.'
             echo 'Gatekeeper acceptance and application launch have not been tested.'
             echo 'Preview versions have no automatic update feed. No GitHub Release is created.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the shipped app's ad-hoc signature
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mount="$TMPDIR/signature-dmg"
+          mkdir -m 700 -- "$mount"
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" \
+            "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg"
+          trap 'hdiutil detach "$mount" || hdiutil detach -force "$mount"' EXIT
+          apps=("$mount"/*.app)
+          test "${#apps[@]}" -eq 1
+          app="${apps[0]}"
+          # Every nested binary and the whole bundle's resources must be sealed.
+          codesign --verify --deep --strict --verbose=2 "$app"
+          details="$(codesign --display --verbose=4 "$app" 2>&1)"
+          printf '%s\n' "$details"
+          bundle_id="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")"
+          fail() { echo "::error::$1"; exit 1; }
+          grep -qx "Identifier=$bundle_id" <<<"$details" || fail "Signature identifier is not $bundle_id."
+          grep -qx 'Signature=adhoc' <<<"$details" || fail 'The app is not ad-hoc signed.'
+          grep -qx 'TeamIdentifier=not set' <<<"$details" || fail 'The preview unexpectedly carries a team identity.'
+          if grep -q '^Authority=' <<<"$details"; then fail 'The preview unexpectedly carries a certificate.'; fi
+          grep -Eq '^Sealed Resources version=2 ' <<<"$details" || fail 'Bundle resources are not sealed.'
+          if grep -Eq '^CodeDirectory .*flags=.*runtime' <<<"$details"; then fail 'Hardened runtime would change preview behavior.'; fi
+          echo 'App signature: ad hoc over the whole bundle; strict verification passed (no publisher identity).' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Smoke-test packaged server update preparation worker
         env:

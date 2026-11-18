@@ -25,7 +25,10 @@ const emptyState: PersonalWorkstreamsState = {
 };
 const empty = Atom.make(emptyState);
 const COLLAPSE = "jones.workstreams.personal.collapsed.v1";
-export function useMobileWorkstreams(threads: readonly PersonalThreadRef[]) {
+export function useMobileWorkstreams(
+  threads: readonly PersonalThreadRef[],
+  onOpenThread?: (thread: PersonalThreadRef) => void,
+) {
   const { environments } = useEnvironments();
   const idsKey = JSON.stringify(environments.map((entry) => entry.environmentId).sort());
   const [binding, setBinding] = useState<Awaited<
@@ -124,7 +127,10 @@ export function useMobileWorkstreams(threads: readonly PersonalThreadRef[]) {
     collapsedKeys,
     confirmedUnassignedKeys,
     secondaryLabelsByKey: new Map<string, readonly string[]>(),
-    bindingRevision: JSON.stringify([...state.assignmentsByThreadKey]),
+    bindingRevision: JSON.stringify([
+      [...state.assignmentsByThreadKey],
+      grouped.groups.map(({ workstream }) => workstream.id),
+    ]),
     toggleGroup: (key: string) =>
       setCollapsed((previous) => {
         const next = new Set(previous);
@@ -157,6 +163,7 @@ export function useMobileWorkstreams(threads: readonly PersonalThreadRef[]) {
             selection={selection}
             onSelect={setSelection}
             onClose={() => setSelection(null)}
+            onOpenThread={onOpenThread}
             perform={perform}
             environmentNames={
               new Map(environments.map((entry) => [entry.environmentId, entry.label]))

@@ -115,7 +115,10 @@ export const makeOpenCodeProtocolFreshness = <E>(
     // Counts admission results and recorded fallbacks; a slower status read cannot replace one.
     let admissionWrites = 0;
 
-    const read = (refresh: boolean): Effect.Effect<ProbedOpenCode, Failure> =>
+    const read = (
+      refresh: boolean,
+      admittedProbe = probe,
+    ): Effect.Effect<ProbedOpenCode, Failure> =>
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const beforeRead = current;
@@ -144,7 +147,7 @@ export const makeOpenCodeProtocolFreshness = <E>(
           let exit = yield* Effect.exit(
             restore(
               Effect.gen(function* () {
-                const result = yield* probe;
+                const result = yield* admittedProbe;
                 const afterSource = yield* readSource;
                 if (current !== epoch || afterSource !== source) {
                   if (current === epoch) current = { source: afterSource };
@@ -170,6 +173,8 @@ export const makeOpenCodeProtocolFreshness = <E>(
     return {
       get: read(false),
       refresh: read(true),
+      // An explicit user request may run online, under the same before/after source fence.
+      admit: (admittedProbe: Effect.Effect<ProbedOpenCode, E>) => read(false, admittedProbe),
       // Status checks are not admissions. They probe directly, so health and catalog discovery do
       // not wait on host identity reads, and they leave admission epochs untouched. The result is a
       // hot read only; an admission still re-verifies the source and version before trusting it.

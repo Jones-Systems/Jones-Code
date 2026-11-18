@@ -1,8 +1,11 @@
 import { act, render as renderTest, type Screen, fakeTimers } from "../../../test/render";
 
+import { RegistryContext } from "@effect/atom-react";
 import { expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import * as Cause from "effect/Cause";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { makeThreadFixture } from "../../test-fixtures";
 import { useUiStateStore } from "../../uiStateStore";
 import type { SidebarThreadSummary } from "../../types";
@@ -17,7 +20,21 @@ vi.mock(
   import("../../state/use-atom-command"),
   () => ({ useAtomCommand: () => state.visit }) as never,
 );
+vi.mock(
+  import("../../connection/catalog"),
+  () =>
+    ({
+      environmentCatalog: {
+        sessionGenerationAtom: (environmentId: string) => sessionGeneration(environmentId),
+      },
+    }) as never,
+);
 import { ThreadVisitWatermark } from "../../components/chat/ThreadVisitWatermark";
+
+// Each test's registry owns the connection sessions its environments have seen.
+const sessionGeneration = Atom.family((_environmentId: string) =>
+  Atom.make(0).pipe(Atom.keepAlive),
+);
 
 const updatedAt = "2026-10-17T12:00:00.000Z";
 const thread = makeThreadFixture({
@@ -27,14 +44,21 @@ const thread = makeThreadFixture({
   lastVisitedAt: "2026-10-17T11:00:00.000Z",
 });
 let root: Screen;
+let registry = AtomRegistry.make();
 const render = async (next = thread) =>
   await act(async () => {
     state.thread = next;
     await root.rerender(
-      <ThreadVisitWatermark threadRef={scopeThreadRef(next.environmentId, next.id)} />,
+      <RegistryContext.Provider value={registry}>
+        <ThreadVisitWatermark threadRef={scopeThreadRef(next.environmentId, next.id)} />
+      </RegistryContext.Provider>,
     );
   });
 const advance = async (ms: number) => await act(async () => vi.advanceTimersByTime(ms));
+const reconnect = async (environmentId: EnvironmentId) =>
+  await act(async () =>
+    registry.update(sessionGeneration(environmentId), (generation) => generation + 1),
+  );
 async function setupTest(): Promise<AsyncDisposable> {
   let testTimers: Disposable | undefined;
   let initialized = false;
@@ -46,6 +70,7 @@ async function setupTest(): Promise<AsyncDisposable> {
       try {
         await screen?.[Symbol.asyncDispose]();
       } finally {
+        registry.dispose();
         vi.useRealTimers();
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
@@ -58,8 +83,9 @@ async function setupTest(): Promise<AsyncDisposable> {
     vi.setSystemTime(new Date(updatedAt));
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    state.visit.mockClear();
+    state.visit.mockReset().mockResolvedValue(AsyncResult.success(undefined));
     useUiStateStore.setState({ threadLastVisitedAtById: {} });
+    registry = AtomRegistry.make();
     root = await renderTest(null, { container: document.createElement("div"), router: false });
     initialized = true;
 
@@ -139,4 +165,33 @@ it("applies the same dwell to older servers' local watermark", async () => {
   await advance(1);
   expect(useUiStateStore.getState().threadLastVisitedAtById[key]).toBe(updatedAt);
   expect(state.visit).not.toHaveBeenCalled();
+});
+it("retries a rejected visit, with its open, once after the session reconnects", async () => {
+  await using _fixture = await setupTest();
+  // A thread no earlier case opened, so its first visit carries the open.
+  const reconnected = { ...thread, id: ThreadId.make("reconnected") };
+  const streamed = "2026-10-17T12:00:01.000Z";
+  state.visit.mockResolvedValueOnce(AsyncResult.failure(Cause.fail("disconnected")));
+  await render(reconnected);
+  await advance(3000);
+  await render({ ...reconnected, updatedAt: streamed });
+  await advance(30_000);
+  expect(state.visit).toHaveBeenCalledTimes(1);
+  await reconnect(reconnected.environmentId);
+  await reconnect(reconnected.environmentId);
+  await advance(30_000);
+  expect(state.visit.mock.calls).toEqual([
+    [
+      {
+        environmentId: reconnected.environmentId,
+        input: { threadId: reconnected.id, visitedAt: updatedAt, opened: true },
+      },
+    ],
+    [
+      {
+        environmentId: reconnected.environmentId,
+        input: { threadId: reconnected.id, visitedAt: streamed, opened: true },
+      },
+    ],
+  ]);
 });

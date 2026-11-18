@@ -24,6 +24,14 @@
     {
       "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
       "to": "apps/mobile/src/jones/descendantApproval/PendingApprovalStack.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/useThreadLifecycle.browser.test.tsx",
+      "to": "apps/web/src/jones/descendantApproval/atoms.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useThreadLifecycle.browser.test.tsx",
+      "to": "packages/client-runtime/src/jones/descendantApproval/index.ts"
     }
   ]
 }

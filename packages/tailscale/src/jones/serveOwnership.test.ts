@@ -25,6 +25,11 @@ const config = (target = claim.expectedTarget) => ({
 });
 const exact = JSON.stringify(config());
 const statusArgs = ["serve", "status", "--json"];
+const nodeStatusArgs = ["status", "--json"];
+const httpsEnabledStatus = JSON.stringify({
+  BackendState: "Running",
+  Self: { CapMap: { https: [] } },
+});
 const writeArgs = ["serve", "--bg", "--https=8443", claim.expectedTarget];
 const offArgs = ["serve", "--https=8443", "--set-path=/", "off"];
 const encoder = new TextEncoder();
@@ -178,6 +183,7 @@ describe("Serve configuration ownership", () => {
   it.effect("creates an absent route, verifies it, and removes only its exact claim", () => {
     const { commands, layer } = recordingLayer([
       { stdout: "{}" },
+      { stdout: httpsEnabledStatus },
       {},
       { stdout: exact },
       { stdout: exact },
@@ -190,6 +196,7 @@ describe("Serve configuration ownership", () => {
       assert.equal(yield* releaseServeMapping({ ...claim, created: true }), "disabled");
       assert.deepEqual(commands, [
         statusArgs,
+        nodeStatusArgs,
         writeArgs,
         statusArgs,
         statusArgs,
@@ -235,6 +242,7 @@ describe("Serve configuration ownership", () => {
   it.effect("does not adopt a write whose readback differs", () => {
     const { commands, layer } = recordingLayer([
       { stdout: "{}" },
+      { stdout: httpsEnabledStatus },
       {},
       { stdout: JSON.stringify(config("http://127.0.0.1:1")) },
     ]);
@@ -242,7 +250,7 @@ describe("Serve configuration ownership", () => {
       assert.deepEqual(yield* acquireServeMapping(claim), {
         skipped: { _tag: "unknown", reason: "status-failed" },
       });
-      assert.deepEqual(commands, [statusArgs, writeArgs, statusArgs]);
+      assert.deepEqual(commands, [statusArgs, nodeStatusArgs, writeArgs, statusArgs]);
     }).pipe(Effect.provide(layer));
   });
 });

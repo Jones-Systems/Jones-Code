@@ -5,6 +5,8 @@ import {
   AssignPersonalWorkstreamInput,
   AssignPersonalWorkstreamResult,
   PersonalWorkstreamsSnapshot,
+  PersonalWorkstreamMembers,
+  PersonalWorkstreamMembersInput,
   PutPersonalWorkstreamInput,
   PutPersonalWorkstreamResult,
   WorkstreamsPersonalError,
@@ -25,6 +27,12 @@ export const SubscribePersonalWorkstreamsRpc = Rpc.make("workstreamsPersonal.sub
   success: PersonalWorkstreamsSnapshot,
   error: Failure,
   stream: true,
+});
+
+export const ReadPersonalWorkstreamMembersRpc = Rpc.make("workstreamsPersonal.members", {
+  payload: PersonalWorkstreamMembersInput,
+  success: PersonalWorkstreamMembers,
+  error: Failure,
 });
 
 export const PutPersonalWorkstreamRpc = Rpc.make("workstreamsPersonal.put", {

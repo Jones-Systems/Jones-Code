@@ -1,6 +1,10 @@
 // @effect-diagnostics globalDate:off - Vitest fake timers control the Date clock used by the view controller.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createThreadReadDwell, suppressThreadReadDwell } from "./threadReadDwell.js";
+import {
+  createThreadReadDwell,
+  suppressThreadReadDwell,
+  type ThreadVisitOutcome,
+} from "./threadReadDwell.js";
 
 const updatedAt = "2026-10-17T12:00:00.000Z";
 const earlier = "2026-10-17T11:00:00.000Z";
@@ -135,5 +139,157 @@ describe("continuous thread read dwell", () => {
     controller.update(snapshot({ lastVisitedAt: updatedAt }));
     vi.advanceTimersByTime(3000);
     expect(onVisit).not.toHaveBeenCalled();
+  });
+});
+
+describe("rejected visit retry", () => {
+  // Each reply waits for the test, so it decides when and how the server answers.
+  function server() {
+    const replies: Array<(outcome: ThreadVisitOutcome) => void> = [];
+    const visit = vi.fn(
+      (_updatedAt: string) => new Promise<ThreadVisitOutcome>((resolve) => replies.push(resolve)),
+    );
+    const answer = async (outcome: ThreadVisitOutcome, index = replies.length - 1) => {
+      replies[index]!(outcome);
+      await vi.advanceTimersByTimeAsync(0);
+    };
+    const view = (overrides: Parameters<typeof snapshot>[0] = {}) =>
+      snapshot({ onVisit: visit, sessionGeneration: 1, ...overrides });
+    return { visit, answer, view };
+  }
+
+  it("retries once per new session, while streaming and completions wait", async () => {
+    const { visit, answer, view } = server();
+    controller.update(view());
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(visit).toHaveBeenCalledExactlyOnceWith(updatedAt);
+    await answer({ accepted: false });
+    controller.update(view({ updatedAt: later, completedAt: later }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(visit).toHaveBeenCalledTimes(1);
+    controller.update(view({ updatedAt: later, completedAt: later, sessionGeneration: 2 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(visit).toHaveBeenCalledTimes(2);
+    expect(visit).toHaveBeenLastCalledWith(later);
+    await answer({ accepted: true });
+    controller.update(view({ updatedAt: later, completedAt: later, sessionGeneration: 3 }));
+    controller.update(view({ updatedAt: later, completedAt: later, sessionGeneration: 4 }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(visit).toHaveBeenCalledTimes(2);
+  });
+
+  it("holds a retry behind the throttle and waits again when the retry is rejected", async () => {
+    const { visit, answer, view } = server();
+    controller.update(view());
+    await vi.advanceTimersByTimeAsync(3000);
+    await answer({ accepted: false });
+    controller.update(view({ sessionGeneration: 2 }));
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(visit).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(visit).toHaveBeenNthCalledWith(2, updatedAt);
+    await answer({ accepted: false });
+    controller.update(view({ updatedAt: later, completedAt: later, sessionGeneration: 2 }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(visit).toHaveBeenCalledTimes(2);
+    controller.update(view({ updatedAt: later, completedAt: later, sessionGeneration: 3 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(visit).toHaveBeenNthCalledWith(3, later);
+  });
+
+  it("retries when the new session came up before the rejection arrived", async () => {
+    const { visit, answer, view } = server();
+    controller.update(view());
+    await vi.advanceTimersByTimeAsync(3000);
+    controller.update(view({ sessionGeneration: 2 }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(visit).toHaveBeenCalledTimes(1);
+    await answer({ accepted: false });
+    await vi.advanceTimersByTimeAsync(8999);
+    expect(visit).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(visit).toHaveBeenNthCalledWith(2, updatedAt);
+  });
+
+  it("restores a rejected visit's metadata only on a retry after a fresh visible dwell", async () => {
+    const { visit, answer, view } = server();
+    const restore = vi.fn();
+    controller.update(view());
+    await vi.advanceTimersByTimeAsync(3000);
+    await answer({ accepted: false, restore });
+    controller.setVisible(false);
+    controller.update(view({ visible: false, sessionGeneration: 2 }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(visit).toHaveBeenCalledTimes(1);
+    expect(restore).not.toHaveBeenCalled();
+    controller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(visit).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(visit).toHaveBeenCalledTimes(2);
+    expect(restore).toHaveBeenCalledOnce();
+    expect(restore.mock.invocationCallOrder[0]).toBeLessThan(visit.mock.invocationCallOrder[1]!);
+  });
+
+  it.each(["before", "after"] as const)(
+    "keeps an explicit unread that arrives %s the rejection",
+    async (order) => {
+      const { visit, answer, view } = server();
+      const restore = vi.fn();
+      controller.update(view());
+      await vi.advanceTimersByTimeAsync(3000);
+      if (order === "before") suppressThreadReadDwell("environment:thread");
+      await answer({ accepted: false, restore });
+      if (order === "after") suppressThreadReadDwell("environment:thread");
+      controller.update(view({ sessionGeneration: 2 }));
+      controller.update(view({ updatedAt: later, completedAt: later, sessionGeneration: 3 }));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(visit).toHaveBeenCalledTimes(1);
+      expect(restore).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["before", "after"] as const)(
+    "does not retry a visit the server showed %s rejecting it, even after an unread rewind",
+    async (order) => {
+      const { visit, answer, view } = server();
+      const restore = vi.fn();
+      controller.update(view());
+      await vi.advanceTimersByTimeAsync(3000);
+      if (order === "before") controller.update(view({ lastVisitedAt: updatedAt }));
+      await answer({ accepted: false, restore });
+      if (order === "after") controller.update(view({ lastVisitedAt: updatedAt }));
+      // Another client marks the thread unread, then the session reconnects.
+      controller.update(view({ lastVisitedAt: earlier }));
+      controller.update(view({ lastVisitedAt: earlier, sessionGeneration: 2 }));
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(visit).toHaveBeenCalledTimes(1);
+      expect(restore).not.toHaveBeenCalled();
+    },
+  );
+
+  it("ignores a rejection made stale by a newer visit, navigation or disposal", async () => {
+    const { visit, answer, view } = server();
+    controller.update(view());
+    await vi.advanceTimersByTimeAsync(3000);
+    controller.update(view({ updatedAt: later }));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(visit).toHaveBeenNthCalledWith(2, later);
+    await answer({ accepted: false }, 0);
+    controller.update(view({ updatedAt: later, sessionGeneration: 2 }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(visit).toHaveBeenCalledTimes(2);
+    controller.update(view({ threadKey: "other:thread", sessionGeneration: 2 }));
+    await answer({ accepted: false }, 1);
+    controller.update(view({ threadKey: "other:thread", sessionGeneration: 3 }));
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(visit).toHaveBeenCalledTimes(3);
+    controller.dispose();
+    await answer({ accepted: false }, 2);
+    controller.update(view({ threadKey: "other:thread", sessionGeneration: 4 }));
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(visit).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(visit).toHaveBeenCalledTimes(4);
   });
 });

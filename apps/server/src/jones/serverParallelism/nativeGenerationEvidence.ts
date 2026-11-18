@@ -1,3 +1,4 @@
+import { untilSamplingAbort } from "./capturedSampling.ts";
 import type { LogicalFinderHandle, FinderToken } from "./computeContract.ts";
 import type { Bootstrap, Request } from "../serverCompute/protocol.ts";
 import type { ComputeChild, SlotResult } from "../serverCompute/processSlot.ts";
@@ -270,5 +271,23 @@ export class NativeGenerationEvidence {
   async stopAndDrain() {
     this.accepting = false;
     await Promise.all(this.pending);
+  }
+}
+
+/** Serialize whole-cohort resource reads with changes to the captured worker population. */
+export class PopulationSampling {
+  private tail = Promise.resolve();
+
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    const previous = this.tail;
+    const next = Promise.withResolvers<void>();
+    this.tail = previous.then(() => next.promise);
+    try {
+      await untilSamplingAbort(previous, signal);
+    } catch (cause) {
+      next.resolve();
+      throw cause;
+    }
+    return () => next.resolve();
   }
 }

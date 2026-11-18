@@ -11,7 +11,7 @@ import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
-import { makeCodexRemoteRequestEvaluation } from "../../textGeneration/jones/CodexRemoteRequestEvaluation.ts";
+import { makeCodexToolFreeTextGeneration } from "../../textGeneration/jones/CodexRemoteRequestEvaluation.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { chatGptModels } from "../CodexChatGptModels.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
@@ -245,14 +245,13 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const resolveRuntime = runtime.auth.controller.withAccess!(runtime.resolve);
   // Launch settings bind the refresh command to the signed-in profile. The registry
   // already wraps openSession in withAccess, so resolve without re-entering it.
+  // The picker shows each model's catalog default effort; dispatch reads the same
+  // catalog so a turn without an explicit effort sends the effort that was shown.
+  const models = snapshot.getSnapshot.pipe(Effect.map((value) => value.models));
   const orchestrationAdapter = yield* createCodexAdapterV2(input, {
     onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+    models,
     resolveRuntime: runtime.resolve,
-    // The picker shows each model's catalog default effort; dispatch reads the same
-    // catalog so a turn without an explicit effort sends the effort that was shown.
-    getModelCatalog: Effect.suspend(() =>
-      snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
-    ),
   }).pipe(
     Effect.mapError(
       (cause) =>
@@ -267,7 +266,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
   const nativeGeneration = yield* makeCodexTextGeneration(
     config,
     undefined,
-    snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+    models,
     resolveRuntime,
   );
   const protect = <A>(operation: string, effect: Effect.Effect<A, TextGenerationError>) =>
@@ -281,13 +280,12 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           }),
       ),
     );
-  const evaluateRemoteRequest = yield* makeCodexRemoteRequestEvaluation({
+  const toolFree = yield* makeCodexToolFreeTextGeneration({
     instanceId,
     access: runtime.auth.access,
   });
   const textGeneration: ProviderInstance["textGeneration"] = {
-    evaluateRemoteRequest: (value) =>
-      protect("evaluateRemoteRequest", evaluateRemoteRequest(value)),
+    evaluateRemoteRequest: (value) => protect("evaluateRemoteRequest", toolFree.evaluate(value)),
     generateCommitMessage: (value) =>
       protect("generateCommitMessage", nativeGeneration.generateCommitMessage(value)),
     generatePrContent: (value) =>
@@ -314,6 +312,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     snapshot,
     orchestrationAdapter,
     textGeneration,
+    generatePromptOnlyText: (value) =>
+      protect("generatePromptOnlyText", toolFree.generatePromptOnlyText(value)),
     auth: runtime.auth.controller,
     snapshotForCwd: (cwd: string) =>
       enabled

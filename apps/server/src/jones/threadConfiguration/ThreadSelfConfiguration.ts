@@ -270,12 +270,22 @@ const make = Effect.gen(function* () {
               updatedAt: now,
             },
           };
+          // Ordinary checkout decodes and digests this whole command, so forward
+          // every authority field rather than only the IntentCommand identity.
+          const ordinaryCheckoutCommand = {
+            type: commandType,
+            commandId,
+            threadId,
+            environmentId: scope.environmentId,
+            input,
+          };
           let refusal: ThreadSelfConfigurationError | undefined;
           const committed = yield* sink
             .commitCommand({
               commandId,
               threadId,
               commandType,
+              ordinaryCheckoutCommand,
               acceptedAt: now,
               events: [event],
               effects: [],

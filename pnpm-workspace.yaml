@@ -23,7 +23,7 @@ allowBuilds:
   node-pty: true
   # Ships N-API prebuilds; its install script only rebuilds from source.
   objc-js: false
-  "react-native-enriched-markdown@file:apps/mobile/deps/react-native-enriched-markdown-1.2.0-t3.18-497fbe63.tgz": true
+  "react-native-enriched-markdown@file:apps/mobile/deps/react-native-enriched-markdown-1.2.0-t3.18-16db4c75.tgz": true
   sharp: true
   "@tsc-rs/typescript": true
   utf-8-validate: false
@@ -58,7 +58,7 @@ catalog:
   "@legendapp/list": 3.7.2
   "@noble/curves": 1.9.1
   "@noble/hashes": 1.8.0
-  "@pierre/diffs": 1.7.0-beta.3
+  "@pierre/diffs": 1.7.0-beta.4
   "@pierre/highlights": 0.5.0
   "@tailwindcss/node": 4.3.3
   "@tailwindcss/oxide": 4.3.3
@@ -69,7 +69,7 @@ catalog:
   "@types/react-dom": ~19.3.0
   "@types/ws": 8.18.2
   alchemy: 2.0.0-beta.85
-  effect: 4.1.2
+  effect: 4.1.3
   electron-webauthn: 1.3.1
   jose: 6.2.2
   lightningcss: 1.33.0
@@ -91,6 +91,7 @@ catalog:
   mdast-util-directive: 3.1.0
   micromark-extension-directive: 4.0.0
   micromark-util-character: 2.1.1
+  micromark-util-decode-string: 2.0.1
   micromark-util-types: 2.0.2
   rehype-raw: 7.0.0
   rehype-sanitize: 6.0.0
@@ -112,11 +113,12 @@ overrides:
   expo-audio: 58.0.11
   expo-network: 58.0.4
   "@clerk/expo-native-components": 0.4.4
+  "@cursor/sdk": 1.3.1
   expo-sharing: 58.0.22
   expo-widgets: 58.0.27
   "@ff-labs/fff-node": 0.11.0
   "@legendapp/list": 3.7.2
-  "@pierre/diffs": 1.7.0-beta.3
+  "@pierre/diffs": 1.7.0-beta.4
   "@react-native-ai/apple": 0.12.0
   "@react-native-menu/menu": 2.0.0
   "@react-navigation/native-stack": 7.21.0
@@ -130,6 +132,7 @@ overrides:
   react-native-webview: 14.0.1
   react-native-svg: 15.16.1
   app-builder-lib: 26.16.1
+  electron-updater: 6.8.9
   expo-modules-core: 58.0.30
   # Keep jsdom's optional peer consistent so Vite+ has one test-runner instance.
   "@exodus/bytes>@noble/hashes": "1.8.0"
@@ -137,6 +140,9 @@ overrides:
   # Move this with @react-navigation/native: an older core than it requires crashes
   # every native stack at launch.
   "@react-navigation/core": 7.24.0
+  # @cloudflare/unenv-preset peers on this exact version, but alchemy's runtime
+  # takes a caret range, so lockfile-free installs drift to a newer prerelease.
+  unenv: 2.0.0-rc.24
   # The dbus-next patch drops usocket from the package, but pnpm resolves from the
   # registry manifest, so the edge has to be cut here as well.
   "dbus-next>usocket": "-"
@@ -213,6 +219,11 @@ overrides:
   # Remove this together with the root `typescript` alias.
   "@voidzero-dev/vite-plus-core>typescript": "*"
   yaml: "catalog:"
+  # @vercel/routing-utils pins exactly 6.1.0, which has a ReDoS advisory (GHSA-9wv6-86v2-598j).
+  "@vercel/routing-utils>path-to-regexp": 6.3.0
+  # zod 3 has a high advisory (GHSA-mrhx-c7xc-m3w5) fixed only in 4.6.6. @vercel/config only
+  # builds a z.object of z.string().regex() and calls parse, which zod 4 keeps unchanged.
+  "@vercel/config>zod": 4.6.7
 
 packageExtensions:
   "@clerk/expo@*":
@@ -228,7 +239,7 @@ packageExtensions:
       vite-plus: "catalog:"
 
 patchedDependencies:
-  effect@4.1.2: patches/effect@4.1.2.patch
+  effect@4.1.3: patches/effect@4.1.3.patch
   react-native-image-viewing@0.2.2: patches/react-native-image-viewing@0.2.2.patch
   mdast-util-math@3.0.0: patches/mdast-util-math@3.0.0.patch
   micromark-extension-llm-math@3.1.0: patches/micromark-extension-llm-math@3.1.0.patch
@@ -243,10 +254,13 @@ patchedDependencies:
   "@effect/vitest@4.1.2": patches/@effect__vitest@4.1.2.patch
   expo-sharing@58.0.22: patches/expo-sharing@58.0.22.patch
   expo-widgets@58.0.27: patches/expo-widgets@58.0.27.patch
+  # Android: an RNHostView without a scrolling descendant (an app bar's buttons) is no longer the
+  # scroll target a Material bottom sheet picks, so sheet content can sit below its header.
+  "@expo/ui@58.0.27": patches/@expo__ui@58.0.27.patch
   "@ff-labs/fff-node@0.11.0": patches/@ff-labs__fff-node@0.11.0.patch
-  # Exports the dependency-light subpaths mobile and the web diff parser import, and makes find
-  # cover folded files and collapsed context (onRevealSearchMatch).
-  "@pierre/diffs@1.7.0-beta.3": patches/@pierre__diffs@1.7.0-beta.3.patch
+  # Exports the dependency-light subpaths mobile and the web diff parser import, re-measures
+  # editor carets when the code font changes, and stops the find bar reclaiming focus from the file.
+  "@pierre/diffs@1.7.0-beta.4": patches/@pierre__diffs@1.7.0-beta.4.patch
   "@react-native-ai/apple@0.12.0": patches/@react-native-ai__apple@0.12.0.patch
   "@react-native-menu/menu@2.0.0": patches/@react-native-menu__menu@2.0.0.patch
   "@react-navigation/native-stack@7.21.0": patches/@react-navigation%2Fnative-stack@7.21.0.patch
@@ -265,6 +279,15 @@ patchedDependencies:
   # Observe the owned host exit independently of descendants retaining its stdio.
   "@muse-code/sdk@1.4.6": patches/@muse-code__sdk@1.4.6.patch
   app-builder-lib@26.16.1: patches/app-builder-lib@26.16.1.patch
+  # The spawner takes an injected spawn function (and uses it for taskkill) so Windows launches
+  # can run on worker threads: apps/server/src/process/SpawnWorker.ts.
+  "@effect/platform-node-shared@4.1.2": patches/@effect__platform-node-shared@4.1.2.patch
+  # Electron net requests never emit "socket", so upstream's idle timeout never fires and a
+  # stalled update download hangs forever.
+  electron-updater@6.8.9: patches/electron-updater@6.8.9.patch
+  # Local agents honor the attribution settings in the user's Cursor CLI cli-config.json, stream
+  # shell output while it runs, and expose agent.resume() (the protocol's ResumeAction).
+  "@cursor/sdk@1.3.1": patches/@cursor__sdk@1.3.1.patch
   # A failed Artifacts.cached effect hangs every later caller: https://github.com/alchemy-run/alchemy/issues/2981
   alchemy@2.0.0-beta.85: patches/alchemy@2.0.0-beta.85.patch
   # Android: a marker orient other than "auto" or a number (auto-start-reverse) no longer throws.
@@ -306,15 +329,217 @@ publicHoistPattern:
   - "@cursor/sdk-*"
 
 minimumReleaseAgeExclude:
-  - "@legendapp/list@3.7.2"
-  - "@effect/tsgo-darwin-arm64@0.67.1"
-  - "@effect/tsgo-darwin-x64@0.67.1"
-  - "@effect/tsgo-linux-arm64@0.67.1"
-  - "@effect/tsgo-linux-arm@0.67.1"
-  - "@effect/tsgo-linux-x64@0.67.1"
-  - "@effect/tsgo-win32-arm64@0.67.1"
-  - "@effect/tsgo-win32-x64@0.67.1"
-  - "@effect/tsgo@0.67.1"
+  - "@ai-sdk/provider@4.0.36"
+  - "@alchemy.run/acme@2.0.0-beta.85"
+  - "@alchemy.run/axiom@2.0.0-beta.85"
+  - "@alchemy.run/cloudflare-runtime@2.0.0-beta.85"
+  - "@alchemy.run/cloudflare@2.0.0-beta.85"
+  - "@alchemy.run/docker@2.0.0-beta.85"
+  - "@alchemy.run/drizzle@2.0.0-beta.85"
+  - "@alchemy.run/node-utils@2.0.0-beta.85"
+  - "@alchemy.run/planetscale@2.0.0-beta.85"
+  - "@alchemy.run/sql@2.0.0-beta.85"
+  - "@alchemy.run/test@2.0.0-beta.85"
   - "@anthropic-ai/claude-agent-sdk@0.3.321"
-  - "@pierre/diffs@1.7.0-beta.3"
+  - "@clerk/backend@3.27.0"
+  - "@clerk/clerk-js@6.42.3"
+  - "@clerk/electron@0.1.10"
+  - "@clerk/expo-native-components@0.4.4"
+  - "@clerk/expo@4.15.1"
+  - "@clerk/react@6.18.6"
+  - "@clerk/shared@4.44.1"
+  - "@coderabbitai/config@1.2.0"
+  - "@cursor/sdk-darwin-arm64@1.3.1"
+  - "@cursor/sdk-darwin-x64@1.3.1"
+  - "@cursor/sdk-linux-arm64@1.3.1"
+  - "@cursor/sdk-linux-x64@1.3.1"
+  - "@cursor/sdk-win32-x64@1.3.1"
+  - "@cursor/sdk@1.3.1"
+  - "@distilled.cloud/acme@1.0.0-rc.18"
+  - "@distilled.cloud/aws4signer@1.0.0-rc.18"
+  - "@distilled.cloud/aws@1.0.0-rc.18"
+  - "@distilled.cloud/axiom@1.0.0-rc.18"
+  - "@distilled.cloud/cloudflare@1.0.0-rc.18"
+  - "@distilled.cloud/core@1.0.0-rc.18"
+  - "@distilled.cloud/iceberg@1.0.0-rc.18"
+  - "@distilled.cloud/planetscale@1.0.0-rc.18"
+  - "@e2e-dev/mobile@0.12.6"
+  - "@e2e-dev/web@0.15.5"
+  - "@effect/atom-react@4.1.2"
+  - "@effect/graphql-generator@4.1.2"
+  - "@effect/openapi-generator@4.1.2"
+  - "@effect/platform-bun@4.1.2"
+  - "@effect/platform-node-shared@4.1.2"
+  - "@effect/platform-node@4.1.2"
+  - "@effect/sql-d1@4.1.1"
+  - "@effect/sql-pg@4.1.2"
+  - "@effect/sql-sqlite-do@4.1.2"
+  - "@effect/vitest@4.1.2"
+  - "@expo/cli@58.1.19"
+  - "@expo/config-plugins@58.0.12"
+  - "@expo/config@58.0.11"
+  - "@expo/env@2.5.4"
+  - "@expo/fingerprint@0.21.9"
+  - "@expo/image-utils@0.12.6"
+  - "@expo/inline-modules@0.2.9"
+  - "@expo/local-build-cache-provider@58.0.11"
+  - "@expo/log-box@58.0.15"
+  - "@expo/metro-config@58.0.21"
+  - "@expo/metro-runtime@58.0.17"
+  - "@expo/modules-macros-linux-arm64@0.29.0"
+  - "@expo/modules-macros-linux-x64@0.29.0"
+  - "@expo/modules-macros-win32-arm64@0.29.0"
+  - "@expo/modules-macros-win32-x64@0.29.0"
+  - "@expo/prebuild-config@58.0.19"
+  - "@expo/require-utils@58.0.5"
+  - "@expo/router-server@58.0.21"
+  - "@expo/schema-utils@58.0.3"
+  - "@expo/ui@58.0.27"
+  - "@generaltranslation/api@0.5.6"
+  - "@generaltranslation/python-extractor@0.2.64"
+  - "@generaltranslation/react-core@11.4.18"
+  - "@generaltranslation/supported-locales@2.1.45"
+  - "@generaltranslation/vue-extractor@0.1.23"
+  - "@hono/node-server@1.19.19"
+  - "@koromix/koffi-android-arm64@3.3.6"
+  - "@koromix/koffi-android-x64@3.3.6"
+  - "@koromix/koffi-darwin-arm64@3.3.6"
+  - "@koromix/koffi-darwin-x64@3.3.6"
+  - "@koromix/koffi-freebsd-arm64@3.3.6"
+  - "@koromix/koffi-freebsd-ia32@3.3.6"
+  - "@koromix/koffi-freebsd-x64@3.3.6"
+  - "@koromix/koffi-linux-arm64@3.3.6"
+  - "@koromix/koffi-linux-arm@3.3.6"
+  - "@koromix/koffi-linux-ia32@3.3.6"
+  - "@koromix/koffi-linux-loong64@3.3.6"
+  - "@koromix/koffi-linux-ppc64@3.3.6"
+  - "@koromix/koffi-linux-riscv64@3.3.6"
+  - "@koromix/koffi-linux-x64@3.3.6"
+  - "@koromix/koffi-openbsd-arm64@3.3.6"
+  - "@koromix/koffi-openbsd-ia32@3.3.6"
+  - "@koromix/koffi-openbsd-x64@3.3.6"
+  - "@koromix/koffi-win32-arm64@3.3.6"
+  - "@koromix/koffi-win32-ia32@3.3.6"
+  - "@koromix/koffi-win32-x64@3.3.6"
+  - "@legendapp/list@3.7.2"
+  - "@noxcturnal/noxcturnal-darwin-arm64@0.1.12"
+  - "@noxcturnal/noxcturnal-darwin-x64@0.1.12"
+  - "@noxcturnal/noxcturnal-linux-arm64-gnu@0.1.12"
+  - "@noxcturnal/noxcturnal-linux-arm64-musl@0.1.12"
+  - "@noxcturnal/noxcturnal-linux-x64-gnu@0.1.12"
+  - "@noxcturnal/noxcturnal-linux-x64-musl@0.1.12"
+  - "@noxcturnal/noxcturnal-win32-arm64-msvc@0.1.12"
+  - "@noxcturnal/noxcturnal-win32-x64-msvc@0.1.12"
+  - "@oxc-parser/binding-android-arm-eabi@0.157.0"
+  - "@oxc-parser/binding-android-arm64@0.157.0"
+  - "@oxc-parser/binding-darwin-arm64@0.157.0"
+  - "@oxc-parser/binding-darwin-x64@0.157.0"
+  - "@oxc-parser/binding-freebsd-x64@0.157.0"
+  - "@oxc-parser/binding-linux-arm-gnueabihf@0.157.0"
+  - "@oxc-parser/binding-linux-arm-musleabihf@0.157.0"
+  - "@oxc-parser/binding-linux-arm64-gnu@0.157.0"
+  - "@oxc-parser/binding-linux-arm64-musl@0.157.0"
+  - "@oxc-parser/binding-linux-ppc64-gnu@0.157.0"
+  - "@oxc-parser/binding-linux-riscv64-gnu@0.157.0"
+  - "@oxc-parser/binding-linux-riscv64-musl@0.157.0"
+  - "@oxc-parser/binding-linux-s390x-gnu@0.157.0"
+  - "@oxc-parser/binding-linux-x64-gnu@0.157.0"
+  - "@oxc-parser/binding-linux-x64-musl@0.157.0"
+  - "@oxc-parser/binding-openharmony-arm64@0.157.0"
+  - "@oxc-parser/binding-win32-arm64-msvc@0.157.0"
+  - "@oxc-parser/binding-win32-ia32-msvc@0.157.0"
+  - "@oxc-parser/binding-win32-x64-msvc@0.157.0"
+  - "@oxc-project/runtime@0.157.0"
+  - "@oxc-project/types@0.157.0"
+  - "@oxc-transform/binding-android-arm-eabi@0.157.0"
+  - "@oxc-transform/binding-android-arm64@0.157.0"
+  - "@oxc-transform/binding-darwin-arm64@0.157.0"
+  - "@oxc-transform/binding-darwin-x64@0.157.0"
+  - "@oxc-transform/binding-freebsd-x64@0.157.0"
+  - "@oxc-transform/binding-linux-arm-gnueabihf@0.157.0"
+  - "@oxc-transform/binding-linux-arm-musleabihf@0.157.0"
+  - "@oxc-transform/binding-linux-arm64-gnu@0.157.0"
+  - "@oxc-transform/binding-linux-arm64-musl@0.157.0"
+  - "@oxc-transform/binding-linux-ppc64-gnu@0.157.0"
+  - "@oxc-transform/binding-linux-riscv64-gnu@0.157.0"
+  - "@oxc-transform/binding-linux-riscv64-musl@0.157.0"
+  - "@oxc-transform/binding-linux-s390x-gnu@0.157.0"
+  - "@oxc-transform/binding-linux-x64-gnu@0.157.0"
+  - "@oxc-transform/binding-linux-x64-musl@0.157.0"
+  - "@oxc-transform/binding-openharmony-arm64@0.157.0"
+  - "@oxc-transform/binding-win32-arm64-msvc@0.157.0"
+  - "@oxc-transform/binding-win32-ia32-msvc@0.157.0"
+  - "@oxc-transform/binding-win32-x64-msvc@0.157.0"
+  - "@pierre/diffs@1.7.0-beta.4"
   - "@pierre/highlights@0.5.0"
+  - "@pierre/highlights@0.5.1"
+  - "@pierre/patches@0.0.1"
+  - "@vitest/expect@5.1.0"
+  - "@vitest/pretty-format@5.1.0"
+  - "@vitest/spy@5.1.0"
+  - "@vitest/utils@5.1.0"
+  - "@vue/shared@3.5.45"
+  - "agent-device@0.21.36"
+  - "alchemy@2.0.0-beta.85"
+  - "babel-preset-expo@58.0.24"
+  - "commander@15.1.0"
+  - "e2e@0.23.0"
+  - "effect@4.1.3"
+  - "electron@44.10.1"
+  - "expo-app-metrics@58.0.15"
+  - "expo-asset@58.0.20"
+  - "expo-audio@58.0.11"
+  - "expo-auth-session@58.0.17"
+  - "expo-build-properties@58.0.12"
+  - "expo-camera@58.0.14"
+  - "expo-constants@58.0.15"
+  - "expo-dev-client@58.0.18"
+  - "expo-dev-launcher@58.0.18"
+  - "expo-file-system@58.0.13"
+  - "expo-font@58.0.11"
+  - "expo-image-manipulator@58.0.16"
+  - "expo-image@58.0.18"
+  - "expo-linking@58.0.16"
+  - "expo-modules-autolinking@58.0.17"
+  - "expo-modules-cli@0.4.0"
+  - "expo-modules-core@58.0.30"
+  - "expo-modules-jsi@58.0.22"
+  - "expo-modules-macros@0.29.0"
+  - "expo-notifications@58.1.8"
+  - "expo-observe@58.0.18"
+  - "expo-sharing@58.0.22"
+  - "expo-splash-screen@58.0.13"
+  - "expo-sqlite@58.0.15"
+  - "expo-updates@58.0.21"
+  - "expo-video@58.0.13"
+  - "expo-widgets@58.0.27"
+  - "expo@58.0.23"
+  - "express-rate-limit@8.7.3"
+  - "generaltranslation@9.5.9"
+  - "glob@13.0.7"
+  - "gt-i18n@1.0.40"
+  - "gt-react-native@11.4.18"
+  - "gt-react@11.4.18"
+  - "gt@2.27.0"
+  - "hono@4.13.17"
+  - "ip-address@10.7.6"
+  - "jose@6.2.17"
+  - "koffi@3.3.6"
+  - "nitro-core@0.37.2"
+  - "nitrogen@0.37.2"
+  - "node-forge@1.4.3"
+  - "noxcturnal@0.1.12"
+  - "oxc-parser@0.157.0"
+  - "oxc-transform@0.157.0"
+  - "qs@6.17.1"
+  - "react-native-gesture-handler@3.5.0"
+  - "react-native-keyboard-controller@1.23.0"
+  - "react-native-nitro-modules@0.37.2"
+  - "react-native-safe-area-context@5.11.1"
+  - "react-native-svg@15.16.1"
+  - "seroval-plugins@1.7.8"
+  - "seroval@1.7.10"
+  - "thread-stream@4.2.1"
+  - "undici@7.30.2"
+  - "undici@8.12.4"
+  - "uniwind@1.13.2"

@@ -216,7 +216,7 @@ async function setup() {
   state.toast.mockClear();
   state.projection = null;
   state.environments.set("test", { label: "VPS", connection: { phase: "connected" } });
-  root = await renderTest(null, { router: false });
+  root = await renderTest(null);
   container = root.container as HTMLDivElement;
   return root;
 }
@@ -575,7 +575,12 @@ it("opens a scoped remote parent, retains its cached title offline, and preserve
   expect(byLabel("Parent agent: Cached parent").disabled).toBe(true);
   state.environments.set("origin", { label: "Laptop", connection: { phase: "connected" } });
   await update();
+  state.command.mockResolvedValueOnce({ _tag: "Success", value: { "equal-id": "Cached parent" } });
   await click(byLabel("Parent agent: Cached parent"));
+  expect(state.command).toHaveBeenLastCalledWith({
+    environmentId: "origin",
+    input: { threadIds: ["equal-id"] },
+  });
   expect(state.navigate).toHaveBeenLastCalledWith({
     to: "/$environmentId/$threadId",
     params: { environmentId: "origin", threadId: "equal-id" },

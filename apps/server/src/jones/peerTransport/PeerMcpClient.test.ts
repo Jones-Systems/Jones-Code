@@ -929,6 +929,11 @@ it.effect.each([
       Response.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "internal" } }),
     message: "The linked environment reported an unrecognized RPC error.",
   },
+  {
+    name: "neither a result nor an error",
+    respond: (id: unknown) => Response.json({ jsonrpc: "2.0", id }),
+    message: "The linked environment answered in an unexpected shape.",
+  },
 ])("still marks a link failing when the peer answers with $name", ({ respond, message }) => {
   const outcomes: Array<{ generation: string; error: string | null }> = [];
   return Effect.gen(function* () {

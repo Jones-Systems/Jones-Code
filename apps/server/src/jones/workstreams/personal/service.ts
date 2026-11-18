@@ -15,6 +15,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../../../config.ts";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
+import * as AutoRouteStore from "../autoRoute/AutoRouteStore.ts";
 
 export class PersonalWorkstreams extends Context.Service<
   PersonalWorkstreams,
@@ -23,20 +24,36 @@ export class PersonalWorkstreams extends Context.Service<
       P.PersonalWorkstreamsSnapshot,
       P.WorkstreamsPersonalError
     >;
+    readonly members: (
+      id: string,
+    ) => Effect.Effect<P.PersonalWorkstreamMembers, P.WorkstreamsPersonalError>;
     readonly changes: Stream.Stream<P.PersonalWorkstreamsSnapshot, P.WorkstreamsPersonalError>;
     readonly create: (
       input: Omit<P.NewPersonalWorkstreamInput, "orderKey" | "now" | "origin">,
     ) => Effect.Effect<P.PutResult, P.WorkstreamsPersonalError>;
     readonly put: (
       workstream: P.PersonalWorkstream,
+      expected?: P.PersonalWorkstream,
     ) => Effect.Effect<P.PutResult, P.WorkstreamsPersonalError>;
     readonly assign: (
       input: P.AssignPersonalWorkstreamInput,
+      options?: { readonly supersedeInitialAutoAssignment: boolean },
     ) => Effect.Effect<P.AssignResult, P.WorkstreamsPersonalError>;
-    readonly readThread: (
-      id: ThreadId,
-    ) => Effect.Effect<
-      { assignment: P.PersonalWorkstreamAssignment; workstream: P.PersonalWorkstream | null },
+    readonly assignAutomatically: (
+      input: AutoRouteStore.DecisionKey & {
+        readonly workstreamId: string;
+        readonly workstreamName: string;
+        readonly confidence: "high";
+        readonly basis: "name" | "similar_threads" | "both";
+      },
+    ) => Effect.Effect<void, P.WorkstreamsPersonalError>;
+    readonly readThread: (id: ThreadId) => Effect.Effect<
+      {
+        assignment: P.PersonalWorkstreamAssignment;
+        workstream: P.PersonalWorkstream | null;
+        /** The thread's latest automatic-routing decision; absent without the Jones table. */
+        autoRoute?: AutoRouteStore.AutoRouteDecisionView | null;
+      },
       P.WorkstreamsPersonalError
     >;
     readonly readDefinitions: (
@@ -49,7 +66,31 @@ export class PersonalWorkstreams extends Context.Service<
   }
 >()("t3/jones/workstreams/personal/service/PersonalWorkstreams") {}
 
-const definitionColumns = `id, name, lifecycle, color, order_key AS orderKey, created_at AS createdAt, updated_at AS updatedAt, deleted_at AS deletedAt, rev, origin`;
+const definitionColumns = `id, name, lifecycle, color, order_key AS orderKey,
+  created_at AS createdAt, updated_at AS updatedAt, deleted_at AS deletedAt, rev,
+  lifecycle_revision AS lifecycleRevision, snoozed_at AS snoozedAt, snoozed_until AS snoozedUntil,
+  name_icon_project_key AS nameIconProjectKey, name_icon_updated_at AS nameIconUpdatedAt, origin`;
+type DefinitionRow = P.PersonalWorkstream & {
+  nameIconProjectKey: string | null;
+  nameIconUpdatedAt: string | null;
+};
+const normalizeDefinition = ({
+  lifecycleRevision,
+  snoozedAt,
+  snoozedUntil,
+  nameIconProjectKey,
+  nameIconUpdatedAt,
+  ...definition
+}: DefinitionRow): P.PersonalWorkstream => ({
+  ...definition,
+  ...(lifecycleRevision ? { lifecycleRevision } : {}),
+  ...(snoozedAt == null && snoozedUntil == null
+    ? {}
+    : { snoozedAt: snoozedAt ?? null, snoozedUntil: snoozedUntil ?? null }),
+  ...(nameIconUpdatedAt
+    ? { nameIcon: { projectKey: nameIconProjectKey, updatedAt: nameIconUpdatedAt } }
+    : {}),
+});
 const assignmentColumns = `a.thread_id AS threadId, a.workstream_id AS workstreamId, a.revision, a.updated_at AS updatedAt`;
 const ImportFile = Schema.Struct({
   schema: Schema.Literal("jones.workstreams-personal-import/v1"),
@@ -76,6 +117,7 @@ const make = Effect.gen(function* () {
   const environmentId = yield* (yield* ServerEnvironment.ServerEnvironmentIdentity)
     .getEnvironmentId;
   const invalidations = yield* PubSub.sliding<void>(1);
+  const autoRoute = yield* AutoRouteStore.make;
   let importIssue: P.PersonalWorkstreamsImportIssue | null = null;
   const sequence = Effect.fn("PersonalWorkstreams.sequence")(function* () {
     const rows = yield* sql<{
@@ -87,13 +129,15 @@ const make = Effect.gen(function* () {
     yield* sql`INSERT INTO jones_personal_workstream_meta(key,value) VALUES('sequence','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)`;
   });
   const definitions = () =>
-    sql.unsafe<P.PersonalWorkstream>(`SELECT ${definitionColumns} FROM jones_personal_workstreams`);
+    sql
+      .unsafe<DefinitionRow>(`SELECT ${definitionColumns} FROM jones_personal_workstreams`)
+      .pipe(Effect.map((rows) => rows.map(normalizeDefinition)));
   const definition = Effect.fn("PersonalWorkstreams.definition")(function* (id: string) {
-    const rows = yield* sql.unsafe<P.PersonalWorkstream>(
+    const rows = yield* sql.unsafe<DefinitionRow>(
       `SELECT ${definitionColumns} FROM jones_personal_workstreams WHERE id=?`,
       [id],
     );
-    return rows[0] ?? null;
+    return rows[0] ? normalizeDefinition(rows[0]) : null;
   });
   const exists = (id: ThreadId) =>
     sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=${id} AND deleted_at IS NULL`.pipe(
@@ -106,13 +150,69 @@ const make = Effect.gen(function* () {
     );
     return rows[0] ?? { threadId: id, workstreamId: null, revision: 0, updatedAt: null };
   });
-  const store = Effect.fn("PersonalWorkstreams.store")(function* (w: P.PersonalWorkstream) {
-    yield* sql`INSERT INTO jones_personal_workstreams ${sql.insert({ id: w.id, name: w.name, lifecycle: w.lifecycle, color: w.color, order_key: w.orderKey, created_at: w.createdAt, updated_at: w.updatedAt, deleted_at: w.deletedAt, rev: w.rev, origin: w.origin })} ON CONFLICT(id) DO UPDATE SET name=excluded.name,lifecycle=excluded.lifecycle,color=excluded.color,order_key=excluded.order_key,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,rev=excluded.rev,origin=excluded.origin`;
+  const persistAssignment = Effect.fn("PersonalWorkstreams.persistAssignment")(function* (
+    threadId: ThreadId,
+    workstreamId: string | null,
+    revision: number,
+  ) {
+    const next = { threadId, workstreamId, revision, updatedAt: yield* now };
+    yield* sql`INSERT INTO jones_personal_workstream_assignments ${sql.insert({ thread_id: threadId, workstream_id: workstreamId, revision, updated_at: next.updatedAt })} ON CONFLICT(thread_id) DO UPDATE SET workstream_id=excluded.workstream_id,revision=excluded.revision,updated_at=excluded.updated_at`;
+    yield* bump();
+    return next;
   });
+  const store = Effect.fn("PersonalWorkstreams.store")(function* (w: P.PersonalWorkstream) {
+    yield* sql`INSERT INTO jones_personal_workstreams ${sql.insert({
+      id: w.id,
+      name: w.name,
+      lifecycle: w.lifecycle,
+      color: w.color,
+      order_key: w.orderKey,
+      created_at: w.createdAt,
+      updated_at: w.updatedAt,
+      deleted_at: w.deletedAt,
+      rev: w.rev,
+      lifecycle_revision: w.lifecycleRevision ?? 0,
+      snoozed_at: w.snoozedAt ?? null,
+      snoozed_until: w.snoozedUntil ?? null,
+      name_icon_project_key: w.nameIcon?.projectKey ?? null,
+      name_icon_updated_at: w.nameIcon?.updatedAt ?? null,
+      origin: w.origin,
+    })} ON CONFLICT(id) DO UPDATE SET
+      name=excluded.name, lifecycle=excluded.lifecycle, color=excluded.color,
+      order_key=excluded.order_key, created_at=excluded.created_at, updated_at=excluded.updated_at,
+      deleted_at=excluded.deleted_at, rev=excluded.rev, lifecycle_revision=excluded.lifecycle_revision,
+      snoozed_at=excluded.snoozed_at, snoozed_until=excluded.snoozed_until,
+      name_icon_project_key=excluded.name_icon_project_key, name_icon_updated_at=excluded.name_icon_updated_at,
+      origin=excluded.origin`;
+  });
+  const unsettledMember = (id: string) =>
+    sql`SELECT 1
+      FROM jones_personal_workstream_assignments a
+      JOIN orchestration_v2_projection_threads t ON t.thread_id = a.thread_id
+      WHERE a.workstream_id = ${id} AND t.deleted_at IS NULL
+      AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
+      LIMIT 1`;
+  const members = Effect.fn("PersonalWorkstreams.members")((id: string) =>
+    sql<{ threadId: ThreadId; title: string; settled: number }>`SELECT
+        a.thread_id AS threadId,
+        t.title,
+        json_extract(t.payload_json, '$.settledOverride') IS 'settled' AS settled
+      FROM jones_personal_workstream_assignments a
+      JOIN orchestration_v2_projection_threads t ON t.thread_id = a.thread_id
+      WHERE a.workstream_id = ${id} AND t.deleted_at IS NULL
+      ORDER BY a.updated_at DESC, a.thread_id`.pipe(
+      Effect.map((rows) => rows.map((row) => ({ ...row, settled: row.settled === 1 }))),
+      Effect.mapError(storage),
+    ),
+  );
   const merge = Effect.fn("PersonalWorkstreams.merge")(function* (
-    w: P.PersonalWorkstream,
-  ): Effect.fn.Return<P.PutResult, SqlError> {
-    const old = yield* definition(w.id);
+    candidate: P.PersonalWorkstream,
+    expected?: P.PersonalWorkstream,
+  ): Effect.fn.Return<P.PutResult, SqlError | P.WorkstreamsPersonalError> {
+    const old = yield* definition(candidate.id);
+    const w = old
+      ? P.preserveWorkstreamNameIcon(P.preservePersonalWorkstreamSnooze(candidate, old), old)
+      : candidate;
     const comparison = old === null ? 1 : P.comparePersonalWorkstreams(w, old);
     if (comparison <= 0)
       return {
@@ -120,6 +220,29 @@ const make = Effect.gen(function* () {
         workstream: old!,
         sequence: yield* sequence(),
       };
+    if (
+      w.deletedAt === null &&
+      P.isClosedPersonalWorkstream(w.lifecycle) &&
+      old?.lifecycle !== w.lifecycle &&
+      (yield* unsettledMember(w.id)).length > 0
+    )
+      return yield* new P.WorkstreamsPersonalError({ code: "unsettled_threads" });
+    if (
+      old?.deletedAt === null &&
+      w.deletedAt === null &&
+      P.isClosedPersonalWorkstream(old.lifecycle) !== P.isClosedPersonalWorkstream(w.lifecycle) &&
+      (w.lifecycleRevision ?? 0) <= (old.lifecycleRevision ?? 0)
+    )
+      return yield* new P.WorkstreamsPersonalError({ code: "precondition_failed" });
+    if (expected) {
+      let precondition = expected;
+      if (old && expected.snoozedUntil === undefined)
+        precondition = P.preservePersonalWorkstreamSnooze(precondition, old);
+      if (old && expected.nameIcon === undefined)
+        precondition = P.preserveWorkstreamNameIcon(precondition, old);
+      if (!old || P.comparePersonalWorkstreams(old, precondition) !== 0)
+        return yield* new P.WorkstreamsPersonalError({ code: "precondition_failed" });
+    }
     yield* store(w);
     if (w.deletedAt !== null)
       yield* sql`UPDATE jones_personal_workstream_assignments SET workstream_id=NULL, revision=revision+1, updated_at=${w.updatedAt} WHERE workstream_id=${w.id}`;
@@ -150,6 +273,7 @@ const make = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
+          const autoAssignments = yield* autoRoute.currentAutoAssignments();
           return {
             environmentId,
             sequence: yield* sequence(),
@@ -158,16 +282,20 @@ const make = Effect.gen(function* () {
               `SELECT ${assignmentColumns} FROM jones_personal_workstream_assignments a JOIN orchestration_v2_projection_threads t ON t.thread_id=a.thread_id WHERE t.deleted_at IS NULL`,
             ),
             importIssue,
+            supportsNameIcons: true as const,
+            supportsSnooze: true as const,
+            ...(autoAssignments === undefined ? {} : { autoAssignments }),
           };
         }),
       )
       .pipe(Effect.mapError(storage)),
   );
-  const put = Effect.fn("PersonalWorkstreams.put")((w: P.PersonalWorkstream) =>
-    decodeDefinition(w).pipe(
-      Effect.mapError(() => new P.WorkstreamsPersonalError({ code: "invalid_request" })),
-      Effect.flatMap((valid) => write(merge(valid))),
-    ),
+  const put = Effect.fn("PersonalWorkstreams.put")(
+    (w: P.PersonalWorkstream, expected?: P.PersonalWorkstream) =>
+      decodeDefinition(w).pipe(
+        Effect.mapError(() => new P.WorkstreamsPersonalError({ code: "invalid_request" })),
+        Effect.flatMap((valid) => write(merge(valid, expected))),
+      ),
   );
   const create = Effect.fn("PersonalWorkstreams.create")(
     (input: Omit<P.NewPersonalWorkstreamInput, "orderKey" | "now" | "origin">) =>
@@ -211,52 +339,110 @@ const make = Effect.gen(function* () {
         }),
       ),
   );
-  const assign = Effect.fn("PersonalWorkstreams.assign")((input: P.AssignPersonalWorkstreamInput) =>
-    decodeAssignment(input).pipe(
-      Effect.mapError(() => new P.WorkstreamsPersonalError({ code: "invalid_request" })),
-      Effect.flatMap((valid) =>
-        write(
-          Effect.gen(function* (): Effect.fn.Return<
-            P.AssignResult,
-            SqlError | P.WorkstreamsPersonalError
-          > {
-            if (!(yield* exists(valid.threadId)))
-              return yield* new P.WorkstreamsPersonalError({ code: "thread_not_found" });
-            const workstream =
-              valid.workstream === null ? null : (yield* merge(valid.workstream)).workstream;
-            if (workstream?.deletedAt != null)
-              return yield* new P.WorkstreamsPersonalError({ code: "workstream_deleted" });
-            const current = yield* assignment(valid.threadId);
-            const target = workstream?.id ?? null;
-            if (current.workstreamId === target)
+  const assign = Effect.fn("PersonalWorkstreams.assign")(
+    (
+      input: P.AssignPersonalWorkstreamInput,
+      options?: { readonly supersedeInitialAutoAssignment: boolean },
+    ) =>
+      decodeAssignment(input).pipe(
+        Effect.mapError(() => new P.WorkstreamsPersonalError({ code: "invalid_request" })),
+        Effect.flatMap((valid) =>
+          write(
+            Effect.gen(function* (): Effect.fn.Return<
+              P.AssignResult,
+              SqlError | P.WorkstreamsPersonalError
+            > {
+              if (!(yield* exists(valid.threadId)))
+                return yield* new P.WorkstreamsPersonalError({ code: "thread_not_found" });
+              const carried = valid.workstream;
+              const local = carried === null ? null : yield* definition(carried.id);
+              const differentLifecycle =
+                carried !== null &&
+                local !== null &&
+                P.isClosedPersonalWorkstream(carried.lifecycle) !==
+                  P.isClosedPersonalWorkstream(local.lifecycle);
+              const workstream =
+                carried === null
+                  ? null
+                  : differentLifecycle || P.isClosedPersonalWorkstream(carried.lifecycle)
+                    ? local
+                    : (yield* merge(carried)).workstream;
+              if (carried && !workstream)
+                return yield* new P.WorkstreamsPersonalError({ code: "workstream_closed" });
+              if (workstream?.deletedAt != null)
+                return yield* new P.WorkstreamsPersonalError({ code: "workstream_deleted" });
+              const current = yield* assignment(valid.threadId);
+              const target = workstream?.id ?? null;
+              const supersedesAutomatic =
+                options?.supersedeInitialAutoAssignment === true &&
+                valid.expectedRevision === 0 &&
+                current.revision === 1 &&
+                (yield* autoRoute.hasCommittedAssignment(current));
+              if (current.workstreamId === target && !supersedesAutomatic)
+                return {
+                  outcome: "already_satisfied",
+                  assignment: current,
+                  workstream,
+                  sequence: yield* sequence(),
+                };
+              if (
+                workstream &&
+                (P.isClosedPersonalWorkstream(workstream.lifecycle) ||
+                  (carried && P.isClosedPersonalWorkstream(carried.lifecycle)))
+              )
+                return yield* new P.WorkstreamsPersonalError({ code: "workstream_closed" });
+              if (valid.expectedRevision !== current.revision && !supersedesAutomatic)
+                return yield* new P.WorkstreamsPersonalError({
+                  code: "precondition_failed",
+                  currentAssignment: current,
+                });
               return {
-                outcome: "already_satisfied",
-                assignment: current,
+                outcome: "applied",
+                assignment: yield* persistAssignment(valid.threadId, target, current.revision + 1),
                 workstream,
                 sequence: yield* sequence(),
               };
-            if (valid.expectedRevision !== current.revision)
-              return yield* new P.WorkstreamsPersonalError({
-                code: "precondition_failed",
-                currentAssignment: current,
-              });
-            const next = {
-              threadId: valid.threadId,
-              workstreamId: target,
-              revision: current.revision + 1,
-              updatedAt: yield* now,
-            };
-            yield* sql`INSERT INTO jones_personal_workstream_assignments ${sql.insert({ thread_id: next.threadId, workstream_id: target, revision: next.revision, updated_at: next.updatedAt })} ON CONFLICT(thread_id) DO UPDATE SET workstream_id=excluded.workstream_id,revision=excluded.revision,updated_at=excluded.updated_at`;
-            yield* bump();
-            return {
-              outcome: "applied",
-              assignment: next,
-              workstream,
-              sequence: yield* sequence(),
-            };
-          }),
+            }),
+          ),
         ),
       ),
+  );
+  const assignAutomatically: PersonalWorkstreams["Service"]["assignAutomatically"] = Effect.fn(
+    "PersonalWorkstreams.assignAutomatically",
+  )((input) =>
+    write(
+      Effect.gen(function* () {
+        if (!(yield* autoRoute.isAssignableThread(input.threadId)))
+          return yield* new P.WorkstreamsPersonalError({ code: "thread_not_found" });
+        const current = yield* assignment(input.threadId);
+        if (current.revision !== 0 || current.workstreamId !== null)
+          return yield* new P.WorkstreamsPersonalError({
+            code: "precondition_failed",
+            currentAssignment: current,
+          });
+        const group = yield* definition(input.workstreamId);
+        if (
+          group === null ||
+          group.lifecycle !== "active" ||
+          group.name !== input.workstreamName ||
+          P.isPersonalWorkstreamSnoozed(group, Date.parse(yield* now))
+        )
+          return yield* new P.WorkstreamsPersonalError({ code: "workstream_not_found" });
+        if (group.deletedAt !== null)
+          return yield* new P.WorkstreamsPersonalError({ code: "workstream_deleted" });
+
+        // Only our write can create provenance, and both records commit before publication.
+        const next = yield* persistAssignment(input.threadId, group.id, 1);
+        const recorded = yield* autoRoute.recordAssignment(input, {
+          workstreamId: group.id,
+          revision: next.revision,
+          decidedAt: next.updatedAt,
+          confidence: input.confidence,
+          basis: input.basis,
+        });
+        if (!recorded)
+          return yield* new P.WorkstreamsPersonalError({ code: "storage_unavailable" });
+      }),
     ),
   );
   const readThread = Effect.fn("PersonalWorkstreams.readThread")((id: ThreadId) =>
@@ -266,10 +452,12 @@ const make = Effect.gen(function* () {
           if (!(yield* exists(id)))
             return yield* new P.WorkstreamsPersonalError({ code: "thread_not_found" });
           const current = yield* assignment(id);
+          const decision = (yield* autoRoute.available) ? yield* autoRoute.latest(id) : undefined;
           return {
             assignment: current,
             workstream:
               current.workstreamId === null ? null : yield* definition(current.workstreamId),
+            ...(decision === undefined ? {} : { autoRoute: decision }),
           };
         }),
       )
@@ -338,9 +526,11 @@ const make = Effect.gen(function* () {
   );
   return PersonalWorkstreams.of({
     snapshot,
+    members,
     create,
     put,
     assign,
+    assignAutomatically,
     readThread,
     // Subscription acquisition precedes even the first consistent snapshot read.
     changes: Stream.unwrap(

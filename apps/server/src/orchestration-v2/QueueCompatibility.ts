@@ -37,6 +37,7 @@ import * as Threads from "./ThreadManagementService.ts";
 import * as Launch from "./ThreadLaunchService.ts";
 import * as Intake from "./ThreadMessageIntake.ts";
 import * as Claims from "./AttachmentClaims.ts";
+import * as AutoRoute from "../jones/workstreams/autoRoute/WorkstreamAutoRoute.ts";
 
 export class QueueCompatibilityError extends Schema.TaggedError<QueueCompatibilityError>()(
   "QueueCompatibilityError",
@@ -73,6 +74,8 @@ const make = Effect.gen(function* () {
   const projects = yield* Projects.ProjectService;
   const events = yield* EventSink.EventSinkV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
+  // Jones: optional, so harnesses without the auto-router dispatch exactly as before.
+  const autoRoute = yield* Effect.serviceOption(AutoRoute.WorkstreamAutoRoute);
   const context = yield* Effect.context<
     | Effect.Services<ReturnType<typeof Intake.dispatchCommand>>
     | FileSystem.FileSystem
@@ -300,7 +303,7 @@ const make = Effect.gen(function* () {
             const previousClaim =
               existing === null
                 ? undefined
-                : (yield* threads.getThreadRecords(input.threadId, ["runs"])).thread
+                : (yield* threads.getLegacyBootstrapRecords(input.threadId)).thread
                     .legacyBootstrapClaim;
             const ownsNewThread =
               previousClaim?.createCommandId === createCommandId &&
@@ -376,12 +379,31 @@ const make = Effect.gen(function* () {
                 "Bootstrap has no exact accepted release receipt",
                 "orchestration_dispatch_failed",
               );
-            return { sequence: launched.legacyReleaseSequence };
+            // A resumed bootstrap can be the first to return the accepted release.
+            // Launch verifies the persisted payload hash, and the worker deduplicates the release ID.
+            return { sequence: launched.legacyReleaseSequence, observeAutoRoute: true };
           }
           const result = yield* Intake.dispatchCommand(command).pipe(Effect.provide(context));
-          return { sequence: result.sequence };
+          return { sequence: result.sequence, observeAutoRoute: result.replayed !== true };
         });
         return yield* send.pipe(
+          Effect.tap(({ observeAutoRoute }) =>
+            transport === "http" && observeAutoRoute && Option.isSome(autoRoute)
+              ? autoRoute.value
+                  .observe({
+                    threadId: input.threadId,
+                    commandId: input.commandId,
+                    messageId: input.message.messageId,
+                    text: input.message.text,
+                  })
+                  .pipe(
+                    Effect.catchCause(() =>
+                      Effect.logWarning("Workstream auto-route observation could not be queued"),
+                    ),
+                  )
+              : Effect.void,
+          ),
+          Effect.map(({ sequence }) => ({ sequence })),
           Effect.tapError((cause) => {
             // A generic dispatch error may follow a commit. Retain those files for reconciliation.
             const tag =

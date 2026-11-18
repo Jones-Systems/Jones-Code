@@ -2,8 +2,44 @@
 
 ## First checkout
 
+### Project checkouts and task worktrees
+
+A registered project's `workspaceRoot` is its persistent checkout folder on
+that environment. Jones Code uses it for repository discovery and Git operations
+that create separate task worktrees. A thread's `worktreePath` is its working
+checkout; settling or retiring that thread does not retire the project folder.
+Several project registrations can refer to checkouts of the same repository.
+
+Choose a durable project folder, such as `~/Projects/<repository>`, outside
+temporary or disposable test directories. A linked worktree is also valid as
+a project folder, but that registration makes it persistent even when its
+name or location resembles an old task. Retain its Git common directory too:
+the checkout's `.git` file can point to a separate repository store.
+
+For a dedicated linked checkout used as a project folder, record that purpose
+with `git worktree lock --reason "Registered Jones Code project checkout"`.
+The lock prevents ordinary Git worktree removal. Release it only after the
+project has a verified replacement folder and no retained consumer needs the
+old path; it does not protect against direct filesystem deletion.
+
+Before cleanup, inspect current native project registrations on the affected
+environment and compare canonical paths, including aliases and project folders
+inside a candidate directory. Keep referenced folders regardless of their
+original thread's state. Automatic cleanup protects registered project folders;
+manual and external cleanup must preserve the same dependencies. Missing or
+incomplete binding evidence is a reason to retain the candidate.
+
+If a project folder is missing, verify the surviving repository's origin,
+retained branch and commit before restoring a dedicated checkout. Update the
+project through the native project service and read back its folder and
+repository identity; verify native worktree discovery succeeds. Preserve
+existing thread bindings and reconcile their separate checkout paths before
+resuming them. An empty replacement directory does not restore a Git checkout.
+
+### Setup
+
 Install `vp` using the [root README](../../README.md#install-vp). The checkout
-requires Node `26.12.1` and declares `pnpm@12.14.0`; Bun is optional.
+requires Node `26.13.1` and declares `pnpm@12.14.0`; Bun is optional.
 For an authorized dependency install and development run, use the repository root:
 
 ```sh
@@ -67,6 +103,24 @@ replace an older local Vitest. After updating source, use the supported Node and
 pnpm versions above and run an authorized `vp install --frozen-lockfile` before
 verification. Apply the same storage admission described above when installing
 without the setup helper.
+
+The development host's pnpm configuration sets `minimumReleaseAge: 30240`
+(21 days). A frozen install refuses a locked version published more recently
+(`ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`, which lists only the first few)
+unless `pnpm-workspace.yaml` lists that exact `name@version` under
+`minimumReleaseAgeExclude`. CI has no such policy, so its Lint job runs
+`scripts/jones/ci/release-age.mjs`. It fails a pull request that locks an
+unexcluded young version or leaves a stale, wildcard or versionless exclusion,
+and reads the npm registry only when the lock gained entries or an exclusion
+was dropped. After an upgrade, or when an install fails this way, run
+`node scripts/jones/ci/release-age.mjs --all --write` and commit the
+regenerated block; it adds young versions and drops aged-out and stale ones.
+It rebinds a `pnpm-workspace.yaml` hash in
+`scripts/jones/boundary/resolutions.json` only when that hash approved the file
+as it was before the write. Other hashes stay stale for boundary review, and
+the command says so.
+Exclusions expire on their own once a version is old enough. Do not lower the
+host policy, even for one command.
 
 From the repository root, verify the actual installed Vitest cleanup behavior:
 
@@ -335,9 +389,11 @@ for the security model.
 `vp run check:changed` runs CI's fast checks for your branch's changes: format and lint of the
 changed files, `knip:check` when code or a manifest changes, the generated GraphQL checks, typecheck
 of the affected packages and their dependents, and the test files beside the changed files. It maps
-files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), as CI does. It
-compares against the merge base with `origin/main`, or with a ref you pass. CI still runs the full
-test suites and the jobs the summary lists, so a local pass does not promise a green CI run.
+files to packages using the Linux CI classifier. It compares against the merge base with
+`origin/main`, or with a ref you pass. For standalone Node suites, it runs the tests assigned
+directly to required CI or its workspace package test scripts. Suites with a fixture-owning
+runner follow the [test runner inventory](./test-runners.md). CI also runs the full test suites
+and the jobs listed in the summary.
 
 For provider lifecycle, thread admission, or selection hooks, also run the affected Jones
 integration commands from [the maintained check recipes](../../scripts/jones/boundary/checks.json)
@@ -354,6 +410,9 @@ vp test run <files>
 vp lint <files>
 vp run --filter <package> typecheck
 ```
+
+`vp test run` finds only Vitest files. See [test runners](./test-runners.md) for the filename,
+command and CI step of each other kind of test.
 
 In `apps/web`, a test that renders React or touches the DOM is named `*.browser.test.{ts,tsx}`
 and runs in headless Chromium with the React Compiler on, like the app. There is no jsdom; other

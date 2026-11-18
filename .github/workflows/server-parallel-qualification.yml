@@ -6,7 +6,15 @@ on:
       scope:
         description: Bounded source evidence first; full matrix after prerequisite review
         type: choice
-        options: [source-evidence, full, observer-diagnostic, observer-control]
+        options:
+          [
+            source-evidence,
+            full,
+            observer-diagnostic,
+            observer-control,
+            observer-cadence,
+            observer-residency,
+          ]
         default: source-evidence
       observer_full_artifact:
         description: Inspected full diagnostic artifact name; required only for the one optional control
@@ -54,7 +62,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: server-parallel-qualification-${{ github.event.pull_request.number || github.ref }}
+  group: server-parallel-qualification-${{ github.event.pull_request.number || github.ref }}${{ (inputs.scope == 'observer-cadence' || inputs.scope == 'observer-residency') && format('-{0}', inputs.scope) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -70,14 +78,21 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        include: ${{ fromJSON((github.event.inputs.scope == 'observer-diagnostic' || github.event.inputs.scope == 'observer-control') && '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"}]' || '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"},{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]') }}
+        include: >-
+          ${{ fromJSON(
+            github.event.inputs.scope == 'observer-cadence' && '[{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]' ||
+            (github.event.inputs.scope == 'observer-diagnostic' || github.event.inputs.scope == 'observer-control' || github.event.inputs.scope == 'observer-residency') && '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"}]' ||
+            '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"},{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]'
+          ) }}
     defaults:
       run:
         shell: bash
     env:
       # One serial qualification lane per OS shares setup and all build outputs.
       T3CODE_DEV_SEED: "0"
-      VP_NODE_VERSION: "26.12.1"
+      # Ordinary scopes run the checked-out engines.node. The observer control replays the
+      # pinned 8e20d00f workload, whose engines.node and prior evidence are Node 26.12.1.
+      VP_NODE_VERSION: ${{ github.event.inputs.scope == 'observer-control' && '26.12.1' || '26.13.1' }}
       JONES_SP_SCOPE: ${{ github.event.inputs.scope || 'source-evidence' }}
     steps:
       - name: Select exact workload revision

@@ -13,11 +13,13 @@ import {
   ProviderInstanceId,
   ThreadId,
   MessageId,
+  OrchestrationDispatchCommandError,
   type OrchestrationV2ServerCommand,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Config from "../config.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as Clones from "../project/ProjectCloneTracker.ts";
@@ -25,12 +27,15 @@ import * as DocumentText from "../provider/DocumentText.ts";
 import * as Threads from "./ThreadManagementService.ts";
 import * as Launch from "./ThreadLaunchService.ts";
 import * as Sink from "./EventSink.ts";
+import * as SupersededTerminalTrace from "../jones/orchestration/SupersededTerminalTrace.ts";
 import * as Bridge from "./QueueCompatibility.ts";
+import * as AutoRoute from "../jones/workstreams/autoRoute/WorkstreamAutoRoute.ts";
 import {
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorDispatchError,
 } from "./Orchestrator.ts";
 
+const isDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const command = {
   type: "thread.turn.start",
   commandId: "queue-test",
@@ -44,9 +49,10 @@ const configLayer = Config.layerTest(process.cwd(), { prefix: "queue-compatibili
   Layer.provideMerge(NodeServices.layer),
 );
 const fixture = (
-  failure?: "rejected" | "unknown",
+  failure?: "rejected" | "unknown" | "replayed",
   cloning = false,
   launch?: Launch.ThreadLaunchService["Service"]["launch"],
+  observed?: AutoRoute.Observation[],
 ) =>
   Effect.gen(function* () {
     const received: OrchestrationV2ServerCommand[] = [];
@@ -74,7 +80,11 @@ const fixture = (
                 cause: "unknown commit outcome",
               }),
             );
-          return Effect.succeed({ sequence: 42, storedEvents: [] });
+          return Effect.succeed({
+            sequence: 42,
+            storedEvents: [],
+            ...(failure === "replayed" ? { replayed: true } : {}),
+          });
         },
       }),
       Layer.mock(Launch.ThreadLaunchService)(launch === undefined ? {} : { launch }),
@@ -86,7 +96,16 @@ const fixture = (
         listByThreadId: () => Effect.succeed([]),
         awaitCompletion: () => Effect.void,
       }),
-      Layer.mock(Sink.EventSinkV2)({ latestSequence: () => Effect.succeed(42) }),
+      Layer.mock(Sink.EventSinkV2)({
+        latestSequence: () => Effect.succeed(42),
+        supersededTerminalTrace: SupersededTerminalTrace.make(),
+      }),
+      // Jones: present only when a case observes Workstream auto-routing.
+      observed === undefined
+        ? Layer.empty
+        : Layer.mock(AutoRoute.WorkstreamAutoRoute)({
+            observe: (observation) => Effect.sync(() => void observed.push(observation)),
+          }),
     );
     const bridge = yield* Bridge.QueueCompatibility.pipe(
       Effect.provide(Bridge.layer.pipe(Layer.provide(services))),
@@ -141,9 +160,9 @@ it.layer(configLayer)("V2 compatibility command intake", (it) => {
       assert.lengthOf(f.received, 0);
     }),
   );
-  it.effect(
-    "forwards the complete WebSocket bootstrap guard and original C to the receiving launcher",
-    () =>
+  it.effect.each([undefined, "deleted"] as const)(
+    "forwards the WebSocket bootstrap guard and original C with cleanup disposition %s",
+    (bootstrapThreadDisposition) =>
       Effect.gen(function* () {
         const forwarded: Launch.ThreadLaunchInput[] = [];
         const f = yield* fixture(undefined, false, (input) => {
@@ -154,6 +173,7 @@ it.layer(configLayer)("V2 compatibility command intake", (it) => {
               commandId: input.commandId,
               projectId: input.projectId,
               threadId: input.threadId,
+              ...(bootstrapThreadDisposition === undefined ? {} : { bootstrapThreadDisposition }),
               cause: new OrchestratorCommandPreviouslyRejectedError({
                 commandId: input.preparationReleaseCommandId!,
                 commandType: "prepared-run.release",
@@ -198,6 +218,12 @@ it.layer(configLayer)("V2 compatibility command intake", (it) => {
         };
         const rejected = yield* f.bridge.dispatch(input, "legacy_websocket").pipe(Effect.flip);
         assert.equal(rejected.reason, "dispatch_guard_rejected");
+        assert.equal(
+          isDispatchCommandError(rejected.cause)
+            ? rejected.cause.bootstrapThreadDisposition
+            : undefined,
+          bootstrapThreadDisposition,
+        );
         assert.lengthOf(forwarded, 1);
         const launch = forwarded[0]!;
         assert.equal(launch.preparationReleaseCommandId, input.commandId);
@@ -422,5 +448,88 @@ it.layer(configLayer)("V2 compatibility command intake", (it) => {
         const files = yield* fs.readDirectory(config.attachmentsDir);
         assert.equal(files.length, failure === "unknown" ? 1 : 0);
       }),
+  );
+  // Jones: Workstream auto-routing observes accepted HTTP turn starts only.
+  it.effect("offers only accepted HTTP turn starts to Workstream auto-routing", () =>
+    Effect.gen(function* () {
+      const observed: AutoRoute.Observation[] = [];
+      const f = yield* fixture(undefined, false, undefined, observed);
+      yield* f.bridge.dispatch(command);
+      yield* f.bridge.dispatch({ ...command, commandId: "queue-websocket" }, "legacy_websocket");
+      yield* f.bridge
+        .dispatch({
+          type: "thread.turn.interrupt",
+          commandId: "queue-interrupt",
+          threadId: "queue-thread",
+          createdAt: "2000-01-01T00:00:00.000Z",
+        })
+        .pipe(Effect.ignore);
+      assert.deepEqual(observed, [
+        {
+          threadId: ThreadId.make("queue-thread"),
+          commandId: CommandId.make("queue-test"),
+          messageId: MessageId.make("queue-message"),
+          text: "Resume",
+        },
+      ]);
+      const rejectedObserved: AutoRoute.Observation[] = [];
+      const rejected = yield* fixture("rejected", false, undefined, rejectedObserved);
+      yield* rejected.bridge.dispatch(command).pipe(Effect.flip);
+      assert.lengthOf(rejectedObserved, 0);
+
+      const replay = yield* fixture("replayed", false, undefined, observed);
+      assert.deepEqual(
+        yield* replay.bridge.dispatch({
+          ...command,
+          message: { ...command.message, text: "changed retry" },
+        }),
+        { sequence: 42 },
+      );
+      assert.lengthOf(observed, 1);
+    }),
+  );
+  it.effect("offers the hash-verified release of a resumed HTTP bootstrap", () =>
+    Effect.gen(function* () {
+      const observed: AutoRoute.Observation[] = [];
+      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" };
+      const f = yield* fixture(
+        undefined,
+        false,
+        (input) =>
+          Effect.succeed({
+            threadId: input.threadId!,
+            projection: {} as never,
+            resumed: true,
+            legacyReleaseSequence: 43,
+          }),
+        observed,
+      );
+      const bootstrapCommand = {
+        ...command,
+        modelSelection,
+        bootstrap: {
+          createThread: {
+            projectId: "project",
+            title: "Queue",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: command.createdAt,
+          },
+        },
+      };
+      assert.deepEqual(yield* f.bridge.dispatch(bootstrapCommand), { sequence: 43 });
+      yield* f.bridge.dispatch(bootstrapCommand, "legacy_websocket");
+      assert.deepEqual(observed, [
+        {
+          threadId: ThreadId.make(command.threadId),
+          commandId: command.commandId,
+          messageId: command.message.messageId,
+          text: command.message.text,
+        },
+      ]);
+    }),
   );
 });

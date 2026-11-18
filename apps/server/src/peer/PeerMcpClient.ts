@@ -1,9 +1,10 @@
-import {
-  type EnvironmentId,
+import type {
+  EnvironmentId,
   OrchestratorMcpFailure,
-  type LinkedRequestContext,
-  type ProviderInteractionMode,
-  type RuntimeMode,
+  ProviderInteractionMode,
+  RuntimeMode,
+  OrchestrationV2LinkedSender,
+  LinkedRequestContext,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -11,23 +12,15 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as PeerMcpTransport from "../jones/peerTransport/PeerMcpTransport.ts";
 import type { LinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
-
 export {
   lookupSendReceipt,
   type SendReceiptLookupInput,
 } from "../jones/peerTransport/PeerMcpTransport.ts";
-
-/** The limits a call carries to the peer: the calling agent's modes here. */
 export interface PeerCallLimits {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
 }
 
-/**
- * Calls a linked environment's T3 MCP tools as this environment's outside
- * agent. Each call carries the calling agent's limits in `T3-Mode-Limit`, so
- * the peer enforces the narrower of those and the link's own access.
- */
 export class PeerMcpClient extends Context.Service<
   PeerMcpClient,
   {
@@ -35,11 +28,13 @@ export class PeerMcpClient extends Context.Service<
     readonly call: <S extends Schema.Decoder<unknown>>(input: {
       readonly environmentId: EnvironmentId;
       readonly expectedGeneration?: string;
+      readonly origin?: LinkedMessageOrigin;
+      readonly context?: LinkedRequestContext;
       readonly tool: string;
       readonly arguments: Record<string, unknown>;
       readonly limits: PeerCallLimits;
-      readonly origin?: LinkedMessageOrigin;
-      readonly context?: LinkedRequestContext;
+      /** The thread here the call is made for, sent as `T3-Sender-Thread`. */
+      readonly sender?: OrchestrationV2LinkedSender;
       readonly success: S;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
   }

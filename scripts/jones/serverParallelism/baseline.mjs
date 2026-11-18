@@ -5,6 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import * as Exit from "effect/Exit";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -18,10 +19,21 @@ import {
   qualificationFixtureId,
 } from "../../../apps/server/src/jones/serverParallelism/qualificationFixture.ts";
 import { make } from "../../../apps/server/src/jones/workspace/nativeSearchRuntime.ts";
+import { nativeSearchProbeTestLayer } from "../../../apps/server/src/jones/serverParallelism/nativeWorkspace.testkit.ts";
+import * as VcsProcess from "../../../apps/server/src/vcs/VcsProcess.ts";
 import { percentiles } from "../../../apps/server/src/jones/serverParallelism/combinedQualification.ts";
-const [output, profile] = process.argv.slice(2);
-if (!NodePath.isAbsolute(output ?? "") || !["laptop", "vps"].includes(profile))
-  throw new Error("baseline.mjs <absolute output> <laptop|vps>");
+const [output, profile, mode, ...extra] = process.argv.slice(2);
+const capped = mode === "bounded-churn";
+if (
+  !NodePath.isAbsolute(output ?? "") ||
+  !["laptop", "vps"].includes(profile) ||
+  (mode !== undefined && (!capped || profile !== "laptop")) ||
+  extra.length > 0
+)
+  throw new Error("baseline.mjs <absolute output> <laptop|vps> [bounded-churn]");
+const schema = capped
+  ? "jones.server-parallelism.bounded-churn/v1"
+  : "jones.server-parallelism.baseline/v1";
 const count = profile === "vps" ? 3 : 2,
   acquisitions = 500,
   files = 512;
@@ -30,10 +42,14 @@ const scratch = await NodeFSP.realpath(
 );
 const scope = await Effect.runPromise(Scope.make());
 const runtimes = new Map(),
+  finderScopes = new Map(),
   keys = [],
   windows = [],
   churnWindows = [];
+const capacity = 4 * count;
 let nativeScopeClosed = false,
+  opens = 0,
+  evictions = 0,
   report;
 const controller = new AbortController(),
   stop = () => controller.abort();
@@ -41,12 +57,34 @@ process.once("SIGTERM", stop);
 process.once("SIGINT", stop);
 const execute = (work) => Effect.runPromise(work, { signal: controller.signal });
 const runtime = async (key) => {
-  if (!runtimes.has(key))
-    runtimes.set(
-      key,
-      await execute(make(key.cwd, key.variant).pipe(Effect.provideService(Scope.Scope, scope))),
-    );
-  return runtimes.get(key);
+  const resident = runtimes.get(key);
+  if (resident) {
+    if (capped) {
+      runtimes.delete(key);
+      runtimes.set(key, resident);
+    }
+    return resident;
+  }
+
+  if (capped && runtimes.size === capacity) {
+    const oldest = runtimes.keys().next().value;
+    await Effect.runPromise(Scope.close(finderScopes.get(oldest), Exit.void));
+    finderScopes.delete(oldest);
+    runtimes.delete(oldest);
+    evictions++;
+  }
+  const finderScope = capped ? await Effect.runPromise(Scope.fork(scope)) : scope;
+  if (capped) finderScopes.set(key, finderScope);
+  const finder = await execute(
+    make(key.cwd, key.variant).pipe(
+      Effect.provide(nativeSearchProbeTestLayer(key.cwd).pipe(Layer.provide(VcsProcess.layer))),
+      Effect.provide(NodeServices.layer),
+      Effect.provideService(Scope.Scope, finderScope),
+    ),
+  );
+  runtimes.set(key, finder);
+  opens++;
+  return finder;
 };
 const request = async (key) => {
   const native = await runtime(key);
@@ -164,6 +202,8 @@ try {
   }
   for (const workingSet of [4 * count + 1, 8 * count]) {
     const started = performance.now(),
+      opensBefore = opens,
+      evictionsBefore = evictions,
       latency = [];
     for (let round = 0; round < 3; round++) {
       for (const key of keys.slice(0, workingSet)) {
@@ -185,12 +225,14 @@ try {
       workingSet,
       durationMs: performance.now() - started,
       latency: percentiles(latency),
+      ...(capped ? { opens: opens - opensBefore, evictions: evictions - evictionsBefore } : {}),
     });
   }
   // Medians across repeated windows avoid selecting the slowest baseline as the target.
   const median = (values) => [...values].sort((a, b) => a - b)[1];
   report = {
-    schema: "jones.server-parallelism.baseline/v1",
+    schema,
+    ...(capped ? { eligible: false, capacity, evictionPolicy: "per-key-lru" } : {}),
     fixtureId: qualificationFixtureId,
     outcome: "passed",
     source: process.env.JONES_SP_SOURCE_SHA,
@@ -207,12 +249,14 @@ try {
       p99: median(windows.map((w) => w.writer.p99)),
     },
     loop: { p99: median(windows.map((w) => w.loop.p99)) },
-    meaning:
-      "Same candidate algorithms/native patch; serial main-process execution and default single-reader baseline, not a historical Git build",
+    meaning: capped
+      ? "Diagnostic only: same main-process workload with per-key LRU at the candidate's total residency cap; worker cohort rotation follows a different eviction policy"
+      : "Same candidate algorithms/native patch; serial main-process execution and default single-reader baseline, not a historical Git build",
   };
 } catch (cause) {
   report = {
-    schema: "jones.server-parallelism.baseline/v1",
+    schema,
+    ...(capped ? { eligible: false, capacity, evictionPolicy: "per-key-lru" } : {}),
     fixtureId: qualificationFixtureId,
     outcome: "failed",
     source: process.env.JONES_SP_SOURCE_SHA,

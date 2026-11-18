@@ -225,11 +225,18 @@ it.effect("a database from the earlier unreleased 147-151 numbering is refused u
     yield* runJonesMigrations(earlier);
     assert.strictEqual((yield* upstreamLinks).length, 1);
     const upstreamBefore = yield* upstreamLinks;
+    const linksBefore = yield* jonesLinks;
     const ledgerBefore = yield* jonesLedger;
 
     const refused = yield* Effect.flip(JonesMigrations.runMigrations());
-    assert.include(String(refused), "unrecognized 147_NativeExecutionProcessCustody");
+    assert.deepInclude(refused, {
+      _tag: "MigrationError",
+      kind: "BadState",
+      message:
+        "Jones migration history: Unrecognized Jones migration history at 147_NativeExecutionProcessCustody.",
+    });
     assert.deepStrictEqual(yield* jonesLedger, ledgerBefore);
+    assert.deepStrictEqual(yield* jonesLinks, linksBefore);
     assert.deepStrictEqual(yield* upstreamLinks, upstreamBefore);
   }).pipe(Effect.provide(memory)),
 );
@@ -342,7 +349,18 @@ it.effect("released schema 63 keeps its rows and Jones links through upstream ca
     });
     assert.deepStrictEqual(executed, future);
     const futureHistory = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-    assert.deepStrictEqual(yield* runMigrations(), []);
+    const jonesBefore = yield* jonesLedger;
+    const refused = yield* Effect.flip(runMigrations());
+    assert.deepInclude(refused, {
+      _tag: "MigrationError",
+      kind: "BadState",
+      message: `Candidate older than this database (upstream migration ${lastUpstreamId + 1}).`,
+    });
+    assert.deepStrictEqual(yield* jonesLedger, jonesBefore);
+    assert.deepStrictEqual(yield* sql`SELECT command_id FROM orchestration_command_receipts`, [
+      { command_id: "synthetic-peer-command" },
+    ]);
+    assert.deepStrictEqual(yield* upstreamLinks, []);
     assert.deepStrictEqual(
       yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
       futureHistory,

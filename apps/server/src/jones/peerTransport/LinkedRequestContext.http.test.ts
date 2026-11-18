@@ -68,6 +68,7 @@ const recordingIntake = (
   beforeRead: (invocation: McpInvocationScope) => Effect.Effect<void> = () => Effect.void,
 ) =>
   Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({
+    isLiveClaim: () => false,
     register: (operation) => {
       registered.push(operation);
     },
@@ -108,14 +109,26 @@ describe("real HTTP middleware → toolkit → admission propagation (K0-P)", ()
           expect(seen).toEqual([]);
           const a = yield* probe.open("token-a");
           const b = yield* probe.open("token-b");
-          const calls = yield* Effect.all(
-            [
-              probe.call(a, { headers: headersFor("a"), params: { marker: "a" } }),
-              probe.call(b, { headers: headersFor("b"), params: { marker: "b" } }),
-            ],
-            { concurrency: "unbounded" },
-          ).pipe(Effect.forkChild);
-          yield* Deferred.await(bothInsideInvoke);
+          const call = (session: typeof a, id: string) =>
+            probe.call(session, { headers: headersFor(id), params: { marker: id } }).pipe(
+              Effect.tap((response) =>
+                Deferred.isDone(bothInsideInvoke).pipe(
+                  Effect.flatMap((entered) =>
+                    entered
+                      ? Effect.void
+                      : Effect.die(
+                          new Error("Request ended before both entered admission", {
+                            cause: response,
+                          }),
+                        ),
+                  ),
+                ),
+              ),
+            );
+          const calls = yield* Effect.all([call(a, "a"), call(b, "b")], {
+            concurrency: "unbounded",
+          }).pipe(Effect.forkChild);
+          yield* Effect.raceFirst(Deferred.await(bothInsideInvoke), Fiber.join(calls));
           expect(arrived).toEqual(new Set(["a", "b"]));
           expect(seen).toEqual([]);
           yield* Deferred.succeed(release, undefined);

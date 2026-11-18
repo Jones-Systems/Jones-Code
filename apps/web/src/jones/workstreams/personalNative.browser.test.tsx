@@ -15,11 +15,11 @@ import { makeThreadFixture } from "../../test-fixtures";
 import { summarizePersonalThreads } from "./personalPresentation";
 import { act, render } from "../../../test/render";
 import { WorkstreamPicker } from "./WorkstreamPicker";
+import { personalThreadAssignmentMenu } from "./personalThreadAssignmentMenu";
 import { PersonalSidebarGroupHeader } from "./PersonalSidebarGroupHeader";
 import {
   WorkstreamNativeSidebar,
   type NativeThreadExternalDrop,
-  type NativeThreadAssignmentMenu,
 } from "../../components/workstreams/WorkstreamNativeSidebar";
 import { WorkstreamCreateForm } from "../../components/workstreams/WorkstreamSidebarSection";
 import { dropPinnedThreadOnWorkstream } from "./sidebarThreadDrop";
@@ -79,6 +79,8 @@ function fixture() {
       registry.dispose();
       localStorage.removeItem("jones:workstreams:collapsed:synthetic-work");
       localStorage.removeItem("jones:workstreams:unassigned-collapsed");
+      localStorage.removeItem("jones:workstreams:named-hidden");
+      localStorage.removeItem("jones:workstreams:shared-status-filter");
     },
   };
 }
@@ -286,6 +288,7 @@ describe("personal thread composer reference drags", () => {
     const neighbor = nativeRow(screen.container, member);
     const composer = screen.container.querySelector<HTMLElement>("[data-thread-context-drop]")!;
     const before = dragPoint(neighbor, 0.2);
+    const sourceHeight = source.getBoundingClientRect().height;
     await act(() => {
       dragPointer(source, "pointerdown", dragPoint(source));
       dragPointer(document, "pointermove", dragPoint(composer));
@@ -295,7 +298,8 @@ describe("personal thread composer reference drags", () => {
     expect(composer.hasAttribute("data-thread-context-over")).toBe(false);
     expect(document.querySelector<HTMLElement>("[data-personal-thread-drag]")?.hidden).toBe(false);
     const insertion = document.querySelector<HTMLElement>("[data-personal-thread-insertion]");
-    expect(insertion?.parentElement).toBe(neighbor);
+    expect(insertion?.nextElementSibling).toBe(neighbor);
+    expect(insertion?.getBoundingClientRect().height).toBe(sourceHeight);
     expect(insertion?.dataset.personalThreadInsertion).toBe("before");
     await act(() => dragPointer(document, "pointerup", before, 0));
     expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(
@@ -593,6 +597,104 @@ describe("personal Workstreams native presentation", () => {
     await userEvent.click(page.getByRole("button", { name: "Create “Second group” and move" }));
     expect(controller.createAndAssign).toHaveBeenCalledWith(thread, "Second group");
   });
+  it.each([240, 320])(
+    "keeps the Icon picker within the name field and uses the supplied project order at %s px",
+    async (width) => {
+      using setup = fixture();
+      const projects = ["Zulu", "Alpha"].map((name) => ({
+        projectKey: name,
+        displayName: name,
+        environmentId: env,
+        workspaceRoot: `/synthetic/${name}`,
+        title: name,
+        faviconPath: null,
+        projectIcon: { kind: "emoji" as const, emoji: "🟪" },
+      }));
+      await using screen = await render(
+        <div style={{ width }}>
+          <WorkstreamCreateForm
+            controller={setup.controller}
+            canSetNameIcon
+            nameIconProjects={projects}
+            open
+            onClose={() => {}}
+            onPendingChange={() => {}}
+          />
+        </div>,
+      );
+      const name = screen.getByRole("textbox", { name: "Workstream name" });
+      const picker = screen.getByRole("combobox", { name: "Icon", exact: true });
+      const inputRect = name
+        .element()
+        .closest('[data-slot="input-control"]')!
+        .getBoundingClientRect();
+      const pickerRect = picker.element().getBoundingClientRect();
+      expect(pickerRect.top).toBeGreaterThanOrEqual(inputRect.bottom);
+      expect(pickerRect.right).toBeCloseTo(inputRect.right, 0);
+      expect(pickerRect.width).toBeLessThanOrEqual(inputRect.width);
+      expect(pickerRect.width).toBeGreaterThan(50);
+      await userEvent.click(picker);
+      const options = page.getByRole("option");
+      await expect.element(options.nth(0)).toHaveTextContent("None");
+      await expect.element(options.nth(1)).toHaveAccessibleName("Zulu");
+      await expect.element(options.nth(2)).toHaveAccessibleName("Alpha");
+      await userEvent.click(options.nth(1));
+      await userEvent.fill(name, "New group");
+      await userEvent.click(screen.getByRole("button", { name: "Create", exact: true }));
+      expect(setup.controller.create).toHaveBeenCalledWith({
+        name: "New group",
+        nameIconProjectKey: "Zulu",
+      });
+    },
+  );
+  it("saves a different icon from the Workstream menu and closes the editor", async () => {
+    using setup = fixture();
+    const { registry, controller, initial, state } = setup;
+    const project = {
+      projectKey: "studio",
+      displayName: "Studio",
+      environmentId: env,
+      workspaceRoot: "/synthetic/studio",
+      title: "Studio",
+      faviconPath: null,
+      projectIcon: { kind: "emoji" as const, emoji: "🟪" },
+    };
+    registry.set(state, { ...initial, canSetNameIcon: true });
+    const setNameIcon = vi.fn<NonNullable<PersonalWorkstreamsController["setNameIcon"]>>(
+      async (_id, projectKey) => {
+        const value = { ...workstream, nameIcon: { projectKey, updatedAt: workstream.updatedAt } };
+        registry.set(state, { ...initial, canSetNameIcon: true, workstreams: [value] });
+        return { ok: true, value };
+      },
+    );
+    controller.setNameIcon = setNameIcon;
+    await using _screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <WorkstreamNativeSidebar
+          controller={controller}
+          nameIconProjects={[project]}
+          threads={[thread]}
+          renderThread={(entry) => <li>{entry.title}</li>}
+          canOperate={() => true}
+          canReorder={() => false}
+          reorder={async () => {}}
+        />
+      </RegistryContext.Provider>,
+    );
+    for (const [label, projectKey] of [
+      ["Studio", "studio"],
+      ["None", null],
+    ] as const) {
+      await userEvent.click(page.getByRole("button", { name: "Options for Alpha", exact: true }));
+      await userEvent.click(page.getByRole("menuitem", { name: "Change name icon" }));
+      const picker = page.getByRole("combobox", { name: "Icon", exact: true });
+      await userEvent.click(picker);
+      await userEvent.click(page.getByRole("option", { name: label, exact: true }));
+      await userEvent.click(page.getByRole("button", { name: "Save", exact: true }));
+      await expect.element(picker).not.toBeInTheDocument();
+      expect(setNameIcon).toHaveBeenLastCalledWith(workstream.id, projectKey);
+    }
+  });
   it("renders a pushed controller update without refresh and keeps a cached group visible while offline", async () => {
     using setup = fixture();
     const { registry, controller, initial, state } = setup;
@@ -709,7 +811,9 @@ describe("personal Workstreams native presentation", () => {
         />
       </RegistryContext.Provider>,
     );
-    const section = _screen.container.querySelector<HTMLElement>("[data-native-workstream]")!;
+    const section = _screen.container.querySelector<HTMLElement>(
+      '[data-native-workstream]:not([data-native-workstream="null"])',
+    )!;
     const rect = section.getBoundingClientRect();
     const point = { x: rect.left + 2, y: rect.top + 2 };
     await act(async () => {
@@ -720,19 +824,66 @@ describe("personal Workstreams native presentation", () => {
     });
     expect(controller.assign).toHaveBeenCalledTimes(2);
   });
+  it.each([true, false])(
+    "saves consecutive menu assignments with pinned=%s while the first save is pending",
+    async (pinned) => {
+      using setup = fixture();
+      const { controller } = setup;
+      let state = setup.initial;
+      const entry = { ...thread, pinnedAt: pinned ? thread.pinnedAt : null };
+      let finish!: (value: { ok: true; value: undefined }) => void;
+      vi.mocked(controller.assign).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const menu = () =>
+        personalThreadAssignmentMenu({
+          controller,
+          state,
+          thread: entry,
+          canOperate: () => true,
+          openPicker: () => {},
+        });
+      expect(menu().items.find((item) => item.id === "assign-workstream:remove")?.checked).toBe(
+        true,
+      );
+      state = {
+        ...setup.initial,
+        assignmentsByThreadKey: new Map([
+          [
+            personalThreadKey(entry),
+            { threadId: entry.id, workstreamId: workstream.id, revision: 1, updatedAt: null },
+          ],
+        ]),
+      };
+      expect(
+        menu().items.find((item) => item.id === `assign-workstream:group:${workstream.id}`)
+          ?.checked,
+      ).toBe(true);
+      expect(menu().items.find((item) => item.id === "assign-workstream:remove")?.checked).toBe(
+        false,
+      );
+      try {
+        await act(() => menu().onAction(`assign-workstream:group:${workstream.id}`));
+        await act(() => menu().onAction("assign-workstream:remove"));
+        expect(controller.assign).toHaveBeenCalledTimes(2);
+        expect(controller.assign).toHaveBeenLastCalledWith(entry, null);
+      } finally {
+        await act(() => finish({ ok: true, value: undefined }));
+      }
+    },
+  );
   it("context unassign and external pinned drop confirm assignment before unpin; unpin failure keeps the assignment", async () => {
     using setup = fixture();
     const { registry, controller } = setup;
-    const assignmentMenuRef: {
-      current: ((entry: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null;
-    } = { current: null };
     const externalDropRef: { current: NativeThreadExternalDrop | null } = { current: null };
     await using _screen = await render(
       <RegistryContext.Provider value={registry}>
         <WorkstreamNativeSidebar
           controller={controller}
           threads={[thread]}
-          assignmentMenuRef={assignmentMenuRef}
           externalDropRef={externalDropRef}
           renderThread={(entry) => <li>{entry.title}</li>}
           canOperate={() => true}
@@ -741,9 +892,19 @@ describe("personal Workstreams native presentation", () => {
         />
       </RegistryContext.Provider>,
     );
-    await act(() => assignmentMenuRef.current!(thread).onAction("assign-workstream:remove"));
+    await act(() =>
+      personalThreadAssignmentMenu({
+        controller,
+        state: registry.get(setup.state),
+        thread,
+        canOperate: () => true,
+        openPicker: () => {},
+      }).onAction("assign-workstream:remove"),
+    );
     expect(controller.assign).toHaveBeenLastCalledWith(thread, null);
-    const section = document.querySelector<HTMLElement>("[data-native-workstream]")!;
+    const section = document.querySelector<HTMLElement>(
+      '[data-native-workstream]:not([data-native-workstream="null"])',
+    )!;
     const rect = section.getBoundingClientRect();
     const unpin = vi.fn(async () => {
       throw new Error("synthetic failure");

@@ -1,3 +1,4 @@
+import type { PromptNavigation } from "../../jones/workQueue/promptSearch";
 import {
   ensureClientSettingsHydrated,
   useClientSettings,
@@ -8,7 +9,9 @@ import {
   UnifiedQueuePage,
 } from "../../jones/workQueue/UnifiedQueuePage";
 
-export function WorkQueuePage() {
+export { validatePromptSearch } from "../../jones/workQueue/promptSearch";
+
+export function WorkQueuePage({ navigation }: { navigation?: PromptNavigation } = {}) {
   const settings = useClientSettings();
   const status = useClientSettingsHydrationStatus();
   if (status !== "ready") {
@@ -21,5 +24,5 @@ export function WorkQueuePage() {
       />
     );
   }
-  return <UnifiedQueuePage defaultView={settings.promptsDefaultStage} />;
+  return <UnifiedQueuePage defaultView={settings.promptsDefaultStage} navigation={navigation} />;
 }

@@ -1,8 +1,17 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "client-projection-efficiency",
-  "jonesOwnedPaths": [],
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/compactThreadVisits/compatibility.ts",
+    "apps/server/src/jones/compactThreadVisits/compatibility.test.ts",
+    "packages/client-runtime/src/jones/foundationComposition.test.ts"
+  ],
   "hookPaths": [],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/compactThreadVisits/compatibility.ts"
+    }
+  ]
 }

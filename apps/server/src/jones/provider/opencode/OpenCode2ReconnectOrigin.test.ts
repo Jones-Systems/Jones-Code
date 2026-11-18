@@ -157,6 +157,7 @@ const runAcrossReconnect = (lend: "same" | "replacement") =>
     let sessionBorrows = 0;
     // A replacement lends a distinct connection on reconnect, as a restarted server does.
     const lending = OpenCode2Server.OpenCode2Server.of({
+      forget: server.forget,
       withConnection: (use, hooks, kind) =>
         server.withConnection(
           (connection) =>

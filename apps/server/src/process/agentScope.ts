@@ -4,7 +4,6 @@ import * as NodeOS from "node:os";
 
 import {
   AgentScope,
-  AgentScopeStopError,
   agentScopeCommand,
   type AgentScopeShape,
   type AgentSystemdScope,
@@ -14,9 +13,11 @@ import { resolveCommandPath } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Semaphore from "effect/Semaphore";
 
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ProviderProcesses from "./providerProcesses.ts";
 
 const AGENT_SLICE = "app-t3code-agents.slice";
 // Owns every agent slice and competes with the server's unit or scope under app.slice.
@@ -48,7 +49,6 @@ function agentSliceMemoryLimits(totalBytes: number) {
 
 export interface ScopeState {
   readonly loadState: string;
-  readonly controlGroup?: string;
   readonly activeState: string;
   readonly result: string;
   readonly oomKills: number | undefined;
@@ -107,6 +107,7 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const hostEnvironment = yield* HostProcess.Environment;
   const { stateDir } = yield* ServerConfig.ServerConfig;
+  const { hasOtherLiveOwner } = yield* ProviderProcesses.ProviderProcesses;
   const ownedSlice = ownedAgentSlice(stateDir);
   const layerScope = yield* Effect.scope;
 
@@ -117,11 +118,8 @@ export const make = Effect.gen(function* () {
       Effect.provideService(HostProcess.Platform, platform),
     );
 
-  const run = (
-    command: string,
-    args: ReadonlyArray<string>,
-    timeout: ProcessRunner.ProcessRunInput["timeout"] = "5 seconds",
-  ) => runner.run({ command, args, timeout }).pipe(Effect.option);
+  const run = (command: string, args: ReadonlyArray<string>) =>
+    runner.run({ command, args, timeout: "5 seconds" }).pipe(Effect.option);
 
   const readCgroupFile = (controlGroup: string, file: string) =>
     fileSystem
@@ -134,6 +132,7 @@ export const make = Effect.gen(function* () {
   const stopLeftoverAgents = Effect.fn("agentScope.stopLeftoverAgents")(function* (
     systemctl: string,
   ) {
+    if (hasOtherLiveOwner) return;
     const shown = yield* run(systemctl, [
       "--user",
       "show",
@@ -194,20 +193,44 @@ export const make = Effect.gen(function* () {
           slice,
           ...properties,
         ]);
-        if (result._tag === "None" || result.value.code !== 0) {
-          yield* Effect.logWarning("Could not set resource limits on an agents slice", {
-            slice,
-            properties,
-            stderr: result._tag === "Some" ? result.value.stderr.trim() : undefined,
-          });
-        }
+        if (result._tag === "Some" && result.value.code === 0) return true;
+        yield* Effect.logWarning("Could not set resource limits on an agents slice", {
+          slice,
+          properties,
+          stderr: result._tag === "Some" ? result.value.stderr.trim() : undefined,
+        });
+        return false;
       });
-      const limits = agentSliceMemoryLimits(NodeOS.totalmem());
-      yield* setProperties(AGENT_SLICE, [`MemoryHigh=${limits.high}`, `MemoryMax=${limits.max}`]);
+      // VMs and containers can resize RAM live, so each launch re-checks the total
+      // the limits came from. A failed update is retried by the next launch.
+      let appliedTotal: number | undefined;
+      const memoryLimitsLock = yield* Semaphore.make(1);
+      const applyMemoryLimits = memoryLimitsLock.withPermits(1)(
+        Effect.gen(function* () {
+          const total = NodeOS.totalmem();
+          if (total === appliedTotal) return;
+          const limits = agentSliceMemoryLimits(total);
+          const applied = yield* setProperties(AGENT_SLICE, [
+            `MemoryHigh=${limits.high}`,
+            `MemoryMax=${limits.max}`,
+          ]);
+          if (!applied) return;
+          if (appliedTotal !== undefined) {
+            yield* Effect.logInfo("Agent memory limits follow a memory change", {
+              slice: AGENT_SLICE,
+              previousTotal: appliedTotal,
+              total,
+              ...limits,
+            });
+          }
+          appliedTotal = total;
+        }),
+      );
+      yield* applyMemoryLimits;
       yield* setProperties(AGENTS_PARENT_SLICE, AGENTS_PARENT_PROPERTIES);
       yield* Effect.logInfo("Agent scopes are on", {
         slice: AGENT_SLICE,
-        ...limits,
+        ...agentSliceMemoryLimits(NodeOS.totalmem()),
         oomPolicy: supportsOomPolicy,
       });
       return {
@@ -215,9 +238,14 @@ export const make = Effect.gen(function* () {
         systemctl,
         runtimeDir,
         supportsOomPolicy,
+        applyMemoryLimits,
       };
     }),
   );
+
+  // Layer acquisition is the startup barrier: recovery must not terminalize or
+  // continue old runs while a previous server's providers can still execute.
+  yield* systemd;
 
   // `shared` scopes serve other threads too: tracked only for OOM diagnosis on old systemd.
   const scopeByThread = new Map<string, { unit: string; oomKilled: boolean; shared: boolean }>();
@@ -237,36 +265,11 @@ export const make = Effect.gen(function* () {
     const populated = parseCgroupCounter(cgroupEvents, "populated");
     return {
       loadState: values.get("LoadState") ?? "",
-      controlGroup,
       activeState: values.get("ActiveState") ?? "",
       result: values.get("Result") ?? "",
       oomKills: parseCgroupCounter(memoryEvents, "oom_kill"),
       populated: populated === undefined ? undefined : populated === 1,
     } satisfies ScopeState;
-  });
-
-  // The returned effect captures one unit, not the thread's replaceable map entry.
-  const stopScope = Effect.fn("agentScope.stopScope")(function* (systemctl: string, unit: string) {
-    const empty = (state: ScopeState | undefined) =>
-      state !== undefined &&
-      (state.loadState === "not-found" ||
-        ((state.activeState === "inactive" || state.activeState === "failed") &&
-          (state.controlGroup === "" || state.populated === false)));
-    const before = yield* readScope(systemctl, unit);
-    if (empty(before)) return;
-    if (before === undefined || before.loadState !== "loaded")
-      return yield* new AgentScopeStopError({
-        unit,
-        detail: "Agent scope retirement unavailable",
-      });
-    // Existing scope TimeoutStopSec sends SIGKILL after the graceful stop period.
-    // Reconcile the observed postcondition even when the command response is lost.
-    yield* run(systemctl, ["--user", "stop", unit], "30 seconds");
-    if (!empty(yield* readScope(systemctl, unit)))
-      return yield* new AgentScopeStopError({
-        unit,
-        detail: "Agent scope retirement remains unknown",
-      });
   });
 
   const clearFailed = Effect.fn("agentScope.clearFailed")(function* (
@@ -425,6 +428,7 @@ export const make = Effect.gen(function* () {
       if (resolved === null) return { command, args };
       const scope = yield* systemd;
       if (scope === undefined) return agentScopeCommand({ command: resolved, args });
+      yield* scope.applyMemoryLimits;
       const unit = `t3code-${name}-${NodeCrypto.randomUUID().slice(0, 8)}.scope`;
       // A continuing shared scope cannot attribute a tool's OOM to one thread.
       // Clear the launch thread's previous scope instead.
@@ -447,11 +451,7 @@ export const make = Effect.gen(function* () {
           ...(owned ? [] : ["--collect"]),
         ],
       };
-      return {
-        ...agentScopeCommand({ command: resolved, args, scope: systemdScope }),
-        unit,
-        stop: yield* Effect.cached(stopScope(scope.systemctl, unit)),
-      };
+      return { ...agentScopeCommand({ command: resolved, args, scope: systemdScope }), unit };
     }),
     oomKilled,
     stop,

@@ -18,7 +18,12 @@ async function pathIdentity(path: string) {
     ctime_ns: String(s.ctimeNs),
   });
 }
-export async function enumerateDisposal(bound: Binding, keepMode: string) {
+// With `preserveUntracked`, untracked paths belong to a preserve commit and are never disposal selections.
+export async function enumerateDisposal(
+  bound: Binding,
+  keepMode: string,
+  preserveUntracked = false,
+) {
   const bytes = await git(bound.path, ["ls-files", "--others", "--exclude-standard", "-z"]);
   if (bytes.toString().includes("\ufffd")) throw new Error("observation_failed");
   const untracked = bytes.toString().split("\0").filter(Boolean);
@@ -39,7 +44,7 @@ export async function enumerateDisposal(bound: Binding, keepMode: string) {
     .map((p) => p.replace(/\/$/, ""));
   const entries: JournalEntry[] = [];
   for (const [kind, paths] of [
-    ["untracked", untracked],
+    ["untracked", preserveUntracked ? [] : untracked],
     ["ignored", ignored],
   ] as const)
     for (const relative of paths) {

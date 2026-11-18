@@ -1,0 +1,43 @@
+/* Sidebar appearance Workstream rules; owned by SBR-H. */
+[data-personal-group-count] {
+  font-size: 0.375rem;
+  line-height: 0.5rem;
+}
+
+[data-jones-sidebar-appearance][data-jones-ws-spacing="roomy"] [data-personal-group-header],
+[data-jones-sidebar-appearance][data-jones-ws-spacing="roomy"] [data-workstream-group-slot] {
+  padding-block: 0.375rem;
+}
+
+[data-jones-sidebar-appearance][data-jones-ws-spacing="tight"] [data-personal-group-header] {
+  padding-block: 0.1875rem;
+}
+
+[data-jones-sidebar-appearance][data-jones-ws-spacing="tight"] [data-workstream-group-slot] {
+  padding-block: 0.125rem;
+}
+
+[data-jones-sidebar-appearance][data-jones-ws-title-weight="medium"] [data-personal-group-title] {
+  font-weight: 500;
+}
+
+[data-jones-sidebar-appearance][data-jones-ws-title-weight="regular"] [data-personal-group-title] {
+  font-weight: 400;
+}
+
+[data-jones-sidebar-appearance][data-jones-ws-title-brightness="muted"]
+  [data-personal-group-title] {
+  color: color-mix(in oklab, currentColor 88%, transparent);
+}
+
+[data-jones-sidebar-appearance][data-jones-pill-bg="15"] [data-personal-status-pill] {
+  --jones-pill-bg: 15%;
+}
+
+[data-jones-sidebar-appearance][data-jones-pill-bg="4"] [data-personal-status-pill] {
+  --jones-pill-bg: 4%;
+}
+
+[data-jones-sidebar-appearance][data-jones-pill-bg="0"] [data-personal-status-pill] {
+  --jones-pill-bg: 0%;
+}

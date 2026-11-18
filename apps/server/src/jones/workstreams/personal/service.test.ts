@@ -24,6 +24,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Config from "../../../config.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import migration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
+import lifecycleMigration from "../../persistence/Migrations/159_JonesWorkstreamLifecycleRevision.ts";
+import snoozeMigration from "../../persistence/Migrations/160_JonesWorkstreamSnooze.ts";
+import nameIconMigration from "../../persistence/Migrations/161_JonesWorkstreamNameIcons.ts";
 import * as Personal from "./service.ts";
 
 const environmentId = EnvironmentId.make("synthetic-personal-server");
@@ -39,9 +42,12 @@ const w = (id: string) =>
 const database = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
+    yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT, title TEXT NOT NULL DEFAULT 'Historical conversation', payload_json TEXT NOT NULL DEFAULT '{}')`;
     yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
     yield* migration;
+    yield* lifecycleMigration;
+    yield* snoozeMigration;
+    yield* nameIconMigration;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 const dependencies = Layer.mergeAll(
@@ -53,6 +59,50 @@ const dependencies = Layer.mergeAll(
 ).pipe(Layer.provideMerge(Layer.merge(NodeServices.layer, NodeCrypto.layer)));
 const fixture = Personal.layer.pipe(Layer.provideMerge(dependencies));
 const fresh = Personal.PersonalWorkstreams.pipe(Effect.provide(Personal.layer));
+
+it.effect("persists a name icon, its explicit clear, and a snooze across legacy writes", () =>
+  Effect.gen(function* () {
+    const service = yield* Personal.PersonalWorkstreams;
+    const legacy = w("icons");
+    const snoozedUntil = "2026-02-01T00:00:00.000Z";
+    const snoozed = P.editPersonalWorkstream(
+      legacy,
+      { snoozedAt: "2026-01-01T00:00:00.000Z", snoozedUntil },
+      "2026-01-01T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(snoozed);
+    const selected = P.editPersonalWorkstream(
+      { ...legacy, rev: snoozed.rev },
+      { nameIconProjectKey: "project:one" },
+      "2026-01-02T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(selected);
+    const legacyRename = { ...legacy, name: "Renamed", rev: selected.rev + 1 };
+    yield* service.put(legacyRename, {
+      ...legacy,
+      rev: selected.rev,
+      updatedAt: selected.updatedAt,
+    });
+    const reloaded = yield* fresh;
+    const [renamed] = (yield* reloaded.snapshot()).workstreams;
+    assert.equal(renamed?.name, "Renamed");
+    assert.deepEqual(renamed?.nameIcon, selected.nameIcon);
+    assert.equal(renamed?.snoozedUntil, snoozedUntil);
+    const cleared = P.editPersonalWorkstream(
+      renamed!,
+      { nameIconProjectKey: null },
+      "2026-01-03T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(cleared);
+    yield* service.put({ ...legacyRename, rev: cleared.rev + 1 });
+    const [persisted] = (yield* reloaded.snapshot()).workstreams;
+    assert.deepEqual(persisted?.nameIcon, cleared.nameIcon);
+    assert.equal(persisted?.snoozedUntil, snoozedUntil);
+  }).pipe(Effect.provide(fixture)),
+);
 
 it.effect("desired-first retries, ABA/CAS rollback, LWW and terminal deletion use real SQL", () =>
   Effect.gen(function* () {
@@ -102,6 +152,73 @@ it.effect("desired-first retries, ABA/CAS rollback, LWW and terminal deletion us
     yield* s.put({ ...b, name: "c" });
     assert.equal((yield* s.readDefinitions(["b"]))[0]?.name, "z");
   }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("closure checks settlement and retains membership when a thread wakes", () =>
+  Effect.gen(function* () {
+    const service = yield* Personal.PersonalWorkstreams;
+    const sql = yield* SqlClient.SqlClient;
+    const open = w("history");
+    yield* service.assign({ threadId, workstream: open, expectedRevision: 0 });
+    const completed = P.editPersonalWorkstream(
+      open,
+      { lifecycle: "completed" },
+      "2026-01-02T00:00:00.000Z",
+      "fixture",
+    );
+    assert.equal((yield* service.put(completed).pipe(Effect.flip)).code, "unsettled_threads");
+    const settle = (state: string) =>
+      sql`UPDATE orchestration_v2_projection_threads SET payload_json =
+        json_object('title', 'Historical conversation', 'settledOverride', ${state})
+        WHERE thread_id = ${threadId}`;
+    yield* settle("settled");
+    assert.equal((yield* service.put(completed)).outcome, "applied");
+    yield* settle("active");
+    assert.deepEqual(yield* service.members(open.id), [
+      { threadId, title: "Historical conversation", settled: false },
+    ]);
+    assert.equal((yield* service.readThread(threadId)).assignment.workstreamId, open.id);
+    assert.equal((yield* service.put({ ...open, rev: 100 })).outcome, "superseded");
+    const reopened = P.editPersonalWorkstream(
+      completed,
+      { lifecycle: "active" },
+      "2026-01-03T00:00:00.000Z",
+      "fixture",
+    );
+    assert.equal((yield* service.put(reopened)).outcome, "applied");
+    assert.equal((yield* service.readThread(threadId)).assignment.revision, 1);
+    const abandoned = P.editPersonalWorkstream(
+      reopened,
+      { lifecycle: "abandoned" },
+      "2026-01-04T00:00:00.000Z",
+      "fixture",
+    );
+    assert.equal((yield* service.put(abandoned).pipe(Effect.flip)).code, "unsettled_threads");
+  }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("the single-environment agent tool leaves closure to the connected app", () =>
+  Effect.gen(function* () {
+    const service = yield* Personal.PersonalWorkstreams;
+    const agent = yield* Agent.AgentWorkstreams;
+    const open = w("agent-scope");
+    yield* service.put(open);
+    for (const lifecycle of ["completed", "abandoned"] as const) {
+      const rejected = yield* agent.update({ id: open.id, lifecycle }).pipe(Effect.flip);
+      assert.equal(rejected.code, "closure_unavailable");
+    }
+    assert.deepEqual((yield* service.readDefinitions([open.id]))[0], open);
+
+    const closed = P.editPersonalWorkstream(
+      open,
+      { lifecycle: "completed" },
+      "2026-01-02T00:00:00.000Z",
+      "fixture",
+    );
+    yield* service.put(closed, open);
+    const reopened = yield* agent.update({ id: open.id, lifecycle: "active" });
+    assert.equal(reopened.workstream.lifecycle, "active");
+  }).pipe(Effect.provide(Agent.layer.pipe(Layer.provideMerge(fixture)))),
 );
 
 it.effect("two subscribers receive a consistent initial snapshot and committed invalidation", () =>
@@ -315,12 +432,22 @@ it.effect(
       const open = () => NodeSqliteClient.layer({ filename: `${dir}/personal.sqlite` });
       const setup = Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
+        yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT, title TEXT NOT NULL DEFAULT 'Historical conversation', payload_json TEXT NOT NULL DEFAULT '{}')`;
         yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
         yield* migration;
+        yield* lifecycleMigration;
+        yield* snoozeMigration;
+        yield* nameIconMigration;
         yield* stage();
         const s = yield* fresh;
         yield* s.assign({ threadId, workstream: null, expectedRevision: 1 });
+        const snoozed = {
+          ...w("snoozed"),
+          snoozedAt: "2026-01-01T13:00:00.000Z",
+          snoozedUntil: "2026-01-01T14:00:00.000Z",
+        };
+        yield* s.put(snoozed);
+        yield* s.put({ ...w("snoozed"), name: "Renamed by older client", rev: 2 });
         return yield* s.snapshot();
       });
       const snapshot = yield* setup.pipe(Effect.provide(open()), Effect.scoped);
@@ -329,6 +456,9 @@ it.effect(
         return yield* s.snapshot();
       }).pipe(Effect.provide(open()), Effect.scoped);
       assert.deepEqual(after, snapshot);
+      const snoozed = after.workstreams.find((item) => item.id === "snoozed");
+      assert.equal(snoozed?.name, "Renamed by older client");
+      assert.equal(snoozed?.snoozedUntil, "2026-01-01T14:00:00.000Z");
       assert.equal(after.assignments[0]?.revision, 2);
       assert.equal(after.assignments[0]?.workstreamId, null);
     }).pipe(

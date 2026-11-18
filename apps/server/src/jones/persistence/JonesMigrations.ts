@@ -83,6 +83,15 @@ import JonesMigration0152 from "./Migrations/152_JonesPeerLinksAdoption.ts";
 import JonesMigration0153 from "./Migrations/153_JonesPersonalWorkstreams.ts";
 import JonesMigration0154 from "./Migrations/154_JonesStartRefusals.ts";
 import JonesMigration0155 from "./Migrations/155_JonesPeerWakeObligations.ts";
+import JonesMigration0156 from "./Migrations/156_JonesWorkspaceDutyLifetimes.ts";
+import JonesMigration0157 from "./Migrations/157_JonesRemoteAdmissionReview.ts";
+import JonesMigration0158 from "./Migrations/158_JonesWorkstreamAutoRoute.ts";
+import JonesMigration0159 from "./Migrations/159_JonesWorkstreamLifecycleRevision.ts";
+import JonesMigration0160 from "./Migrations/160_JonesWorkstreamSnooze.ts";
+import JonesMigration0161 from "./Migrations/161_JonesWorkstreamNameIcons.ts";
+import JonesMigration0162 from "./Migrations/162_JonesOrdinaryPreparation.ts";
+import JonesMigration0163 from "./Migrations/163_JonesRemoteSendReceipts.ts";
+import JonesMigration0164 from "./Migrations/164_JonesLegacyBootstrap.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -141,6 +150,15 @@ export const jonesMigrationEntries = [
   [153, "PersonalWorkstreams", JonesMigration0153],
   [154, "StartRefusals", JonesMigration0154],
   [155, "PeerWakeObligations", JonesMigration0155],
+  [156, "WorkspaceDutyLifetimes", JonesMigration0156],
+  [157, "RemoteAdmissionReview", JonesMigration0157],
+  [158, "WorkstreamAutoRoute", JonesMigration0158],
+  [159, "WorkstreamLifecycleRevision", JonesMigration0159],
+  [160, "WorkstreamSnooze", JonesMigration0160],
+  [161, "WorkstreamNameIcons", JonesMigration0161],
+  [162, "OrdinaryPreparation", JonesMigration0162],
+  [163, "RemoteSendReceipts", JonesMigration0163],
+  [164, "LegacyBootstrap", JonesMigration0164],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {

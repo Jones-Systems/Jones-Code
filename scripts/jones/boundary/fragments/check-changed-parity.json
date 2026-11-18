@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "check-changed-parity",
+  "jonesOwnedPaths": [],
+  "hookPaths": ["scripts/check-changed.ts", "scripts/check-changed.test.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "scripts/check-changed.ts",
+      "to": "scripts/jones/ci/local-selection.cjs"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import { type TimestampFormat } from "@t3tools/contracts/settings";
+import type { TimestampFormat } from "@t3tools/contracts/settings";
 
 function getTimestampFormatOptions(
   timestampFormat: TimestampFormat,
@@ -129,6 +129,13 @@ export function formatChatTimestampTooltip(
   const month = monthNameFormatter.format(date);
   const year = date.getFullYear();
   return `${time}, ${day}${ordinalSuffix(day)} ${month} ${year}`;
+}
+
+export function formatFullTimestamp(isoDate: string, timestampFormat: TimestampFormat): string {
+  return new Date(isoDate).toLocaleString(
+    undefined,
+    timestampFormat === "locale" ? undefined : { hour12: timestampFormat === "12-hour" },
+  );
 }
 
 export function formatShortTimestamp(isoDate: string, timestampFormat: TimestampFormat): string {

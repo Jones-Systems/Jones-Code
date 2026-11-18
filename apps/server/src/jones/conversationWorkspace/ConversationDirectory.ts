@@ -18,53 +18,107 @@ const within = (parent: string, target: string) => {
       !NodePath.isAbsolute(relative))
   );
 };
-const lstatOrNull = (target: string) =>
-  NodeFSP.lstat(target).catch((cause: unknown) => {
-    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return null;
+export const placementRefusals = {
+  excluded_root: "Conversation directory overlaps an excluded root",
+  git_checkout: "Conversation state lies inside a Git checkout",
+  system_temp: "Conversation state lies inside the system temporary directory",
+  invalid_root: "Invalid conversation root",
+  reserved_root_registered:
+    "A project or thread workspace is inside the reserved conversation root",
+} as const;
+
+export class ConversationPlacementError extends Error {
+  readonly rule: keyof typeof placementRefusals;
+
+  constructor(rule: keyof typeof placementRefusals) {
+    super(placementRefusals[rule]);
+    this.rule = rule;
+  }
+}
+
+const isMissing = (cause: unknown) =>
+  cause instanceof Error && "code" in cause && cause.code === "ENOENT";
+
+const lstatIfPresent = (path: string) =>
+  NodeFSP.lstat(path).catch((cause: unknown) => {
+    if (isMissing(cause)) return null;
     throw cause;
   });
+
 // Mirrors Git discovery: a gitfile or a `.git` directory holding HEAD marks a
 // checkout. Git ignores an empty `.git` directory, such as a stray one in $HOME.
 async function isGitCheckoutMarker(directory: string): Promise<boolean> {
-  const marker = await lstatOrNull(NodePath.join(directory, ".git"));
+  const marker = await lstatIfPresent(NodePath.join(directory, ".git"));
   if (marker === null) return false;
   if (!marker.isDirectory()) return true;
-  return (await lstatOrNull(NodePath.join(directory, ".git", "HEAD"))) !== null;
+  return (await lstatIfPresent(NodePath.join(directory, ".git", "HEAD"))) !== null;
 }
+
+async function realLocation(path: string): Promise<string> {
+  try {
+    return await NodeFSP.realpath(path);
+  } catch (cause) {
+    if (!isMissing(cause) || (await lstatIfPresent(path)) !== null) throw cause;
+    const parent = NodePath.dirname(path);
+    if (parent === path) throw cause;
+    return NodePath.join(await realLocation(parent), NodePath.basename(path));
+  }
+}
+
+async function validateConversationRoot(root: string): Promise<void> {
+  const stat = await lstatIfPresent(root);
+  if (
+    stat !== null &&
+    (!stat.isDirectory() || stat.isSymbolicLink() || (await NodeFSP.realpath(root)) !== root)
+  ) {
+    throw new ConversationPlacementError("invalid_root");
+  }
+}
+
+export async function checkConversationDirectoryPlacement(
+  stateDirectory: string,
+  excluded: readonly string[],
+  registered: readonly string[] = [],
+): Promise<string> {
+  const state = await NodeFSP.realpath(stateDirectory);
+  const root = NodePath.join(state, "conversation-workspaces");
+  await validateConversationRoot(root);
+  if (within(await realLocation(NodeOS.tmpdir()), root)) {
+    throw new ConversationPlacementError("system_temp");
+  }
+  // Registered roots hold every thread checkout: thousands of mostly duplicate
+  // paths. Resolve each distinct path once and concurrently. Serial awaits
+  // wait a full event-loop turn each and stalled launches for minutes.
+  const locate = (paths: readonly string[]) =>
+    Promise.all([...new Set(paths)].map((path) => realLocation(NodePath.resolve(path))));
+  const [excludedLocations, registeredLocations] = await Promise.all([
+    locate(excluded),
+    locate(registered),
+  ]);
+  if (excludedLocations.some((location) => within(location, root) || within(root, location))) {
+    throw new ConversationPlacementError("excluded_root");
+  }
+  if (registeredLocations.some((location) => within(root, location))) {
+    throw new ConversationPlacementError("reserved_root_registered");
+  }
+  const ancestors = [root];
+  for (let ancestor = root; NodePath.dirname(ancestor) !== ancestor;) {
+    ancestors.push((ancestor = NodePath.dirname(ancestor)));
+  }
+  if ((await Promise.all(ancestors.map(isGitCheckoutMarker))).some(Boolean)) {
+    throw new ConversationPlacementError("git_checkout");
+  }
+  return root;
+}
+
 export async function createConversationDirectory(
   stateDirectory: string,
   excluded: readonly string[],
+  registered: readonly string[] = [],
 ): Promise<DirectoryIdentity> {
-  const state = await NodeFSP.realpath(stateDirectory);
-  // Production state cannot live in scratch. Synthetic tests explicitly supply
-  // a state root outside the system temporary directory too.
-  const root = NodePath.join(state, "conversation-workspaces");
-  // Canonicalize concurrently: each serial await waits a full event-loop turn,
-  // which took tens of milliseconds per path on busy servers.
-  const canonicalRoots = await Promise.all(
-    [...new Set([...excluded, NodeOS.tmpdir()])].map((candidate) =>
-      NodeFSP.realpath(candidate).catch((cause: unknown) => {
-        if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
-          return NodePath.resolve(candidate);
-        throw cause;
-      }),
-    ),
-  );
-  if (canonicalRoots.some((canonical) => within(canonical, root)))
-    throw new Error("Conversation directory overlaps an excluded root");
-  const ancestors = [state];
-  for (let ancestor = state; NodePath.dirname(ancestor) !== ancestor;)
-    ancestors.push((ancestor = NodePath.dirname(ancestor)));
-  if ((await Promise.all(ancestors.map(isGitCheckoutMarker))).some(Boolean))
-    throw new Error("Conversation state lies inside a Git checkout");
+  const root = await checkConversationDirectoryPlacement(stateDirectory, excluded, registered);
   await NodeFSP.mkdir(root, { recursive: true, mode: 0o700 });
-  const rootStat = await NodeFSP.lstat(root);
-  if (
-    !rootStat.isDirectory() ||
-    rootStat.isSymbolicLink() ||
-    (await NodeFSP.realpath(root)) !== root
-  )
-    throw new Error("Invalid conversation root");
+  await validateConversationRoot(root);
   const directory = NodePath.join(root, NodeCrypto.randomUUID());
   await NodeFSP.mkdir(directory, { mode: 0o700 });
   const stat = await NodeFSP.lstat(directory, { bigint: true });

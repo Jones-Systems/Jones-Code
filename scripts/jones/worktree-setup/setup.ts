@@ -17,6 +17,13 @@ import {
 } from "./local-mac-admission.ts";
 
 const GIB = 1024n ** 3n;
+// pnpm prints this once, at the top of a long list, so the bounded failure tail
+// drops it. Setup keeps the cause and the fix instead.
+const RELEASE_AGE_CODE = "ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION";
+const RELEASE_AGE_ADVICE = [
+  `Cause: a locked package version is younger than this host's pnpm minimumReleaseAge (${RELEASE_AGE_CODE}). pnpm lists only the first few.`,
+  "Fix: run `node scripts/jones/ci/release-age.mjs --all` to list every such version, then land them as exact entries in pnpm-workspace.yaml minimumReleaseAgeExclude through a pull request (`--all --write` regenerates the block). Leave the host pnpm policy alone.",
+].join("\n");
 type Options = { install: boolean; warm: boolean; reserve: bigint; peak: bigint };
 type Runner = (
   command: string,
@@ -292,6 +299,7 @@ export async function runSetupWorktree(
         const child = dependencies.spawn(command, commandArgs, options);
         activeProducer = child;
         let output = "";
+        let releaseAgeViolation = false;
         let spawnError: Error | undefined;
         child.on("error", (error) => {
           spawnError = error;
@@ -303,9 +311,14 @@ export async function runSetupWorktree(
           [child.stderr, dependencies.stderr],
         ] as const) {
           source?.setEncoding("utf8");
+          // Each stream carries its last 64 characters so a code split across chunks is found.
+          let carried = "";
           source?.on("data", (chunk: string) => {
             target.write(chunk);
             output = (output + chunk).slice(-8_000);
+            const scanned = carried + chunk;
+            releaseAgeViolation ||= scanned.includes(RELEASE_AGE_CODE);
+            carried = scanned.slice(-64);
           });
         }
         const code = await new Promise<number | null>((resolve) => child.once("close", resolve));
@@ -315,7 +328,10 @@ export async function runSetupWorktree(
             ? `Cancelled by ${cancelSignal}.`
             : spawnError
               ? (spawnError.stack ?? String(spawnError))
-              : output.trimEnd().split("\n").slice(-30).join("\n");
+              : [
+                  ...(releaseAgeViolation ? [RELEASE_AGE_ADVICE, ""] : []),
+                  output.trimEnd().split("\n").slice(-30).join("\n"),
+                ].join("\n");
           return code || 1;
         }
         return 0;

@@ -101,6 +101,9 @@ receipt; an ordinary subsequent send selects a fresh logical session while
 preserving its saved native conversation. An unavailable observer or an old
 completed-unknown receipt remains unknown. Shared-process thread retirement
 uses its own exact closure proof without stopping healthy sibling conversations.
+That proof can arrive minutes after a Codex turn ends, so run admission treats
+a still-pending retirement as a bounded wait on the same observer, not as a
+startup failure to retry; only a failed proof ends the run.
 
 ## Setup must not happen as a health-check side effect
 
@@ -138,10 +141,12 @@ and npm are proven by the real path (symlinks followed): a versioned keg or cask
 `brew --prefix`, or `<prefix>/lib/node_modules/<pkg>/` (Windows: the shim beside `node_modules`).
 Native installer layouts and the global directories of pnpm, Bun, Yarn, and Vite+ may match on
 either the resolved path or its real target, since those installers place real files or their own
-symlinks there. Volta is proven by its `volta-shim` link plus the package's image directory. When
-nothing is proven, the provider's own updater (`claude update`, `codex update`, `opencode upgrade`,
-`pi update --self`, `grok update`) runs instead, because each one detects its installer itself;
-the runner's version check catches an updater that exits 0 without updating. Mise is checked
+symlinks there. Volta is proven by the package's image directory plus either its `volta-shim` link
+or, on Windows, the exact cmd or bash forwarding script Volta generates; a custom script that merely
+calls `volta run` does not qualify. When nothing is proven, Pi's and Grok's own updaters
+(`pi update --self`, `grok update`) run instead, because each detects its installer itself; the
+runner's version check catches an updater that exits 0 without updating. Claude, Codex, and OpenCode updaters only act on their own native layout, so
+those providers stay manual-only unless that layout is proven. Mise is checked
 first, since a `mise x` wrapper can sit at a native installer's path, and `MISE_DATA_DIR` can put
 installs anywhere, so `mise which` is asked whenever mise is on `PATH`. Each driver names its fixed
 mise tool; mise must resolve the binary and list it in an active install of that tool requested as
@@ -149,7 +154,7 @@ mise tool; mise must resolve the binary and list it in an active install of that
 path must be a shim or under the tool's `latest` link, which the upgrade repoints: a version
 directory (including one `mise activate` put on `PATH`) would keep running the old binary until mise
 prunes it. Everything else mise touches (fixed version paths, pinned tools, wrappers, OpenCode 1.x,
-whose mise tool crosses into 2.x) stays manual-only, so T3 Code never edits mise config. `mise latest` supplies the version, because settings such as
+whose mise tool crosses into 2.x) stays manual-only, so T3 Code never edits mise config. Nix store installs stay manual-only too, since the store is read-only. `mise latest` supplies the version, because settings such as
 `minimum_release_age` can hold mise behind npm. A Grok cask whose Homebrew prefix
 cannot be verified also stays manual-only: `grok update` would install a second copy. npm updates pin `--prefix` because the
 `npm` on `PATH` can belong to a different Node than the one that owns the provider. Homebrew
@@ -166,6 +171,12 @@ changed since the advisory, and reports success only when the refreshed provider
 with a readable, current version.
 
 ## Protocol traps
+
+Restart recovery reuses the saved Codex conversation and sends the recorded
+continuation instruction as turn input. `thread/resume` alone does not establish
+an application-owned turn, and Codex rejects `turn/start` with empty input.
+The instruction retains the warning to reconcile actions interrupted by shutdown
+before repeating them. Other providers keep their supported native continuation.
 
 Codex async questions arrive as notifications and are answered with a new user message. There is
 no pending RPC response to send. The

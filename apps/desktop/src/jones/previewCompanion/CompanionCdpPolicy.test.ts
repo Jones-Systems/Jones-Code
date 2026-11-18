@@ -13,6 +13,9 @@ const makeRelay = (restricted = true) => {
     {
       send,
       setDownloadDirectory,
+      // Policy commands use child sessions, so the page screencast pacing stays idle here.
+      receivesScreencast: () => true,
+      ackScreencastFrame: vi.fn<CdpRelayTarget["ackScreencastFrame"]>(),
       targetId: async () => "guest",
       url: () => "https://example.test",
       title: () => "Fixture",

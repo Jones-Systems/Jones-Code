@@ -26,7 +26,10 @@ it.effect("resolves setup scripts through the standalone project service", () =>
     assert.ok(data);
     const token = /__T3_SETUP_DONE___([a-f0-9]{32}):/.exec(data)?.[1];
     assert.ok(token);
-    assert.equal(data, ` ( ${command}\r); printf '\\n__T3_SETUP_DONE___${token}:%s\\n' "$?"\r`);
+    assert.equal(
+      data,
+      ` ( __t3_command=$(printf '%b_' '${command}'); eval "\${__t3_command%_}" ); printf '\\n__T3_SETUP_DONE___${token}:%s\\n' "$?"\r`,
+    );
   };
   const listeners = new Set<
     Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]

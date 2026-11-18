@@ -5,7 +5,11 @@ import type {
 import { personalThreadKey } from "@t3tools/client-runtime/jones/workstreams/personal";
 import * as Schema from "effect/Schema";
 import { useSyncExternalStore } from "react";
-import { readLocalStorageValue, subscribeLocalStorageKey } from "../../hooks/useLocalStorage";
+import {
+  readLocalStorageValue,
+  subscribeLocalStorageKey,
+  writeLocalStorageValue,
+} from "../../hooks/useLocalStorage";
 import {
   personalThreadLimitKey,
   personalThreadExpandedKey,
@@ -17,28 +21,47 @@ import {
 export const personalGroupCollapsedKey = (id: string | null) =>
   id === null ? "jones:workstreams:unassigned-collapsed" : `jones:workstreams:collapsed:${id}`;
 
+/** Hides every named group and its threads; each group's own collapsed state is left untouched. */
+export const personalNamedGroupsHiddenKey = "jones:workstreams:named-hidden";
+
+/**
+ * Expands or collapses every given group. Collapsing also returns a group's
+ * thread window to its saved default, exactly as collapsing one group does.
+ */
+export function setPersonalGroupsCollapsed(ids: readonly string[], collapsed: boolean) {
+  for (const id of ids) {
+    writeLocalStorageValue(personalGroupCollapsedKey(id), collapsed, false, Schema.Boolean);
+    if (collapsed)
+      writeLocalStorageValue(personalThreadExpandedKey(id), false, false, Schema.Boolean);
+  }
+}
+
 export function usePersonalSidebarActiveThreads<T extends PersonalThreadRef>(
   grouping: PersonalWorkstreamsGrouping<T>,
   currentThread: PersonalThreadRef | null,
 ): { visible: readonly T[]; traversal: readonly T[] } {
   const groups = [
-    ...grouping.groups.map((group) => ({ id: group.workstream.id, threads: group.threads })),
     { id: null, threads: grouping.ungrouped },
+    ...grouping.groups.map((group) => ({ id: group.workstream.id, threads: group.threads })),
   ];
-  const keys = groups.flatMap((group) => [
-    personalGroupCollapsedKey(group.id),
-    ...(group.id === null
-      ? []
-      : [personalThreadLimitKey(group.id), personalThreadExpandedKey(group.id)]),
-  ]);
+  const keys = [
+    personalNamedGroupsHiddenKey,
+    ...groups.flatMap((group) => [
+      personalGroupCollapsedKey(group.id),
+      ...(group.id === null
+        ? []
+        : [personalThreadLimitKey(group.id), personalThreadExpandedKey(group.id)]),
+    ]),
+  ];
   const subscribe = (onChange: () => void) => {
     const stops = keys.map((key) => subscribeLocalStorageKey(key, onChange));
     return () => stops.forEach((stop) => stop());
   };
   // A primitive snapshot stays stable between writes, including when groups are reordered.
   const snapshot = useSyncExternalStore(subscribe, () =>
-    JSON.stringify(
-      groups.map((group) => ({
+    JSON.stringify({
+      hidden: readLocalStorageValue(personalNamedGroupsHiddenKey, false, Schema.Boolean),
+      windows: groups.map((group) => ({
         collapsed: readLocalStorageValue(
           personalGroupCollapsedKey(group.id),
           false,
@@ -46,16 +69,20 @@ export function usePersonalSidebarActiveThreads<T extends PersonalThreadRef>(
         ),
         ...(group.id === null ? { limit: 5, expanded: true } : readPersonalThreadWindow(group.id)),
       })),
-    ),
+    }),
   );
-  const windows = JSON.parse(snapshot) as Array<{
-    collapsed: boolean;
-    limit: PersonalThreadLimit;
-    expanded: boolean;
-  }>;
+  const { hidden, windows } = JSON.parse(snapshot) as {
+    hidden: boolean;
+    windows: Array<{
+      collapsed: boolean;
+      limit: PersonalThreadLimit;
+      expanded: boolean;
+    }>;
+  };
   const currentKey = currentThread === null ? null : personalThreadKey(currentThread);
+  // Hiding the named groups removes their rows like collapsing each of them, without writing their state.
   const visibleGroups = groups.map((group, index) =>
-    windows[index]!.collapsed
+    windows[index]!.collapsed || (hidden && group.id !== null)
       ? []
       : windowPersonalThreads(group.threads, windows[index]!.limit, windows[index]!.expanded),
   );

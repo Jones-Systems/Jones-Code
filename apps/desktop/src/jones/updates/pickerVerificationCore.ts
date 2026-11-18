@@ -9,14 +9,13 @@ import { JonesActionsClient, type JonesActionsTransport } from "@t3tools/shared/
 import * as Effect from "effect/Effect";
 import * as Scope from "effect/Scope";
 import * as Exit from "effect/Exit";
-import * as DesktopIpc from "../../ipc/DesktopIpc.ts";
+import type { DesktopIpcRegistrationError } from "../../ipc/DesktopIpc.ts";
 import { DesktopUpdates, makeDesktopUpdateStateCell } from "../../updates/DesktopUpdatesService.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
 import { createJonesDesktopPreparation } from "./desktopPreparationRuntime.ts";
 import { makeJonesDesktopUpdates } from "./jonesDesktopUpdatesService.ts";
 import { requireStableMacAppPath } from "./jonesMacStagingChecks.ts";
 import type { JonesStagingWorker } from "./stagingWorkerClient.ts";
-import { registerDesktopUpdateIpc } from "./updateIpcRegistration.ts";
 
 export interface PickerVerificationInput {
   readonly root: string;
@@ -134,8 +133,11 @@ export async function createPickerVerificationCore(input: PickerVerificationInpu
     );
   return {
     nativeCalls,
-    register: (main: DesktopIpc.DesktopIpcMain) =>
-      run(registerDesktopUpdateIpc(DesktopIpc.make(main))),
+    // The host supplies Electron's ipcMain and the trusted window. The core
+    // runs the registration in its own scope with its update service.
+    register: (
+      registration: Effect.Effect<void, DesktopIpcRegistrationError, Scope.Scope | DesktopUpdates>,
+    ) => run(registration),
     preflightStableAppPath: () => requireStableMacAppPath(input.appPath),
     start: async () => {
       await assertPickerOwnedState(input);

@@ -207,9 +207,20 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
+
+      # The development host refuses a locked version younger than its pnpm
+      # minimumReleaseAge unless pnpm-workspace.yaml excludes that exact version.
+      # CI has no such policy, so this is where the lockfile meets it. The npm
+      # registry is read only when a pull request adds lock entries.
+      - name: Check dependency release-age exclusions
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          node scripts/jones/ci/release-age.mjs ${BASE_SHA:+--base "$BASE_SHA"}
+          git diff --exit-code -- pnpm-lock.yaml
 
       - name: Check Jones migration order
         run: node scripts/jones/ci/jones-migration-order.cjs
@@ -309,7 +320,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -385,7 +396,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -468,7 +479,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -499,6 +510,21 @@ jobs:
 
       - name: Test CI contracts and Chromium setup
         run: node --test --test-concurrency=1 scripts/jones/ci/*.node-test.*
+
+      # Install-free twins of the vitest suites that share their testkits, plus
+      # the .github/scripts tests no other step names. standalone-tests.json
+      # records every standalone test and the step that runs it.
+      - name: Test standalone Node suites
+        run: |
+          node --test --test-concurrency=1 \
+            apps/server/src/jones/workspaceRetirement/*.node-test.mjs \
+            apps/server/src/jones/workspaceRecreation/*.node-test.mjs \
+            apps/server/src/jones/conversationWorkspace/*.node-test.mjs \
+            apps/web/src/jones/storageCleanupResults/*.node-test.mjs \
+            .github/scripts/mobile-ios-preview-record.test.cjs \
+            .github/scripts/mobile-preview-comment.test.cjs \
+            .github/scripts/test-delta.test.cjs \
+            .github/scripts/thread-transfer-report.test.cjs
 
       - name: Test process placement build custody
         run: node --test native/process-placement/build.test.mjs
@@ -570,7 +596,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -668,7 +694,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -735,7 +761,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -747,7 +773,8 @@ jobs:
       - *test_receipt_upload
       - *test_receipt_cleanup
 
-  # Both shards run the complete web command, including unit and browser projects.
+  # Every shard runs the same unit and browser projects. Smaller shards limit
+  # the lifetime of each Chromium process on the Linux runners.
   test_web:
     needs: linux_changes
     if: ${{ !cancelled() && needs.linux_changes.outputs.test_web != 'false' }}
@@ -755,7 +782,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -807,7 +834,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -906,7 +933,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: false
           run-install: false
 
@@ -983,7 +1010,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -1182,7 +1209,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: false
           run-install: false
 
@@ -1463,7 +1490,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: |
             args:
@@ -1540,7 +1567,7 @@ jobs:
       - name: Install dependencies on the supported development runtime
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: true
 
@@ -1583,8 +1610,6 @@ jobs:
           # Invoke the installed JS runner directly so vp cannot select the development Node version.
           qualification_runner="$("$qualification_node" -e 'const r = require("node:module").createRequire(require.resolve("vite-plus/package.json")); const p = r.resolve("vitest/package.json"); console.log(require("node:path").resolve(require("node:path").dirname(p), r(p).bin.vitest));')"
           "$qualification_node" "$qualification_runner" run \
-            apps/server/src/jones/workstreams/enrollment/ \
-            apps/server/src/environment/NativeStoreAuthority.test.ts \
             apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts \
             packages/shared/src/nodeSqliteClient.test.ts
 
@@ -1661,7 +1686,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 26.12.1
+          node-version: 26.13.1
           cache: true
           run-install: |
             args:

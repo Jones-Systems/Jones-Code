@@ -2,8 +2,9 @@ import * as NodeCryptoServices from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Independently verify raw fragment bytes in the synchronous synthetic consumer fixture.
 import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, expect } from "@effect/vitest";
 import {
+  ContextTransferId,
   EnvironmentId,
   MessageId,
   RunId,
@@ -35,7 +36,7 @@ import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import { fixture } from "../taskContinuation/testkit.ts";
-import { prepareThreadContentEvidence } from "./threadContentEvidence.ts";
+import { admitThreadEvidencePage, prepareThreadContentEvidence } from "./threadContentEvidence.ts";
 
 const decodeRead = Schema.decodeUnknownSync(OrchestratorMcpThreadReadInput);
 const encodeResult = Schema.encodeSync(OrchestratorMcpThreadReadResult);
@@ -429,11 +430,14 @@ function readFixture() {
     text: "aa-middle-zz",
     streaming: false,
   };
-  const parent = {
-    ...f.parent,
+  const child = {
+    ...f.child,
+    turnItems: [primary],
     contextTransfers: [
+      ...f.child.contextTransfers,
       {
         ...f.child.contextTransfers[0]!,
+        id: ContextTransferId.make("source-result"),
         type: "subagent_result" as const,
         sourceThreadId: f.child.thread.id,
         targetThreadId: f.parent.thread.id,
@@ -450,18 +454,17 @@ function readFixture() {
       item: primary,
     },
   ];
-  const child = { ...f.child, turnItems: [primary] };
   let hasMore = false;
   let acknowledgements = 0;
   const selections: Array<unknown> = [];
   const layer = serviceLayer({
-    getThreadRecords: (id) => Effect.succeed(id === parent.thread.id ? parent : child),
+    getThreadRecords: (id) => Effect.succeed(id === f.parent.thread.id ? f.parent : child),
     getThreadShell: () => Effect.succeed(liveThreadShell(child.thread.id, { activeRunId: null })),
     getProjectThreadRecords: () => Effect.succeed(child),
     getTimelinePage: (_id, selection) =>
       Effect.sync(() => {
         selections.push(selection);
-        return { items: rows, hasMore, totalItems: 9 };
+        return { items: rows, hasMore, hasEarlier: false, totalItems: 9 };
       }),
     dispatch: (command) =>
       Effect.sync(() => {
@@ -702,4 +705,35 @@ describe("native read service content evidence", () => {
         }).pipe(Effect.provide(f.layer));
       }),
   );
+});
+
+it("admits the final contiguous evidence page including evidence overhead before hashing", () => {
+  const rows = [item("first"), { ...item("second"), position: 1 }];
+  const admitted = admitThreadEvidencePage({
+    items: rows,
+    maxChars: 2,
+    budgetBytes: 3000,
+    newestFirst: true,
+  });
+  if (Result.isFailure(admitted)) throw admitted.failure;
+  expect(admitted.success.start).toBe(1);
+  expect(admitted.success.items).toEqual([rows[1]]);
+  expect(
+    prepareThreadContentEvidence({
+      request: { threadId, contentEvidence: optIn },
+      environmentId,
+      items: admitted.success.items,
+      hasMore: true,
+      maxChars: 2,
+    })._tag,
+  ).toBe("Success");
+});
+it("rejects oversized evidence metadata rather than dropping an item after acknowledgement", () => {
+  const admitted = admitThreadEvidencePage({
+    items: [{ ...item("answer"), title: "x".repeat(40000) }],
+    maxChars: 2,
+    budgetBytes: 30000,
+    newestFirst: false,
+  });
+  expect(Result.isFailure(admitted)).toBe(true);
 });

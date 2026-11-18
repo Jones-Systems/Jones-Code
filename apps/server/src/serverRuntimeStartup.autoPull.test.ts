@@ -14,6 +14,7 @@ import * as NetAddress from "effect/net/NetAddress";
 
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
+import { SERVICE_LAUNCHER_PROTOCOL } from "./cloud/serviceProtocol.ts";
 import * as ServerConfig from "./config.ts";
 import { resolveServerParallelismProfile } from "./jones/serverParallelism/config.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -22,10 +23,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as EventSink from "./orchestration-v2/EventSink.ts";
+import * as SupersededTerminalTrace from "./jones/orchestration/SupersededTerminalTrace.ts";
 import * as EffectOutbox from "./orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
+import { unusedCorePorts } from "./jones/testing/UnusedCorePorts.testkit.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ProviderRuntimeRecovery from "./orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
@@ -123,7 +126,9 @@ it.effect("parks automatic pull until activation without delaying command readin
         FileSystem.layerNoop({}),
         Layer.succeed(HostProcess.Environment, {}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({}),
+        Layer.mock(EventSink.EventSinkV2)({
+          supersededTerminalTrace: SupersededTerminalTrace.make(),
+        }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({}),
         Layer.mock(Keybindings.Keybindings)({ start: Effect.void }),
         Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
@@ -137,17 +142,20 @@ it.effect("parks automatic pull until activation without delaying command readin
           reconcile: () => Effect.succeed(recovery),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
+          ...unusedCorePorts(),
           recoverCodexFailover: Effect.void,
+          recoverSelfSettlements: Effect.void,
           recoverDelegatedTasks: Effect.void,
+          recoverRemoteTaskQuestions: Effect.void,
           recoverPlannedUpdateQueues: Effect.void,
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ shutdown: Effect.void }),
         Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({ start: () => Effect.void }),
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
-          runOnce: Effect.never,
+          runOnce: () => Effect.never,
           awaitWork: Effect.never,
-          runActionOnce: Effect.never,
-          runUrgentOnce: Effect.never,
+          runActionOnce: () => Effect.never,
+          runUrgentOnce: () => Effect.never,
         }),
         Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({
           publish: (event) => Effect.succeed({ ...event, sequence: 1 }),
@@ -175,11 +183,13 @@ it.effect("parks automatic pull until activation without delaying command readin
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(ServiceLauncherClient.ServiceLauncherClient)({
           managed: true,
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
           requiresQualifiedTrialGate: false,
-          prepareTrial: Deferred.succeed(prepared, undefined).pipe(
-            Effect.andThen(Deferred.await(commitTrial)),
-            Effect.as(undefined),
-          ),
+          prepareTrial: () =>
+            Deferred.succeed(prepared, undefined).pipe(
+              Effect.andThen(Deferred.await(commitTrial)),
+              Effect.as(undefined),
+            ),
         }),
         Layer.mock(GitVcsDriver.GitVcsDriver)({
           statusDetails: (root) =>

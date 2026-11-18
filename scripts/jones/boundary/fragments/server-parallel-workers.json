@@ -2,6 +2,10 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "server-parallel-workers",
   "jonesOwnedPaths": [
+    "apps/server/src/jones/cleanup/InventoryRead.ts",
+    "apps/server/src/jones/cleanup/InventoryRead.test.ts",
+    "apps/server/src/jones/workspace/SearchGitProbe.ts",
+    "apps/server/src/jones/workspace/SearchGitProbe.test.ts",
     "apps/server/src/jones/serverCompute/",
     "apps/server/src/jones/serverParallelism/",
     "packages/shared/src/jones/sqliteReaders/",
@@ -20,6 +24,14 @@
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workspace/SearchGitProbe.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/cleanup/InventoryRead.ts"
+    },
     {
       "from": "apps/server/src/bin.ts",
       "to": "apps/server/src/jones/serverCompute/worker.ts"
@@ -159,6 +171,26 @@
     {
       "from": "apps/server/src/workspace/WorkspaceFileSystem.ts",
       "to": "apps/server/src/jones/workspace/fileWriteSerialization.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/persistenceOptions.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.test.ts",
+      "to": "packages/shared/src/jones/sqliteReadPriority.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+      "to": "apps/server/src/jones/workspace/nativeSearchRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/nativeWorkspace.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+      "to": "apps/server/src/jones/serverCompute/searchProbeClient.ts"
     }
   ]
 }

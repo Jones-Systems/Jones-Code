@@ -8,8 +8,16 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  type OrchestrationV2RunStatus,
+  type OrchestratorMcpThreadSendResult,
 } from "@t3tools/contracts";
+import type * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as SqlClient from "effect/sql/SqlClient";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
+import * as RemoteSendReceipts from "../orchestration/RemoteSendReceiptStore.ts";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import migration from "../persistence/Migrations/117_JonesRemoteDelegationIntents.ts";
 import type * as Store from "./IntentStore.ts";
 export const commandId = CommandId.make("remote:intent:test");
@@ -48,3 +56,68 @@ export const envelope: Store.IntentEnvelope = {
 export const layer = Layer.effectDiscard(migration).pipe(
   Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
 );
+
+/** The delivery a receiving stand-in reports for a send it accepts. */
+export interface AcceptedSend {
+  readonly runId: RunId;
+  readonly status: OrchestrationV2RunStatus;
+  readonly delivery: OrchestratorMcpThreadSendResult["delivery"];
+}
+
+/** Linked fixture sends record the actual receipt in the same SQL transaction. */
+export const acceptingSendReceipts = (sql: SqlClient.SqlClient) => {
+  const store = RemoteSendReceipts.makeRemoteSendReceiptStore(sql, makeJonesTablePresence(sql));
+  const remoteSendReceipts: RemoteSendReceipts.RemoteSendReceiptPorts = {
+    available: store.available,
+    lookup: store.lookup,
+    withSendCommit: store.withSendCommit,
+    pruneBefore: store.pruneBefore,
+    // Stand-in threads prepare no workspace, so there is no target lock to take.
+    guardPreparation: <A, E, R>(id: CommandId, preparation: Effect.Effect<A, E, R>) =>
+      Effect.gen(function* () {
+        const capture = yield* RemoteSendReceipts.SendCommit;
+        if (capture?.commandId !== id)
+          return yield* new RemoteSendReceipts.RemoteSendReceiptError({
+            reason: "preparation_capture_missing",
+          });
+        return yield* preparation;
+      }),
+  };
+  const accept = <A, R>(
+    targetCreatedAt: DateTime.Utc,
+    accepted: AcceptedSend,
+    send: Effect.Effect<A, never, R>,
+  ) =>
+    Effect.gen(function* () {
+      const capture = yield* RemoteSendReceipts.SendCommit;
+      // A send made here, not through a link, records no receipt.
+      if (capture === undefined) return yield* send;
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* RemoteSendReceipts.assertTargetBirth(capture, targetCreatedAt);
+            const result = yield* send;
+            yield* store.record(capture, {
+              threadId: capture.threadId,
+              messageId: capture.messageId,
+              runId: accepted.runId,
+              status: accepted.status,
+              delivery: accepted.delivery,
+              ...(capture.link === undefined ? {} : { link: capture.link }),
+            });
+            return result;
+          }),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new Orchestrator.OrchestratorDispatchError({
+                commandId: capture.commandId,
+                commandType: "message.dispatch",
+                cause,
+              }),
+          ),
+        );
+    });
+  return { remoteSendReceipts, accept };
+};

@@ -57,7 +57,7 @@ export function ReasoningEffortShortcuts({
         aria-label="Model and reasoning effort"
         aria-hidden={!props.visible || undefined}
         inert={!props.visible || undefined}
-        className="grid w-max gap-1 rounded-(--control-radius) bg-background"
+        className="grid w-max max-w-full gap-1 rounded-(--control-radius) bg-background"
         style={{ visibility: props.visible ? "visible" : "hidden" }}
       >
         {rows.map((row) => (
@@ -65,7 +65,7 @@ export function ReasoningEffortShortcuts({
             key={row.label}
             role="group"
             aria-label={row.name}
-            className="grid grid-cols-[3rem_repeat(3,minmax(max-content,1fr))] items-center gap-1"
+            className="grid min-w-0 grid-cols-[3rem_repeat(3,minmax(0,1fr))] items-center gap-1"
           >
             <span className="px-1 text-xs text-muted-foreground">{row.label}</span>
             {row.cells.map((cell) => {
@@ -79,6 +79,7 @@ export function ReasoningEffortShortcuts({
                 <ComposerControl
                   key={cell.effort.value}
                   size="xs"
+                  className="h-auto min-h-7 min-w-0 whitespace-normal [overflow-wrap:anywhere] sm:h-auto sm:min-h-6"
                   aria-label={`${row.name}, ${cell.label} reasoning`}
                   aria-pressed={
                     sameModel &&
@@ -126,13 +127,14 @@ export function ReasoningEffortShortcuts({
       aria-label={descriptor.label}
       aria-hidden={!props.visible || undefined}
       inert={!props.visible || undefined}
-      className="grid w-max grid-cols-[repeat(3,minmax(max-content,1fr))] gap-1 rounded-(--control-radius) bg-background"
+      className="grid w-max max-w-full grid-cols-[repeat(3,minmax(0,1fr))] gap-1 rounded-(--control-radius) bg-background"
       style={{ visibility: props.visible ? "visible" : "hidden" }}
     >
       {descriptor.options.map((option) => (
         <ComposerControl
           key={option.id}
           size="xs"
+          className="h-auto min-h-7 min-w-0 whitespace-normal [overflow-wrap:anywhere] sm:h-auto sm:min-h-6"
           aria-label={`${descriptor.label}: ${option.label}`}
           aria-pressed={selectedValue === option.id}
           disabled={

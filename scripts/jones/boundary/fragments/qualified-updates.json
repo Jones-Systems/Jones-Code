@@ -2,6 +2,9 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "qualified-updates",
   "jonesOwnedPaths": [
+    "apps/server/src/jones/cloud/servicePreflightResult.test.ts",
+    "apps/server/src/jones/cli/managedRuntime.ts",
+    "apps/server/src/jones/cli/managedRuntime.test.ts",
     "apps/web/src/jones/updates/clientUpdateBanner.tsx",
     "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
     "apps/web/src/jones/updates/fixtures/client-update-notices-entry.tsx",
@@ -131,6 +134,7 @@
     "apps/desktop/src/jones/updates/jonesMacStagingChecks.ts"
   ],
   "hookPaths": [
+    "apps/server/src/cli/uninstall.ts",
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
     "apps/desktop/src/boot.ts",
     "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
@@ -251,6 +255,14 @@
     "packages/contracts/src/ipc.test.ts"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/cli/update.ts",
+      "to": "apps/server/src/jones/cli/managedRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/cli/uninstall.ts",
+      "to": "apps/server/src/jones/cli/managedRuntime.ts"
+    },
     {
       "from": "apps/web/src/components/ServerUpdateAction.browser.test.tsx",
       "to": "apps/web/src/jones/updates/jonesUpdates.ts"
@@ -534,6 +546,10 @@
     {
       "from": "apps/desktop/src/updates/DesktopUpdates.ts",
       "to": "apps/desktop/src/updates/DesktopUpdatesService.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.ts",
+      "to": "apps/server/src/jones/updates/migrationPlan.ts"
     }
   ]
 }

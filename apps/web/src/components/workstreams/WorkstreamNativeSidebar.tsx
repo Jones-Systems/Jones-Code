@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useLayoutEffect,
   useRef,
   useState,
@@ -10,11 +11,13 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   groupPersonalThreads,
   personalThreadKey,
+  openPersonalWorkstreams,
+  visiblePersonalWorkstreamId,
   type PersonalWorkstreamsController,
+  type PersonalThreadRef,
+  type PersonalWorkstreamView,
 } from "@t3tools/client-runtime/jones/workstreams/personal";
-import type { ContextMenuItem } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { ThreadActionMenuId } from "../threadActionMenu.logic";
 import { SIDEBAR_DRAG_DISTANCE, SidebarPointerSensor } from "../Sidebar.pointer";
 import {
   dropThreadContext,
@@ -22,37 +25,42 @@ import {
   moveThreadContextDrag as moveThreadContextDragGhost,
 } from "../chat/threadContextDrag";
 import { WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
-import { WorkstreamPicker } from "../../jones/workstreams/WorkstreamPicker";
+import type { WorkstreamNameIconProject } from "../../jones/workstreams/WorkstreamNameIconPicker";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
-import { summarizePersonalThreads } from "../../jones/workstreams/personalPresentation";
+import { assignPersonalThread } from "../../jones/workstreams/personalThreadAssignmentMenu";
+import {
+  personalSidebarRosterTotals,
+  summarizePersonalThreads,
+} from "../../jones/workstreams/personalPresentation";
 import {
   liftPersonalThreadCard,
   personalThreadContextRefs,
 } from "../../jones/workstreams/personalThreadDrag";
 import { windowPersonalThreads } from "../../jones/workstreams/personalThreadWindow";
-export interface NativeThreadAssignmentMenu {
-  readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
-  readonly onAction: (action: ThreadActionMenuId) => void;
-}
-
+import { createSidebarDragAutoScroll } from "../../jones/workstreams/sidebarDragAutoScroll";
 export interface NativeThreadExternalDrop {
   readonly locateExternal: (
     point: { x: number; y: number },
     thread: EnvironmentThreadShell,
+    options?: { fromMember: boolean },
   ) => boolean;
   readonly dropExternal: (
     point: { x: number; y: number },
     thread: EnvironmentThreadShell,
+    options?: { fromMember: boolean },
   ) => Promise<boolean> | null;
   readonly clear: () => void;
 }
 
 export function WorkstreamNativeSidebar({
   controller,
+  nameIconProjects,
   threads,
   summaryThreads = threads,
+  rosterThreads = summaryThreads,
+  snoozedWorkstreams = [],
   renderThread,
-  assignmentMenuRef,
+  onOpenHistoryThread,
   externalDropRef,
   canOperate,
   canReorder,
@@ -60,15 +68,13 @@ export function WorkstreamNativeSidebar({
   placeThread,
 }: {
   controller: PersonalWorkstreamsController;
+  nameIconProjects?: readonly WorkstreamNameIconProject[] | undefined;
   threads: readonly EnvironmentThreadShell[];
   summaryThreads?: readonly EnvironmentThreadShell[];
-  renderThread: (
-    thread: EnvironmentThreadShell,
-    assignment: NativeThreadAssignmentMenu,
-  ) => ReactNode;
-  assignmentMenuRef?: RefObject<
-    ((thread: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
-  >;
+  rosterThreads?: readonly EnvironmentThreadShell[];
+  snoozedWorkstreams?: readonly PersonalWorkstreamView[];
+  onOpenHistoryThread?: (thread: PersonalThreadRef) => void;
+  renderThread: (thread: EnvironmentThreadShell) => ReactNode;
   externalDropRef?: RefObject<NativeThreadExternalDrop | null>;
   canOperate: (thread: EnvironmentThreadShell) => boolean;
   canReorder: (thread: EnvironmentThreadShell) => boolean;
@@ -84,12 +90,26 @@ export function WorkstreamNativeSidebar({
     after: boolean,
   ) => Promise<boolean>;
 }) {
-  const state = useAtomValue(controller.state);
+  const allWorkstreams = useAtomValue(controller.state);
+  const snoozedIds = new Set(snoozedWorkstreams.map((item) => item.id));
+  const state =
+    snoozedIds.size === 0
+      ? allWorkstreams
+      : {
+          ...allWorkstreams,
+          workstreams: allWorkstreams.workstreams.filter((item) => !snoozedIds.has(item.id)),
+        };
+  const openWorkstreams = openPersonalWorkstreams(state);
   const grouping = groupPersonalThreads(state, threads);
   const summaryGrouping = groupPersonalThreads(state, summaryThreads);
-  const [picker, setPicker] = useState<EnvironmentThreadShell | null>(null);
   const [drop, setDrop] = useState<string | null | undefined>();
-  const [dropRow, setDropRow] = useState<{ key: string; after: boolean } | null>(null);
+  const [dropRow, setDropRow] = useState<{
+    id: string | null;
+    key: string | null;
+    after: boolean;
+    height: number;
+  } | null>(null);
+  const draggedHeight = useRef(0);
   const root = useRef<HTMLDivElement | null>(null);
   const sensor = useRef<SidebarPointerSensor | null>(null);
   const busy = useRef(false);
@@ -102,66 +122,15 @@ export function WorkstreamNativeSidebar({
   const canMove = (thread: EnvironmentThreadShell) =>
     canOperate(thread) && controller.canAssign(thread);
   const move = async (thread: EnvironmentThreadShell, id: string | null) => {
-    if (busy.current || !canMove(thread)) return false;
-    busy.current = true;
-    return controller
-      .assign(thread, id)
-      .then((result) => {
-        if (!result.ok) showPersonalFailure(result.failure);
-        return result.ok;
-      })
-      .catch(() => {
-        showPersonalFailure({
-          action: id === null ? "unassign" : "assign",
-          reason: "failed",
-          environmentId: thread.environmentId,
-          dedupeKey: `assign:${personalThreadKey(thread)}:failed`,
-        });
-        return false;
-      })
-      .finally(() => {
-        busy.current = false;
-      });
+    if (!canMove(thread)) return false;
+    const name =
+      id === null ? null : (state.workstreams.find((item) => item.id === id)?.name ?? "Workstream");
+    return assignPersonalThread(controller, thread, id, name);
   };
-  const menu = (thread: EnvironmentThreadShell): NativeThreadAssignmentMenu => ({
-    items: [
-      {
-        id: "assign-workstream:picker",
-        label: "Search or create Workstream…",
-        disabled: !canMove(thread),
-      },
-      ...state.workstreams.map((item) => ({
-        id: `assign-workstream:group:${item.id}` as ThreadActionMenuId,
-        label: item.name,
-        disabled: !canMove(thread),
-      })),
-      {
-        id: "assign-workstream:remove",
-        label: "Unassigned",
-        disabled: !canMove(thread),
-        separatorBefore: true,
-      },
-    ],
-    onAction: (action) => {
-      if (!canMove(thread)) return;
-      if (action === "assign-workstream:picker") setPicker(thread);
-      else if (action === "assign-workstream:remove") void move(thread, null);
-      else {
-        const item = state.workstreams.find(
-          (entry) => action === `assign-workstream:group:${entry.id}`,
-        );
-        if (item) void move(thread, item.id);
-      }
-    },
-  });
   type Target = { id: string | null; neighborKey: string | null; after: boolean };
-  const groupId = (thread: EnvironmentThreadShell) => {
-    const id = state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId;
-    return id && state.workstreams.some((item) => item.id === id) ? id : null;
-  };
+  const groupId = (thread: EnvironmentThreadShell) => visiblePersonalWorkstreamId(state, thread);
   const validTarget = (target: Target) => {
-    if (target.id !== null && !state.workstreams.some((item) => item.id === target.id))
-      return false;
+    if (target.id !== null && !openWorkstreams.some((item) => item.id === target.id)) return false;
     return (
       target.neighborKey === null ||
       threads.some(
@@ -174,15 +143,32 @@ export function WorkstreamNativeSidebar({
     thread: EnvironmentThreadShell,
     external = false,
   ): Target | null => {
-    setDropRow(null);
-    setDrop(undefined);
+    const reject = () => {
+      setDropRow(null);
+      setDrop(undefined);
+      return null;
+    };
     const element = document.elementFromPoint(point.x, point.y);
     const section = element?.closest<HTMLElement>("[data-native-workstream]");
-    if (!section || !root.current?.contains(section) || !canMove(thread)) return null;
+    if (!section || !root.current?.contains(section) || !canMove(thread)) return reject();
     const id = JSON.parse(section.dataset.nativeWorkstream!) as string | null;
     const list = section.querySelector<HTMLElement>("[data-personal-thread-list]");
-    if (id !== null && !state.workstreams.some((item) => item.id === id)) return null;
+    if (id !== null && !state.workstreams.some((item) => item.id === id)) return reject();
     const key = personalThreadKey(thread);
+    const gap = element?.closest<HTMLElement>("[data-personal-thread-insertion]");
+    if (gap) {
+      // The placeholder displaced its neighbor; keep its captured slot rather than re-hit-testing shifted rows.
+      const target = JSON.parse(gap.dataset.personalThreadSlot!) as Target;
+      const neighbor = threads.find((entry) => personalThreadKey(entry) === target.neighborKey);
+      if (
+        !validTarget(target) ||
+        !(external || canReorder(thread)) ||
+        (neighbor && !canReorder(neighbor))
+      )
+        return reject();
+      setDrop(id);
+      return target;
+    }
     const row = element?.closest<HTMLElement>("[data-personal-thread]");
     let neighbor = threads.find(
       (entry) => personalThreadKey(entry) === row?.dataset.personalThread,
@@ -193,15 +179,16 @@ export function WorkstreamNativeSidebar({
     if (placeThread && !row && list?.contains(element ?? null)) {
       const rows = [...list.querySelectorAll<HTMLElement>("[data-personal-thread]")];
       const last = rows.findLast((entry) => entry.dataset.personalThread !== key);
-      if (!last && rows.length > 0) return null;
+      if (!last && rows.length > 0) return reject();
       neighbor = threads.find((entry) => personalThreadKey(entry) === last?.dataset.personalThread);
       after = true;
     }
-    if (neighbor && (groupId(neighbor) !== id || personalThreadKey(neighbor) === key)) return null;
+    if (neighbor && (groupId(neighbor) !== id || personalThreadKey(neighbor) === key))
+      return reject();
     const canPosition = (external || canReorder(thread)) && (!neighbor || canReorder(neighbor));
     const ordinal =
       neighbor !== undefined && canPosition && (Boolean(placeThread) || groupId(thread) === id);
-    if ((!ordinal || !neighbor) && !external && groupId(thread) === id) return null;
+    if ((!ordinal || !neighbor) && !external && groupId(thread) === id) return reject();
     const members =
       id === null
         ? grouping.ungrouped
@@ -212,7 +199,7 @@ export function WorkstreamNativeSidebar({
         (entry) => personalThreadKey(entry) === personalThreadKey(neighbor),
       );
       const slot = targetIndex + (after ? 1 : 0);
-      if (sourceIndex >= 0 && (slot === sourceIndex || slot === sourceIndex + 1)) return null;
+      if (sourceIndex >= 0 && (slot === sourceIndex || slot === sourceIndex + 1)) return reject();
     }
     const target = {
       id,
@@ -220,7 +207,14 @@ export function WorkstreamNativeSidebar({
       after,
     };
     setDrop(id);
-    if (neighbor && ordinal) setDropRow({ key: personalThreadKey(neighbor), after });
+    setDropRow(
+      list &&
+        canPosition &&
+        (ordinal || (members.length === 0 && placeThread)) &&
+        draggedHeight.current > 0
+        ? { id, key: target.neighborKey, after, height: draggedHeight.current }
+        : null,
+    );
     return target;
   };
   const place = async (thread: EnvironmentThreadShell, target: Target, external = false) => {
@@ -279,13 +273,20 @@ export function WorkstreamNativeSidebar({
     setDrop(undefined);
     setDropRow(null);
   };
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed menu and drop handles for Sidebar's single pointer gesture owner.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed drop handles for Sidebar's single pointer gesture owner.
   useLayoutEffect(() => {
-    if (assignmentMenuRef) assignmentMenuRef.current = menu;
     if (externalDropRef)
       externalDropRef.current = {
-        locateExternal: (point, thread) => {
-          const target = locate(point, thread, true);
+        locateExternal: (point, thread, options) => {
+          const source = [
+            ...document.querySelectorAll<HTMLElement>("[data-thread-item], [data-personal-thread]"),
+          ].find(
+            (row) =>
+              row.dataset.threadItem === personalThreadKey(thread) ||
+              row.dataset.personalThread === personalThreadKey(thread),
+          );
+          draggedHeight.current = source?.getBoundingClientRect().height ?? 0;
+          const target = locate(point, thread, !options?.fromMember);
           const previous = externalTarget.current;
           externalTarget.current = target
             ? {
@@ -297,19 +298,20 @@ export function WorkstreamNativeSidebar({
             : null;
           return target !== null;
         },
-        dropExternal: (point, thread) => {
+        dropExternal: (point, thread, options) => {
           const captured = externalTarget.current;
           externalTarget.current = null;
-          clearDrop();
           if (
             captured &&
             captured.key === personalThreadKey(thread) &&
             (captured.sourceId !== groupId(thread) || !validTarget(captured.target))
-          )
+          ) {
+            clearDrop();
             return Promise.resolve(false);
-          const target = locate(point, thread, true);
+          }
+          const target = locate(point, thread, !options?.fromMember);
           clearDrop();
-          return target ? place(thread, target, true) : null;
+          return target ? place(thread, target, !options?.fromMember) : null;
         },
         clear: () => {
           externalTarget.current = null;
@@ -317,7 +319,6 @@ export function WorkstreamNativeSidebar({
         },
       };
     return () => {
-      if (assignmentMenuRef) assignmentMenuRef.current = null;
       if (externalDropRef) externalDropRef.current = null;
     };
   });
@@ -356,6 +357,7 @@ export function WorkstreamNativeSidebar({
           : null;
     };
     sensor.current?.cancel();
+    let autoScroll: ReturnType<typeof createSidebarDragAutoScroll> | null = null;
     sensor.current = new SidebarPointerSensor({
       active: key,
       event: event.nativeEvent,
@@ -363,6 +365,7 @@ export function WorkstreamNativeSidebar({
         distance: SIDEBAR_DRAG_DISTANCE,
         onAttach: () => {},
         onFinish: () => {
+          autoScroll?.dispose();
           sensor.current = null;
           lifted.current?.dispose();
           lifted.current = null;
@@ -384,10 +387,14 @@ export function WorkstreamNativeSidebar({
       onPending: () => {},
       onAbort: () => {},
       onStart: (point) => {
-        if (canMove(thread) && !busy.current)
+        if (canMove(thread) && !busy.current) {
+          draggedHeight.current = source.getBoundingClientRect().height;
           lifted.current = liftPersonalThreadCard(source, point);
+          autoScroll = createSidebarDragAutoScroll(source, locateCurrent);
+        }
       },
       onMove: (point) => {
+        autoScroll?.move(point);
         const outside = outsideSidebar(point);
         lifted.current?.setVisible(!outside);
         if (outside) {
@@ -418,13 +425,28 @@ export function WorkstreamNativeSidebar({
       },
     });
   };
+  const renderGap = () =>
+    dropRow ? (
+      <li
+        aria-hidden
+        data-personal-thread-insertion={dropRow.after ? "after" : "before"}
+        data-personal-thread-slot={JSON.stringify({
+          id: dropRow.id,
+          neighborKey: dropRow.key,
+          after: dropRow.after,
+        })}
+        style={{ height: dropRow.height }}
+      />
+    ) : null;
   return (
     <div ref={root}>
-      {picker ? (
-        <WorkstreamPicker controller={controller} thread={picker} onClose={() => setPicker(null)} />
-      ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        nameIconProjects={nameIconProjects}
+        snoozedIds={snoozedIds}
+        onOpenHistoryThread={onOpenHistoryThread}
+        rosterTotals={personalSidebarRosterTotals(state, rosterThreads)}
+        dropTargetId={drop}
         memberCounts={
           new Map(grouping.groups.map((group) => [group.workstream.id, group.threads.length]))
         }
@@ -453,30 +475,32 @@ export function WorkstreamNativeSidebar({
                   ? "Unassigned threads"
                   : `${state.workstreams.find((item) => item.id === id)?.name ?? "Workstream"} threads`
               }
-              className={drop === id ? "rounded ring-1 ring-primary" : ""}
+              // Named members sit a fixed 8 CSS px in, independent of the root font size; Unassigned stays flush.
+              {...(id === null ? {} : { style: { paddingLeft: "8px" } })}
             >
               {members.length === 0 ? (
                 <li className="relative px-3 pb-3 text-xs text-sidebar-muted-foreground">
-                  No active threads
+                  No threads match the current filters
                 </li>
               ) : null}
               {members.map((thread) => (
-                <li
-                  key={personalThreadKey(thread)}
-                  data-personal-thread={personalThreadKey(thread)}
-                  className="relative cursor-grab active:cursor-grabbing"
-                  onPointerDown={(event) => pointerDown(event, thread)}
-                >
-                  {dropRow?.key === personalThreadKey(thread) ? (
-                    <div
-                      aria-hidden
-                      data-personal-thread-insertion={dropRow.after ? "after" : "before"}
-                      className={`pointer-events-none absolute inset-x-1 z-20 h-0.5 bg-primary ${dropRow.after ? "bottom-0" : "top-0"}`}
-                    />
-                  ) : null}
-                  <ul>{renderThread(thread, menu(thread))}</ul>
-                </li>
+                <Fragment key={personalThreadKey(thread)}>
+                  {dropRow?.id === id && dropRow.key === personalThreadKey(thread) && !dropRow.after
+                    ? renderGap()
+                    : null}
+                  <li
+                    data-personal-thread={personalThreadKey(thread)}
+                    className="relative cursor-grab active:cursor-grabbing"
+                    onPointerDown={(event) => pointerDown(event, thread)}
+                  >
+                    <ul>{renderThread(thread)}</ul>
+                  </li>
+                  {dropRow?.id === id && dropRow.key === personalThreadKey(thread) && dropRow.after
+                    ? renderGap()
+                    : null}
+                </Fragment>
               ))}
+              {dropRow?.id === id && dropRow.key === null ? renderGap() : null}
             </ul>
           );
         }}

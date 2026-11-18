@@ -38,8 +38,15 @@ export function createPersonalWorkstreamsRpcTransport(
       });
       return () => abort.abort();
     },
-    put: (connection, workstream) =>
-      run(client(connection)["workstreamsPersonal.put"]({ workstream })),
+    members: (connection, workstreamId) =>
+      run(client(connection)["workstreamsPersonal.members"]({ workstreamId })),
+    put: (connection, workstream, expected) =>
+      run(
+        client(connection)["workstreamsPersonal.put"]({
+          workstream,
+          ...(expected ? { expected } : {}),
+        }),
+      ),
     assign: (connection, input) => run(client(connection)["workstreamsPersonal.assign"](input)),
   };
 }

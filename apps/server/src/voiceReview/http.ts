@@ -87,6 +87,12 @@ export const voiceReviewHttpApiLayer = HttpApiBuilder.group(
       .handle("sendNow", ({ params, payload }) =>
         call((principal) => bridge.mutate(principal, params.id, "send-now", payload)),
       )
+      .handle("sendOptions", ({ params }) =>
+        call((principal) => bridge.sendOptions(principal, params.id)),
+      )
+      .handle("sendReviewed", ({ params, payload }) =>
+        call((principal) => bridge.sendReviewed(principal, params.id, payload)),
+      )
       .handle("delete", ({ params, payload }) =>
         call((principal) => bridge.mutate(principal, params.id, "delete", payload)),
       );

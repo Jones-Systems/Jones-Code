@@ -1,9 +1,6 @@
+import { terminalLaunchResult } from "./recordedResult.ts";
 import { encodeJson, decodeJson } from "./json.ts";
-import {
-  canonicalJson as stable,
-  PRUNE_BATCH_SIZE,
-  terminalRetentionCutoff,
-} from "../remoteDelegation/shared.ts";
+import { canonicalJson as stable, PRUNE_BATCH_SIZE } from "../remoteDelegation/shared.ts";
 // @effect-diagnostics nodeBuiltinImport:off -- Hashes and IDs bind durable receiving intents.
 import * as NodeCrypto from "node:crypto";
 import {
@@ -18,13 +15,25 @@ import {
   type EnvironmentSessionPrincipalShape,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
+import * as DateTime from "effect/DateTime";
+import * as ServerSettings from "../../serverSettings.ts";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
+import type {
+  RemoteAdmissionAccessBinding,
+  RemoteAdmissionReviewDecision,
+} from "@t3tools/contracts/jones/remoteAdmissionReview";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as RemoteAdmission from "../remoteAdmission/RemoteAdmission.ts";
+import { makeRecoveryStore, ReceiverRecoveryEvidence } from "./RecoveryStore.ts";
+import { ReceiverClaimTracker } from "./ClaimTracker.ts";
+import { classifyLaunchEvidence } from "./LaunchRecovery.ts";
+import { RemoteAdmissionLaunchResult } from "@t3tools/contracts/jones/remoteAdmissionReview";
 import { isRemoteAdmissionOwner } from "./owner.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import { resolveRemoteEvaluationModel } from "../../textGeneration/jones/remoteEvaluationModel.ts";
@@ -49,6 +58,7 @@ type Target = (
 export class RemoteAdmissionIntake extends Context.Service<
   RemoteAdmissionIntake,
   {
+    readonly isLiveClaim: (id: string) => boolean;
     readonly register: (operation: string, handler: Handler, target: Target) => void;
     readonly invoke: (
       operation: string,
@@ -61,7 +71,7 @@ export class RemoteAdmissionIntake extends Context.Service<
       input: RemoteAdmissionPolicyUpdate,
     ) => Effect.Effect<RemoteAdmissionSnapshot, RemoteAdmissionIntakeError>;
     readonly decide: (
-      input: RemoteAdmissionDecision,
+      input: RemoteAdmissionDecision | RemoteAdmissionReviewDecision,
       owner: EnvironmentSessionPrincipalShape,
     ) => Effect.Effect<RemoteAdmissionRecord, RemoteAdmissionIntakeError>;
     readonly withdraw: (
@@ -77,11 +87,15 @@ const defaultPolicy: RemoteAdmissionReceiverPolicy = {
   revision: "initial",
   modelSelection: null,
 };
-const StoredResult = Schema.Struct({ ok: Schema.Boolean, value: Schema.Unknown });
+const StoredResult = Schema.Struct({
+  ok: Schema.Boolean,
+  value: Schema.Unknown,
+  launchResult: Schema.optionalKey(RemoteAdmissionLaunchResult),
+});
 const decodeStoredResult = Schema.decodeUnknownEffect(Schema.fromJsonString(StoredResult));
 // An admission whose handler never recorded a result: the request fiber was cut off or the
 // server stopped mid-handler. Whether the handler's effect happened is unknown, so the
-// admission is closed with this failure and never replayed; the sender may submit anew.
+// admission is closed with this unknown outcome and never automatically replayed.
 const interruptedFailure = () =>
   new OrchestratorMcpFailure({
     code: "orchestration_error",
@@ -119,7 +133,8 @@ const unpack = (record: RemoteAdmissionRecord) => {
 // Pin only display data. Every other invocation field belongs to this attempt
 // and must still participate in the generic admission's digest comparison.
 const pinOriginTitle = (invocation: Invocation, previous: RemoteAdmissionRecord): Invocation => {
-  const original = unpack(previous).invocation.client?.remoteOrigin;
+  const previousClient = unpack(previous).invocation.client;
+  const original = previousClient?.remoteOrigin;
   const client = invocation.client;
   const origin = client?.remoteOrigin;
   if (
@@ -133,10 +148,27 @@ const pinOriginTitle = (invocation: Invocation, previous: RemoteAdmissionRecord)
   )
     return invocation;
   const { title: _title, ...thread } = origin.thread;
+  const sender = client.senderThread;
+  const originalSender = previousClient?.senderThread;
+  const mirrorsOrigin =
+    sender?.environmentId === origin.environmentId &&
+    sender.threadId === origin.thread.threadId &&
+    sender.title === (origin.thread.title ?? "Untitled thread");
+  // The HTTP adapter now mirrors linked origin metadata in senderThread as well.
+  // Earlier records have no mirror, so retain that omission for the same origin.
+  const senderThread = mirrorsOrigin
+    ? originalSender === undefined
+      ? undefined
+      : originalSender.environmentId === sender.environmentId &&
+          originalSender.threadId === sender.threadId
+        ? { ...sender, title: originalSender.title }
+        : sender
+    : sender;
   return {
     ...invocation,
     client: {
       ...client,
+      senderThread,
       remoteOrigin: {
         ...origin,
         thread: {
@@ -170,8 +202,15 @@ const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const serviceScope = yield* Effect.scope;
+  const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+  const presence = makeJonesTablePresence(sql);
+  const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const admissions = yield* RemoteAdmission.RemoteAdmission;
-  const sessions = yield* EnvironmentAuth.EnvironmentAuth;
+  const recoveryEvidence = yield* Effect.serviceOption(ReceiverRecoveryEvidence);
+  const recovery = Option.isSome(recoveryEvidence)
+    ? makeRecoveryStore(sql, admissions, recoveryEvidence.value)
+    : null;
   const providers = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const handlers = new Map<string, Handler>();
   const targets = new Map<string, Target>();
@@ -191,10 +230,62 @@ const make = Effect.gen(function* () {
     }>`SELECT result_json FROM jones_remote_admission_results WHERE admission_id = ${id}`;
     return rows[0] ? yield* decodeStoredResult(rows[0].result_json) : null;
   });
+  const assertUnfenced = Effect.fn("RemoteAdmissionIntake.assertUnfenced")(function* (
+    sessionId: string,
+    key: string,
+  ) {
+    if (!(yield* presence("jones_remote_admission_fences"))) return;
+    const rows =
+      yield* sql`SELECT 1 FROM jones_remote_admission_fences WHERE client_id=${sessionId} AND idempotency_key=${key}`;
+    if (rows.length)
+      return yield* new OrchestratorMcpFailure({
+        code: "request_conflict",
+        message:
+          "This request was superseded. Its retained history may be unavailable; it will not execute again.",
+      });
+  });
+  const withSettings = <A, E, R>(use: () => Effect.Effect<A, E, R>, requireLinked = true) => {
+    if (Option.isNone(settings)) return Effect.fail(intakeError("settings_unavailable"));
+    return settings.value.withSettingsSnapshot<A, E | RemoteAdmissionIntakeError, R>((current) =>
+      !requireLinked || current.linkedEnvironmentsEnabled
+        ? use()
+        : Effect.fail(intakeError("linked_environments_disabled")),
+    );
+  };
+  // Database-only guard. Invoked within the claim writer while settings is already held.
+  const currentAuthority = Effect.fn("RemoteAdmissionIntake.currentAuthority")(function* (
+    record: RemoteAdmissionRecord,
+  ) {
+    const { invocation } = unpack(record);
+    const client = invocation.client;
+    if (!client) return { authorized: false, currentPolicy: yield* policy() };
+    const rows = yield* sql<{
+      scopes: string;
+    }>`SELECT scopes FROM auth_sessions WHERE session_id=${client.sessionId}
+      AND subject='mcp-client' AND method='bearer-access-token' AND revoked_at IS NULL AND expires_at>${yield* nowIso}`;
+    const scopes: unknown = rows[0] ? decodeJson(rows[0].scopes) : [];
+    const authorized = Array.isArray(scopes) && scopes.includes("orchestration:operate");
+    yield* assertUnfenced(client.sessionId, record.idempotencyKey);
+    if (authorized) yield* validateTarget(record);
+    const attemptsAvailable = yield* presence("jones_remote_admission_attempts");
+    const child =
+      attemptsAvailable &&
+      (yield* sql`SELECT 1 FROM jones_remote_admission_attempts WHERE child_admission_id=${record.id}`)
+        .length > 0;
+    const childAllowed =
+      !child || (recovery !== null && (yield* recovery.guardChildInTransaction(record)));
+    const managedAuthority =
+      Option.isSome(recoveryEvidence) && (yield* recoveryEvidence.value.authorize(record));
+    return {
+      authorized: authorized && childAllowed && managedAuthority,
+      currentPolicy: yield* policy(),
+    };
+  });
   // Admissions this process claimed for dispatch. A handler that dies in this process leaves
   // its claim visible to the sender and owner, as before. A `dispatching` row outside this set
   // was claimed by an earlier process, so its handler cannot still be running.
-  const claimedHere = new Set<string>();
+  const tracker = yield* Effect.serviceOption(ReceiverClaimTracker);
+  const claimedHere = Option.isSome(tracker) ? tracker.value : new Set<string>();
   const finishClaim = (record: RemoteAdmissionRecord) =>
     admissions.markDispatched({
       id: record.id,
@@ -205,8 +296,30 @@ const make = Effect.gen(function* () {
     record: RemoteAdmissionRecord,
   ) {
     // A concurrent settle may win the insert; read back whichever result was recorded.
-    yield* sql`INSERT OR IGNORE INTO jones_remote_admission_results (admission_id, result_json) VALUES (${record.id}, ${encodeJson({ ok: false, value: interruptedFailure() })})`;
-    yield* finishClaim(record);
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const now = yield* nowIso;
+        const { params } = unpack(record);
+        const launchResult =
+          record.envelope.operation === "t3_thread_launch"
+            ? terminalLaunchResult({
+                status: record.status,
+                commandId: record.commandId,
+                recordedAt: now,
+                initialMessageRequested:
+                  typeof params.message === "string" ||
+                  (Array.isArray(params.attachments) && params.attachments.length > 0),
+              })
+            : null;
+        yield* sql`INSERT OR IGNORE INTO jones_remote_admission_results (admission_id, result_json) VALUES (${record.id}, ${encodeJson({ ok: false, value: interruptedFailure(), ...(launchResult ? { launchResult } : {}) })})`;
+        if (yield* presence("jones_remote_admission_extensions")) {
+          yield* sql`INSERT INTO jones_remote_admission_extensions(admission_id,outcome) VALUES(${record.id},'unknown') ON CONFLICT(admission_id) DO UPDATE SET outcome=COALESCE(outcome,'unknown')`;
+          yield* sql`INSERT INTO jones_remote_admission_peer_revisions(session_id,revision) VALUES(${record.envelope.identity.clientId},1)
+        ON CONFLICT(session_id) DO UPDATE SET revision=revision+1`;
+        }
+        yield* finishClaim(record);
+      }),
+    );
     return (yield* result(record.id))!;
   });
   const deliver = (saved: { ok: boolean; value: unknown }) =>
@@ -227,9 +340,11 @@ const make = Effect.gen(function* () {
       });
     }
   });
-  const dispatch = Effect.fn("RemoteAdmissionIntake.dispatch")(function* (
+  const dispatchOnce = Effect.fn("RemoteAdmissionIntake.dispatch")(function* (
     record: RemoteAdmissionRecord,
   ) {
+    const clientId = record.envelope.identity.clientId;
+    yield* assertUnfenced(clientId, record.idempotencyKey);
     const prior = yield* result(record.id);
     if (prior) {
       // A result was recorded but the claim was not closed: finish it, so the row can leave
@@ -240,21 +355,54 @@ const make = Effect.gen(function* () {
     const handler = handlers.get(record.envelope.operation);
     if (!handler) return yield* pending(record);
     const { params, invocation } = unpack(record);
+    if (invocation.client)
+      yield* assertUnfenced(invocation.client.sessionId, record.idempotencyKey);
     yield* validateTarget(record);
-    const active = yield* sessions.listSessions();
-    if (!active.some((session) => session.sessionId === invocation.client?.sessionId)) {
-      return yield* new OrchestratorMcpFailure({
-        code: "capability_denied",
-        message: "The originating connection is no longer active.",
-      });
-    }
     const commandId = dispatchCommandId(record.id);
-    const claim = yield* admissions.claimDispatch({
-      id: record.id,
-      bindingDigest: record.bindingDigest,
-      commandId,
-      currentPolicy: yield* policy(),
-    });
+    const claim = yield* withSettings(() =>
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const hasAttempt =
+            (yield* presence("jones_remote_admission_attempts")) &&
+            (yield* sql`SELECT 1 FROM jones_remote_admission_attempts WHERE child_admission_id=${record.id}`)
+              .length > 0;
+          if (
+            hasAttempt &&
+            recovery !== null &&
+            !(yield* recovery.guardChildInTransaction(record))
+          ) {
+            const closed =
+              yield* sql`SELECT 1 FROM jones_remote_admission_attempts WHERE child_admission_id=${record.id} AND state IN ('refused','expired')`;
+            if (closed.length) {
+              yield* sql`UPDATE jones_remote_admissions SET status='denied',reason='Retry evidence changed or the prepared attempt expired.',category='out_of_scope',updated_at=${yield* nowIso}
+            WHERE id=${record.id} AND status IN ('passed','approved')`;
+              yield* admissions.access.bumpInTransaction(
+                "attempt",
+                record.id,
+                yield* nowIso,
+                record.envelope.identity.clientId,
+              );
+            }
+            return { record: (yield* admissions.get(record.id))!, claimed: false };
+          }
+          const claimed = yield* admissions.claimDispatch({
+            id: record.id,
+            bindingDigest: record.bindingDigest,
+            commandId,
+            currentPolicy: record.envelope.receiverPolicy,
+            checkCurrentAuthority: (current) =>
+              currentAuthority(current).pipe(
+                Effect.mapError(
+                  (cause) => new RemoteAdmission.RemoteAdmissionPersistenceError({ cause }),
+                ),
+              ),
+          });
+          if (claimed.claimed && (yield* presence("jones_remote_admission_attempts")))
+            yield* sql`UPDATE jones_remote_admission_attempts SET state='claimed' WHERE child_admission_id=${record.id} AND state='origin_registered'`;
+          return claimed;
+        }),
+      ),
+    );
     if (!claim.claimed) {
       // Claimed by a process that has since stopped: close it with a recorded failure
       // instead of leaving the sender to retry against `dispatching` forever.
@@ -272,14 +420,67 @@ const make = Effect.gen(function* () {
         Effect.succeed({ ok: false, value: error }),
       ),
     );
-    yield* sql`INSERT INTO jones_remote_admission_results (admission_id, result_json) VALUES (${record.id}, ${encodeJson(outcome)})`;
-    yield* admissions.markDispatched({
-      id: record.id,
-      bindingDigest: record.bindingDigest,
+    const resultRecordedAt = yield* nowIso;
+    const unknownLaunchResult = terminalLaunchResult({
+      status: "dispatching",
       commandId,
+      recordedAt: resultRecordedAt,
+      initialMessageRequested:
+        typeof params.message === "string" ||
+        (Array.isArray(params.attachments) && params.attachments.length > 0),
     });
+    const launchResult =
+      record.envelope.operation === "t3_thread_launch"
+        ? Option.isSome(recoveryEvidence)
+          ? yield* recoveryEvidence.value.read(record).pipe(
+              Effect.map((raw) => classifyLaunchEvidence({ ...raw, liveClaim: false }).result),
+              Effect.orElseSucceed(() => unknownLaunchResult),
+            )
+          : unknownLaunchResult
+        : null;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`INSERT INTO jones_remote_admission_results (admission_id, result_json) VALUES (${record.id}, ${encodeJson({ ...outcome, ...(launchResult ? { launchResult } : {}) })})`;
+        const now = yield* nowIso;
+        if (yield* presence("jones_remote_admission_extensions")) {
+          yield* sql`INSERT INTO jones_remote_admission_extensions(admission_id,outcome,terminal_at)
+          VALUES(${record.id},${launchResult ? (launchResult.outcome === "unknown" ? "unknown" : launchResult.outcome === "created" ? "success" : "failure") : outcome.ok ? "success" : "unknown"},${now})
+          ON CONFLICT(admission_id) DO UPDATE SET outcome=excluded.outcome,terminal_at=excluded.terminal_at`;
+          if (launchResult?.outcome === "created" && launchResult.threadId) {
+            const grants = yield* sql<{
+              generation: number;
+            }>`SELECT generation FROM jones_remote_admission_grants WHERE admission_id=${record.id}`;
+            if (grants[0])
+              yield* admissions.access.activateInTransaction({
+                admissionId: record.id,
+                expectedGeneration: grants[0].generation,
+                destinationThreadId: launchResult.threadId,
+                now,
+              });
+          }
+          yield* sql`UPDATE jones_remote_admission_attempts SET state=${launchResult?.outcome === "created" ? "completed" : "refused"},terminal_at=${now} WHERE child_admission_id=${record.id} AND state='claimed'`;
+          yield* sql`INSERT INTO jones_remote_admission_peer_revisions(session_id,revision) VALUES(${record.envelope.identity.clientId},1)
+          ON CONFLICT(session_id) DO UPDATE SET revision=revision+1`;
+        }
+        yield* admissions.markDispatched({
+          id: record.id,
+          bindingDigest: record.bindingDigest,
+          commandId,
+        });
+      }),
+    );
+    claimedHere.delete(record.id);
     return yield* deliver(outcome);
   });
+  const entering = new Set<string>();
+  const dispatch = (record: RemoteAdmissionRecord) =>
+    Effect.suspend(() => {
+      if (entering.has(record.id)) return Effect.fail(pending(record));
+      entering.add(record.id);
+      return dispatchOnce(record).pipe(
+        Effect.ensuring(Effect.sync(() => entering.delete(record.id))),
+      );
+    });
   // Admissions still `dispatching` when the server starts were claimed by a handler that
   // died with the previous process. Close each: its result if one was recorded, otherwise
   // the interrupted failure.
@@ -295,35 +496,79 @@ const make = Effect.gen(function* () {
       else yield* finishClaim(record);
     }
   });
-  // Terminal admissions (denied, withdrawn, or dispatched with a recorded result) are replay
-  // keys only. Delete them, with their results, once their last change predates `cutoff`.
-  // One whose thread-result request is still pending is kept: that request observes it.
-  const pruneFinished = Effect.fn("RemoteAdmissionIntake.pruneFinished")(function* (
-    cutoff: string,
-  ) {
-    const observed =
-      (yield* sql`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jones_thread_result_requests'`)
-        .length > 0;
-    while (true) {
+  const pruneFinished = Effect.fn("RemoteAdmissionIntake.pruneFinished")(function* (now: string) {
+    const cutoff = DateTime.formatIso(DateTime.subtract(DateTime.makeUnsafe(now), { days: 30 }));
+    const review = yield* presence("jones_remote_admission_extensions");
+    const dependencies = yield* presence("jones_thread_result_requests");
+    for (;;) {
       const removed = yield* sql.withTransaction(
         Effect.gen(function* () {
-          const ids = (
-            observed
-              ? yield* sql<{ id: string }>`SELECT id FROM jones_remote_admissions AS admission
-                WHERE admission.status IN ('denied', 'cancelled', 'dispatched')
-                  AND admission.updated_at < ${cutoff}
-                  AND NOT EXISTS (
-                    SELECT 1 FROM jones_thread_result_requests AS request
-                    WHERE request.origin_environment_id = admission.origin_environment_id
-                      AND request.operation_id = admission.operation_id
-                      AND request.state = 'pending'
-                  )
-                LIMIT ${PRUNE_BATCH_SIZE}`
-              : yield* sql<{ id: string }>`SELECT id FROM jones_remote_admissions
-                WHERE status IN ('denied', 'cancelled', 'dispatched') AND updated_at < ${cutoff}
-                LIMIT ${PRUNE_BATCH_SIZE}`
-          ).map((row) => row.id);
-          if (ids.length === 0) return 0;
+          const rows = yield* sql<{
+            id: string;
+            status: string;
+            updated_at: string;
+            result_json: string | null;
+          }>`SELECT a.id,a.status,a.updated_at,r.result_json FROM jones_remote_admissions a
+          LEFT JOIN jones_remote_admission_results r ON r.admission_id=a.id
+          WHERE a.status IN ('denied','cancelled','dispatched') AND a.updated_at<${cutoff} ORDER BY a.updated_at,a.id`;
+          const ids: string[] = [];
+          for (const row of rows) {
+            if (
+              dependencies &&
+              (yield* sql`SELECT 1 FROM jones_thread_result_requests request JOIN jones_remote_admissions a
+            ON request.origin_environment_id=a.origin_environment_id AND request.operation_id=a.operation_id
+            WHERE a.id=${row.id} AND request.state='pending'`).length
+            )
+              continue;
+            if (review) {
+              const ext = (yield* sql<{
+                outcome: string | null;
+                terminal_at: string | null;
+              }>`SELECT outcome,terminal_at FROM jones_remote_admission_extensions WHERE admission_id=${row.id}`)[0];
+              if (ext?.terminal_at && ext.terminal_at >= cutoff) continue;
+              if (
+                ext?.outcome === "unknown" &&
+                !(yield* sql`SELECT 1 FROM jones_remote_admission_recovered_results
+              WHERE admission_id=${row.id} AND json_extract(result_json,'$.outcome') IN ('created','refused','not_created')`)
+                  .length
+              )
+                continue;
+              if (
+                (yield* sql`SELECT 1 FROM jones_remote_admission_recovered_results WHERE admission_id=${row.id} AND created_at>=${cutoff}`)
+                  .length
+              )
+                continue;
+              if (
+                (yield* sql`SELECT 1 FROM jones_remote_admission_recovered_notices WHERE admission_id=${row.id} AND state NOT IN ('delivered','suppressed','closed_unknown')`)
+                  .length
+              )
+                continue;
+              if (
+                (yield* sql`SELECT 1 FROM jones_remote_admission_grants WHERE admission_id=${row.id}`)
+                  .length
+              )
+                continue;
+              if (
+                (yield* sql`SELECT 1 FROM jones_remote_admission_attempts WHERE (child_admission_id=${row.id} OR predecessor_admission_id=${row.id}) AND state IN ('prepared','origin_registered','claimed')`)
+                  .length
+              )
+                continue;
+            }
+            if (row.status === "dispatched") {
+              const saved = row.result_json ? yield* decodeStoredResult(row.result_json) : null;
+              if (
+                !saved ||
+                (!saved.ok &&
+                  saved.launchResult?.outcome !== "refused" &&
+                  saved.launchResult?.outcome !== "not_created")
+              )
+                continue;
+              if (saved.launchResult?.outcome === "unknown") continue;
+            }
+            ids.push(row.id);
+            if (ids.length === PRUNE_BATCH_SIZE) break;
+          }
+          if (!ids.length) return 0;
           yield* sql`DELETE FROM jones_remote_admission_results WHERE admission_id IN ${sql.in(ids)}`;
           yield* sql`DELETE FROM jones_remote_admissions WHERE id IN ${sql.in(ids)}`;
           return ids.length;
@@ -339,7 +584,19 @@ const make = Effect.gen(function* () {
       pending: yield* admissions.listPending(),
     };
   }, Effect.mapError(intakeError));
+  let reactorStarted = false;
+  const drainApproved = Effect.gen(function* () {
+    const rows = yield* sql<{
+      id: string;
+    }>`SELECT id FROM jones_remote_admissions WHERE status IN ('passed','approved') ORDER BY created_at`;
+    for (const row of rows) {
+      if (entering.has(row.id)) continue;
+      const record = yield* admissions.get(row.id);
+      if (record) yield* dispatch(record).pipe(Effect.ignore, Effect.forkIn(serviceScope));
+    }
+  });
   return RemoteAdmissionIntake.of({
+    isLiveClaim: (id) => claimedHere.has(id),
     register: (operation, handler, target) => {
       handlers.set(operation, handler);
       targets.set(operation, target);
@@ -368,7 +625,18 @@ const make = Effect.gen(function* () {
           return rows[0] ? yield* admissions.get(rows[0].id) : null;
         });
         const previous = keyed ? yield* selectPrevious() : null;
-        if (!current.enabled && previous === null) return yield* handler(params, invocation);
+        yield* assertUnfenced(client.sessionId, key);
+        const message =
+          operation === "t3_thread_send" || operation === "t3_thread_send_attachments";
+        const managed =
+          message &&
+          typeof params.threadId === "string" &&
+          (yield* presence("jones_remote_managed_scopes"))
+            ? (yield* sql`SELECT 1 FROM jones_remote_managed_scopes WHERE destination_thread_id=${params.threadId} LIMIT 1`)
+                .length > 0
+            : false;
+        if (!current.enabled && previous === null && !managed)
+          return yield* handler(params, invocation);
         const resolveTarget = targets.get(operation);
         if (!resolveTarget) return yield* intakeError("target_unavailable");
         // Stable receiver-owned scope is bound with the exact decoded request.
@@ -402,7 +670,30 @@ const make = Effect.gen(function* () {
               ...advisory,
             }),
           );
+          const origin =
+            client.linked && client.remoteOrigin?.linkSessionId === client.sessionId
+              ? client.remoteOrigin
+              : undefined;
+          const accessBinding: RemoteAdmissionAccessBinding | undefined =
+            origin?.thread && (message || operation === "t3_thread_launch")
+              ? {
+                  receiverEnvironmentId: invocation.environmentId,
+                  sessionId: client.sessionId,
+                  originEnvironmentId: origin.environmentId,
+                  originThreadId: origin.thread.threadId,
+                  destinationThreadId:
+                    message && typeof params.threadId === "string" ? params.threadId : null,
+                  operation: "t3_thread_send",
+                  runtimeMode:
+                    typeof params.runtimeMode === "string"
+                      ? params.runtimeMode
+                      : McpInvocationContext.clientModeCeiling(client).runtimeMode,
+                  interactionMode:
+                    typeof params.interactionMode === "string" ? params.interactionMode : "default",
+                }
+              : undefined;
           return yield* admissions.request({
+            ...(accessBinding ? { accessBinding } : {}),
             idempotencyKey: key,
             envelope: {
               identity: {
@@ -472,23 +763,38 @@ const make = Effect.gen(function* () {
       ),
     ),
     withdraw: Effect.fn("RemoteAdmissionIntake.withdraw")((input, clientId) =>
-      admissions.withdraw({ ...input, clientId }).pipe(
-        Effect.catchTags({
-          RemoteAdmissionStateConflict: (error) =>
-            error.status === "dispatching" ||
-            error.status === "dispatched" ||
-            error.status === "denied"
-              ? admissions.get(input.id).pipe(
-                  Effect.filterOrFail(
-                    (record) => record !== null,
-                    () => error,
-                  ),
-                )
-              : Effect.fail(error),
-        }),
-        Effect.map(publicRemoteAdmission),
-        Effect.mapError(intakeError),
-      ),
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const before = yield* admissions.get(input.id);
+            const record = yield* admissions.withdraw({ ...input, clientId }).pipe(
+              Effect.catchTags({
+                RemoteAdmissionStateConflict: (error) =>
+                  error.status === "dispatching" ||
+                  error.status === "dispatched" ||
+                  error.status === "denied"
+                    ? admissions.get(input.id).pipe(
+                        Effect.filterOrFail(
+                          (current) => current !== null,
+                          () => error,
+                        ),
+                      )
+                    : Effect.fail(error),
+              }),
+            );
+            if (
+              record.status === "cancelled" &&
+              before?.status !== "cancelled" &&
+              (yield* presence("jones_remote_admission_peer_revisions"))
+            ) {
+              yield* sql`INSERT INTO jones_remote_admission_peer_revisions(session_id,revision) VALUES(${clientId},1)
+            ON CONFLICT(session_id) DO UPDATE SET revision=revision+1`;
+              yield* admissions.access.invalidate;
+            }
+            return publicRemoteAdmission(record);
+          }),
+        )
+        .pipe(Effect.mapError(intakeError)),
     ),
     updatePolicy: Effect.fn("RemoteAdmissionIntake.updatePolicy")(function* (input) {
       yield* sql.withTransaction(
@@ -515,30 +821,53 @@ const make = Effect.gen(function* () {
     decide: Effect.fn("RemoteAdmissionIntake.decide")(function* (input, owner) {
       if (!isRemoteAdmissionOwner(owner))
         return yield* new RemoteAdmission.RemoteAdmissionForbidden({});
-      const existing = yield* admissions.get(input.id);
-      if (!existing) return yield* new RemoteAdmission.RemoteAdmissionNotFound({});
-      if (
-        input.decision === "approve" &&
-        stable(existing.envelope.receiverPolicy) !== stable(yield* policy())
-      )
-        return yield* new RemoteAdmission.RemoteAdmissionPolicyChanged({});
-      if (input.decision === "approve" && existing.status === "held")
-        yield* validateTarget(existing);
-      if (
-        input.decision === "approve" &&
-        ["approved", "dispatching", "dispatched"].includes(existing.status)
-      ) {
-        if (existing.bindingDigest !== input.bindingDigest)
-          return yield* new RemoteAdmission.RemoteAdmissionBindingMismatch({});
-        if (existing.status === "approved") yield* dispatch(existing).pipe(Effect.ignore);
-      } else {
-        const record = yield* admissions.resolve({
-          ...input,
-          principal: { kind: "human-owner", subject: owner.sessionId },
-        });
-        if (record.status === "approved") yield* dispatch(record).pipe(Effect.ignore);
-      }
-      return (yield* admissions.get(input.id))!;
+      const committed = yield* withSettings(
+        () =>
+          sql.withTransaction(
+            Effect.gen(function* () {
+              const existing = yield* admissions.get(input.id);
+              if (!existing) return yield* new RemoteAdmission.RemoteAdmissionNotFound({});
+              if (existing.bindingDigest !== input.bindingDigest)
+                return yield* new RemoteAdmission.RemoteAdmissionBindingMismatch({});
+              if (
+                input.decision === "approve" &&
+                ["approved", "dispatching", "dispatched"].includes(existing.status)
+              )
+                return existing;
+              if (input.decision === "approve") {
+                const authority = yield* currentAuthority(existing);
+                if (!authority.authorized)
+                  return yield* new RemoteAdmission.RemoteAdmissionForbidden({});
+                if (stable(existing.envelope.receiverPolicy) !== stable(authority.currentPolicy))
+                  return yield* new RemoteAdmission.RemoteAdmissionPolicyChanged({});
+              }
+              const decided = yield* admissions.resolve({
+                id: input.id,
+                bindingDigest: input.bindingDigest,
+                decision: input.decision,
+                principal: { kind: "human-owner", subject: owner.sessionId },
+                ...(input.decision === "approve" && "grant" in input && input.grant
+                  ? { durationSeconds: input.grant.durationSeconds }
+                  : {}),
+              });
+              if (yield* presence("jones_remote_admission_peer_revisions")) {
+                yield* sql`INSERT INTO jones_remote_admission_peer_revisions(session_id,revision) VALUES(${existing.envelope.identity.clientId},1)
+            ON CONFLICT(session_id) DO UPDATE SET revision=revision+1`;
+                yield* admissions.access.invalidate;
+              }
+              return decided;
+            }),
+          ),
+        input.decision === "approve",
+      );
+      if (committed.status === "approved")
+        yield* dispatch(committed).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Remote admission reactor deferred dispatch", { cause }),
+          ),
+          Effect.forkIn(serviceScope),
+        );
+      return committed;
     }, Effect.mapError(intakeError)),
     resumeApproved: Effect.fn("RemoteAdmissionIntake.resumeApproved")(function* () {
       // Startup recovery of this receiver's own state, before approved requests resume.
@@ -547,18 +876,26 @@ const make = Effect.gen(function* () {
           Effect.logWarning("Unable to close interrupted remote admissions.", { cause }),
         ),
       );
-      yield* terminalRetentionCutoff.pipe(
-        Effect.flatMap(pruneFinished),
+      yield* nowIso.pipe(
+        Effect.flatMap((now) =>
+          presence("jones_remote_admission_extensions").pipe(
+            Effect.flatMap((present) => (present ? admissions.retention.prune(now) : Effect.void)),
+            Effect.andThen(pruneFinished(now)),
+          ),
+        ),
         Effect.catch((cause) =>
           Effect.logWarning("Unable to prune finished remote admissions.", { cause }),
         ),
       );
-      const rows = yield* sql<{
-        id: string;
-      }>`SELECT id FROM jones_remote_admissions WHERE status = 'approved' ORDER BY created_at LIMIT 200`;
-      for (const row of rows) {
-        const record = yield* admissions.get(row.id);
-        if (record) yield* dispatch(record).pipe(Effect.ignore);
+      if (!reactorStarted) {
+        reactorStarted = true;
+        yield* drainApproved.pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Remote admission reactor scan deferred", { cause }),
+          ),
+          Effect.repeat(Schedule.spaced("1 second")),
+          Effect.forkIn(serviceScope),
+        );
       }
     }, Effect.mapError(intakeError)),
   });

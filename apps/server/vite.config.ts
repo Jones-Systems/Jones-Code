@@ -10,6 +10,7 @@ import "vite-plus/test/config";
 import * as NodePath from "node:path";
 import { defineConfig, mergeConfig } from "vite-plus";
 
+import { resolveTaggedSourceVersion } from "../../scripts/lib/tagged-source-version.ts";
 import baseConfig from "../../vite.config.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 import rootPackageJson from "../../package.json" with { type: "json" };
@@ -25,9 +26,11 @@ import {
 export { shouldBundleCliDependency };
 
 const repoEnv = loadRepoEnv();
-const cliBuildChannel = /^[^-+]+-(?:nightly|preview)\./.test(packageJson.version)
-  ? "nightly"
-  : "latest";
+const serverManifestPath = NodePath.join(import.meta.dirname, "package.json");
+const buildVersion =
+  process.env.APP_VERSION?.trim() ||
+  resolveTaggedSourceVersion(NodePath.join(import.meta.dirname, "../.."), packageJson.version);
+const cliBuildChannel = /^[^-+]+-(?:nightly|preview)\./.test(buildVersion) ? "nightly" : "latest";
 // Official release workflows set the telemetry channel; local builds and forks use "dev".
 const TELEMETRY_CHANNELS = ["stable", "nightly", "preview", "dev"];
 const telemetryChannel = process.env.T3CODE_TELEMETRY_CHANNEL?.trim() || "dev";
@@ -97,6 +100,16 @@ export default mergeConfig(
     },
     pack: {
       plugins: [
+        {
+          name: "t3code:source-build-version",
+          load(id) {
+            if (NodePath.resolve(id) !== serverManifestPath) return;
+            return {
+              code: JSON.stringify({ ...packageJson, version: buildVersion }),
+              moduleType: "json",
+            };
+          },
+        },
         serverComputeBuildIdentity(NodeURL.fileURLToPath(new URL("../../", import.meta.url)), {
           packExecutable,
           packExecutableTarget,
@@ -136,6 +149,7 @@ export default mergeConfig(
             },
           }
         : {}),
+      alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },
       deps: {
         // alwaysBundle=false has no opinion; neverBundle must retain transitive native acceleration.
         alwaysBundle: shouldBundleCliDependency,

@@ -35,12 +35,17 @@ import {
 } from "./ui/dialog";
 
 type SnoozeChoice = { readonly snoozedUntil: string };
-type Request = { readonly resolve: (choice: SnoozeChoice | null) => void };
+type Request = {
+  readonly subject: "threads" | "workstream";
+  readonly resolve: (choice: SnoozeChoice | null) => void;
+};
 const useRequest = create<{ request: Request | null }>(() => ({ request: null }));
 
-export function requestCustomSnooze(): Promise<SnoozeChoice | null> {
+export function requestCustomSnooze(
+  subject: Request["subject"] = "threads",
+): Promise<SnoozeChoice | null> {
   useRequest.getState().request?.resolve(null);
-  return new Promise((resolve) => useRequest.setState({ request: { resolve } }));
+  return new Promise((resolve) => useRequest.setState({ request: { resolve, subject } }));
 }
 
 function finish(choice: SnoozeChoice | null) {
@@ -59,10 +64,10 @@ export function CustomSnoozeDialogHost() {
   const request = useRequest((state) => state.request);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- resolves any pending snooze request promise with null when the dialog host unmounts
   useEffect(() => () => finish(null), []);
-  return request ? <CustomSnoozeDialog /> : null;
+  return request ? <CustomSnoozeDialog subject={request.subject} /> : null;
 }
 
-function CustomSnoozeDialog() {
+function CustomSnoozeDialog({ subject }: { subject: Request["subject"] }) {
   const id = useId();
   const navigate = useNavigate();
   const [initial] = useState(() => new Date(Date.now() + 3_600_000));
@@ -104,7 +109,11 @@ function CustomSnoozeDialog() {
         >
           <DialogHeader>
             <DialogTitle>Custom snooze</DialogTitle>
-            <DialogDescription>Choose when snoozed threads return to your inbox.</DialogDescription>
+            <DialogDescription>
+              {subject === "workstream"
+                ? "Choose when this Workstream returns to your sidebar."
+                : "Choose when snoozed threads return to your inbox."}
+            </DialogDescription>
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-4">

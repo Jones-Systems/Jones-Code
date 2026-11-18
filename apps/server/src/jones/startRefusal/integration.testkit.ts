@@ -20,6 +20,7 @@ import type * as Adapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Queue from "effect/Queue";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -34,10 +35,12 @@ import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/Cod
 import * as Replay from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
+import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as Start from "../../orchestration-v2/ProviderTurnStartService.ts";
 import * as Admission from "../orchestration/ControlAdmission.ts";
 import * as Store from "./Store.ts";
 import * as Probe from "./Probe.ts";
+import { withActiveEffectClaim } from "../workspaceLifecycle/ActiveEffectClaim.ts";
 
 export const driver = ProviderDriverKind.make("codex");
 const instance = ProviderInstanceId.make("codex");
@@ -136,6 +139,7 @@ const makeRuntime = <Output>(
   missing: false | "both" | "attempts" | "holds" = false,
   suppliedDatabase = database,
   startAdmissionLayer = heldAdmission,
+  startRefusalProbeLayer: typeof probeLayer | false = probeLayer,
 ) => {
   const db = missing
     ? Layer.effect(
@@ -160,6 +164,7 @@ const makeRuntime = <Output>(
       runContinuationWorker: false,
       continuationRequestsLayer: continuationsLayer,
       startAdmissionLayer,
+      startRefusalProbeLayer,
     },
   ).pipe(
     Layer.provideMerge(Store.layer.pipe(Layer.provideMerge(db))),
@@ -171,18 +176,66 @@ export const runtime = makeRuntime(probeLayer);
 export const startingRuntime = makeRuntime(probeLayer, false, database, startingAdmission).pipe(
   Layer.provideMerge(startingGateLayer),
 );
-export const runtimeWithoutProbe = makeRuntime(Layer.empty);
+export const runtimeWithoutProbe = makeRuntime(Layer.empty, false, database, heldAdmission, false);
 export const legacyRuntime = makeRuntime(probeLayer, "both");
 export const missingAttemptsRuntime = makeRuntime(probeLayer, "attempts");
 export const missingHoldsRuntime = makeRuntime(probeLayer, "holds");
 export const runtimeOn = (sql: SqlClient.SqlClient, withProbe: boolean) =>
-  makeRuntime(withProbe ? probeLayer : Layer.empty, false, Layer.succeed(SqlClient.SqlClient, sql));
+  makeRuntime(
+    withProbe ? probeLayer : Layer.empty,
+    false,
+    Layer.succeed(SqlClient.SqlClient, sql),
+    heldAdmission,
+    withProbe ? probeLayer : false,
+  );
 
 export const seedTasks = Effect.fnUntraced(function* (taskCount = 1) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const sink = yield* Sink.EventSinkV2;
   const start = yield* Start.ProviderTurnStartServiceV2;
+  const outbox = yield* Outbox.EffectOutboxV2;
+  const sql = yield* SqlClient.SqlClient;
   const threadId = ThreadId.make("thread:refusal-parent");
+  const startRun = Effect.fnUntraced(function* (runId: RunId) {
+    const candidates = (yield* outbox.listByThreadId(threadId)).filter(
+      (row) =>
+        row.status === "pending" &&
+        row.request.type === "provider-turn.start" &&
+        row.request.runId === runId,
+    );
+    if (candidates.length !== 1)
+      return yield* Effect.die(`Expected one pending start for fixture run ${runId}`);
+    const effectId = candidates[0]!.id;
+    const workerId = "start-refusal-fixture";
+    const now = DateTime.formatIso(yield* DateTime.now);
+    // This fixture executes only the selected delivery while the general worker is disabled.
+    const updated = yield* sql`UPDATE orchestration_v2_effect_outbox
+      SET status = 'running', attempt_count = attempt_count + 1, lease_owner = ${workerId},
+        updated_at = ${now}, last_error = NULL
+      WHERE effect_id = ${effectId} AND status = 'pending' AND available_at <= ${now}
+      RETURNING effect_id`;
+    const claimed = yield* outbox.get(effectId);
+    if (updated.length !== 1 || Option.isNone(claimed))
+      return yield* Effect.die(`Could not claim fixture start ${effectId}`);
+    return yield* withActiveEffectClaim(outbox, claimed.value, 10_000, false, (custody) =>
+      Effect.gen(function* () {
+        const result = yield* start.start({ threadId, runId }).pipe(Effect.result);
+        if (result._tag === "Failure") {
+          yield* custody.settle((claim) =>
+            outbox.retry({
+              effectId,
+              workerId,
+              claim,
+              delayMs: 0,
+              error: String(result.failure.cause),
+            }),
+          );
+          return yield* result.failure;
+        }
+        yield* custody.settle((claim) => outbox.succeed({ effectId, workerId, claim }));
+      }),
+    );
+  });
   let sequence = 0;
   const event = (value: Omit<OrchestrationV2DomainEvent, "id" | "occurredAt">) =>
     Effect.map(
@@ -325,19 +378,22 @@ export const seedTasks = Effect.fnUntraced(function* (taskCount = 1) {
   const admitted = yield* orchestrator.getThreadProjection(threadId);
   const run = admitted.runs.find((run) => run.userMessageId === delivery.messageId)!;
   const refuse = Effect.gen(function* () {
-    const finalized = yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
-      Stream.filter(
-        ({ event: e }) =>
-          e.type === "run.updated" &&
-          e.payload.id === parent.id &&
-          e.payload.delegatedCompletion?.delivery?.messageId !== delivery.messageId,
-      ),
-      Stream.take(1),
-      Stream.runDrain,
-      Effect.forkChild,
-    );
+    const afterSequence = yield* sink.latestSequence({ threadId });
+    const finalized = yield* sink
+      .stream({ threadId, afterSequence, eventType: "run.updated" })
+      .pipe(
+        Stream.filter(
+          ({ event: e }) =>
+            e.type === "run.updated" &&
+            e.payload.id === parent.id &&
+            e.payload.delegatedCompletion?.delivery?.messageId !== delivery.messageId,
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkChild,
+      );
     yield* Effect.yieldNow;
-    yield* start.start({ threadId, runId: run.id }).pipe(Effect.result);
+    yield* startRun(run.id);
     yield* Fiber.join(finalized);
   });
   const witness = (key: string, native = true, createAttempt = true, witnessDriver = driver) =>
@@ -408,7 +464,7 @@ export const seedTasks = Effect.fnUntraced(function* (taskCount = 1) {
   return {
     orchestrator,
     sink,
-    start,
+    startRun,
     threadId,
     parent,
     taskId,

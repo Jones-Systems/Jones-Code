@@ -1,0 +1,220 @@
+{
+  "schema": "jones.standalone-tests/v1",
+  "entries": [
+    {
+      "glob": ".github/scripts/check-nightly-release.test.cjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": ".github/scripts/mobile-ios-preview-record.test.cjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": ".github/scripts/mobile-preview-comment.test.cjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": ".github/scripts/relay-state-output.test.cjs",
+      "kind": "manual",
+      "reason": "It extracts a step from .github/workflows/release.yml, which Jones defers. scripts/release-smoke.ts runs it only when that workflow exists."
+    },
+    {
+      "glob": ".github/scripts/stage-preview-bundle.test.py",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": ".github/scripts/test-delta.test.cjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": ".github/scripts/thread-transfer-report.test.cjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": ".github/scripts/vercel-deployment-output.test.cjs",
+      "kind": "manual",
+      "reason": "It checks .github/workflows/release.yml and web-preview.yml, which Jones defers. The ci.yml step runs it only when both workflows exist."
+    },
+    {
+      "glob": "apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-thread-monitor-native.yml"
+    },
+    {
+      "glob": "apps/desktop/scripts/ui-evidence/*.test.mjs",
+      "kind": "advisory",
+      "runner": "package.json"
+    },
+    {
+      "glob": "apps/server-swap-cli/*.test.cjs",
+      "kind": "ci",
+      "runner": "apps/server-swap-cli/package.json"
+    },
+    {
+      "glob": "apps/server/integration/jones-e2e/physicalHost.transport.test.py",
+      "kind": "manual",
+      "reason": "No workflow runs it. The physical-host qualification it supports is an explicit operator action."
+    },
+    {
+      "glob": "apps/server/integration/jones-e2e/workspaceLifecycleDev.node-test.mjs",
+      "kind": "manual",
+      "reason": "It needs operator flags (--live --operator <bindings.json>) and native hosts. The recipes in scripts/jones/boundary/checks.json give the invocations."
+    },
+    {
+      "glob": "apps/server/src/jones/conversationWorkspace/*.node-test.mjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": "apps/server/src/jones/workspaceRecreation/*.node-test.mjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": "apps/server/src/jones/workspaceRetirement/*.node-test.mjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": "apps/server/src/jones/workspaceRetirement/CrossRuntime.source-test.mjs",
+      "kind": "manual",
+      "reason": "A source probe that takes a pinned V3 checkout and a qualified Python interpreter as arguments."
+    },
+    {
+      "glob": "apps/web/src/jones/storageCleanupResults/*.node-test.mjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": "native/process-placement/build.test.mjs",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": "scripts/jones/ci/*.node-test.*",
+      "kind": "ci",
+      "runner": ".github/workflows/ci.yml"
+    },
+    {
+      "glob": "scripts/jones/direct-producers/*.node-test.mjs",
+      "kind": "ci",
+      "runner": "scripts/package.json"
+    },
+    {
+      "glob": "scripts/jones/e2e/acp-stub/agent.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-native-workflows.yml"
+    },
+    {
+      "glob": "scripts/jones/incremental-typecheck/*.node-test.mjs",
+      "kind": "ci",
+      "runner": "scripts/package.json"
+    },
+    {
+      "glob": "scripts/jones/mobile/*.node-test.mjs",
+      "kind": "ci",
+      "runner": "scripts/package.json"
+    },
+    {
+      "glob": "scripts/jones/native-enrollment/*.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/native-enrollment-candidate.yml"
+    },
+    {
+      "glob": "scripts/jones/performance/*.node-test.mjs",
+      "kind": "ci",
+      "runner": "scripts/package.json"
+    },
+    {
+      "glob": "scripts/jones/serverParallelism/*.node-test.mjs",
+      "kind": "advisory",
+      "runner": "scripts/jones/serverParallelism/ci-run.mjs"
+    },
+    {
+      "glob": "scripts/jones/signing/*.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-desktop-signing.yml"
+    },
+    {
+      "glob": "scripts/jones/test-scratch/*.node-test.mjs",
+      "kind": "ci",
+      "runner": "scripts/package.json"
+    },
+    {
+      "glob": "scripts/jones/tsrs/*.node-test.mjs",
+      "kind": "ci",
+      "runner": "scripts/package.json"
+    },
+    {
+      "glob": "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs",
+      "kind": "manual",
+      "reason": "It exercises the macOS cold-start fixture, which only runs on a macOS host."
+    },
+    {
+      "glob": "scripts/jones/updates/install-preview-qualification.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-update-qualification.yml"
+    },
+    {
+      "glob": "scripts/jones/updates/install-retention.node-test.mjs",
+      "kind": "ci",
+      "runner": "apps/desktop/src/jones/updates/installRetention.test.ts"
+    },
+    {
+      "glob": "scripts/jones/updates/interrupted-staging-fixture.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-update-qualification.yml"
+    },
+    {
+      "glob": "scripts/jones/updates/native-fixture-support.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-update-qualification.yml"
+    },
+    {
+      "glob": "scripts/jones/updates/native-startup-fixture.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-update-qualification.yml"
+    },
+    {
+      "glob": "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-update-qualification.yml"
+    },
+    {
+      "glob": "scripts/jones/updates/packaged-desktop-pair.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-update-qualification.yml"
+    },
+    {
+      "glob": "scripts/jones/updates/packaged-recovery-fixture.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-update-qualification.yml"
+    },
+    {
+      "glob": "scripts/jones/updates/packaged-recovery-launcher.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-update-qualification.yml"
+    },
+    {
+      "glob": "scripts/jones/updates/packaged-recovery-preload.node-test.mjs",
+      "kind": "advisory",
+      "runner": ".github/workflows/jones-update-qualification.yml"
+    },
+    {
+      "glob": "scripts/jones/worktree-setup/*.node-test.mjs",
+      "kind": "ci",
+      "runner": "scripts/package.json"
+    },
+    {
+      "glob": "scripts/seed-issue-21397.test.py",
+      "kind": "manual",
+      "reason": "No workflow runs it, and it fails on macOS because it compares /var and /private/var temp paths. Wire it after a Linux run."
+    }
+  ]
+}

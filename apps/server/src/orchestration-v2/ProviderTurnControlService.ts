@@ -7,6 +7,7 @@ import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
+  ModelSelection,
   type NodeId,
   ProviderSessionId,
   ProviderThreadId,
@@ -14,21 +15,22 @@ import {
   RunAttemptId,
   ThreadId,
 } from "@t3tools/contracts";
-import * as Clock from "effect/Clock";
 import type * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderControlDeadline } from "@t3tools/provider-core/server/jones/providerControlOutcome";
-import * as ProjectionStore from "./ProjectionStore.ts";
 import * as EventSink from "./EventSink.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import { awaitRestartTerminal } from "../jones/orchestration/RestartPreparation.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
-import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import { STOP_CHILD_BUDGET_MS, STOP_RECOVERY_BUDGET_MS } from "../jones/provider/stopBudgets.ts";
 
 export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnControlError>()(
@@ -38,6 +40,7 @@ export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnCon
     operation: Schema.Literals(["interrupt", "restart", "steer"]),
     providerTurnId: ProviderTurnId,
     turnCompleted: Schema.optional(Schema.Boolean),
+    steerDeclined: Schema.optional(Schema.Boolean),
     /** The provider never confirmed the stop; Force stop is the way out. */
     unresponsive: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
@@ -67,8 +70,31 @@ export interface ProviderTurnControlServiceV2Shape {
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
     readonly messageId: MessageId;
+    readonly modelSelection?: ModelSelection;
     readonly messageIds?: ReadonlyArray<MessageId>;
   }) => Effect.Effect<void, ProviderTurnControlError>;
+  /** Best effort: a turn that ended or moved sessions picks the selection up when it next starts. */
+  readonly applyModelSelection: (input: {
+    readonly threadId: ThreadId;
+    readonly providerSessionId: ProviderSessionId;
+    readonly providerThreadId: ProviderThreadId;
+    readonly modelSelection: ModelSelection;
+  }) => Effect.Effect<
+    void,
+    | ProjectionStore.ProjectionStoreV2Error
+    | ProviderSessionManager.ProviderSessionManagerV2Error
+    | ProviderAdapter.ProviderAdapterV2Error
+  >;
+  /** Best effort: a provider thread that is no longer live picks the title up when its next turn starts. */
+  readonly applyThreadTitle: (input: {
+    readonly threadId: ThreadId;
+    readonly title: string;
+  }) => Effect.Effect<
+    void,
+    | ProjectionStore.ProjectionStoreV2Error
+    | ProviderSessionManager.ProviderSessionManagerV2Error
+    | ProviderAdapter.ProviderAdapterV2Error
+  >;
   readonly interruptAndAwaitTerminal: (input: {
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
@@ -87,14 +113,14 @@ export class ProviderTurnControlServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnControlServiceV2,
   never,
+  | EventSink.EventSinkV2
   | ProjectionStore.ProjectionStoreV2
   | ProviderSessionManager.ProviderSessionManagerV2
-  | EventSink.EventSinkV2
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
+    const eventSink = yield* EventSink.EventSinkV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const sink = yield* EventSink.EventSinkV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
 
     const load = Effect.fn("ProviderTurnControlService.load")(function* (input: {
@@ -177,7 +203,7 @@ export const layer: Layer.Layer<
           );
           return {
             context,
-            providerThread,
+            providerThread: interruptProviderThread,
             providerTurn,
             session: Option.none(),
           };
@@ -194,6 +220,7 @@ export const layer: Layer.Layer<
       }
       return {
         context,
+        // A committed replacement may run on another instance; the old runtime keeps its own.
         providerThread: targetsRecordedSession
           ? providerThread
           : { ...interruptProviderThread, providerInstanceId: session.value.instanceId },
@@ -202,9 +229,67 @@ export const layer: Layer.Layer<
       };
     });
 
+    const awaitSettled = Effect.fn("ProviderTurnControlService.awaitSettled")(function* (
+      threadId: ThreadId,
+      target: ProjectionStore.ProjectionProviderControlTarget,
+    ) {
+      const isSettled = projections
+        .getProviderControlContext(threadId, target)
+        .pipe(
+          Effect.map(
+            ({ providerTurn, attempt }) =>
+              providerTurn?.status !== "running" && attempt?.status !== "running",
+          ),
+        );
+      const afterSequence = yield* eventSink.latestSequence({ threadId });
+      if (yield* isSettled) return;
+      yield* eventSink.stream({ threadId, afterSequence }).pipe(
+        Stream.filter(
+          ({ event }) =>
+            event.type === "provider-turn.updated" || event.type === "run-attempt.updated",
+        ),
+        Stream.mapEffect(() => isSettled),
+        Stream.takeUntil((settled) => settled),
+        Stream.runDrain,
+      );
+    });
+
     return ProviderTurnControlServiceV2.of({
+      applyModelSelection: Effect.fn("ProviderTurnControlService.applyModelSelection")(
+        function* (input) {
+          const { providerThread, providerTurn } = yield* projections.getRunningTurnContext(
+            input.threadId,
+          );
+          if (
+            providerThread?.id !== input.providerThreadId ||
+            providerThread.providerSessionId !== input.providerSessionId ||
+            providerTurn === undefined
+          ) {
+            return;
+          }
+          const session = yield* sessions.get(input.providerSessionId);
+          if (Option.isNone(session) || session.value.applyModelSelection === undefined) return;
+          yield* session.value.applyModelSelection({
+            providerThread,
+            modelSelection: input.modelSelection,
+          });
+        },
+      ),
+      applyThreadTitle: Effect.fn("ProviderTurnControlService.applyThreadTitle")(function* (input) {
+        const { thread, providerThreads } = yield* projections.getThreadRecords(input.threadId, [
+          "providerThreads",
+        ]);
+        const providerThread = providerThreads.find(
+          (candidate) => candidate.id === thread.activeProviderThreadId,
+        );
+        if (!providerThread?.providerSessionId) return;
+        const session = yield* sessions.get(providerThread.providerSessionId);
+        if (Option.isNone(session) || session.value.applyThreadTitle === undefined) return;
+        yield* session.value.applyThreadTitle({ providerThread, title: input.title });
+      }),
       interrupt: Effect.fn("ProviderTurnControlService.interrupt")(
         function* (input) {
+          // One Stop budget covers the child fleet; adapters inherit it as their control deadline.
           const interruptDeadline = (yield* Clock.currentTimeMillis) + STOP_CHILD_BUDGET_MS;
           const loaded = yield* load({ ...input, operation: "interrupt" });
           const session = Option.isSome(loaded.session)
@@ -260,24 +345,17 @@ export const layer: Layer.Layer<
                   ),
               }),
             );
-          const remaining = Math.max(0, interruptDeadline - (yield* Clock.currentTimeMillis));
-          // Use real time; ingestion fibers do not advance TestClock and would leave Stop blocked.
-          yield* Effect.gen(function* () {
-            const deadline = (yield* Clock.currentTimeMillis) + Math.min(remaining, 2_000);
-            while (
-              loaded.providerTurn.status === "running" &&
-              (yield* Clock.currentTimeMillis) < deadline
-            ) {
-              const current = yield* projections.getProviderControlContext(input.threadId, input);
-              if (
-                current.providerTurn?.status !== "running" &&
-                current.attempt?.status !== "running"
-              ) {
-                return;
-              }
-              yield* Effect.sleep("10 millis");
-            }
-          }).pipe(Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()));
+          if (loaded.providerTurn.status === "running") {
+            // Let native terminal ingestion finalize the attempt before the Stop follow-up repairs it.
+            // The wait spends only what remains of the Stop budget, at most two seconds.
+            const remaining = Math.max(0, interruptDeadline - (yield* Clock.currentTimeMillis));
+            const { runAttemptId } = loaded.providerTurn;
+            yield* awaitSettled(input.threadId, {
+              providerThreadId: input.providerThreadId,
+              providerTurnId: input.providerTurnId,
+              ...(runAttemptId === null ? {} : { attemptId: runAttemptId }),
+            }).pipe(Effect.timeoutOption(Math.min(remaining, 2_000)));
+          }
         },
         (effect, input) =>
           effect.pipe(
@@ -311,6 +389,8 @@ export const layer: Layer.Layer<
             return;
           }
 
+          // A restart keeps the native goal, and fails before the session manager's interrupt
+          // timeout when the provider never answers; a timeout is never treated as stopped.
           yield* loaded.session.value
             .interruptTurn({
               providerThread: loaded.providerThread,
@@ -319,10 +399,11 @@ export const layer: Layer.Layer<
             })
             .pipe(Effect.timeout(STOP_RECOVERY_BUDGET_MS));
 
+          // Only persisted terminal evidence for the captured turn and attempt releases the restart.
           yield* awaitRestartTerminal({
             target: input,
             projections,
-            sink,
+            sink: eventSink,
           });
         },
         (effect, input) =>
@@ -383,6 +464,7 @@ export const layer: Layer.Layer<
             });
           }
           let batchPayload: { text: string; attachments: typeof message.attachments } | undefined;
+          let capturedMessages: ReadonlyArray<typeof message> = [message];
           if (input.messageIds !== undefined) {
             const records = yield* projections.getThreadRecords(input.threadId, ["messages"], {
               messageIds: input.messageIds,
@@ -406,7 +488,16 @@ export const layer: Layer.Layer<
                 cause: "The persisted batch membership changed.",
               });
             const plan = planQueuedSteerBatch(
-              messages.map((row) => ({ message: row!, eligible: true })),
+              messages.map((row) => ({
+                message: {
+                  ...row!,
+                  text: projectComposerContextForProvider({
+                    text: row!.text,
+                    records: row!.context?.records ?? [],
+                  }),
+                },
+                eligible: true,
+              })),
             );
             if (plan.count !== messages.length)
               return yield* new ProviderTurnControlError({
@@ -416,13 +507,68 @@ export const layer: Layer.Layer<
                 cause: "The persisted batch exceeds the steering budget.",
               });
             batchPayload = plan;
+            capturedMessages = messages.map((row) => row!);
           }
+          const fresh = yield* projections.getProviderControlContext(input.threadId, input);
+          const live = yield* sessions.get(input.providerSessionId, { touchActivity: false });
+          const stopped =
+            message.notification === undefined
+              ? undefined
+              : yield* projections.getThreadRecords(input.threadId, ["turnItems"], {
+                  turnItemTypes: ["run_interrupt_request"],
+                  turnItemRunIds: [run.id],
+                });
+          const persisted = yield* projections.getThreadRecords(input.threadId, ["messages"], {
+            messageIds: capturedMessages.map((row) => row.id),
+          });
+          if (
+            (message.notification !== undefined &&
+              (message.createdBy !== "agent" ||
+                message.creationSource !== "server" ||
+                (!(
+                  message.notification.source.kind === "delegated_task" &&
+                  message.notification.outcome === "updated"
+                ) &&
+                  fresh.providerThread?.goal?.status !== "active") ||
+                (stopped?.turnItems.length ?? 0) > 0)) ||
+            fresh.run?.id !== run.id ||
+            fresh.run.activeAttemptId !== run.activeAttemptId ||
+            fresh.run.status !== "running" ||
+            !Schema.toEquivalence(ModelSelection)(fresh.run.modelSelection, run.modelSelection) ||
+            fresh.providerTurn?.id !== loaded.providerTurn.id ||
+            fresh.providerThread?.providerSessionId !== loaded.providerThread.providerSessionId ||
+            fresh.providerThread?.runtimeIdentity?.runtimeGeneration !==
+              loaded.providerThread.runtimeIdentity?.runtimeGeneration ||
+            fresh.providerThread?.runtimeIdentity?.evidenceRevision !==
+              loaded.providerThread.runtimeIdentity?.evidenceRevision ||
+            fresh.providerThread?.nativeThreadRef?.nativeId !==
+              loaded.providerThread.nativeThreadRef?.nativeId ||
+            Option.isNone(live) ||
+            live.value !== loaded.session.value ||
+            capturedMessages.some(
+              (row) =>
+                JSON.stringify(persisted.messages.find((next) => next.id === row.id)) !==
+                JSON.stringify(row),
+            )
+          )
+            return yield* new ProviderTurnControlError({
+              threadId: input.threadId,
+              operation: "steer",
+              providerTurnId: input.providerTurnId,
+              cause:
+                message.notification === undefined
+                  ? "The captured steering target or persisted batch changed before dispatch."
+                  : new GoalNotificationNotDelivered(),
+            });
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
               runId: run.id,
               providerThread: loaded.providerThread,
               providerTurnId: loaded.providerTurn.id,
+              ...(input.modelSelection === undefined
+                ? {}
+                : { modelSelection: input.modelSelection }),
               message: {
                 messageId: message.id,
                 text:
@@ -443,14 +589,28 @@ export const layer: Layer.Layer<
               },
             })
             .pipe(
+              Effect.catchTags({
+                ProviderAdapterSteerDeclinedError: (cause) =>
+                  Effect.fail(
+                    new ProviderTurnControlError({
+                      threadId: input.threadId,
+                      operation: "steer",
+                      providerTurnId: input.providerTurnId,
+                      steerDeclined: true,
+                      cause,
+                    }),
+                  ),
+              }),
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  if (isProviderTurnControlError(cause)) return yield* cause;
                   const current = yield* projections.getProviderControlContext(
                     input.threadId,
                     input,
                   );
                   // A plain rejection from a turn the projection shows completed took nothing in.
-                  // Typed outcomes and every other notification failure stay unknown.
+                  // Typed steer outcomes stay unknown, as does any other notification failure;
+                  // only the provider's explicit not-delivered result proves no delivery.
                   const rejectedByCompletedTurn =
                     findSteerFailure(cause) === undefined &&
                     current.providerTurn?.status === "completed";

@@ -12,6 +12,7 @@ import {
   TurnItemId,
   MessageId,
 } from "@t3tools/contracts";
+import type * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -32,7 +33,7 @@ export const replacementSelection = {
 } satisfies ModelSelection;
 const pooledCapabilities: OrchestrationV2ProviderCapabilities = CodexProviderCapabilitiesV2;
 export interface ActiveTurn {
-  readonly events: Queue.Queue<ProviderAdapter.ProviderAdapterV2Event>;
+  readonly events: Queue.Queue<ProviderAdapter.ProviderAdapterV2Event, Cause.Done>;
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly providerTurnId: ProviderTurnId;
 }
@@ -134,7 +135,7 @@ export function makeRestartAdapter(
         yield* Deferred.succeed(gate.entered, undefined);
         yield* Deferred.await(gate.release);
       }
-      const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+      const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event, Cause.Done>();
       const now = yield* DateTime.now;
       const providerSession: OrchestrationV2ProviderSession = {
         id: sessionInput.providerSessionId,
@@ -261,14 +262,23 @@ export function makeRestartAdapter(
                 driver,
                 detail: "Synthetic writer binding changed.",
               });
-            return {
-              binding,
-              evidence:
-                allowProducerRetirement &&
-                !sessionCapabilities.sessions.supportsMultipleProviderThreadsPerSession
-                  ? ("producer_exited" as const)
-                  : ("thread_closed" as const),
-            };
+            if (
+              allowProducerRetirement &&
+              !sessionCapabilities.sessions.supportsMultipleProviderThreadsPerSession
+            ) {
+              yield* Queue.offer(events, {
+                type: "provider_session.updated",
+                driver,
+                providerSession: {
+                  ...providerSession,
+                  status: "stopped",
+                  updatedAt: yield* DateTime.now,
+                },
+              });
+              yield* Queue.end(events);
+              return { binding, evidence: "producer_exited" as const };
+            }
+            return { binding, evidence: "thread_closed" as const };
           },
         ),
         resumeThread: ({ providerThread, modelSelection }) =>
@@ -381,6 +391,7 @@ export const finishActive = Effect.fn("ThreadConfigurationTest.finishActive")(fu
 ) {
   const active = (yield* Ref.get(state)).activeTurn;
   if (active === null) return yield* Effect.die("No held turn");
+  const { driver } = active.input.providerThread;
   const now = yield* DateTime.now;
   yield* Queue.offer(active.events, {
     type: "turn_item.updated",

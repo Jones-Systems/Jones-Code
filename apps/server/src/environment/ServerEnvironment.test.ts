@@ -35,6 +35,8 @@ import {
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "./ServerEnvironment.ts";
 
+const encodeDescriptor = Schema.encodeEffect(ExecutionEnvironmentDescriptor);
+
 class DescriptorTestApi extends HttpApi.make("environment").add(
   EnvironmentHttpApi.groups.metadata,
 ) {}
@@ -168,6 +170,57 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
         expect(yield* readHttp).toEqual(before);
       }),
   );
+  // External queue dispatchers read the descriptor with a byte limit (t3q: 4096, raised to
+  // 16384 alongside personal Workstreams HTTP). Every host-dependent branch is forced on.
+  it.effect("keeps the descriptor with every optional branch within the queue read limit", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped();
+      buildMetadata.jonesSource = {
+        repository: "Jones-Systems/Jones-Code",
+        sha: "a".repeat(40),
+        tree: "b".repeat(40),
+      };
+      buildMetadata.jonesBuildStartedAt = "2026-11-14T12:34:56.789Z";
+      const served = yield* Effect.gen(function* () {
+        return yield* (yield* ServerEnvironment.ServerEnvironment).getDescriptor;
+      }).pipe(
+        Effect.provide(layerServerEnvironment(baseDir)),
+        Effect.ensuring(
+          Effect.sync(() => {
+            delete buildMetadata.jonesSource;
+            delete buildMetadata.jonesBuildStartedAt;
+          }),
+        ),
+      );
+      expect(served.jonesSource).toBeDefined();
+      expect(served.capabilities.workstreamsPersonalHttp).toEqual({ version: 1 });
+      const maximal: ExecutionEnvironmentDescriptor = {
+        ...served,
+        label: "Synthetic environment label of typical hostname size",
+        platform: { ...served.platform, machine: "mac-studio" },
+        databaseMigration: 9999,
+        capabilities: {
+          ...served.capabilities,
+          fastWorktreeCheckout: true,
+          localServerStop: true,
+          serverSelfUpdate: "desktop-managed",
+          serverInstallation: {
+            kind: "npm-global",
+            prefix: "/Users/synthetic-owner/.local/share/npm-global",
+          },
+          serverSelfUpdateProgress: true,
+          desktopAppUpdate: true,
+          desktopAppChannelSwitch: true,
+          agentActivityPublishing: true,
+        },
+      };
+      const encoded = yield* encodeDescriptor(maximal);
+      const bytes = new TextEncoder().encode(JSON.stringify(encoded)).length;
+      yield* Effect.logInfo(`environment descriptor with every optional branch: ${bytes} bytes`);
+      expect(bytes).toBeLessThan(16_384);
+    }),
+  );
   it.effect.each(["2026-10-20T21:13:43Z", undefined, "invalid"])(
     "forwards only valid embedded build time %s with the descriptor version",
     (startedAt) =>
@@ -240,6 +293,50 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
         });
       }
     }),
+  );
+  it.effect.each([
+    { desktopAppUpdate: false, advertised: undefined },
+    { desktopAppUpdate: true, advertised: true },
+  ])(
+    "advertises desktop app updates only when the desktop can install them ($desktopAppUpdate)",
+    ({ desktopAppUpdate, advertised }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        const config = yield* makeServerConfig(baseDir);
+        yield* fs.makeDirectory(config.stateDir, { recursive: true });
+        const descriptor = yield* Effect.gen(function* () {
+          const environment = yield* ServerEnvironment.ServerEnvironment;
+          return yield* environment.getDescriptor;
+        }).pipe(
+          Effect.provide(
+            ServerEnvironment.layer.pipe(
+              Layer.provide(layerEmptySecretStore),
+              Layer.provide(
+                ServerConfig.layer({
+                  ...config,
+                  mode: "desktop",
+                  desktopTelemetryControlFd: 5,
+                  desktopAppUpdate,
+                }),
+              ),
+            ),
+          ),
+          Effect.provideService(HostProcess.Environment, {}),
+        );
+        const capabilities = descriptor.capabilities;
+        expect({
+          serverSelfUpdate: capabilities.serverSelfUpdate,
+          desktopAppUpdate: capabilities.desktopAppUpdate,
+          desktopAppChannelSwitch: capabilities.desktopAppChannelSwitch,
+          serverSelfUpdateProgress: capabilities.serverSelfUpdateProgress,
+        }).toEqual({
+          serverSelfUpdate: "desktop-managed",
+          desktopAppUpdate: advertised,
+          desktopAppChannelSwitch: advertised,
+          serverSelfUpdateProgress: advertised,
+        });
+      }),
   );
   it.effect.each([
     { platform: "darwin", architecture: "arm64", supported: true },
@@ -413,7 +510,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
     }),
   );
 
-  it.effect("advertises desktopAppUpdate only with desktop mode and the control fd", () =>
+  it.effect("requires desktop mode and a control fd to advertise desktop app updates", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -430,7 +527,9 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
           Effect.provide(
             ServerEnvironment.layer.pipe(
               Layer.provide(ServerSecretStore.layer),
-              Layer.provide(ServerConfig.layer({ ...serverConfig, ...overrides })),
+              Layer.provide(
+                ServerConfig.layer({ ...serverConfig, desktopAppUpdate: true, ...overrides }),
+              ),
             ),
           ),
         );
@@ -681,7 +780,7 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
     }),
   );
 
-  it.effect("advertises desktopAppUpdate only with desktop mode and the control fd", () =>
+  it.effect("requires desktop mode and a control fd to advertise desktop app updates", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -698,7 +797,9 @@ it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
           Effect.provide(
             ServerEnvironment.layer.pipe(
               Layer.provide(ServerSecretStore.layer),
-              Layer.provide(ServerConfig.layer({ ...serverConfig, ...overrides })),
+              Layer.provide(
+                ServerConfig.layer({ ...serverConfig, desktopAppUpdate: true, ...overrides }),
+              ),
             ),
           ),
         );

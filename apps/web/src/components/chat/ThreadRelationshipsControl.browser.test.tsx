@@ -28,9 +28,12 @@ vi.mock(import("@effect/atom-react"), async (original) => ({
   useAtomValue: (() => false) as never,
 }));
 
-vi.mock(import("../../state/entities"), () => ({
-  useQuietThreadShell: (() => null) as never,
+vi.mock(import("../../state/entities"), async (original) => ({
+  ...(await original()),
   useThreadProjection: ((ref: unknown) =>
+    ref === null ? null : { projection: state.projection }) as never,
+  useQuietThreadShell: (() => null) as never,
+  useQuietThreadProjection: ((ref: unknown) =>
     ref === null ? null : { projection: state.projection }) as never,
   useThreadRelationshipShells: (() =>
     state.projection === null
@@ -95,6 +98,7 @@ async function render(...args: Parameters<typeof renderBase>) {
   return screen;
 }
 import { makeThreadProjectionFixture } from "../../test-fixtures";
+import { ScrollArea } from "../ui/scroll-area";
 import { ToastProvider } from "../ui/toast";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 
@@ -380,6 +384,33 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
   expect(screen.router?.state.location.pathname).toBe("/environment/fork");
 });
 
+it("explains why Merge back is unavailable before the fork completes a run", async () => {
+  setup();
+  state.projection = { ...(state.projection as Record<string, unknown>), runs: [] };
+  await using screen = await render(
+    <ThreadRelationshipsPanel
+      environmentId={environmentId}
+      threadId={threadId}
+      showLineage
+      showSideChats={false}
+    />,
+    { router: "/environment/fork" },
+  );
+
+  const mergeBack = screen.getByRole("button", { name: "Merge back to source conversation" });
+  await expect.element(mergeBack).toBeDisabled();
+  await userEvent.hover(mergeBack.element().closest('[data-slot="tooltip-trigger"]')!);
+  await vi.waitFor(() =>
+    expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toBe(
+      "Complete a run in this fork before merging it back",
+    ),
+  );
+
+  state.commandSucceeds = true;
+  await mergeBack.click({ force: true });
+  expect(screen.router?.state.location.pathname).toBe("/environment/fork");
+});
+
 it("shows a delegated-from thread's full title in its tooltip even when its environment is unavailable", async () => {
   setup();
   const longTitle = "Parent task delegated from another machine that has a long description";
@@ -455,4 +486,45 @@ it("hides a deleted fork and keeps unloaded and archived forks with their curren
   await expect.element(screen.getByText("Unloaded fork", { exact: true })).toBeVisible();
   await expect.element(screen.getByText("Archived fork", { exact: true })).toBeVisible();
   await expect.element(screen.getByText("deleted-fork", { exact: true })).not.toBeInTheDocument();
+});
+
+it.each([1, 18])("continues scrolling the panel past a list of %i subagents", async (count) => {
+  setup();
+  const projection = makeThreadProjectionFixture();
+  state.projection = projection;
+  state.relatedShells = Array.from({ length: count }, (_, index) => ({
+    id: ThreadId.make(`subagent-${index}`),
+    title: `Subagent ${index}`,
+    forkedFrom: null,
+    lineage: { parentThreadId: projection.thread.id, relationshipToParent: "subagent" },
+    activityRunStatus: "running",
+    status: "running",
+  }));
+  await using screen = await render(
+    <div data-testid="panel" style={{ height: 320, width: 280 }}>
+      <ScrollArea>
+        <ThreadRelationshipsPanel
+          environmentId={environmentId}
+          threadId={projection.thread.id}
+          showLineage
+          showSideChats
+        />
+        <div style={{ height: 600 }} />
+      </ScrollArea>
+    </div>,
+  );
+  if (count > 6) {
+    await screen.getByRole("button", { name: "Show 12 more" }).click();
+    await expect.element(screen.getByText("Subagent 17", { exact: true })).toBeInTheDocument();
+  }
+  const list = screen.getByRole("list", { name: "Related threads" }).element();
+  const viewport = screen
+    .getByTestId("panel")
+    .element()
+    .querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
+  list.scrollTop = list.scrollHeight;
+  if (count > 6) expect(list.scrollTop).toBeGreaterThan(0);
+  viewport.scrollTop = 0;
+  await userEvent.wheel(list, { delta: { y: 300 } });
+  await vi.waitFor(() => expect(viewport.scrollTop).toBeGreaterThan(0));
 });

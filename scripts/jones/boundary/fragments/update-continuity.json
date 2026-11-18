@@ -23,9 +23,17 @@
     "apps/desktop/src/jones/updates/jonesQuitPreparation.test.ts",
     "packages/shared/src/jones/shutdownBudget.ts"
   ],
-  "hookPaths": [],
+  "hookPaths": ["apps/desktop/src/app/DesktopLifecycle.ts"],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendPool.test.ts",
+      "to": "packages/shared/src/jones/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/updates/continuationPrompt.ts"
+    },
     {
       "from": "apps/server/src/serviceLauncher.ts",
       "to": "apps/server/src/jones/updates/launcherOperation.ts"
@@ -85,6 +93,18 @@
     {
       "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
       "to": "packages/shared/src/jones/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/desktop/src/app/DesktopLifecycle.ts",
+      "to": "packages/shared/src/jones/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+      "to": "packages/shared/src/jones/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts"
     }
   ]
 }

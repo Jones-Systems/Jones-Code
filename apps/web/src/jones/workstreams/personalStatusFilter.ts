@@ -1,6 +1,7 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   groupPersonalThreads,
+  openPersonalWorkstreams,
   personalThreadKey,
   type PersonalThreadRef,
   type PersonalWorkstreamsState,
@@ -11,6 +12,7 @@ import {
   readLocalStorageValue,
   subscribeLocalStorageKey,
   useLocalStorage,
+  writeLocalStorageValue,
 } from "../../hooks/useLocalStorage";
 import type { SidebarThreadSummary } from "../../types";
 import type { ThreadStatusFilter } from "../threadStatusFilter/model";
@@ -18,36 +20,165 @@ import { useThreadStatusSelection } from "../threadStatusFilter/useThreadStatusF
 
 export type PersonalStatusFilter = ThreadStatusFilter | "hide-input" | "hide-done";
 
-const PersonalStatusFilterSchema = Schema.NullOr(
-  Schema.Literals(["all", "working", "input", "done", "hide-working", "hide-input", "hide-done"]),
-);
+/**
+ * A stored choice carries a revision so the shared "Workstreams" pill and each
+ * group's own pill order themselves by recency instead of by who wrote last
+ * into one key. `filter: null` is a tombstone: "follow the global filter".
+ */
+export interface PersonalStatusChoice {
+  readonly filter: PersonalStatusFilter | null;
+  readonly rev: number;
+}
+
+const FilterSchema = Schema.Literals([
+  "all",
+  "working",
+  "input",
+  "done",
+  "hide-working",
+  "hide-input",
+  "hide-done",
+]);
+const ChoiceSchema = Schema.Struct({
+  filter: Schema.NullOr(FilterSchema),
+  rev: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+// Earlier builds stored the bare filter literal; read it as revision 0 and write only the struct.
+const StoredLocalSchema = Schema.NullOr(Schema.Union([FilterSchema, ChoiceSchema]));
+const StoredChoiceSchema = Schema.NullOr(ChoiceSchema);
 
 export const personalStatusFilterKey = (id: string) => `jones:workstreams:status-filter:${id}`;
+export const personalSharedStatusFilterKey = "jones:workstreams:shared-status-filter";
 
+export function readPersonalStatusChoice(id: string): PersonalStatusChoice | null {
+  const stored = readLocalStorageValue(personalStatusFilterKey(id), null, StoredLocalSchema);
+  return typeof stored === "string" ? { filter: stored, rev: 0 } : stored;
+}
+
+export function readSharedPersonalStatusChoice(): PersonalStatusChoice | null {
+  return readLocalStorageValue(personalSharedStatusFilterKey, null, StoredChoiceSchema);
+}
+
+/** The group's own stored filter, ignoring the shared choice. */
 export function readPersonalStatusFilter(id: string): PersonalStatusFilter | null {
-  return readLocalStorageValue(personalStatusFilterKey(id), null, PersonalStatusFilterSchema);
+  return readPersonalStatusChoice(id)?.filter ?? null;
+}
+
+/**
+ * The group's own choice wins while it is at least as recent as the shared
+ * one; otherwise the shared choice applies. `null` follows the global filter.
+ */
+export function effectivePersonalStatusFilter(
+  local: PersonalStatusChoice | null,
+  shared: PersonalStatusChoice | null,
+): PersonalStatusFilter | null {
+  if (local !== null && local.rev >= (shared?.rev ?? 0)) return local.filter;
+  return shared?.filter ?? null;
+}
+
+/** A group's write never ticks the sequence; it is only never older than the shared choice. */
+export function stampLocalPersonalStatusChoice(
+  filter: PersonalStatusFilter | null,
+  shared: PersonalStatusChoice | null,
+  own: PersonalStatusChoice | null,
+): PersonalStatusChoice {
+  return { filter, rev: Math.max(shared?.rev ?? 0, own?.rev ?? 0) };
+}
+
+/** A shared write is newer than every present group's choice, including after the shared key was lost. */
+export function nextSharedPersonalStatusChoice(
+  filter: PersonalStatusFilter | null,
+  shared: PersonalStatusChoice | null,
+  locals: readonly (PersonalStatusChoice | null)[],
+): PersonalStatusChoice {
+  return {
+    filter,
+    rev: 1 + Math.max(shared?.rev ?? 0, ...locals.map((local) => local?.rev ?? 0)),
+  };
+}
+
+function writeChoice(key: string, choice: PersonalStatusChoice) {
+  // A struct never equals null, so clearing keeps its revision instead of removing the key.
+  writeLocalStorageValue(key, choice, null, StoredChoiceSchema);
+}
+
+export function setPersonalStatusFilter(id: string, filter: PersonalStatusFilter | null) {
+  writeChoice(
+    personalStatusFilterKey(id),
+    stampLocalPersonalStatusChoice(
+      filter,
+      readSharedPersonalStatusChoice(),
+      readPersonalStatusChoice(id),
+    ),
+  );
+}
+
+export function setSharedPersonalStatusFilter(
+  ids: readonly string[],
+  filter: PersonalStatusFilter | null,
+) {
+  writeChoice(
+    personalSharedStatusFilterKey,
+    nextSharedPersonalStatusChoice(
+      filter,
+      readSharedPersonalStatusChoice(),
+      ids.map(readPersonalStatusChoice),
+    ),
+  );
+}
+
+type FilterUpdate =
+  | PersonalStatusFilter
+  | null
+  | ((current: PersonalStatusFilter | null) => PersonalStatusFilter | null);
+
+function usePersonalStatusChoices(ids: readonly string[]) {
+  const subscribe = (onChange: () => void) => {
+    if (typeof window === "undefined") return () => {};
+    const stops = [personalSharedStatusFilterKey, ...ids.map(personalStatusFilterKey)].map((key) =>
+      subscribeLocalStorageKey(key, onChange),
+    );
+    return () => stops.forEach((stop) => stop());
+  };
+  const getSnapshot = () =>
+    JSON.stringify([readSharedPersonalStatusChoice(), ...ids.map(readPersonalStatusChoice)]);
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const [shared, ...locals] = JSON.parse(snapshot) as Array<PersonalStatusChoice | null>;
+  return { shared: shared ?? null, locals };
 }
 
 export function usePersonalStatusFilter(id: string) {
-  const [filter, setFilter] = useLocalStorage(
-    personalStatusFilterKey(id),
-    null,
-    PersonalStatusFilterSchema,
-  );
+  const { shared, locals } = usePersonalStatusChoices([id]);
+  const filter = effectivePersonalStatusFilter(locals[0] ?? null, shared);
+  const setFilter = (update: FilterUpdate) => {
+    const next =
+      typeof update === "function"
+        ? update(
+            effectivePersonalStatusFilter(
+              readPersonalStatusChoice(id),
+              readSharedPersonalStatusChoice(),
+            ),
+          )
+        : update;
+    setPersonalStatusFilter(id, next);
+  };
   return { filter, setFilter };
 }
 
+/** The Workstreams header pill: one choice applied to every named group. */
+export function useSharedPersonalStatusFilter(ids: readonly string[]) {
+  const [shared] = useLocalStorage(personalSharedStatusFilterKey, null, StoredChoiceSchema);
+  const setFilter = (filter: PersonalStatusFilter | null) =>
+    setSharedPersonalStatusFilter(ids, filter);
+  return { filter: shared?.filter ?? null, setFilter };
+}
+
 function usePersonalStatusFilters(state: PersonalWorkstreamsState) {
-  const ids = state.workstreams.map((workstream) => workstream.id);
-  const subscribe = (onChange: () => void) => {
-    if (typeof window === "undefined") return () => {};
-    const stops = ids.map((id) => subscribeLocalStorageKey(personalStatusFilterKey(id), onChange));
-    return () => stops.forEach((stop) => stop());
-  };
-  const getSnapshot = () => JSON.stringify(ids.map((id) => readPersonalStatusFilter(id)));
-  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  const filters = JSON.parse(snapshot) as Array<PersonalStatusFilter | null>;
-  return new Map(ids.map((id, index) => [id, filters[index] ?? null]));
+  const ids = openPersonalWorkstreams(state).map(({ id }) => id);
+  const { shared, locals } = usePersonalStatusChoices(ids);
+  return new Map(
+    ids.map((id, index) => [id, effectivePersonalStatusFilter(locals[index] ?? null, shared)]),
+  );
 }
 
 type LocalStatusSelections<T> = Readonly<Record<ThreadStatusFilter, readonly T[]>>;

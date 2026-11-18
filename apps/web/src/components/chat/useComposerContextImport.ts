@@ -8,18 +8,15 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import type { RefObject } from "react";
 import type { ChatComposerProps } from "./ChatComposer";
-import {
-  type ComposerContextClipboardFragment,
-  type ComposerContextRecord,
-  type EnvironmentId,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+import type {
+  ComposerContextClipboardFragment,
+  ComposerContextRecord,
+  EnvironmentId,
 } from "@t3tools/contracts";
 import {
   type ComposerFileAttachment,
   type ComposerImageAttachment,
   type DraftId,
-  composerFileMatchesReattachMarker,
-  composerFileNeedsReattach,
   useComposerDraftStore,
 } from "../../composerDraftStore";
 import { type PendingUserInput } from "../../session-logic";
@@ -42,8 +39,8 @@ import { copiedComposerAttachmentFile } from "~/lib/copiedComposerAttachments";
 import { countQuestionAttachments, questionAttachmentDraftId } from "../../questionAttachments";
 import { collectInlineContextIds } from "../../lib/composerContextReferences";
 import { elementContextToPreviewAnnotation } from "../../lib/elementContext";
-import { orchestrationEnvironment } from "~/state/orchestration";
 import { pendingDraftWork } from "./pendingDraftWork";
+import { readComposerImageBytes } from "./composerAttachmentFiles";
 import { randomUUID } from "~/lib/utils";
 import { readPreparedConnection } from "~/state/session";
 import { resolveAssetUrl } from "~/assets/assetUrls";
@@ -53,7 +50,6 @@ import {
   type ComposerDraftContextRecords,
   uploadedContextRecordFromDraft,
 } from "../composerContextPresentation";
-import { useAtomCommand } from "../../state/use-atom-command";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { countPreparingComposerImages } from "./preparingComposerImages";
@@ -90,7 +86,6 @@ export function useComposerContextImport(input: {
   readonly composerImages: ReadonlyArray<ComposerImageAttachment>;
   readonly composerFilesRef: ChatComposerProps["composerFilesRef"];
   readonly promptRef: RefObject<string>;
-  readonly pendingThreadImportsRef: RefObject<Map<string, number>>;
   readonly addComposerFilesToDraft: (files: ComposerFileAttachment[]) => string[];
 }) {
   const {
@@ -105,9 +100,7 @@ export function useComposerContextImport(input: {
     pendingUserInputs,
     composerContextRecords,
     composerImages,
-    composerFilesRef,
     promptRef,
-    pendingThreadImportsRef,
     addComposerFilesToDraft,
   } = input;
   const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
@@ -128,9 +121,6 @@ export function useComposerContextImport(input: {
     (store) => store.addEnvironmentContexts,
   );
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, { reportFailure: false });
-  const loadThreadTranscript = useAtomCommand(orchestrationEnvironment.threadTranscript, {
-    reportFailure: false,
-  });
   const countReservedAttachments = () => {
     const questionRequest = pendingUserInputs[0];
     const otherQuestionKeys =
@@ -151,11 +141,9 @@ export function useComposerContextImport(input: {
       (draft?.images.length ?? 0) +
       (draft?.files.length ?? 0) +
       countPreparingComposerImages(attachmentTargetKey) +
-      (pendingThreadImportsRef.current.get(attachmentTargetKey) ?? 0) +
       countQuestionAttachments(otherQuestionKeys)
     );
   };
-  const countReservedAttachmentsStable = useStableCallback(countReservedAttachments);
   const runAttachmentImport = async (
     record: Extract<ComposerContextRecord, { kind: "image" | "file" }>,
     localId: string,
@@ -198,6 +186,8 @@ export function useComposerContextImport(input: {
         fail("Downloading it from the source failed.");
         return;
       }
+      file = new File([blob], record.name, { type: record.mimeType || blob.type });
+      if (record.kind === "image") await readComposerImageBytes(file);
       // Question attachments have no inline reference; annotations can own their screenshots.
       const references = new Set(collectInlineContextIds(promptRef.current));
       if (
@@ -212,30 +202,10 @@ export function useComposerContextImport(input: {
         )
       )
         return;
-      file = new File([blob], record.name, { type: record.mimeType || blob.type });
     }
     // The draft these bytes belong to may have been sent or switched away from while they
     // downloaded. Dropping them here keeps them out of whatever draft is open now.
     if (attachmentTargetKeyRef.current !== importTargetKey) return;
-    const replacesFileMarker =
-      record.kind === "file" &&
-      composerFilesRef.current.some(
-        (candidate) =>
-          composerFileNeedsReattach(candidate) &&
-          composerFileMatchesReattachMarker(candidate, {
-            name: record.name,
-            mimeType: file.type,
-            sizeBytes: file.size,
-          }),
-      );
-    if (
-      !replacesFileMarker &&
-      (pendingThreadImportsRef.current.get(importTargetKey) ?? 0) > 0 &&
-      countReservedAttachments() >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS
-    ) {
-      fail("The attachment limit has been reached.");
-      return;
-    }
     if (record.kind === "image") {
       const accepted = addComposerDraftImages(
         attachmentDraftTarget,
@@ -308,7 +278,7 @@ export function useComposerContextImport(input: {
     for (const candidate of orderedRecords) {
       // Producer ids fold into context ids, so two different excerpts can collide. Only skip
       // when the draft already holds the same payload; a colliding but different record is
-      // re-minted under a fresh id so both survive the paste.
+      // re-minted under a fresh id so both survive the paste. Threads resolve below.
       const record = asKnownContextRecord(candidate);
       if (!record) continue;
       // A reminted annotation needs its screenshot under the new annotation id.
@@ -349,7 +319,7 @@ export function useComposerContextImport(input: {
       if (
         existingRecord &&
         isSameComposerContextPayload(existingRecord, record) &&
-        (record.kind !== "thread" || threadDraftTarget === attachmentDraftTarget)
+        record.kind !== "thread"
       ) {
         if (record.kind === "preview-annotation" && record.screenshotContextId) {
           skippedDependentAttachmentIds.add(record.screenshotContextId);
@@ -395,14 +365,25 @@ export function useComposerContextImport(input: {
           break;
         }
         case "thread": {
-          // Jones captures an authorized source excerpt for a foreign machine instead of
-          // asking the destination agent to resolve a reference on that machine.
+          // Threads reuse their destination record by identity, reminting only on an ID collision.
+          const threads = getComposerDraft(threadDraftTarget)?.threadContexts ?? [];
+          const attached = threads.find(
+            (thread) =>
+              thread.environmentId === record.environmentId && thread.threadId === record.threadId,
+          );
+          const imported =
+            attached ??
+            (threads.some((thread) => thread.contextId === record.contextId)
+              ? { ...record, contextId: toKindScopedComposerContextId("thread", randomUUID()) }
+              : record);
           const capture =
             threadDraftTarget === attachmentDraftTarget
               ? captureThreadContexts
               : captureComposerThreadContexts;
-          capture([record], { appendReference: false });
-          rewritten.set(record.contextId, record.contextId);
+          capture([imported], {
+            appendReference: false,
+          });
+          rewritten.set(record.contextId, imported.contextId);
           break;
         }
         case "environment": {
@@ -441,9 +422,7 @@ export function useComposerContextImport(input: {
   const importContextFragmentStable = useStableCallback(importContextFragment);
 
   return {
-    loadThreadTranscript,
     countReservedAttachments,
-    countReservedAttachmentsStable,
     importContextRecords,
     importContextFragment,
     importContextFragmentStable,

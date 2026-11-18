@@ -1,3 +1,4 @@
+import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
 // @effect-diagnostics nodeBuiltinImport:off -- Task-isolated native owner, directory and shared-database fixtures; no provider turns.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeOS from "node:os";
@@ -48,21 +49,25 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderEventIngestor from "../../orchestration-v2/ProviderEventIngestor.ts";
 import * as Manager from "../../orchestration-v2/ProviderSessionManager.ts";
+import * as StartAdmission from "../provider/StartAdmission.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as Ownership from "../../serverOwnership.ts";
+import * as Incarnation from "./sharedAdmission/DatabaseIncarnation.ts";
+import { prepareSyntheticOpen } from "./sharedAdmission/DatabaseIncarnation.fixture.ts";
 import { WorkspaceLifecycle } from "../workspaceLifecycle/WorkspaceLifecycle.ts";
 import {
   HeldRuntimeOwner,
   invalidateCheckedServerOwnership,
+  inspectHeldDatabaseOwner,
   bindHeldDatabaseOwner,
 } from "./CheckedRuntimeOwner.ts";
 import { captureRuntimeUseSession } from "./RuntimeUseSession.ts";
 import {
   digest,
   runtimeUseError,
-  type RuntimeUseError,
+  RuntimeUseError,
   type RuntimeUseOutboxClaim,
 } from "./RuntimeUseProtocol.ts";
 import { captureRuntimeUseWorkspace } from "./RuntimeUseWorkspace.ts";
@@ -225,9 +230,14 @@ const fixture = <A, E>(
         const owner = yield* Ownership.acquireServerOwnership(
           NodePath.join(stateDir, "server-runtime.json"),
         );
-        const persistence = Layer.effectDiscard(runMigrations()).pipe(
-          Layer.provideMerge(NodeSqliteClient.layer({ filename: dbPath })),
-        );
+        const { open } = yield* prepareSyntheticOpen(owner.heldRuntimeOwner, root);
+        const persistence = Layer.effectDiscard(
+          Effect.gen(function* () {
+            yield* Incarnation.bindOpen(open);
+            yield* runMigrations();
+            yield* Incarnation.revalidateOpen(open);
+          }),
+        ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: dbPath })));
         const stores = Layer.mergeAll(
           EventStore.layer,
           ProjectionStore.layer,
@@ -409,6 +419,7 @@ const fixture = <A, E>(
             )
           : Layer.empty;
         const dependencies = Layer.mergeAll(
+          ProviderInstallationGate.layer,
           conversations,
           sink,
           EffectOutbox.layer.pipe(Layer.provideMerge(persistence)),
@@ -424,8 +435,8 @@ const fixture = <A, E>(
         const manager = Manager.layerWithOptions({ configureMcp: false }).pipe(
           Layer.provideMerge(dependencies),
           Layer.provideMerge(persistence),
-          Layer.provide(Layer.succeed(HeldRuntimeOwner, { token: owner.heldRuntimeOwner })),
-          Layer.provide(
+          Layer.provideMerge(Layer.succeed(HeldRuntimeOwner, { token: owner.heldRuntimeOwner })),
+          Layer.provideMerge(
             Layer.succeed(AgentScope, {
               wrap: ({ command, args }) => Effect.succeed({ command, args }),
               oomKilled: () => Effect.succeed(false),
@@ -442,7 +453,9 @@ const fixture = <A, E>(
           const eventSink = yield* EventSink.EventSinkV2;
           let sessions = yield* Manager.ProviderSessionManagerV2;
           const scope = yield* Scope.Scope;
-          const managerDependencies = yield* Effect.context<Layer.Services<typeof manager>>();
+          // Capture exactly the services the manager layer requires, so a rebuild reuses them.
+          const managerDependencies =
+            yield* Effect.context<Layer.Services<ReturnType<typeof Manager.layerWithOptions>>>();
           const attachmentOutbox = yield* EffectOutbox.EffectOutboxV2;
           const now = yield* DateTime.now;
           const iso = DateTime.formatIso(now);
@@ -516,8 +529,38 @@ const fixture = <A, E>(
               baseRef: "main",
             })).path;
           }
+          // This fixture exercises the raw manager's journal boundary. Its start
+          // seam rechecks the real persisted synthetic birth and original owner;
+          // end-to-end command/worker admission is covered by the replay harness.
+          // Direct native-load calls below inherit that same revalidation port.
+          const revalidateFixtureStart = Effect.fn("RuntimeUseManager.testRevalidateStart")(
+            function* (id: ThreadId) {
+              yield* Effect.try(() => inspectHeldDatabaseOwner(owner.heldRuntimeOwner));
+              const current = yield* projections.getThread(id);
+              if (
+                current === undefined ||
+                current.projectId !== projectId ||
+                current.providerInstanceId !== instanceId ||
+                DateTime.formatIso(current.createdAt) !== iso ||
+                current.archivedAt !== null ||
+                current.deletedAt !== null
+              )
+                return yield* new RuntimeUseError({
+                  reason: "synthetic_original_start_not_current",
+                });
+            },
+            Effect.mapError(
+              (cause) =>
+                new Adapter.ProviderAdapterProtocolError({
+                  driver: ProviderDriverKind.make("codex"),
+                  detail: "The persisted synthetic start or original owner changed.",
+                  cause,
+                }),
+            ),
+          );
           const openFor = (id: ThreadId, cwd = workspace) =>
             sessions.open({
+              revalidateStartAdmission: revalidateFixtureStart(id),
               threadId: id,
               providerSessionId: sessionId,
               modelSelection,
@@ -552,6 +595,7 @@ const fixture = <A, E>(
                   ],
                 });
                 let operation = sessions.open({
+                  revalidateStartAdmission: revalidateFixtureStart(childId),
                   threadId: childId,
                   providerSessionId: sessionId,
                   modelSelection,
@@ -645,10 +689,12 @@ const fixture = <A, E>(
             open: openFor(threadId),
             close: Effect.suspend(() => sessions.close(sessionId)),
             restartManager: Effect.gen(function* () {
-              const rebuilt = yield* Layer.buildWithScope(Layer.fresh(manager), scope).pipe(
-                Effect.provide(managerDependencies),
-                Effect.mapError(runtimeUseError),
-              );
+              const rebuilt = yield* Layer.buildWithScope(
+                Manager.layerWithOptions({ configureMcp: false }).pipe(
+                  Layer.provide(Layer.succeedContext(managerDependencies)),
+                ),
+                scope,
+              ).pipe(Effect.mapError(runtimeUseError));
               const replacement = Context.get(rebuilt, Manager.ProviderSessionManagerV2);
               assert.notStrictEqual(replacement, sessions);
               assert.isFalse(yield* replacement.isLive(sessionId));
@@ -806,7 +852,12 @@ const fixture = <A, E>(
                   ],
                 })
                 .pipe(Effect.asVoid),
-          });
+          }).pipe(
+            Effect.provideService(
+              StartAdmission.CurrentRevalidation,
+              revalidateFixtureStart(threadId),
+            ),
+          );
         }).pipe(Effect.provide(manager));
       }).pipe(
         Effect.provideService(HostProcess.HomeDirectory, root),

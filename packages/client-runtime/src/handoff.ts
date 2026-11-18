@@ -7,10 +7,7 @@ import type {
   ServerProvider,
   ServerProviderModel,
 } from "@t3tools/contracts";
-import {
-  getModelSelectionStringOptionValue,
-  getProviderOptionCurrentValue,
-} from "@t3tools/shared/model";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { isReasoningSelect } from "./modelTraits.ts";
 import type { ThreadStructure } from "./state/models.ts";
@@ -96,8 +93,8 @@ export interface ModelSwitchChange {
 }
 
 /**
- * What a recorded model switch visibly changed, or null when it changed neither the model nor the
- * effort. The composer omits an untouched effort, so an unset effort reads as the model's default.
+ * What a recorded model switch visibly changed. Compare effort only when both selections record it.
+ * The current catalog cannot tell us which default a historical turn used.
  */
 export function resolveModelSwitchChange(
   { from, to }: OrchestrationV2ModelSwitch,
@@ -115,7 +112,6 @@ export function resolveModelSwitchChange(
   return modelChanged || effort ? { modelChanged, effort } : null;
 }
 
-/** The composer's reasoning control for the model; stated values only when the catalog lacks it. */
 function resolveEffort(
   selection: ModelSelection,
   models: ReadonlyArray<ServerProviderModel> | undefined,
@@ -130,9 +126,7 @@ function resolveEffort(
   }
   const descriptor = model.capabilities?.optionDescriptors?.find(isReasoningSelect);
   if (descriptor === undefined) return undefined;
-  const value =
-    getModelSelectionStringOptionValue(selection, descriptor.id) ??
-    getProviderOptionCurrentValue(descriptor, selection);
-  if (typeof value !== "string") return undefined;
+  const value = getModelSelectionStringOptionValue(selection, descriptor.id);
+  if (value === undefined) return undefined;
   return { value, label: descriptor.options.find((option) => option.id === value)?.label ?? value };
 }
