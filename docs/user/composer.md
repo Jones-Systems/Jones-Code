@@ -424,9 +424,9 @@ by any part of its pull request numbers. A complete number is also resolved dire
 pull request is older than the recent list. Type a single word after `#` to search pull requests in
 the repository by text. Choose a result to insert it as a chip.
 
-Another thread can be context too. Type `@` followed by part of its title to pick one from
-the same server, or on web and desktop drag a thread out of the sidebar and drop it on the
-composer; a multi-selection drops together. The chip shows the thread's current title and
+Another thread can be context too. On web and desktop, type `@` followed by part of its title
+to search your connected environments, or drag threads from the sidebar onto the composer.
+You can also paste a copied thread reference. The chip shows the thread's current title and
 opens it when selected, including threads from another connected environment. Your prompt
 carries the title, thread ID, and source environment. On web and desktop, adding a thread also
 captures a bounded excerpt of its recent conversation: up to three recent exchanges with tool
@@ -441,12 +441,16 @@ limited to 16,000 characters; excerpts across a message share a 32,000-character
 be omitted when the rest of the prompt leaves too little room. Reasoning and attached file
 contents are excluded. Selected text and tool output are copied into the receiving conversation.
 
-The excerpt reflects the source when you attach it. Adding the same reference again does not
-refresh it. If the source is disconnected or cannot provide an excerpt, the identity reference
-still works and the missing context is identified. The agent can read more history on demand.
-Reading another environment requires a tool that supports its environment ID and an accessible
-linked source; attaching a reference does not grant that access.
-Attaching a thread does not change it or authorize the agent to message it.
+The excerpt reflects the source when you attach it. Adding the same reference again keeps the
+original capture. The client can capture recent context for a draft on another machine even
+when the receiving agent has no link back to the source. On mobile, pasting a foreign thread
+reference can also capture an excerpt when the client is connected to the source.
+If neither an excerpt nor a live read route is available, reconnect to the source and reattach
+the thread, or remove the reference to send.
+
+For live follow-up from another machine, set up a directional [read-only link](./remote-access.md#link-another-environment).
+The agent can use that link to read additional history. Attaching a thread shares only the
+reference and captured excerpt, and leaves the source thread unchanged.
 
 Dropping or pasting a thread reference preserves its source environment. Existing transcript
 files you attached previously remain ordinary file attachments; this does not remove them.

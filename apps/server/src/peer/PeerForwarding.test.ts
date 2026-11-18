@@ -747,6 +747,29 @@ it.effect("runs any tool that takes a linked environment there", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("reads an existing thread through a read-only link without permitting a message", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const seen = yield* Ref.make<Seen>(nothingSeen);
+      const b = yield* serveBox(seen, yield* Ref.make(""));
+      const a = yield* makeLaptop;
+      yield* linkTo(a.links, b, "read-only");
+      const target = { environmentId: box.environmentId, threadId: usersThread };
+
+      const read = yield* a.call("thread:laptop-full", "t3_thread_read", target);
+      expect(read.isError).toBe(false);
+      expect(read.structuredContent).toMatchObject({ thread: { threadId: usersThread } });
+
+      const send = yield* a.call("thread:laptop-full", "t3_thread_send", {
+        ...target,
+        message: "This must not be delivered.",
+      });
+      expect(failureOf(send)).toMatchObject({ code: "capability_denied" });
+      expect((yield* Ref.get(seen)).sends).toEqual([]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("refuses what a linked environment cannot take before anything leaves", () =>
   Effect.scoped(
     Effect.gen(function* () {
