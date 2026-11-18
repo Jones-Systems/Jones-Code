@@ -1454,6 +1454,8 @@
     "apps/web/src/components/auth/ConnectAgentSurface.tsx": "accepted-shared",
     "apps/web/src/components/chat/ChatComposer.tsx": "accepted-shared",
     "apps/web/src/components/chat/ChatHeader.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ThreadContextDragGhost.tsx": "accepted-shared",
+    "apps/web/src/components/chat/threadContextDrag.ts": "accepted-shared",
     "apps/web/src/components/chat/ChatMarkdownMedia.tsx": "accepted-shared",
     "apps/web/src/components/chat/ChildThreadApprovals.tsx": "hook",
     "apps/web/src/components/chat/ComposerControlsBar.tsx": "accepted-shared",
@@ -3690,14 +3692,7 @@
     "apps/web/src/jones/storageCleanupResults/runStatus.testkit.ts": "jones-owned",
     "apps/web/src/jones/storageCleanupResults/runStatus.test.ts": "jones-owned",
     "apps/web/src/jones/storageCleanupResults/runStatus.node-test.mjs": "jones-owned",
-    "packages/contracts/src/jones/storageCleanupReportStatus.test.ts": "jones-owned",
-    "apps/server/src/jones/hostFiles/HostFiles.test.ts": "jones-owned",
-    "apps/server/src/jones/hostFiles/HostFiles.ts": "jones-owned",
-    "apps/server/src/jones/mcp/hostFiles/handlers.test.ts": "jones-owned",
-    "apps/server/src/jones/mcp/hostFiles/handlers.ts": "jones-owned",
-    "apps/server/src/jones/mcp/hostFiles/tools.ts": "jones-owned",
-    "packages/contracts/src/jones/hostFiles.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/host-files.json": "jones-owned"
+    "packages/contracts/src/jones/storageCleanupReportStatus.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

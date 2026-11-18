@@ -2,6 +2,15 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-thread-title-drag",
+      "tests": ["apps/web/src/jones/threadTitleDrag/threadTitleDrag.browser.test.tsx"],
+      "commands": [
+        "cd apps/web && vp test run --project browser src/jones/threadTitleDrag/threadTitleDrag.browser.test.tsx src/components/chat/ChatHeader.browser.test.tsx src/components/chat/threadContextDrag.browser.test.tsx src/jones/workstreams/personalThreadDrag.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-workspace-pre-session-failure",
       "tests": [
         "apps/server/src/jones/workspaceRecreation/PreSessionFailure.test.ts",
@@ -5611,23 +5620,6 @@
         "node --test --test-concurrency=1 apps/server/src/jones/workspaceRetirement/SessionDuty.node-test.mjs",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-host-files",
-      "tests": [
-        "apps/server/src/jones/hostFiles/HostFiles.test.ts",
-        "apps/server/src/jones/mcp/hostFiles/handlers.test.ts",
-        "apps/server/src/provider/AgentContextBudget.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/hostFiles/HostFiles.test.ts apps/server/src/jones/mcp/hostFiles/handlers.test.ts apps/server/src/provider/AgentContextBudget.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/contracts typecheck",
-        "vp run --filter t3 typecheck",
-        "vp lint apps/server/src/jones/hostFiles apps/server/src/jones/mcp/hostFiles packages/contracts/src/jones/hostFiles.ts apps/server/src/mcp/McpHttpServer.ts packages/contracts/src/index.ts",
-        "vp run knip:check",
-        "node scripts/jones/check-boundary.ts --strict",
-        "git diff --check"
       ]
     },
     {
