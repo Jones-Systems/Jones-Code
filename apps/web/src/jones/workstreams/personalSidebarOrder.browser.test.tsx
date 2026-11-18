@@ -93,11 +93,11 @@ async function withSidebar(
     rows: () => string[];
     visit: (id: string) => Promise<void>;
     step: (direction: "next" | "previous", expected: string) => Promise<void>;
+    setWorking: (id: string, working: boolean) => Promise<void>;
     threadIds: readonly string[];
     assign: ReturnType<typeof vi.fn>;
   }) => Promise<void>,
-  pinnedFixture = false,
-  writableFixture = false,
+  { pinnedFixture = false, writableFixture = false, idleAlphaFixture = false } = {},
 ) {
   const threadIds = [
     "a1",
@@ -118,8 +118,10 @@ async function withSidebar(
       completedAt: null,
     })),
   }));
-  using _environment = installFakeEnvironment([
-    ...threads,
+  const roster = [
+    ...threads.map((thread) =>
+      idleAlphaFixture && thread.id.startsWith("a") ? { ...thread, runs: [] } : thread,
+    ),
     ...(pinnedFixture
       ? [
           {
@@ -129,7 +131,14 @@ async function withSidebar(
         ]
       : []),
     { ...threadWithHistory("child", 1), sideChatOf: threads[2]!.id },
-  ]);
+  ];
+  using _environment = installFakeEnvironment(roster);
+  const setWorking = async (id: string, working: boolean) => {
+    const index = threads.findIndex((thread) => thread.id === id);
+    const thread = threads[index]!;
+    roster[index] = { ...thread, runs: working ? thread.runs : [] };
+    await refreshFakeShell();
+  };
   using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
   const at = "2026-11-16T12:00:00.000Z";
   const state: PersonalWorkstreamsState = {
@@ -238,7 +247,7 @@ async function withSidebar(
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${expected}`),
     );
   };
-  await inspect({ router, rows, visit, step, threadIds, assign });
+  await inspect({ router, rows, visit, step, setWorking, threadIds, assign });
 }
 
 it("traverses Unassigned before named Workstreams and skips collapsed groups", async () => {
@@ -398,28 +407,67 @@ it("keeps next, previous and numeric jumps aligned with truncated and expanded r
   });
 });
 
-it("shows assigned pinned members once inside Workstreams above the remaining pinned shelf", async () => {
-  await withSidebar(async ({ rows, visit, step, router }) => {
-    expect(rows()).toHaveLength(8);
-    const header = document.querySelector("[data-personal-workstreams-header]")!;
-    const findPin = () =>
-      [...document.querySelectorAll<HTMLElement>("li[data-thread-item]")].find((row) =>
-        row.dataset.threadItem?.includes("loose-pin"),
+it("steps from the open thread's former position when it starts working and its row disappears", async () => {
+  await withSidebar(
+    async ({ router, rows, visit, step, setWorking }) => {
+      writeLocalStorageValue(
+        personalStatusFilterKey("alpha"),
+        "hide-working",
+        "hide-working",
+        Schema.Literals(["hide-working"]),
       );
-    await vi.waitFor(() => expect(findPin()).toBeDefined());
-    const pinRow = findPin()!;
-    expect(header.compareDocumentPosition(pinRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(document.querySelectorAll("[data-personal-thread]")).toHaveLength(8);
-    await expect
-      .element(page.getByRole("button", { name: "Show 2 more threads in alpha", exact: true }))
-      .toBeVisible();
-    await visit(rows().at(-1)!);
-    await step("next", "loose-pin");
-    await userEvent.keyboard("{Meta>}1{/Meta}");
-    await vi.waitFor(() =>
-      expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${rows()[0]}`),
-    );
-  }, true);
+      const alphaRows = () => rows().filter((id) => id.startsWith("a"));
+      await vi.waitFor(() => expect(alphaRows()).toHaveLength(5));
+      const before = alphaRows();
+      const current = before[4]!;
+
+      for (const direction of ["next", "previous"] as const) {
+        await visit(current);
+        await vi.waitFor(() => expect(alphaRows()).toEqual(before));
+        await setWorking(current, true);
+        await vi.waitFor(() => {
+          expect(alphaRows()).toHaveLength(5);
+          expect(alphaRows()).not.toContain(current);
+        });
+        expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${current}`);
+        // The sixth row moves into the five-row window when the active row disappears.
+        const expected = direction === "next" ? alphaRows()[4]! : before[3]!;
+        await step(direction, expected);
+        await setWorking(current, false);
+        await vi.waitFor(() => expect(alphaRows()).toEqual(before));
+      }
+    },
+    { idleAlphaFixture: true },
+  );
+});
+
+it("shows assigned pinned members once inside Workstreams above the remaining pinned shelf", async () => {
+  await withSidebar(
+    async ({ rows, visit, step, router }) => {
+      expect(rows()).toHaveLength(8);
+      const header = document.querySelector("[data-personal-workstreams-header]")!;
+      const findPin = () =>
+        [...document.querySelectorAll<HTMLElement>("li[data-thread-item]")].find((row) =>
+          row.dataset.threadItem?.includes("loose-pin"),
+        );
+      await vi.waitFor(() => expect(findPin()).toBeDefined());
+      const pinRow = findPin()!;
+      expect(
+        header.compareDocumentPosition(pinRow) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(document.querySelectorAll("[data-personal-thread]")).toHaveLength(8);
+      await expect
+        .element(page.getByRole("button", { name: "Show 2 more threads in alpha", exact: true }))
+        .toBeVisible();
+      await visit(rows().at(-1)!);
+      await step("next", "loose-pin");
+      await userEvent.keyboard("{Meta>}1{/Meta}");
+      await vi.waitFor(() =>
+        expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${rows()[0]}`),
+      );
+    },
+    { pinnedFixture: true },
+  );
 });
 
 it("offers single-thread actions from the header even when Workstream filters hide a selected thread", async () => {
@@ -497,7 +545,6 @@ it("offers single-thread actions from the header even when Workstream filters hi
       await assignToBeta(header);
       expect(assign).toHaveBeenCalledTimes(5);
     },
-    false,
-    true,
+    { writableFixture: true },
   );
 });

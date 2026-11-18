@@ -44,7 +44,10 @@ import {
 import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
 import { dropPinnedThreadOnWorkstream } from "../jones/workstreams/sidebarThreadDrop";
-import { usePersonalSidebarActiveThreads } from "../jones/workstreams/personalSidebarOrder";
+import {
+  useHiddenPersonalSidebarNeighbor,
+  usePersonalSidebarActiveThreads,
+} from "../jones/workstreams/personalSidebarOrder";
 import { usePersonalStatusSelection } from "../jones/workstreams/personalStatusFilter";
 import { placePersonalThread } from "../jones/workstreams/personalThreadPlacement";
 import { usePersonalWorkstreams } from "../state/workstreamsPersonal";
@@ -1556,25 +1559,29 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       ? null
       : { environmentId: workstreamRouteThread.environmentId, id: workstreamRouteThread.threadId },
   );
+  const orderedShelfThreads = [
+    ...pinnedThreads,
+    ...visibleWorkingThreads,
+    ...visibleSnoozedThreads,
+    ...renderedSettledThreads,
+  ];
   const orderedThreads = workstreamsEnabled
-    ? [
-        ...workstreamActiveThreads.visible,
-        ...pinnedThreads,
-        ...visibleWorkingThreads,
-        ...visibleSnoozedThreads,
-        ...renderedSettledThreads,
-      ]
+    ? [...workstreamActiveThreads.visible, ...orderedShelfThreads]
     : null;
   const orderedThreadKeys = orderedThreads?.map(threadShellKey) ?? fallbackOrderedThreadKeys;
   const traversalThreadKeys = workstreamsEnabled
-    ? [
-        ...workstreamActiveThreads.traversal,
-        ...pinnedThreads,
-        ...visibleWorkingThreads,
-        ...visibleSnoozedThreads,
-        ...renderedSettledThreads,
-      ].map(threadShellKey)
+    ? [...workstreamActiveThreads.traversal, ...orderedShelfThreads].map(threadShellKey)
     : fallbackOrderedThreadKeys;
+  const hiddenThreadNeighbor = useHiddenPersonalSidebarNeighbor(
+    workstreamsEnabled ? routeRowThreadKey : null,
+    traversalThreadKeys,
+    () =>
+      [
+        ...workstreamGrouping.ungrouped,
+        ...workstreamGrouping.groups.flatMap((group) => group.threads),
+        ...orderedShelfThreads,
+      ].map(threadShellKey),
+  );
   const threadByKey = orderedThreads
     ? new Map([
         ...fallbackThreadByKey,
@@ -3374,7 +3381,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             threadIds: traversalThreadKeys,
             currentThreadId: routeRowThreadKey,
             direction: traversalDirection,
-          }),
+          }) ?? hiddenThreadNeighbor(traversalDirection),
         );
         return;
       }
@@ -3385,6 +3392,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
   }, [
+    hiddenThreadNeighbor,
     keybindings,
     navigateToThread,
     orderedThreadKeys,
