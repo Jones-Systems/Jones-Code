@@ -22,12 +22,8 @@ export function SnoozedWorkstreamRow({
   const wake = async () => {
     if (!controller.setSnoozedUntil) return;
     setPending(true);
-    try {
-      const result = await controller.setSnoozedUntil(item.id, null);
-      if (!result.ok) showPersonalFailure(result.failure);
-    } finally {
-      setPending(false);
-    }
+    const result = await controller.setSnoozedUntil(item.id, null).finally(() => setPending(false));
+    if (!result.ok) showPersonalFailure(result.failure);
   };
   return (
     <li className="min-w-0 list-none">
