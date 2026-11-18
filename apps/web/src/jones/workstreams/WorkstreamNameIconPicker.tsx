@@ -41,7 +41,7 @@ export function WorkstreamNameIconPicker({
         id={labelId}
         className="shrink-0 text-xs text-muted-foreground @max-[8rem]/name-icon:sr-only"
       >
-        Name icon
+        Icon
       </span>
       <Select
         value={value ?? ""}
@@ -62,7 +62,7 @@ export function WorkstreamNameIconPicker({
             ) : (
               <>
                 <span className="@max-[8rem]/name-icon:hidden">None</span>
-                <span className="hidden @max-[8rem]/name-icon:inline">Name icon</span>
+                <span className="hidden @max-[8rem]/name-icon:inline">Icon</span>
               </>
             )}
           </SelectValue>
