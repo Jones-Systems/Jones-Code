@@ -1448,6 +1448,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               tabIndex={0}
               data-sidebar-row={threadKey}
               data-sidebar-parent={props.navigationParent}
+              data-jones-sidebar-card-surface=""
               aria-label={accessibility.label + devicePresentation.accessibleSuffix}
               aria-current={accessibility.current}
               data-testid="sidebar-row-card"
@@ -1466,7 +1467,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               "relative z-10 h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
             )}
           >
-            <div className="flex h-5 min-w-0 items-center gap-1.5">
+            <div data-jones-sidebar-card-topline className="flex h-5 min-w-0 items-center gap-1.5">
               {draftIndicator}
               {props.project ? (
                 <ProjectFavicon project={props.project} className="size-4 shrink-0" />

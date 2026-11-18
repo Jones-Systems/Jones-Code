@@ -1,8 +1,7 @@
 import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
-import { observeResize } from "../../lib/observeResize";
 import { useSidebarAppearancePresentation } from "../sidebarAppearance/SidebarAppearanceContext";
-import { PersonalStatusPill } from "./PersonalStatusPill";
+import { observePersonalStatusSpacing, PersonalStatusPill } from "./PersonalStatusPill";
 import { formatPersonalThreadCount, type PersonalThreadSummary } from "./personalPresentation";
 import type { PersonalStatusFilter } from "./personalStatusFilter";
 
@@ -17,7 +16,7 @@ export function PersonalSidebarGroupHeader({
   nameIcon,
   onRenameRequested,
   nameEditor,
-  actions,
+  hasContextMenu,
   statusFilter = null,
   onStatusFilterChange,
 }: {
@@ -31,7 +30,7 @@ export function PersonalSidebarGroupHeader({
   nameIcon?: ReactNode;
   onRenameRequested?: () => void;
   nameEditor?: ReactNode;
-  actions?: ReactNode;
+  hasContextMenu?: boolean;
   statusFilter?: PersonalStatusFilter | null;
   onStatusFilterChange?: (filter: PersonalStatusFilter | null) => void;
 }) {
@@ -55,9 +54,7 @@ export function PersonalSidebarGroupHeader({
     const probeIcon = hasNameIcon ? titleProbeIconRef.current : null;
     const counters = countersRef.current;
     if (!lane || !probe || !probeText || !counters) return;
-    let disposed = false;
     const fit = () => {
-      if (disposed) return;
       const setSpacing = (factor: number) =>
         counters.style.setProperty("--personal-status-spacing", String(factor));
       setSpacing(1);
@@ -99,22 +96,14 @@ export function PersonalSidebarGroupHeader({
       const factor = Math.min(1, 0.25 + (0.75 * spare) / (standardWidth - minimumWidth));
       setSpacing(Math.floor(factor * 1000) / 1000);
     };
-    fit();
     // The unwrapped probe observes typography independently of the fitted title;
     // all temporary measurements finish synchronously, without a frame loop.
-    const stop = observeResize([lane, probe, counters], fit);
-    document.fonts.addEventListener("loadingdone", fit);
-    void document.fonts.ready.then(fit);
-    return () => {
-      disposed = true;
-      stop();
-      document.fonts.removeEventListener("loadingdone", fit);
-    };
+    return observePersonalStatusSpacing(counters, [lane, probe, counters], fit);
   }, [name, nameEditor, hasNameIcon]);
   return (
     <div
       data-personal-group-header
-      className="relative grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-0.75 rounded-md px-2 py-1 text-left hover:bg-sidebar-row-hover"
+      className="relative grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)] items-start gap-x-0.75 rounded-md px-2 py-1 text-left hover:bg-sidebar-row-hover"
     >
       <Tooltip>
         <TooltipTrigger
@@ -124,6 +113,7 @@ export function PersonalSidebarGroupHeader({
               aria-label={`${collapsed ? "Expand" : "Collapse"} ${name}`}
               aria-describedby={descriptionId}
               aria-expanded={!collapsed}
+              aria-keyshortcuts={hasContextMenu ? "Shift+F10" : undefined}
               onClick={() => {
                 undoTitleClickRef.current = null;
                 onToggle();
@@ -139,6 +129,7 @@ export function PersonalSidebarGroupHeader({
       </Tooltip>
       <div
         ref={titleLaneRef}
+        data-personal-group-title-lane
         className="pointer-events-none relative col-start-1 row-start-1 flex min-w-0 items-start gap-x-0.75"
       >
         <span
@@ -179,7 +170,7 @@ export function PersonalSidebarGroupHeader({
                     }
                   : undefined
               }
-              className="pointer-events-auto line-clamp-2 cursor-pointer [[data-workstream-header][draggable=true]_&]:cursor-grab [[data-workstream-header][draggable=true]_&]:active:cursor-grabbing min-w-0 break-words text-sm font-semibold leading-5"
+              className="pointer-events-auto line-clamp-2 w-fit min-w-0 max-w-full cursor-pointer [[data-workstream-header][draggable=true]_&]:cursor-grab [[data-workstream-header][draggable=true]_&]:active:cursor-grabbing break-words text-sm font-semibold leading-5"
             >
               {hasNameIcon ? (
                 <span aria-hidden="true" className={nameIconClassName}>
@@ -200,38 +191,31 @@ export function PersonalSidebarGroupHeader({
           }}
         />
       </div>
-      {actions ? (
-        <div
-          data-workstream-header-control
-          className="relative col-start-2 row-start-1 [-webkit-app-region:no-drag]"
-          draggable={false}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-          onDragStart={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-        >
-          {actions}
-        </div>
-      ) : null}
       {numericCount ? (
         <span
           data-personal-group-count
+          data-jones-board-count
           aria-hidden="true"
-          className="pointer-events-none col-span-2 col-start-1 row-start-2 mt-0.5 flex min-w-0 items-baseline justify-end whitespace-nowrap font-medium tabular-nums"
+          className="pointer-events-none col-start-1 row-start-2 mt-0.5 flex min-w-0 items-baseline justify-end whitespace-nowrap font-medium tabular-nums"
         >
           {summary.failed > 0 ? (
             <>
               <span className="text-thread-failed">{summary.failed} failed</span>
-              <span className="mx-[0.4em] text-muted-foreground/60">·</span>
+              <span
+                data-jones-board-count-separator
+                className="mx-[0.4em] text-muted-foreground/60"
+              >
+                ·
+              </span>
             </>
           ) : null}
           <span className="text-muted-foreground">{total}</span>
         </span>
       ) : (
-        <span className="pointer-events-none col-span-2 col-start-1 row-start-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 text-xs leading-4 text-sidebar-muted-foreground">
+        <span
+          data-jones-board-count
+          className="pointer-events-none col-start-1 row-start-2 flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 text-xs leading-4 text-sidebar-muted-foreground"
+        >
           <span className="tabular-nums">{formatPersonalThreadCount(total)}</span>
           {summary.failed > 0 ? (
             <span className="ml-auto text-right text-thread-failed tabular-nums">

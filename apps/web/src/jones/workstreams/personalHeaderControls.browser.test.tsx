@@ -1,10 +1,9 @@
 import "~/index.css";
+import "../sidebarAppearance/sidebarAppearance.workstreams.css";
 import { useState, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../../test/render";
-import { EllipsisVerticalIcon } from "lucide-react";
-import { PersonalWorkstreamOptionsButton } from "./PersonalWorkstreamDisplayControls";
 import { PersonalStatusPill } from "./PersonalStatusPill";
 import { PersonalSidebarGroupHeader } from "./PersonalSidebarGroupHeader";
 import type { PersonalStatusFilter } from "./personalStatusFilter";
@@ -47,11 +46,6 @@ function Header({
         statusFilter={filter}
         onStatusFilterChange={setFilter}
         onRenameRequested={onRename}
-        actions={
-          <PersonalWorkstreamOptionsButton aria-label={`Options for ${name}`}>
-            <EllipsisVerticalIcon aria-hidden className="size-[12px]" />
-          </PersonalWorkstreamOptionsButton>
-        }
       />
       <output aria-label="Local status">{filter ?? "inherit"}</output>
       {!collapsed ? <p>Member threads</p> : null}
@@ -145,11 +139,6 @@ describe("personal Workstream header controls", () => {
       expect(getComputedStyle(hit).cursor).toBe(draggable ? "grab" : "pointer");
       for (const button of screen.container.querySelectorAll("button"))
         expect(getComputedStyle(button).cursor).toBe("pointer");
-      const options = screen.container.querySelector<HTMLElement>(
-        '[aria-label="Options for Alpha"]',
-      )!;
-      expect(options.getBoundingClientRect().width).toBe(12);
-      expect(options.getBoundingClientRect().height).toBe(12);
     },
   );
 
@@ -232,10 +221,7 @@ describe("personal Workstream header controls", () => {
   it("has no disclosure chevron, keeps the title flush left and toggles through the labelled overlay", async () => {
     await using screen = await render(<Header />);
     const header = screen.container.querySelector<HTMLElement>("[data-personal-group-header]")!;
-    expect(header.querySelectorAll("svg")).toHaveLength(1);
-    expect(header.querySelector("svg")!.closest("button")!.getAttribute("aria-label")).toBe(
-      "Options for Alpha",
-    );
+    expect(header.querySelector("svg")).toBeNull();
     const headerRect = header.getBoundingClientRect();
     const title = header.querySelector<HTMLElement>(".line-clamp-2")!;
     const paddingLeft = parseFloat(getComputedStyle(header).paddingLeft);
@@ -322,6 +308,22 @@ describe("personal Workstream header controls", () => {
     },
   );
 
+  it("refits a narrow header when switching from fixed to adaptive spacing", async () => {
+    const ui = (spacing: "fixed" | "adaptive") => (
+      <div data-jones-board-filter-spacing={spacing}>
+        <Header width={213} name={"W".repeat(100)} />
+      </div>
+    );
+    await using screen = await render(ui("fixed"));
+    const group = pill(screen.container);
+    const fixedWidth = group.getBoundingClientRect().width;
+    expect(group.style.getPropertyValue("--personal-status-spacing")).toBe("");
+    await screen.rerender(ui("adaptive"));
+    await expect.poll(() => group.getBoundingClientRect().width).toBeLessThan(fixedWidth - 2);
+    await screen.rerender(ui("fixed"));
+    expect(group.getBoundingClientRect().width).toBeCloseTo(fixedWidth);
+  });
+
   it("returns unused line space to the counters when further title wrapping cannot improve", async () => {
     await using screen = await render(<Header width={420} />);
     const standardWidth = pill(screen.container).getBoundingClientRect().width;
@@ -398,13 +400,12 @@ describe("personal Workstream header controls", () => {
   });
 
   it.each([260, 360])(
-    "places failed metadata below the action at the full right edge at %s px",
+    "places failed metadata below the filters at the full right edge at %s px",
     async (width) => {
       await using screen = await render(
         <Header width={width} name="A long Workstream title that wraps onto two lines" />,
       );
       const header = screen.container.querySelector<HTMLElement>("[data-personal-group-header]")!;
-      const options = header.querySelector<HTMLButtonElement>('[aria-label^="Options for"]')!;
       const failed = [...header.querySelectorAll("span")].find(
         (element) => element.textContent === "1 failed",
       )!;
@@ -416,8 +417,7 @@ describe("personal Workstream header controls", () => {
       expect(
         Math.abs(failedRect.right - (rect.right - parseFloat(style.paddingRight))),
       ).toBeLessThan(1);
-      expect(Math.abs(failedRect.right - options.getBoundingClientRect().right)).toBeLessThan(1);
-      expect(failedRect.top).toBeGreaterThanOrEqual(options.getBoundingClientRect().bottom);
+      expect(failedRect.top).toBeGreaterThanOrEqual(pill(header).getBoundingClientRect().bottom);
       expect(title.getBoundingClientRect().right).toBeLessThanOrEqual(
         working.getBoundingClientRect().left,
       );

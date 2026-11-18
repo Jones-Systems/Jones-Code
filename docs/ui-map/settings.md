@@ -269,9 +269,14 @@ name the focused checks; this documentation lane did not run them. Synthetic UI
 proof belongs to the primary verification owner. Runtime, live account acceptance,
 mobile and packaged notification delivery remain **unverified** here.
 
-### Sidebar title brightness
+### Jones Code appearance
 
-Jones Code settings includes a device-local **Sidebar thread title brightness**
+**Settings → Jones Code → Appearance** contains the thread board preview and
+device-local appearance controls. Verify an adjustment in the preview and on the
+sidebar, then reopen the page and check that it persists. Check a named
+Workstream and Unassigned for independent backgrounds and visible card outlines.
+
+The page also includes a device-local **Sidebar thread title brightness**
 slider, shared with the **Sidebar appearance** panel beside the thread list.
 It increases title contrast toward black in light themes and white in dark
 themes. Jones Code settings shows original and adjusted versions of the same

@@ -685,7 +685,9 @@ describe("personal Workstreams native presentation", () => {
       ["Studio", "studio"],
       ["None", null],
     ] as const) {
-      await userEvent.click(page.getByRole("button", { name: "Options for Alpha", exact: true }));
+      await page
+        .getByRole("button", { name: "Collapse Alpha", exact: true })
+        .click({ button: "right" });
       await userEvent.click(page.getByRole("menuitem", { name: "Change name icon" }));
       const picker = page.getByRole("combobox", { name: "Icon", exact: true });
       await userEvent.click(picker);

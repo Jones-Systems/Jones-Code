@@ -1,8 +1,7 @@
 import { useLayoutEffect, useRef } from "react";
 import { ChevronDownIcon, MinusIcon, PlusIcon } from "lucide-react";
 import { Button } from "../../components/ui/button";
-import { observeResize } from "../../lib/observeResize";
-import { PersonalStatusPill } from "./PersonalStatusPill";
+import { observePersonalStatusSpacing, PersonalStatusPill } from "./PersonalStatusPill";
 import type { PersonalThreadSummary } from "./personalPresentation";
 import type { PersonalStatusFilter } from "./personalStatusFilter";
 
@@ -39,10 +38,8 @@ export function PersonalWorkstreamsHeader({
     const label = labelRef.current;
     const pill = pillRef.current;
     if (!row || !label || !pill) return;
-    let disposed = false;
     // Same spacing variable and range the group headers use for long titles.
     const fit = () => {
-      if (disposed) return;
       const setSpacing = (factor: number) =>
         pill.style.setProperty("--personal-status-spacing", String(factor));
       setSpacing(1);
@@ -56,17 +53,9 @@ export function PersonalWorkstreamsHeader({
       const factor = Math.max(0.25, 1 - (0.75 * (overflow + 1)) / (standardWidth - minimumWidth));
       setSpacing(Math.floor(factor * 1000) / 1000);
     };
-    fit();
     // The pill's own size changes with its count digits; each fit leaves its final width
     // stable, so observing it does not loop.
-    const stop = observeResize([row, pill], fit);
-    document.fonts.addEventListener("loadingdone", fit);
-    void document.fonts.ready.then(fit);
-    return () => {
-      disposed = true;
-      stop();
-      document.fonts.removeEventListener("loadingdone", fit);
-    };
+    return observePersonalStatusSpacing(pill, [row, pill], fit);
   }, []);
   return (
     <div

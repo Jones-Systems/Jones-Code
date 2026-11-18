@@ -177,8 +177,8 @@ function section(container: HTMLElement, id: string | null) {
   return result;
 }
 
-const options = (name: string) =>
-  page.getByRole("button", { name: `Options for ${name}`, exact: true });
+const groupHeader = (name: string) =>
+  page.getByRole("button", { name: new RegExp(`^(?:Collapse|Expand) ${name}$`) });
 const radio = (limit: number) =>
   page.getByRole("menuitemradio", { name: String(limit), exact: true });
 const showMore = (name: string, count: number) =>
@@ -187,7 +187,7 @@ const showFewer = (name: string, limit: number) =>
   page.getByRole("button", { name: `Show only ${limit} threads in ${name}`, exact: true });
 
 async function chooseLimit(name: string, limit: number) {
-  await userEvent.click(options(name));
+  await groupHeader(name).click({ button: "right" });
   await userEvent.click(radio(limit));
   await expect.element(radio(limit)).toHaveAttribute("aria-checked", "true");
   await userEvent.keyboard("{Escape}");
@@ -239,10 +239,11 @@ describe("personal Workstream thread windows", () => {
     await expect.element(showMore("Alpha", 8)).toHaveTextContent("Show 8 more");
     await expect.element(showMore("Alpha", 8)).toHaveAttribute("aria-expanded", "false");
     expect(beta.querySelector("[data-workstream-window-footer]")).toBeNull();
-    await expect.element(options("Unassigned")).not.toBeInTheDocument();
+    await groupHeader("Unassigned").click({ button: "right" });
+    await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
     expect(unassigned.querySelector("[data-workstream-window-footer]")).toBeNull();
 
-    await userEvent.click(options("Alpha"));
+    await groupHeader("Alpha").click({ button: "right" });
     await expect.element(page.getByText("Visible threads", { exact: true })).toBeVisible();
     await expect
       .element(page.getByRole("group", { name: "Default visible threads", exact: true }))
@@ -316,7 +317,7 @@ describe("personal Workstream thread windows", () => {
       ["Alpha", 10],
       ["Beta", 5],
     ] as const) {
-      await userEvent.click(options(name));
+      await groupHeader(name).click({ button: "right" });
       await expect.element(radio(limit)).toHaveAttribute("aria-checked", "true");
       await userEvent.keyboard("{Escape}");
     }

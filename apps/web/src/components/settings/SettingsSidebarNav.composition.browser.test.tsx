@@ -1,8 +1,10 @@
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
+import { useLocation } from "@tanstack/react-router";
 
 import { act, render } from "../../../test/render";
 import { SidebarProvider } from "../ui/sidebar";
+import { SettingsBreadcrumb } from "./SettingsBreadcrumb";
 import { SettingsSidebarNav } from "./SettingsSidebarNav";
 import { SETTINGS_NAV_GROUPS, SETTINGS_SECTION_LABELS } from "./settingsSearch";
 
@@ -89,11 +91,35 @@ it("moves Tab through every settings section", async () => {
   expect(tabbed).toEqual(sections);
 });
 
+it("opens Jones Code Appearance and marks only that page as current", async () => {
+  function SettingsNavigation() {
+    const pathname = useLocation({ select: (location) => location.pathname });
+    return (
+      <SidebarProvider defaultOpen>
+        <SettingsSidebarNav pathname={pathname} />
+        <SettingsBreadcrumb pathname={pathname} />
+      </SidebarProvider>
+    );
+  }
+  await page.viewport(1280, 800);
+  await using screen = await render(<SettingsNavigation />, { router: "/settings/jones-code" });
+  const category = screen.getByRole("group", { name: "Jones Code" });
+  const appearance = category.getByRole("button", { name: "Appearance", exact: true });
+  const workflows = category.getByRole("button", { name: "Workflows", exact: true });
+  await expect.element(workflows).toHaveAttribute("aria-current", "page");
+  await appearance.click();
+  await expect.element(appearance).toHaveAttribute("aria-current", "page");
+  await expect.element(workflows).not.toHaveAttribute("aria-current");
+  expect(screen.router?.state.location.pathname).toBe("/settings/jones-code/appearance");
+  const breadcrumb = screen.getByRole("navigation", { name: "Settings breadcrumb" });
+  expect(breadcrumb.element().textContent).toBe("Settings/Jones Code/Appearance");
+});
+
 it.each([1280, 390])("names each group by a heading outside it at %ipx wide", async (width) => {
   await page.viewport(width, 800);
   await using _screen = await renderNav();
 
-  for (const name of ["Agents", "Code", "Connections"]) {
+  for (const name of ["Agents", "Code", "Connections", "Jones Code"]) {
     const heading = page.getByRole("heading", { name, level: 3 });
     await expect.element(heading).toBeInTheDocument();
     const group = page.getByRole("group", { name }).element();

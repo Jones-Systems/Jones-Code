@@ -97,10 +97,6 @@
       "to": "apps/server/src/jones/provider/workModePrompt.ts"
     },
     {
-      "from": "apps/web/src/routes/_chat.settings.jones-code.tsx",
-      "to": "apps/web/src/jones/workMode/WorkButtonSettings.tsx"
-    },
-    {
       "from": "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
       "to": "packages/shared/src/jones/workMode.ts"
     },

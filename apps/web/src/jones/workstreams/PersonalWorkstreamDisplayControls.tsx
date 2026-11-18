@@ -1,17 +1,5 @@
-import type { ComponentProps } from "react";
 import { Menu } from "@base-ui/react/menu";
 import { PERSONAL_THREAD_LIMITS, type PersonalThreadLimit } from "./personalThreadWindow";
-
-/** Narrow visual control; the menu primitive owns focus and popup semantics. */
-export function PersonalWorkstreamOptionsButton({ className, ...props }: ComponentProps<"button">) {
-  return (
-    <button
-      type="button"
-      className={`inline-flex h-[12px] w-[12px] my-[6px] p-0 shrink-0 [&_svg]:size-[12px] cursor-pointer items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${className ?? ""}`}
-      {...props}
-    />
-  );
-}
 
 /** Compact effort-style choices, retaining the menu's radio keyboard semantics. */
 export function PersonalWorkstreamVisibleThreads({

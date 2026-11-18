@@ -58,6 +58,7 @@ import { Route as ChatSettingsAccessRouteImport } from './routes/_chat.settings.
 import { Route as ChatSettingsAboutRouteImport } from './routes/_chat.settings.about'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
+import { Route as ChatSettingsJonesCodeAppearanceRouteImport } from './routes/_chat.settings.jones-code_.appearance'
 
 const WorkQueueRoute = WorkQueueRouteImport.update({
   id: '/work-queue',
@@ -309,6 +310,12 @@ const ChatEnvironmentIdThreadIdRoute =
     path: '/$environmentId/$threadId',
     getParentRoute: () => ChatRoute,
   } as any)
+const ChatSettingsJonesCodeAppearanceRoute =
+  ChatSettingsJonesCodeAppearanceRouteImport.update({
+    id: '/jones-code_/appearance',
+    path: '/jones-code/appearance',
+    getParentRoute: () => ChatSettingsRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
@@ -359,6 +366,7 @@ export interface FileRoutesByFullPath {
   '/settings/voice': typeof ChatSettingsVoiceRoute
   '/settings/worktrees': typeof ChatSettingsWorktreesRoute
   '/threads/$environmentId/$threadId': typeof ThreadsEnvironmentIdThreadIdRoute
+  '/settings/jones-code/appearance': typeof ChatSettingsJonesCodeAppearanceRoute
 }
 export interface FileRoutesByTo {
   '/approve-agent': typeof ApproveAgentRoute
@@ -409,6 +417,7 @@ export interface FileRoutesByTo {
   '/settings/voice': typeof ChatSettingsVoiceRoute
   '/settings/worktrees': typeof ChatSettingsWorktreesRoute
   '/threads/$environmentId/$threadId': typeof ThreadsEnvironmentIdThreadIdRoute
+  '/settings/jones-code/appearance': typeof ChatSettingsJonesCodeAppearanceRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -461,6 +470,7 @@ export interface FileRoutesById {
   '/_chat/settings/voice': typeof ChatSettingsVoiceRoute
   '/_chat/settings/worktrees': typeof ChatSettingsWorktreesRoute
   '/threads/$environmentId/$threadId': typeof ThreadsEnvironmentIdThreadIdRoute
+  '/_chat/settings/jones-code_/appearance': typeof ChatSettingsJonesCodeAppearanceRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -513,6 +523,7 @@ export interface FileRouteTypes {
     | '/settings/voice'
     | '/settings/worktrees'
     | '/threads/$environmentId/$threadId'
+    | '/settings/jones-code/appearance'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/approve-agent'
@@ -563,6 +574,7 @@ export interface FileRouteTypes {
     | '/settings/voice'
     | '/settings/worktrees'
     | '/threads/$environmentId/$threadId'
+    | '/settings/jones-code/appearance'
   id:
     | '__root__'
     | '/_chat'
@@ -614,6 +626,7 @@ export interface FileRouteTypes {
     | '/_chat/settings/voice'
     | '/_chat/settings/worktrees'
     | '/threads/$environmentId/$threadId'
+    | '/_chat/settings/jones-code_/appearance'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -977,6 +990,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatEnvironmentIdThreadIdRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/_chat/settings/jones-code_/appearance': {
+      id: '/_chat/settings/jones-code_/appearance'
+      path: '/jones-code/appearance'
+      fullPath: '/settings/jones-code/appearance'
+      preLoaderRoute: typeof ChatSettingsJonesCodeAppearanceRouteImport
+      parentRoute: typeof ChatSettingsRoute
+    }
   }
 }
 
@@ -1009,6 +1029,7 @@ interface ChatSettingsRouteChildren {
   ChatSettingsThreadsRoute: typeof ChatSettingsThreadsRoute
   ChatSettingsVoiceRoute: typeof ChatSettingsVoiceRoute
   ChatSettingsWorktreesRoute: typeof ChatSettingsWorktreesRoute
+  ChatSettingsJonesCodeAppearanceRoute: typeof ChatSettingsJonesCodeAppearanceRoute
 }
 
 const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
@@ -1040,6 +1061,7 @@ const ChatSettingsRouteChildren: ChatSettingsRouteChildren = {
   ChatSettingsThreadsRoute: ChatSettingsThreadsRoute,
   ChatSettingsVoiceRoute: ChatSettingsVoiceRoute,
   ChatSettingsWorktreesRoute: ChatSettingsWorktreesRoute,
+  ChatSettingsJonesCodeAppearanceRoute: ChatSettingsJonesCodeAppearanceRoute,
 }
 
 const ChatSettingsRouteWithChildren = ChatSettingsRoute._addFileChildren(

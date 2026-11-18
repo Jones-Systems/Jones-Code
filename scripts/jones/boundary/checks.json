@@ -5372,6 +5372,7 @@
         "apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
         "apps/web/src/jones/workstreams/personalRail.test.ts",
+        "apps/web/src/jones/workstreams/PersonalWorkstreamColorDialog.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalInlineRename.browser.test.tsx",
         "apps/web/src/jones/workstreams/personalThreadWindow.test.ts",
         "apps/web/src/jones/workstreams/personalThreadWindow.browser.test.tsx",
@@ -5393,7 +5394,7 @@
         "cd apps/web && vp test run --project unit src/jones/workstreams/personalThreadPlacement.test.ts src/jones/workstreams/personalThreadReorder.test.ts src/jones/workstreams/personalThreadWindow.test.ts --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run --project unit src/reactCompilerCoverage.test.ts -t 'Workstream(NativeSidebar|SidebarSection)|PersonalWorkstreamTitleEditor|PersonalSidebarGroupHeader|PersonalStatusPill|PersonalWorkstreamsHeader' --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run --project unit src/hooks/useThreadActionMenu.test.ts src/components/threadActionMenu.logic.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/web/src/jones/workstreams/personalRail.test.ts"
+        "vp test run apps/web/src/jones/workstreams/personalRail.test.ts apps/web/src/jones/workstreams/PersonalWorkstreamColorDialog.browser.test.tsx"
       ]
     },
     {
@@ -5673,11 +5674,12 @@
         "apps/web/src/jones/sidebarAppearance/SidebarAppearanceLauncher.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/sidebarAppearanceCards.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.browser.test.tsx",
+        "apps/web/src/jones/sidebarAppearance/ThreadBoardAppearanceSettings.browser.test.tsx",
         "apps/web/src/jones/sidebarAppearance/sidebarAppearanceWorkstreams.browser.test.tsx"
       ],
       "commands": [
         "cd apps/web && vp test run --project unit src/jones/sidebarAppearance/model.test.ts --maxWorkers=1 --no-file-parallelism",
-        "cd apps/web && vp test run --project browser src/jones/sidebarAppearance/SidebarAppearanceLauncher.browser.test.tsx src/jones/sidebarAppearance/sidebarAppearanceCards.browser.test.tsx src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.browser.test.tsx src/jones/sidebarAppearance/sidebarAppearanceWorkstreams.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project browser src/jones/sidebarAppearance/SidebarAppearanceLauncher.browser.test.tsx src/jones/sidebarAppearance/sidebarAppearanceCards.browser.test.tsx src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.browser.test.tsx src/jones/sidebarAppearance/ThreadBoardAppearanceSettings.browser.test.tsx src/jones/sidebarAppearance/sidebarAppearanceWorkstreams.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]

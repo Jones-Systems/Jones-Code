@@ -12,6 +12,8 @@ import {
   useSidebarAppearanceStore,
   type SidebarAppearanceStore,
 } from "./useSidebarAppearanceStore";
+import { copyThreadBoardCardVariables, threadBoardAppearanceScope } from "./threadBoardAppearance";
+import { useStoredThreadBoardAppearance } from "./useThreadBoardAppearance";
 import "./sidebarAppearance.cards.css";
 import "./sidebarAppearance.workstreams.css";
 
@@ -26,6 +28,7 @@ export interface SidebarAppearanceHost extends SidebarAppearanceStore {
 
 export function useSidebarAppearanceHost(): SidebarAppearanceHost {
   const store = useSidebarAppearanceStore();
+  const boardScope = threadBoardAppearanceScope(useStoredThreadBoardAppearance());
   // Comparing Original (or Selected) changes presentation only, preserving the stored boost.
   const storedSignature = JSON.stringify(store.stored);
   const [comparison, setComparison] = useState<{
@@ -50,7 +53,11 @@ export function useSidebarAppearanceHost(): SidebarAppearanceHost {
     presented,
     comparingPreset,
     setComparingPreset,
-    scopeProps: Object.assign({}, scope.attributes, { style: scope.variables }),
+    scopeProps: {
+      ...scope.attributes,
+      ...boardScope.attributes,
+      style: { ...scope.variables, ...boardScope.variables },
+    },
     update: (patch) => {
       setComparingPreset(null);
       store.update(patch);
@@ -88,7 +95,7 @@ export function useSidebarAppearanceHostContext(): SidebarAppearanceHost {
 }
 
 export function copySidebarAppearanceScope(source: Element, target: HTMLElement): void {
-  const scope = source.closest("[data-jones-sidebar-appearance]");
+  const scope = source.closest<HTMLElement>("[data-jones-sidebar-appearance]");
   for (const name of SIDEBAR_APPEARANCE_SCOPE_ATTRIBUTE_NAMES) {
     const value = scope?.getAttribute(name);
     if (value == null) target.removeAttribute(name);
@@ -96,7 +103,7 @@ export function copySidebarAppearanceScope(source: Element, target: HTMLElement)
   }
   for (const name of SIDEBAR_APPEARANCE_SCOPE_VARIABLE_NAMES) {
     // Read only the scoped, inline boost; never copy computed theme or scale tokens.
-    const value = (scope as HTMLElement | null)?.style?.getPropertyValue(name).trim() ?? "";
+    const value = scope?.style?.getPropertyValue(name).trim() ?? "";
     const boost = /^(?:[1-9]\d?|100)%$/.test(value) ? value : null;
     if (boost && scope?.hasAttribute("data-jones-thread-title-boost")) {
       target.style.setProperty(name, boost);
@@ -104,4 +111,5 @@ export function copySidebarAppearanceScope(source: Element, target: HTMLElement)
       target.style.removeProperty(name);
     }
   }
+  copyThreadBoardCardVariables(scope, target);
 }

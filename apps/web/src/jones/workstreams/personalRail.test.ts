@@ -1,32 +1,46 @@
 import { describe, expect, it } from "vite-plus/test";
-import { personalWorkstreamGroupColors } from "./personalRail";
+import {
+  PERSONAL_WORKSTREAM_PALETTE,
+  personalWorkstreamAutomaticColors,
+  personalWorkstreamGroupColors,
+} from "./personalRail";
 
 describe("personal Workstream group colors", () => {
   it("keeps identity colors through reorder, rename and repeated selection", () => {
-    const items = ["work-a", "work-b", "work-c", "work-d"].map((id) => ({
-      id,
-      name: id,
+    const items = PERSONAL_WORKSTREAM_PALETTE.map((_, index) => ({
+      id: `work-${index}`,
+      name: `Workstream ${index}`,
       color: null,
     }));
-    const original = new Map(items.map((item) => [item.id, personalWorkstreamGroupColors(item)]));
-    expect(new Set([...original.values()].map(({ rail }) => rail)).size).toBe(4);
-    expect(new Set([...original.values()].map(({ tint }) => tint)).size).toBe(4);
-    for (const item of items.toReversed()) {
-      const renamed = { ...item, name: "Renamed" };
-      expect(personalWorkstreamGroupColors(renamed)).toEqual(original.get(item.id));
-      expect(personalWorkstreamGroupColors(item)).toEqual(original.get(item.id));
-    }
+    const original = personalWorkstreamAutomaticColors(items);
+    expect(new Set(original.values()).size).toBe(PERSONAL_WORKSTREAM_PALETTE.length);
+    const changed = items
+      .toReversed()
+      .map((item) => ({ ...item, name: "Renamed", color: "#ABCDEF" }));
+    expect(personalWorkstreamAutomaticColors(changed)).toEqual(original);
+  });
+
+  it("continues assigning palette colors when the number of groups exceeds the palette", () => {
+    const items = Array.from({ length: PERSONAL_WORKSTREAM_PALETTE.length + 7 }, (_, index) => ({
+      id: String(index),
+    }));
+    const assigned = personalWorkstreamAutomaticColors(items);
+    expect(assigned.size).toBe(items.length);
+    expect(new Set(assigned.values())).toEqual(
+      new Set(PERSONAL_WORKSTREAM_PALETTE.map(({ color }) => color)),
+    );
   });
 
   it("preserves an explicit hex selection and restores the identity color when cleared", () => {
     const item = { id: "work-a", color: null };
-    const automatic = personalWorkstreamGroupColors(item);
-    const custom = personalWorkstreamGroupColors({ ...item, color: "#AABBCC" });
+    const assigned = personalWorkstreamAutomaticColors([item]).get(item.id);
+    const automatic = personalWorkstreamGroupColors(item, assigned);
+    const custom = personalWorkstreamGroupColors({ ...item, color: "#AABBCC" }, assigned);
     expect(custom).toEqual({
+      color: "#AABBCC",
+      automaticColor: automatic.color,
       rail: "color-mix(in srgb, #AABBCC 70%, var(--sidebar))",
-      tint: "color-mix(in srgb, #AABBCC 8%, transparent)",
     });
-    expect(personalWorkstreamGroupColors({ id: "work-b", color: "#AABBCC" })).toEqual(custom);
-    expect(personalWorkstreamGroupColors(item)).toEqual(automatic);
+    expect(personalWorkstreamGroupColors(item).color).toBe(custom.automaticColor);
   });
 });

@@ -1,8 +1,11 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "sidebar-appearance",
-  "jonesOwnedPaths": ["apps/web/src/jones/sidebarAppearance/"],
-  "hookPaths": [],
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/sidebarAppearance/",
+    "apps/web/src/jones/settings/JonesCodeAppearanceSettings.tsx"
+  ],
+  "hookPaths": ["apps/web/src/routes/_chat.settings.jones-code_.appearance.tsx"],
   "tombstones": [],
   "allowedImports": [
     {
@@ -18,8 +21,8 @@
       "to": "apps/web/src/jones/sidebarAppearance/useSidebarDevicePresentation.ts"
     },
     {
-      "from": "apps/web/src/routes/_chat.settings.jones-code.tsx",
-      "to": "apps/web/src/jones/sidebarAppearance/ThreadTitleBrightnessSettings.tsx"
+      "from": "apps/web/src/routes/_chat.settings.jones-code_.appearance.tsx",
+      "to": "apps/web/src/jones/settings/JonesCodeAppearanceSettings.tsx"
     }
   ]
 }

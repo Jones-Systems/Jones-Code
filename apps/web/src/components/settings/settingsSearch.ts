@@ -18,6 +18,7 @@ import type { ResolvedSettingsScope } from "./settingsScope";
 
 export type SettingsPath =
   | "/settings/jones-code"
+  | "/settings/jones-code/appearance"
   | "/settings/projects"
   | "/settings/general"
   | "/settings/diagnostics"
@@ -117,8 +118,21 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/about": msg("About"),
   "/settings/voice": msg("Voice"),
   "/settings/archived": msg("Archive"),
-  "/settings/jones-code": msg("Jones Code"),
+  "/settings/jones-code": msg("Workflows"),
+  "/settings/jones-code/appearance": msg("Appearance"),
 };
+
+const JONES_CODE_SETTINGS_HEADING = msg("Jones Code");
+const JONES_CODE_SETTINGS_PATHS = [
+  "/settings/jones-code/appearance",
+  "/settings/jones-code",
+] as const;
+
+export function settingsSectionCategoryLabel(path: string) {
+  return JONES_CODE_SETTINGS_PATHS.some((section) => section === path)
+    ? JONES_CODE_SETTINGS_HEADING
+    : undefined;
+}
 
 /** Sidebar order. A group with a hidden heading is set apart on screen by space alone. */
 export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
@@ -162,15 +176,13 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     ],
   },
   {
+    heading: JONES_CODE_SETTINGS_HEADING,
+    paths: JONES_CODE_SETTINGS_PATHS,
+  },
+  {
     heading: msg("More"),
     headingHidden: true,
-    paths: [
-      "/settings/jones-code",
-      "/settings/maintenance",
-      "/settings/labs",
-      "/settings/about",
-      "/settings/archived",
-    ],
+    paths: ["/settings/maintenance", "/settings/labs", "/settings/about", "/settings/archived"],
   },
 ];
 
@@ -239,8 +251,22 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "show-work-button",
     title: "Show Work button",
-    to: "/settings/jones-code",
+    to: "/settings/jones-code/appearance",
     searchTerms: ["sidebar appearance visibility hide work mode"],
+  },
+  {
+    id: "thread-board-appearance",
+    title: msg("Thread board appearance"),
+    to: "/settings/jones-code/appearance",
+    searchTerms: [
+      "sidebar thread card border outline tint opacity brightness background workstream color font size weight density padding spacing counts filters fixed adaptive",
+    ],
+  },
+  {
+    id: "sidebar-thread-title-brightness",
+    title: msg("Sidebar thread title brightness"),
+    to: "/settings/jones-code/appearance",
+    searchTerms: ["read thread text contrast sidebar title"],
   },
   {
     id: "thread-activity-window",
@@ -1445,6 +1471,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/about": null,
   "/settings/archived": "project-defaults",
   "/settings/jones-code": null,
+  "/settings/jones-code/appearance": null,
 };
 
 const RENAMED_SETTINGS_PATHS: Readonly<Record<string, SettingsPath>> = {
@@ -1455,6 +1482,7 @@ const RENAMED_SETTINGS_PATHS: Readonly<Record<string, SettingsPath>> = {
 const SPLIT_SETTINGS_PATHS: ReadonlySet<string> = new Set([
   "/settings/general",
   "/settings/appearance",
+  "/settings/jones-code",
   "/settings/source-control",
   "/settings/connections",
   ...Object.keys(RENAMED_SETTINGS_PATHS),
@@ -1602,12 +1630,16 @@ export function searchSettings(
   return settingsForThisPlatform(items)
     .flatMap((item, index) => {
       const title = normalizeSearchText(item.title);
+      const category = settingsSectionCategoryLabel(item.to);
       const fields = [
         title,
         normalizeSearchText(SETTINGS_SECTION_LABELS[item.to]),
         // The labels as displayed, so search also works in the active language.
         normalizeSearchText(translate(item.title)),
         normalizeSearchText(translate(SETTINGS_SECTION_LABELS[item.to])),
+        ...(category
+          ? [normalizeSearchText(category), normalizeSearchText(translate(category))]
+          : []),
         ...(item.searchTerms ?? []).map(normalizeSearchText),
       ];
       if (!queryTokens.every((token) => fields.some((field) => field.includes(token)))) return [];
