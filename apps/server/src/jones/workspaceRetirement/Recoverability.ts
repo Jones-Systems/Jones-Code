@@ -187,6 +187,25 @@ export async function planPreservation(input: {
   };
 }
 
+/**
+ * A held qualification that one preserve commit can make removable: every hold is preservable and
+ * the plan excludes nothing.
+ */
+export const preservable = (result: {
+  outcome: string;
+  recoverability?: Recoverability | undefined;
+  preservePlan?: PreservePlan | undefined;
+}) =>
+  result.outcome === "hold" &&
+  result.recoverability?.verdict === "retirable_after_preserve" &&
+  result.preservePlan?.excluded.length === 0;
+
+/** The paths a preserve commit adds and removes; no plan carries nothing. */
+export const preserveSelection = (result: { preservePlan?: PreservePlan | undefined }) => ({
+  selected: result.preservePlan?.selected ?? [],
+  deletions: result.preservePlan?.deletions ?? [],
+});
+
 const LIVENESS = new Set([
   "identity_mismatch",
   "primary_checkout",

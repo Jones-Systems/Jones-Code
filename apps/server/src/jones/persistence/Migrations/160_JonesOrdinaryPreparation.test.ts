@@ -4,13 +4,13 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import migration from "./159_JonesOrdinaryPreparation.ts";
+import migration from "./160_JonesOrdinaryPreparation.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 class SyntheticRollback extends Schema.TaggedError<SyntheticRollback>()("SyntheticRollback", {}) {}
 
 it.effect(
-  "159 creates three sparse tables without upstream schema, data, foreign keys or ledger writes",
+  "160 creates three sparse tables without upstream schema, data, foreign keys or ledger writes",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -73,7 +73,7 @@ it.effect(
 );
 
 it.effect(
-  "159 DDL rolls back with its transaction and enforces origin and binding uniqueness",
+  "160 DDL rolls back with its transaction and enforces origin and binding uniqueness",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

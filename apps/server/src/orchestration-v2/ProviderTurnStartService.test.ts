@@ -1,3 +1,5 @@
+import { WriterRetirementPendingError } from "../jones/providerRetirement/admissionWait.ts";
+import { WriterRetirementError } from "../jones/providerRetirement/RetirementLedger.ts";
 import { RuntimeUseError } from "../jones/cleanup/RuntimeUseProtocol.ts";
 import * as StartRefusals from "../jones/startRefusal/Store.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
@@ -4164,5 +4166,143 @@ effectIt.effect(
         expect(harness.projection().runs.at(-1)?.status).toBe("starting");
         expect(harness.events).toEqual([]);
       }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+// This harness exercises admission settlement/currentness; native closure and shared-session
+// ownership are exercised by the manager's shared detach integration case.
+effectIt.effect.each(["complete", "expired", "cancelled", "selection-changed"] as const)(
+  "keeps a queued Claude admission pending beyond startup retries: %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const completion = yield* Deferred.make<void, WriterRetirementError>();
+      const sourceSessionId = ProviderSessionId.make("shared-codex-session");
+      const sourceInstanceId = ProviderInstanceId.make("shared-codex");
+      const sourceDriver = ProviderDriverKind.make("codex");
+      const sourceGeneration = "shared-codex-generation";
+      const detach = vi.fn(() =>
+        Effect.fail(
+          new WriterRetirementPendingError({
+            providerSessionId: sourceSessionId,
+            awaitCompletion: Deferred.await(completion),
+          }),
+        ),
+      );
+      const harness: ReturnType<typeof makeLocalCommandHarness> = makeLocalCommandHarness({
+        text: "Continue on Claude",
+        driver: "claudeAgent",
+        nativeResume: "missing",
+        switchPlan: () =>
+          Effect.succeed({
+            instanceChanged: true,
+            modelChanged: true,
+            targetProviderThreadId: null,
+            releaseProviderSessionIds: [sourceSessionId],
+            transition: { type: "create_with_handoff" },
+          }),
+        manager: {
+          detach,
+          captureThreadRetirement: (binding) =>
+            Effect.sync(() => {
+              expect(binding).toEqual(sourceBinding);
+              return {
+                binding: sourceBinding,
+                awaitRetired: Deferred.await(completion).pipe(
+                  Effect.orDie,
+                  Effect.as({ binding: sourceBinding, evidence: "thread_closed" as const }),
+                ),
+              };
+            }),
+        },
+      });
+      const projection = harness.projection();
+      const sourceThread = {
+        ...projection.providerThreads[0]!,
+        id: ProviderThreadId.make("shared-codex-writer"),
+        driver: sourceDriver,
+        providerInstanceId: sourceInstanceId,
+        providerSessionId: sourceSessionId,
+        nativeThreadRef: {
+          driver: sourceDriver,
+          nativeId: "shared-native",
+          strength: "strong" as const,
+        },
+        runtimeIdentity: {
+          ...ProviderAdapter.identityForRequest(
+            ProviderAdapter.requestedRuntimeIdentity(
+              { instanceId: sourceInstanceId, model: "previous" },
+              sourceDriver,
+            ),
+            undefined,
+          ),
+          runtimeGeneration: sourceGeneration,
+        },
+      };
+      const sourceBinding = ProviderAdapter.runtimeBinding(sourceThread, sourceGeneration)!;
+      harness.setProjection({
+        ...projection,
+        providerThreads: [...projection.providerThreads, sourceThread],
+        providerSessions: [
+          {
+            id: sourceSessionId,
+            driver: sourceDriver,
+            providerInstanceId: sourceInstanceId,
+            status: "ready",
+            cwd: "/tmp/native-account-command",
+            model: "previous",
+            capabilities: CodexProviderCapabilitiesV2,
+            createdAt: projection.updatedAt,
+            updatedAt: projection.updatedAt,
+            lastError: null,
+          },
+        ],
+      });
+      const starting = yield* harness.startWithRetry.pipe(Effect.forkChild);
+      yield* TestClock.adjust("1 minute");
+      expect(starting.pollUnsafe()).toBeUndefined();
+      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+      expect(harness.projection().turnItems).toEqual([]);
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(detach).toHaveBeenCalledTimes(1);
+      if (outcome === "cancelled") {
+        yield* Fiber.interrupt(starting);
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(yield* Deferred.isDone(completion)).toBe(false);
+        return;
+      }
+      if (outcome === "expired") {
+        yield* TestClock.adjust("9 minutes");
+        yield* Fiber.join(starting);
+        expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+        expect(harness.projection().turnItems[0]).toMatchObject({
+          title: "Previous provider is still releasing this conversation",
+          failure: { message: expect.stringContaining("shared-codex-session") },
+        });
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(detach).toHaveBeenCalledTimes(1);
+        return;
+      }
+      if (outcome === "selection-changed") {
+        const projection = harness.projection();
+        harness.setProjection({
+          ...projection,
+          runs: projection.runs.map((run) => ({
+            ...run,
+            modelSelection: { ...run.modelSelection, model: "changed" },
+          })),
+        });
+      }
+      yield* Deferred.succeed(completion, undefined);
+      if (outcome === "selection-changed") {
+        yield* Effect.exit(Fiber.join(starting));
+        expect(harness.open).not.toHaveBeenCalled();
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+      } else {
+        yield* Fiber.join(starting);
+        expect(harness.open).toHaveBeenCalledTimes(1);
+        expect(harness.startRootRun).toHaveBeenCalledTimes(1);
+        expect(harness.projection().runs.at(-1)?.status).toBe("running");
+      }
+      expect(detach).toHaveBeenCalledTimes(1);
     }),
 );

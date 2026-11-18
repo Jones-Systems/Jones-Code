@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
+import { isClosedPersonalWorkstream } from "@t3tools/contracts/jones/workstreamsPersonal";
 import {
+  openPersonalWorkstreams,
   personalThreadKey,
   type PersonalThreadRef,
   type PersonalWorkstreamsController,
@@ -26,6 +28,10 @@ export function WorkstreamPicker({
 }) {
   const state = useAtomValue(controller.state);
   const key = personalThreadKey(thread);
+  const savedWorkstreamId = state.assignmentsByThreadKey.get(key)?.workstreamId;
+  const historicalWorkstream = state.workstreams.find(
+    (item) => item.id === savedWorkstreamId && isClosedPersonalWorkstream(item.lifecycle),
+  );
   const automaticWorkstream = state.autoAssignedThreadKeys?.has(key)
     ? state.workstreams.find(
         (item) => item.id === state.assignmentsByThreadKey.get(key)?.workstreamId,
@@ -62,12 +68,17 @@ export function WorkstreamPicker({
       <DialogPopup>
         <DialogHeader>
           <DialogTitle>Move to Workstream</DialogTitle>
-          {automaticWorkstream && (
+          {historicalWorkstream ? (
+            <DialogDescription>
+              This thread appears in Unassigned. Its saved Workstream is {historicalWorkstream.name}
+              .
+            </DialogDescription>
+          ) : automaticWorkstream ? (
             <DialogDescription>
               Assigned automatically to {automaticWorkstream.name} from a queued prompt. Choose
               another Workstream or remove it.
             </DialogDescription>
-          )}
+          ) : null}
         </DialogHeader>
         <Input
           aria-label="Search Workstreams"
@@ -76,7 +87,7 @@ export function WorkstreamPicker({
           maxLength={160}
         />
         <div className="grid gap-1 py-3">
-          {state.workstreams
+          {openPersonalWorkstreams(state)
             .filter((item) => item.name.toLowerCase().includes(query.toLowerCase()))
             .map((item) => (
               <Button
@@ -93,7 +104,7 @@ export function WorkstreamPicker({
             disabled={busy || !controller.canAssign(thread)}
             onClick={() => void choose(null)}
           >
-            Unassigned
+            {historicalWorkstream ? "Remove saved Workstream" : "Unassigned"}
           </Button>
           {query.trim() ? (
             <Button

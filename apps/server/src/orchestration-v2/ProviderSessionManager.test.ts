@@ -1,3 +1,9 @@
+import * as Clock from "effect/Clock";
+import {
+  awaitRetirementForAdmission,
+  RETIREMENT_ADMISSION_BUDGET_MS,
+} from "../jones/providerRetirement/admissionWait.ts";
+import { makeCodexThreadRetirements } from "../jones/provider/codex/CodexRetirement.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as StartAdmission from "../jones/provider/StartAdmission.ts";
 import * as NetAddress from "effect/net/NetAddress";
@@ -6842,4 +6848,191 @@ it.effect.each([
       if (kind === "attachment-drift") assert.equal(assignmentChecks, 2);
     }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, conversationLayer })));
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "a shared detach timeout retains exact proof without a process Stop capture and preserves its sibling",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const reached = yield* Deferred.make<void>();
+      const retirements = makeCodexThreadRetirements<object>();
+      const producer = {};
+      let unsubscribes = 0;
+      const proof: NonNullable<
+        ProviderAdapter.ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]
+      > = ({ providerThread, allowProducerRetirement }) =>
+        Effect.gen(function* () {
+          assert.isFalse(allowProducerRetirement);
+          const request = yield* retirements.begin({
+            producer,
+            binding: ProviderAdapter.runtimeBinding(
+              providerThread,
+              providerThread.runtimeIdentity!.runtimeGeneration!,
+            )!,
+            processExit: undefined,
+            dispatch: Effect.sync(() => {
+              unsubscribes++;
+            }).pipe(
+              Effect.andThen(Deferred.succeed(reached, undefined)),
+              Effect.as("thread" as const),
+            ),
+          });
+          if (request === undefined) return yield* Effect.die("Missing exact retirement");
+          return yield* request.wait;
+        });
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("shared-transfer");
+        const providerSessionId = idAllocator.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        const providerThread = {
+          ...makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+          runtimeIdentity: {
+            runtimeGeneration: "shared-transfer-generation",
+            requested: ProviderAdapter.requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+            observed: ProviderAdapter.unobservedRuntimeIdentity(),
+          },
+        };
+        yield* sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
+            {
+              id: yield* idAllocator.allocate.event({ threadId }),
+              type: "provider-thread.updated",
+              threadId,
+              occurredAt: now,
+              payload: providerThread,
+            },
+          ],
+        });
+        const input = {
+          ...makeTestAdmission().input,
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        };
+        const runtime = yield* manager.open(input);
+        yield* runtime.resumeThread({ threadId, providerThread, modelSelection, runtimePolicy });
+        const sibling = ThreadId.make("shared-transfer-sibling");
+        yield* sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({
+              idAllocator: idAllocator,
+              threadId: sibling,
+              now: now,
+            }),
+          ],
+        });
+        yield* manager.open({ ...input, threadId: sibling });
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const siblingRun = idAllocator.derive.run({ threadId: sibling, ordinal: 1 });
+        yield* startTestTurn(runtime, {
+          ...makeTestAdmission().input,
+          appThread: (yield* projections.getThreadProjection(sibling)).thread,
+          threadId: sibling,
+          runId: siblingRun,
+          runOrdinal: 1,
+          providerTurnOrdinal: 1,
+          attemptId: idAllocator.derive.runAttempt({
+            runId: siblingRun,
+            attemptOrdinal: 1,
+          }),
+          rootNodeId: idAllocator.derive.rootNode({ runId: siblingRun }),
+          providerThread: makeProviderThread({
+            idAllocator: idAllocator,
+            threadId: sibling,
+            providerSessionId: providerSessionId,
+            now: now,
+            nativeThreadId: "busy-sibling-native",
+          }),
+          message: {
+            createdBy: "user",
+            creationSource: "web",
+            messageId: yield* idAllocator.allocate.message({
+              threadId: sibling,
+              ordinal: 1,
+            }),
+            text: "Keep working",
+            attachments: [],
+          },
+          modelSelection,
+          runtimePolicy,
+        });
+        const deadline = (yield* Clock.currentTimeMillis) + RETIREMENT_ADMISSION_BUDGET_MS;
+        const detach = yield* manager
+          .detach({
+            providerSessionId: providerSessionId,
+            threadId: threadId,
+            requireWriterRetirement: true,
+          })
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* Deferred.await(reached);
+        const binding = ProviderAdapter.runtimeBinding(
+          providerThread,
+          providerThread.runtimeIdentity!.runtimeGeneration!,
+        )!;
+        assert.isUndefined(runtime.captureRuntimeStop);
+        const observer = yield* manager.captureThreadRetirement!(binding);
+        assert.isNotNull(observer);
+        if (observer === null) return yield* Effect.die("Missing captured retirement observer");
+        assert.isNull(
+          yield* manager.captureThreadRetirement!({
+            ...binding,
+            runtimeGeneration: "foreign",
+          }),
+        );
+        const receipt = yield* observer.awaitRetired.pipe(Effect.forkChild);
+        yield* TestClock.adjust("11 seconds");
+        const pending = yield* Fiber.join(detach);
+        assert.propertyVal(pending, "_tag", "WriterRetirementPendingError");
+        let replacementStarts = 0;
+        let revalidations = 0;
+        const admission = yield* awaitRetirementForAdmission(
+          Effect.fail(pending),
+          deadline,
+          Effect.sync(() => {
+            revalidations++;
+          }),
+        ).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              replacementStarts++;
+            }),
+          ),
+          Effect.forkChild,
+        );
+        yield* retirements.observeClosed(producer, "wrong-native-thread");
+        yield* retirements.observeClosed({}, binding.nativeThreadId);
+        yield* TestClock.adjust("1 minute");
+        assert.isUndefined(admission.pollUnsafe());
+        assert.equal(replacementStarts, 0);
+        assert.equal(unsubscribes, 1);
+        assert.isAbove(revalidations, 0);
+        assert.isUndefined(receipt.pollUnsafe());
+        const sameRuntime = yield* manager.open({ ...input, threadId: sibling });
+        assert.strictEqual(sameRuntime, runtime);
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(manager.open(input))));
+        yield* retirements.observeClosed(producer, binding.nativeThreadId);
+        yield* Fiber.join(admission);
+        assert.equal(replacementStarts, 1);
+        assert.equal(unsubscribes, 1);
+        assert.equal((yield* Ref.get(state)).interruptCount, 0);
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+        const retired = yield* Fiber.join(receipt);
+        assert.deepEqual(retired, { binding, evidence: "thread_closed" });
+        assert.strictEqual(yield* manager.captureThreadRetirement!(binding), observer);
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(manager.open(input))));
+        assert.strictEqual(yield* manager.open({ ...input, threadId: sibling }), runtime);
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+      }).pipe(
+        Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, retireThreadForTransfer: proof })),
+      );
+    }),
 );

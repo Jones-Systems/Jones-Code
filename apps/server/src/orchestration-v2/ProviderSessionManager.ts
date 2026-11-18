@@ -1,3 +1,4 @@
+import * as RetirementAdmission from "../jones/providerRetirement/admissionWait.ts";
 import * as DutyRelease from "../jones/workspaceRetirement/DutyRelease.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as DecisionSnapshotAccess from "../jones/mcp/decisionSnapshot/access.ts";
@@ -273,6 +274,8 @@ export const ProviderSessionManagerV2Error = Schema.Union([
   ProviderSessionLookupError,
   ProviderSessionCloseError,
   ProviderSessionReleaseError,
+  RetirementLedger.WriterRetirementError,
+  RetirementAdmission.WriterRetirementPendingError,
   ProviderSessionActivityError,
 ]);
 export type ProviderSessionManagerV2Error = typeof ProviderSessionManagerV2Error.Type;
@@ -291,7 +294,10 @@ export interface ProviderSessionManagerV2Shape {
   readonly awaitThreadRetirement?: (input: {
     readonly threadId: ThreadId;
     readonly instanceId: ProviderInstanceId;
-  }) => Effect.Effect<void, RetirementLedger.WriterRetirementError>;
+  }) => Effect.Effect<
+    void,
+    RetirementLedger.WriterRetirementError | RetirementAdmission.WriterRetirementPendingError
+  >;
   readonly reconcileThreadBindingPublication?: (input: {
     readonly run: OrchestrationV2Run;
     readonly providerThread: OrchestrationV2ProviderThread;
@@ -535,6 +541,12 @@ function providerThreadLoadKey(input: {
   });
 }
 
+const isWriterRetirementFailure = Schema.is(
+  Schema.Union([
+    RetirementAdmission.WriterRetirementPendingError,
+    RetirementLedger.WriterRetirementError,
+  ]),
+);
 export const layerWithOptions = (
   options: ProviderSessionManagerV2LayerOptions = {},
 ): Layer.Layer<
@@ -5048,9 +5060,7 @@ export const layerWithOptions = (
           const prior = retirements.find(input.providerSessionId, input.threadId);
           if (prior !== undefined) {
             if (options?.awaitCompletion !== false)
-              yield* Deferred.await(prior.completion).pipe(
-                Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
-              );
+              yield* RetirementAdmission.awaitWriterRetirement(prior, UNLOAD_THREAD_TIMEOUT_MS);
             return;
           }
           const entry = (yield* Ref.get(sessions)).get(sessionKey(input.providerSessionId));
@@ -5174,9 +5184,7 @@ export const layerWithOptions = (
             const pending = retirements.find(input.providerSessionId, input.threadId);
             if (pending !== undefined) {
               if (options?.awaitCompletion !== false)
-                yield* Deferred.await(pending.completion).pipe(
-                  Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
-                );
+                yield* RetirementAdmission.awaitWriterRetirement(pending, UNLOAD_THREAD_TIMEOUT_MS);
               return;
             }
             return yield* Effect.fail("The source runtime changed before retirement was captured.");
@@ -5288,7 +5296,7 @@ export const layerWithOptions = (
             }),
           );
           if (options?.awaitCompletion !== false)
-            yield* Deferred.await(record.completion).pipe(Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS));
+            yield* RetirementAdmission.awaitWriterRetirement(record, UNLOAD_THREAD_TIMEOUT_MS);
         },
         (effect) =>
           effect.pipe(Effect.forkDetach({ startImmediately: true }), Effect.flatMap(Fiber.join)),
@@ -5484,26 +5492,15 @@ export const layerWithOptions = (
               );
             }),
           ),
-        awaitThreadRetirement: (input) =>
-          readDestinationKey(input.instanceId).pipe(
-            Effect.flatMap((destinationKey) =>
-              Effect.forEach(
-                retirements.pendingConversation(input.threadId, destinationKey),
-                (record) =>
-                  Deferred.await(record.completion).pipe(
-                    Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
-                    Effect.mapError(
-                      (cause) =>
-                        new RetirementLedger.WriterRetirementError({
-                          providerSessionId: record.providerSessionId,
-                          cause,
-                        }),
-                    ),
-                  ),
-                { concurrency: 1, discard: true },
-              ),
-            ),
-          ),
+        awaitThreadRetirement: Effect.fn("ProviderSessionManager.awaitThreadRetirement")(
+          function* (input) {
+            const destinationKey = yield* readDestinationKey(input.instanceId);
+            yield* RetirementAdmission.awaitWriterRetirements(
+              retirements.pendingConversation(input.threadId, destinationKey),
+              UNLOAD_THREAD_TIMEOUT_MS,
+            );
+          },
+        ),
         captureThreadRetirement: (binding) =>
           Effect.sync(() => recoveryRetirements.capture(binding)),
         captureCurrentThreadRuntimeStop,
@@ -6319,15 +6316,18 @@ export const layerWithOptions = (
           },
           (effect, input) =>
             effect.pipe(
-              Effect.catchCause((cause) =>
-                Effect.fail(
+              Effect.catchCause((cause): Effect.Effect<never, ProviderSessionManagerV2Error> => {
+                const failure = Cause.findErrorOption(cause);
+                if (Option.isSome(failure) && isWriterRetirementFailure(failure.value))
+                  return Effect.fail(failure.value);
+                return Effect.fail(
                   new ProviderSessionReleaseError({
                     providerSessionId: input.providerSessionId,
                     reason: "manual_shutdown",
                     cause,
                   }),
-                ),
-              ),
+                );
+              }),
             ),
         ),
         // Stored suggestions can outlive a deleted thread, so check the thread before serving one.

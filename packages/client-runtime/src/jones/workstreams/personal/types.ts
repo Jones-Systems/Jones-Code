@@ -2,6 +2,7 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type {
   PersonalWorkstreamLifecycle,
   PersonalWorkstreamAssignment,
+  PersonalWorkstreamMembers,
 } from "@t3tools/contracts/jones/workstreamsPersonal";
 import type { Atom } from "effect/reactivity";
 
@@ -55,6 +56,13 @@ export interface PersonalWorkstreamsGrouping<T extends PersonalThreadRef> {
   readonly workstreamIdByThreadKey: ReadonlyMap<string, string>;
 }
 
+export type PersonalWorkstreamMember = PersonalWorkstreamMembers[number] & PersonalThreadRef;
+
+export interface PersonalWorkstreamHistory {
+  readonly members: readonly PersonalWorkstreamMember[];
+  readonly complete: boolean;
+}
+
 export type PersonalWorkstreamsAction =
   | "create"
   | "rename"
@@ -70,6 +78,9 @@ export type PersonalWorkstreamsFailureReason =
   | "update_required"
   | "thread_not_found"
   | "workstream_deleted"
+  | "workstream_closed"
+  | "unsettled_threads"
+  | "closure_unavailable"
   | "changed_elsewhere"
   | "unconfirmed"
   | "failed";
@@ -85,6 +96,7 @@ export type PersonalResult<A> =
 
 export interface PersonalWorkstreamsController {
   readonly state: Atom.Atom<PersonalWorkstreamsState>;
+  readHistory?(id: string): Promise<PersonalWorkstreamHistory>;
   canAssign(thread: PersonalThreadRef): boolean;
   create(input: { name: string }): Promise<PersonalResult<PersonalWorkstreamView>>;
   rename(id: string, name: string): Promise<PersonalResult<PersonalWorkstreamView>>;

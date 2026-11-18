@@ -40,6 +40,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 export const RPC_REQUIRED_SCOPES = {
   ...CLIENT_GUARDED_RPC_SCOPES,
   "workstreamsPersonal.subscribe": AuthOrchestrationReadScope,
+  "workstreamsPersonal.members": AuthOrchestrationReadScope,
   "workstreamsPersonal.put": AuthOrchestrationOperateScope,
   "workstreamsPersonal.assign": AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: AuthOrchestrationReadScope,

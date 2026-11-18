@@ -9,7 +9,13 @@
     "apps/server/src/jones/mcp/storageCleanup/handlers.test.ts",
     "apps/server/src/jones/mcp/storageCleanup/handlers.ts",
     "apps/server/src/jones/mcp/storageCleanup/tools.ts",
+    "apps/web/src/jones/storageCleanupResults/CleanupResults.preserve.browser.test.tsx",
     "apps/web/src/jones/storageCleanupResults/CleanupResults.tsx",
+    "apps/web/src/jones/storageCleanupResults/PreserveDetails.tsx",
+    "apps/web/src/jones/storageCleanupResults/retirementCopy.node-test.mjs",
+    "apps/web/src/jones/storageCleanupResults/retirementCopy.test.ts",
+    "apps/web/src/jones/storageCleanupResults/retirementCopy.testkit.ts",
+    "apps/web/src/jones/storageCleanupResults/retirementCopy.ts",
     "apps/web/src/jones/storageCleanupResults/runStatus.ts",
     "apps/web/src/jones/storageCleanupResults/runStatus.testkit.ts",
     "apps/web/src/jones/storageCleanupResults/runStatus.test.ts",
@@ -45,6 +51,10 @@
     {
       "from": "apps/web/src/components/settings/StorageSettings.tsx",
       "to": "apps/web/src/jones/storageCleanupResults/runStatus.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/StorageSettings.tsx",
+      "to": "apps/web/src/jones/storageCleanupResults/retirementCopy.ts"
     }
   ]
 }

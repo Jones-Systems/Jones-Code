@@ -24,12 +24,16 @@ export class PersonalWorkstreams extends Context.Service<
       P.PersonalWorkstreamsSnapshot,
       P.WorkstreamsPersonalError
     >;
+    readonly members: (
+      id: string,
+    ) => Effect.Effect<P.PersonalWorkstreamMembers, P.WorkstreamsPersonalError>;
     readonly changes: Stream.Stream<P.PersonalWorkstreamsSnapshot, P.WorkstreamsPersonalError>;
     readonly create: (
       input: Omit<P.NewPersonalWorkstreamInput, "orderKey" | "now" | "origin">,
     ) => Effect.Effect<P.PutResult, P.WorkstreamsPersonalError>;
     readonly put: (
       workstream: P.PersonalWorkstream,
+      expected?: P.PersonalWorkstream,
     ) => Effect.Effect<P.PutResult, P.WorkstreamsPersonalError>;
     readonly assign: (
       input: P.AssignPersonalWorkstreamInput,
@@ -62,7 +66,12 @@ export class PersonalWorkstreams extends Context.Service<
   }
 >()("t3/jones/workstreams/personal/service/PersonalWorkstreams") {}
 
-const definitionColumns = `id, name, lifecycle, color, order_key AS orderKey, created_at AS createdAt, updated_at AS updatedAt, deleted_at AS deletedAt, rev, origin`;
+const definitionColumns = `id, name, lifecycle, color, order_key AS orderKey, created_at AS createdAt, updated_at AS updatedAt, deleted_at AS deletedAt, rev, lifecycle_revision AS lifecycleRevision, origin`;
+const normalizeDefinition = ({
+  lifecycleRevision,
+  ...definition
+}: P.PersonalWorkstream): P.PersonalWorkstream =>
+  lifecycleRevision ? { ...definition, lifecycleRevision } : definition;
 const assignmentColumns = `a.thread_id AS threadId, a.workstream_id AS workstreamId, a.revision, a.updated_at AS updatedAt`;
 const ImportFile = Schema.Struct({
   schema: Schema.Literal("jones.workstreams-personal-import/v1"),
@@ -101,13 +110,15 @@ const make = Effect.gen(function* () {
     yield* sql`INSERT INTO jones_personal_workstream_meta(key,value) VALUES('sequence','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)`;
   });
   const definitions = () =>
-    sql.unsafe<P.PersonalWorkstream>(`SELECT ${definitionColumns} FROM jones_personal_workstreams`);
+    sql
+      .unsafe<P.PersonalWorkstream>(`SELECT ${definitionColumns} FROM jones_personal_workstreams`)
+      .pipe(Effect.map((rows) => rows.map(normalizeDefinition)));
   const definition = Effect.fn("PersonalWorkstreams.definition")(function* (id: string) {
     const rows = yield* sql.unsafe<P.PersonalWorkstream>(
       `SELECT ${definitionColumns} FROM jones_personal_workstreams WHERE id=?`,
       [id],
     );
-    return rows[0] ?? null;
+    return rows[0] ? normalizeDefinition(rows[0]) : null;
   });
   const exists = (id: ThreadId) =>
     sql`SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id=${id} AND deleted_at IS NULL`.pipe(
@@ -131,11 +142,32 @@ const make = Effect.gen(function* () {
     return next;
   });
   const store = Effect.fn("PersonalWorkstreams.store")(function* (w: P.PersonalWorkstream) {
-    yield* sql`INSERT INTO jones_personal_workstreams ${sql.insert({ id: w.id, name: w.name, lifecycle: w.lifecycle, color: w.color, order_key: w.orderKey, created_at: w.createdAt, updated_at: w.updatedAt, deleted_at: w.deletedAt, rev: w.rev, origin: w.origin })} ON CONFLICT(id) DO UPDATE SET name=excluded.name,lifecycle=excluded.lifecycle,color=excluded.color,order_key=excluded.order_key,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,rev=excluded.rev,origin=excluded.origin`;
+    yield* sql`INSERT INTO jones_personal_workstreams ${sql.insert({ id: w.id, name: w.name, lifecycle: w.lifecycle, color: w.color, order_key: w.orderKey, created_at: w.createdAt, updated_at: w.updatedAt, deleted_at: w.deletedAt, rev: w.rev, lifecycle_revision: w.lifecycleRevision ?? 0, origin: w.origin })} ON CONFLICT(id) DO UPDATE SET name=excluded.name,lifecycle=excluded.lifecycle,color=excluded.color,order_key=excluded.order_key,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,rev=excluded.rev,lifecycle_revision=excluded.lifecycle_revision,origin=excluded.origin`;
   });
+  const unsettledMember = (id: string) =>
+    sql`SELECT 1
+      FROM jones_personal_workstream_assignments a
+      JOIN orchestration_v2_projection_threads t ON t.thread_id = a.thread_id
+      WHERE a.workstream_id = ${id} AND t.deleted_at IS NULL
+      AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
+      LIMIT 1`;
+  const members = Effect.fn("PersonalWorkstreams.members")((id: string) =>
+    sql<{ threadId: ThreadId; title: string; settled: number }>`SELECT
+        a.thread_id AS threadId,
+        t.title,
+        json_extract(t.payload_json, '$.settledOverride') IS 'settled' AS settled
+      FROM jones_personal_workstream_assignments a
+      JOIN orchestration_v2_projection_threads t ON t.thread_id = a.thread_id
+      WHERE a.workstream_id = ${id} AND t.deleted_at IS NULL
+      ORDER BY a.updated_at DESC, a.thread_id`.pipe(
+      Effect.map((rows) => rows.map((row) => ({ ...row, settled: row.settled === 1 }))),
+      Effect.mapError(storage),
+    ),
+  );
   const merge = Effect.fn("PersonalWorkstreams.merge")(function* (
     w: P.PersonalWorkstream,
-  ): Effect.fn.Return<P.PutResult, SqlError> {
+    expected?: P.PersonalWorkstream,
+  ): Effect.fn.Return<P.PutResult, SqlError | P.WorkstreamsPersonalError> {
     const old = yield* definition(w.id);
     const comparison = old === null ? 1 : P.comparePersonalWorkstreams(w, old);
     if (comparison <= 0)
@@ -144,6 +176,22 @@ const make = Effect.gen(function* () {
         workstream: old!,
         sequence: yield* sequence(),
       };
+    if (
+      w.deletedAt === null &&
+      P.isClosedPersonalWorkstream(w.lifecycle) &&
+      old?.lifecycle !== w.lifecycle &&
+      (yield* unsettledMember(w.id)).length > 0
+    )
+      return yield* new P.WorkstreamsPersonalError({ code: "unsettled_threads" });
+    if (
+      old?.deletedAt === null &&
+      w.deletedAt === null &&
+      P.isClosedPersonalWorkstream(old.lifecycle) !== P.isClosedPersonalWorkstream(w.lifecycle) &&
+      (w.lifecycleRevision ?? 0) <= (old.lifecycleRevision ?? 0)
+    )
+      return yield* new P.WorkstreamsPersonalError({ code: "precondition_failed" });
+    if (expected && (!old || P.comparePersonalWorkstreams(old, expected) !== 0))
+      return yield* new P.WorkstreamsPersonalError({ code: "precondition_failed" });
     yield* store(w);
     if (w.deletedAt !== null)
       yield* sql`UPDATE jones_personal_workstream_assignments SET workstream_id=NULL, revision=revision+1, updated_at=${w.updatedAt} WHERE workstream_id=${w.id}`;
@@ -189,11 +237,12 @@ const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(storage)),
   );
-  const put = Effect.fn("PersonalWorkstreams.put")((w: P.PersonalWorkstream) =>
-    decodeDefinition(w).pipe(
-      Effect.mapError(() => new P.WorkstreamsPersonalError({ code: "invalid_request" })),
-      Effect.flatMap((valid) => write(merge(valid))),
-    ),
+  const put = Effect.fn("PersonalWorkstreams.put")(
+    (w: P.PersonalWorkstream, expected?: P.PersonalWorkstream) =>
+      decodeDefinition(w).pipe(
+        Effect.mapError(() => new P.WorkstreamsPersonalError({ code: "invalid_request" })),
+        Effect.flatMap((valid) => write(merge(valid, expected))),
+      ),
   );
   const create = Effect.fn("PersonalWorkstreams.create")(
     (input: Omit<P.NewPersonalWorkstreamInput, "orderKey" | "now" | "origin">) =>
@@ -252,8 +301,21 @@ const make = Effect.gen(function* () {
             > {
               if (!(yield* exists(valid.threadId)))
                 return yield* new P.WorkstreamsPersonalError({ code: "thread_not_found" });
+              const carried = valid.workstream;
+              const local = carried === null ? null : yield* definition(carried.id);
+              const differentLifecycle =
+                carried !== null &&
+                local !== null &&
+                P.isClosedPersonalWorkstream(carried.lifecycle) !==
+                  P.isClosedPersonalWorkstream(local.lifecycle);
               const workstream =
-                valid.workstream === null ? null : (yield* merge(valid.workstream)).workstream;
+                carried === null
+                  ? null
+                  : differentLifecycle || P.isClosedPersonalWorkstream(carried.lifecycle)
+                    ? local
+                    : (yield* merge(carried)).workstream;
+              if (carried && !workstream)
+                return yield* new P.WorkstreamsPersonalError({ code: "workstream_closed" });
               if (workstream?.deletedAt != null)
                 return yield* new P.WorkstreamsPersonalError({ code: "workstream_deleted" });
               const current = yield* assignment(valid.threadId);
@@ -270,6 +332,12 @@ const make = Effect.gen(function* () {
                   workstream,
                   sequence: yield* sequence(),
                 };
+              if (
+                workstream &&
+                (P.isClosedPersonalWorkstream(workstream.lifecycle) ||
+                  (carried && P.isClosedPersonalWorkstream(carried.lifecycle)))
+              )
+                return yield* new P.WorkstreamsPersonalError({ code: "workstream_closed" });
               if (valid.expectedRevision !== current.revision && !supersedesAutomatic)
                 return yield* new P.WorkstreamsPersonalError({
                   code: "precondition_failed",
@@ -400,6 +468,7 @@ const make = Effect.gen(function* () {
   );
   return PersonalWorkstreams.of({
     snapshot,
+    members,
     create,
     put,
     assign,

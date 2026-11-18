@@ -3,7 +3,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
-import migration from "./161_JonesLegacyBootstrap.ts";
+import migration from "./162_JonesLegacyBootstrap.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 it.effect(

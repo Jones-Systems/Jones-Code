@@ -21,7 +21,7 @@ export const sourcePins = {
     "apps/desktop/src/snapShot/DesktopSnapShot.ts":
       "2817c375b8c32820a9a7c3ea82e1d3913a9266aa21cfea842e135f59382dab50",
     "scripts/build-desktop-artifact.ts":
-      "74761927bb4a70ff197b712a0fb2b456209e0ba6a4267efcff5971632a024da3",
+      "09c18643bb4db2cf6317d2bdb14718de4c186a3e630c8a89a3a0b9b6167e57fc",
   },
   pgrep: {
     "apps/desktop/scripts/electron-launcher.test.mjs":

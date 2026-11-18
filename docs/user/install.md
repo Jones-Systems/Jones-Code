@@ -9,9 +9,10 @@ desktop, web, or mobile app. Set up the machine where the agents will work first
 > store apps. Jones Code supports Apple Silicon Macs and Linux; Windows and Intel
 > Macs are unsupported.
 >
-> - **Get Jones Code:** Mac builds are unsigned preview DMGs from the
+> - **Get Jones Code:** Mac builds are preview DMGs from the
 >   [Mac desktop artifact](../operations/build-artifacts.md#mac-desktop-artifact)
->   workflow, kept for 7 days. Linux uses the
+>   workflow, kept for 7 days. The app inside is ad hoc signed, with no Developer
+>   ID signing or notarization. Linux uses the
 >   [CLI artifacts](../operations/build-artifacts.md).
 > - **Update Jones Code:** use **Install status** in the app, as described in
 >   [Updating Jones Code](./updating.md#install-status). Do not drag a newer DMG

@@ -41,6 +41,7 @@ import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.t
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as ServerOwnership from "../serverOwnership.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import {
   makePersistedServerRuntimeState,
@@ -226,6 +227,64 @@ it.effect("does not send a token to whatever took over a dead server's port", ()
     );
 
     assert.equal(requests, 0);
+    assert.equal((yield* readProjects(baseDir)).projects[0]?.workspaceRoot, workspaceRoot);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("releases fresh auth storage before falling back from an unavailable server", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-unreachable-project-cli-" });
+    const baseDir = NodePath.join(root, "state");
+    const workspaceRoot = NodePath.join(root, "workspace");
+    const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
+    yield* fs.makeDirectory(workspaceRoot);
+    const state = yield* makePersistedServerRuntimeState({
+      config: { host: "127.0.0.1", devUrl: undefined },
+      port: 3_773,
+    });
+    // A lock-aware runtime record can survive its owner even if its PID is now alive.
+    yield* persistServerRuntimeState({
+      path: statePath,
+      state: { ...state, ownerId: "former-owner" },
+    });
+    let requests = 0;
+    const fetch: typeof globalThis.fetch = async () => {
+      requests++;
+      return new Response(null, { status: 503 });
+    };
+
+    yield* runCli(["project", "add", workspaceRoot, "--base-dir", baseDir]).pipe(
+      Effect.provideService(FetchHttpClient.Fetch, fetch),
+    );
+
+    assert.equal(requests, 1);
+    assert.isFalse(yield* fs.exists(statePath));
+    assert.equal((yield* readProjects(baseDir)).projects[0]?.workspaceRoot, workspaceRoot);
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("refuses an offline project mutation while another owner holds the lock", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-owned-project-cli-" });
+    const baseDir = NodePath.join(root, "state");
+    const workspaceRoot = NodePath.join(root, "workspace");
+    const statePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
+    yield* fs.makeDirectory(workspaceRoot);
+
+    yield* Effect.gen(function* () {
+      yield* ServerOwnership.holdServerOwnershipLock(statePath);
+      const error = yield* runCli(["project", "add", workspaceRoot, "--base-dir", baseDir]).pipe(
+        Effect.flip,
+      );
+      assert.instanceOf(error, ServerOwnership.ServerAlreadyRunningError);
+      assert.isFalse(
+        yield* fs.exists(NodePath.join(NodePath.dirname(statePath), "statev2.sqlite")),
+      );
+    }).pipe(Effect.scoped);
+
+    yield* runCli(["project", "add", workspaceRoot, "--base-dir", baseDir]);
     assert.equal((yield* readProjects(baseDir)).projects[0]?.workspaceRoot, workspaceRoot);
   }).pipe(Effect.provide(NodeServices.layer)),
 );

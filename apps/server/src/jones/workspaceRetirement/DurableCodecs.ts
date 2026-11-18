@@ -232,6 +232,24 @@ const qualification = Schema.Struct({
     }),
   ),
 });
+// Optional on the receipt, so a receipt written before preserve branches still decodes.
+const preserve = Schema.Struct({
+  branch: Schema.String,
+  sha: Schema.String,
+  remote: Schema.NullOr(Schema.String),
+  verification: Schema.Literals(["remote_verified", "local_only"]),
+  excluded: Schema.mutable(
+    Schema.Array(Schema.Struct({ path: Schema.String, reason: Schema.String })),
+  ),
+  restore: Schema.String,
+  forced: Schema.Boolean,
+  readback: Schema.optionalKey(
+    Schema.Struct({
+      local: Schema.Literals(["verified", "failed"]),
+      remote: Schema.Literals(["verified", "failed", "not_applicable"]),
+    }),
+  ),
+});
 export const RetirementReceiptJson = Schema.fromJsonString(
   Schema.Struct({
     schema: Schema.Literal("worktree-retirement/v1"),
@@ -260,5 +278,6 @@ export const RetirementReceiptJson = Schema.fromJsonString(
       allocated: Schema.NullOr(Schema.Number),
       statvfs_delta: Schema.NullOr(Schema.Number),
     }),
+    preserve: Schema.optionalKey(preserve),
   }),
 ) satisfies Schema.Codec<RetirementReceipt, string>;

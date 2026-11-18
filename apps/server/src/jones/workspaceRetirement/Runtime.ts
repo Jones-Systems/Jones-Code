@@ -28,6 +28,7 @@ import { qualify, type QualificationInput } from "./Qualification.ts";
 import type { Probe } from "./ConsumerProbe.ts";
 import { NativeObservations } from "./NativeObservations.ts";
 import * as GitDriver from "../../vcs/GitVcsDriver.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   finalCheckpointSettled,
   legacySettlementAdmission,
@@ -36,6 +37,8 @@ import {
 import { nativeWorktreeRemoval, retire } from "./RetirementExecutor.ts";
 import { interruptedRetirement } from "./InterruptedRetirement.ts";
 import { forgetWorktreeOutputs } from "./OutputFinalization.ts";
+import { preserveRemote } from "./PreserveBranch.ts";
+import { confirmedPaths, preserveOutcome, recoverabilityOutcome } from "./PreserveOutcome.ts";
 
 const unavailable = (limit: string): Probe => ({
   observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()),
@@ -510,6 +513,11 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           );
     }
     yield* assess;
+    // Only the owner's Retire of a confirmed proposal may preserve to a branch, push and force removal.
+    const preserve =
+      Option.isSome(gitDriver) && request.cause === "owner_action" && request.ownerCoverage
+        ? { git: gitDriver.value, host: yield* HostProcess.Hostname }
+        : undefined;
     return yield* retire({
       cause: request.cause,
       worktree: request.worktree,
@@ -526,6 +534,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
             }).pipe(mapError),
           }
         : {}),
+      ...(preserve ? { preserve } : {}),
       finalizeOutputs: (receipt) => {
         // The interrupted reconcile settles before any observation, so read the registry as the
         // absent-checkout finish does.
@@ -595,6 +604,18 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           nextAction: `Have the recorded producer owner run node scripts/jones/direct-producers/resolve.ts --worktree '${record.binding.path.replaceAll("'", "'\\''")}' --json on the workspace-owning server; reobserve the reported holder or host limitation, then reevaluate this checkout.`,
         })),
       );
+  // A proposal names the remote a preserve push would target; an unresolved remote stays unstated.
+  const proposalRemote =
+    !request.execute &&
+    qualification?.recoverability?.verdict === "retirable_after_preserve" &&
+    Option.isSome(gitDriver)
+      ? yield* preserveRemote(gitDriver.value, {
+          cwd: request.worktree,
+          branch: qualification.branch ?? null,
+        }).pipe(Effect.orElseSucceed(() => undefined))
+      : undefined;
+  const recoverability = recoverabilityOutcome(qualification, proposalRemote);
+  const preserved = preserveOutcome("preserve" in result ? result.preserve : undefined);
   const outcome: WorkspaceRetirementOutcome = {
     state: result.state,
     reasonCodes: [...new Set([...result.reasons, ...nativeDetails.map((detail) => detail.reason)])],
@@ -602,14 +623,19 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
     fingerprint: qualification?.fingerprint ?? null,
     paths: qualification
       ? [
-          ...new Set([
-            ...(qualification.ignored ?? []).flatMap((r) => [r.path, ...(r.paths ?? [])]),
-            ...(qualification.untrackedPaths ?? []).map((p) =>
-              NodePath.resolve(request.worktree, p),
+          ...new Set(
+            confirmedPaths(
+              recoverability?.verdict,
+              (qualification.ignored ?? []).flatMap((r) => [r.path, ...(r.paths ?? [])]),
+              (qualification.untrackedPaths ?? []).map((p) =>
+                NodePath.resolve(request.worktree, p),
+              ),
             ),
-          ]),
+          ),
         ]
       : [],
+    ...(recoverability ? { recoverability } : {}),
+    ...(preserved ? { preserve: preserved } : {}),
     details: [
       ...(qualification?.details ?? []),
       ...nativeDetails,

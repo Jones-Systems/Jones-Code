@@ -73,6 +73,64 @@ describe("retained retirement report", () => {
     expect(merged.bytesFreed).toBe(4096);
   });
 
+  it("replaces the proposal's preserve plan with the retire's preserve receipt, leaving other proposals' plans", () => {
+    const retirement = (patch: Partial<NonNullable<StorageCleanupReportEntry["retirement"]>>) => ({
+      state: "proposed" as const,
+      reasonCodes: [],
+      receiptId: null,
+      fingerprint: "fingerprint",
+      paths: [],
+      details: [],
+      outputObligations: [],
+      ...patch,
+    });
+    const plan = {
+      verdict: "retirable_after_preserve" as const,
+      regenerable: [],
+      preserve: { files: 2, deletions: 0, bytes: 10, excluded: [], excludedBytes: 0 },
+    };
+    const preserve = {
+      branch: "preserve/20261117/mini/b",
+      sha: "0123456789abcdef0123456789abcdef01234567",
+      remote: "origin",
+      verification: "remote_verified" as const,
+      excluded: [],
+      restore: "git worktree add /synthetic/b preserve/20261117/mini/b",
+      forced: true,
+    };
+    const planned = report(
+      "propose",
+      "manual",
+      [
+        { ...entry("a", "kept"), retirement: retirement({ recoverability: plan }) },
+        { ...entry("b", "kept"), retirement: retirement({ recoverability: plan }) },
+      ],
+      "2026-11-17T10:00:00.000Z",
+    );
+    const merged = mergeRetirementReport(
+      retire,
+      planned,
+      report(
+        "retire",
+        "manual",
+        [
+          {
+            ...entry("b", "removed", 4096),
+            retirement: retirement({ state: "retired", recoverability: plan, preserve }),
+          },
+        ],
+        "2026-11-17T10:05:00.000Z",
+        4096,
+      ),
+    );
+    expect(merged.entries.map((e) => [e.threadTitle, e.retirement?.preserve?.branch])).toEqual([
+      ["a", undefined],
+      ["b", "preserve/20261117/mini/b"],
+    ]);
+    expect(merged.entries[0]?.retirement?.recoverability?.verdict).toBe("retirable_after_preserve");
+    expect(merged.entries[1]?.retirement?.preserve?.forced).toBe(true);
+  });
+
   it("accumulates freed bytes across successive retires and appends unseen entries", () => {
     const first = mergeRetirementReport(
       retire,

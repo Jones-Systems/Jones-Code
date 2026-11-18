@@ -1,5 +1,6 @@
 import { requestConfirmDialog } from "~/confirmDialog";
 import { CleanupResults } from "../../jones/storageCleanupResults/CleanupResults";
+import { retireConfirmation } from "../../jones/storageCleanupResults/retirementCopy";
 import {
   cleanupFleetTimestamp,
   cleanupReportSummary,
@@ -482,9 +483,11 @@ function CleanupSection() {
       return;
     const coveredPaths = entry.retirement.paths;
     const confirmed = await (requestConfirmDialog(
-      `Retire ${entry.path}? Branches and recovery references are kept. This authorizes disposal only of these exact selections, including additions within the listed roots:
-${coveredPaths.length ? coveredPaths.join("\n") : "No local content selected."}
-Live consumers, tracked edits, nested repositories and other protections still hold.`,
+      retireConfirmation({
+        path: entry.path,
+        coveredPaths,
+        recoverability: entry.retirement.recoverability,
+      }),
       { variant: "destructive" },
     ) ?? Promise.resolve(false));
     if (!confirmed) return;

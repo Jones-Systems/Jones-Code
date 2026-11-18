@@ -491,9 +491,10 @@ it.effect(
           [156, "WorkspaceDutyLifetimes"],
           [157, "RemoteAdmissionReview"],
           [158, "WorkstreamAutoRoute"],
-          [159, "OrdinaryPreparation"],
-          [160, "RemoteSendReceipts"],
-          [161, "LegacyBootstrap"],
+          [159, "WorkstreamLifecycleRevision"],
+          [160, "OrdinaryPreparation"],
+          [161, "RemoteSendReceipts"],
+          [162, "LegacyBootstrap"],
         ],
       );
       assert.deepStrictEqual(
@@ -734,9 +735,10 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [156, "WorkspaceDutyLifetimes"],
       [157, "RemoteAdmissionReview"],
       [158, "WorkstreamAutoRoute"],
-      [159, "OrdinaryPreparation"],
-      [160, "RemoteSendReceipts"],
-      [161, "LegacyBootstrap"],
+      [159, "WorkstreamLifecycleRevision"],
+      [160, "OrdinaryPreparation"],
+      [161, "RemoteSendReceipts"],
+      [162, "LegacyBootstrap"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

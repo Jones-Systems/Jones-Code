@@ -6,6 +6,7 @@ import { ClaimAbsence } from "./ClaimReconciliation.ts";
 import type { JournalEntry, RetirementReceipt } from "./Receipts.ts";
 import { makeRootsWritable } from "./ReadOnlyRemoval.ts";
 import { forgetWorktreeOutputs } from "./OutputFinalization.ts";
+import type { WorkspaceRetirementOutcome } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
 import { DutyIdentityJson, NativeDutyOwnerJson, RetirementReceiptJson } from "./DurableCodecs.ts";
@@ -44,7 +45,7 @@ import { qualify, type QualificationInput } from "./Qualification.ts";
 import { readReservation } from "./Reservation.ts";
 import * as NodeChildProcess from "node:child_process";
 
-async function fixtureSql(
+export async function fixtureSql(
   path: string,
   after?: (query: string, values: unknown[]) => Promise<void>,
   migrate = true,
@@ -217,7 +218,7 @@ const retireRequest = (repo: string, worktree: string, input: QualificationInput
   revalidate: Effect.void,
   finalizeOutputs: () => Effect.void,
 });
-const receiptRow = (f: Awaited<ReturnType<typeof fixtureSql>>, id: string) => {
+export const receiptRow = (f: Awaited<ReturnType<typeof fixtureSql>>, id: string) => {
   const row = f.db
     .prepare(
       "SELECT state,receipt_json FROM jones_workspace_retirement_receipts WHERE receipt_id=?",
@@ -1603,6 +1604,9 @@ interface EvaluatedRetirement {
     readonly receiptId: string | null;
     readonly fingerprint: string | null;
     readonly details: readonly { readonly nextAction: string }[];
+    readonly paths: readonly string[];
+    readonly recoverability?: WorkspaceRetirementOutcome["recoverability"];
+    readonly preserve?: WorkspaceRetirementOutcome["preserve"];
   };
 }
 export interface OutputStub {

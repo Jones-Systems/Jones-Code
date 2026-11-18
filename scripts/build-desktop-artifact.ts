@@ -2892,6 +2892,48 @@ export function resolveDesktopProductName(_version: string): string {
   return desktopPackageJson.productName ?? "Jones Code";
 }
 
+export class DesktopMacAdHocSigningConflictError extends Schema.TaggedError<DesktopMacAdHocSigningConflictError>()(
+  "DesktopMacAdHocSigningConflictError",
+  {
+    platform: BuildPlatform,
+    signed: Schema.Boolean,
+  },
+) {
+  override get message(): string {
+    return "T3CODE_DESKTOP_MAC_ADHOC_SIGN applies only to unsigned macOS builds.";
+  }
+}
+
+/**
+ * Opt-in ad-hoc seal ("-") for unsigned macOS previews, which otherwise carry
+ * only Electron's linker signature and fail strict verification. It
+ * authenticates no publisher: builds stay unsigned and unnotarized.
+ */
+export const resolveMacAdHocSigning = Effect.fn("resolveMacAdHocSigning")(function* (
+  platform: typeof BuildPlatform.Type,
+  signed: boolean,
+) {
+  const requested = yield* Config.Boolean("T3CODE_DESKTOP_MAC_ADHOC_SIGN").pipe(
+    Config.withDefault(false),
+  );
+  if (!requested) return false;
+  if (platform !== "mac" || signed) {
+    return yield* new DesktopMacAdHocSigningConflictError({ platform, signed });
+  }
+  return true;
+});
+
+export const MAC_AD_HOC_SIGNING = {
+  identity: "-",
+  // Builds without an identity run unhardened. Hardened runtime would add
+  // library validation and TCC checks that the preview's default
+  // entitlements do not grant, changing runtime behavior.
+  hardenedRuntime: false,
+  // Ad-hoc signatures carry no secure timestamp; do not contact Apple's
+  // timestamp service.
+  timestamp: "none",
+} as const;
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
@@ -2965,11 +3007,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     }
   }
 
+  const macAdHocSigning = yield* resolveMacAdHocSigning(platform, signed);
   if (platform === "mac") {
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
     buildConfig.mac = {
       ...(productionSigning(process.env) ? { notarize: false, hardenedRuntime: true } : {}),
+      ...(macAdHocSigning ? MAC_AD_HOC_SIGNING : {}),
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
@@ -3797,6 +3841,8 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   options: ResolvedBuildOptions,
 ) {
   requireProductionBuild(process.env, options);
+  // Refuse a conflicting ad-hoc request before staging anything.
+  const macAdHocSigning = yield* resolveMacAdHocSigning(options.platform, options.signed);
   const repoRoot = yield* RepoRoot;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -4239,6 +4285,12 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     delete buildEnv.APPLE_API_KEY;
     delete buildEnv.APPLE_API_KEY_ID;
     delete buildEnv.APPLE_API_ISSUER;
+  }
+  if (macAdHocSigning) {
+    // electron-builder skips all signing when GITHUB_BASE_REF marks a pull
+    // request. Ad-hoc signing uses no credentials (removed above), so pull
+    // request previews must produce the same sealed bundle as main.
+    buildEnv.CSC_FOR_PULL_REQUEST = "true";
   }
 
   if (hostPlatform === "win32") {

@@ -1,3 +1,8 @@
+import * as Clock from "effect/Clock";
+import {
+  awaitRetirementForAdmission,
+  RETIREMENT_ADMISSION_BUDGET_MS,
+} from "../providerRetirement/admissionWait.ts";
 import {
   EventId,
   ProviderSessionId,
@@ -121,6 +126,7 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       runId: run.id,
       cause: "Run has no active attempt.",
     });
+  const deadline = (yield* Clock.currentTimeMillis) + RETIREMENT_ADMISSION_BUDGET_MS;
   const events: Array<OrchestrationV2DomainEvent> = [];
   for (const providerSessionId of plan.releaseProviderSessionIds) {
     const retired = projection.providerSessions.find((session) => session.id === providerSessionId);
@@ -136,12 +142,16 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       (yield* sessionHasBackgroundWork(sessions, retired, projection.providerThreads))
     )
       continue;
-    yield* sessions.detach({
-      providerSessionId,
-      threadId: run.threadId,
-      detail: "Selection changed at normal run admission.",
-      requireWriterRetirement: true,
-    });
+    yield* awaitRetirementForAdmission(
+      sessions.detach({
+        providerSessionId,
+        threadId: run.threadId,
+        detail: "Selection changed at normal run admission.",
+        requireWriterRetirement: true,
+      }),
+      deadline,
+      revalidateReplacement,
+    );
     const writers = projection.providerThreads.filter(
       (candidate) =>
         candidate.providerSessionId === providerSessionId && candidate.appThreadId === run.threadId,
@@ -170,11 +180,13 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       },
     });
   }
-  yield* (
+  yield* awaitRetirementForAdmission(
     sessions.awaitThreadRetirement?.({
       threadId: run.threadId,
       instanceId: run.modelSelection.instanceId,
-    }) ?? Effect.void
+    }) ?? Effect.void,
+    deadline,
+    revalidateReplacement,
   );
   const retiredWriter =
     provider.providerSessionId !== null &&

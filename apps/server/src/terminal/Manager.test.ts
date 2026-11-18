@@ -2743,6 +2743,7 @@ it.layer(
       const fs = yield* FileSystem.FileSystem;
       const writes = yield* Queue.unbounded<number>();
       const maxBytes = 64 * 1024;
+      let logPath: string;
       const { manager, ptyAdapter, logsDir } = yield* createManager(5_000, {
         historyByteLimit: maxBytes,
       }).pipe(
@@ -2753,11 +2754,14 @@ it.layer(
               .writeFileString(path, data, options)
               .pipe(
                 Effect.tap(() =>
-                  data.length > 0 ? Queue.offer(writes, Buffer.byteLength(data)) : Effect.void,
+                  path === logPath && data.length > 0
+                    ? Queue.offer(writes, Buffer.byteLength(data))
+                    : Effect.void,
                 ),
               ),
         }),
       );
+      logPath = yield* historyLogPath(logsDir);
       yield* manager.open(openInput());
       const process = ptyAdapter.processes[0]!;
       process.emitData("a".repeat(maxBytes));
@@ -2768,7 +2772,7 @@ it.layer(
       }
       expect(written).toBeLessThan(maxBytes * 2);
       const expected = "a".repeat(maxBytes - 16 * 1024) + "b".repeat(16 * 1024);
-      const persisted = yield* fs.readFileString(yield* historyLogPath(logsDir));
+      const persisted = yield* fs.readFileString(logPath);
       expect(Buffer.byteLength(persisted)).toBe(maxBytes + 16 * 1024);
       for (const failure of [undefined, "write", "rename"] as const) {
         let failed = false;
@@ -2807,7 +2811,7 @@ it.layer(
       }
       yield* manager.close({ threadId: "thread-1" });
       expect((yield* manager.open(openInput())).history).toBe(expected);
-      expect(yield* fs.readFileString(yield* historyLogPath(logsDir))).toBe(expected);
+      expect(yield* fs.readFileString(logPath)).toBe(expected);
     }),
   );
 
@@ -2816,11 +2820,12 @@ it.layer(
       const fs = yield* FileSystem.FileSystem;
       const writes = yield* Queue.unbounded<void>();
       let failAppend = false;
+      let logPath: string;
       const { manager, ptyAdapter, logsDir } = yield* createManager().pipe(
         Effect.provideService(FileSystem.FileSystem, {
           ...fs,
           writeFileString: (path, data, options) => {
-            if (options?.flag === "a" && failAppend) {
+            if (path === logPath && options?.flag === "a" && failAppend) {
               failAppend = false;
               return fs.writeFileString(path, data.slice(0, 1), options).pipe(
                 // The file cannot also be a parent directory: fail after the partial append.
@@ -2831,11 +2836,16 @@ it.layer(
             return fs
               .writeFileString(path, data, options)
               .pipe(
-                Effect.tap(() => (data.length > 0 ? Queue.offer(writes, undefined) : Effect.void)),
+                Effect.tap(() =>
+                  path === logPath && data.length > 0
+                    ? Queue.offer(writes, undefined)
+                    : Effect.void,
+                ),
               );
           },
         }),
       );
+      logPath = yield* historyLogPath(logsDir);
       yield* manager.open(openInput());
       const process = ptyAdapter.processes[0]!;
       process.emitData("start:");
@@ -2846,7 +2856,7 @@ it.layer(
       expect(failAppend).toBe(false);
       process.emitData(":end");
       yield* Queue.take(writes);
-      expect(yield* fs.readFileString(yield* historyLogPath(logsDir))).toBe("start:middle:end");
+      expect(yield* fs.readFileString(logPath)).toBe("start:middle:end");
       yield* manager.close({ threadId: "thread-1" });
     }),
   );

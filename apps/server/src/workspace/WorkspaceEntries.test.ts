@@ -1094,10 +1094,10 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
             finder.grep = () => {
               throw new Error("search must not grep on the JS thread");
             };
-            const scanFilesAsync = finder.scanFilesAsync.bind(finder);
-            finder.scanFilesAsync = () => {
+            const reindexAsync = finder.reindexAsync.bind(finder);
+            finder.reindexAsync = (root) => {
               rescans += 1;
-              return scanFilesAsync();
+              return reindexAsync(root);
             };
             const waitForIndexReady = finder.waitForIndexReady.bind(finder);
             finder.waitForIndexReady = (timeoutMs) =>

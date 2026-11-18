@@ -58,7 +58,13 @@ export function cleanupReportSummary(report: StorageCleanupReport) {
     report.trigger === "automatic" ? "Automatic cleanup" : cleanupOperationLabel(operation);
   const recovered =
     report.bytesFreed > 0 ? ` · about ${formatBytes(report.bytesFreed)} recovered` : "";
-  return `${label}: ${outcome} · ${counts}${recovered}`;
+  // A checkout whose content was saved to a preserve branch says so, so a retire never reads as a plain delete.
+  const preserved = report.entries.filter((entry) => entry.retirement?.preserve).length;
+  const saved =
+    preserved > 0
+      ? ` · ${preserved.toLocaleString()} saved to ${preserved === 1 ? "a preserve branch" : "preserve branches"}`
+      : "";
+  return `${label}: ${outcome} · ${counts}${saved}${recovered}`;
 }
 
 export function cleanupRequestSummary(request: CleanupRequest) {

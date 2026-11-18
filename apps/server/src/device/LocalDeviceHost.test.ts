@@ -37,6 +37,20 @@ const processOutput = (code: number, stdout = "", stderr = "", timedOut = false)
   stderrInvalidUtf8: false,
 });
 
+const seedAndroidSdk = Effect.fn("seedAndroidSdk")(function* (root: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const tool of [
+    "platform-tools/adb",
+    "emulator/emulator",
+    "cmdline-tools/latest/bin/avdmanager",
+  ]) {
+    const toolPath = path.join(root, tool);
+    yield* fs.makeDirectory(path.dirname(toolPath), { recursive: true });
+    yield* fs.writeFileString(toolPath, "");
+  }
+});
+
 const agentFixture = Effect.fn("agentFixture")(function* (
   startup: (
     stateDir: string,
@@ -48,6 +62,7 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-agent-start-" });
+  yield* seedAndroidSdk(path.join(environment?.HOME ?? baseDir, "Library", "Android", "sdk"));
   const hub = { running: true, spawnFails: false, cleanup: Effect.void };
   const daemonStopRequested = yield* Deferred.make<ReadonlyArray<string>>();
   const stateDir = agentDeviceStateDir(path, path.join(baseDir, "userdata"));
@@ -170,14 +185,8 @@ describe("AgentDevice startup", () => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-sdk-" });
-      const standard = `${home}/Library/Android/sdk`;
       const profile = `${home}/profile-sdk`;
-      for (const root of [standard, profile]) {
-        for (const tool of ["platform-tools/adb", "emulator/emulator"]) {
-          yield* fs.makeDirectory(`${root}/${tool.split("/")[0]}`, { recursive: true });
-          yield* fs.writeFileString(`${root}/${tool}`, "");
-        }
-      }
+      yield* seedAndroidSdk(profile);
       const environment: NodeJS.ProcessEnv = { HOME: home, PATH: "" };
       const { host, hub, runs } = yield* agentFixture(
         (stateDir) =>

@@ -3959,6 +3959,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 threads={activeThreads}
                                 summaryThreads={workstreamSummaryThreads}
                                 rosterThreads={workstreamRosterThreads}
+                                onOpenHistoryThread={(thread) =>
+                                  void navigateToThread(
+                                    scopeThreadRef(thread.environmentId, thread.id),
+                                  )
+                                }
                                 renderThread={(thread, assignment) =>
                                   renderThreadRow(thread, "active", undefined, assignment)
                                 }

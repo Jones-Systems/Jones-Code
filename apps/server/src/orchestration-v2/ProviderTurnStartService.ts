@@ -1,3 +1,4 @@
+import { isWriterRetirementWaitExpired } from "../jones/providerRetirement/admissionWait.ts";
 import { withStartFailureDiagnostic } from "../jones/provider/startFailureDiagnostics.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
@@ -1426,11 +1427,27 @@ export const layer: Layer.Layer<
         Effect.result,
       );
       if (preparation._tag === "Failure") {
-        if (input.willRetry === true && !terminalStartFailure(preparation.failure))
+        // Pending proof has its own admission budget, outside ordinary startup retries.
+        const failure = preparation.failure;
+        const retirement = isWriterRetirementWaitExpired(failure)
+          ? failure
+          : "cause" in failure
+            ? failure.cause
+            : undefined;
+        const expired = isWriterRetirementWaitExpired(retirement) ? retirement : undefined;
+        if (
+          expired === undefined &&
+          input.willRetry === true &&
+          !terminalStartFailure(preparation.failure)
+        )
           return yield* preparation.failure;
         yield* settleStartFailure({
           signal: "provider-writer-retirement-failure",
-          title: "Previous provider writer could not retire",
+          title:
+            expired === undefined
+              ? "Previous provider writer could not retire"
+              : "Previous provider is still releasing this conversation",
+          ...(expired === undefined ? {} : { message: expired.message }),
           error: preparation.failure,
         });
         return;
