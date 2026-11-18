@@ -122,12 +122,18 @@ export const handlers = {
     (input) => input.scheduledTaskId === undefined,
     McpToolAccess.startsThreads(
       () => ({}),
-      ({ prompt, schedule, ...input }) =>
+      ({ prompt, schedule, modelSelection, ...input }) =>
         Effect.gen(function* () {
           if (prompt === undefined || schedule === undefined) {
             return yield* new OrchestratorMcpFailure({
               code: "invalid_request",
               message: "A new scheduled task needs `prompt` and `schedule`.",
+            });
+          }
+          if (modelSelection !== undefined) {
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "An explicit model selection requires an existing scheduledTaskId.",
             });
           }
           const scope = yield* McpInvocationContext.McpInvocationContext;
@@ -138,13 +144,23 @@ export const handlers = {
       { refused: "schedule tasks in this environment" },
     ),
     McpToolAccess.writes(
-      ({ scheduledTaskId, prompt, title, schedule, enabled, freshSession, bindToCurrentThread }) =>
+      ({
+        scheduledTaskId,
+        modelSelection,
+        prompt,
+        title,
+        schedule,
+        enabled,
+        freshSession,
+        bindToCurrentThread,
+      }) =>
         Effect.gen(function* () {
           if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
           const scope = yield* McpInvocationContext.McpInvocationContext;
           const service = yield* OrchestratorMcpService.OrchestratorMcpService;
           return yield* service.updateScheduledTask(scope, {
             scheduledTaskId,
+            modelSelection,
             prompt,
             title,
             schedule,

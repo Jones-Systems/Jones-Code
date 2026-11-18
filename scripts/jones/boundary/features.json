@@ -1692,6 +1692,14 @@
       "scope": "delegate_task accepts an optional workspaceStrategy (new worktree from a named base/branch, or an existing project worktree), exclusive with legacy isolation, so delegated children, including same-provider Claude sessions, keep app-owned subagent lineage, task_status, task_cancel and completion wake instead of being launched as unlinked top-level threads. Existing-worktree admission matches t3_thread_launch; named bases use ThreadLaunchService.checkWorktreeBase; accepted retries replay without re-validation. An optional projectId selects another registered project: it requires workspaceStrategy, validates the base or worktree and provider enablement against the target project, keeps parent mode clamps, and is carried on delegated_task.request (optional, so earlier commands decode unchanged) so the decider rejects missing workspace or missing/deleted target projects before any event and binds the child thread to the target project with lineage to the parent. Same-project commands are unchanged; thread.created.record keeps its same-project rule. App-owned delegated existing-worktree preparation, identified by subagent lineage plus the parent's app_owned task record, observes setup completion without publishing setup-tracker snapshots: synchronous setup holds provider release, while async setup releases the provider and remains cancellable. Stop (task_cancel) closes its setup terminal without removing the checkout, including cancellation after async release; top-level existing-worktree launches are unchanged. No persisted-event schema change, migration, keepalive change or retroactive relinking. Injected orchestration instructions and delegate_task/create_threads/orchestrator_capabilities/t3_thread_launch descriptions reserve top-level launches for user-requested standalone conversations. New first-message dispatch on a replayed create_threads result independently enforces current runtime and interaction ceilings under the target lock; accepted first-message receipts retain replay behavior."
     },
     {
+      "id": "scheduled-task-model-settings",
+      "tests": [
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/scheduledTasks/ScheduledTaskService.interval.test.ts"
+      ],
+      "scope": "Agents can read and edit the saved model and explicit options for an existing new-thread task using the existing authenticated scheduler tools. The update validates options against the selected provider catalog and compares the saved task identity before changing only its model selection. Coverage uses the existing MCP tool and SQLite scheduler harnesses."
+    },
+    {
       "id": "scheduled-wake-coalescing",
       "tests": [
         "apps/server/src/jones/scheduledTasks/queuedWake.test.ts",

@@ -347,6 +347,8 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     projectId: task.projectId,
     boundThreadId: task.threadId,
     freshSession: scheduledTaskThreadMode(task) === "fresh_session",
+    threadMode: scheduledTaskThreadMode(task),
+    modelSelection: task.modelSelection,
     schedule: task.schedule,
     nextRunAt: task.nextRunAt,
     lastRunStatus: task.lastRunStatus,
@@ -2476,6 +2478,59 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        if (input.modelSelection !== undefined) {
+          if (
+            input.prompt !== undefined ||
+            input.title !== undefined ||
+            input.schedule !== undefined ||
+            input.enabled !== undefined ||
+            input.bindToCurrentThread !== undefined ||
+            input.freshSession !== undefined
+          ) {
+            return yield* failure("invalid_request", "Send modelSelection as a standalone edit.");
+          }
+          if (existing.threadId !== null || scheduledTaskThreadMode(existing) !== "new_thread") {
+            return yield* failure(
+              "invalid_request",
+              "Use the target thread's model settings for tasks that reuse a thread.",
+            );
+          }
+          const { instanceId, model, options } = input.modelSelection;
+          const provider = (yield* loadProviders).find(
+            (candidate) => candidate.instanceId === instanceId,
+          );
+          if (
+            provider === undefined ||
+            !provider.enabled ||
+            !(yield* threadManagement.isProviderInstanceEnabledForProject({
+              projectId: existing.projectId,
+              instanceId,
+            }))
+          ) {
+            return yield* failure(
+              "provider_unavailable",
+              `Provider instance ${instanceId} is unavailable for this project.`,
+            );
+          }
+          yield* requireAdvertisedModel(provider, model);
+          const descriptors = advertisedModel(provider, model)?.capabilities?.optionDescriptors;
+          const invalid = invalidOptionSelections(options ?? [], descriptors ?? []);
+          if (invalid.length > 0) {
+            return yield* failure(
+              "invalid_request",
+              `Model ${model} on provider ${instanceId} rejected options: ${invalid.join(" ")}`,
+            );
+          }
+          const selection: ModelSelection = {
+            instanceId,
+            model,
+            ...(options === undefined ? {} : { options }),
+          };
+          const task = yield* scheduledTasks
+            .setModelSelection(existing, selection)
+            .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
+          return scheduledTaskSummary(task, false);
+        }
         if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)

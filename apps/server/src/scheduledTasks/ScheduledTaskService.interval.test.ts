@@ -315,3 +315,40 @@ it.effect("reports the stored task when the row was replaced during the run", ()
     Effect.provide(SqlitePersistence.layerMemory),
   ),
 );
+
+it.effect(
+  "changes a saved launch model without changing the schedule or recreating a stale task",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-11-18T14:00:00Z"));
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const decoded = yield* decodeInput({
+        ...input,
+        threadMode: "new_thread",
+        schedule: { type: "interval", everyMs: 604_800_000 },
+      });
+      const { task } = yield* service.upsert(decoded);
+      const selection = {
+        ...task.modelSelection,
+        model: "gpt-6.2-sol",
+        options: [
+          { id: "reasoningEffort", value: "xhigh" },
+          { id: "serviceTier", value: "default" },
+        ],
+      };
+      yield* TestClock.adjust("1 second");
+      const saved = yield* service.setModelSelection(task, selection);
+      expect(saved).toEqual({ ...task, modelSelection: selection, updatedAt: saved.updatedAt });
+      expect((yield* service.list()).tasks).toEqual([saved]);
+      yield* service.setModelSelection(task, task.modelSelection).pipe(Effect.flip);
+      expect((yield* service.list()).tasks).toEqual([saved]);
+
+      yield* service.delete({ id: task.id });
+      yield* service.setModelSelection(saved, task.modelSelection).pipe(Effect.flip);
+      expect((yield* service.list()).tasks).toEqual([]);
+    }).pipe(
+      Effect.provide(serviceLayer),
+      Effect.provideService(ServerActivation, Effect.never),
+      Effect.provide(SqlitePersistence.layerMemory),
+    ),
+);

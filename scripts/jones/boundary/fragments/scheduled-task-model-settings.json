@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "scheduled-task-model-settings",
+  "jonesOwnedPaths": ["apps/server/src/jones/scheduledTasks/compareAndSetModelSelection.ts"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/scheduledTasks/compareAndSetModelSelection.ts"
+    }
+  ]
+}

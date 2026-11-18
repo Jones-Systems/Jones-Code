@@ -599,6 +599,8 @@ const layerUnusedScheduledTaskStub = Layer.succeed(
     list: () => Effect.succeed({ tasks: [] }),
     subscribeList: () => Stream.succeed({ tasks: [] }),
     upsert: () => Effect.die("ScheduledTaskService.upsert is unused in this test"),
+    setModelSelection: () =>
+      Effect.die("ScheduledTaskService.setModelSelection is unused in this test"),
     setEnabled: () => Effect.die("ScheduledTaskService.setEnabled is unused in this test"),
     delete: () => Effect.die("ScheduledTaskService.delete is unused in this test"),
     deleteForThread: () => Effect.die("unused in this test"),
@@ -1476,6 +1478,12 @@ describe("orchestrator MCP toolkit", () => {
                   ]);
                   return { task };
                 }),
+              setModelSelection: (expected, modelSelection) => {
+                const task = { ...expected, modelSelection };
+                return Ref.update(scheduledStore, (all) =>
+                  all.map((existing) => (existing.id === task.id ? task : existing)),
+                ).pipe(Effect.as(task));
+              },
               setEnabled: () =>
                 Effect.die("ScheduledTaskService.setEnabled is unused in this test"),
               delete: (input) =>
@@ -2439,8 +2447,21 @@ describe("orchestrator MCP toolkit", () => {
             const scheduledListCall = yield* invoke("list_scheduled_tasks", {});
             expect(scheduledListCall.isError).toBe(false);
             expect(scheduledListCall.structuredContent).toMatchObject({
-              tasks: [{ scheduledTaskId, boundThreadId: parentThreadId }],
+              tasks: [
+                {
+                  scheduledTaskId,
+                  boundThreadId: parentThreadId,
+                  threadMode: "continue",
+                  modelSelection: codexSelection,
+                },
+              ],
             });
+
+            const boundModelEdit = yield* invoke("schedule_task", {
+              scheduledTaskId,
+              modelSelection: { ...codexSelection, options: { reasoning: "high" } },
+            });
+            expect(boundModelEdit.isError).toBe(true);
 
             const scheduledUpdateCall = yield* invoke("schedule_task", {
               scheduledTaskId,
@@ -2459,6 +2480,49 @@ describe("orchestrator MCP toolkit", () => {
               deleted: true,
             });
             expect(yield* Ref.get(scheduledStore)).toHaveLength(0);
+
+            const existing = storedAfterCreate[0];
+            if (existing === undefined) throw new Error("Expected the task fixture to be saved");
+            const freshId = ScheduledTaskId.make("saved-weekly-task");
+            yield* Ref.set(scheduledStore, [
+              {
+                ...existing,
+                id: freshId,
+                prompt: "Review repository guidance",
+                threadId: null,
+                threadMode: "new_thread",
+                schedule: { type: "interval", everyMs: 604_800_000 },
+              },
+            ]);
+            const freshTask = yield* invoke("list_scheduled_tasks", { scheduledTaskId: freshId });
+            expect(freshTask.isError).toBe(false);
+            const invalidOptions = yield* invoke("schedule_task", {
+              scheduledTaskId: freshId,
+              modelSelection: { ...codexSelection, options: { reasoning: "unsupported" } },
+            });
+            expect(invalidOptions.isError).toBe(true);
+            const savedModel = {
+              ...codexSelection,
+              options: [{ id: "reasoning", value: "high" }],
+            };
+            const modelEdit = yield* invoke("schedule_task", {
+              scheduledTaskId: freshId,
+              modelSelection: { ...codexSelection, options: { reasoning: "high" } },
+            });
+            expect(modelEdit.isError, JSON.stringify(modelEdit.content)).toBe(false);
+            const beforeEdit = freshTask.structuredContent as { tasks: Array<object> };
+            const freshTaskExpected = {
+              ...beforeEdit.tasks[0],
+              threadMode: "new_thread",
+              modelSelection: savedModel,
+            };
+            expect(modelEdit.structuredContent).toMatchObject(freshTaskExpected);
+            const modelReadback = yield* invoke("list_scheduled_tasks", {
+              scheduledTaskId: freshId,
+            });
+            expect(modelReadback.isError).toBe(false);
+            expect(modelReadback.structuredContent).toMatchObject({ tasks: [freshTaskExpected] });
+            yield* invoke("delete_scheduled_task", { scheduledTaskId: freshId });
 
             // OpenCode 1.15 has emitted this exact nested-object-as-JSON-string
             // shape. Decode it at the MCP boundary rather than failing a task
