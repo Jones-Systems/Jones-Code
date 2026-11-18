@@ -57,12 +57,13 @@ describe("repository freshness RPC authorization", () => {
                 calls.push(["status", id]);
                 return snapshot(id, first);
               }),
+            checkForLaunch: () => Effect.die("RPC must use a caller-authorized checkout refresh"),
             refresh: (id) =>
               Effect.sync(() => {
                 calls.push(["refresh", id]);
                 return {
                   status: snapshot(id, second),
-                  checkout: { status: "skipped", reason: "checkout-update-deferred" } as const,
+                  checkout: { status: "skipped", reason: "auto-pull-disabled" } as const,
                 };
               }),
           }),
@@ -95,7 +96,7 @@ describe("repository freshness RPC authorization", () => {
       });
       expect(yield* writer[WS_METHODS.vcsRefreshRepoFreshness]({ projectId })).toMatchObject({
         status: { projectId, latestAttempt: { status: "succeeded", verification: second } },
-        checkout: { status: "skipped", reason: "checkout-update-deferred" },
+        checkout: { status: "skipped", reason: "auto-pull-disabled" },
       });
       expect(calls).toEqual([
         ["status", projectId],

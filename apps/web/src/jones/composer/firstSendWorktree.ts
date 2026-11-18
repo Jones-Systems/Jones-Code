@@ -9,7 +9,6 @@ export function usesVerifiedDefault(
   if (!config || !projectId) return false;
   const capabilities = config.environment.capabilities;
   return (
-    "repoFreshness" in capabilities &&
     capabilities.repoFreshness === true &&
     (config.settings.projectSettingsOverrides[projectId]?.repoFreshnessCadenceSeconds ?? 0) > 0
   );

@@ -426,11 +426,7 @@ export function NewTaskFlowProvider(
     ? selectedEnvironmentServerConfig?.settings.projectSettingsOverrides[selectedProject.id]
         ?.repoFreshnessCadenceSeconds
     : undefined;
-  const verifiedDefault =
-    capabilities !== undefined &&
-    "repoFreshness" in capabilities &&
-    capabilities.repoFreshness === true &&
-    (cadence ?? 0) > 0;
+  const verifiedDefault = capabilities?.repoFreshness === true && (cadence ?? 0) > 0;
   const startFromOrigin =
     isGitRepo &&
     (draftStartFromOrigin ??

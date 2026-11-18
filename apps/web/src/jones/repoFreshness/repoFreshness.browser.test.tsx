@@ -153,7 +153,7 @@ it("reports only the scoped manual attempt and leaves the verified age after fai
   fixture.scopes.get(remote)!.add(AuthSourceControlWriteScope);
   const atom = Atom.make(AsyncResult.success(status));
   fixture.status.mockReturnValue(atom);
-  const checkout = { status: "skipped", reason: "checkout-update-deferred" };
+  const checkout = { status: "skipped", reason: "auto-pull-disabled" };
   fixture.refresh.mockResolvedValueOnce(AsyncResult.success({ status, checkout }));
   const exact = { ...verification, commitSha: "e".repeat(40) };
   fixture.refresh.mockResolvedValueOnce(
@@ -181,7 +181,7 @@ it("reports only the scoped manual attempt and leaves the verified age after fai
     .poll(() => fixture.toast.mock.lastCall?.[0])
     .toMatchObject({
       type: "success",
-      description: "upstream/release at eeeeeeeeeeee. Checkout update deferred.",
+      description: "upstream/release at eeeeeeeeeeee. Automatically pull is off for this checkout.",
     });
   expect(fixture.refresh.mock.calls).toEqual([[remoteTarget], [remoteTarget]]);
 });

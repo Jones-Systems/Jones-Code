@@ -33,6 +33,15 @@ import { useAtomCommand } from "../../state/use-atom-command";
 
 const repoFreshness = createRepoFreshnessAtoms(connectionAtomRuntime);
 
+const checkoutSkipMessages = new Map([
+  ["auto-pull-disabled", "Automatically pull is off for this checkout."],
+  ["wrong-branch", "This checkout is on a different branch."],
+  ["upstream-mismatch", "The checkout tracks a different upstream."],
+  ["dirty-checkout", "The checkout has uncommitted changes."],
+  ["local-commits", "The checkout contains commits outside the remote default branch."],
+  ["update-unverified", "The checkout update could not be verified."],
+]);
+
 function useFetchLatest(project: ScopedProjectRef, canFetch: boolean) {
   const refresh = useAtomCommand(repoFreshness.refresh, { reportFailure: false });
   const [pending, setPending] = useState(false);
@@ -66,9 +75,7 @@ function useFetchLatest(project: ScopedProjectRef, canFetch: boolean) {
           ? "Checkout updated."
           : checkout.status === "already-current"
             ? "Checkout already current."
-            : checkout.reason === "checkout-update-deferred"
-              ? "Checkout update deferred."
-              : "Checkout update skipped.";
+            : (checkoutSkipMessages.get(checkout.reason ?? "") ?? "Checkout update skipped.");
       toastManager.add({
         type: "success",
         title: "Fetched latest remote default",
