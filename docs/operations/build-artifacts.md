@@ -143,12 +143,29 @@ The build stamps the exact source commit and tree and checks the packaged
 The app retains its native update helper and install-time startup handshake.
 Artifact production does not run the retired legacy bootstrap or offline
 preparation producer, and no source, worker or lockfile byte pin controls whether
-the DMG can be built. The workflow verifies the DMG container and writes its
-SHA-256 checksum; it does not launch the packaged app against user state.
+the DMG can be built. The workflow verifies the DMG container, writes its SHA-256
+checksum and checks the shipped app's signature from a read-only mount; it does
+not launch the packaged app against user state.
 
-The DMG has no Developer ID signing or notarization. Container and checksum
-validation do not establish Gatekeeper acceptance or successful application
-launch. Download and verification alone install nothing.
+The build seals the whole `Jones Code.app` with an ad hoc signature
+(electron-builder's `identity: "-"`), without hardened runtime or a secure
+timestamp. The run fails, and uploads no DMG, unless
+`codesign --verify --deep --strict` passes on the mounted app and its signature
+is ad hoc, with no team identifier or certificate. The DMG container itself is
+not signed. `ARTIFACT.json` records `signing: "ad-hoc"`, `signed: false` and
+`notarized: false`: `signed` means publisher-authenticated signing, which ad hoc
+signing does not provide. Earlier builds can carry only Electron's linker
+signature on the main executable and fail strict verification.
+
+The workflow requests ad hoc signing with `T3CODE_DESKTOP_MAC_ADHOC_SIGN=true`
+on a runner with no signing identities. electron-builder searches the keychain
+for an identity whose name contains `-` before it falls back to ad hoc, so set
+the variable only on a Mac whose keychain holds no Developer ID or Mac Developer
+identity. The build refuses it for signed or non-Mac builds.
+
+The DMG has no Developer ID signing or notarization. A valid ad hoc signature,
+container and checksum do not establish Gatekeeper acceptance or successful
+application launch. Download and verification alone install nothing.
 
 To update a Mac where Jones Code is already installed and adopted, use
 **Install status** in the app, as described in
@@ -170,8 +187,9 @@ These facts hold for the DMG above and affect any install or update plan:
   same identifier. Launch Services can then route `t3code://` links and app
   lookups to either app. If both are installed, verify which app Launch
   Services selects before using those links or lookups.
-- In one observed laptop trial, Gatekeeper rejected the ad hoc signed bundle;
-  first launch there required a deliberate local override.
+- In one observed laptop trial, Gatekeeper rejected an earlier build. First
+  launch there required a deliberate local override. Gatekeeper behavior for
+  a quarantined copy of the sealed preview is unverified.
 - There is no Electron or Squirrel update feed. Packaged preview builds use the
   Jones updater instead (`apps/desktop/src/updates/DesktopUpdates.ts`). It
   checks 15 seconds after launch and then every 4 minutes, on the fixed
@@ -194,7 +212,9 @@ These facts hold for the DMG above and affect any install or update plan:
   On a refusal, the startup fence
   (`packages/shared/src/jones/nativeWriterFence.ts`) shows a **Jones Code could
   not start safely** dialog with `Startup refused (<code>)` and a link to
-  [If Jones Code refuses to start](../user/updating.md#if-jones-code-refuses-to-start).
+  [If an update fails](../user/updating.md#if-an-update-fails), whose
+  [If Jones Code refuses to start](../user/updating.md#if-jones-code-refuses-to-start)
+  section explains each code.
   It also prints the reason to stderr, prefixed `Jones Code refused native
   startup:`, and exits with status 1. For example, a `writer-mismatch` refusal
   prints `The native writer does not match the admitted source generation.`
