@@ -9331,13 +9331,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               WHERE json_type(link.value, '$.watch') IS NOT NULL
             )
           ) AS may_be_live,
-          -- One list for the whole read, found through the child_thread_id index. A lookup per
-          -- thread would parse the payload of every subagent row.
+          -- Build the set of bound remote owners once. It must match the retained-owner read.
           t.thread_id IN (
             SELECT subagent.thread_id FROM orchestration_v2_projection_subagents subagent
-            WHERE subagent.origin = 'app_owned'
-              AND subagent.child_thread_id IS NULL
-              AND json_type(subagent.payload_json, '$.remoteChild') = 'object'
+            WHERE subagent.driver = 'remote'
+              AND CASE WHEN json_valid(subagent.payload_json)
+                THEN json_extract(subagent.payload_json, '$.remoteChild.threadId') END IS NOT NULL
           ) AS has_remote_tasks
         FROM orchestration_v2_projection_threads t
         WHERE t.deleted_at IS NULL

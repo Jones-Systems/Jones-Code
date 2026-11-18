@@ -2081,14 +2081,21 @@ const layerBase: Layer.Layer<
               DateTime.formatIso(input.acceptedAt),
             );
 
-          if (input.settlementRestore !== undefined)
-            yield* settlementRestores.recordRestore({
-              threadId: input.threadId,
-              settleCommandId: input.settlementRestore.settleCommandId,
-              restoreCommandId: input.commandId,
-              restoredAt: input.acceptedAt,
-              sequence,
-            });
+          if (input.settlementRestore !== undefined) {
+            const restored = storedEvents.find(
+              (stored) =>
+                stored.event.type === "thread.unsettled" &&
+                stored.event.threadId === input.threadId,
+            );
+            if (restored !== undefined)
+              yield* settlementRestores.recordRestore({
+                threadId: input.threadId,
+                settleCommandId: input.settlementRestore.settleCommandId,
+                restoreCommandId: input.commandId,
+                restoredAt: restored.event.occurredAt,
+                sequence: receipt.resultSequence,
+              });
+          }
           const cancelledEffectIds =
             input.cancelUnsettledEffects === undefined
               ? []

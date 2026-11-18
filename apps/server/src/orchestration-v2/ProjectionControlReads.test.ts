@@ -279,28 +279,28 @@ it.effect.each(storageCases)(
       assert.instanceOf(missingThread, ProjectionStore.ProjectionStoreThreadNotFoundError);
 
       const calls: string[] = [];
+      const runtime = {
+        interruptTurn: () =>
+          Effect.sync(() => {
+            calls.push("interrupt");
+          }),
+        steerTurn: (input: {
+          message: {
+            text: string;
+          };
+          runId: RunId;
+        }) =>
+          Effect.sync(() => {
+            assert.equal(input.runId, runId);
+            calls.push(input.message.text);
+          }),
+        respondToRuntimeRequest: () =>
+          Effect.sync(() => {
+            calls.push("reply");
+          }),
+      } as never;
       const layerSessions = Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-        get: () =>
-          Effect.succeedSome({
-            interruptTurn: () =>
-              Effect.sync(() => {
-                calls.push("interrupt");
-              }),
-            steerTurn: (input: {
-              message: {
-                text: string;
-              };
-              runId: RunId;
-            }) =>
-              Effect.sync(() => {
-                assert.equal(input.runId, runId);
-                calls.push(input.message.text);
-              }),
-            respondToRuntimeRequest: () =>
-              Effect.sync(() => {
-                calls.push("reply");
-              }),
-          } as never),
+        get: () => Effect.succeedSome(runtime),
       });
       // Each pull is announced, so a second pull proves Stop judged the first event.
       const pulls = yield* Queue.unbounded<void>();

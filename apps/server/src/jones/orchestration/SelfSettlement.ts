@@ -36,7 +36,10 @@ export const terminalDisposition = (input: {
   const following = projection.runs.filter(
     (candidate) =>
       candidate.ordinal > run.ordinal &&
-      !(candidate.status === "cancelled" && cancelledSteered.has(candidate.userMessageId)),
+      !(
+        candidate.status === "cancelled" &&
+        (candidate.startedAt === null || cancelledSteered.has(candidate.userMessageId))
+      ),
   );
   const automatic = new Set(
     projection.messages

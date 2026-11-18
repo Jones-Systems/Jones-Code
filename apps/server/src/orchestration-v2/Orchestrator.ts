@@ -6125,6 +6125,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     if (liveSessions.length > 0) {
+      const liveSessionIds = new Set(liveSessions.map((session) => session.id));
+      if (command.type === "thread.metadata.update") {
+        const { runs, providerThreads } = yield* loadProjectionForCommand(command, [
+          "runs",
+          "providerThreads",
+        ]);
+        for (const run of runs) {
+          if (run.status !== "running") continue;
+          const providerThread = providerThreads.find(
+            (candidate) => candidate.id === run.providerThreadId,
+          );
+          if (
+            providerThread?.providerSessionId == null ||
+            !liveSessionIds.has(providerThread.providerSessionId)
+          )
+            continue;
+          // Record a controlled interruption before detach; the outbox serializes
+          // these effects per thread, so interrupt is processed before release.
+          yield* dispatchRunInterrupt(
+            {
+              type: "run.interrupt",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              runId: run.id,
+              reason: "Workspace changed.",
+              holdQueue: false,
+            },
+            events,
+            effects,
+            { requireLiveSession: true },
+          );
+        }
+      }
       yield* Effect.forEach(
         liveSessions,
         (session) =>
@@ -15105,6 +15138,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2ServerCommand, { readonly type: "run.interrupt" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    options?: { readonly requireLiveSession: true },
   ) {
     const projection = yield* loadProjectionForCommand(
       command,
@@ -15181,6 +15215,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Run ${command.runId} is not interruptible.`,
       });
+    }
+    if (options?.requireLiveSession === true) {
+      if (
+        run.status !== "running" ||
+        providerTurn?.status !== "running" ||
+        providerThread.providerSessionId === null
+      )
+        return;
     }
     const now = yield* DateTime.now;
     const completionMessage = projection.messages.find(
@@ -15491,6 +15533,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ),
           );
     if (Option.isNone(sessionOption)) {
+      if (options?.requireLiveSession === true) return;
       yield* emitEvent({
         type: "turn-item.updated",
         threadId: command.threadId,
@@ -19207,7 +19250,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       type: "thread.settle",
       threadId,
       expectedLatestRunId: latest.id,
-      commandId: CommandId.make(`${intent.commandId}:settle:${latest.id}`),
+      commandId: CommandId.make(`${intent.commandId}:settle`),
     }).pipe(
       Effect.catch((cause) =>
         Effect.gen(function* () {
