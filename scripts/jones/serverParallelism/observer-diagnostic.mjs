@@ -42,7 +42,9 @@ export function validateDiagnosticAdmission(input) {
     !/^[0-9a-f]{40}$/.test(source ?? "") ||
     !/^[0-9a-f]{40}$/.test(sourceTree ?? "")
   )
-    throw new Error("Diagnostic requires its selected host platform, source N2/W3/A500/F512, and exact source/tree");
+    throw new Error(
+      "Diagnostic requires its selected host platform, source N2/W3/A500/F512, and exact source/tree",
+    );
   if (
     !manifest ||
     manifest.schema !== "jones.server-parallelism.command/v1" ||

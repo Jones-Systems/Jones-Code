@@ -6,7 +6,15 @@ on:
       scope:
         description: Bounded source evidence first; full matrix after prerequisite review
         type: choice
-        options: [source-evidence, full, observer-diagnostic, observer-control, observer-cadence, observer-residency]
+        options:
+          [
+            source-evidence,
+            full,
+            observer-diagnostic,
+            observer-control,
+            observer-cadence,
+            observer-residency,
+          ]
         default: source-evidence
       observer_full_artifact:
         description: Inspected full diagnostic artifact name; required only for the one optional control

@@ -331,7 +331,10 @@ try {
         outcome: value?.outcome ?? "unknown",
         cleanupProved: value?.cleanupProved ?? null,
       });
-      requireRetirement(value?.cleanupProved === true && results.at(-1)?.capturedExit === true, name);
+      requireRetirement(
+        value?.cleanupProved === true && results.at(-1)?.capturedExit === true,
+        name,
+      );
     }
     if (scope === "observer-residency") await runBaseline("laptop", "bounded-churn");
   } else {

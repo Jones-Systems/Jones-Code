@@ -242,10 +242,9 @@ try {
       p99: median(windows.map((w) => w.writer.p99)),
     },
     loop: { p99: median(windows.map((w) => w.loop.p99)) },
-    meaning:
-      capped
-        ? "Diagnostic only: same main-process workload with per-key LRU at the candidate's total residency cap; worker cohort rotation follows a different eviction policy"
-        : "Same candidate algorithms/native patch; serial main-process execution and default single-reader baseline, not a historical Git build",
+    meaning: capped
+      ? "Diagnostic only: same main-process workload with per-key LRU at the candidate's total residency cap; worker cohort rotation follows a different eviction policy"
+      : "Same candidate algorithms/native patch; serial main-process execution and default single-reader baseline, not a historical Git build",
   };
 } catch (cause) {
   report = {
