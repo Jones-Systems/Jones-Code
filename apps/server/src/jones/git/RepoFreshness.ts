@@ -50,6 +50,7 @@ export class RepoFreshness extends Context.Service<
   {
     readonly status: (projectId: ProjectId) => Effect.Effect<RepoFreshnessStatus>;
     readonly refresh: (projectId: ProjectId) => Effect.Effect<RefreshResult>;
+    readonly checkForLaunch: (projectId: ProjectId) => Effect.Effect<RepoFreshnessStatus>;
   }
 >()("t3/jones/git/RepoFreshness") {}
 
@@ -260,7 +261,7 @@ const make = Effect.gen(function* () {
   yield* forkParked(
     Effect.forever(tick().pipe(Effect.ignore, Effect.andThen(Effect.sleep(TICK_MS)))),
   );
-  return RepoFreshness.of({ status, refresh });
+  return RepoFreshness.of({ status, refresh, checkForLaunch: refreshStatus });
 });
 
 export const layer = Layer.effect(RepoFreshness, make);

@@ -61,13 +61,21 @@ it.effect("routes verified launch to status and only fetches on explicit request
     const select = yield* make();
     expect((yield* select(projectId, "verified", undefined)).status).toBe("selected");
     expect((yield* select(projectId, "fetch-now", undefined)).status).toBe("failed");
-    expect(requests).toEqual(["status", "refresh"]);
+    expect((yield* select(projectId, "fetch-now", undefined, true)).status).toBe("failed");
+    expect((yield* select(projectId, "fetch-now", "feature/base", true)).status).toBe("failed");
+    expect(requests).toEqual(["status", "check", "refresh", "check"]);
   }).pipe(
     Effect.provideService(RepoFreshness, {
       status: (id) =>
         Effect.sync(() => {
           expect(id).toBe(projectId);
           requests.push("status");
+          return cachedStatus;
+        }),
+      checkForLaunch: (id) =>
+        Effect.sync(() => {
+          expect(id).toBe(projectId);
+          requests.push("check");
           return cachedStatus;
         }),
       refresh: (id) =>

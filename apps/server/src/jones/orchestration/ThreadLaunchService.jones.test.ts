@@ -625,12 +625,13 @@ it.effect.each([
 );
 
 it.effect.each([
-  { mode: "verified", fails: false },
-  { mode: "fetch-now", fails: false },
-  { mode: "fetch-now", fails: true },
+  { mode: "verified", fails: false, sync: false },
+  { mode: "fetch-now", fails: false, sync: false },
+  { mode: "fetch-now", fails: false, sync: true },
+  { mode: "fetch-now", fails: true, sync: false },
 ] as const)(
-  "prepares the exact freshness base for $mode with failure $fails",
-  ({ mode, fails }) => {
+  "prepares the exact freshness base for $mode with failure $fails and primary sync $sync",
+  ({ mode, fails, sync }) => {
     const verified = {
       remoteName: "origin",
       branchName: "main",
@@ -647,33 +648,36 @@ it.effect.each([
       freshness: "fresh",
     } satisfies RepoFreshness.RepoFreshnessStatus;
     const read = vi.fn(() => Effect.succeed(status));
+    const checked = {
+      ...status,
+      latestAttempt: fails
+        ? { status: "failed" as const, checkedAtMs: 11 }
+        : { status: "succeeded" as const, verification: newer },
+    };
+    const checkForLaunch = vi.fn(() => Effect.succeed(checked));
     const refresh = vi.fn(() =>
       Effect.succeed({
-        status: {
-          ...status,
-          latestAttempt: fails
-            ? { status: "failed" as const, checkedAtMs: 11 }
-            : { status: "succeeded" as const, verification: newer },
-        },
+        status: checked,
         checkout: { status: "skipped" as const, reason: "checkout-update-deferred" as const },
       }),
     );
     const ordinaryFetch = vi.fn(() => Effect.die("must use the selected freshness mode"));
     const harness = makeHarness({
-      repoFreshness: { status: read, refresh },
+      repoFreshness: { status: read, checkForLaunch, refresh },
       fetchWorktreeBaseCommit: ordinaryFetch,
     });
     return Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
-      const launched = yield* launches.launch(
-        launchInput({
+      const launched = yield* launches.launch({
+        ...launchInput({
           command: "command:freshness-base",
           thread: "thread:freshness-base",
           message: "Use the verified base",
           workspace: { type: "worktree", branch: "feature", baseFreshness: mode },
         }),
-      );
+        ...(sync ? { syncPrimaryOnFreshFetch: true as const } : {}),
+      });
       yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
         Stream.filter(
           ({ event }) =>
@@ -684,7 +688,8 @@ it.effect.each([
       );
       assert.lengthOf(ordinaryFetch.mock.calls, 0);
       assert.lengthOf(read.mock.calls, mode === "verified" ? 1 : 0);
-      assert.lengthOf(refresh.mock.calls, mode === "fetch-now" ? 1 : 0);
+      assert.lengthOf(checkForLaunch.mock.calls, mode === "fetch-now" && !sync ? 1 : 0);
+      assert.lengthOf(refresh.mock.calls, mode === "fetch-now" && sync ? 1 : 0);
       assert.lengthOf(harness.createWorktree.mock.calls, fails ? 0 : 1);
       if (!fails) {
         assert.equal(

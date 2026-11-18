@@ -141,6 +141,8 @@ export interface ThreadLaunchInput {
   /** Server-owned legacy compatibility inputs; public launch schemas do not decode them. */
   readonly preparationReleaseCommandId?: CommandId;
   readonly legacyBootstrap?: OrchestrationV2LegacyBootstrapPolicy;
+  /** The receiving transport verified write access for this foreground request. */
+  readonly syncPrimaryOnFreshFetch?: true;
   readonly runSetupScript?: boolean;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
@@ -178,7 +180,12 @@ interface IdlePreparation {
 
 type PreparationInput = Pick<
   ThreadLaunchInput,
-  "commandId" | "projectId" | "workspaceStrategy" | "initialMessage" | "runSetupScript"
+  | "commandId"
+  | "projectId"
+  | "workspaceStrategy"
+  | "initialMessage"
+  | "runSetupScript"
+  | "syncPrimaryOnFreshFetch"
 > & {
   readonly reusedWorktree?: { readonly baseRef: string | undefined };
   readonly nativeCreation?: boolean;
@@ -874,6 +881,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
                 input.projectId,
                 mode,
                 input.workspaceStrategy.baseRef,
+                input.syncPrimaryOnFreshFetch === true,
               );
         if (freshness?.status === "failed") {
           yield* setupTracker.stageStatus(threadId, "fetch", "failed", freshness.detail);

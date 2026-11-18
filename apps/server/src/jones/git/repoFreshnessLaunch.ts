@@ -77,6 +77,7 @@ export const make = Effect.fn("RepoFreshnessLaunch.make")(function* () {
     projectId: ProjectId,
     mode: FreshnessMode,
     requestedBase: string | undefined,
+    syncPrimary: boolean = false,
   ): Effect.fn.Return<FreshWorktreeBase> {
     if (Option.isNone(service)) {
       return mode === "fetch-now"
@@ -84,9 +85,11 @@ export const make = Effect.fn("RepoFreshnessLaunch.make")(function* () {
         : { status: "local", detail: "Repository freshness is unavailable. Using the local base." };
     }
     const current =
-      mode === "fetch-now"
-        ? (yield* service.value.refresh(projectId)).status
-        : yield* service.value.status(projectId);
+      mode !== "fetch-now"
+        ? yield* service.value.status(projectId)
+        : syncPrimary && requestedBase === undefined
+          ? (yield* service.value.refresh(projectId)).status
+          : yield* service.value.checkForLaunch(projectId);
     return chooseFreshWorktreeBase(mode, requestedBase, current);
   });
 });

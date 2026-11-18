@@ -50,6 +50,7 @@ import {
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
   AuthOrchestrationOperateScope,
+  AuthSourceControlWriteScope,
   type AuthEnvironmentScope,
   type ScheduledTaskListResult,
   AuthSessionId,
@@ -2348,6 +2349,11 @@ export const layerWsRpc = (
                           runtimeMode: input.runtimeMode,
                           interactionMode: input.interactionMode,
                           workspaceStrategy: input.workspaceStrategy,
+                          ...(input.workspaceStrategy.type === "worktree" &&
+                          input.workspaceStrategy.baseFreshness === "fetch-now" &&
+                          currentSession.scopes.includes(AuthSourceControlWriteScope)
+                            ? { syncPrimaryOnFreshFetch: true as const }
+                            : {}),
                           ...(input.initialMessage === undefined
                             ? {}
                             : {
