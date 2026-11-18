@@ -166,19 +166,21 @@ function bucketKey(bucket: UsageBucket): string {
   return JSON.stringify([bucket.day, bucket.hourStart ?? null, bucket.provider, bucket.model]);
 }
 
+interface SourceScan {
+  readonly environment: EnvironmentUsage;
+  readonly source: UsageSource;
+}
+
 function claimSources(
   environments: readonly EnvironmentUsage[],
   sourceKey: (fingerprint: UsageSourceFingerprint) => string,
 ): {
-  readonly ownerScanByFingerprint: ReadonlyMap<string, { readonly source: UsageSource }>;
+  readonly ownerScanByFingerprint: ReadonlyMap<string, SourceScan>;
   readonly supplementalBucketsByEnvironment: ReadonlyMap<EnvironmentId, ReadonlySet<UsageBucket>>;
   readonly sessionsByFingerprint: ReadonlyMap<string, number>;
   readonly duplicates: readonly string[];
 } {
-  const ownerScanByFingerprint = new Map<
-    string,
-    { environment: EnvironmentUsage; source: UsageSource }
-  >();
+  const ownerScanByFingerprint = new Map<string, SourceScan>();
   const seenBucketKeysByFingerprint = new Map<string, Set<string>>();
   const supplementalBucketsByEnvironment = new Map<EnvironmentId, Set<UsageBucket>>();
   const sessionsByFingerprint = new Map<string, number>();
@@ -254,7 +256,7 @@ function claimSources(
 
 function ownedContribution(
   environment: EnvironmentUsage,
-  ownerScanByFingerprint: ReadonlyMap<string, { readonly source: UsageSource }>,
+  ownerScanByFingerprint: ReadonlyMap<string, SourceScan>,
   supplementalBuckets: ReadonlySet<UsageBucket>,
   sessionsByFingerprint: ReadonlyMap<string, number>,
   sourceKey: (fingerprint: UsageSourceFingerprint) => string,
@@ -268,9 +270,10 @@ function ownedContribution(
   for (const source of environment.summary.sources) {
     if (source.status === "missing") continue;
     const key = sourceKey(source.fingerprint);
-    // By source, not environment: one server can reach a directory through two
-    // mounts, and only the winning reading may count.
-    if (ownerScanByFingerprint.get(key)?.source === source) {
+    // A cached summary can be shared by environments, and one environment can
+    // reach the same directory through two mounts. Only the winning scan counts.
+    const owner = ownerScanByFingerprint.get(key);
+    if (owner?.environment === environment && owner.source === source) {
       const provider = source.fingerprint.provider;
       ownedProviders.add(provider);
       ownedSources.add(`${provider}\u0000${source.fingerprint.resolvedHomePath}`);

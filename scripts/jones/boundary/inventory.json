@@ -2573,6 +2573,7 @@
     "packages/source-control-github/src/server/driver.ts": "accepted-shared",
     "packages/source-control-github/src/server/gitHubChangeRequestTemplate.test.ts": "jones-tests-in-upstream",
     "packages/source-control-github/src/server/gitHubConditionalChecks.ts": "accepted-shared",
+    "packages/source-control-github/src/server/gitHubPullRequestJson.ts": "accepted-shared",
     "packages/source-control-github/vite.config.ts": "hook",
     "packages/source-control-gitlab/src/server/GitLabCli.ts": "accepted-shared",
     "packages/source-control-gitlab/src/server/GitLabPullRequestCli.ts": "accepted-shared",

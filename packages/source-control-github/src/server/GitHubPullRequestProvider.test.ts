@@ -15,6 +15,23 @@ import type {
 import { gitHubViewerPermissions, loginAvatarUrl, make } from "./GitHubPullRequestProvider.ts";
 import type { GitHubReviewThreadComments } from "./gitHubPullRequestJson.ts";
 
+const getPullRequestCheckObservation: GitHubPullRequestApi.GitHubPullRequestApi["Service"]["getPullRequestCheckObservation"] =
+  ({ headSha, checks }) => {
+    const sha = headSha ?? "abc123";
+    return Effect.succeed({
+      headSha: sha,
+      checks,
+      jonesCheckObservation: {
+        headSha: sha,
+        enumerationComplete: false,
+        workflowState: "unknown",
+        requiredSetKnown: false,
+        requiredState: "unknown",
+        requiredChecks: [],
+      },
+    });
+  };
+
 const coreFields = {
   maintainerCanModify: true,
   canEditMaintainerEdits: false,
@@ -282,6 +299,8 @@ describe("gitHubViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestCheckObservation,
+          listUnfinishedWorkflowRuns: () => Effect.succeed([]),
           getPullRequestDetail: () =>
             Effect.succeed({
               ...coreFields,
@@ -349,7 +368,11 @@ describe("gitHubViewerPermissions", () => {
       if (readChecks === undefined) return yield* Effect.die("checks read missing");
       expect(
         yield* readChecks({ cwd: "/w", repository: "acme/web", host: "github.com", number: 7 }),
-      ).toEqual({ state: detail.state, checks: detail.checks });
+      ).toEqual({
+        state: detail.state,
+        checks: detail.checks,
+        jonesCheckObservation: detail.jonesCheckObservation,
+      });
       expect(detail.workflowApprovalsRequired).toBe(1);
       expect(detail.checks).toEqual([
         {
@@ -375,6 +398,7 @@ describe("gitHubViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestCheckObservation,
           getPullRequestDetail: () =>
             Effect.succeed({
               ...coreFields,
@@ -505,6 +529,7 @@ it.effect("adds unstarted same-repository workflow runs as pending, not as appro
     Effect.provide(
       Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
         revalidateChecks: (_input, read) => read,
+        getPullRequestCheckObservation,
         getPullRequestDetail: () =>
           Effect.succeed({ ...openDetail, isCrossRepository: false, checks: sameRepositoryChecks }),
         // Run 201 is represented by its running job; run 202 is queued before any job exists.
@@ -553,6 +578,7 @@ it.effect("keeps an unsafe workflow approval scope visible as unknown", () =>
     Effect.provide(
       Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
         revalidateChecks: (_input, read) => read,
+        getPullRequestCheckObservation,
         getPullRequestDetail: () => Effect.succeed(openDetail),
         listUnfinishedWorkflowRuns: () => Effect.succeed([]),
         listWorkflowRunsRequiringApproval: () =>

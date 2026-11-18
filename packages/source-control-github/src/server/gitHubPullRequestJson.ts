@@ -1153,15 +1153,19 @@ export function decodeUnfinishedWorkflowRunsJson(
 ): Result.Result<ReadonlyArray<GitHubWorkflowRunApproval>, DecodeFailure> {
   const decoded = decodeWorkflowRuns(raw);
   if (!Result.isSuccess(decoded)) return Result.fail(decoded.failure);
-  return Result.succeed(
-    decoded.success.workflow_runs
-      .filter((run) => UNFINISHED_WORKFLOW_RUN_STATUSES.has(run.status ?? ""))
-      .map((run) => ({
-        id: run.id,
-        name: trimmed(run.name) ?? `Workflow run ${run.id}`,
-        url: trimmed(run.html_url),
-      })),
-  );
+  return Result.succeed(toUnfinishedWorkflowRuns(decoded.success.workflow_runs));
+}
+
+export function toUnfinishedWorkflowRuns(
+  runs: (typeof RawWorkflowRunsSchema.Type)["workflow_runs"],
+): ReadonlyArray<GitHubWorkflowRunApproval> {
+  return runs
+    .filter((run) => UNFINISHED_WORKFLOW_RUN_STATUSES.has(run.status ?? ""))
+    .map((run) => ({
+      id: run.id,
+      name: trimmed(run.name) ?? `Workflow run ${run.id}`,
+      url: trimmed(run.html_url),
+    }));
 }
 
 export function toPullRequestHeads(result: PullRequestHeads.Result): {

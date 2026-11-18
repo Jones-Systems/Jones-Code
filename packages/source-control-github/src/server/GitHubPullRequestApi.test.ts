@@ -4599,6 +4599,21 @@ layer("GitHubPullRequestApi.layer", (it) => {
     "composes fresh REST observation into provider detail when GraphQL has no check rollup",
     () =>
       Effect.gen(function* () {
+        const queuedRun = {
+          id: 1,
+          workflow_id: 2,
+          check_suite_id: 2,
+          run_number: 1,
+          run_attempt: 1,
+          head_sha: "abc123",
+          head_branch: "feature",
+          path: ".github/workflows/ci.yml",
+          name: "queued workflow",
+          html_url: "https://github.com/acme/web/actions/runs/1",
+          event: "pull_request",
+          status: "queued",
+          conclusion: null,
+        };
         mockedExecute.mockImplementation((call) => {
           if (call.kind === "graphql") return Effect.succeed(output(encodeJson(coreResponse())));
           const body = call.path.includes("/pulls/")
@@ -4624,15 +4639,32 @@ layer("GitHubPullRequestApi.layer", (it) => {
                 }
               : call.path.includes("/statuses")
                 ? []
-                : { total_count: 0, workflow_runs: [] };
+                : {
+                    total_count: 2,
+                    workflow_runs: [
+                      queuedRun,
+                      {
+                        ...queuedRun,
+                        id: 2,
+                        run_number: 2,
+                        check_suite_id: 3,
+                        status: "completed",
+                        conclusion: "success",
+                      },
+                    ],
+                  };
           return Effect.succeed(output(encodeJson(body)));
         });
         const provider = yield* GitHubPullRequestProvider.make;
         const detail = yield* provider.getChangeRequest(pullRequestInput);
-        expect(detail.checks).toMatchObject([{ name: "failed-rest-check", status: "failure" }]);
+        expect(detail.checks).toMatchObject([
+          { name: "failed-rest-check", status: "failure" },
+          { name: queuedRun.name, status: "pending", url: queuedRun.html_url },
+        ]);
         expect(detail.jonesCheckObservation).toMatchObject({
           headSha: "abc123",
           enumerationComplete: true,
+          workflowState: "complete",
           requiredSetKnown: false,
         });
         expect(restCallsTo("/check-runs")).toHaveLength(1);

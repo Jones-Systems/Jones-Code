@@ -1097,18 +1097,18 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
       yield* runGit(repoDir, ["push", "-u", "origin", "feature/status-identity-cache"]);
 
+      const gitCommands: string[] = [];
       const gitConfigReads: string[] = [];
-      const { manager } = yield* makeManager({ gitConfigReads });
+      const { manager } = yield* makeManager({ gitCommands, gitConfigReads });
 
       yield* manager.remoteStatus({ cwd: repoDir }, { refreshUpstream: false });
+      expect(gitCommands).toContain("config --get-all remote.origin.url");
+      gitCommands.length = 0;
       gitConfigReads.length = 0;
       yield* manager.remoteStatus({ cwd: repoDir }, { refreshUpstream: false });
 
-      const identityReads = gitConfigReads.filter(
-        (key) =>
-          key === "branch.feature/status-identity-cache.remote" || key === "remote.origin.url",
-      );
-      expect(identityReads).toHaveLength(0);
+      expect(gitConfigReads).not.toContain("branch.feature/status-identity-cache.remote");
+      expect(gitCommands).not.toContain("config --get-all remote.origin.url");
     }),
   );
 

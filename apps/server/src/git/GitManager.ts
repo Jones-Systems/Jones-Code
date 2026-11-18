@@ -1610,7 +1610,6 @@ export const make = Effect.gen(function* () {
   const resolveRemoteRepositoryContext = Effect.fn("resolveRemoteRepositoryContext")(function* (
     cwd: string,
     remoteName: string | null,
-    readConfig: typeof readConfigValueNullable = readConfigValueNullable,
   ) {
     if (!remoteName) {
       return {
@@ -1645,19 +1644,15 @@ export const make = Effect.gen(function* () {
     };
   });
 
-  const resolveHeadAndOriginContexts = (
-    cwd: string,
-    remoteName: string | null,
-    readConfig: typeof readConfigValueNullable = readConfigValueNullable,
-  ) =>
+  const resolveHeadAndOriginContexts = (cwd: string, remoteName: string | null) =>
     remoteName === "origin"
-      ? resolveRemoteRepositoryContext(cwd, "origin", readConfig).pipe(
+      ? resolveRemoteRepositoryContext(cwd, "origin").pipe(
           Effect.map((origin) => [origin, origin] as const),
         )
       : Effect.all(
           [
-            resolveRemoteRepositoryContext(cwd, remoteName, readConfig),
-            resolveRemoteRepositoryContext(cwd, "origin", readConfig),
+            resolveRemoteRepositoryContext(cwd, remoteName),
+            resolveRemoteRepositoryContext(cwd, "origin"),
           ],
           { concurrency: "unbounded" },
         );
@@ -1681,7 +1676,6 @@ export const make = Effect.gen(function* () {
     const [remoteRepository, originRepository] = yield* resolveHeadAndOriginContexts(
       cwd,
       remoteName,
-      readConfig,
     );
 
     // With no origin to compare against, the only remote is the repository change requests
@@ -1809,7 +1803,6 @@ export const make = Effect.gen(function* () {
   const findPublishedBranchRemote = Effect.fn("findPublishedBranchRemote")(function* (
     cwd: string,
     branch: string,
-    readConfig: typeof readConfigValueNullable = readConfigValueNullable,
   ) {
     const localRef = `refs/heads/${branch}`;
     const remoteNames = (yield* gitCore.execute({
@@ -1900,7 +1893,7 @@ export const make = Effect.gen(function* () {
   ) {
     const headContext = yield* resolveBranchHeadContext(cwd, details, readConfig);
     if (details.upstreamRef === null) {
-      const remoteName = yield* findPublishedBranchRemote(cwd, details.branch, readConfig).pipe(
+      const remoteName = yield* findPublishedBranchRemote(cwd, details.branch).pipe(
         Effect.orElseSucceed(() => null),
       );
       if (remoteName !== null && remoteName !== headContext.remoteName) {

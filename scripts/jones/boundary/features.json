@@ -288,7 +288,7 @@
         "apps/server/src/orchestration-v2/pullRequestWatch.test.ts",
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
-      "scope": "Jones-owned same-head REST observation and completion classification distinguish complete enumeration from required-set knowledge. The exact existing Jones-Code github.com/main CI Check policy is bound explicitly; all other targets retain unknown gate completeness. Shared API/provider/service/cache hooks preserve optional metadata and the reactor only extends its existing inFlight predicate. Existing API, provider, service and runtime harnesses prove real composition and persistent watch dedupe; extracting those harness tests would duplicate upstream fixtures. No retry, sweep, connection, merge policy, DB, workflow, dependency or installed-runtime changes."
+      "scope": "Jones-owned same-head REST observation and completion classification distinguish complete enumeration from required-set knowledge. The exact existing Jones-Code github.com/main CI Check policy is bound explicitly; all other targets retain unknown gate completeness. Shared API/provider/service/cache hooks preserve optional metadata. The GitHub provider reuses a complete same-head workflow enumeration to project unfinished rows through the shared decoder helper, with the existing fallback for incomplete evidence. The reactor only extends its existing inFlight predicate. Existing API, provider, service and runtime harnesses prove real composition and persistent watch dedupe; extracting those harness tests would duplicate upstream fixtures. No retry, sweep, connection, merge policy, DB, workflow, dependency or installed-runtime changes."
     },
     {
       "id": "anonymous-checkout",

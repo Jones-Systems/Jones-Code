@@ -3,6 +3,10 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import {
+  toUnfinishedWorkflowRuns,
+  type GitHubWorkflowRunApproval,
+} from "../server/gitHubPullRequestJson.ts";
 import { GitHubRest } from "../server/GitHubRest.ts";
 import { expectedRequiredChecks, requiredCheckState } from "./pullRequestCheckExpectations.ts";
 
@@ -26,6 +30,7 @@ const Status = Schema.Struct({
 const Workflow = Schema.Struct({
   id: Schema.Number,
   workflow_id: Schema.Number,
+  html_url: Schema.optional(Schema.NullOr(Schema.String)),
   check_suite_id: Schema.Number,
   run_number: Schema.Number,
   run_attempt: Schema.Number,
@@ -65,6 +70,7 @@ export interface CheckObservationResult {
   readonly headSha: string;
   readonly checks: ReadonlyArray<PullRequestCheck>;
   readonly jonesCheckObservation: PullRequestCheckObservation;
+  readonly unfinishedWorkflowRuns?: ReadonlyArray<GitHubWorkflowRunApproval>;
 }
 
 function latest<T>(
@@ -191,9 +197,8 @@ export const makeCheckObservationReader = Effect.gen(function* () {
           message: "Pull request changed during check enumeration.",
         });
       }
-      const valid =
-        checks.rows.every((check) => check.head_sha === sha) &&
-        workflows.rows.every((run) => run.head_sha === sha);
+      const workflowsMatchHead = workflows.rows.every((run) => run.head_sha === sha);
+      const valid = workflowsMatchHead && checks.rows.every((check) => check.head_sha === sha);
       const runs = latest(
         workflows.rows.filter((run) => run.head_sha === sha),
         (run) => `${run.workflow_id}:${run.event}:${run.head_branch}`,
@@ -279,6 +284,10 @@ export const makeCheckObservationReader = Effect.gen(function* () {
         headSha: sha,
         checks: checkRows,
         jonesCheckObservation,
+        // Detail shows the first page, including older queued runs superseded in the check evidence.
+        ...(workflows.complete && workflowsMatchHead
+          ? { unfinishedWorkflowRuns: toUnfinishedWorkflowRuns(workflows.rows.slice(0, 100)) }
+          : {}),
       };
       return result;
     });

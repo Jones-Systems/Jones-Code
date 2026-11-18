@@ -413,7 +413,8 @@ it.each([
   const processor = unified().use(remarkParse).use(CHAT_MARKDOWN_REMARK_PLUGINS);
   const path = "/tmp/project/summary.md";
   const markdown = path + " " + citation;
-  const tree = processor.runSync(processor.parse(markdown), markdown);
+  const tree = processor.parse(markdown);
+  processor.runSync(tree, markdown);
   const paragraph = tree.children[0];
   expect(paragraph?.type).toBe("paragraph");
   if (paragraph?.type !== "paragraph") throw new Error("Expected a paragraph");

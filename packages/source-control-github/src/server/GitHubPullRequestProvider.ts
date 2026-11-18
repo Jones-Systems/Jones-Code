@@ -365,6 +365,7 @@ export const make = Effect.gen(function* () {
         ): Effect.Effect<
           GitHubPullRequestCore & {
             readonly jonesCheckObservation?: PullRequestCheckObservation | undefined;
+            readonly unfinishedWorkflowRuns?: ReadonlyArray<GitHubWorkflowRunApproval>;
           },
           GitHubPullRequestApi.GitHubPullRequestApiError
         > =>
@@ -380,7 +381,7 @@ export const make = Effect.gen(function* () {
                 })
                 .pipe(Effect.map((observation) => ({ ...pullRequest, ...observation }))),
       ),
-      Effect.flatMap((pullRequest) =>
+      Effect.flatMap(({ unfinishedWorkflowRuns, ...pullRequest }) =>
         (pullRequest.state !== "open" || pullRequest.isCrossRepository !== true
           ? Effect.succeed({
               runs: [] as ReadonlyArray<GitHubWorkflowRunApproval>,
@@ -414,8 +415,10 @@ export const make = Effect.gen(function* () {
                 )
         ).pipe(
           Effect.zip(
-            pullRequest.state !== "open" || pullRequest.headSha == null
-              ? Effect.succeed([] as ReadonlyArray<GitHubWorkflowRunApproval>)
+            unfinishedWorkflowRuns !== undefined ||
+              pullRequest.state !== "open" ||
+              pullRequest.headSha == null
+              ? Effect.succeed(unfinishedWorkflowRuns ?? [])
               : cli.listUnfinishedWorkflowRuns({ ...input, headSha: pullRequest.headSha }).pipe(
                   Effect.catchIf(
                     (error) =>
