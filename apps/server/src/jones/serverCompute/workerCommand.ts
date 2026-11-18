@@ -14,6 +14,7 @@ declare const __JONES_SERVER_COMPUTE_BUILD_ID__: string | undefined;
 
 export const sourceFiles = [
   "jones/serverCompute/worker.ts",
+  "jones/serverCompute/nativeBlockDarwinObservation.ts",
   "jones/serverCompute/guardian.ts",
   "jones/serverCompute/protocol.ts",
   "jones/serverCompute/failure.ts",
