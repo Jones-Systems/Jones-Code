@@ -210,6 +210,21 @@ export default defineConfig({
       },
     },
     {
+      // The isolated peer gets no Clerk or application bridge; keep its sandbox preload self-contained.
+      format: "cjs",
+      outDir: "dist-electron",
+      dts: false,
+      sourcemap: true,
+      outExtensions: () => ({ js: ".cjs" }),
+      entry: { "jones/threadMonitor/preload": "src/jones/threadMonitor/preload.ts" },
+      clean: false,
+      outputOptions: { codeSplitting: false, banner: "(() => {", footer: "})();" },
+      deps: {
+        alwaysBundle: (id) => id !== "electron" && !id.startsWith("node:"),
+        neverBundle: (id) => id === "electron" || id.startsWith("node:"),
+      },
+    },
+    {
       format: "cjs",
       outDir: "dist-electron",
       dts: false,

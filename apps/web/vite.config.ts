@@ -442,6 +442,10 @@ export default defineConfig(({ command }) => {
       sourcemap: buildSourcemap,
       ...(builtDev ? { watch: { exclude: rolldownWatchExclude } } : {}),
       rolldownOptions: {
+        input: {
+          app: new URL("./index.html", import.meta.url).pathname,
+          threadMonitor: new URL("./thread-monitor.html", import.meta.url).pathname,
+        },
         output: {
           // PDF.js resolves decoder modules and ICC data relative to wasmUrl.
           assetFileNames: (asset) =>
