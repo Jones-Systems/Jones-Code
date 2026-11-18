@@ -7363,6 +7363,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       providerInstanceId: input.modelSelection.instanceId,
       providerThreadId: restartProviderThread.id,
       providerTurnId: null,
+      providerSettlement: null,
       reason: "steering_restart",
       status: "pending",
       startedAt: null,
@@ -7393,7 +7394,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         nodeId: rootNodeId,
         providerInstanceId: targetRun.providerInstanceId,
         occurredAt: now,
-        payload: { ...currentAttempt, status: "superseded", completedAt: now },
+        payload: {
+          ...currentAttempt,
+          providerTurnId: providerTurn.id,
+          status: "superseded",
+          completedAt: now,
+        },
       });
     }
     if (currentRootNode !== undefined) {
@@ -18428,14 +18434,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
-    // The run-end release can lag behind a new send; start the queue first so the send waits behind it.
-    // A restart continuation resumes the ended run, so it must not be overtaken by the queue.
+    // Run-end queue release can lag a new send. Durable continuations go first so that
+    // their committed selection and inherited queue overrides govern the next release.
     if (
       command.type === "message.dispatch" &&
       command.restartContinuationOfRunId === undefined &&
       (command.dispatchMode.type === "start_immediately" ||
         command.dispatchMode.type === "queue_after_active" ||
-        command.dispatchMode.type === "defer_start")
+        command.dispatchMode.type === "defer_start") &&
+      (yield* codexFailover.continuationSourceRunId(command).pipe(mapDispatchError(command))) ===
+        undefined
     ) {
       yield* mapDispatchError(command)(
         startNextQueuedRun(command.threadId, { latestRunEnded: true }),

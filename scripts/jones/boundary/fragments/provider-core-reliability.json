@@ -45,6 +45,10 @@
       "to": "apps/server/src/jones/provider/StartAdmission.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/CheckpointRollbackService.ts",
+      "to": "apps/server/src/jones/provider/StartAdmission.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
       "to": "apps/server/src/jones/provider/StartAdmission.ts"
     },

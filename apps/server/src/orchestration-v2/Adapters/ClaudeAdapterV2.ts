@@ -6036,7 +6036,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         let sourceOwnerClosed = false;
         const sessionTeardown = yield* Deferred.make<void>();
         let sourceRegistration: SourceQueryRegistration | undefined;
-        const retireGeneration = (generation: string) =>
+        const retireGeneration = (
+          generation: string,
+          abandon = input.runtimeLifecycle?.abandon(generation) ?? Effect.void,
+        ) =>
           retirementPermit.withPermits(1)(
             Effect.gen(function* () {
               if (attemptedAbandonments.has(generation))
@@ -6047,7 +6050,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               if (!launchedGenerations.has(generation)) return;
               queryEventProducers.get(generation)?.retire();
               attemptedAbandonments.add(generation);
-              yield* input.runtimeLifecycle?.abandon(generation) ?? Effect.void;
+              yield* abandon;
               attemptedAbandonments.delete(generation);
               launchedGenerations.delete(generation);
               queryEventProducers.delete(generation);
@@ -13150,6 +13153,43 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
           const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
+          const retirePredecessor = Effect.fnUntraced(function* (previous: ClaudeLiveQueryContext) {
+            const retireForReplacement = input.runtimeLifecycle?.retireForReplacement;
+            const binding = ProviderAdapter.runtimeBinding(
+              previous.providerThread,
+              previous.runtimeGeneration,
+            );
+            if (
+              retireForReplacement === undefined ||
+              binding === undefined ||
+              binding.providerThreadId !== turnInput.providerThread.id ||
+              turnInput.providerThread.runtimeIdentity?.runtimeGeneration !==
+                binding.runtimeGeneration
+            )
+              return yield* closeCapturedQuery(previous);
+
+            // Cleanup only after retirement has proved the source exited. Its projection
+            // remains the expected predecessor until the successor publishes its binding.
+            let clearPredecessor: Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error> =
+              Effect.void;
+            yield* Effect.addFinalizer(() => clearPredecessor.pipe(Effect.orDie));
+            yield* closeCapturedQuery(
+              previous,
+              Effect.void,
+              false,
+              retireGeneration(
+                binding.runtimeGeneration,
+                retireForReplacement(binding).pipe(
+                  Effect.tap((clear) =>
+                    Effect.sync(() => {
+                      clearPredecessor = clear;
+                    }),
+                  ),
+                  Effect.asVoid,
+                ),
+              ),
+            );
+          });
           let existing = yield* Ref.get(queryContext);
           if (existing !== null && existing.nativeThreadId === nativeThreadId) {
             if (nativeSessionProof !== undefined) {
@@ -13166,7 +13206,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 return yield* action;
               }
               if (action === "reopen") {
-                yield* closeCapturedQuery(existing);
+                yield* retirePredecessor(existing);
                 existing = null;
               }
             }
@@ -13291,7 +13331,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const closedExistingNativeThreadId = existing !== null ? existing.nativeThreadId : null;
           clearedNativeSessions.delete(nativeThreadId);
           if (existing !== null) {
-            yield* closeCapturedQuery(existing);
+            yield* retirePredecessor(existing);
             if (existing.nativeThreadId !== nativeThreadId) {
               yield* clearWakeStateForNativeThread(existing.nativeThreadId);
               yield* resetBackgroundTaskStateForNativeThreadProcess(existing.nativeThreadId, {
@@ -13824,7 +13864,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             Effect.forkDetach,
           );
           return context;
-        });
+        }, Effect.scoped);
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
@@ -14499,7 +14539,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 detail: `Claude provider turn ${turnInput.providerTurnId} is not the active turn.`,
               });
             }
-            yield* currentTurn.input.revalidateStartAdmission ?? Effect.void;
+            yield* turnInput.revalidateSteerAdmission ?? Effect.void;
             if (currentTurn.nativeSessionProof !== undefined) {
               yield* currentTurn.nativeSessionProof
                 .confirm(existing.observedNativeSessionId, existing.runtimeGeneration)
@@ -14560,11 +14600,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
               Effect.provideService(Path.Path, path),
             );
+            yield* turnInput.revalidateSteerAdmission ?? Effect.void;
             yield* backgroundForegroundSubagents(existing, backgroundDeadline);
             if (liveSteerSelection !== undefined) {
               yield* applySelectionLive(existing, liveSteerSelection);
             }
-            yield* currentTurn.input.revalidateStartAdmission ?? Effect.void;
+            yield* turnInput.revalidateSteerAdmission ?? Effect.void;
             // The turn can end while the moves or the selection change are answered.
             // A steer offered then would start a new turn the orchestrator never
             // asked for, so the steer fails and the orchestrator starts the follow-up turn.
@@ -14677,6 +14718,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ProviderAdapter.ProviderAdapterProtocolError
             > = Effect.void,
             cancel = false,
+            retire: Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error> = retireGeneration(
+              existing.runtimeGeneration,
+            ),
           ) {
             const inheritedDeadline = yield* ProviderControlDeadline;
             const deadline = Math.min(
@@ -14697,7 +14741,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 retire: Effect.gen(function* () {
                   // No producer/retirement permit is held while native exit or drain awaits.
                   existing.acceptingEvidence = false;
-                  yield* retireGeneration(existing.runtimeGeneration);
+                  yield* retire;
                   yield* Ref.update(queryContext, (current) =>
                     current === existing ? null : current,
                   );

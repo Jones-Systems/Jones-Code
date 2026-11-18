@@ -4,6 +4,7 @@ import * as ConversationPolicy from "../jones/conversationWorkspace/Conversation
 import * as DecisionSnapshotAccess from "../jones/mcp/decisionSnapshot/access.ts";
 import { PROVIDER_SCOPE_CLOSE_TIMEOUT_MS } from "../jones/cloud/shutdownBudget.ts";
 import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
+import { CurrentEffectClaim } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
 import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { OpenDutyClaim } from "../jones/workspaceRetirement/DutyLifetimeLink.ts";
@@ -828,6 +829,49 @@ export const layerWithOptions = (
             }),
           ),
         );
+        const forgetGeneration = Effect.fn("ProviderSessionManager.forgetGeneration")(function* (
+          generation: string,
+        ) {
+          const reservation = reservations.get(generation);
+          reservations.delete(generation);
+          const runtime = owner.runtime;
+          const loads = runtime === undefined ? undefined : originalThreadLoads.get(runtime);
+          if (loads !== undefined)
+            for (const [threadId, original] of loads)
+              if (original.binding?.runtimeGeneration === generation) loads.delete(threadId);
+          yield* physicalEvidence.abandon(generation);
+          return reservation;
+        });
+        const clearRetiredGeneration = Effect.fn("ProviderSessionManager.clearRetiredGeneration")(
+          function* (generation: string, bindings: ReadonlyMap<string, ThreadId> | undefined) {
+            if (bindings === undefined) return;
+            for (const [id, threadId] of bindings) {
+              const current = yield* readThread(threadId, id);
+              if (current?.runtimeIdentity?.runtimeGeneration !== generation) continue;
+              yield* eventSink.write({
+                runtimeIdentityBoundary: {
+                  expectedGeneration: generation,
+                  expectedActiveProviderThreadId: current.id,
+                },
+                events: [
+                  {
+                    id: yield* idAllocator.allocate.event({ threadId, providerSessionId }),
+                    type: "provider-thread.updated",
+                    threadId,
+                    occurredAt: yield* DateTime.now,
+                    payload: {
+                      ...current,
+                      runtimeIdentity: {
+                        requested: current.runtimeIdentity.requested,
+                        observed: unobservedRuntimeIdentity(),
+                      },
+                    },
+                  },
+                ],
+              });
+            }
+          },
+        );
         return {
           reserve: Effect.fn("ProviderSessionManager.reserve")((threadId) =>
             Effect.gen(function* () {
@@ -895,44 +939,35 @@ export const layerWithOptions = (
           prepareBindingPublication,
           bind: (value) =>
             prepareBindingPublication(value).pipe(Effect.flatMap((handle) => handle.complete)),
-          abandon: Effect.fn("ProviderSessionManager.abandon")((generation) =>
-            Effect.gen(function* () {
-              const reservation = reservations.get(generation);
-              reservations.delete(generation);
-              const runtime = owner.runtime;
-              const loads = runtime === undefined ? undefined : originalThreadLoads.get(runtime);
-              if (loads !== undefined)
-                for (const [threadId, original] of loads)
-                  if (original.binding?.runtimeGeneration === generation) loads.delete(threadId);
-              yield* physicalEvidence.abandon(generation);
-              if (reservation === undefined) return;
-              for (const [id, threadId] of reservation.bindings) {
-                const current = yield* readThread(threadId, id);
-                if (current?.runtimeIdentity?.runtimeGeneration !== generation) continue;
-                yield* eventSink.write({
-                  runtimeIdentityBoundary: {
-                    expectedGeneration: generation,
-                    expectedActiveProviderThreadId: current.id,
-                  },
-                  events: [
-                    {
-                      id: yield* idAllocator.allocate.event({ threadId, providerSessionId }),
-                      type: "provider-thread.updated",
-                      threadId,
-                      occurredAt: yield* DateTime.now,
-                      payload: {
-                        ...current,
-                        runtimeIdentity: {
-                          requested: current.runtimeIdentity.requested,
-                          observed: unobservedRuntimeIdentity(),
-                        },
-                      },
-                    },
-                  ],
-                });
-              }
-            }).pipe(Effect.mapError(protocolError)),
-          ),
+          abandon: Effect.fn("ProviderSessionManager.abandon")(function* (generation) {
+            const retired = yield* forgetGeneration(generation);
+            yield* clearRetiredGeneration(generation, retired?.bindings);
+          }, Effect.mapError(protocolError)),
+          retireForReplacement: Effect.fn("ProviderSessionManager.retireForReplacement")(function* (
+            binding,
+          ) {
+            const generation = binding.runtimeGeneration;
+            const reservation = reservations.get(generation);
+            if (
+              !owner.active ||
+              reservation?.bindings.get(binding.providerThreadId) !== binding.threadId
+            )
+              return yield* protocolError("The retired predecessor is not owned by this runtime.");
+            const current = yield* readThread(binding.threadId, binding.providerThreadId);
+            const currentBinding =
+              current === undefined ? undefined : runtimeBinding(current, generation);
+            if (
+              current?.runtimeIdentity?.runtimeGeneration !== generation ||
+              currentBinding === undefined ||
+              !Schema.toEquivalence(ProviderAdapterBinding)(currentBinding, binding) ||
+              reservations.get(generation) !== reservation
+            )
+              return yield* protocolError("The retired predecessor changed before replacement.");
+            yield* forgetGeneration(generation);
+            return clearRetiredGeneration(generation, reservation.bindings).pipe(
+              Effect.mapError(protocolError),
+            );
+          }, Effect.mapError(protocolError)),
           invalidate: Effect.fn("ProviderSessionManager.invalidate")((binding) =>
             Effect.gen(function* () {
               const runtime = owner.runtime;
@@ -4187,27 +4222,46 @@ export const layerWithOptions = (
                   );
                 },
               }),
-          steerTurn: (input) =>
-            observeActivity(
-              providerSessionId,
-              touchActivity(providerSessionId, { onlyIfRuntime: runtime }),
-            ).pipe(
-              Effect.andThen(assertControlTarget(input.providerThread, input.threadId, true)),
-              Effect.andThen(
-                beforeRuntimeUse(input.threadId).pipe(
+          steerTurn: Effect.fn("ProviderSessionManager.steerTurn")(function* (input) {
+            const claim = yield* Effect.serviceOption(CurrentEffectClaim);
+            const revalidateSteerAdmission = Effect.gen(function* () {
+              if (Option.isSome(claim)) {
+                yield* claim.value.check.pipe(
                   Effect.mapError(
                     (cause) =>
-                      new ProviderAdapter.ProviderAdapterProtocolError({
+                      new ProviderRuntimeBindingError({
                         driver: runtime.driver,
-                        detail: "Cannot validate the original workspace before steering.",
+                        detail: "The steering effect no longer has the captured claim.",
                         cause,
                       }),
                   ),
+                );
+              }
+              yield* assertControlTarget(input.providerThread, input.threadId, true);
+              yield* beforeRuntimeUse(input.threadId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: runtime.driver,
+                      detail: "Cannot validate the original workspace before steering.",
+                      cause,
+                    }),
                 ),
+              );
+            });
+            return yield* observeActivity(
+              providerSessionId,
+              touchActivity(providerSessionId, { onlyIfRuntime: runtime }),
+            ).pipe(
+              Effect.andThen(revalidateSteerAdmission),
+              Effect.andThen(
+                runtime
+                  .steerTurn({ ...input, revalidateSteerAdmission })
+                  .pipe(turnMetrics("steer")),
               ),
-              Effect.andThen(runtime.steerTurn(input).pipe(turnMetrics("steer"))),
               (effect) => withRuntimeInvocation(input.threadId, effect),
-            ),
+            );
+          }),
           // A provider starved of memory can stop answering, so no caller may wait on it unbounded.
           interruptTurn: (input) =>
             observeActivity(

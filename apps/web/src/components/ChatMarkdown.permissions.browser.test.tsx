@@ -158,14 +158,15 @@ async function renderMarkdown(text: string) {
   const anchor = () => screen.container.querySelector("a")!;
   return Object.assign(screen, {
     anchor,
-    openContextMenu: () =>
+    openContextMenu: (eventInit?: PointerEventInit) =>
       act(async () => {
         anchor().dispatchEvent(
-          new MouseEvent("contextmenu", {
+          new PointerEvent("contextmenu", {
             bubbles: true,
             cancelable: true,
             clientX: 10,
             clientY: 10,
+            ...eventInit,
           }),
         );
       }),
@@ -204,7 +205,8 @@ it.each(["[Docs](https://example.com/docs)", "[Readme](docs/readme.md)"])(
     using _setup = setup();
     await using screen = await renderMarkdown(text);
     screen.anchor().focus();
-    await userEvent.keyboard("{Shift>}{F10}{/Shift}");
+    // Shift+F10 does not emit a contextmenu on macOS Playwright.
+    await screen.openContextMenu({ button: -1, clientX: 0, clientY: 0 });
     await vi.waitFor(() => expect(state.choose.mock.lastCall?.[2]).toBe("keyboard"));
     await userEvent.click(screen.anchor(), { button: "right" });
     await vi.waitFor(() => expect(state.choose.mock.lastCall?.[2]).toBe("mouse"));

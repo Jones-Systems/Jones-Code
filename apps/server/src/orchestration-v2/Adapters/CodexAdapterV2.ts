@@ -2233,6 +2233,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         const producers = new Map<string, CodexRuntimeProducer>();
         const threadRetirements = makeCodexThreadRetirements<CodexRuntimeProducer>();
+        let exclusiveStop: { generation: string; publish: Effect.Effect<void> } | undefined;
+        const finishExclusiveStop = (generation: string) =>
+          Effect.uninterruptible(
+            Effect.suspend(() => {
+              if (exclusiveStop?.generation !== generation) return Effect.void;
+              const { publish } = exclusiveStop;
+              exclusiveStop = undefined;
+              return publish;
+            }),
+          );
         const startup = makeCodexStartup(adapterOptions.startupBudgetMs, controlAdmission);
         const admissionTarget = (
           threadId: string | null,
@@ -2382,7 +2392,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     continuityProducerId: yield* random.uuidV4(),
                     termination,
                     terminalDrain,
-                    processExit: retirement.processExit,
+                    processExit: retirement.processExit?.pipe(
+                      Effect.tap(() => finishExclusiveStop(generation)),
+                    ),
                     capturedLifetime: lifetimeConflict ? undefined : capturedLifetime,
                     retirement,
                     client: actualClient,
@@ -2629,7 +2641,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         );
         const events = yield* Queue.unbounded<
           ProviderAdapter.ProviderAdapterV2Event,
-          ProviderAdapter.ProviderAdapterEventStreamError
+          ProviderAdapter.ProviderAdapterEventStreamError | Cause.Done
         >();
         const initialized = yield* Ref.make(false);
         // After a timeout the session is retiring; waiters must not re-send to the hung app-server.
@@ -12351,6 +12363,29 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 )
               : Effect.void,
           );
+        const fenceExclusiveStop = (producer: CodexRuntimeProducer) => {
+          producer.active = false;
+          producer.eventProducer.drain();
+          // Only the captured physical exit may close the session queue. Buffered events
+          // retain their origin through the final stopped update and the pump's drain.
+          exclusiveStop = {
+            generation: producer.generation,
+            publish: Effect.gen(function* () {
+              if (currentProducer !== producer) return;
+              const stopped: ProviderAdapterV2Event = {
+                type: "provider_session.updated",
+                driver: CODEX_PROVIDER,
+                providerSession: { ...session, status: "stopped", updatedAt: yield* DateTime.now },
+              };
+              ProviderEventOrigin.stampProviderEvent(stopped, {
+                producer: producer.eventProducer.origin,
+              });
+              yield* Queue.offer(events, stopped);
+              yield* Queue.end(events);
+              yield* Deferred.succeed(producer.terminalDrain, undefined);
+            }),
+          };
+        };
         const canRetireExclusiveProducer = Effect.fn("CodexAdapterV2.canRetireExclusiveProducer")(
           function* (
             producer: CodexRuntimeProducer,
@@ -12386,8 +12421,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               (yield* runtime.hasPendingBackgroundWork!)
             )
               return false;
-            producer.active = false;
-            producer.eventProducer.drain();
+            fenceExclusiveStop(producer);
             return true;
           },
         );
@@ -12588,8 +12622,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         yield* handoffCompaction.cancel("cancelled");
                         started = true;
                         yield* drainRootPublications(producer);
-                        producer.active = false;
-                        producer.eventProducer.drain();
+                        fenceExclusiveStop(producer);
                         yield* producer.retirement.close.pipe(
                           Effect.ignore,
                           Effect.forkDetach({ startImmediately: true }),

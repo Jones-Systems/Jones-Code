@@ -857,6 +857,19 @@ it.effect(
       );
       assert.isFalse(replay.committed);
       assert.equal(replay.receipt.sequenceDomain, "historical-upstream");
+
+      // The pruner can remove a non-head intent while retaining its command receipt.
+      yield* f.append({ ...claim, sequence: 43 });
+      yield* f.sql`DELETE FROM orchestration_events WHERE sequence = 42`;
+      const replacement = preflight(CommandId.make("replacement:after-prune"));
+      const failure = yield* Effect.flip(
+        f.sql.withTransaction(
+          Effect.gen(function* () {
+            return yield* (yield* f.store.forTransaction).commitPreflight(replacement);
+          }),
+        ),
+      );
+      assert.equal(failure.reason, "historical_preflight_unavailable");
       assert.deepStrictEqual(yield* f.sql`SELECT * FROM jones_legacy_bootstrap_commands`, []);
     }).pipe(Effect.provide(memory)),
 );

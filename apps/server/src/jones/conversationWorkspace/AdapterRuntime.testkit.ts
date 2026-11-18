@@ -86,6 +86,7 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
           serviceTier: null,
         };
       }
+      if (method === "config/read") return { config: {}, origins: {} };
       if (method === "turn/start") {
         observed.push({ method, cwd: input.cwd ?? null, mcp: true, resume: false });
         return {

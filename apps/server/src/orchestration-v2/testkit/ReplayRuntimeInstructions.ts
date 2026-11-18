@@ -2,6 +2,8 @@ import type { ProviderDriverKind, ProviderReplayTranscript } from "@t3tools/cont
 
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 
+import { APP_IDENTITY } from "../../jones/runtimeIdentity/AppIdentity.ts";
+
 export function materializeReplayTranscriptRuntimeInstructions(
   transcript: ProviderReplayTranscript,
   runtime: { readonly driver: ProviderDriverKind; readonly model: string },
@@ -19,12 +21,14 @@ export function materializeReplayTranscriptRuntimeInstructions(
               ? "fx"
               : undefined;
   if (harness === undefined) return transcript;
-  const instructions = buildRuntimeInstructions({ harness, model: runtime.model });
+  const instructionsForModel = (model: string) =>
+    buildRuntimeInstructions({ harness, model, appIdentity: APP_IDENTITY });
+  const instructions = instructionsForModel(runtime.model);
   // The notes name the model, so each prompt expects the ones for its session's current model.
   const sessionModels = new Map<unknown, string>();
   const notesFor = (sessionId: unknown) => {
     const model = sessionModels.get(sessionId) ?? runtime.model;
-    return model === runtime.model ? instructions : buildRuntimeInstructions({ harness, model });
+    return model === runtime.model ? instructions : instructionsForModel(model);
   };
   // Grok's flavor sets `supportsCompaction`; Kiro compacts through its own request instead.
   const compactsThroughPrompt = runtime.driver === "grok";
@@ -208,12 +212,17 @@ export function materializeReplayTranscriptRuntimeInstructions(
           compact: false,
           compactionsAtSend: compactionCounts.get(promptSessionId) ?? 0,
         };
-        if (!resend) return entry;
+        // Older recordings embed the upstream product identity in their runtime-info block.
+        const legacyNotes = recordedNotes?.startsWith(
+          `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness`,
+        );
+        if (!resend && !legacyNotes) return entry;
+        const content = legacyNotes ? prompt.slice(0, -1) : prompt;
         return {
           ...entry,
           frame: {
             ...frame,
-            params: { ...frame.params, prompt: [...prompt, { type: "text", text: expected }] },
+            params: { ...frame.params, prompt: [...content, { type: "text", text: expected }] },
           },
         };
       }

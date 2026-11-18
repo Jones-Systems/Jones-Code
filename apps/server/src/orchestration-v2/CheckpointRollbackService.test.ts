@@ -130,12 +130,15 @@ it.effect.each(["initial", "waiting"])(
             )
           : undefined;
       const rollback = yield* service
-        .execute({
-          threadId,
-          providerThreadId,
-          checkpointId,
-          scopeId,
-        })
+        .execute(
+          {
+            threadId,
+            providerThreadId,
+            checkpointId,
+            scopeId,
+          },
+          Effect.void,
+        )
         .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
       if (state === "waiting") {
         yield* Deferred.await(readEntered);
@@ -348,7 +351,7 @@ it.effect.each([
           ? yield* cleanupEffect.pipe(Effect.forkChild({ startImmediately: true }))
           : undefined;
       const rollback = yield* service
-        .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
+        .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles }, Effect.void)
         .pipe(Effect.forkChild({ startImmediately: true }));
       if (order === "cleanup-first") assert.deepEqual(calls, []);
       if (order === "rollback-first") yield* Deferred.await(openEntered);
@@ -494,7 +497,7 @@ it.effect.each([{ restoreFiles: true }, { restoreFiles: false }])(
       yield* Effect.gen(function* () {
         const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
         const rollback = yield* service
-          .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
+          .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles }, Effect.void)
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Deferred.await(openEntered);
         // A synchronous realPath lets the forked start reach the reservation
@@ -531,7 +534,9 @@ it.effect.each([{ restoreFiles: true }, { restoreFiles: false }])(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-const seedRollbackHistory = Effect.gen(function* () {
+const seedRollbackHistory = Effect.fnUntraced(function* (
+  afterOpen: Effect.Effect<void> = Effect.void,
+) {
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const now = yield* DateTime.now;
   const threadId = ThreadId.make("rollback-history");
@@ -779,29 +784,43 @@ const seedRollbackHistory = Effect.gen(function* () {
             ),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-          open: () =>
-            Effect.succeed({
-              rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
-                Effect.gen(function* () {
-                  rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));
-                  return { providerThread: input.providerThread };
-                }),
-            } as never),
+          open: (input) =>
+            (input.revalidateStartAdmission ?? Effect.die("Missing rollback admission")).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderSessionManager.ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause,
+                  }),
+              ),
+              Effect.andThen(afterOpen),
+              Effect.as({
+                rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
+                  Effect.gen(function* () {
+                    rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));
+                    return { providerThread: input.providerThread };
+                  }),
+              } as never),
+            ),
         }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
       ),
     ),
   );
-  const rollback = (ordinal: number) =>
+  const rollback = (ordinal: number, checkClaim: Effect.Effect<void, string> = Effect.void) =>
     Effect.gen(function* () {
       const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
-      yield* service.execute({
-        threadId,
-        providerThreadId,
-        scopeId,
-        checkpointId: checkpointId(ordinal),
-      });
-    }).pipe(Effect.provide(serviceLayer));
+      yield* service.execute(
+        {
+          threadId,
+          providerThreadId,
+          scopeId,
+          checkpointId: checkpointId(ordinal),
+        },
+        checkClaim,
+      );
+    }).pipe(Effect.provide(Layer.orDie(serviceLayer)));
 
   return {
     store,
@@ -822,9 +841,42 @@ describe("rollback history reads", () => {
   const layerHistory = ProjectionStore.layer.pipe(
     Layer.provideMerge(SqlitePersistence.layerMemory),
   );
+  it.effect.each(["lost claim", "changed checkpoint"])(
+    "refuses a rollback after session open on %s",
+    (change) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        let lost = false;
+        const history = yield* seedRollbackHistory(
+          Effect.gen(function* () {
+            if (change === "lost claim") {
+              lost = true;
+            } else {
+              yield* sql`UPDATE orchestration_v2_projection_checkpoints
+            SET status = 'stale', payload_json = json_set(payload_json, '$.status', 'stale')
+            WHERE checkpoint_id = 'rollback-history-checkpoint-2'`.pipe(Effect.orDie);
+            }
+          }),
+        );
+        const error = yield* history
+          .rollback(
+            2,
+            Effect.suspend(() => (lost ? Effect.fail("lost rollback claim") : Effect.void)),
+          )
+          .pipe(Effect.flip);
+        assert.equal(
+          error.reason,
+          change === "lost claim" ? "unexpected-failure" : "rollback-target-invalid",
+        );
+        assert.deepEqual(history.rollbackCounts, []);
+        assert.deepEqual(history.restored, []);
+        assert.deepEqual(history.committed, []);
+      }).pipe(Effect.provide(layerHistory)),
+  );
+
   it.effect("rolls back later terminal runs despite obsolete unrelated SQLite payloads", () =>
     Effect.gen(function* () {
-      const history = yield* seedRollbackHistory;
+      const history = yield* seedRollbackHistory();
       const sql = yield* SqlClient.SqlClient;
       const { threadId, runId, nodeId, checkpointId } = history;
       yield* sql`
@@ -899,7 +951,7 @@ describe("rollback history reads", () => {
 
   it.effect("rewinds stopped runs repeatedly without counting discarded provider turns again", () =>
     Effect.gen(function* () {
-      const history = yield* seedRollbackHistory;
+      const history = yield* seedRollbackHistory();
       yield* history.rollback(5);
       yield* history.rollback(2);
       yield* history.rollback(0);

@@ -622,6 +622,10 @@ export interface ProviderRuntimeLifecycle {
     input: RuntimeBindingPublicationInput,
   ) => Effect.Effect<CapturedRuntimeBindingPublication, ProviderAdapterV2Error>;
   readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** After confirmed process exit, retain the exact predecessor until its replacement publishes. */
+  readonly retireForReplacement?: (
+    binding: ProviderRuntimeBinding,
+  ) => Effect.Effect<Effect.Effect<void, ProviderAdapterV2Error>, ProviderAdapterV2Error>;
   readonly invalidate: (
     binding: ProviderRuntimeBinding,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
@@ -781,6 +785,8 @@ export interface ProviderAdapterV2SteerInput {
   readonly message: ProviderAdapterV2TurnMessage;
   /** The selection sent with the message when it differs from the running turn's. */
   readonly modelSelection?: ModelSelection;
+  /** Rechecks this steer’s control authority after asynchronous preparation. */
+  readonly revalidateSteerAdmission?: Effect.Effect<void, ProviderAdapterV2Error>;
 }
 
 export interface ProviderAdapterV2InterruptInput {

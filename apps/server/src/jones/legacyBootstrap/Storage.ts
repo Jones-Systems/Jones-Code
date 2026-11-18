@@ -1129,10 +1129,16 @@ export const make = (
         const rows = yield* sql<{
           command_id: string;
         }>`SELECT command_id FROM jones_legacy_bootstrap_commands WHERE thread_id = ${p.threadId} AND kind = 'preflight-intent'`;
+        // A historical intent's accepted receipt survives pruning. Require the same
+        // exact event and outcome readback even when only its receipt can name it.
         const historical = yield* sql<{
           command_id: string | null;
         }>`SELECT command_id FROM orchestration_events WHERE stream_id = ${p.threadId}
-          AND aggregate_kind = 'thread' AND application_event_version = 2 AND event_type = 'legacy-bootstrap.preflight-intent'`;
+          AND aggregate_kind = 'thread' AND application_event_version = 2 AND event_type = 'legacy-bootstrap.preflight-intent'
+          UNION
+          SELECT command_id FROM orchestration_command_receipts
+          WHERE aggregate_kind = 'thread' AND aggregate_id = ${p.threadId}
+            AND command_type = 'legacy-bootstrap.preflight-intent' AND status = 'accepted'`;
         for (const row of [...rows, ...historical]) {
           if (row.command_id === null) return yield* error("historical_intent_identity_missing");
           const id = yield* decodeCommandId(row.command_id);

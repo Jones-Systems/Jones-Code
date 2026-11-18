@@ -10,11 +10,15 @@ import * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
 import * as LegacyStorage from "../jones/legacyBootstrap/Storage.ts";
 import * as LegacyCleanup from "../jones/legacyBootstrap/TerminalCleanupWorker.ts";
 import * as SqlClient from "effect/sql/SqlClient";
-import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
+import {
+  sameOperationRequest,
+  withOperation,
+} from "../jones/workspaceLifecycle/NativeOperation.ts";
 import { withOriginalTransition } from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import { LifecycleConfiguration } from "../jones/workspaceLifecycle/NativeSource.ts";
 import {
   CurrentEffectClaim,
+  EffectClaimLost,
   findEffectClaimLost,
   withActiveEffectClaim,
 } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
@@ -862,50 +866,62 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
           }
-          case "provider-thread.rollback":
-            return checkpointRollback
-              .execute({
-                threadId: effect.threadId,
-                providerThreadId: effect.request.providerThreadId,
-                checkpointId: effect.request.checkpointId,
-                scopeId: effect.request.scopeId,
-                ...(effect.request.restoreFiles === undefined
-                  ? {}
-                  : { restoreFiles: effect.request.restoreFiles }),
-              })
-              .pipe(
-                Effect.tapCause((cause) =>
-                  willRetry || Cause.hasInterruptsOnly(cause)
-                    ? Effect.void
-                    : threads
-                        .dispatch({
-                          type: "checkpoint.rollback.fail",
-                          commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
-                          threadId: effect.threadId,
-                          requestId: effect.commandId,
-                          message: Option.match(Cause.findErrorOption(cause), {
-                            onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
-                            onSome: CheckpointRollbackService.rollbackFailureClientMessage,
+          case "provider-thread.rollback": {
+            const request = effect.request;
+            return Effect.serviceOption(CurrentEffectClaim).pipe(
+              Effect.flatMap((claim) => {
+                const lost = () => new EffectClaimLost({ effectId: effect.id });
+                const checkClaim = Option.isNone(claim)
+                  ? Effect.fail(lost())
+                  : claim.value.use((current) =>
+                      sameOperationRequest(current, effect) ? Effect.void : Effect.fail(lost()),
+                    );
+                return checkpointRollback.execute(
+                  {
+                    threadId: effect.threadId,
+                    providerThreadId: request.providerThreadId,
+                    checkpointId: request.checkpointId,
+                    scopeId: request.scopeId,
+                    ...(request.restoreFiles === undefined
+                      ? {}
+                      : { restoreFiles: request.restoreFiles }),
+                  },
+                  checkClaim,
+                );
+              }),
+              Effect.tapCause((cause) =>
+                willRetry || Cause.hasInterruptsOnly(cause)
+                  ? Effect.void
+                  : threads
+                      .dispatch({
+                        type: "checkpoint.rollback.fail",
+                        commandId: CommandId.make(`${effect.commandId}:rollback-failed`),
+                        threadId: effect.threadId,
+                        requestId: effect.commandId,
+                        message: Option.match(Cause.findErrorOption(cause), {
+                          onNone: () => CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+                          onSome: CheckpointRollbackService.rollbackFailureClientMessage,
+                        }),
+                      })
+                      .pipe(
+                        Effect.catchCause((recordCause) =>
+                          Effect.logWarning("Failed to record rollback failure", {
+                            effectId: effect.id,
+                            cause: recordCause,
                           }),
-                        })
-                        .pipe(
-                          Effect.catchCause((recordCause) =>
-                            Effect.logWarning("Failed to record rollback failure", {
-                              effectId: effect.id,
-                              cause: recordCause,
-                            }),
-                          ),
                         ),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
+                      ),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                    cause,
+                  }),
+              ),
+            );
+          }
           case "checkpoint.capture":
             return runFinalization
               .finalize({
