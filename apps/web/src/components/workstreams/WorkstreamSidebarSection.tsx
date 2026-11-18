@@ -25,7 +25,6 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   ChevronDownIcon,
-  PaletteIcon,
   ImageIcon,
   PencilIcon,
   PlusIcon,
@@ -70,7 +69,7 @@ import {
   personalWorkstreamAutomaticColors,
   personalWorkstreamGroupColors,
 } from "../../jones/workstreams/personalRail";
-import { PersonalWorkstreamColorDialog } from "../../jones/workstreams/PersonalWorkstreamColorDialog";
+import { PersonalWorkstreamColorMenu } from "../../jones/workstreams/PersonalWorkstreamColorMenu";
 import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalWorkstreamTitleEditor";
 import {
   WorkstreamNameIconPicker,
@@ -244,7 +243,7 @@ function Group({
     false,
     collapsedSchema,
   );
-  const [editing, setEditing] = useState<"name" | "color" | "nameIcon" | null>(null);
+  const [editing, setEditing] = useState<"name" | "nameIcon" | null>(null);
   const threadWindow = usePersonalThreadWindow(item.id);
   const { filter: statusFilter, setFilter: setStatusFilter } = usePersonalStatusFilter(item.id);
   const overflowCount = memberCount - threadWindow.limit;
@@ -451,9 +450,12 @@ function Group({
           <MenuItem disabled={!state.canCreate || pending} onClick={startRename}>
             <PencilIcon aria-hidden /> Rename
           </MenuItem>
-          <MenuItem disabled={!state.canCreate || pending} onClick={() => setEditing("color")}>
-            <PaletteIcon aria-hidden /> Change color
-          </MenuItem>
+          <PersonalWorkstreamColorMenu
+            color={item.color}
+            automaticColor={colors.automaticColor}
+            disabled={!state.canCreate || pending}
+            onSelect={(color) => void run(() => controller.setColor(item.id, color))}
+          />
           {state.canSetNameIcon && controller.setNameIcon ? (
             <MenuItem
               disabled={pending}
@@ -622,20 +624,6 @@ function Group({
             </button>
           ) : null}
         </>
-      ) : null}
-      {editing === "color" ? (
-        <PersonalWorkstreamColorDialog
-          color={item.color}
-          automaticColor={colors.automaticColor}
-          pending={pending}
-          onOpenChange={(open) => {
-            if (!open && !pendingRef.current) setEditing(null);
-          }}
-          onSave={async (color) => {
-            const result = await run(() => controller.setColor(item.id, color));
-            if (result?.ok) setEditing(null);
-          }}
-        />
       ) : null}
     </section>
   );
