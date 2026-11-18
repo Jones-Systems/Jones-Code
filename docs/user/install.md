@@ -16,7 +16,8 @@ desktop, web, or mobile app. Set up the machine where the agents will work first
 >   [CLI artifacts](../operations/build-artifacts.md).
 > - **Update Jones Code:** use **Install status** in the app, as described in
 >   [Updating Jones Code](./updating.md#install-status). Do not drag a newer DMG
->   over an installed copy; startup refuses it.
+>   over an installed copy; startup refuses it. If you already completed a
+>   manual install, [clear the old update plan](./updating.md#clear-an-old-plan-after-a-manual-install).
 > - **Run it in the background:** use `t3 jones host setup` from
 >   [Running in the background](./background-service.md), not `t3 service install`.
 >
