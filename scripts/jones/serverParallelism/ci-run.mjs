@@ -19,6 +19,7 @@ const diagnosticModes =
         ? ["full"]
         : [];
 const diagnosticScope = diagnosticModes.length > 0;
+const writerTiming = scope === "writer-timing";
 if (
   diagnosticScope &&
   (HostProcess.Platform.defaultValue() !== (scope === "observer-cadence" ? "darwin" : "linux") ||
@@ -26,7 +27,13 @@ if (
     (scope === "observer-control" && !NodePath.isAbsolute(priorDirectory ?? "")))
 )
   throw new Error("Manual observer diagnostic requires its selected platform and bound inputs");
-if (!diagnosticScope && !["full", "source-evidence"].includes(scope))
+if (
+  writerTiming &&
+  (HostProcess.Platform.defaultValue() !== "linux" ||
+    process.env.GITHUB_EVENT_NAME !== "workflow_dispatch")
+)
+  throw new Error("Writer timing requires an explicitly dispatched Linux job");
+if (!writerTiming && !diagnosticScope && !["full", "source-evidence"].includes(scope))
   throw new Error("Unknown qualification scope");
 if (!NodePath.isAbsolute(output ?? "") || !NodePath.isAbsolute(installedRoot ?? ""))
   throw new Error("ci-run.mjs <absolute reports directory> <absolute extracted archive directory>");
@@ -156,12 +163,19 @@ async function report(name, path) {
 async function runBaseline(profile, mode) {
   const name = mode === "bounded-churn" ? `baseline-bounded-${profile}` : `baseline-${profile}`;
   const baseline = NodePath.join(output, `${name}.json`);
-  await node(name, [
-    "scripts/jones/serverParallelism/baseline.mjs",
-    baseline,
-    profile,
-    ...(mode ? [mode] : []),
-  ]);
+  await node(
+    name,
+    [
+      ...(writerTiming
+        ? ["--import", "./scripts/jones/serverParallelism/writer-timing-preload.mjs"]
+        : []),
+      "scripts/jones/serverParallelism/baseline.mjs",
+      baseline,
+      profile,
+      ...(mode ? [mode] : []),
+    ],
+    writerTiming ? { JONES_SP_WRITER_TRACE: NodePath.join(output, "writer-baseline.json") } : {},
+  );
   try {
     const original = await NodeFSP.readFile(baseline, "utf8"),
       value = JSON.parse(original),
@@ -217,6 +231,47 @@ async function runBaseline(profile, mode) {
   }
   await report(name, baseline);
   return baseline;
+}
+
+async function writerTraceVerified(filename, entry, prefix) {
+  try {
+    const path = NodePath.join(output, filename);
+    const stat = await NodeFSP.lstat(path);
+    if (!stat.isFile() || stat.size > 8 * 1024 * 1024) return false;
+    const trace = JSON.parse(await NodeFSP.readFile(path, "utf8"));
+    return (
+      trace.schema === "jones.server-parallelism.writer-timing/v1" &&
+      trace.complete === true &&
+      trace.source === source &&
+      trace.sourceTree === sourceTree &&
+      trace.node === process.versions.node &&
+      trace.entry === entry &&
+      trace.transactions.length === 1500 &&
+      trace.transactions.every((transaction, index) => {
+        const calls = transaction.calls.filter((call) => call.operation !== "prepare");
+        return (
+          transaction.databaseName === `${prefix}-${Math.floor(index / 500)}.sqlite` &&
+          transaction.index === index % 500 &&
+          Number.isFinite(transaction.start) &&
+          Number.isFinite(transaction.end) &&
+          transaction.start <= transaction.end &&
+          transaction.calls.every(
+            (call) =>
+              call.succeeded === true &&
+              transaction.start <= call.start &&
+              call.start <= call.end &&
+              call.end <= transaction.end,
+          ) &&
+          ["begin", "insert", "commit"].every(
+            (kind) => calls.filter((call) => call.kind === kind).length === 1,
+          ) &&
+          !calls.some((call) => call.kind === "rollback")
+        );
+      })
+    );
+  } catch {
+    return false;
+  }
 }
 
 try {
@@ -277,7 +332,29 @@ try {
       manifests.push({ form, path });
     }
   }
-  if (diagnosticScope) {
+  if (writerTiming) {
+    const profile = "vps";
+    const baseline = await runBaseline(profile);
+    const name = `native-source-${profile}`;
+    const native = NodePath.join(output, `${name}.json`);
+    await node(
+      name,
+      [
+        "--import",
+        "./scripts/jones/serverParallelism/writer-timing-preload.mjs",
+        "scripts/jones/serverParallelism/qualify.mjs",
+        sourceManifest,
+        native,
+        profile,
+        baseline,
+      ],
+      { JONES_SP_WRITER_TRACE: NodePath.join(output, "writer-native.json") },
+    );
+    await report(name, native);
+    diagnosticComplete =
+      (await writerTraceVerified("writer-baseline.json", "baseline.mjs", "baseline")) &&
+      (await writerTraceVerified("writer-native.json", "qualify.mjs", "combined"));
+  } else if (diagnosticScope) {
     const { verifyDiagnosticArtifacts } = await import("./observer-diagnostic.mjs");
     let baseline;
     let prior;
@@ -479,7 +556,28 @@ try {
   clearTimeout(deadline);
   process.removeListener("SIGINT", stop);
   process.removeListener("SIGTERM", stop);
-  if (diagnosticScope) {
+  if (writerTiming) {
+    const complete = diagnosticComplete && !cancelled && !admissionClosed;
+    await NodeFSP.writeFile(
+      NodePath.join(output, "qualification.json"),
+      JSON.stringify(
+        {
+          schema: "jones.server-parallelism.writer-timing-ci/v1",
+          eligible: false,
+          passed: false,
+          outcome: complete ? "recorded" : "incomplete",
+          source,
+          sourceTree,
+          scope,
+          results,
+          reports,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    if (!complete) process.exitCode = 1;
+  } else if (diagnosticScope) {
     const cleanupProved =
       !admissionClosed &&
       reports.length > 0 &&

@@ -4,6 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodePerfHooks from "node:perf_hooks";
+import * as NodeDiagnosticsChannel from "node:diagnostics_channel";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
@@ -37,6 +38,8 @@ const schema = capped
 const count = profile === "vps" ? 3 : 2,
   acquisitions = 500,
   files = 512;
+const writerTiming = NodeDiagnosticsChannel.channel("jones:server-parallelism:writer-timing");
+const traceWriter = writerTiming.hasSubscribers;
 const scratch = await NodeFSP.realpath(
   await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-baseline-")),
 );
@@ -127,6 +130,7 @@ try {
   }
   for (const key of qualificationResidentOrder(count)) await runtime(keys[key]);
   for (let window = 0; window < 3; window++) {
+    const databaseName = `baseline-${window}.sqlite`;
     const writer = [],
       control = [],
       loop = NodePerfHooks.monitorEventLoopDelay({ resolution: 10 });
@@ -158,10 +162,13 @@ try {
               (_, index) =>
                 Effect.gen(function* () {
                   const start = performance.now();
+                  if (traceWriter) writerTiming.publish({ databaseName, index, start });
                   yield* sql.withTransaction(
                     sql`INSERT INTO synthetic_load(value) VALUES (${String(index)})`,
                   );
-                  writer.push(performance.now() - start);
+                  const end = performance.now();
+                  if (traceWriter) writerTiming.publish({ databaseName, index, end });
+                  writer.push(end - start);
                   yield* Effect.yieldNow;
                 }),
               { discard: true },
@@ -183,7 +190,7 @@ try {
       }).pipe(
         Effect.provide(
           NodeSqliteClient.layer({
-            filename: NodePath.join(scratch, `baseline-${window}.sqlite`),
+            filename: NodePath.join(scratch, databaseName),
             checkpointWorker: true,
             readerFailureMode: "fail",
           }),
