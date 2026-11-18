@@ -948,15 +948,10 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
             })
             .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))));
         if (!recordedBaseResolves && mode === "fetch-now") {
-          return yield* mapError(
-            input,
-            "provision-worktree",
-            threadId,
-          )(
-            new Error(
-              "The verified remote commit is no longer available in the project repository.",
-            ),
-          );
+          const detail =
+            "The verified remote commit is no longer available in the project repository.";
+          yield* setupTracker.stageStatus(threadId, "fetch", "failed", detail);
+          return yield* mapError(input, "provision-worktree", threadId)(new Error(detail));
         }
         if (!recordedBaseResolves) {
           const remoteName =
@@ -972,12 +967,17 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
           if (fallback !== null) {
             startRef = fallback.startRef;
             baseRefName = fallback.baseRefName;
-            yield* setupTracker.update(threadId, (snapshot) => ({
-              ...snapshot,
-              baseRef: fallback.baseRefName,
-            }));
+            if (freshness?.status === "selected") {
+              yield* setupTracker.stageStatus(
+                threadId,
+                "fetch",
+                "skipped",
+                "The last verified commit is unavailable. Using the local base.",
+              );
+            }
           }
         }
+        yield* setupTracker.update(threadId, (snapshot) => ({ ...snapshot, baseRef: baseRefName }));
         if (branch !== null && (generatedTemporaryBranch || isTemporaryWorktreeBranch(branch))) {
           const parts = branch.split("/");
           for (let depth = 1; depth < parts.length; depth++) {

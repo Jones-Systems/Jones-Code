@@ -91,6 +91,7 @@ const adapter = {
 interface HarnessOptions {
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
+  readonly hasCommit?: GitWorkflow.GitWorkflowService["Service"]["hasCommit"];
   readonly resolveWorktreeBaseRemote?: GitWorkflow.GitWorkflowService["Service"]["resolveWorktreeBaseRemote"];
   readonly fetchWorktreeBaseCommit?: GitWorkflow.GitWorkflowService["Service"]["fetchWorktreeBaseCommit"];
   readonly listRefs?: GitWorkflow.GitWorkflowService["Service"]["listRefs"];
@@ -178,7 +179,8 @@ function makeHarness(options: HarnessOptions = {}) {
       createWorktree,
       // Every named base exists in this repository; no local branch occupies a
       // generated branch's parent path, so neither the fallback base nor flattening applies.
-      hasCommit: ({ refName }) => Effect.succeed(!refName.startsWith("refs/heads/")),
+      hasCommit:
+        options.hasCommit ?? (({ refName }) => Effect.succeed(!refName.startsWith("refs/heads/"))),
       renameBranch,
       resolveWorktreeBaseRemote:
         options.resolveWorktreeBaseRemote ??
@@ -625,13 +627,15 @@ it.effect.each([
 );
 
 it.effect.each([
-  { mode: "verified", fails: false, sync: false },
-  { mode: "fetch-now", fails: false, sync: false },
-  { mode: "fetch-now", fails: false, sync: true },
-  { mode: "fetch-now", fails: true, sync: false },
+  { mode: "verified", fails: false, sync: false, missing: false },
+  { mode: "verified", fails: false, sync: false, missing: true },
+  { mode: "fetch-now", fails: false, sync: false, missing: false },
+  { mode: "fetch-now", fails: false, sync: true, missing: false },
+  { mode: "fetch-now", fails: true, sync: false, missing: false },
+  { mode: "fetch-now", fails: false, sync: false, missing: true },
 ] as const)(
-  "prepares the exact freshness base for $mode with failure $fails and primary sync $sync",
-  ({ mode, fails, sync }) => {
+  "prepares $mode with fetch failure $fails, primary sync $sync, and missing commit $missing",
+  ({ mode, fails, sync, missing }) => {
     const verified = {
       remoteName: "origin",
       branchName: "main",
@@ -662,13 +666,18 @@ it.effect.each([
       }),
     );
     const ordinaryFetch = vi.fn(() => Effect.die("must use the selected freshness mode"));
+    const rejected = fails || (mode === "fetch-now" && missing);
+    const preparedBase = missing ? "HEAD" : "refs/remotes/origin/main";
     const harness = makeHarness({
       repoFreshness: { status: read, checkForLaunch, refresh },
       fetchWorktreeBaseCommit: ordinaryFetch,
+      hasCommit: ({ refName }) =>
+        Effect.succeed(!missing || (refName !== verified.commitSha && refName !== newer.commitSha)),
     });
     return Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const launched = yield* launches.launch({
         ...launchInput({
           command: "command:freshness-base",
@@ -682,7 +691,7 @@ it.effect.each([
         Stream.filter(
           ({ event }) =>
             event.type === "run.updated" &&
-            event.payload.status === (fails ? "failed" : "starting"),
+            event.payload.status === (rejected ? "failed" : "starting"),
         ),
         Stream.runHead,
       );
@@ -690,16 +699,19 @@ it.effect.each([
       assert.lengthOf(read.mock.calls, mode === "verified" ? 1 : 0);
       assert.lengthOf(checkForLaunch.mock.calls, mode === "fetch-now" && !sync ? 1 : 0);
       assert.lengthOf(refresh.mock.calls, mode === "fetch-now" && sync ? 1 : 0);
-      assert.lengthOf(harness.createWorktree.mock.calls, fails ? 0 : 1);
-      if (!fails) {
+      assert.lengthOf(harness.createWorktree.mock.calls, rejected ? 0 : 1);
+      const snapshot = yield* tracker.get(launched.threadId);
+      const fetchStage = snapshot?.stages.find(({ id }) => id === "fetch");
+      if (rejected) {
+        assert.equal(fetchStage?.status, "failed");
+      } else {
         assert.equal(
           harness.createWorktree.mock.calls[0]?.[0].refName,
-          mode === "verified" ? verified.commitSha : newer.commitSha,
+          missing ? "HEAD" : mode === "verified" ? verified.commitSha : newer.commitSha,
         );
-        assert.equal(
-          harness.createWorktree.mock.calls[0]?.[0].baseRefName,
-          "refs/remotes/origin/main",
-        );
+        assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, preparedBase);
+        assert.equal(snapshot?.baseRef, preparedBase);
+        if (missing) assert.include(fetchStage?.detail, "Using the local base.");
       }
     }).pipe(Effect.provide(harness.layer));
   },

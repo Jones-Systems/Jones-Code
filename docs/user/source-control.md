@@ -3,6 +3,22 @@
 T3 Code integrates with GitHub, GitLab, Forgejo, Gitea, Bitbucket, Azure DevOps, GitCafe, and Cursor
 Origin to clone and publish repositories, create pull requests, and review changes.
 
+## Keep the default branch fresh
+
+In **Settings → Projects**, choose a project checkout and set its automatic fetch interval to
+**2 minutes** or **5 minutes**. The server that owns the checkout checks the remote even when the
+app is closed. The last checked time advances on a successful check, including when the commit
+stays the same. The result becomes stale after five minutes at the two-minute interval, or after
+12 minutes and 30 seconds at the five-minute interval.
+
+New worktrees using **Default branch** start from the last verified commit. Choose **Fetch latest
+now** when a change has just landed and you want the worktree to use a fresh remote check. You can
+also use **Fetch latest now** in the project's source-control controls before starting a thread.
+
+With **Automatically pull** enabled for the project checkout, a successful check can fast-forward
+its clean default branch. A dirty checkout, a different branch, or a branch with local-only
+commits stays as it is.
+
 ## Review turn changes
 
 A turn's changed files and diff show only the turn's own work. When a turn pulls, merges, or
