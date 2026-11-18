@@ -67,6 +67,7 @@ export function showPersonalAssignment(workstreamName: string | null, pinned: bo
     stackedThreadToast({
       type: "success",
       title: workstreamName === null ? "Thread is now Unassigned" : `Assigned to ${workstreamName}`,
+      timeout: 2_000,
       ...(pinned ? { description: "This thread remains in Pinned." } : {}),
     }),
   );
