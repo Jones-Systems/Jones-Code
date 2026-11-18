@@ -17,6 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import type * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSettings from "../../../serverSettings.ts";
@@ -46,7 +47,8 @@ const modelSelection = {
   instanceId: ProviderInstanceId.make("synthetic-provider"),
   model: "synthetic-model",
 };
-const request = { clientRequestId: "key", projectId, title: "New", message: "Task" };
+const requestWithoutProject = { clientRequestId: "key", title: "New", message: "Task" };
+const request = { ...requestWithoutProject, projectId };
 const ids = clientLaunchIds("synthetic-handlers", "key");
 const full = { runtimeMode: "full-access", interactionMode: "default" } as const;
 const baseScope: Invocation.McpInvocationScope = {
@@ -338,9 +340,10 @@ it.effect.each(["t3_thread_launch", "t3_thread_launch_fence"] as const)(
     );
   },
 );
-it.effect.each([
-  { scratch: false },
+const unsupportedKeyedRequests: ReadonlyArray<Schema.JsonObject> = [
+  { ...request, scratch: false },
   {
+    ...request,
     attachments: [
       {
         type: "file",
@@ -351,24 +354,28 @@ it.effect.each([
       },
     ],
   },
-  { workspaceStrategy: { type: "worktree" as const }, message: "" },
-  { projectId: undefined },
-])("T3: refuses keyed unsupported input %j before claiming", (change) => {
-  const h = harness();
-  return execute(
-    h,
-    Effect.gen(function* () {
-      const toolkit = yield* tool;
-      const result = yield* toolkit
-        .handle("t3_thread_launch", { ...request, ...change } as typeof request)
-        .pipe(Stream.unwrap, Stream.runCollect);
-      assert.equal(code(result), "invalid_request");
-      const sql = yield* SqlClient.SqlClient;
-      assert.deepEqual(yield* sql`SELECT * FROM jones_mcp_client_launch_requests`, []);
-      assert.equal(h.state.dispatches, 0);
-    }),
-  );
-});
+  { ...request, workspaceStrategy: { type: "worktree" }, message: "" },
+  requestWithoutProject,
+];
+it.effect.each(unsupportedKeyedRequests)(
+  "T3: refuses keyed unsupported input %j before claiming",
+  (input) => {
+    const h = harness();
+    return execute(
+      h,
+      Effect.gen(function* () {
+        const toolkit = yield* tool;
+        const result = yield* toolkit
+          .handle("t3_thread_launch", input)
+          .pipe(Stream.unwrap, Stream.runCollect);
+        assert.equal(code(result), "invalid_request");
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(yield* sql`SELECT * FROM jones_mcp_client_launch_requests`, []);
+        assert.equal(h.state.dispatches, 0);
+      }),
+    );
+  },
+);
 it.effect("T11: a narrower caller cannot continue, but may read a completed replay", () =>
   Effect.gen(function* () {
     for (const pending of [true, false]) {

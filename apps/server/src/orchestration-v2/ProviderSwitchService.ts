@@ -2,7 +2,10 @@ import * as Outbox from "./EffectOutbox.ts";
 import * as Receipts from "./CommandReceiptStore.ts";
 import * as EventSink from "./EventSink.ts";
 import * as StartRefusals from "../jones/startRefusal/Store.ts";
-import { makeUnsentStartProof } from "../jones/provider/UnsentStartProof.ts";
+import {
+  makeUnreleasedStartProof,
+  makeUnsentStartProof,
+} from "../jones/provider/UnsentStartProof.ts";
 import {
   executionProjection,
   executionWorkspace,
@@ -160,12 +163,25 @@ export const layer: Layer.Layer<
               sink: sink.value,
               refusals: refusals.value,
             });
+            const readBirth = sink.value.readUnreleasedStartBirth;
+            const proveUnreleased =
+              rebindPreparing === true &&
+              beforeStartEvidence.runs.some((run) => run.status === "preparing") &&
+              readBirth !== undefined
+                ? makeUnreleasedStartProof({
+                    outbox: outbox.value,
+                    refusals: refusals.value,
+                    readBirth,
+                  })
+                : undefined;
             for (const run of beforeStartEvidence.runs) {
-              if (
-                run.activeAttemptId !== null &&
-                (yield* proveUnsent(run, beforeStartEvidence.attempts))
-              )
-                certifiedUnsent.add(run.activeAttemptId);
+              if (run.activeAttemptId === null) continue;
+              const proved =
+                run.status === "preparing" || run.status === "queued"
+                  ? proveUnreleased !== undefined &&
+                    (yield* proveUnreleased(run, beforeStartEvidence.attempts))
+                  : yield* proveUnsent(run, beforeStartEvidence.attempts);
+              if (proved) certifiedUnsent.add(run.activeAttemptId);
             }
           }
           const rebindPendingProviderThread =
@@ -240,14 +256,11 @@ export const layer: Layer.Layer<
             Option.isSome(targetAdapter) &&
             Option.isSome(currentInstance) &&
             (currentSession !== undefined || currentProviderThread !== undefined)
-              ? negotiatedCapabilities === undefined
-                ? // No session record left to switch in place; the next session starts with it.
-                  ({ type: "apply_on_next_turn" } as const)
-                : yield* targetAdapter.value.planSelectionTransition({
-                    current,
-                    target: targetModelSelection,
-                    sessionCapabilities: negotiatedCapabilities,
-                  })
+              ? yield* targetAdapter.value.planSelectionTransition({
+                  current,
+                  target: targetModelSelection,
+                  sessionCapabilities: negotiatedCapabilities ?? currentInstance.value.capabilities,
+                })
               : undefined;
           // A selection change keeps the thread where it is. A shared session's cwd is the
           // workspace of whichever thread opened it, not a move of this thread.

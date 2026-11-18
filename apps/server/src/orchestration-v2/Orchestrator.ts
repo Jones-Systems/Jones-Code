@@ -4704,16 +4704,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     >,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    pendingThread?: OrchestrationV2AppThread,
   ): Effect.fn.Return<void, OrchestratorV2Error> {
-    const thread = yield* projectionStore.getThread(command.threadId).pipe(
-      Effect.mapError(
-        (cause) =>
-          new OrchestratorProjectionError({
-            threadId: command.threadId,
-            cause,
-          }),
-      ),
-    );
+    const thread =
+      pendingThread ??
+      (yield* projectionStore.getThread(command.threadId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorProjectionError({
+              threadId: command.threadId,
+              cause,
+            }),
+        ),
+      ));
     if (thread.deletedAt !== null) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -7404,11 +7407,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: { ...currentRootNode, status: "interrupted", completedAt: now },
       });
     }
-    if (selectionChanged) {
+    const threadProviderChanged =
+      input.projection.thread.providerInstanceId !== input.modelSelection.instanceId;
+    if (
+      selectionChanged &&
+      (threadProviderChanged ||
+        !modelSelectionsEqual(input.projection.thread.modelSelection, input.modelSelection))
+    ) {
       yield* emitEvent({
-        type: providerInstanceChanged
-          ? "thread.provider-switched"
-          : "thread.model-selection-updated",
+        type: threadProviderChanged ? "thread.provider-switched" : "thread.model-selection-updated",
         threadId: input.command.threadId,
         providerInstanceId: input.modelSelection.instanceId,
         occurredAt: now,
@@ -7997,6 +8004,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
         events,
         effects,
+        projection.thread,
       );
       projection = yield* refreshMessageProjection();
       ownerPreparationRebound = true;

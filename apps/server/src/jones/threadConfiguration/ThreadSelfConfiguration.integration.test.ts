@@ -2446,7 +2446,7 @@ it.live.each(["starting", "running"] as const)(
 );
 
 it.live.each(["restart", "next_turn", "handoff", "reject"] as const)(
-  "A9/A9b crash continuation with pending C validates a fresh session: %s",
+  "A9/A9b crash continuation with pending C respects execution authority: %s",
   (transition) =>
     scenario(
       "owner-crash-continuation-" + transition,
@@ -2501,7 +2501,7 @@ it.live.each(["restart", "next_turn", "handoff", "reject"] as const)(
                   Stream.runDrain,
                   Effect.forkScoped,
                 )
-              : yield* observeRun(threadId, 2, "completed");
+              : yield* observeRun(threadId, 2, transition === "restart" ? "failed" : "completed");
           yield* worker.drain();
           yield* outbox.awaitSettled(scheduled[0]!.id);
           const continuation = yield* orchestrator.getThreadProjection(threadId);
@@ -2510,13 +2510,13 @@ it.live.each(["restart", "next_turn", "handoff", "reject"] as const)(
             transition === "reject" ? 1 : 2,
             "Settled recovery intent must admit C or record its typed decline",
           );
-          assert.notEqual(
-            continuation.runs[1]?.status,
-            "failed",
-            "Recovery must reach the provider without a pre-admission failure",
-          );
-          if (transition !== "reject")
-            assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, replacement);
+          if (transition === "next_turn" || transition === "handoff") {
+            assert.notEqual(
+              continuation.runs[1]?.status,
+              "failed",
+              "Recovery must reach the provider without a pre-admission failure",
+            );
+          }
           yield* Fiber.join(barrier);
           yield* worker.drain();
           const after = yield* orchestrator.getThreadProjection(threadId);
@@ -2540,6 +2540,20 @@ it.live.each(["restart", "next_turn", "handoff", "reject"] as const)(
             assert.equal(yield* sink.latestSequence({ threadId }), sequence);
             assert.lengthOf((yield* Ref.get(state)).started, 1);
             assert.lengthOf((yield* Ref.get(state)).resumed ?? [], 0);
+          } else if (transition === "restart") {
+            // The snapshot excludes shutdown and carries no completed native retirement receipt.
+            assert.equal(after.runs[1]?.restartContinuationOfRunId, after.runs[0]?.id);
+            assert.equal(after.runs[1]?.status, "failed");
+            assert.isTrue(
+              after.turnItems.some(
+                (item) =>
+                  item.runId === after.runs[1]?.id &&
+                  item.title === "Previous provider writer could not retire",
+              ),
+            );
+            assert.lengthOf(invoked.started, 1);
+            assert.lengthOf(invoked.opened, 1);
+            assert.lengthOf(invoked.resumed ?? [], 0);
           } else {
             assert.lengthOf(after.runs, 2);
             assert.equal(after.runs[1]?.restartContinuationOfRunId, after.runs[0]?.id);
@@ -2764,14 +2778,14 @@ it.live(
     ),
 );
 
-it.live("owner unchanged Claude restart intent retains the generic typed refusal", () =>
+it.live("owner unchanged Claude restart intent stops the old turn and queues a new one", () =>
   scenario(
     "owner-claude-unchanged-restart",
     false,
-    ({ threadId, state, sql }) =>
+    ({ threadId, state }) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const sink = yield* Sink.EventSinkV2;
+        const worker = yield* Worker.OrchestrationEffectWorkerV2;
         yield* orchestrator
           .dispatch({
             type: "thread.model-selection.set",
@@ -2780,20 +2794,26 @@ it.live("owner unchanged Claude restart intent retains the generic typed refusal
             modelSelection: initialSelection,
           })
           .pipe(withOwnerSelectionIngress);
-        const sequence = yield* sink.latestSequence({ threadId });
-        const effects = yield* countEffects(sql, threadId);
-        const error = yield* orchestrator
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const started = yield* observeRun(threadId, 2, "running");
+        yield* orchestrator
           .dispatch({
             ...messageCommand(threadId, "claude:unchanged-restart"),
             deliveryIntent: "restart",
           })
-          .pipe(withOwnerSelectionIngress, Effect.flip);
-        assert.instanceOf(error, Orchestrator.OrchestratorDispatchError);
-        assert.nestedPropertyVal(error, "cause.capability", "interrupt_restart_steering");
-        assert.equal(yield* sink.latestSequence({ threadId }), sequence);
-        assert.equal(yield* countEffects(sql, threadId), effects);
-        assert.lengthOf((yield* Ref.get(state)).started, 1);
-        assert.lengthOf((yield* Ref.get(state)).interrupted ?? [], 0);
+          .pipe(withOwnerSelectionIngress);
+        yield* Fiber.join(started);
+        yield* worker.drain();
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        const invoked = yield* Ref.get(state);
+        assert.deepEqual(after.thread.modelSelection, initialSelection);
+        assert.equal(after.runs[0]?.id, before.runs[0]?.id);
+        assert.equal(after.runs[0]?.activeAttemptId, before.runs[0]?.activeAttemptId);
+        assert.equal(after.runs[0]?.status, "interrupted");
+        assert.equal(after.runs[1]?.status, "running");
+        assert.lengthOf(after.attempts, 2);
+        assert.lengthOf(invoked.started, 2);
+        assert.lengthOf(invoked.interrupted ?? [], 1);
         assert.lengthOf((yield* Ref.get(state)).steered ?? [], 0);
       }),
     undefined,

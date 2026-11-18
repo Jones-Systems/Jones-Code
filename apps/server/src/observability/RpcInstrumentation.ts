@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import * as References from "effect/References";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
+import * as RpcSchema from "effect/rpc/RpcSchema";
 
 import { rpcRequestDuration, rpcRequestsTotal, withMetrics } from "./Metrics.ts";
 
@@ -294,6 +295,8 @@ export const rpcInstrumentationLayer = Layer.succeed(RpcInstrumentation)((effect
             ...DEFAULT_RPC_SPAN_ATTRIBUTES,
             "rpc.method": method,
             "rpc.aggregate": RPC_AGGREGATES[method as WsRpcMethod],
+            // Streaming spans last for the subscription. Trace queries can exclude them from latency.
+            "rpc.stream": RpcSchema.isStreamSchema(rpc.successSchema),
           },
         }),
       ),

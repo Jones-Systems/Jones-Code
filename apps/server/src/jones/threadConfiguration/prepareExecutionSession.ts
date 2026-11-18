@@ -5,6 +5,7 @@ import {
 } from "../providerRetirement/admissionWait.ts";
 import {
   EventId,
+  OrchestrationV2ProviderRef,
   ProviderSessionId,
   RunId,
   ProviderRuntimeBinding,
@@ -21,6 +22,7 @@ import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
 import { runtimeBinding } from "@t3tools/provider-core/server/ProviderAdapter";
+import { executionProjection } from "./executionSelection.ts";
 
 export class ExecutionSessionRevalidationError extends Schema.TaggedError<ExecutionSessionRevalidationError>()(
   "ExecutionSessionRevalidationError",
@@ -28,6 +30,15 @@ export class ExecutionSessionRevalidationError extends Schema.TaggedError<Execut
 ) {
   override get message(): string {
     return "The run attempt or provider selection changed during retirement.";
+  }
+}
+
+export class WriterRetirementProofMissingError extends Schema.TaggedError<WriterRetirementProofMissingError>()(
+  "WriterRetirementProofMissingError",
+  { runId: RunId },
+) {
+  override get message(): string {
+    return "Restart has no completed original writer retirement.";
   }
 }
 
@@ -68,6 +79,7 @@ export class ExecutionSessionRevalidationUnavailableError extends Schema.TaggedE
     return "Provider start could not read the current run state after retirement. No provider work was started.";
   }
 }
+const sameNativeRef = Schema.toEquivalence(OrchestrationV2ProviderRef);
 const isExecutionSessionRevalidationUnavailable = Schema.is(
   ExecutionSessionRevalidationUnavailableError,
 );
@@ -120,7 +132,15 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
   const transitions = yield* Switch.ProviderSwitchServiceV2;
   const sessions = yield* Sessions.ProviderSessionManagerV2;
   const sink = yield* Sink.EventSinkV2;
-  const plan = yield* transitions.plan({ projection, targetModelSelection: run.modelSelection });
+  // The starting run holds the requested selection. Plan from the conversation it will replace.
+  const priorProjection = {
+    ...projection,
+    runs: projection.runs.filter((candidate) => candidate.id !== run.id),
+  };
+  const plan = yield* transitions.plan({
+    projection: priorProjection,
+    targetModelSelection: run.modelSelection,
+  });
   if (run.activeAttemptId === null)
     return yield* new ExecutionSessionRevalidationError({
       runId: run.id,
@@ -222,11 +242,25 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     events.length === 0 &&
     !stoppedRuntime &&
     !retiredWriter
-  )
-    return yield* new ExecutionSessionRevalidationError({
-      runId: run.id,
-      cause: "Restart has no completed original writer retirement.",
-    });
+  ) {
+    // Immediate account transfer may already have detached the source in its own
+    // effect. Its exact retired binding still owns the proof for this conversation.
+    const priorThreadId = executionProjection(priorProjection).thread.activeProviderThreadId;
+    const priorWriter = projection.providerThreads.find(
+      (candidate) =>
+        candidate.id === priorThreadId &&
+        candidate.appThreadId === run.threadId &&
+        candidate.ownerNodeId === null &&
+        candidate.driver === provider.driver &&
+        candidate.providerInstanceId !== provider.providerInstanceId &&
+        candidate.nativeThreadRef !== null &&
+        provider.nativeThreadRef !== null &&
+        sameNativeRef(candidate.nativeThreadRef, provider.nativeThreadRef),
+    );
+    if (priorWriter === undefined)
+      return yield* new WriterRetirementProofMissingError({ runId: run.id });
+    yield* awaitWriterRetirement(sessions, run.id, priorWriter);
+  }
   const revalidation = yield* Effect.result(revalidateReplacement);
   if (revalidation._tag === "Failure") {
     // Only a completed detach may be recorded here. The manager's retired-writer fence

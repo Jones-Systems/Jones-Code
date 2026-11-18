@@ -174,6 +174,7 @@ describe("sidebar render isolation", () => {
     document.body.append(terminal);
     stack.defer(() => terminal.remove());
     stack.defer(() => useTerminalUiStateStore.getState().setTerminalOpen(routeThreadRef, false));
+    using _timers = fakeTimers({ now: new Date("2026-01-01T00:00:00.000Z") });
     await using screen = await render(
       <SidebarProvider>
         <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
@@ -182,13 +183,25 @@ describe("sidebar render isolation", () => {
     await expect.element(screen.getByText("Thread 4").first()).toBeInTheDocument();
     const rowRenders = () => vi.mocked(SortableThreadRow).mock.calls.length;
 
-    using _timers = fakeTimers();
     const modifier = isMacPlatform(navigator.platform) ? "Meta" : "Control";
+    // Flush modifier-driven React updates before reading the row render counts.
+    const sendModifier = (type: "keydown" | "keyup") =>
+      act(() => {
+        (document.activeElement ?? document.body).dispatchEvent(
+          new KeyboardEvent(type, {
+            key: modifier,
+            bubbles: true,
+            metaKey: type === "keydown" && modifier === "Meta",
+            ctrlKey: type === "keydown" && modifier === "Control",
+          }),
+        );
+      });
+    await act(() => {});
     const beforeShortcut = rowRenders();
-    await userEvent.keyboard(`{${modifier}>}`);
+    await sendModifier("keydown");
     await act(() => useTerminalUiStateStore.getState().setTerminalOpen(routeThreadRef, true));
     await act(() => terminalInput.focus());
-    await userEvent.keyboard(`{/${modifier}}`);
+    await sendModifier("keyup");
     await act(() => terminalInput.blur());
     expect(
       rowRenders() - beforeShortcut,
@@ -202,11 +215,11 @@ describe("sidebar render isolation", () => {
         .map(([props]) => props.jumpLabel)
         .filter((label) => label !== null);
     const beforeHold = rowRenders();
-    await userEvent.keyboard(`{${modifier}>}`);
+    await sendModifier("keydown");
     await act(() => vi.advanceTimersByTime(THREAD_JUMP_HINT_SHOW_DELAY_MS));
     expect(jumpLabelsSince(beforeHold), "holding Mod showed no jump hints").toHaveLength(2);
     const beforeRelease = rowRenders();
-    await userEvent.keyboard(`{/${modifier}}`);
+    await sendModifier("keyup");
     expect(rowRenders()).toBeGreaterThan(beforeRelease);
     expect(jumpLabelsSince(beforeRelease)).toEqual([]);
   });

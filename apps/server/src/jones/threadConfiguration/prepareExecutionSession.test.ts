@@ -23,11 +23,13 @@ import * as SupersededTerminalTrace from "../orchestration/SupersededTerminalTra
 import {
   ExecutionSessionRevalidationError,
   ExecutionSessionRevalidationUnavailableError,
+  WriterRetirementProofMissingError,
   prepareExecutionSession,
 } from "./prepareExecutionSession.ts";
 
 const isRevalidationUnavailable = Schema.is(ExecutionSessionRevalidationUnavailableError);
 const isRevalidationError = Schema.is(ExecutionSessionRevalidationError);
+const isRetirementProofMissing = Schema.is(WriterRetirementProofMissingError);
 const isEventSinkWriteError = Schema.is(Sink.EventSinkWriteError);
 
 it.effect.each(["no-proof", "wrong-proof", "no-release"] as const)(
@@ -36,7 +38,9 @@ it.effect.each(["no-proof", "wrong-proof", "no-release"] as const)(
     Effect.gen(function* () {
       const fixture = makeFixture("restart_and_resume", fault);
       const error = yield* Effect.flip(fixture.start);
-      assert.isTrue(isRevalidationError(error));
+      assert.isTrue(
+        fault === "no-release" ? isRetirementProofMissing(error) : isRevalidationError(error),
+      );
       assert.deepEqual(fixture.order, fault === "no-release" ? [] : ["detach"]);
       assert.deepEqual(fixture.writes, []);
     }),
@@ -116,7 +120,11 @@ function makeFixture(
   },
 ) {
   const projection = {
-    thread: { id: ThreadId.make("retirement-thread") },
+    thread: {
+      id: ThreadId.make("retirement-thread"),
+      activeProviderThreadId: null,
+      modelSelection: { instanceId: ProviderInstanceId.make("target"), model: "synthetic" },
+    },
     runs: [
       {
         id: RunId.make("retirement-run"),

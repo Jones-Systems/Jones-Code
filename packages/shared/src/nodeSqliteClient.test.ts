@@ -1343,13 +1343,16 @@ it.effect.each([
 
           const failed = yield* withWorkers(workers, readConnection(sql));
           assert.deepEqual(failed, { count: 1, connection: ["writer"] });
+          yield* awaitLastWorkerRetirement();
           yield* sql`PRAGMA journal_mode = DELETE`;
           yield* TestClock.adjust("1 second");
-          yield* Effect.promise(() => workerExits.get(startedWorkers.at(-1)!)!);
+          // The retry handles its startup result on a separate fiber from the worker exit.
+          assert.deepEqual(yield* Queue.takeN(lines, logged.length), logged);
+          yield* awaitLastWorkerRetirement();
           yield* TestClock.adjust("1 hour");
           assert.deepEqual(yield* readConnection(sql), { count: 1, connection: ["writer"] });
           assert.equal(startedWorkers.length, startedBefore + starts);
-          assert.deepEqual(yield* Queue.clear(lines), logged);
+          assert.deepEqual(yield* Queue.clear(lines), []);
         }),
       ),
     ),

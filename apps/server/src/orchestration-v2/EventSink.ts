@@ -73,6 +73,7 @@ import {
 } from "../jones/orchestration/QueueHoldStore.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
 import * as StartRefusal from "../jones/startRefusal/Store.ts";
+import { readUnreleasedStartBirth } from "../jones/provider/UnsentStartProof.ts";
 import * as RemoteSendReceipts from "../jones/orchestration/RemoteSendReceiptStore.ts";
 import {
   recordSelfSettlementProjectRemaining,
@@ -95,6 +96,7 @@ import { identityForRequest } from "@t3tools/provider-core/server/ProviderAdapte
 import {
   CommandId,
   type OrchestrationV2Run,
+  type OrchestrationV2RunAttempt,
   type OrchestrationV2ProviderThread,
   OrchestrationV2ProviderRef,
   type ProviderRuntimeEvidenceCapture,
@@ -535,6 +537,10 @@ export interface EventSinkV2Shape {
       } | null
     >;
   }) => Effect.Effect<boolean, EventSinkV2Error>;
+  readonly readUnreleasedStartBirth?: (
+    run: OrchestrationV2Run,
+    attempt: OrchestrationV2RunAttempt,
+  ) => Effect.Effect<boolean, EventSinkV2Error>;
   readonly readByCommandId: (input: {
     readonly commandId: CommandId;
   }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
@@ -2812,6 +2818,10 @@ const layerBase: Layer.Layer<
         legacyStorage.readLegacyPreflight(commandId).pipe(
           Effect.map(Option.fromUndefinedOr),
           Effect.mapError((cause) => new EventSinkWriteError({ commandId, eventCount: 0, cause })),
+        ),
+      readUnreleasedStartBirth: (run, attempt) =>
+        readUnreleasedStartBirth(sql, run, attempt).pipe(
+          Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })),
         ),
       readLifecycleByCommandId: ({ commandId }) =>
         Stream.fromEffect(legacyStorage.readLifecycleByCommandId(commandId)).pipe(

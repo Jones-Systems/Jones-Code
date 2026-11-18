@@ -9,7 +9,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-import { makeUnsentStartProof } from "./UnsentStartProof.ts";
+import { makeUnreleasedStartProof, makeUnsentStartProof } from "./UnsentStartProof.ts";
 
 type Ports = Parameters<typeof makeUnsentStartProof>[0];
 const threadId = ThreadId.make("unsent-original");
@@ -132,4 +132,34 @@ it.effect("certifies a queued promotion only with its accepted zero-claim start"
       ]),
     );
   }),
+);
+
+it.effect(
+  "certifies unreleased admission only with retained birth evidence and no start effect",
+  () =>
+    Effect.gen(function* () {
+      const preparing = { ...run, status: "preparing", completedAt: null } as const;
+      const queued = { ...preparing, status: "queued" } as const;
+      const pending = { ...attempt, status: "pending", completedAt: null } as const;
+      const absent = fixture({ missing: true });
+      const provedBirth = () => Effect.succeed(true);
+      const prove = makeUnreleasedStartProof({ ...absent, readBirth: provedBirth });
+
+      assert.isTrue(yield* prove(preparing, [pending]));
+      assert.isTrue(yield* prove(queued, [pending]));
+      assert.isFalse(yield* prove({ ...preparing, status: "starting" }, [pending]));
+      assert.isFalse(yield* prove(preparing, [{ ...pending, attemptOrdinal: 2 }]));
+      const noBirth = makeUnreleasedStartProof({
+        ...absent,
+        readBirth: () => Effect.succeed(false),
+      });
+      assert.isFalse(yield* noBirth(preparing, [pending]));
+      const withStart = makeUnreleasedStartProof({ ...fixture(), readBirth: provedBirth });
+      assert.isFalse(yield* withStart(preparing, [pending]));
+      const crossed = makeUnreleasedStartProof({
+        ...fixture({ missing: true, crossed: true }),
+        readBirth: provedBirth,
+      });
+      assert.isFalse(yield* crossed(preparing, [pending]));
+    }),
 );
