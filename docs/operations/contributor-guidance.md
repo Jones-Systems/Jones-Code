@@ -522,6 +522,8 @@ also start it automatically. The cold job saves per-file results for that
 run and attempt. The warm job restores them on a separate Linux runner,
 re-executes one hit without caching, and compares every file and case against
 the fresh shard report. The transfer-budget test runs fresh in all three.
+If the selected shard includes the system service control test, that test also
+runs fresh because Vite's cache tracer would alter the environment it checks.
 The warm job summary records the comparison and elapsed times. The pilot
 result archive is scoped to the experiment. The normal server matrix still
 qualifies every selected test fresh and supplies the shard weight measurements.

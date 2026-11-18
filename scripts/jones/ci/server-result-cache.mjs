@@ -14,6 +14,11 @@ import {
 const root = NodePath.resolve(import.meta.dirname, "../../..");
 const server = NodePath.join(root, "apps/server");
 const transferTest = "integration/transferBudgetV2.integration.test.ts";
+const alwaysFresh = [
+  transferTest,
+  // Automatic input tracing injects variables into the worker environment.
+  "src/jones/hostService/systemServiceControl.test.ts",
+];
 const schema = "jones.server-result-cache-pilot/v1";
 const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 const readJson = (file) => JSON.parse(NodeFS.readFileSync(file, "utf8"));
@@ -150,7 +155,7 @@ function measure(phase, env) {
       run: NodeCrypto.randomUUID(),
       files: files.map((file) => "apps/server/" + file),
       groupSize: 1,
-      uncached: ["apps/server/" + transferTest],
+      uncached: alwaysFresh.map((file) => "apps/server/" + file),
       reportResults: true,
     };
     const taskEnv = {
@@ -180,7 +185,7 @@ function measure(phase, env) {
       const hit = observed.result.CacheHit !== undefined;
       if (hit) {
         if (
-          file === transferTest ||
+          alwaysFresh.includes(file) ||
           observed.result.CacheHit.source !== "Local" ||
           producer?.files[file]?.reportSha256 !== record.reportSha256
         ) {

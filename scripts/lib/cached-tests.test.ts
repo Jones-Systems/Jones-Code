@@ -198,12 +198,24 @@ describe("cachedTestTasks", () => {
       await NodeFSP.writeFile(NodePath.join(pkg, "fixture.txt"), "hello again");
       await NodeFSP.writeFile(
         NodePath.join(pkg, "b.test.ts"),
-        'import {test} from "vite-plus/test";import {writeFileSync} from "node:fs";test("report",()=>writeFileSync("report.json","{}"));',
+        `import {test} from "vite-plus/test";
+import {writeFileSync} from "node:fs";
+import {execFileSync} from "node:child_process";
+test("report", () => {
+  const observed = execFileSync(process.execPath, ["-p", "JSON.stringify(process.env)"], {
+    env: {},
+    encoding: "utf8",
+  });
+  const childEnv = JSON.parse(observed);
+  const tracingVars = ["FSPY_PAYLOAD", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"]
+    .filter((key) => key in childEnv);
+  writeFileSync("report.json", JSON.stringify(tracingVars));
+});`,
       );
       expect(await run(undefined, [b])).toBe(0);
       await NodeFSP.unlink(NodePath.join(pkg, "report.json"));
       expect(await run(undefined, [b])).toBe(0);
-      expect(await NodeFSP.readFile(NodePath.join(pkg, "report.json"), "utf8")).toBe("{}");
+      expect(await NodeFSP.readFile(NodePath.join(pkg, "report.json"), "utf8")).toBe("[]");
     } finally {
       await NodeFSP.rm(directory, { recursive: true, force: true });
     }
