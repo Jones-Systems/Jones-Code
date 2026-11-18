@@ -63,7 +63,7 @@ import {
   formatPersonalThreadCount,
   type PersonalThreadSummary,
 } from "../../jones/workstreams/personalPresentation";
-import { personalWorkstreamRailColor } from "../../jones/workstreams/personalRail";
+import { personalWorkstreamGroupColors } from "../../jones/workstreams/personalRail";
 import { PersonalWorkstreamTitleEditor } from "../../jones/workstreams/PersonalWorkstreamTitleEditor";
 import { PersonalWorkstreamsHeader } from "../../jones/workstreams/PersonalWorkstreamsHeader";
 
@@ -176,6 +176,7 @@ function Group({
   onDeleteRequested: () => void;
 }) {
   const state = useAtomValue(controller.state);
+  const { rail, tint } = personalWorkstreamGroupColors(item);
   const [collapsed, setCollapsed] = useLocalStorage(
     personalGroupCollapsedKey(item.id),
     false,
@@ -249,11 +250,9 @@ function Group({
       data-thread-drop-target={dropTarget ? "" : undefined}
       className={`min-w-0 rounded-lg border-l-2 border-sidebar-border/70 ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
       style={{
-        borderLeftColor: personalWorkstreamRailColor(item),
+        borderLeftColor: rail,
         backgroundColor:
-          dropTarget && collapsed
-            ? "color-mix(in oklab, var(--primary) 3.25%, transparent)"
-            : undefined,
+          dropTarget && collapsed ? "color-mix(in oklab, var(--primary) 3.25%, transparent)" : tint,
       }}
     >
       <div
