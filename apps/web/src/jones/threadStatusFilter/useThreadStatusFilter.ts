@@ -103,6 +103,7 @@ export function useThreadStatusSelection(
     topLevelThreads.some(
       (thread) =>
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === activeThreadKey &&
+        thread.settledOverride !== "settled" &&
         threadIsInActivityWindow(thread, activityWindow, observedNowMs) &&
         !effectiveSnoozed(thread, { now: new Date(observedNowMs).toISOString() }),
     );

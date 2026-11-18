@@ -4,12 +4,16 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeDiagnosticsChannel from "node:diagnostics_channel";
+import * as NodePath from "node:path";
 import { readerPoolOptions } from "./persistenceOptions.ts";
 import { backgroundRead, interactiveRead } from "./readClassification.ts";
 import type { SqliteReaderObservation } from "@t3tools/shared/jones/sqliteReaderContracts";
 import { observeSafely } from "./observations.ts";
 import type { DiagnosticCpu, DiagnosticEvent, DiagnosticSink } from "./diagnosticObservation.ts";
 import type { ComputeObservation } from "./observations.ts";
+
+const writerTiming = NodeDiagnosticsChannel.channel("jones:server-parallelism:writer-timing");
 
 export const percentiles = (values: readonly number[]) => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -85,6 +89,8 @@ export async function combinedReaderWriterWindow(
   const observations: SqliteReaderObservation[] = [];
   const writerMs: number[] = [],
     controlMs: number[] = [];
+  const traceWriter = writerTiming.hasSubscribers;
+  const databaseName = traceWriter ? NodePath.basename(filename) : undefined;
   emit("database-begin");
   const database = NodeSqliteClient.layer({
     filename,
@@ -140,11 +146,13 @@ export async function combinedReaderWriterWindow(
               (_, index) =>
                 Effect.gen(function* () {
                   const start = performance.now();
+                  if (traceWriter) writerTiming.publish({ databaseName, index, start });
                   emit("writer-begin", index, undefined, start);
                   yield* sql.withTransaction(
                     sql`INSERT INTO synthetic_load(value) VALUES (${String(index)})`,
                   );
                   const end = performance.now();
+                  if (traceWriter) writerTiming.publish({ databaseName, index, end });
                   writerMs.push(end - start);
                   emit("writer-end", index, undefined, end);
                   yield* Effect.yieldNow;

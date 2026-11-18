@@ -1241,7 +1241,7 @@
       ],
       "commands": [
         "vp run --filter @t3tools/ssh typecheck",
-        "vp lint packages/ssh/src/tunnel.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
+        "vp lint packages/ssh/src/tunnel.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/launcherTestHarness.ts packages/ssh/src/jones/persistentRemoteLifecycle.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
         "vp test run packages/ssh/src/jones/persistentRemoteLifecycle.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/hostRuntime.test.ts"
       ]
     },

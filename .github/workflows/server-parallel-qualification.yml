@@ -14,6 +14,7 @@ on:
             observer-control,
             observer-cadence,
             observer-residency,
+            writer-timing,
           ]
         default: source-evidence
       observer_full_artifact:
@@ -81,7 +82,7 @@ jobs:
         include: >-
           ${{ fromJSON(
             github.event.inputs.scope == 'observer-cadence' && '[{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]' ||
-            (github.event.inputs.scope == 'observer-diagnostic' || github.event.inputs.scope == 'observer-control' || github.event.inputs.scope == 'observer-residency') && '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"}]' ||
+            (github.event.inputs.scope == 'observer-diagnostic' || github.event.inputs.scope == 'observer-control' || github.event.inputs.scope == 'observer-residency' || github.event.inputs.scope == 'writer-timing') && '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"}]' ||
             '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"},{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]'
           ) }}
     defaults:
@@ -267,10 +268,6 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
-      - name: Ensure pinned Electron Node runtime
-        if: env.JONES_SP_SCOPE == 'full'
-        run: vp run --filter @t3tools/desktop ensure:electron
-
       - name: Build the macOS native pool census
         if: matrix.os == 'macos' && (env.JONES_SP_SCOPE == 'source-evidence' || env.JONES_SP_SCOPE == 'full')
         run: |
@@ -338,6 +335,12 @@ jobs:
           test "${#archives[@]}" -eq 1
           mkdir "$TMPDIR/installed"
           tar -xzf "${archives[0]}" -C "$TMPDIR/installed"
+
+      - name: Ensure pinned Electron Node runtime
+        # Only the Electron measurement needs this runtime. Keep its download
+        # and extracted application out of the build and archive storage gates.
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && env.JONES_SP_SCOPE == 'full' }}
+        run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Revalidate original workload and regenerated manifest before control
         id: control_preflight
