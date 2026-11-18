@@ -3270,9 +3270,12 @@
     },
     {
       "id": "jones-markdown-table-interactions",
-      "tests": ["apps/web/src/components/chat/MarkdownTable.browser.test.tsx"],
+      "tests": [
+        "apps/web/src/components/chat/MarkdownTable.browser.test.tsx",
+        "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx"
+      ],
       "commands": [
-        "vp test run --root apps/web --config vite.config.ts --project browser src/components/chat/MarkdownTable.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "cd apps/web && vp test run --project browser src/components/chat/MarkdownTable.browser.test.tsx src/components/chat/MessagesTimeline.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

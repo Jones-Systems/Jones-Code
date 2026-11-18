@@ -228,6 +228,66 @@ function text() {
   return container.textContent ?? "";
 }
 
+it("fits expanded assistant tables to their content within the conversation row", async () => {
+  const { innerWidth, innerHeight } = window;
+  onTestFinished(() => page.viewport(innerWidth, innerHeight));
+  await page.viewport(1000, 760);
+  await using screen = await renderTimeline([
+    message(
+      [
+        "Storage findings",
+        "",
+        "| Target | Observed allocation | Assessment | Recovery |",
+        "| --- | --- | --- | --- |",
+        "| Python dependencies scoped to the dev environment | Disk allocation on the workspace volume | Project dependencies can be rebuilt from the lockfile | Retain the lockfile and documented install steps |",
+        "",
+        "| Small | Table |",
+        "| --- | --- |",
+        "| One | Two |",
+      ].join("\n"),
+      { role: "assistant" },
+    ),
+  ]);
+  const [wide, small] = await vi.waitFor(() => {
+    const tables = screen.container.querySelectorAll<HTMLElement>(".chat-markdown-table-container");
+    expect(tables).toHaveLength(2);
+    return [tables.item(0), tables.item(1)] as const;
+  });
+  const lane = wide.closest(".chat-content-lane")!.getBoundingClientRect();
+  const frame = wide.closest(".messages-timeline-row-frame")!.getBoundingClientRect();
+  const expanded = wide.getBoundingClientRect();
+  expect(expanded.left).toBeLessThan(lane.left);
+  expect(expanded.right).toBeGreaterThan(lane.right);
+  expect(expanded.left).toBeGreaterThanOrEqual(frame.left);
+  expect(expanded.right).toBeLessThanOrEqual(frame.right);
+  expect(small.getBoundingClientRect().width).toBeLessThan(lane.width);
+
+  const header = wide.querySelector("thead")!.getBoundingClientRect();
+  const headerY = header.top + header.height / 2;
+  expect(wide.contains(document.elementFromPoint((expanded.left + lane.left) / 2, headerY))).toBe(
+    true,
+  );
+  expect(wide.contains(document.elementFromPoint((expanded.right + lane.right) / 2, headerY))).toBe(
+    true,
+  );
+
+  const collapse = screen.button("Collapse table");
+  const buttonRect = collapse.getBoundingClientRect();
+  expect(
+    collapse.contains(
+      document.elementFromPoint(
+        buttonRect.left + buttonRect.width / 2,
+        buttonRect.top + buttonRect.height / 2,
+      ),
+    ),
+  ).toBe(true);
+
+  await click(collapse);
+  expect(wide.getBoundingClientRect().width).toBeLessThanOrEqual(lane.width);
+  await click(screen.button("Expand table"));
+  expect(wide.getBoundingClientRect().width).toBeCloseTo(expanded.width, 0);
+});
+
 it("distinguishes a pending send, accepted startup, and confirmed provider work", async () => {
   const props = {
     ...baseProps(),

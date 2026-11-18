@@ -1,13 +1,14 @@
-/* Size top-level expanded tables to their content, capped by the conversation
-   pane. The row follows ChatCanvas's lane insets; surrounding text retains the
-   reading width, and nested tables stay inside their markdown parent. */
-[data-timeline-root] .chat-markdown > .chat-markdown-table-container[data-expanded="true"] {
-  position: relative;
-  left: 50%;
-  width: max-content;
-  max-width: calc(100cqw - 0.5rem);
-  margin-inline: 0;
-  transform: translateX(-50%);
+/* The conversation row clips at its outer edges. Expanded tables can use
+   that width while prose and nested Markdown keep their own reading widths. */
+@container chat-table-row (min-width: 0px) {
+  [data-timeline-root] .chat-markdown > .chat-markdown-table-container[data-expanded="true"] {
+    position: relative;
+    left: 50%;
+    width: max-content;
+    max-width: calc(100cqw - 0.5rem);
+    margin-inline: 0;
+    transform: translateX(-50%);
+  }
 }
 
 .chat-markdown [data-markdown-table-scroll] {
@@ -31,20 +32,4 @@
 .chat-markdown .chat-markdown-table-container[data-expanded="true"] td {
   max-width: 24rem;
   overflow-wrap: anywhere;
-}
-
-/* Fit expanded tables to wide timeline lanes; narrow lanes keep horizontal
-   scrolling so prose columns remain readable. */
-@container chat-lane (min-width: 36rem) {
-  .chat-markdown .chat-markdown-table-container[data-expanded="true"] table {
-    min-width: 0;
-  }
-
-  .chat-markdown .chat-markdown-table-container[data-expanded="true"] th {
-    white-space: normal;
-  }
-
-  .chat-markdown .chat-markdown-table-container[data-expanded="true"] td {
-    overflow-wrap: break-word;
-  }
 }
