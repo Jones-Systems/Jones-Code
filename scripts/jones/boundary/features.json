@@ -816,7 +816,7 @@
         "packages/ssh/src/tunnel.test.ts",
         "packages/ssh/src/jones/hostRuntime.test.ts"
       ],
-      "scope": "SSH disconnect and client shutdown preserve host-owned remote servers. Shell policy is isolated under Jones ownership; manager lifecycle tests retain their shared harness."
+      "scope": "SSH disconnect and client shutdown preserve host-owned remote servers. Shell policy is isolated under Jones ownership; manager lifecycle tests retain their shared harness. The upstream launcher fixture has a separate wall-clock budget for fresh archive helper processes while keeping the same simulated clock and server-reuse assertions."
     },
     {
       "id": "native-organization-metadata",

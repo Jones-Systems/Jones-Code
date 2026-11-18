@@ -64,7 +64,7 @@ function fixtureGit(home: string, transform: (input: GitInput) => GitInput = (x)
                     ? reject(error)
                     : resolve({ exitCode: error ? Number(error.code) : 0, stdout, stderr }),
               );
-              child.stdin?.end(input.stdin ?? "");
+              child.stdin?.end(input.stdin);
             },
           );
         },
