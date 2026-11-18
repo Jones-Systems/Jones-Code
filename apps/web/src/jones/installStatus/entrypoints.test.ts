@@ -7,6 +7,13 @@ import type {
 } from "@t3tools/contracts/jones/installPlan";
 import type { JonesRecoveryPreflight } from "@t3tools/contracts/jones/jonesOperations";
 import { startPlan } from "@t3tools/client-runtime/jones/install-plan";
+import type { JonesUpdateObservation } from "@t3tools/client-runtime/jones/updates";
+import {
+  describeUpdateEverything,
+  updateEverythingRowHasWork,
+  type UpdateEverythingMachine,
+} from "../../components/sidebar/updateEverything.logic";
+import { describeJonesBulkTargets } from "./bulkUpdates";
 import {
   routeInstallStatusPill,
   routeLaptopDownload,
@@ -475,5 +482,99 @@ describe("install entrypoint routing", () => {
     const result = partitionUpdateEverything(machines, (machine) => machine.jones);
     expect(result.jones.map((m) => m.label)).toEqual(["VPS", "Mini", "Desktop"]);
     expect(result.other.map((m) => m.label)).toEqual(["npm"]);
+  });
+});
+
+describe("Jones machine update counts", () => {
+  const laptop = { environmentId, label: "Laptop" };
+  const mini = peer("Mac Mini");
+  const vps = peer("VPS");
+  const testServer = peer("Test Server");
+  const peers = [mini, vps, testServer];
+  const offered = { source, version: "0.1.9-preview.20261118.120.1" };
+  const linuxVersion = "0.1.9-preview.20261118.121.1";
+
+  function peer(label: string): UpdateEverythingMachine {
+    return {
+      environmentId: EnvironmentId.make(label),
+      label,
+      connected: true,
+      hostedByThisApp: false,
+      canMaintain: true,
+      serverConfig: null,
+      updateState: { status: "idle" },
+    };
+  }
+
+  function running(sha: string, version: string): JonesUpdateObservation {
+    return {
+      freshness: "fresh",
+      state: {
+        phase: "no-new",
+        source: "jones-actions",
+        channel: "jones-main",
+        capability: { check: true, download: false, install: false },
+        currentVersion: version,
+        installedSource: { repository: target.repository, sha, tree: target.sourceTree },
+      },
+    };
+  }
+
+  function describeReview(machines: ReturnType<typeof describeJonesBulkTargets>["machines"]) {
+    return describeUpdateEverything({
+      localVersion: null,
+      localMachines: [],
+      jonesMachines: machines,
+      servers: [],
+      providerMachines: [],
+      skipped: [],
+    });
+  }
+
+  it("counts Laptop once and counts each peer that needs the candidate source", () => {
+    const formerSource = "c".repeat(40);
+    const observations = new Map(
+      peers.map((machine) => [machine.environmentId, running(formerSource, offered.version)]),
+    );
+    const { machines, hasPeerUpdates } = describeJonesBulkTargets(
+      peers,
+      observations,
+      offered,
+      laptop,
+    );
+    const { summary, rows } = describeReview(machines);
+    expect(hasPeerUpdates).toBe(true);
+    expect(summary).toBe("Update 4 Jones machines");
+    expect(rows.filter(updateEverythingRowHasWork).map((row) => row.label)).toEqual([
+      "Laptop",
+      "Mac Mini",
+      "VPS",
+      "Test Server",
+    ]);
+    expect(rows[0]?.jonesHandoffNotice).toBe("Install status on Laptop; review before installing");
+  });
+
+  it("ignores different package versions for a matching source and skips unverified peers", () => {
+    const observations = new Map([
+      [mini.environmentId, running(source, offered.version)],
+      [vps.environmentId, running(source, linuxVersion)],
+      [testServer.environmentId, running("c".repeat(40), linuxVersion)],
+    ]);
+    const { machines, hasPeerUpdates } = describeJonesBulkTargets(
+      [mini, vps, { ...testServer, connected: false }],
+      observations,
+      offered,
+      laptop,
+    );
+    const { summary, rows } = describeReview(machines);
+    expect(hasPeerUpdates).toBe(false);
+    expect(summary).toBe("Update 1 Jones machine");
+    expect(rows.filter(updateEverythingRowHasWork).map((row) => row.label)).toEqual(["Laptop"]);
+    expect(rows.map((row) => row.skipped)).toEqual([
+      null,
+      "Already on selected build",
+      "Already on selected build",
+      "Couldn’t verify running build",
+    ]);
   });
 });

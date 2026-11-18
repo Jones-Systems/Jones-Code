@@ -467,6 +467,13 @@
       ]
     },
     {
+      "id": "macos-dependency-cache",
+      "tests": ["scripts/jones/ci/macos-dependency-cache.node-test.mjs"],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/ci/macos-dependency-cache.node-test.mjs"
+      ]
+    },
+    {
       "id": "jones-server-result-cache",
       "tests": [
         "scripts/jones/ci/server-result-cache.node-test.mjs",
@@ -3315,6 +3322,7 @@
         "apps/web/src/components/ChatMarkdown.browser.test.tsx",
         "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx",
         "apps/web/src/components/ThreadTerminalDrawer.test.ts",
+        "apps/web/src/components/ThreadTerminalDrawer.browser.test.tsx",
         "apps/web/src/state/terminalSessions.test.ts",
         "apps/server/src/jones/terminal/ShellIdleExpiry.test.ts",
         "apps/server/src/terminal/Manager.test.ts",

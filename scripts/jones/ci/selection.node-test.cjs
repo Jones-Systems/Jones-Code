@@ -195,6 +195,24 @@ test("an exact GitHub comparison can opt the cache pilot in while the required m
   }
 });
 
+test("cache reuse is limited to exact same-repository ordinary PR diffs", () => {
+  const repo = event.repository;
+  const pr = { ...event.pull_request, head: { ...event.pull_request.head, repo } };
+  const evaluate = (candidate, metadata, paths) =>
+    changedPaths("pull_request", { ...event, pull_request: candidate }, (cmd) => {
+      if (cmd === "gh") return JSON.stringify(metadata);
+      if (paths === null) throw new Error("no exact diff");
+      return paths;
+    }).serverCacheEligible;
+  const paths = "apps/server/src/server.ts\0";
+  assert.equal(evaluate(pr, pr, paths), true);
+  const fork = { ...pr, head: { ...pr.head, repo: { full_name: "contributor/fork" } } };
+  assert.equal(evaluate(fork, fork, paths), false);
+  assert.notEqual(evaluate(pr, { ...pr, stack: {} }, paths), true);
+  assert.notEqual(evaluate(pr, { ...pr, head: { ...pr.head, sha: "c".repeat(40) } }, paths), true);
+  assert.notEqual(evaluate(pr, pr, null), true);
+});
+
 test("package execution accepts known selected names, and missing/malformed outputs run the full batch", () => {
   const available = packageBatch(packages);
   assert.deepEqual(selectPackages("[]", available), []);

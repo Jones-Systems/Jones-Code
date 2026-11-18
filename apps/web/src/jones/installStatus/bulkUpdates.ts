@@ -2,10 +2,45 @@ import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesUpdateProvenance } from "@t3tools/contracts/jones/jonesUpdates";
-import type { UpdateEverythingMachine } from "../../components/sidebar/updateEverything.logic";
+import type { JonesUpdateObservation } from "@t3tools/client-runtime/jones/updates";
+import { APP_SOURCE_SHA } from "../../branding";
+import type {
+  UpdateEverythingMachine,
+  UpdateEverythingPlan,
+} from "../../components/sidebar/updateEverything.logic";
 import { jonesUpdates } from "../updates/jonesUpdates";
 import { useInstallPlan } from "./useInstallPlan";
-import { handOffJonesTargets, partitionUpdateEverything, targetForDesktop } from "./entrypoints";
+import { handOffJonesTargets, partitionUpdateEverything } from "./entrypoints";
+
+export function describeJonesBulkTargets(
+  targets: readonly UpdateEverythingMachine[],
+  observations: ReadonlyMap<EnvironmentId, JonesUpdateObservation>,
+  target: { readonly source?: string | undefined; readonly version: string },
+  laptop: { readonly environmentId: EnvironmentId | null; readonly label: string } | undefined,
+) {
+  const machines: NonNullable<UpdateEverythingPlan["jonesMachines"]>[number][] = targets.map(
+    ({ environmentId, label, connected, serverConfig }) => {
+      const observation = observations.get(environmentId);
+      const state = observation?.freshness === "fresh" ? observation.state : null;
+      const installedSource =
+        state?.installedSource?.sha ?? serverConfig?.environment.jonesSource?.sha;
+      const installedVersion = state?.currentVersion ?? serverConfig?.environment.serverVersion;
+      const installed = target.source === undefined ? installedVersion : installedSource;
+      return {
+        environmentId,
+        label,
+        ...(connected && installed !== undefined
+          ? installed === (target.source ?? target.version)
+            ? { skipped: "Already on selected build" }
+            : {}
+          : { skipped: "Couldn’t verify running build" }),
+      };
+    },
+  );
+  const hasPeerUpdates = machines.some((machine) => machine.skipped === undefined);
+  if (laptop !== undefined) machines.unshift({ ...laptop, hostedByThisApp: true });
+  return { machines, hasPeerUpdates };
+}
 
 const bulkObservations = Atom.family((key: string) =>
   Atom.make((get) => {
@@ -19,6 +54,7 @@ export function useJonesBulkUpdates(
   machines: readonly UpdateEverythingMachine[],
   targetVersion: string,
   localVersion: string | null,
+  desktopTargetSource?: string,
 ) {
   const status = useInstallPlan();
   const observations = useAtomValue(
@@ -30,23 +66,36 @@ export function useJonesBulkUpdates(
       machine.serverConfig?.environment.jonesSource !== undefined ||
       observations.get(machine.environmentId)?.state?.source === "jones-actions",
   );
-  const targets = partition.jones.filter((m) => !m.hostedByThisApp);
-  const targetSource =
-    status.native?.current?.target.sourceSha ?? targetForDesktop(status.desktop)?.sourceSha;
+  const targets = partition.jones.filter((machine) => !machine.hostedByThisApp);
+  const laptop = machines.find((machine) => machine.hostedByThisApp);
+  const runningSource =
+    status.desktop?.jones?.installedSource?.sha ??
+    laptop?.serverConfig?.environment.jonesSource?.sha ??
+    APP_SOURCE_SHA;
+  const managesLocal =
+    typeof window !== "undefined" &&
+    window.desktopBridge?.installPlan !== undefined &&
+    localVersion !== null;
+  const localTarget = managesLocal ? desktopTargetSource : undefined;
+  const { machines: reviewMachines, hasPeerUpdates } = describeJonesBulkTargets(
+    targets,
+    observations,
+    {
+      source: status.native?.current?.target.sourceSha ?? localTarget ?? runningSource,
+      version: targetVersion,
+    },
+    localTarget !== undefined && localTarget !== runningSource
+      ? {
+          environmentId: laptop?.environmentId ?? status.native?.laptop.environmentId ?? null,
+          label: laptop?.label ?? "Laptop",
+        }
+      : undefined,
+  );
   return {
     other: partition.other,
-    targets,
-    managesLocal:
-      typeof window !== "undefined" &&
-      window.desktopBridge?.installPlan !== undefined &&
-      localVersion !== null,
-    hasUpdates: targets.some(
-      (machine) =>
-        machine.serverConfig?.environment.serverVersion !== targetVersion ||
-        (targetSource !== undefined &&
-          (observations.get(machine.environmentId)?.state?.installedSource?.sha ??
-            machine.serverConfig?.environment.jonesSource?.sha) !== targetSource),
-    ),
+    reviewMachines,
+    managesLocal,
+    hasUpdates: hasPeerUpdates,
     handOff: (reviewedBuild?: JonesUpdateProvenance) => {
       if (reviewedBuild !== undefined)
         return handOffJonesTargets(targets, undefined, reviewedBuild);

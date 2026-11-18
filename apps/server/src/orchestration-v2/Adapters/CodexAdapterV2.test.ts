@@ -3,6 +3,7 @@ import { RequiredNativeSession } from "../../jones/taskContinuation/requiredNati
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
 import { CODEX_START_ACK_TIMEOUT_MS } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
+import { CurrentStartedTurnContinuation } from "../../jones/provider/StartAdmission.ts";
 import { buildAppIdentityInstructions } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import { historyResponseItems, selectHistory } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
@@ -13396,6 +13397,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
 
     it.effect("keeps a /goal run open across the turns Codex continues on its own", () =>
       Effect.gen(function* () {
+        let startClaimSettled = false;
+        let revalidatedContinuation = false;
         const transcript = makeCodexReplayTranscript({
           scenario: "goal-continuation",
           entries: [
@@ -13446,9 +13449,44 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             }),
           ],
         });
-        const harness = yield* makeCodexReplayHarness(transcript);
-        yield* harness.runtime.startTurn(yield* goalTurnInput(harness, `/goal ${objective}`));
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          undefined,
+          undefined,
+          undefined,
+          (entry) =>
+            entry.label === "first turn done"
+              ? Effect.sync(() => {
+                  startClaimSettled = true;
+                })
+              : Effect.void,
+        );
+        const input = yield* goalTurnInput(harness, `/goal ${objective}`);
+        const generation = harness.providerThread.runtimeIdentity?.runtimeGeneration;
+        assert.isDefined(generation);
+        const binding = ProviderAdapter.runtimeBinding(harness.providerThread, generation!);
+        assert.isDefined(binding);
+        yield* harness.runtime.startTurn({
+          ...input,
+          revalidateStartAdmission: Effect.gen(function* () {
+            if (!startClaimSettled) return;
+            const continuation = yield* CurrentStartedTurnContinuation;
+            if (continuation === undefined) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                detail: "The original start claim has settled.",
+              });
+            }
+            assert.deepEqual(continuation, {
+              runId: input.runId,
+              attemptId: input.attemptId,
+              binding,
+            });
+            revalidatedContinuation = true;
+          }),
+        });
         yield* harness.firstTerminal;
+        assert.isTrue(revalidatedContinuation);
 
         const idAllocator = yield* IdAllocator.IdAllocatorV2;
         const providerTurnId = (nativeTurnId: string) =>

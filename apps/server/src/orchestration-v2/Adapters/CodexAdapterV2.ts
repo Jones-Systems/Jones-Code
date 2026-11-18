@@ -13,7 +13,7 @@ import { GoalNotificationNotDelivered } from "../../jones/goals/GoalNotification
 import * as CodexFailoverEvidence from "../../jones/codexFailover/CodexFailoverEvidence.ts";
 import { makeCodexFailoverNativeEvidence } from "../../jones/codexFailover/CodexFailoverNativeEvidence.ts";
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
-import { CurrentCapacityContinuation } from "../../jones/provider/StartAdmission.ts";
+import { CurrentStartedTurnContinuation } from "../../jones/provider/StartAdmission.ts";
 import { boundedSteer, verifyCodexProcessExit } from "../../jones/orchestration/LateSteer.ts";
 import {
   rootStartWaitMs,
@@ -6492,8 +6492,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           turnInput: ProviderAdapterV2TurnInput,
           producer: CodexRuntimeProducer,
         ) {
-          if (turnInput.nativeCreationGuard !== undefined) return false;
+          const binding = runtimeBinding(turnInput.providerThread, producer.generation);
+          if (turnInput.nativeCreationGuard !== undefined || binding === undefined) return false;
+          // Codex started this turn under an existing run. Its original start claim may
+          // already be settled, so revalidate that exact run, attempt, and native binding.
           const admitted = yield* (turnInput.revalidateStartAdmission ?? Effect.void).pipe(
+            Effect.provideService(CurrentStartedTurnContinuation, {
+              runId: turnInput.runId,
+              attemptId: turnInput.attemptId,
+              binding,
+            }),
             Effect.exit,
           );
           return (
@@ -8983,7 +8991,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               );
             const request = makeCapacityContinuationRequest(owner, failed);
             return sendCapacityTurn(request, request.state.retryOrdinal).pipe(
-              Effect.provideService(CurrentCapacityContinuation, {
+              Effect.provideService(CurrentStartedTurnContinuation, {
                 runId: failed.input.runId,
                 attemptId: failed.input.attemptId,
                 binding,

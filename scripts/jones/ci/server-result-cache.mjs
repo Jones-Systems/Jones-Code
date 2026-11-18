@@ -129,9 +129,73 @@ function runTasks(args, env) {
 
 function reportFor(task, file) {
   const bytes = NodeFS.readFileSync(NodePath.join(server, cachedTestReportPath(task)));
-  const cases = caseResults(JSON.parse(bytes), server);
+  const report = JSON.parse(bytes);
+  const cases = caseResults(report, server);
   if (cases.size !== 1 || !cases.has(file)) throw new Error("Wrong test module for " + file);
-  return { ...cases.get(file), reportSha256: digest(bytes) };
+  return { ...cases.get(file), reportSha256: digest(bytes), report };
+}
+
+function taskPlan(files, env, work) {
+  const request = {
+    run: NodeCrypto.randomUUID(),
+    files: files.map((file) => "apps/server/" + file),
+    groupSize: 1,
+    uncached: alwaysFresh.map((file) => "apps/server/" + file),
+    reportResults: true,
+  };
+  const taskEnv = {
+    ...env,
+    T3_CACHED_TESTS: JSON.stringify(request),
+    T3CODE_TRANSFER_BUDGET_REPORT_PATH: NodePath.join(work, "transfer.md"),
+    T3CODE_TRANSFER_BUDGET_RESULT_PATH: NodePath.join(work, "transfer.json"),
+  };
+  return { request, taskEnv };
+}
+
+function runWithReports(operation) {
+  const reportDir = NodePath.join(server, testResultDirectory);
+  NodeFS.mkdirSync(NodePath.dirname(reportDir), { recursive: true });
+  NodeFS.mkdirSync(reportDir);
+  try {
+    operation();
+  } finally {
+    NodeFS.rmSync(reportDir, { recursive: true, force: true });
+  }
+}
+
+function collectResults(files, request, taskEnv, verifyHit, onReport = () => {}) {
+  const config = cachedTestTasks(taskEnv.T3_CACHED_TESTS, root);
+  runTasks(["--concurrency-limit", "1", "test-cache"], taskEnv);
+  const summary = readRunSummary(taskEnv.VITE_CACHE_PATH, request.run);
+  if (!summary) throw new Error("Missing task summary for the current run");
+  const summaries = new Map(summary.tasks.map((task) => [task.task_name, task]));
+  if (summary.tasks.length !== summaries.size || summaries.size !== Object.keys(config).length) {
+    throw new Error("Task summary does not cover the planned tasks exactly once");
+  }
+  const records = new Map();
+  const hits = [];
+  for (const file of files) {
+    const task = cachedTestTaskName(["apps/server/" + file]);
+    const observed = summaries.get(task);
+    if (!observed || observed.command !== config[task]?.command) {
+      throw new Error("Task summary does not match the plan for " + file);
+    }
+    const { report, ...record } = reportFor(task, file);
+    const hit = observed.result.CacheHit !== undefined;
+    if (hit) {
+      if (
+        request.uncached.includes("apps/server/" + file) ||
+        observed.result.CacheHit.source !== "Local"
+      ) {
+        throw new Error("Unexpected result reused for " + file);
+      }
+      verifyHit(file, record);
+      hits.push({ task, file });
+    }
+    records.set(file, { ...record, execution: hit ? "cached" : "fresh" });
+    onReport(report);
+  }
+  return { records, hits };
 }
 
 function measure(phase, env) {
@@ -147,54 +211,13 @@ function measure(phase, env) {
     throw new Error("Cold result does not belong to this pilot");
   }
 
-  const reportDir = NodePath.join(server, testResultDirectory);
-  NodeFS.mkdirSync(NodePath.dirname(reportDir), { recursive: true });
-  NodeFS.mkdirSync(reportDir);
-  try {
-    const request = {
-      run: NodeCrypto.randomUUID(),
-      files: files.map((file) => "apps/server/" + file),
-      groupSize: 1,
-      uncached: alwaysFresh.map((file) => "apps/server/" + file),
-      reportResults: true,
-    };
-    const taskEnv = {
-      ...env,
-      T3_CACHED_TESTS: JSON.stringify(request),
-      T3CODE_TRANSFER_BUDGET_REPORT_PATH: NodePath.join(work, "transfer.md"),
-      T3CODE_TRANSFER_BUDGET_RESULT_PATH: NodePath.join(work, "transfer.json"),
-    };
-    const config = cachedTestTasks(taskEnv.T3_CACHED_TESTS, root);
-    runTasks(["--concurrency-limit", "1", "test-cache"], taskEnv);
-    const summary = readRunSummary(env.VITE_CACHE_PATH, request.run);
-    if (!summary) throw new Error("Missing task summary for the current run");
-    const summaries = new Map(summary.tasks.map((task) => [task.task_name, task]));
-    if (summary.tasks.length !== summaries.size || summaries.size !== Object.keys(config).length) {
-      throw new Error("Task summary does not cover the planned tasks exactly once");
-    }
-
-    const records = new Map();
-    const hits = [];
-    for (const file of files) {
-      const task = cachedTestTaskName(["apps/server/" + file]);
-      const observed = summaries.get(task);
-      if (!observed || observed.command !== config[task]?.command) {
-        throw new Error("Task summary does not match the plan for " + file);
+  const { request, taskEnv } = taskPlan(files, env, work);
+  runWithReports(() => {
+    const { records, hits } = collectResults(files, request, taskEnv, (file, record) => {
+      if (producer?.files[file]?.reportSha256 !== record.reportSha256) {
+        throw new Error("Unverified result reused for " + file);
       }
-      const record = reportFor(task, file);
-      const hit = observed.result.CacheHit !== undefined;
-      if (hit) {
-        if (
-          alwaysFresh.includes(file) ||
-          observed.result.CacheHit.source !== "Local" ||
-          producer?.files[file]?.reportSha256 !== record.reportSha256
-        ) {
-          throw new Error("Unverified result reused for " + file);
-        }
-        hits.push({ task, file });
-      }
-      records.set(file, { ...record, execution: hit ? "cached" : "fresh" });
-    }
+    });
     readJson(taskEnv.T3CODE_TRANSFER_BUDGET_RESULT_PATH);
     NodeFS.readFileSync(taskEnv.T3CODE_TRANSFER_BUDGET_REPORT_PATH);
 
@@ -240,9 +263,7 @@ function measure(phase, env) {
         " s from before cache restore through evidence.\n\n" +
         (audit ? "Fresh hit audit passed for `" + audit + "`.\n" : ""),
     );
-  } finally {
-    NodeFS.rmSync(reportDir, { recursive: true, force: true });
-  }
+  });
 }
 
 function compare(env) {
@@ -324,13 +345,234 @@ function compare(env) {
   );
 }
 
+const rolloutSchema = "jones.server-result-cache/v1";
+const sha256 = /^[a-f0-9]{64}$/;
+const commitSha = /^[a-f0-9]{40}$/;
+const positiveInteger = /^[1-9][0-9]*$/;
+
+export function rolloutCacheKeys(shard, fingerprint, env) {
+  const {
+    GITHUB_REPOSITORY,
+    GITHUB_REF,
+    GITHUB_RUN_ID,
+    GITHUB_RUN_ATTEMPT,
+    RUNNER_OS,
+    RUNNER_ARCH,
+    ImageVersion,
+  } = env;
+  const pr = /^refs\/pull\/([1-9][0-9]*)\/merge$/.exec(GITHUB_REF)?.[1];
+  if (
+    GITHUB_REPOSITORY !== "Jones-Systems/Jones-Code" ||
+    !pr ||
+    RUNNER_OS !== "Linux" ||
+    !RUNNER_ARCH ||
+    !ImageVersion ||
+    !positiveInteger.test(GITHUB_RUN_ID ?? "") ||
+    !positiveInteger.test(GITHUB_RUN_ATTEMPT ?? "") ||
+    !/^\d+\/\d+$/.test(shard) ||
+    !sha256.test(fingerprint)
+  ) {
+    throw new Error("Missing pull request cache identity");
+  }
+  const prefix =
+    "jones-server-results-v1-pr-" +
+    pr +
+    "-" +
+    digest(
+      JSON.stringify([shard, fingerprint, RUNNER_OS, RUNNER_ARCH, ImageVersion, process.version]),
+    ) +
+    "-";
+  return { prefix, key: prefix + GITHUB_RUN_ID + "-" + GITHUB_RUN_ATTEMPT };
+}
+
+function fingerprintInputs() {
+  const files = [
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    ".github/workflows/ci.yml",
+    "vite.config.ts",
+    "apps/server/vite.config.ts",
+    "scripts/lib/cached-tests.ts",
+    "scripts/lib/sharded-tests.ts",
+    "scripts/jones/ci/server-result-cache.mjs",
+  ];
+  return digest(
+    JSON.stringify(files.map((file) => digest(NodeFS.readFileSync(NodePath.join(root, file))))),
+  );
+}
+
+async function selectRollout(env) {
+  const shard = env.JONES_RESULT_CACHE_SHARD;
+  const { shardedTestFiles } = await import("../../lib/sharded-tests.ts");
+  const files = (await shardedTestFiles(server, shard))
+    .map((file) => NodePath.relative(server, file))
+    .sort();
+  if (files.length === 0 || new Set(files).size !== files.length) {
+    throw new Error("Expected a nonempty shard without duplicate files");
+  }
+  const keys = rolloutCacheKeys(shard, fingerprintInputs(), env);
+  NodeFS.writeFileSync(
+    NodePath.join(env.JONES_RESULT_CACHE_DIR, "selection.json"),
+    JSON.stringify({ ...keys, shard, files }),
+  );
+  NodeFS.appendFileSync(
+    env.GITHUB_OUTPUT,
+    `prefix=${keys.prefix}
+key=${keys.key}
+`,
+  );
+}
+
+export function validateArchive(archive, matchedKey, prefix) {
+  if (
+    archive?.schema !== rolloutSchema ||
+    archive.key !== matchedKey ||
+    !matchedKey?.startsWith(prefix) ||
+    !archive.files ||
+    typeof archive.files !== "object" ||
+    Array.isArray(archive.files)
+  ) {
+    throw new Error("Restored archive has no matching receipt");
+  }
+  for (const record of Object.values(archive.files)) {
+    if (
+      !sha256.test(record?.reportSha256 ?? "") ||
+      !commitSha.test(record?.producer?.commit ?? "") ||
+      !positiveInteger.test(record?.producer?.run ?? "") ||
+      !positiveInteger.test(record?.producer?.attempt ?? "")
+    )
+      throw new Error("Malformed result producer");
+  }
+  return new Map(Object.entries(archive.files));
+}
+
+export function combineCaseReports(reports) {
+  const totals = Object.fromEntries(
+    [
+      "numTotalTestSuites",
+      "numPassedTestSuites",
+      "numFailedTestSuites",
+      "numPendingTestSuites",
+      "numTotalTests",
+      "numPassedTests",
+      "numFailedTests",
+      "numPendingTests",
+      "numTodoTests",
+    ].map((key) => [key, reports.reduce((total, report) => total + report[key], 0)]),
+  );
+  if (!Object.values(totals).every(Number.isSafeInteger)) {
+    throw new Error("Incomplete Vitest totals");
+  }
+  return { ...totals, success: true, testResults: reports.flatMap((report) => report.testResults) };
+}
+
+function executeRollout(env) {
+  const started = Date.now();
+  const work = env.JONES_RESULT_CACHE_DIR;
+  const { key, prefix, shard, files } = readJson(NodePath.join(work, "selection.json"));
+  const archivePath = NodePath.join(env.VITE_CACHE_PATH, "server-result-receipt.json");
+  const restoredKey = env.JONES_RESULT_CACHE_RESTORED_KEY;
+  const restored = restoredKey
+    ? validateArchive(readJson(archivePath), restoredKey, prefix)
+    : new Map();
+  const producer = {
+    commit: env.GITHUB_SHA,
+    run: env.GITHUB_RUN_ID,
+    attempt: env.GITHUB_RUN_ATTEMPT,
+  };
+  const { request, taskEnv } = taskPlan(files, env, work);
+  runWithReports(() => {
+    const reports = [];
+    const { records, hits } = collectResults(
+      files,
+      request,
+      taskEnv,
+      (file, record) => {
+        if (restored.get(file)?.reportSha256 !== record.reportSha256) {
+          throw new Error("Unverified result reused for " + file);
+        }
+      },
+      (report) => reports.push(report),
+    );
+    // Rotate the audit as the PR changes while keeping selection reproducible.
+    const audit = hits[Number.parseInt(producer.commit.slice(0, 8), 16) % hits.length];
+    if (audit) {
+      NodeFS.rmSync(NodePath.join(server, cachedTestReportPath(audit.task)));
+      runTasks(["--no-cache", "--remote-cache", "off", audit.task], taskEnv);
+      if (!sameCases(records.get(audit.file), reportFor(audit.task, audit.file))) {
+        throw new Error("Fresh audit disagreed with cache for " + audit.file);
+      }
+    }
+    if (records.has(transferTest)) {
+      readJson(taskEnv.T3CODE_TRANSFER_BUDGET_RESULT_PATH);
+      NodeFS.copyFileSync(
+        taskEnv.T3CODE_TRANSFER_BUDGET_RESULT_PATH,
+        env.T3CODE_TRANSFER_BUDGET_RESULT_PATH,
+      );
+      NodeFS.copyFileSync(
+        taskEnv.T3CODE_TRANSFER_BUDGET_REPORT_PATH,
+        env.T3CODE_TRANSFER_BUDGET_REPORT_PATH,
+      );
+    }
+    const report = combineCaseReports(reports);
+    verifyCases(records, caseResults(report, server));
+    const evidence =
+      JSON.stringify({
+        schema: rolloutSchema,
+        key,
+        restoredKey: restoredKey || null,
+        ...producer,
+        weightsDigest: env.JONES_SERVER_SHARD_WEIGHTS_DIGEST ?? null,
+        shard,
+        elapsedMs: Date.now() - started,
+        audit: audit?.file ?? null,
+        cacheHits: hits.length,
+        files: Object.fromEntries(
+          Array.from(records, ([file, record]) => [
+            file,
+            {
+              ...record,
+              producer: record.execution === "cached" ? restored.get(file).producer : producer,
+            },
+          ]),
+        ),
+      }) + "\n";
+    NodeFS.writeFileSync(
+      NodePath.join(env.RUNNER_TEMP, "test-results.json"),
+      JSON.stringify(report) + "\n",
+    );
+    NodeFS.writeFileSync(NodePath.join(env.RUNNER_TEMP, "server-result-cache.json"), evidence);
+    const hasNewResults = [...records].some(
+      ([file, record]) => record.execution === "fresh" && !alwaysFresh.includes(file),
+    );
+    if (hasNewResults) {
+      NodeFS.writeFileSync(archivePath, evidence);
+      NodeFS.appendFileSync(env.GITHUB_OUTPUT, "save_cache=true\n");
+    }
+    NodeFS.appendFileSync(
+      env.GITHUB_STEP_SUMMARY,
+      `### Server result cache (${shard})
+
+${files.length} files, ${hits.length} reused, ${report.numTotalTests} cases.
+
+` +
+        (audit
+          ? `Fresh hit audit passed for \`${audit.file}\`.
+`
+          : ""),
+    );
+  });
+}
+
 async function main() {
   const mode = process.argv[2];
   const env = process.env;
   if (mode === "select") await select(env);
   else if (mode === "cold" || mode === "warm") measure(mode, env);
   else if (mode === "compare") compare(env);
-  else throw new Error("Expected select, cold, warm or compare");
+  else if (mode === "select-rollout") await selectRollout(env);
+  else if (mode === "run-rollout") executeRollout(env);
+  else throw new Error("Expected select, cold, warm, compare, select-rollout or run-rollout");
 }
 
 if (process.argv[1] && NodeURL.pathToFileURL(process.argv[1]).href === import.meta.url)
