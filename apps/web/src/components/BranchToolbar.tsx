@@ -100,7 +100,7 @@ interface BranchToolbarProps {
   envLocked: boolean;
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
-  workspaceTrailing?: (hasWorkspaceControls: boolean) => ReactNode;
+  renderWorkspaceTrailing?: ((hasWorkspaceControls: boolean) => ReactNode) | undefined;
   /** Shown at the end of the composer strip, such as the new thread's permissions. */
   trailing?: ReactNode;
   availableEnvironments?: readonly EnvironmentOption[];
@@ -649,7 +649,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   onComposerFocusRequest,
   availableEnvironments,
   onEnvironmentChange,
-  workspaceTrailing,
+  renderWorkspaceTrailing,
   trailing,
 }: BranchToolbarProps) {
   const conversationAvailable =
@@ -846,7 +846,7 @@ export const BranchToolbar = memo(function BranchToolbar({
         </div>
       ) : null}
 
-      {workspaceTrailing?.(showGitControls || showEnvironmentIndicator)}
+      {renderWorkspaceTrailing?.(showGitControls || showEnvironmentIndicator)}
 
       {showGitControls || trailing ? (
         <div

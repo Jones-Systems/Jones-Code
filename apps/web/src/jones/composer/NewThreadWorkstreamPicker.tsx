@@ -50,7 +50,7 @@ export function NewThreadWorkstreamPicker({
       >
         <MenuTrigger
           render={<ComposerControl size="xs" />}
-          className="min-w-0 justify-start"
+          className="min-w-0 shrink justify-start"
           aria-label={value === null ? "Workstream for new thread" : `Workstream: ${label}`}
           disabled={disabled}
           data-composer-context-control

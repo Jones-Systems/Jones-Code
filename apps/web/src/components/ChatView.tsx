@@ -3986,12 +3986,12 @@ export default function ChatView(props: ChatViewProps) {
                                       : undefined
                                   }
                                   availableEnvironments={logicalProjectEnvironments}
-                                  {...(!isServerThread &&
-                                  draftId &&
-                                  isLocalDraftThread &&
-                                  !draftThread?.promotedTo
-                                    ? {
-                                        workspaceTrailing: (hasWorkspaceControls: boolean) => (
+                                  renderWorkspaceTrailing={
+                                    !isServerThread &&
+                                    draftId &&
+                                    isLocalDraftThread &&
+                                    !draftThread?.promotedTo
+                                      ? (hasWorkspaceControls) => (
                                           <NewThreadWorkstreamPicker
                                             environmentId={environmentId}
                                             value={newThreadWorkstreamId}
@@ -4003,9 +4003,9 @@ export default function ChatView(props: ChatViewProps) {
                                             disabled={isSendBusy || isEnvironmentChanging}
                                             showContextDivider={hasWorkspaceControls}
                                           />
-                                        ),
-                                      }
-                                    : {})}
+                                        )
+                                      : undefined
+                                  }
                                   trailing={
                                     !isServerThread ? (
                                       <ComposerContextPermissions
