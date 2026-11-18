@@ -811,7 +811,9 @@ describe("personal Workstreams native presentation", () => {
         />
       </RegistryContext.Provider>,
     );
-    const section = _screen.container.querySelector<HTMLElement>("[data-native-workstream]")!;
+    const section = _screen.container.querySelector<HTMLElement>(
+      '[data-native-workstream]:not([data-native-workstream="null"])',
+    )!;
     const rect = section.getBoundingClientRect();
     const point = { x: rect.left + 2, y: rect.top + 2 };
     await act(async () => {
@@ -912,7 +914,9 @@ describe("personal Workstreams native presentation", () => {
     );
     await act(() => assignmentMenuRef.current!(thread).onAction("assign-workstream:remove"));
     expect(controller.assign).toHaveBeenLastCalledWith(thread, null);
-    const section = document.querySelector<HTMLElement>("[data-native-workstream]")!;
+    const section = document.querySelector<HTMLElement>(
+      '[data-native-workstream]:not([data-native-workstream="null"])',
+    )!;
     const rect = section.getBoundingClientRect();
     const unpin = vi.fn(async () => {
       throw new Error("synthetic failure");

@@ -41,8 +41,8 @@ export function usePersonalSidebarActiveThreads<T extends PersonalThreadRef>(
   currentThread: PersonalThreadRef | null,
 ): { visible: readonly T[]; traversal: readonly T[] } {
   const groups = [
-    ...grouping.groups.map((group) => ({ id: group.workstream.id, threads: group.threads })),
     { id: null, threads: grouping.ungrouped },
+    ...grouping.groups.map((group) => ({ id: group.workstream.id, threads: group.threads })),
   ];
   const keys = [
     personalNamedGroupsHiddenKey,

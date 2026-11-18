@@ -58,6 +58,7 @@ vi.mock(import("~/state/server"), async (original) => {
         { key: "mod+shift+[", command: "thread.previous" },
         { key: "mod+1", command: "thread.jump.1" },
         { key: "mod+6", command: "thread.jump.6" },
+        { key: "mod+8", command: "thread.jump.8" },
       ]),
     ),
   };
@@ -212,35 +213,41 @@ async function withSidebar(
   await inspect({ router, rows, visit, step, threadIds });
 }
 
-it("traverses displayed Workstreams then Unassigned and skips collapsed groups", async () => {
+it("traverses Unassigned before named Workstreams and skips collapsed groups", async () => {
   await withSidebar(async ({ router, rows, visit, step }) => {
+    const header = page.getByRole("button", { name: "Hide all Workstreams", exact: true });
+    const unassigned = page.getByRole("button", { name: "Collapse Unassigned", exact: true });
+    const firstNamed = page.getByRole("button", { name: "Collapse alpha", exact: true });
+    expect(header.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      unassigned.element().getBoundingClientRect().top,
+    );
+    expect(unassigned.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      firstNamed.element().getBoundingClientRect().top,
+    );
     const order = rows();
-    expect(order.slice(0, 5).every((id) => id.startsWith("a"))).toBe(true);
-    expect(order[5]).toBe("b1");
-    expect(order.slice(6).sort()).toEqual(["u1", "u2"]);
+    expect(order.slice(0, 2).sort()).toEqual(["u1", "u2"]);
+    expect(order.slice(2, 7).every((id) => id.startsWith("a"))).toBe(true);
+    expect(order[7]).toBe("b1");
     await visit(order[0]!);
-    await step("next", order[1]!);
-    await step("previous", order[0]!);
-    await visit(order[4]!);
-    for (const id of order.slice(5)) await step("next", id);
-    for (const id of order.slice(4, -1).reverse()) await step("previous", id);
+    for (const id of order.slice(1)) await step("next", id);
+    for (const id of order.slice(0, -1).reverse()) await step("previous", id);
     // Click the title's gesture layer rather than the background toggle beneath it.
     await userEvent.click(page.getByText("beta", { exact: true }));
-    await visit(order[4]!);
-    await step("next", order[6]!);
-    await step("previous", order[4]!);
+    expect(rows()).toEqual(order.slice(0, -1));
     await visit("child");
-    await step("next", order[6]!);
-    await visit("child");
-    await step("previous", order[4]!);
+    await step("previous", order[6]!);
     await visit("b1");
-    await step("next", order[6]!);
-    await visit("b1");
-    await step("previous", order[4]!);
+    await step("previous", order[6]!);
     await userEvent.click(page.getByText("beta", { exact: true }));
     await step("next", "b1");
     await userEvent.click(page.getByRole("button", { name: "Collapse Unassigned", exact: true }));
-    await step("next", "b1");
+    expect(rows()).toEqual(order.slice(2));
+    await userEvent.keyboard("{Meta>}1{/Meta}");
+    await vi.waitFor(() =>
+      expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[2]}`),
+    );
+    await userEvent.click(page.getByRole("button", { name: "Expand Unassigned", exact: true }));
+    expect(rows()).toEqual(order);
     await userEvent.keyboard("{Meta>}1{/Meta}");
     await vi.waitFor(() =>
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${order[0]}`),
@@ -265,11 +272,11 @@ it("leaves hidden Workstream rows out of traversal and numeric jumps, keeping on
     await vi.waitFor(() => expect([...rows()].sort()).toEqual(["u1", "u2"]));
     const unassigned = rows();
     // The route starts on a hidden Workstream row: it anchors the step but no other hidden row does.
-    await step("next", unassigned[0]!);
-    await step("next", unassigned[1]!);
+    await step("previous", unassigned[1]!);
     await step("previous", unassigned[0]!);
+    await step("next", unassigned[1]!);
     await visit("b1");
-    await step("next", unassigned[0]!);
+    await step("previous", unassigned[1]!);
     await userEvent.keyboard("{Meta>}1{/Meta}");
     await vi.waitFor(() => expect(pathname()).toBe(`/${ENVIRONMENT_ID}/${unassigned[0]}`));
     await userEvent.keyboard("{Meta>}6{/Meta}");
@@ -329,10 +336,9 @@ it("uses local Workstream status overrides for rendered rows, traversal and nume
 
 it("keeps next, previous and numeric jumps aligned with truncated and expanded rows", async () => {
   await withSidebar(async ({ router, rows, visit, step, threadIds }) => {
-    const order = rows();
+    const order = rows().slice(2);
     expect(order.slice(0, 5).every((id) => id.startsWith("a"))).toBe(true);
     expect(order[5]).toBe("b1");
-    expect(order.slice(6).sort()).toEqual(["u1", "u2"]);
     await visit(order[4]!);
     await step("next", "b1");
     await step("previous", order[4]!);
@@ -341,25 +347,25 @@ it("keeps next, previous and numeric jumps aligned with truncated and expanded r
     await step("next", "b1");
     await visit(hiddenAlpha);
     await step("previous", order[4]!);
-    await userEvent.keyboard("{Meta>}6{/Meta}");
+    await userEvent.keyboard("{Meta>}8{/Meta}");
     await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
     await userEvent.click(
       page.getByRole("button", { name: "Show 2 more threads in alpha", exact: true }),
     );
-    const expandedOrder = rows();
-    expect(expandedOrder).toHaveLength(10);
+    const expandedOrder = rows().slice(2);
+    expect(expandedOrder).toHaveLength(8);
     await visit(expandedOrder[4]!);
     await step("next", expandedOrder[5]!);
     await step("next", expandedOrder[6]!);
     await step("next", "b1");
-    await userEvent.keyboard("{Meta>}6{/Meta}");
+    await userEvent.keyboard("{Meta>}8{/Meta}");
     await vi.waitFor(() =>
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${expandedOrder[5]}`),
     );
     await userEvent.click(
       page.getByRole("button", { name: "Show only 5 threads in alpha", exact: true }),
     );
-    await userEvent.keyboard("{Meta>}6{/Meta}");
+    await userEvent.keyboard("{Meta>}8{/Meta}");
     await vi.waitFor(() => expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/b1`));
   });
 });

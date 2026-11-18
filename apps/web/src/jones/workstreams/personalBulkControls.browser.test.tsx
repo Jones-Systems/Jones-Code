@@ -419,9 +419,9 @@ describe("Workstreams bulk controls", () => {
       page.getByRole("button", { name: "Expand all Workstreams", exact: true }),
     );
     expect(listsIn(screen.container)).toEqual([
+      "Unassigned threads",
       "Alpha threads",
       "Beta threads",
-      "Unassigned threads",
     ]);
     expect(rowsIn(sectionFor(screen.container, alphaId))).toHaveLength(5);
     await expect.element(page.getByText("6 threads", { exact: true })).toBeVisible();
