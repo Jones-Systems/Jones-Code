@@ -34,7 +34,11 @@ import {
 } from "@t3tools/client-runtime/providerSkills";
 import { searchProviderSkills } from "../../providerSkillSearch";
 import { useVisibleThreadShells } from "~/state/entities";
-import { useEnvironmentIdentities, useEnvironmentMachines } from "~/state/environments";
+import {
+  useConnectedEnvironmentIds,
+  useEnvironmentIdentities,
+  useEnvironmentMachines,
+} from "~/state/environments";
 import { offersLinkedEnvironmentsAtom } from "~/state/peerLinks";
 import {
   pullRequestEnvironment,
@@ -123,15 +127,21 @@ export function useComposerMenuItems({
     pullRequestTextQuery === debouncedPullRequestTextQuery ? pullRequestTextQuery : null;
   const isPathTrigger = composerTriggerKind === "path";
   const environmentThreadShells = useVisibleThreadShells(isPathTrigger);
-  // Mounts older settled threads matching the mention, here and on linked machines, which shells
-  // may leave out.
+  // The client can capture context from the environments it can browse.
+  const environmentIdentities = useEnvironmentIdentities();
+  const connectedEnvironmentIds = useConnectedEnvironmentIds();
+  const referenceEnvironments = new Map([
+    ...linkedEnvironments,
+    ...environmentIdentities
+      .filter((identity) => connectedEnvironmentIds.includes(identity.environmentId))
+      .map((identity) => [identity.environmentId, identity.label] as const),
+  ]);
   useThreadSearch(
-    isPathTrigger ? [environmentId, ...linkedEnvironments.keys()] : [],
+    isPathTrigger ? [...new Set([environmentId, ...connectedEnvironmentIds])] : [],
     pathTriggerQuery,
     { titlesOnly: true },
   );
   // The user's machines feed `@` machine matches; the catalog summary is cheap and stable.
-  const environmentIdentities = useEnvironmentIdentities();
   const environmentMachines = useEnvironmentMachines();
   const offersMachines = useAtomValue(offersLinkedEnvironmentsAtom(environmentId));
   const mentionableEnvironments = environmentIdentities.map((identity) => ({
@@ -209,6 +219,7 @@ export function useComposerMenuItems({
         ...matchComposerThreadItems({
           shells: environmentThreadShells,
           environmentId,
+          referenceEnvironments,
           excludeThreadId: activeThreadId,
           query: composerTrigger.query,
           now,

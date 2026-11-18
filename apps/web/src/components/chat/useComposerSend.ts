@@ -649,8 +649,8 @@ export function useComposerSend(input: ComposerSendInput) {
       toastManager.add(
         stackedThreadToast({
           type: "warning",
-          title: "Attached thread is on another machine",
-          description: `This machine's agent can't read "${strandedThread.title}". Remove it, or switch back to ${owner} to send.`,
+          title: "Attached thread context unavailable",
+          description: `Reconnect to ${owner} and reattach "${strandedThread.title}", or remove it to send.`,
         }),
       );
       return;
