@@ -1585,15 +1585,17 @@ it("keeps a workspace PDF open across URL renewals and reloads it when the file 
   const renewed = URL.createObjectURL(planningPdf());
   const edited = URL.createObjectURL(planningPdf(["Quarterly outlook", "Updated milestones"]));
   const preview = (mutation: string) => (
-    <WorkspaceBrowserPreview
-      environmentId={EnvironmentId.make("test")}
-      threadRef={{ environmentId: EnvironmentId.make("test"), threadId: ThreadId.make("test") }}
-      draft={false}
-      workspaceRoot="/repo"
-      absolutePath="/repo/planning.pdf"
-      title="Planning PDF"
-      workspaceMutationId={mutation}
-    />
+    <div className="flex h-[600px] w-[320px]">
+      <WorkspaceBrowserPreview
+        environmentId={EnvironmentId.make("test")}
+        threadRef={{ environmentId: EnvironmentId.make("test"), threadId: ThreadId.make("test") }}
+        draft={false}
+        workspaceRoot="/repo"
+        absolutePath="/repo/planning.pdf"
+        title="Planning PDF"
+        workspaceMutationId={mutation}
+      />
+    </div>
   );
   assetUrlState.mockReturnValue({
     _tag: "Success",
@@ -1604,7 +1606,9 @@ it("keeps a workspace PDF open across URL renewals and reloads it when the file 
   try {
     await using screen = await render(preview("first"));
     const region = () => screen.container.querySelector('[aria-label="Planning PDF PDF preview"]');
-    await vi.waitFor(() => expect(pdfLoads).toEqual([expect.stringContaining(original)]));
+    // The zoom control becomes usable after the lazy viewer opens the real document.
+    await expect.element(screen.getByRole("textbox", { name: "Zoom percentage" })).toBeEnabled();
+    expect(pdfLoads).toEqual([expect.stringContaining(original)]);
     const opened = region();
     expect(opened).not.toBeNull();
 

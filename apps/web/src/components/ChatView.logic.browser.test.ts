@@ -28,6 +28,16 @@ it("keeps keyboard focus on a sidebar row on window return, but not a clicked ro
   expect(shouldRefocusComposerOnWindowFocus(document.activeElement)).toBe(false);
 });
 
+it("keeps focus on the trigger while its popup opens on window return", () => {
+  const trigger = document.createElement("button");
+  trigger.setAttribute("aria-haspopup", "dialog");
+  trigger.setAttribute("aria-expanded", "true");
+  expect(shouldRefocusComposerOnWindowFocus(trigger)).toBe(false);
+
+  trigger.setAttribute("aria-expanded", "false");
+  expect(shouldRefocusComposerOnWindowFocus(trigger)).toBe(true);
+});
+
 it("keeps focus in a region with its own keys on window return", async () => {
   const region = document.createElement("div");
   region.tabIndex = -1;

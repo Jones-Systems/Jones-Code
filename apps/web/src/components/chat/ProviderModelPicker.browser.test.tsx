@@ -177,7 +177,7 @@ it("keeps a docked picker open after a pick and hands focus to that model's effo
   await expect.element(search).not.toBeInTheDocument();
 });
 
-it("opens on the active provider when every favorite belongs to a disabled provider", async () => {
+it("keeps the active provider selectable when every favorite belongs to a disabled provider", async () => {
   const entries = deriveProviderInstanceEntries(
     ["Codex", "Claude"].map((name) => ({
       instanceId: ProviderInstanceId.make(name.toLowerCase()),
@@ -217,6 +217,11 @@ it("opens on the active provider when every favorite belongs to a disabled provi
     />,
   );
   await screen.getByRole("button", { name: "Choose model" }).click();
+  await expect
+    .element(page.getByRole("button", { name: "Favorites" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect.element(page.getByRole("option", { name: /Claude model/ })).not.toBeInTheDocument();
+  await page.getByRole("button", { name: "Codex", exact: true }).click();
   await expect.element(page.getByRole("option", { name: /Codex model/ })).toBeVisible();
 });
 

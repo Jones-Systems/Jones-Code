@@ -1098,7 +1098,7 @@ export function hasServerAcknowledgedLocalDispatch(input: {
 }
 
 // Window return puts the caret in the composer unless focus is deliberate: another text field,
-// a terminal, an open dialog, menu, or popup, a region, timeline, or sidebar row reached from the
+// a terminal, an open popup or its trigger, a region, timeline, or sidebar row reached from the
 // keyboard, or a region with its own keys (aria-keyshortcuts). A plain focused button or a clicked
 // row yields to the composer.
 export function shouldRefocusComposerOnWindowFocus(
@@ -1120,7 +1120,7 @@ export function shouldRefocusComposerOnWindowFocus(
   }
   return (
     activeElement.closest(
-      '[data-workspace-keyboard-focus], [data-sidebar-row]:focus-visible, [role="dialog"], [role="alertdialog"], [role="application"], [role="menu"], [role="listbox"], [data-slot$="-popup"], [data-terminal-owner], [aria-keyshortcuts]',
+      '[data-workspace-keyboard-focus], [data-sidebar-row]:focus-visible, :is([role="combobox"], [aria-haspopup]:not([aria-haspopup="false"]))[aria-expanded="true"], [role="dialog"], [role="alertdialog"], [role="application"], [role="menu"], [role="listbox"], [data-slot$="-popup"], [data-terminal-owner], [aria-keyshortcuts]',
     ) === null
   );
 }
