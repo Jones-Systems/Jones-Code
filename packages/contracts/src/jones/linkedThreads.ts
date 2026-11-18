@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 import { EnvironmentId, ThreadId, ProjectId, RunId } from "../baseSchemas.ts";
 import { ModelSelection } from "../modelSelection.ts";
 import {
-  OrchestrationV2ThreadLaunchWorkspaceStrategy,
+  OrchestrationV2ThreadLaunchToolWorkspaceStrategy,
   OrchestrationV2RunStatus,
 } from "../orchestrationV2.ts";
 import { RuntimeMode, ProviderInteractionMode } from "../providerPolicy.ts";
@@ -215,7 +215,7 @@ export const ThreadHandoffToolInput = Schema.Struct({
         interactionMode: Schema.optional(ProviderInteractionMode),
       }),
     ),
-    workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+    workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchToolWorkspaceStrategy),
     scratch: Schema.optional(Schema.Boolean),
   }),
   goal: text(4000),

@@ -745,7 +745,7 @@ export type OrchestrationV2RunBackgroundWorkCancelled =
 export const OrchestrationV2WorktreeBaseFreshness = Schema.Literals(["verified", "fetch-now"]);
 export type OrchestrationV2WorktreeBaseFreshness = typeof OrchestrationV2WorktreeBaseFreshness.Type;
 
-export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
+const nonWorktreeLaunchStrategies = [
   Schema.Struct({
     type: Schema.Literal("auto"),
     branch: Schema.optional(TrimmedNonEmptyString),
@@ -760,11 +760,25 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
     worktreePath: TrimmedNonEmptyString,
     branch: Schema.optional(TrimmedNonEmptyString),
   }),
+] as const;
+
+const worktreeLaunchFields = {
+  type: Schema.Literal("worktree"),
+  baseRef: Schema.optional(TrimmedNonEmptyString),
+  branch: Schema.optional(TrimmedNonEmptyString),
+  startFromOrigin: Schema.optional(Schema.Boolean),
+};
+
+export const OrchestrationV2ThreadLaunchToolWorkspaceStrategy = Schema.Union([
+  ...nonWorktreeLaunchStrategies,
+  Schema.Struct(worktreeLaunchFields),
+]);
+
+export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
+  ...nonWorktreeLaunchStrategies,
   Schema.Struct({
-    type: Schema.Literal("worktree"),
-    baseRef: Schema.optional(TrimmedNonEmptyString),
-    branch: Schema.optional(TrimmedNonEmptyString),
-    startFromOrigin: Schema.optional(Schema.Boolean),
+    ...worktreeLaunchFields,
+    // Capability-aware clients select this policy and preparation retains it for replay.
     baseFreshness: Schema.optional(OrchestrationV2WorktreeBaseFreshness),
   }),
 ]);
