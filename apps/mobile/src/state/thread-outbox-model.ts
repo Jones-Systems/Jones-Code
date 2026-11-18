@@ -13,6 +13,7 @@ import {
   MessageId,
   ModelSelection,
   OrchestrationMessageContext,
+  OrchestrationV2WorktreeBaseFreshness,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -49,6 +50,7 @@ const QueuedThreadCreationSchema = Schema.Struct({
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   startFromOrigin: Schema.optional(Schema.Boolean),
+  baseFreshness: Schema.optional(OrchestrationV2WorktreeBaseFreshness),
   pullRequestReference: Schema.optional(Schema.String),
 });
 
@@ -84,6 +86,7 @@ export interface QueuedThreadCreation {
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin?: boolean;
+  readonly baseFreshness?: OrchestrationV2WorktreeBaseFreshness;
   readonly pullRequestReference?: string;
 }
 

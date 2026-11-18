@@ -1,3 +1,7 @@
+import {
+  resolveFirstSendWorktreePreparation,
+  usesVerifiedDefault,
+} from "../../jones/composer/firstSendWorktree";
 import { withMessageContext } from "../../jones/composer/messageContext";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { pendingNewThread } from "../../jones/pendingSends/newThread";
@@ -256,9 +260,19 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                     },
                     prepareWorktree: {
                       projectCwd: project.workspaceRoot,
-                      ...(branch === null ? {} : { baseBranch: branch }),
+                      ...resolveFirstSendWorktreePreparation({
+                        isFirstMessage: true,
+                        sendEnvMode: "worktree",
+                        worktreePath: null,
+                        projectCwd: project.workspaceRoot,
+                        baseBranch: branch,
+                        startFromOrigin,
+                        verifiedDefault: usesVerifiedDefault(
+                          appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId),
+                          project.id,
+                        ),
+                      }),
                       requireWorktree: true,
-                      ...(startFromOrigin ? { startFromOrigin: true } : {}),
                     },
                     runSetupScript: true,
                   },

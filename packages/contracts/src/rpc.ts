@@ -1,4 +1,5 @@
 import { WorkspaceRetirementAction } from "./jones/workspaceRetirement.ts";
+import { GetRepoFreshnessRpc, RefreshRepoFreshnessRpc } from "./jones/repoFreshnessRpc.ts";
 import {
   ListLinkedThreadsRpc,
   LinkThreadsRpc,
@@ -497,6 +498,8 @@ export const WS_METHODS = {
 
   vcsPull: "vcs.pull",
   vcsRefreshStatus: "vcs.refreshStatus",
+  vcsGetRepoFreshness: GetRepoFreshnessRpc._tag,
+  vcsRefreshRepoFreshness: RefreshRepoFreshnessRpc._tag,
   vcsListRefs: "vcs.listRefs",
   vcsCreateWorktree: "vcs.createWorktree",
   vcsRemoveWorktree: "vcs.removeWorktree",
@@ -2428,6 +2431,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewProviderConversationReselectionRpc,
   WsThreadReferenceExcerptRpc,
   ListLinkedThreadsRpc,
+  GetRepoFreshnessRpc,
+  RefreshRepoFreshnessRpc,
   LinkThreadsRpc,
   UnlinkThreadsRpc,
   AcceptThreadHandoffRpc,

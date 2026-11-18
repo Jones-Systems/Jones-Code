@@ -52,7 +52,13 @@ export function BranchPicker({
   onLoadNext: () => void;
   statusText: string | null;
   notice?: string | null | undefined;
-  originControl?: { checked: boolean; onCheckedChange: (checked: boolean) => void } | undefined;
+  originControl?:
+    | {
+        checked: boolean;
+        onCheckedChange: (checked: boolean) => void;
+        fetchDefaultNow?: boolean;
+      }
+    | undefined;
   popupProps: Omit<ComponentProps<typeof ComboboxPopup>, "children">;
   renderItem: (value: string, index: number) => ReactNode;
   getItemType?: ((value: string) => string) | undefined;
@@ -164,22 +170,28 @@ export function BranchPicker({
                   >
                     <span className="flex min-w-0 items-center gap-1.5 font-medium text-muted-foreground">
                       <RefreshIcon aria-hidden="true" className="size-3 shrink-0" />
-                      <span className="truncate">Start from remote</span>
+                      <span className="truncate">
+                        {originControl.fetchDefaultNow ? "Fetch latest now" : "Start from remote"}
+                      </span>
                     </span>
                     <Switch
                       id={startFromOriginSwitchId}
                       checked={originControl.checked}
                       size="sm"
-                      aria-label="Start worktree from remote"
+                      aria-label={
+                        originControl.fetchDefaultNow
+                          ? "Fetch latest now"
+                          : "Start worktree from remote"
+                      }
                       onCheckedChange={(checked) => originControl.onCheckedChange(Boolean(checked))}
                     />
                   </label>
                 }
               />
               <TooltipPopup side="top" className="max-w-72 whitespace-normal">
-                Uses the latest commit of the base branch’s tracked remote branch, even if its name
-                differs. Otherwise uses the same-named branch on origin. Uses your local branch if
-                that remote branch is missing.
+                {originControl.fetchDefaultNow
+                  ? "Checks the remote default before creating the worktree. Leave off to use the last verified commit."
+                  : "Uses the latest commit of the base branch’s tracked remote branch, even if its name differs. Otherwise uses the same-named branch on origin. Uses your local branch if that remote branch is missing."}
               </TooltipPopup>
             </Tooltip>
           ) : null}

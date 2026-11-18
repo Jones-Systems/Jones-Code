@@ -19,6 +19,7 @@ export function buildQueuedThreadCreationStartTurnInput(input: {
   readonly attachments: PreparedTurnAttachments["attachments"];
   readonly settings: ThreadSettingsSnapshot;
   readonly serverResolvesWorktreeBase: boolean;
+  readonly serverSupportsRepoFreshness?: boolean;
   readonly inlineMessageContext?: boolean;
 }) {
   const { message, creation, settings } = input;
@@ -43,6 +44,9 @@ export function buildQueuedThreadCreationStartTurnInput(input: {
     branch: creation.branch,
     worktreePath: creation.worktreePath,
     startFromOrigin: creation.startFromOrigin ?? false,
+    ...(input.serverSupportsRepoFreshness && creation.baseFreshness !== undefined
+      ? { baseFreshness: creation.baseFreshness }
+      : {}),
     serverResolvesWorktreeBase: input.serverResolvesWorktreeBase,
     worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
   });

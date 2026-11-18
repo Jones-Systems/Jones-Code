@@ -44,6 +44,7 @@ import {
   THREAD_DETAILS_PANEL_LABEL_CLASS,
 } from "./threadDetailsPanelStyles";
 import { Menu, MenuPopup } from "../ui/menu";
+import { RepoFreshnessControl } from "../../jones/repoFreshness/RepoFreshnessControl";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -246,6 +247,12 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                         threadRef={activeThreadRef}
                         project={project}
                         composerTarget={props.composerDraftTarget}
+                      />
+                    ) : null}
+                    {show.git && visible.gitActions && props.isGitRepo ? (
+                      <RepoFreshnessControl
+                        key={JSON.stringify([props.environmentId, props.projectId])}
+                        project={scopeProjectRef(props.environmentId, props.projectId)}
                       />
                     ) : null}
                     {show.git && props.gitCwd ? (

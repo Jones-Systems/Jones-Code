@@ -421,8 +421,16 @@ export function NewTaskFlowProvider(
   // only the explicit flag is ever written back to the draft, so the resolved
   // value keeps tracking the server setting when the config loads late.
   const draftStartFromOrigin = selectedProjectDraft.workspaceSelection?.startFromOrigin;
+  const capabilities = selectedEnvironmentServerConfig?.environment?.capabilities;
+  const cadence = selectedProject
+    ? selectedEnvironmentServerConfig?.settings.projectSettingsOverrides[selectedProject.id]
+        ?.repoFreshnessCadenceSeconds
+    : undefined;
+  const verifiedDefault = capabilities?.repoFreshness === true && (cadence ?? 0) > 0;
   const startFromOrigin =
-    isGitRepo && (draftStartFromOrigin ?? projectSettings.settings.newWorktreesStartFromOrigin);
+    isGitRepo &&
+    (draftStartFromOrigin ??
+      (!verifiedDefault && projectSettings.settings.newWorktreesStartFromOrigin));
   const defaultRuntimeMode = projectSettings.settings.defaultRuntimeMode;
   const managedPolicy = selectedEnvironmentServerConfig?.managedPolicy;
   const runtimeMode = resolveNewThreadRuntimeMode(
@@ -760,6 +768,16 @@ export function NewTaskFlowProvider(
     }
     const workspaceSelection = resolveWorkspaceSelection(draft.workspaceSelection);
     const mode = workspaceSelection.mode;
+    const fetchFromOrigin = workspaceSelection.startFromOrigin ?? startFromOrigin;
+    const baseFreshness =
+      verifiedDefault &&
+      mode === "worktree" &&
+      workspaceSelection.branch === null &&
+      !workspaceSelection.pullRequestReference
+        ? fetchFromOrigin
+          ? ("fetch-now" as const)
+          : ("verified" as const)
+        : undefined;
     return {
       environmentId: selectedProject.environmentId,
       threadId: ThreadId.make(metadata.threadId),
@@ -790,9 +808,8 @@ export function NewTaskFlowProvider(
           currentCheckoutBranch: options?.currentCheckoutBranch ?? null,
         }),
         worktreePath: mode === "worktree" ? null : (workspaceSelection?.worktreePath ?? null),
-        ...((workspaceSelection?.startFromOrigin ?? startFromOrigin)
-          ? { startFromOrigin: true }
-          : {}),
+        ...(fetchFromOrigin ? { startFromOrigin: true } : {}),
+        ...(baseFreshness === undefined ? {} : { baseFreshness }),
       },
       createdAt: metadata.createdAt,
     };

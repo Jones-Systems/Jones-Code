@@ -1,0 +1,20 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "remote-fetch-observation",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/git/remoteFetchObservation.ts",
+    "apps/server/src/jones/git/remoteFetchObservation.test.ts"
+  ],
+  "hookPaths": ["apps/server/src/vcs/GitVcsDriver.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/vcs/GitVcsDriver.ts",
+      "to": "apps/server/src/jones/git/remoteFetchObservation.ts"
+    },
+    {
+      "from": "apps/server/src/vcs/GitVcsDriverCore.ts",
+      "to": "apps/server/src/jones/git/remoteFetchObservation.ts"
+    }
+  ]
+}

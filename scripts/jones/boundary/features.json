@@ -2276,6 +2276,30 @@
       "scope": "Opt-in serial verified official Effect TSRS incremental checking for explicitly selected exact-launcher workspaces. V2 identity covers compiler/pins/standard libraries, workspace/dependency bindings and guarded raw JSONC inputs, without unsupported native showConfig. Every invocation executes the verified compiler; authenticated launch coordinates with patch/restore only through spawn. Legacy v1 is ignored and preserved; unsupported retained hosts fail clearly. Fresh mode bypasses retained state; private buildinfo cleanup and existing bounds remain."
     },
     {
+      "id": "remote-fetch-observation",
+      "tests": ["apps/server/src/jones/git/remoteFetchObservation.test.ts"],
+      "scope": "The Git driver owns bounded in-memory evidence keyed by physical Git common directory, effective remote URL configuration and coverage. The existing status writer observes captured configured refspecs, and the worktree-base writer observes its selected branch. Driver hooks run Git with the captured physical admin directory and pinned effective remote URL, and return the branch SHA from the fetch's own result. The server-only read methods bind a fresh identity for one or multiple coverage reads. Jones tests cover alias swaps, retargeting, refspec changes, failures, timeouts, eviction and completion order with synthetic Git fixtures."
+    },
+    {
+      "id": "repo-freshness",
+      "tests": [
+        "apps/server/src/jones/git/RepoFreshness.test.ts",
+        "apps/server/src/jones/git/repoFreshnessLaunch.test.ts",
+        "apps/web/src/jones/composer/firstSendWorktree.test.ts"
+      ],
+      "scope": "Server-owned project-ID status, awaitable live refresh, server-activated polling and optional project cadence. Physical Git targets share a single in-flight check, which selects the remote-advertised default branch and materializes its exact SHA without moving tracking refs or a checkout. Status retains prior success through failures until it becomes stale, and binds it to the current configured remote."
+    },
+    {
+      "id": "repo-freshness-controls",
+      "tests": [
+        "apps/server/src/jones/repoFreshness/wsHandlers.test.ts",
+        "apps/web/src/jones/repoFreshness/repoFreshness.browser.test.tsx",
+        "packages/client-runtime/src/jones/repoFreshness.test.ts",
+        "packages/contracts/src/jones/repoFreshness.test.ts"
+      ],
+      "scope": "Project-ID repository freshness RPCs advertise an optional capability and use read scope for status and source-control write for live refresh. The shared client checks the selected session's descriptor. Web and Electron renderer controls read only while visible, age the last verification locally, report the manual attempt separately, and edit the cadence for the exact registered checkout. Shared hooks register the RPC and capability and place the controls in the existing project Git settings and thread Version Control section."
+    },
+    {
       "id": "vcs-cache-efficiency",
       "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
       "scope": "VCS status cache updates mutate the private directory map synchronously while replacing snapshot values, preserving deduplication, remote ordering and existing retention. A small accepted shared-file edit and colocated regression preserve private cache ownership without adding an extraction interface."

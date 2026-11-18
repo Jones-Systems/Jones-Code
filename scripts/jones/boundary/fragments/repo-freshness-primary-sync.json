@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "repo-freshness-primary-sync",
+  "jonesOwnedPaths": ["apps/server/src/jones/git/repoFreshnessCheckout.ts"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/vcs/GitVcsDriverCore.ts",
+      "to": "apps/server/src/jones/git/repoFreshnessCheckout.ts"
+    }
+  ]
+}

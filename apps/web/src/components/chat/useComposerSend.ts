@@ -1,6 +1,9 @@
 import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
 import { withMessageContext } from "../../jones/composer/messageContext";
-import { resolveFirstSendWorktreePreparation } from "../../jones/composer/firstSendWorktree";
+import {
+  resolveFirstSendWorktreePreparation,
+  usesVerifiedDefault,
+} from "../../jones/composer/firstSendWorktree";
 import type { EnvironmentContextRecord } from "@t3tools/contracts";
 import { pendingSends } from "../../jones/pendingSends/store";
 import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
@@ -859,6 +862,10 @@ export function useComposerSend(input: ComposerSendInput) {
       freshContext: freshArm !== undefined,
     });
     const worktreePreparation = resolveFirstSendWorktreePreparation({
+      verifiedDefault: usesVerifiedDefault(
+        appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId),
+        activeProject.id,
+      ),
       isFirstMessage: !sendQueuesBehindSetup && (!isServerThread || activeMessageCount === 0),
       sendEnvMode: effectiveSendEnvMode,
       worktreePath: activeThread.worktreePath,

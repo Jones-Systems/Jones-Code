@@ -1263,6 +1263,9 @@ export function createThreadOutboxDelivery(): {
         attachments: prepared.attachments,
         settings: sendSettings,
         serverResolvesWorktreeBase: true,
+        serverSupportsRepoFreshness:
+          "repoFreshness" in currentConfig.environment.capabilities &&
+          currentConfig.environment.capabilities.repoFreshness === true,
         inlineMessageContext: currentConfig.environment.capabilities.inlineMessageContext === true,
       }),
     );

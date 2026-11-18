@@ -1,4 +1,5 @@
 import * as SearchGitProbe from "./jones/workspace/SearchGitProbe.ts";
+import * as RepoFreshness from "./jones/git/RepoFreshness.ts";
 import * as CoreFollowUpOwner from "./jones/orchestration/FollowUpCommandOwnerLayer.ts";
 import * as ControlAdmission from "./jones/orchestration/ControlAdmission.ts";
 import * as Scheduler from "./scheduling/Scheduler.ts";
@@ -805,6 +806,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
+  Layer.provideMerge(RepoFreshness.layer),
   Layer.provideMerge(
     RuntimeLayer.layerEventInfrastructure.pipe(Layer.provide(DependencyChanges.layer)),
   ),

@@ -43,6 +43,24 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+it("round-trips project freshness opt-ins and leaves older settings off", () => {
+  const id = ProjectId.make("repo-freshness");
+  expect(decodeServerSettings({}).projectSettingsOverrides[id]).toBeUndefined();
+  for (const cadence of [0, 120, 300] as const) {
+    const patch = { projectSettingsOverrides: { [id]: { repoFreshnessCadenceSeconds: cadence } } };
+    expect(decodeServerSettingsPatch(encodeServerSettingsPatch(patch))).toEqual(patch);
+    const saved = decodeServerSettings(patch);
+    expect(decodeServerSettings(encodeServerSettings(saved)).projectSettingsOverrides[id]).toEqual(
+      patch.projectSettingsOverrides[id],
+    );
+  }
+  expect(() =>
+    decodeServerSettingsPatch({
+      projectSettingsOverrides: { [id]: { repoFreshnessCadenceSeconds: 60 } },
+    }),
+  ).toThrow();
+});
+
 it("drops theme defaults from a client's settings patch", () => {
   expect(
     decodeClientServerSettingsPatch({

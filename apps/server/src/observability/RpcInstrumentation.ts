@@ -201,6 +201,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.worktreeSetupCancel]: "vcs",
   [WS_METHODS.subscribeResourceTelemetry]: "server",
   [WS_METHODS.vcsRefreshStatus]: "vcs",
+  [WS_METHODS.vcsGetRepoFreshness]: "vcs",
+  [WS_METHODS.vcsRefreshRepoFreshness]: "vcs",
   [WS_METHODS.vcsPull]: "git",
   [WS_METHODS.gitRunStackedAction]: "vcs",
   [WS_METHODS.gitResolvePullRequest]: "git",

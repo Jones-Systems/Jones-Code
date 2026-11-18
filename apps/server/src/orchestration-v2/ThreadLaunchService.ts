@@ -9,6 +9,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as LaunchPreparation from "../jones/ordinaryCheckout/LaunchPreparation.ts";
 import * as LegacyBootstrapLaunch from "../jones/legacyBootstrap/LegacyBootstrapLaunch.ts";
+import * as RepoFreshnessLaunch from "../jones/git/repoFreshnessLaunch.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as AutoLaunchStrategy from "../jones/conversationWorkspace/LaunchStrategy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
@@ -118,6 +119,7 @@ export type ThreadLaunchWorkspaceStrategy =
       readonly baseRef?: string | undefined;
       readonly branch?: string | undefined;
       readonly startFromOrigin?: boolean | undefined;
+      readonly baseFreshness?: "verified" | "fetch-now" | undefined;
     };
 
 export interface ThreadLaunchInitialMessage {
@@ -139,6 +141,8 @@ export interface ThreadLaunchInput {
   /** Server-owned legacy compatibility inputs; public launch schemas do not decode them. */
   readonly preparationReleaseCommandId?: CommandId;
   readonly legacyBootstrap?: OrchestrationV2LegacyBootstrapPolicy;
+  /** The receiving transport verified write access for this foreground request. */
+  readonly syncPrimaryOnFreshFetch?: true;
   readonly runSetupScript?: boolean;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
@@ -176,7 +180,12 @@ interface IdlePreparation {
 
 type PreparationInput = Pick<
   ThreadLaunchInput,
-  "commandId" | "projectId" | "workspaceStrategy" | "initialMessage" | "runSetupScript"
+  | "commandId"
+  | "projectId"
+  | "workspaceStrategy"
+  | "initialMessage"
+  | "runSetupScript"
+  | "syncPrimaryOnFreshFetch"
 > & {
   readonly reusedWorktree?: { readonly baseRef: string | undefined };
   readonly nativeCreation?: boolean;
@@ -381,6 +390,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
   // Jones retained owners: provenance capture, `auto` resolution, indexed metadata reads.
   const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
   const autoStrategy = yield* AutoLaunchStrategy.make;
+  const resolveFreshWorktreeBase = yield* RepoFreshnessLaunch.make();
   const metadataReads = yield* Effect.serviceOption(ThreadMetadataReads.ThreadMetadataReads);
   // Retain the service's database and lifetime. Lazy legacy construction must
   // not borrow a request fiber's context when it first executes.
@@ -600,6 +610,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
       });
     const baseResolves =
       hasBaseCommit ||
+      strategy.baseFreshness !== undefined ||
       baseRef === undefined ||
       (yield* Effect.gen(function* () {
         if (strategy.startFromOrigin === true) {
@@ -861,13 +872,42 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
             phase: "worktree",
           }).pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
         }
+        const mode = input.workspaceStrategy.baseFreshness;
+        if (mode === "fetch-now") yield* setupTracker.stageStatus(threadId, "fetch", "running");
+        const freshness =
+          mode === undefined
+            ? undefined
+            : yield* resolveFreshWorktreeBase(
+                input.projectId,
+                mode,
+                input.workspaceStrategy.baseRef,
+                input.syncPrimaryOnFreshFetch === true,
+              );
+        if (freshness?.status === "failed") {
+          yield* setupTracker.stageStatus(threadId, "fetch", "failed", freshness.detail);
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )(new Error(freshness.detail));
+        }
+        if (freshness !== undefined) {
+          yield* setupTracker.stageStatus(
+            threadId,
+            "fetch",
+            mode === "fetch-now" ? "done" : "skipped",
+            freshness.detail,
+          );
+        }
         const requestedBaseRef =
-          input.workspaceStrategy.baseRef ??
-          (yield* defaultWorktreeBase(input, project.workspaceRoot, threadId));
-        let startRef = requestedBaseRef;
+          freshness?.status === "selected"
+            ? freshness.baseRefName
+            : (input.workspaceStrategy.baseRef ??
+              (yield* defaultWorktreeBase(input, project.workspaceRoot, threadId)));
+        let startRef = freshness?.status === "selected" ? freshness.startRef : requestedBaseRef;
         let baseRefName = requestedBaseRef;
         const remote =
-          input.workspaceStrategy.startFromOrigin === true
+          mode === undefined && input.workspaceStrategy.startFromOrigin === true
             ? yield* git
                 .resolveWorktreeBaseRemote({
                   cwd: project.workspaceRoot,
@@ -876,7 +916,9 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
                 .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)))
             : null;
         const shouldFetch = remote !== null;
-        yield* setupTracker.stageStatus(threadId, "fetch", shouldFetch ? "running" : "skipped");
+        if (mode === undefined) {
+          yield* setupTracker.stageStatus(threadId, "fetch", shouldFetch ? "running" : "skipped");
+        }
         let fetchedBase = false;
         if (remote !== null) {
           const remoteBase = yield* git
@@ -905,24 +947,37 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
               refName: startRef === "-" ? "@{-1}" : startRef,
             })
             .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId))));
+        if (!recordedBaseResolves && mode === "fetch-now") {
+          const detail =
+            "The verified remote commit is no longer available in the project repository.";
+          yield* setupTracker.stageStatus(threadId, "fetch", "failed", detail);
+          return yield* mapError(input, "provision-worktree", threadId)(new Error(detail));
+        }
         if (!recordedBaseResolves) {
           const remoteName =
-            remote?.remoteName ??
-            (yield* git
-              .resolvePrimaryRemoteName(project.workspaceRoot)
-              .pipe(Effect.orElseSucceed(() => null)));
+            mode !== undefined
+              ? null
+              : (remote?.remoteName ??
+                (yield* git
+                  .resolvePrimaryRemoteName(project.workspaceRoot)
+                  .pipe(Effect.orElseSucceed(() => null))));
           const fallback = yield* worktreeFallbackBase(project.workspaceRoot, remoteName).pipe(
             Effect.orElseSucceed(() => null),
           );
           if (fallback !== null) {
             startRef = fallback.startRef;
             baseRefName = fallback.baseRefName;
-            yield* setupTracker.update(threadId, (snapshot) => ({
-              ...snapshot,
-              baseRef: fallback.baseRefName,
-            }));
+            if (freshness?.status === "selected") {
+              yield* setupTracker.stageStatus(
+                threadId,
+                "fetch",
+                "skipped",
+                "The last verified commit is unavailable. Using the local base.",
+              );
+            }
           }
         }
+        yield* setupTracker.update(threadId, (snapshot) => ({ ...snapshot, baseRef: baseRefName }));
         if (branch !== null && (generatedTemporaryBranch || isTemporaryWorktreeBranch(branch))) {
           const parts = branch.split("/");
           for (let depth = 1; depth < parts.length; depth++) {

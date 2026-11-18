@@ -3,6 +3,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
 import * as Logger from "effect/Logger";
 import * as ThreadMetadataReads from "./threadMetadataReads.ts";
+import * as RepoFreshness from "../git/RepoFreshness.ts";
 import * as WorktreeSetupTracker from "../../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
@@ -90,6 +91,7 @@ const adapter = {
 interface HarnessOptions {
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
+  readonly hasCommit?: GitWorkflow.GitWorkflowService["Service"]["hasCommit"];
   readonly resolveWorktreeBaseRemote?: GitWorkflow.GitWorkflowService["Service"]["resolveWorktreeBaseRemote"];
   readonly fetchWorktreeBaseCommit?: GitWorkflow.GitWorkflowService["Service"]["fetchWorktreeBaseCommit"];
   readonly listRefs?: GitWorkflow.GitWorkflowService["Service"]["listRefs"];
@@ -99,6 +101,7 @@ interface HarnessOptions {
   readonly generateBranchName?: TextGeneration.TextGeneration["Service"]["generateBranchName"];
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly providers?: ReadonlyArray<ServerProvider>;
+  readonly repoFreshness?: RepoFreshness.RepoFreshness["Service"];
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -142,6 +145,9 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   const externalServices = Layer.mergeAll(
     WorktreeSetupTracker.layer,
+    options.repoFreshness === undefined
+      ? Layer.empty
+      : Layer.succeed(RepoFreshness.RepoFreshness, options.repoFreshness),
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
     // The project at /repo is a Git repository, as the Git workflow below reports.
@@ -173,7 +179,8 @@ function makeHarness(options: HarnessOptions = {}) {
       createWorktree,
       // Every named base exists in this repository; no local branch occupies a
       // generated branch's parent path, so neither the fallback base nor flattening applies.
-      hasCommit: ({ refName }) => Effect.succeed(!refName.startsWith("refs/heads/")),
+      hasCommit:
+        options.hasCommit ?? (({ refName }) => Effect.succeed(!refName.startsWith("refs/heads/"))),
       renameBranch,
       resolveWorktreeBaseRemote:
         options.resolveWorktreeBaseRemote ??
@@ -615,6 +622,97 @@ it.effect.each([
         harness.createWorktree.mock.calls[0]?.[0].baseRefName,
         missing ? base : `refs/remotes/${remoteName}/${branchName}`,
       );
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect.each([
+  { mode: "verified", fails: false, sync: false, missing: false },
+  { mode: "verified", fails: false, sync: false, missing: true },
+  { mode: "fetch-now", fails: false, sync: false, missing: false },
+  { mode: "fetch-now", fails: false, sync: true, missing: false },
+  { mode: "fetch-now", fails: true, sync: false, missing: false },
+  { mode: "fetch-now", fails: false, sync: false, missing: true },
+] as const)(
+  "prepares $mode with fetch failure $fails, primary sync $sync, and missing commit $missing",
+  ({ mode, fails, sync, missing }) => {
+    const verified = {
+      remoteName: "origin",
+      branchName: "main",
+      commitSha: "a".repeat(40),
+      checkedAtMs: 10,
+    };
+    const newer = { ...verified, commitSha: "b".repeat(40), checkedAtMs: 11 };
+    const status = {
+      projectId,
+      cadenceSeconds: 120,
+      target: { status: "resolved", remoteName: "origin" },
+      latestVerified: verified,
+      latestAttempt: { status: "succeeded", verification: verified },
+      freshness: "fresh",
+    } satisfies RepoFreshness.RepoFreshnessStatus;
+    const read = vi.fn(() => Effect.succeed(status));
+    const checked = {
+      ...status,
+      latestAttempt: fails
+        ? { status: "failed" as const, checkedAtMs: 11 }
+        : { status: "succeeded" as const, verification: newer },
+    };
+    const checkForLaunch = vi.fn(() => Effect.succeed(checked));
+    const refresh = vi.fn(() =>
+      Effect.succeed({
+        status: checked,
+        checkout: { status: "skipped" as const, reason: "auto-pull-disabled" as const },
+      }),
+    );
+    const ordinaryFetch = vi.fn(() => Effect.die("must use the selected freshness mode"));
+    const rejected = fails || (mode === "fetch-now" && missing);
+    const preparedBase = missing ? "HEAD" : "refs/remotes/origin/main";
+    const harness = makeHarness({
+      repoFreshness: { status: read, checkForLaunch, refresh },
+      fetchWorktreeBaseCommit: ordinaryFetch,
+      hasCommit: ({ refName }) =>
+        Effect.succeed(!missing || (refName !== verified.commitSha && refName !== newer.commitSha)),
+    });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const launched = yield* launches.launch({
+        ...launchInput({
+          command: "command:freshness-base",
+          thread: "thread:freshness-base",
+          message: "Use the verified base",
+          workspace: { type: "worktree", branch: "feature", baseFreshness: mode },
+        }),
+        ...(sync ? { syncPrimaryOnFreshFetch: true as const } : {}),
+      });
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        Stream.filter(
+          ({ event }) =>
+            event.type === "run.updated" &&
+            event.payload.status === (rejected ? "failed" : "starting"),
+        ),
+        Stream.runHead,
+      );
+      assert.lengthOf(ordinaryFetch.mock.calls, 0);
+      assert.lengthOf(read.mock.calls, mode === "verified" ? 1 : 0);
+      assert.lengthOf(checkForLaunch.mock.calls, mode === "fetch-now" && !sync ? 1 : 0);
+      assert.lengthOf(refresh.mock.calls, mode === "fetch-now" && sync ? 1 : 0);
+      assert.lengthOf(harness.createWorktree.mock.calls, rejected ? 0 : 1);
+      const snapshot = yield* tracker.get(launched.threadId);
+      const fetchStage = snapshot?.stages.find(({ id }) => id === "fetch");
+      if (rejected) {
+        assert.equal(fetchStage?.status, "failed");
+      } else {
+        assert.equal(
+          harness.createWorktree.mock.calls[0]?.[0].refName,
+          missing ? "HEAD" : mode === "verified" ? verified.commitSha : newer.commitSha,
+        );
+        assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, preparedBase);
+        assert.equal(snapshot?.baseRef, preparedBase);
+        if (missing) assert.include(fetchStage?.detail, "Using the local base.");
+      }
     }).pipe(Effect.provide(harness.layer));
   },
 );

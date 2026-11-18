@@ -3545,6 +3545,19 @@
       ]
     },
     {
+      "id": "jones-remote-fetch-observation",
+      "tests": [
+        "apps/server/src/jones/git/remoteFetchObservation.test.ts",
+        "apps/server/src/vcs/GitVcsDriverCore.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/git/remoteFetchObservation.test.ts apps/server/src/vcs/GitVcsDriverCore.test.ts --maxWorkers=1 --no-file-parallelism -t 'remote and coverage|orders late completion|evicted observation|latest fetched remote commit|cached remote divergence|upstream status fetch|claimed status fetch|running status fetch|worktree.*base'",
+        "vp lint apps/server/src/jones/git/remoteFetchObservation.ts apps/server/src/jones/git/remoteFetchObservation.test.ts apps/server/src/vcs/GitVcsDriver.ts apps/server/src/vcs/GitVcsDriverCore.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-vcs-cache-efficiency",
       "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
       "commands": [
@@ -5718,6 +5731,42 @@
         "vp test run apps/server/src/jones/mcp/workstreams/handlers.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/textGeneration/jones/CodexRemoteRequestEvaluation.test.ts apps/server/src/textGeneration/TextGenerators.test.ts",
         "vp test run apps/server/src/provider/Drivers/CodexDriver.test.ts apps/server/src/provider/AgentContextBudget.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/scripts/jones/currentFixtures.test.ts",
         "vp test run apps/web/src/jones/workstreams/WorkstreamPickerProvenance.browser.test.tsx apps/web/src/jones/workstreams/personalWorkstreamMenu.browser.test.tsx"
+      ]
+    },
+    {
+      "id": "jones-repo-freshness",
+      "tests": [
+        "apps/server/src/jones/git/RepoFreshness.test.ts",
+        "apps/server/src/jones/git/repoFreshnessLaunch.test.ts",
+        "apps/web/src/jones/composer/firstSendWorktree.test.ts",
+        "apps/mobile/src/lib/projectThreadStartTurn.test.ts",
+        "apps/mobile/src/state/threadOutboxDelivery.test.ts",
+        "apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/contracts/src/settings.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/git/RepoFreshness.test.ts apps/server/src/jones/git/repoFreshnessLaunch.test.ts apps/web/src/jones/composer/firstSendWorktree.test.ts apps/mobile/src/lib/projectThreadStartTurn.test.ts apps/mobile/src/state/threadOutboxDelivery.test.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts packages/client-runtime/src/operations/commands.test.ts packages/contracts/src/settings.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-repo-freshness-controls",
+      "tests": [
+        "apps/server/src/jones/repoFreshness/wsHandlers.test.ts",
+        "apps/web/src/jones/repoFreshness/repoFreshness.browser.test.tsx",
+        "packages/client-runtime/src/jones/repoFreshness.test.ts",
+        "packages/contracts/src/jones/repoFreshness.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/repoFreshness/wsHandlers.test.ts apps/web/src/jones/repoFreshness/repoFreshness.browser.test.tsx packages/client-runtime/src/jones/repoFreshness.test.ts packages/contracts/src/jones/repoFreshness.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     },
     {

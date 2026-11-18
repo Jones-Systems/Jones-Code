@@ -53,6 +53,11 @@ import * as VcsDriver from "./VcsDriver.ts";
 import * as VcsProcess from "./VcsProcess.ts";
 import * as CaptureRepository from "../jones/checkpointCapture/CaptureRepository.ts";
 import type {
+  RemoteFetchObservation,
+  RemoteFetchTarget,
+} from "../jones/git/remoteFetchObservation.ts";
+import type { RepoFreshnessRemote } from "../jones/git/repoFreshnessGit.ts";
+import type {
   LegacyBranchRenameHooks,
   LegacyWorktreePreparationHooks,
 } from "../jones/nativeCreation/worktreeObservation/WorktreeObservation.ts";
@@ -369,6 +374,14 @@ export class GitVcsDriver extends Context.Service<
       cwd: string,
       options?: GitRemoteStatusOptions,
     ) => Effect.Effect<GitRemoteStatusDetails, GitCommandError>;
+    readonly readRemoteFetchObservation: (
+      input: RemoteFetchTarget & { readonly cwd: string },
+    ) => Effect.Effect<RemoteFetchObservation>;
+    readonly bindRemoteFetchObservations: (
+      cwd: string,
+      remoteName: string,
+    ) => Effect.Effect<(coverage: RemoteFetchTarget["coverage"]) => RemoteFetchObservation>;
+    readonly resolveRepoFreshnessRemote: (cwd: string) => Effect.Effect<RepoFreshnessRemote | null>;
     /** Refs, HEAD and shallow boundaries. Null when the snapshot cannot be read. */
     readonly readRefSnapshot: (cwd: string) => Effect.Effect<string | null>;
     readonly prepareCommitContext: (
