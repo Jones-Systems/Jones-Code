@@ -28,6 +28,7 @@ import { qualify, type QualificationInput } from "./Qualification.ts";
 import type { Probe } from "./ConsumerProbe.ts";
 import { NativeObservations } from "./NativeObservations.ts";
 import * as GitDriver from "../../vcs/GitVcsDriver.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   finalCheckpointSettled,
   legacySettlementAdmission,
@@ -510,6 +511,11 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           );
     }
     yield* assess;
+    // Only the owner's Retire of a confirmed proposal may preserve to a branch, push and force removal.
+    const preserve =
+      Option.isSome(gitDriver) && request.cause === "owner_action" && request.ownerCoverage
+        ? { git: gitDriver.value, host: yield* HostProcess.Hostname }
+        : undefined;
     return yield* retire({
       cause: request.cause,
       worktree: request.worktree,
@@ -526,6 +532,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
             }).pipe(mapError),
           }
         : {}),
+      ...(preserve ? { preserve } : {}),
       finalizeOutputs: (receipt) => {
         // The interrupted reconcile settles before any observation, so read the registry as the
         // absent-checkout finish does.
