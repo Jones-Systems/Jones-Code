@@ -99,15 +99,15 @@ function WorkstreamHistory({
         <DialogFooter>
           <Button
             disabled={busy || !canReopen}
-            onClick={async () => {
+            onClick={() => {
               setBusy(true);
-              try {
-                const result = await controller.setLifecycle(id, "active");
-                if (result.ok) onClose();
-                else showPersonalFailure(result.failure);
-              } finally {
-                setBusy(false);
-              }
+              void controller
+                .setLifecycle(id, "active")
+                .then((result) => {
+                  if (result.ok) onClose();
+                  else showPersonalFailure(result.failure);
+                })
+                .finally(() => setBusy(false));
             }}
           >
             Reopen Workstream
