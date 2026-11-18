@@ -162,7 +162,9 @@ export function makeRemoteFetchBinding(input: {
         refspecResult.stdoutTruncated
       )
         return null;
-      const refspecs = refspecResult.stdout.split("\0").filter(Boolean);
+      if (refspecResult.exitCode === 0 && !refspecResult.stdout.endsWith("\0")) return null;
+      const refspecs =
+        refspecResult.exitCode === 0 ? refspecResult.stdout.slice(0, -1).split("\0") : [];
       const hash = (value: unknown) =>
         digest
           .digest(Digest.sha256, new TextEncoder().encode(JSON.stringify(value)))

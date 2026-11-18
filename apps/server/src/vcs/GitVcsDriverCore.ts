@@ -82,6 +82,7 @@ import {
   makeRemoteFetchWriters,
   remoteFetchWriterKey,
 } from "../jones/git/remoteFetchObservation.ts";
+import { fetchRepoDefault } from "../jones/git/repoFreshnessGit.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -2018,6 +2019,38 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             detail: "No git remote is configured for this repository.",
           }),
       ),
+    );
+
+  const resolveRepoFreshnessRemote: GitVcsDriver.GitVcsDriver["Service"]["resolveRepoFreshnessRemote"] =
+    Effect.fn("GitVcsDriver.resolveRepoFreshnessRemote")(
+      function* (cwd) {
+        const physicalCwd = yield* fileSystem.realPath(cwd);
+        const names = yield* listRemoteNames(physicalCwd);
+        const remoteName = names.includes("origin")
+          ? "origin"
+          : names.length === 1
+            ? names[0]
+            : null;
+        if (!remoteName) return null;
+        const bound = yield* bindRemoteFetch(physicalCwd, remoteName);
+        if (bound === null) return null;
+        return {
+          identity: bound.identity,
+          remoteName,
+          check: withRemoteFetchWriter(
+            remoteFetchWriterKey(bound.gitCommonDir, remoteName),
+            Effect.gen(function* () {
+              const selected = yield* fetchRepoDefault(bound);
+              const current = yield* bindRemoteFetch(physicalCwd, remoteName);
+              if (current?.identity !== bound.identity || current.gitDir !== bound.gitDir) {
+                return yield* invalidRemoteFetch(bound.cwd);
+              }
+              return selected;
+            }),
+          ),
+        };
+      },
+      Effect.orElseSucceed(() => null),
     );
 
   const resolveConfiguredPushRemoteName = Effect.fn("resolveConfiguredPushRemoteName")(function* (
@@ -6438,6 +6471,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     statusDetailsRemote,
     readRemoteFetchObservation,
     bindRemoteFetchObservations,
+    resolveRepoFreshnessRemote,
     readRefSnapshot,
     prepareCommitContext,
     commit: Effect.fnUntraced(function* (cwd, subject, body, options) {

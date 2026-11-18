@@ -56,6 +56,7 @@ import type {
   RemoteFetchObservation,
   RemoteFetchTarget,
 } from "../jones/git/remoteFetchObservation.ts";
+import type { RepoFreshnessRemote } from "../jones/git/repoFreshnessGit.ts";
 import type {
   LegacyBranchRenameHooks,
   LegacyWorktreePreparationHooks,
@@ -380,6 +381,7 @@ export class GitVcsDriver extends Context.Service<
       cwd: string,
       remoteName: string,
     ) => Effect.Effect<(coverage: RemoteFetchTarget["coverage"]) => RemoteFetchObservation>;
+    readonly resolveRepoFreshnessRemote: (cwd: string) => Effect.Effect<RepoFreshnessRemote | null>;
     /** Refs, HEAD and shallow boundaries. Null when the snapshot cannot be read. */
     readonly readRefSnapshot: (cwd: string) => Effect.Effect<string | null>;
     readonly prepareCommitContext: (

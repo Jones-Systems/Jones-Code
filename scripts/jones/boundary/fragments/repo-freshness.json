@@ -1,0 +1,25 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "repo-freshness",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/git/RepoFreshness.ts",
+    "apps/server/src/jones/git/RepoFreshness.test.ts",
+    "apps/server/src/jones/git/repoFreshnessGit.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/git/RepoFreshness.ts"
+    },
+    {
+      "from": "apps/server/src/vcs/GitVcsDriver.ts",
+      "to": "apps/server/src/jones/git/repoFreshnessGit.ts"
+    },
+    {
+      "from": "apps/server/src/vcs/GitVcsDriverCore.ts",
+      "to": "apps/server/src/jones/git/repoFreshnessGit.ts"
+    }
+  ]
+}

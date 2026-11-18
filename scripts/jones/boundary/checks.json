@@ -5711,6 +5711,19 @@
       ]
     },
     {
+      "id": "jones-repo-freshness",
+      "tests": [
+        "apps/server/src/jones/git/RepoFreshness.test.ts",
+        "packages/contracts/src/settings.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/git/RepoFreshness.test.ts packages/contracts/src/settings.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-remote-file-links",
       "tests": ["apps/web/src/jones/remoteFileLinks/RemoteFilePreview.browser.test.tsx"],
       "commands": [

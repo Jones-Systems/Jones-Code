@@ -1,4 +1,5 @@
 import * as SearchGitProbe from "./jones/workspace/SearchGitProbe.ts";
+import * as RepoFreshness from "./jones/git/RepoFreshness.ts";
 import * as CoreFollowUpOwner from "./jones/orchestration/FollowUpCommandOwnerLayer.ts";
 import * as ControlAdmission from "./jones/orchestration/ControlAdmission.ts";
 import * as Scheduler from "./scheduling/Scheduler.ts";
@@ -1481,6 +1482,7 @@ const layerMakeServer = Layer.unwrap(
       ).pipe(Effect.asVoid),
     }).pipe(
       Layer.provide(ThreadMetadataReads.layer),
+      Layer.provideMerge(RepoFreshness.layer),
       Layer.provideMerge(layerRuntimeDependencies),
       Layer.provide(layerLauncher),
     );

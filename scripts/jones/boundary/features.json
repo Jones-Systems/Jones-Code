@@ -2264,6 +2264,11 @@
       "scope": "The Git driver owns bounded in-memory evidence keyed by physical Git common directory, effective remote URL configuration and coverage. The existing status writer observes captured configured refspecs, and the worktree-base writer observes its selected branch. Driver hooks run Git with the captured physical admin directory and pinned effective remote URL, and return the branch SHA from the fetch's own result. The server-only read methods bind a fresh identity for one or multiple coverage reads. Jones tests cover alias swaps, retargeting, refspec changes, failures, timeouts, eviction and completion order with synthetic Git fixtures."
     },
     {
+      "id": "repo-freshness",
+      "tests": ["apps/server/src/jones/git/RepoFreshness.test.ts"],
+      "scope": "Server-owned project-ID status, awaitable live refresh, server-activated polling and optional project cadence. Physical Git targets share a single in-flight check, which selects the remote-advertised default branch and materializes its exact SHA without moving tracking refs or a checkout. Status retains prior success through failures until it becomes stale, and binds it to the current configured remote."
+    },
+    {
       "id": "vcs-cache-efficiency",
       "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
       "scope": "VCS status cache updates mutate the private directory map synchronously while replacing snapshot values, preserving deduplication, remote ordering and existing retention. A small accepted shared-file edit and colocated regression preserve private cache ownership without adding an extraction interface."
