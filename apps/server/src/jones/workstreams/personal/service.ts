@@ -66,12 +66,19 @@ export class PersonalWorkstreams extends Context.Service<
   }
 >()("t3/jones/workstreams/personal/service/PersonalWorkstreams") {}
 
-const definitionColumns = `id, name, lifecycle, color, order_key AS orderKey, created_at AS createdAt, updated_at AS updatedAt, deleted_at AS deletedAt, rev, lifecycle_revision AS lifecycleRevision, origin`;
+const definitionColumns = `id, name, lifecycle, color, order_key AS orderKey, created_at AS createdAt, updated_at AS updatedAt, deleted_at AS deletedAt, rev, lifecycle_revision AS lifecycleRevision, snoozed_at AS snoozedAt, snoozed_until AS snoozedUntil, origin`;
 const normalizeDefinition = ({
   lifecycleRevision,
+  snoozedAt,
+  snoozedUntil,
   ...definition
-}: P.PersonalWorkstream): P.PersonalWorkstream =>
-  lifecycleRevision ? { ...definition, lifecycleRevision } : definition;
+}: P.PersonalWorkstream): P.PersonalWorkstream => ({
+  ...definition,
+  ...(lifecycleRevision ? { lifecycleRevision } : {}),
+  ...(snoozedAt == null && snoozedUntil == null
+    ? {}
+    : { snoozedAt: snoozedAt ?? null, snoozedUntil: snoozedUntil ?? null }),
+});
 const assignmentColumns = `a.thread_id AS threadId, a.workstream_id AS workstreamId, a.revision, a.updated_at AS updatedAt`;
 const ImportFile = Schema.Struct({
   schema: Schema.Literal("jones.workstreams-personal-import/v1"),
@@ -142,7 +149,7 @@ const make = Effect.gen(function* () {
     return next;
   });
   const store = Effect.fn("PersonalWorkstreams.store")(function* (w: P.PersonalWorkstream) {
-    yield* sql`INSERT INTO jones_personal_workstreams ${sql.insert({ id: w.id, name: w.name, lifecycle: w.lifecycle, color: w.color, order_key: w.orderKey, created_at: w.createdAt, updated_at: w.updatedAt, deleted_at: w.deletedAt, rev: w.rev, lifecycle_revision: w.lifecycleRevision ?? 0, origin: w.origin })} ON CONFLICT(id) DO UPDATE SET name=excluded.name,lifecycle=excluded.lifecycle,color=excluded.color,order_key=excluded.order_key,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,rev=excluded.rev,lifecycle_revision=excluded.lifecycle_revision,origin=excluded.origin`;
+    yield* sql`INSERT INTO jones_personal_workstreams ${sql.insert({ id: w.id, name: w.name, lifecycle: w.lifecycle, color: w.color, order_key: w.orderKey, created_at: w.createdAt, updated_at: w.updatedAt, deleted_at: w.deletedAt, rev: w.rev, lifecycle_revision: w.lifecycleRevision ?? 0, snoozed_at: w.snoozedAt ?? null, snoozed_until: w.snoozedUntil ?? null, origin: w.origin })} ON CONFLICT(id) DO UPDATE SET name=excluded.name,lifecycle=excluded.lifecycle,color=excluded.color,order_key=excluded.order_key,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,rev=excluded.rev,lifecycle_revision=excluded.lifecycle_revision,snoozed_at=excluded.snoozed_at,snoozed_until=excluded.snoozed_until,origin=excluded.origin`;
   });
   const unsettledMember = (id: string) =>
     sql`SELECT 1
@@ -165,10 +172,11 @@ const make = Effect.gen(function* () {
     ),
   );
   const merge = Effect.fn("PersonalWorkstreams.merge")(function* (
-    w: P.PersonalWorkstream,
+    candidate: P.PersonalWorkstream,
     expected?: P.PersonalWorkstream,
   ): Effect.fn.Return<P.PutResult, SqlError | P.WorkstreamsPersonalError> {
-    const old = yield* definition(w.id);
+    const old = yield* definition(candidate.id);
+    const w = old ? P.preservePersonalWorkstreamSnooze(candidate, old) : candidate;
     const comparison = old === null ? 1 : P.comparePersonalWorkstreams(w, old);
     if (comparison <= 0)
       return {
@@ -190,7 +198,16 @@ const make = Effect.gen(function* () {
       (w.lifecycleRevision ?? 0) <= (old.lifecycleRevision ?? 0)
     )
       return yield* new P.WorkstreamsPersonalError({ code: "precondition_failed" });
-    if (expected && (!old || P.comparePersonalWorkstreams(old, expected) !== 0))
+    if (
+      expected &&
+      (!old ||
+        P.comparePersonalWorkstreams(
+          old,
+          expected.snoozedUntil === undefined
+            ? P.preservePersonalWorkstreamSnooze(expected, old)
+            : expected,
+        ) !== 0)
+    )
       return yield* new P.WorkstreamsPersonalError({ code: "precondition_failed" });
     yield* store(w);
     if (w.deletedAt !== null)
@@ -231,6 +248,7 @@ const make = Effect.gen(function* () {
               `SELECT ${assignmentColumns} FROM jones_personal_workstream_assignments a JOIN orchestration_v2_projection_threads t ON t.thread_id=a.thread_id WHERE t.deleted_at IS NULL`,
             ),
             importIssue,
+            supportsSnooze: true as const,
             ...(autoAssignments === undefined ? {} : { autoAssignments }),
           };
         }),
@@ -368,7 +386,12 @@ const make = Effect.gen(function* () {
             currentAssignment: current,
           });
         const group = yield* definition(input.workstreamId);
-        if (group === null || group.lifecycle !== "active" || group.name !== input.workstreamName)
+        if (
+          group === null ||
+          group.lifecycle !== "active" ||
+          group.name !== input.workstreamName ||
+          P.isPersonalWorkstreamSnoozed(group, Date.parse(yield* now))
+        )
           return yield* new P.WorkstreamsPersonalError({ code: "workstream_not_found" });
         if (group.deletedAt !== null)
           return yield* new P.WorkstreamsPersonalError({ code: "workstream_deleted" });

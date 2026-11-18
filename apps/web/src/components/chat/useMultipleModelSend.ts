@@ -9,6 +9,7 @@ import {
   type EnvironmentId,
   type ModelSelection,
   type RuntimeMode,
+  type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -105,6 +106,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     isCurrentSend,
     draftChangedDuringPreparation,
     submittedComposerDraft,
+    onNewThreadAccepted,
   }: {
     readonly threadId: ThreadId;
     readonly project: EnvironmentProject;
@@ -123,6 +125,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     /** False once a newer send from this composer started. */
     readonly isCurrentSend: () => boolean;
     readonly draftChangedDuringPreparation: () => boolean;
+    readonly onNewThreadAccepted?: ((thread: ScopedThreadRef) => void) | undefined;
   }) => {
     const { attachments: attachmentsSnapshot, messageText } = sendSnapshot;
     const planned = targets.map((target) => {
@@ -208,7 +211,10 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
             retryKey,
             targetThreadId,
             whenAccepted: (callback) =>
-              pendingSends.whenAccepted(environmentId, targetThreadId, messageId, callback),
+              pendingSends.whenAccepted(environmentId, targetThreadId, messageId, () => {
+                callback();
+                onNewThreadAccepted?.(scopeThreadRef(environmentId, targetThreadId));
+              }),
             failureKnownUnsent: () =>
               pendingSends.get(environmentId, targetThreadId, messageId)?.delivery === "failed",
             model: target.selection.model,

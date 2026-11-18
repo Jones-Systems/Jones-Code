@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import * as ConfigProvider from "effect/ConfigProvider";
 import { ServerSelfUpdateError, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -29,6 +30,7 @@ import * as ServerSelfUpdate from "./selfUpdate.ts";
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
   readonly qualified?: boolean;
+  readonly archiveProvenance?: boolean;
   readonly qualifiedRecovery?: boolean;
   readonly releaseBaseUrl?: string | null;
   readonly managed?: boolean;
@@ -44,6 +46,14 @@ interface HarnessOptions {
 }
 
 const archiveBytes = new TextEncoder().encode("not really a tarball");
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const releaseChecksum = (bytes: Uint8Array) =>
+  Effect.promise(() => crypto.subtle.digest("SHA-256", bytes)).pipe(
+    Effect.map((digest) =>
+      Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+    ),
+  );
+
 /** These cases fake `installQualified`, so staged verification is never reached. */
 const verifyStaged: ServerSelfUpdate.QualifiedStageVerifier = () =>
   Promise.reject(new Error("staged verification is faked by installQualified"));
@@ -52,10 +62,7 @@ const releaseHttpClient = (order: string[], urls: string[], beforeDownload?: Eff
     Effect.gen(function* () {
       urls.push(request.url);
       if (request.url.endsWith("/SHA256SUMS")) {
-        const digest = yield* Effect.promise(() => crypto.subtle.digest("SHA-256", archiveBytes));
-        const hex = Array.from(new Uint8Array(digest), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join("");
+        const hex = yield* releaseChecksum(archiveBytes);
         return HttpClientResponse.fromWeb(
           request,
           new Response(`${hex}  t3-1.1.0-linux-x64.tar.gz\n`),
@@ -96,7 +103,26 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
           order.push("extract");
           const stagingDir = input.args[input.args.indexOf("-C") + 1];
           if (stagingDir === undefined) return yield* Effect.die("missing tar target");
-          yield* fs.writeFileString(path.join(stagingDir, "t3"), "#!/bin/sh\n").pipe(Effect.orDie);
+          const entry = "#!/bin/sh\n";
+          yield* fs.writeFileString(path.join(stagingDir, "t3"), entry).pipe(Effect.orDie);
+          if (options.archiveProvenance) {
+            yield* fs
+              .writeFileString(
+                path.join(stagingDir, ".jones-provenance.json"),
+                encodeJson({
+                  schema: 1,
+                  repository: "Jones-Systems/Jones-Code",
+                  source: "a".repeat(40),
+                  version: "1.1.0",
+                  platform: "linux",
+                  architecture: "x64",
+                  artifact: "t3-1.1.0-linux-x64.tar.gz",
+                  sha256: yield* releaseChecksum(archiveBytes),
+                  entrySha256: yield* releaseChecksum(new TextEncoder().encode(entry)),
+                }),
+              )
+              .pipe(Effect.orDie);
+          }
           return {
             stdout: "",
             stderr: "",
@@ -397,9 +423,22 @@ it.layer(NodeServices.layer)("server self update", (it) => {
     }),
   );
 
-  it.effect("stages the runtime without asking the launcher to restart", () =>
+  it.effect("refuses deferred installation when the archive has no Jones provenance", () =>
     Effect.gen(function* () {
       const { selfUpdate, order } = yield* makeHarness();
+      const error = yield* selfUpdate
+        .update({ targetVersion: "1.1.0", stageOnly: true })
+        .pipe(Effect.flip);
+      expect(error.reason).toContain("Jones provenance");
+      expect(order).toEqual(["download", "extract"]);
+      expect((yield* selfUpdate.update({ targetVersion: "1.1.0" })).updateId).toBe("launcher-id");
+      expect(order).toEqual(["download", "extract", "download", "extract", "preflight", "accept"]);
+    }),
+  );
+
+  it.effect("stages the runtime without asking the launcher to restart", () =>
+    Effect.gen(function* () {
+      const { selfUpdate, order } = yield* makeHarness({ archiveProvenance: true });
       expect(yield* selfUpdate.update({ targetVersion: "1.1.0", stageOnly: true })).toEqual({
         targetVersion: "1.1.0",
         method: "boot-service",

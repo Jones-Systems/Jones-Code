@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 // @effect-diagnostics nodeBuiltinImport:off - node:path.win32 stands in for a Windows host in one test.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -29,6 +30,8 @@ import {
 } from "./pinnedRuntime.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const sourceCommit = "a".repeat(40);
 const version = "1.2.3";
 const archiveName = `t3-${version}-linux-x64.tar.gz`;
 const archiveBytes = new TextEncoder().encode("not really a tarball");
@@ -70,6 +73,32 @@ const extractingRunner = (fs: FileSystem.FileSystem, path: Path.Path, commands: 
         };
       }),
   });
+
+const writeProvenance = (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  paths: ReturnType<typeof pinnedRuntimePaths>,
+  entry: string,
+  source = sourceCommit,
+) =>
+  archiveHex(new TextEncoder().encode(entry)).pipe(
+    Effect.flatMap((entrySha256) =>
+      fs.writeFileString(
+        path.join(paths.versionDir, ".jones-provenance.json"),
+        encodeJson({
+          schema: 1,
+          repository: "Jones-Systems/Jones-Code",
+          source,
+          version,
+          platform: "linux",
+          architecture: "x64",
+          artifact: archiveName,
+          sha256: "b".repeat(64),
+          entrySha256,
+        }),
+      ),
+    ),
+  );
 
 it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
   it.effect("installs the verified release archive as the runtime executable", () =>
@@ -142,6 +171,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
         httpClient: client,
         runner: extractingRunner(fs, path),
         validate: () => Effect.die("must not validate an interrupted archive"),
@@ -209,6 +239,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
         httpClient: HttpClient.make((request) => {
           requests.push(request.url);
           const isChecksums = request.url.endsWith("/SHA256SUMS");
@@ -251,6 +282,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
         httpClient: HttpClient.make((request) => {
           const isChecksums = request.url.endsWith("/SHA256SUMS");
           const response = HttpClientResponse.fromWeb(
@@ -298,6 +330,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
         httpClient: HttpClient.make((request) => {
           requests += 1;
           return Effect.fail(
@@ -327,6 +360,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
         httpClient: releaseHttpClient(`${"0".repeat(64)}  ${archiveName}\n`),
         runner: extractingRunner(fs, path, commands),
         validate: () => Effect.die("must not validate an unverified archive"),
@@ -353,6 +387,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
         httpClient: releaseHttpClient(yield* validChecksums),
         runner: extractingRunner(fs, path),
         validate: (staging) =>
@@ -384,6 +419,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
         httpClient: releaseHttpClient(yield* validChecksums),
         runner: extractingRunner(fs, path),
         validate: () =>
@@ -400,7 +436,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
     }),
   );
 
-  it.effect("replaces an incomplete pinned runtime", () =>
+  it.effect("replaces an incomplete runtime with verified Jones provenance", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -408,6 +444,8 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const finalPaths = pinnedRuntimePaths(path, baseDir, version, "linux");
       yield* fs.makeDirectory(finalPaths.versionDir, { recursive: true });
       yield* fs.writeFileString(path.join(finalPaths.versionDir, "partial"), "incomplete\n");
+      yield* fs.writeFileString(finalPaths.entryPath, "old executable");
+      yield* writeProvenance(fs, path, finalPaths, "old executable");
 
       yield* ensurePinnedRuntimeInstalled({
         baseDir,
@@ -416,6 +454,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
         httpClient: releaseHttpClient(yield* validChecksums),
         runner: extractingRunner(fs, path),
         validate: () => Effect.void,
@@ -434,6 +473,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const cached = pinnedRuntimePaths(path, baseDir, version, "linux");
       yield* fs.makeDirectory(path.dirname(cached.entryPath), { recursive: true });
       yield* fs.writeFileString(cached.entryPath, "#!/bin/sh\n");
+      yield* writeProvenance(fs, path, cached, "#!/bin/sh\n");
       yield* fs.writeFileString(cached.sentinelPath, `${version}\n`);
       const install = (checksums: string, requests: string[]) =>
         ensurePinnedRuntimeInstalled({
@@ -470,6 +510,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       const finalPaths = pinnedRuntimePaths(path, baseDir, version, "linux");
       yield* fs.makeDirectory(path.dirname(finalPaths.entryPath), { recursive: true });
       yield* fs.writeFileString(finalPaths.entryPath, "broken\n");
+      yield* writeProvenance(fs, path, finalPaths, "broken\n");
       yield* fs.writeFileString(finalPaths.sentinelPath, `${version}\n`);
 
       let validations = 0;
@@ -481,6 +522,7 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
         path,
         platform: "linux",
         arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
         httpClient: releaseHttpClient(yield* validChecksums, requests),
         runner: extractingRunner(fs, path),
         validate: (paths) =>
@@ -668,6 +710,7 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
       if (linkedHome) yield* fs.symlink(baseDir, home);
 
       // The launch agent puts the running runtime's own directory on PATH.
+      const runtimePath = yield* fs.realPath(ownDir);
       const removed = yield* prunePinnedRuntimes({ baseDir: home, keep: ["2.0.0"] }).pipe(
         Effect.provideService(
           ProcessRunner.ProcessRunner,
@@ -676,7 +719,7 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
         Effect.provideService(HostProcess.Platform, "darwin"),
         Effect.provideService(HostProcess.Environment, {
           T3CODE_INSTALL_BIN_DIR: binDir,
-          PATH: onPath ? `${ownDir}:/usr/bin:/bin` : "/usr/bin:/bin",
+          PATH: onPath ? `${runtimePath}:/usr/bin:/bin` : "/usr/bin:/bin",
         }),
       );
       assert.deepEqual(removed, ["1.0.0"]);

@@ -2,15 +2,16 @@ import type {
   EnvironmentId,
   ThreadRegistryComposedSnapshot,
   ThreadRegistryWorkstreams,
-  VoiceReviewAction,
   VoiceReviewDraft,
   VoiceReviewRecentList,
 } from "@t3tools/contracts";
+import { isClosedPersonalWorkstream } from "@t3tools/contracts/jones/workstreamsPersonal";
 import { useEffect, useEffectEvent, useId, useRef, useState, useSyncExternalStore } from "react";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Skeleton } from "../ui/skeleton";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { promptAttention } from "../../jones/workQueue/promptAttention";
@@ -22,6 +23,7 @@ import {
 import { type PromptCount } from "../../jones/workQueue/promptOrganize";
 import {
   draftStatus,
+  NEEDS_DESTINATION,
   promptProgressSteps,
   routingStateLabel,
   textStateLabel,
@@ -39,28 +41,39 @@ import {
   type PromptListView,
 } from "../../jones/workQueue/PromptToolbar";
 import { promptLink } from "../../jones/workQueue/promptSearch";
-import { PromptWorkstreams } from "../../jones/workQueue/PromptWorkstreamDetails";
 import { PromptMasterDetail } from "../../jones/workQueue/PromptList";
 import { PromptProgress } from "../../jones/workQueue/PromptProgress";
 import { displayText, usePromptTime, type PromptRowView } from "../../jones/workQueue/PromptRow";
+import { usePersonalWorkstreams } from "../../state/workstreamsPersonal";
 import { useVoiceReview } from "./useVoiceReview";
 import { RoutingDiagnostics } from "./RoutingDiagnostics";
 import {
   remainingSeconds,
+  reviewedSendBlocker,
+  VOICE_REVIEW_TEXT_LIMIT,
   VoiceReviewActions,
   voiceReviewError,
+  type PendingReviewAction,
+  type PendingSendOptions,
   type VoiceReviewTransport,
 } from "./voiceReviewActions";
 
 const PENDING_LIMIT = 50;
 const terminalStates: ReadonlySet<string> = new Set(["released", "deleted", "expired"]);
-const conflictMessage = voiceReviewError({ _tag: "VoiceReviewConflictError" });
 
 /** An immutable view of one draft's action controller, rebuilt whenever it changes. */
 interface PendingDraftView {
   readonly draft: VoiceReviewDraft;
   readonly text: string;
-  /** This session holds the edit handle, so unsaved text is local. */
+  readonly effectiveText: string;
+  readonly instructions: string;
+  readonly workstreamId: string | null;
+  readonly sendOptions: PendingSendOptions;
+  readonly hasChanges: boolean;
+  readonly needsSave: boolean;
+  readonly compositionError: string | null;
+  readonly canType: boolean;
+  readonly reviewRequired: boolean;
   readonly ownsEdit: boolean;
   readonly busy: boolean;
   readonly uncertain: boolean;
@@ -102,6 +115,15 @@ class PendingDraftStore {
         {
           draft: actions.draft,
           text: actions.text,
+          effectiveText: actions.composition.text,
+          instructions: actions.instructions,
+          workstreamId: actions.workstreamId,
+          sendOptions: actions.sendOptions,
+          hasChanges: actions.hasChanges,
+          needsSave: actions.needsSave,
+          compositionError: actions.compositionError,
+          canType: actions.canType,
+          reviewRequired: actions.reviewRequired,
           ownsEdit: actions.editHandle !== null,
           busy: actions.busy,
           uncertain: actions.uncertain,
@@ -130,17 +152,26 @@ class PendingDraftStore {
     }
     this.publish();
   }
-  act(id: string, action: VoiceReviewAction, sendAfterSave = false) {
-    void this.controllers.get(id)?.actions.act(action, sendAfterSave);
+  act(id: string, action: PendingReviewAction, availableWorkstreamIds: ReadonlySet<string>) {
+    void this.controllers.get(id)?.actions.act(action, availableWorkstreamIds);
   }
   setText(id: string, text: string) {
     this.controllers.get(id)?.actions.setText(text);
   }
+  setInstructions(id: string, instructions: string) {
+    this.controllers.get(id)?.actions.setInstructions(instructions);
+  }
+  setWorkstream(id: string, workstreamId: string | null) {
+    this.controllers.get(id)?.actions.setWorkstream(workstreamId);
+  }
+  checkSendOptions(id: string) {
+    void this.controllers.get(id)?.actions.checkSendOptions();
+  }
+  invalidateSendOptions(id: string) {
+    this.controllers.get(id)?.actions.invalidateSendOptions();
+  }
   reconcile(id: string) {
     void this.controllers.get(id)?.actions.reconcile();
-  }
-  discardTerminalEdit(id: string) {
-    this.controllers.get(id)?.actions.discardTerminalEdit();
   }
 }
 
@@ -158,7 +189,6 @@ export function EnvironmentVoiceReview({
   listView,
   linkedKey,
   onLinkSelection,
-  workstreamNamesUnavailable,
 }: {
   environmentId: EnvironmentId;
   pane?: "pending" | "queued" | "sent";
@@ -168,7 +198,6 @@ export function EnvironmentVoiceReview({
   listView?: PromptListView | undefined;
   linkedKey?: string | undefined;
   onLinkSelection?: ((key: string) => void) | undefined;
-  workstreamNamesUnavailable?: boolean | undefined;
 }) {
   const { fetchList, transport, review } = useVoiceReview(environmentId);
   const [drafts, setDrafts] = useState<readonly VoiceReviewDraft[]>([]);
@@ -288,11 +317,11 @@ export function EnvironmentVoiceReview({
       seconds,
       busy: view?.busy ?? false,
       uncertain: view?.uncertain ?? false,
-      conflict: view?.error === conflictMessage,
+      conflict: view?.reviewRequired ?? false,
       ownsEdit: view?.ownsEdit ?? false,
       unavailable: blocked,
     });
-    const text = view?.ownsEdit ? view.text : draft.text;
+    const text = view?.effectiveText ?? draft.text;
     return {
       key: item.key,
       environmentId,
@@ -323,7 +352,7 @@ export function EnvironmentVoiceReview({
         <Alert variant="warning">
           <AlertTitle>Switch prompts?</AlertTitle>
           <AlertDescription>
-            This prompt has unsaved text, an action in progress, or an outcome that is not
+            This prompt has unsaved changes, an action in progress, or an outcome that is not
             confirmed. Switching keeps that work with this prompt. It does not save, resume, or
             retry anything.
           </AlertDescription>
@@ -381,13 +410,8 @@ export function EnvironmentVoiceReview({
               <PendingPromptDetail
                 key={selectedItem.key}
                 item={selectedItem}
-                workstreams={
-                  <PromptWorkstreams
-                    environmentId={environmentId}
-                    lines={[]}
-                    namesUnavailable={workstreamNamesUnavailable ?? false}
-                  />
-                }
+                environmentId={environmentId}
+                active={pane === undefined || pane === "pending"}
                 view={views.get(selectedItem.draft.id)}
                 now={now}
                 unavailable={blocked}
@@ -420,7 +444,8 @@ export function EnvironmentVoiceReview({
 
 function PendingPromptDetail({
   item,
-  workstreams,
+  environmentId,
+  active,
   view,
   now,
   unavailable,
@@ -431,7 +456,8 @@ function PendingPromptDetail({
   dependencyPresent,
 }: {
   item: PromptItem;
-  workstreams: import("react").ReactNode;
+  environmentId: EnvironmentId;
+  active: boolean;
   view: PendingDraftView | undefined;
   now: number;
   unavailable: boolean;
@@ -442,18 +468,48 @@ function PendingPromptDetail({
   dependencyPresent: (id: string) => boolean;
 }) {
   const reasonId = useId();
+  const sendReasonId = useId();
+  const resumeReasonId = useId();
+  const promptId = useId();
+  const instructionsId = useId();
+  const workstreamPickerId = useId();
   const [routingOpen, setRoutingOpen] = useState(false);
   const draft = view?.draft ?? item.draft!;
   const destination = displayText(draft.routing_target, "Destination not observed yet");
   const ownsEdit = view?.ownsEdit ?? false;
   const editing = ownsEdit && draft.state === "editing";
   const terminal = terminalStates.has(draft.state);
+  const draftId = draft.id;
+  const probeEnabled = active && view !== undefined && !unavailable && !terminal;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Observe capabilities for this visible draft and fence late responses when its binding changes.
+  useEffect(() => {
+    if (!probeEnabled) return;
+    store.checkSendOptions(draftId);
+    return () => store.invalidateSendOptions(draftId);
+  }, [store, draftId, probeEnabled]);
+  const { state: personal } = usePersonalWorkstreams();
+  const source = personal.environments.find((entry) => entry.environmentId === environmentId);
+  const scopedCatalog =
+    source?.confirmed && (source.status === "ready" || source.status === "read_only")
+      ? source.workstreams
+      : undefined;
+  const sendOptions = view?.sendOptions;
+  const approvedIds = new Set(
+    sendOptions?.kind === "available" ? sendOptions.options.workstream_ids : [],
+  );
+  const workstreams =
+    scopedCatalog?.filter(
+      ({ id, lifecycle }) => approvedIds.has(id) && !isClosedPersonalWorkstream(lifecycle),
+    ) ?? [];
+  const availableWorkstreamIds = new Set(workstreams.map(({ id }) => id));
+  const workstreamId = view?.workstreamId ?? null;
+  const selectedWorkstream = workstreams.find(({ id }) => id === workstreamId);
   const seconds = remainingSeconds(draft, Math.max(0, now - (view?.observedAt ?? now)));
   const status = draftStatus(draft, {
     seconds,
     busy: view?.busy ?? false,
     uncertain: view?.uncertain ?? false,
-    conflict: view?.error === conflictMessage,
+    conflict: view?.reviewRequired ?? false,
     ownsEdit,
     unavailable,
   });
@@ -467,16 +523,51 @@ function PendingPromptDetail({
           ? "Outcome unknown. Check the current state before acting again."
           : null;
   const text = view?.text ?? draft.text ?? "";
-  const validText = text.trim().length > 0 && text.length <= 100000;
-  const saveReason = reason ?? (editing && !validText ? "Enter prompt text before saving." : null);
-  const act = (action: VoiceReviewAction, send = false) => store.act(draft.id, action, send);
+  const blockedReason =
+    reason ?? (view?.reviewRequired ? "Check the current state before acting again." : null);
+  const editReason =
+    draft.state === "editing" && !ownsEdit
+      ? "Another session holds the edit. Pause the prompt or wait until that edit ends."
+      : null;
+  const saveReason = blockedReason ?? editReason ?? view?.compositionError ?? null;
+  const blockedOnEarlierPrompt =
+    sendOptions?.kind === "available" &&
+    !sendOptions.options.can_send_without_workstream &&
+    sendOptions.options.workstream_ids.length === 0 &&
+    (draft.routing_state === "awaiting_dependency" || draft.reason === "awaiting_dependency");
+  const destinationIssue = blockedOnEarlierPrompt
+    ? "Waiting for an earlier prompt. Check send options again after it clears."
+    : sendOptions
+      ? reviewedSendBlocker(sendOptions, workstreamId, availableWorkstreamIds)
+      : null;
+  const sendReason = saveReason ?? destinationIssue;
+  const pause = draft.state === "held" || (draft.state === "editing" && !ownsEdit);
+  const resumeIssue =
+    workstreamId !== null
+      ? "Clear the selected Workstream before resuming."
+      : view?.needsSave || editing
+        ? "Save or discard your changes before resuming."
+        : null;
+  const pauseReason = blockedReason ?? (pause ? null : resumeIssue);
+  const act = (action: PendingReviewAction) => store.act(draft.id, action, availableWorkstreamIds);
+  const showDraftActions = (view?.hasChanges ?? false) || ownsEdit;
+  const readonly = unavailable || !view?.canType;
   const routing = routingStateLabel(draft.routing_state, draft.routing_target, draft.dependencies);
-  const holding = draft.state === "held" || draft.state === "editing";
+  const legacyRouting = sendOptions?.kind === "unsupported";
+  const routingDetail =
+    !legacyRouting && draft.routing_state === "owner_required"
+      ? null
+      : !legacyRouting && draft.routing_state === "proposed"
+        ? "The proposed destination applies to automatic release."
+        : routing.detail;
   return (
     <PromptDetail
-      workstreams={workstreams}
       title={destination}
-      status={status}
+      status={
+        !legacyRouting && status.explanation === NEEDS_DESTINATION
+          ? { ...status, explanation: "Automatic release is waiting for a destination." }
+          : status
+      }
       meta={
         <span>
           Voice · captured {item.time === null ? "time not reported" : formatTime(item.time)}
@@ -490,44 +581,13 @@ function PendingPromptDetail({
         />
       }
       actions={
-        terminal ? null : editing ? (
-          <PromptActions
-            destructive={
-              <PromptAction
-                label={`Cancel edit of prompt to ${destination}`}
-                reason={reason}
-                reasonId={reasonId}
-                onClick={() => act("edit-cancel")}
-              >
-                Cancel edit · stay paused
-              </PromptAction>
-            }
-          >
-            <PromptAction
-              label={`Save prompt to ${destination} and stay paused`}
-              reason={saveReason}
-              reasonId={reasonId}
-              onClick={() => act("edit-save")}
-            >
-              Save · stay paused
-            </PromptAction>
-            <PromptAction
-              label={`Save and send prompt to ${destination}`}
-              variant="default"
-              reason={saveReason}
-              reasonId={reasonId}
-              onClick={() => act("edit-save", true)}
-            >
-              Save and send
-            </PromptAction>
-          </PromptActions>
-        ) : (
+        terminal ? null : (
           <PromptActions
             destructive={
               <PromptAction
                 label={`Delete prompt to ${destination} before send`}
                 variant="destructive-outline"
-                reason={reason}
+                reason={blockedReason}
                 reasonId={reasonId}
                 onClick={() => act("delete")}
               >
@@ -536,40 +596,49 @@ function PendingPromptDetail({
             }
           >
             <PromptAction
-              label={`${holding ? "Pause" : "Resume"} prompt to ${destination}`}
-              reason={reason}
-              reasonId={reasonId}
-              onClick={() => act(holding ? "pause" : "play")}
+              label={`${pause ? "Pause" : "Resume"} prompt to ${destination}`}
+              reason={pauseReason}
+              reasonId={pauseReason === blockedReason ? reasonId : resumeReasonId}
+              onClick={() => act(pause ? "pause" : "play")}
             >
-              {holding ? "Pause" : "Resume"}
+              {pause ? "Pause" : "Resume"}
             </PromptAction>
-            {draft.state !== "editing" ? (
-              <>
-                <PromptAction
-                  label={`Edit prompt to ${destination}`}
-                  reason={reason}
-                  reasonId={reasonId}
-                  onClick={() => act("edit-begin")}
-                >
-                  Edit
-                </PromptAction>
-                <PromptAction
-                  label={`Send prompt to ${destination} now`}
-                  variant="default"
-                  reason={reason}
-                  reasonId={reasonId}
-                  onClick={() => act("send-now")}
-                >
-                  Send now
-                </PromptAction>
-              </>
+            {showDraftActions && (editing || view?.needsSave) ? (
+              <PromptAction
+                label={`Save prompt to ${destination} and stay paused`}
+                reason={saveReason}
+                reasonId={saveReason === blockedReason ? reasonId : sendReasonId}
+                onClick={() => act("edit-save")}
+              >
+                Save · stay paused
+              </PromptAction>
             ) : null}
+            <PromptAction
+              label={`Send prompt to ${destination} now`}
+              variant="default"
+              reason={sendReason}
+              reasonId={sendReason === blockedReason ? reasonId : sendReasonId}
+              onClick={() => act("send-now")}
+            >
+              Send now
+            </PromptAction>
           </PromptActions>
         )
       }
       actionStatus={
         <>
-          {saveReason ? <p id={reasonId}>{saveReason}</p> : null}
+          {blockedReason ? <p id={reasonId}>{blockedReason}</p> : null}
+          {pauseReason && pauseReason !== blockedReason ? (
+            <p id={resumeReasonId}>{pauseReason}</p>
+          ) : null}
+          {sendReason && sendReason !== blockedReason && !terminal ? (
+            <p id={sendReasonId}>{sendReason}</p>
+          ) : null}
+          {probeEnabled && destinationIssue && !saveReason && sendOptions?.kind !== "checking" ? (
+            <Button size="sm" variant="outline" onClick={() => store.checkSendOptions(draftId)}>
+              Check send options again
+            </Button>
+          ) : null}
           {view?.retained || view?.error ? (
             <div className="space-y-1">
               {view.retained ? (
@@ -581,39 +650,35 @@ function PendingPromptDetail({
                 variant="outline"
                 aria-disabled={view.busy || unavailable || undefined}
                 onClick={() => {
-                  if (!view.busy && !unavailable) store.reconcile(draft.id);
+                  if (!view.busy && !unavailable) {
+                    store.reconcile(draftId);
+                    if (probeEnabled) store.checkSendOptions(draftId);
+                  }
                 }}
               >
                 Check current state
               </Button>
             </div>
           ) : null}
-          {ownsEdit && !editing ? (
-            terminal ? (
-              <>
-                <p>
-                  This prompt has ended. You can copy your unsaved text before discarding the local
-                  edit.
-                </p>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={view?.busy || view?.uncertain}
-                  onClick={() => store.discardTerminalEdit(draft.id)}
-                >
-                  Discard local edit
-                </Button>
-              </>
-            ) : (
-              <p>Unsaved text is preserved. Begin a new edit before saving it.</p>
-            )
+          {terminal && showDraftActions ? (
+            <p>This prompt has ended. You can copy your draft before discarding it.</p>
+          ) : null}
+          {showDraftActions ? (
+            <PromptAction
+              label={`Discard local changes to prompt to ${destination}`}
+              reason={view?.ownsEdit ? blockedReason : reason}
+              reasonId={reasonId}
+              onClick={() => act("edit-cancel")}
+            >
+              Discard local changes
+            </PromptAction>
           ) : null}
         </>
       }
       routing={
         <PromptDisclosure summary="Routing details" onToggle={setRoutingOpen}>
           <p className="text-foreground">{routing.label}</p>
-          {routing.detail ? <p>{routing.detail}</p> : null}
+          {routingDetail ? <p>{routingDetail}</p> : null}
           {draft.routing_target ? (
             <p>Proposed destination: {displayText(draft.routing_target, "Not reported")}</p>
           ) : null}
@@ -633,7 +698,7 @@ function PendingPromptDetail({
               ))}
             </ul>
           ) : null}
-          <p>Routing is decided by the voice source. It cannot be changed here.</p>
+          <p>The voice source verifies the receiving thread when you send.</p>
           {routingOpen ? (
             <RoutingDiagnostics draftId={draft.id} fetchDiagnostics={fetchDiagnostics} />
           ) : null}
@@ -647,26 +712,69 @@ function PendingPromptDetail({
         />
       }
     >
-      {ownsEdit ? (
-        <Textarea
-          aria-label={`Prompt text to ${destination}`}
-          value={text}
-          readOnly={reason !== null || !editing}
-          maxLength={100000}
-          onChange={(event) => store.setText(draft.id, event.target.value)}
-        />
-      ) : draft.text !== null ? (
-        <p
-          className="whitespace-pre-wrap text-sm wrap-anywhere"
-          onDoubleClick={() => {
-            if (reason === null && !terminal && draft.state !== "editing") act("edit-begin");
-          }}
-        >
-          {draft.text}
-        </p>
-      ) : (
-        <p className="text-sm text-muted-foreground">Prompt text is unavailable.</p>
-      )}
+      <div className="space-y-3">
+        <div className="space-y-1">
+          <label htmlFor={promptId} className="text-sm font-medium">
+            Prompt text
+          </label>
+          <Textarea
+            id={promptId}
+            aria-label={`Prompt text to ${destination}`}
+            value={text}
+            placeholder={
+              draft.text === null ? "Captured text unavailable" : "Uses captured text when empty"
+            }
+            readOnly={readonly}
+            rows={4}
+            maxLength={VOICE_REVIEW_TEXT_LIMIT}
+            onChange={(event) => store.setText(draft.id, event.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <label htmlFor={instructionsId} className="text-sm font-medium">
+            Additional instructions{" "}
+            <span className="font-normal text-muted-foreground">(optional)</span>
+          </label>
+          <Textarea
+            id={instructionsId}
+            value={view?.instructions ?? ""}
+            readOnly={readonly}
+            rows={2}
+            maxLength={VOICE_REVIEW_TEXT_LIMIT}
+            onChange={(event) => store.setInstructions(draft.id, event.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <label htmlFor={workstreamPickerId} className="text-sm font-medium">
+            Workstream <span className="font-normal text-muted-foreground">(optional)</span>
+          </label>
+          <Select
+            value={workstreamId ?? ""}
+            disabled={readonly || (workstreamId === null && sendOptions?.kind !== "available")}
+            onValueChange={(value) => {
+              if (value === "") store.setWorkstream(draftId, null);
+              else if (value !== null && availableWorkstreamIds.has(value))
+                store.setWorkstream(draftId, value);
+            }}
+          >
+            <SelectTrigger id={workstreamPickerId}>
+              <SelectValue>
+                {workstreamId === null
+                  ? "No Workstream"
+                  : (selectedWorkstream?.name ?? "Selected Workstream unavailable")}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup>
+              <SelectItem value="">No Workstream</SelectItem>
+              {workstreams.map((workstream) => (
+                <SelectItem key={workstream.id} value={workstream.id}>
+                  {workstream.name}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </div>
+      </div>
     </PromptDetail>
   );
 }

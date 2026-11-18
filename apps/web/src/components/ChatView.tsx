@@ -23,6 +23,8 @@ import {
   ComposerLayoutHeadline,
   ComposerLayoutFooter,
 } from "../jones/composer/ComposerLayout";
+import { NewThreadWorkstreamPicker } from "../jones/composer/NewThreadWorkstreamPicker";
+import { assignNewThreadWorkstream } from "../jones/composer/newThreadWorkstream";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -3004,6 +3006,7 @@ export default function ChatView(props: ChatViewProps) {
     scrollToEnd,
     setThreadError,
   });
+  const newThreadWorkstreamId = draftThread?.newThreadWorkstreamId ?? null;
   const { onSend, importedHistoryChoice } = useComposerSend({
     isImportedHistory: importedHistoryContinuationEligible(serverProjection),
     steeringBlockedByQuestion: pendingQuestionBlocksSteering(pendingUserInputs),
@@ -3078,6 +3081,19 @@ export default function ChatView(props: ChatViewProps) {
     setKeepFullHistory,
     anchorNewTurn,
     acknowledgeActiveThreadWoke,
+    onNewThreadAccepted:
+      !embedded && isLocalDraftThread && newThreadWorkstreamId !== null
+        ? (thread) =>
+            void assignNewThreadWorkstream(
+              { environmentId: thread.environmentId, id: thread.threadId },
+              newThreadWorkstreamId,
+              () =>
+                void navigate({
+                  to: "/$environmentId/$threadId",
+                  params: buildThreadRouteParams(thread),
+                }),
+            )
+        : undefined,
     onSideChat: sideChat.available ? sendSideChatStable : undefined,
     sideChatDisabledReason,
     handleNewThreadInActiveProject,
@@ -3972,14 +3988,30 @@ export default function ChatView(props: ChatViewProps) {
                                     ? {}
                                     : {
                                         trailing: (
-                                          <ComposerContextPermissions
-                                            environmentId={environmentId}
-                                            runtimeMode={runtimeMode}
-                                            supportedRuntimeModes={
-                                              activeProviderStatus?.supportedRuntimeModes
-                                            }
-                                            onRuntimeModeChange={handleRuntimeModeChangeStable}
-                                          />
+                                          <>
+                                            {draftId &&
+                                            isLocalDraftThread &&
+                                            !draftThread?.promotedTo ? (
+                                              <NewThreadWorkstreamPicker
+                                                environmentId={environmentId}
+                                                value={newThreadWorkstreamId}
+                                                onChange={(id) =>
+                                                  useComposerDraftStore
+                                                    .getState()
+                                                    .setNewThreadWorkstream(draftId, id)
+                                                }
+                                                disabled={isSendBusy || isEnvironmentChanging}
+                                              />
+                                            ) : null}
+                                            <ComposerContextPermissions
+                                              environmentId={environmentId}
+                                              runtimeMode={runtimeMode}
+                                              supportedRuntimeModes={
+                                                activeProviderStatus?.supportedRuntimeModes
+                                              }
+                                              onRuntimeModeChange={handleRuntimeModeChangeStable}
+                                            />
+                                          </>
                                         ),
                                       })}
                                 />

@@ -21,6 +21,7 @@
     "apps/web/src/jones/workQueue/PromptsSettings.tsx",
     "apps/web/src/jones/workQueue/SentPrompts.browser.test.tsx",
     "apps/web/src/jones/workQueue/SentPrompts.tsx",
+    "apps/web/src/jones/workQueue/SentWorkstreamAssignment.tsx",
     "apps/web/src/jones/workQueue/UnifiedQueuePage.browser.test.tsx",
     "apps/web/src/jones/workQueue/UnifiedQueuePage.tsx",
     "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.browser.test.tsx",
@@ -38,6 +39,7 @@
     "apps/web/src/jones/workQueue/promptSearch.ts",
     "apps/web/src/jones/workQueue/promptWorkstreams.test.ts",
     "apps/web/src/jones/workQueue/promptWorkstreams.ts",
+    "apps/web/src/jones/workQueue/sentWorkstreams.ts",
     "apps/web/src/jones/workQueue/useWorkQueueMetadata.ts",
     "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
     "packages/client-runtime/src/jones/workQueueMetadata.ts"

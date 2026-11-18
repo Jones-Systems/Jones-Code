@@ -30,7 +30,7 @@ import {
   legacyPayloadHash,
 } from "../../orchestration-v2/LegacyBootstrap.ts";
 import { type CommandReceiptV2 } from "../../orchestration-v2/CommandReceiptStore.ts";
-import migration from "../persistence/Migrations/162_JonesLegacyBootstrap.ts";
+import migration from "../persistence/Migrations/163_JonesLegacyBootstrap.ts";
 import * as Storage from "./Storage.ts";
 import * as S from "./StorageSchema.ts";
 import * as M from "./RecordedMetadata.ts";

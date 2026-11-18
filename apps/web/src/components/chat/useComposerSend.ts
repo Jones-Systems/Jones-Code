@@ -257,6 +257,7 @@ interface ComposerSendInput {
   readonly setKeepFullHistory: (threadKey: string, keep: boolean) => void;
   readonly anchorNewTurn: TimelineFollow["anchorNewTurn"];
   readonly acknowledgeActiveThreadWoke: () => void;
+  readonly onNewThreadAccepted?: ((thread: ScopedThreadRef) => void) | undefined;
   /** Resolves true once the side chat started and got the prompt. */
   readonly onSideChat?: ((prompt: string) => Promise<boolean>) | undefined;
   /** Refuses `/side` with this reason and keeps the draft. */
@@ -1309,6 +1310,7 @@ export function useComposerSend(input: ComposerSendInput) {
         draftChangedDuringPreparation,
         isCurrentSend: isCurrentComposerSend,
         submittedComposerDraft,
+        onNewThreadAccepted: input.onNewThreadAccepted,
       });
       return;
     }
@@ -1648,6 +1650,7 @@ export function useComposerSend(input: ComposerSendInput) {
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
       pendingSends.whenAccepted(environmentId, threadIdForSend, messageIdForSend, () => {
         turnStartSucceeded = true;
+        if (sentDraftThreadRef) input.onNewThreadAccepted?.(sentDraftThreadRef);
         acknowledgeComposerSelection(recoveryTarget(), submittedComposerDraft);
         if (checkoutPullRequestUrl)
           linkCheckoutPullRequest(

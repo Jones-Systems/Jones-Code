@@ -1,4 +1,6 @@
 import { sidebarRowsAreHeld, useSteadySidebarThreads } from "../jones/navigation/steadySidebar";
+import { projectWorkstreamSnoozes } from "../jones/workstreams/personalSnooze";
+import { SnoozedWorkstreamRow } from "../jones/workstreams/SnoozedWorkstreamRow";
 import { SidebarAppearanceLauncher } from "../jones/sidebarAppearance/SidebarAppearanceLauncher";
 import {
   personalSidebarRoster,
@@ -512,7 +514,18 @@ function useSidebarThreads(input: {
   const settledResetKey = JSON.stringify([projectScopeKey, input.excludedEnvironmentKey]);
 
   // Minute-quantized clocks would delay second-precise snooze wakes by up to a minute.
-  const snoozeWakeClock = useSnoozeWakeClock(threads);
+  const snoozeWakeClock = useSnoozeWakeClock([
+    ...threads,
+    ...input.personalWorkstreams.workstreams,
+  ]);
+  const workstreamSnooze = projectWorkstreamSnoozes(input.personalWorkstreams, {
+    utcMinute: nowMinute,
+    wakeClockMs: snoozeWakeClock,
+  });
+  const sidebarThreads =
+    !input.workstreamsEnabled || workstreamSnooze.snoozed.length === 0
+      ? scopedThreads
+      : scopedThreads.filter((thread) => !workstreamSnooze.hidesThread(thread));
   const [statusWakeAt, setStatusWakeAt] = useState(() => new Date().toISOString());
   const {
     statusFilter,
@@ -520,10 +533,10 @@ function useSidebarThreads(input: {
     hideWorkingThreads,
     counts: statusCounts,
     threads: globallyVisibleThreads,
-  } = useThreadStatusFilter(scopedThreads, "current", statusWakeAt, routeRowThreadKey);
+  } = useThreadStatusFilter(sidebarThreads, "current", statusWakeAt, routeRowThreadKey);
   const personalVisibleThreads = usePersonalStatusSelection(
-    scopedThreads,
-    input.personalWorkstreams,
+    sidebarThreads,
+    workstreamSnooze.visibleState,
     globallyVisibleThreads,
     statusWakeAt,
     routeRowThreadKey,
@@ -584,7 +597,11 @@ function useSidebarThreads(input: {
 
   const { snoozedThreads, settledThreads } = partition;
   const { pinnedThreads, activeThreads, workingThreads } = input.workstreamsEnabled
-    ? personalSidebarRoster(input.personalWorkstreams, partition)
+    ? personalSidebarRoster(
+        workstreamSnooze.visibleState,
+        partition,
+        workstreamSnooze.keepsAwakeMemberUnassigned,
+      )
     : partition;
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const olderSettledShelf = useOlderSettledShelf({
@@ -668,8 +685,10 @@ function useSidebarThreads(input: {
     delegatedUnderParent,
     threads,
     environmentThreads,
-    workstreamSummaryThreads: personalSidebarSummaryThreads(scopedThreads, partition.snoozeNow),
-    workstreamRosterThreads: scopedThreads,
+    workstreamSummaryThreads: personalSidebarSummaryThreads(sidebarThreads, partition.snoozeNow),
+    workstreamRosterThreads: sidebarThreads,
+    snoozedWorkstreams: workstreamSnooze.snoozed,
+    visibleWorkstreamState: workstreamSnooze.visibleState,
     statusFilter,
     cycleStatusFilter,
     hideWorkingThreads,
@@ -1425,6 +1444,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     searchableThreads,
     workstreamSummaryThreads,
     workstreamRosterThreads,
+    snoozedWorkstreams,
+    visibleWorkstreamState,
     settledVisibleCount,
     settledCount,
     olderSettledShelf,
@@ -1516,7 +1537,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useStableCallback(() => setWorkstreamCreateOpen(false));
-  const workstreamGrouping = groupPersonalThreads(workstreamController.state, activeThreads);
+  const workstreamGrouping = groupPersonalThreads(visibleWorkstreamState, activeThreads);
   const workstreamRouteThread = routeRowThreadKey ? parseScopedThreadKey(routeRowThreadKey) : null;
   const workstreamActiveThreads = usePersonalSidebarActiveThreads(
     workstreamGrouping,
@@ -2211,7 +2232,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       items.push({ kind: "marker", marker: "working-header" });
       items.push(...rowsOf(visibleWorkingThreads, "working"));
     }
-    if (snoozedThreads.length > 0) {
+    if (snoozedThreads.length + snoozedWorkstreams.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
       items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
     }
@@ -3735,7 +3756,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             pinnedThreads.length +
               activeThreads.length +
               workingThreads.length +
-              snoozedThreads.length ===
+              snoozedThreads.length +
+              snoozedWorkstreams.length ===
               0 &&
             (settledCount === 0 || scopedProjectGroups.length > 0) ? (
               <div className="flex flex-col items-center gap-2 px-2 py-6 text-center text-xs text-muted-foreground/60">
@@ -3957,6 +3979,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   )
                                 }
                                 threads={activeThreads}
+                                snoozedWorkstreams={snoozedWorkstreams}
                                 summaryThreads={workstreamSummaryThreads}
                                 rosterThreads={workstreamRosterThreads}
                                 onOpenHistoryThread={(thread) =>
@@ -4098,13 +4121,26 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   marker="snoozed-header"
                                   className={cn(workingThreads.length === 0 && "mt-auto")}
                                   label="Snoozed"
-                                  count={snoozedThreads.length}
+                                  count={snoozedThreads.length + snoozedWorkstreams.length}
                                   toggle={{
                                     expanded: snoozedShelfExpanded,
                                     onToggle: toggleSnoozedShelf,
                                   }}
                                 />,
                               );
+                              if (snoozedShelfExpanded) {
+                                items.push(
+                                  ...snoozedWorkstreams.map((item) => (
+                                    <SnoozedWorkstreamRow
+                                      key={`snoozed-workstream:${item.id}`}
+                                      item={item}
+                                      controller={workstreamController.controller}
+                                      canWake={workstreamController.state.canSnooze === true}
+                                      now={snoozeNow}
+                                    />
+                                  )),
+                                );
+                              }
                               break;
                             case "settled-header":
                               items.push(
@@ -4112,8 +4148,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   key="settled-shelf-header"
                                   marker="settled-header"
                                   className={cn(
-                                    workingThreads.length + snoozedThreads.length === 0 &&
-                                      "mt-auto",
+                                    workingThreads.length +
+                                      snoozedThreads.length +
+                                      snoozedWorkstreams.length ===
+                                      0 && "mt-auto",
                                   )}
                                   label="Settled"
                                   count={settledCount}

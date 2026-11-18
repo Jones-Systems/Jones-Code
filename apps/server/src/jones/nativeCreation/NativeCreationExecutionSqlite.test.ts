@@ -600,9 +600,9 @@ it.effect.each(["absent", "other-request"] as const)(
       let issues = 0;
       let executions = 0;
       const attempt = executeNativeProviderEffect(effect).pipe(
-        Effect.provide(executionEventSink),
         Effect.provide(
-          Layer.merge(
+          Layer.mergeAll(
+            executionEventSink,
             Layer.mock(Authority.NativeCreationAuthority)({
               issueExecution: () =>
                 Effect.sync(() => {

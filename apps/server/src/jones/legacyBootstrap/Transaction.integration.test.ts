@@ -33,7 +33,7 @@ import {
   legacyPayloadHash,
   legacyBootstrapCreateCommandId,
 } from "../../orchestration-v2/LegacyBootstrap.ts";
-import migration from "../persistence/Migrations/162_JonesLegacyBootstrap.ts";
+import migration from "../persistence/Migrations/163_JonesLegacyBootstrap.ts";
 import * as Storage from "./Storage.ts";
 import * as Decision from "./Decision.ts";
 

@@ -50,6 +50,7 @@ function resourceEmitter(diagnostic: ResourceDiagnostics | undefined, pid?: numb
 }
 const statStart = (text: string) => text.slice(text.lastIndexOf(")") + 2).split(" ")[19];
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
+const macThreadPidColumn = "JONES_SP_PID";
 let clockTicks: Promise<number> | undefined;
 export interface LinuxThreadScheduling {
   readonly startTimeTicks: string;
@@ -325,6 +326,27 @@ export function processResourceSample(
 }
 
 export type QualificationPredicate = boolean | "unknown";
+
+export function parseMacThreadCounts(
+  output: string,
+  pids: readonly number[],
+): ReadonlyMap<number, number> {
+  const [header, ...lines] = output.trimEnd().split("\n");
+  const heading = header?.trimEnd() ?? "";
+  const offset = heading.length - macThreadPidColumn.length;
+  if (!heading.endsWith(` ${macThreadPidColumn}`)) return new Map();
+
+  const counts = new Map<number, number>();
+  const requested = new Set(pids.map(String));
+  for (const line of lines) {
+    const pid = line.slice(offset).trim();
+    if (!requested.has(pid)) return new Map();
+    const value = Number(pid);
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export function resourcePredicates(
   samples: readonly ProcessResourceSample[],
   parentPid: number,
@@ -479,17 +501,19 @@ export async function sampleProcesses(
       const result = await execute("ps", ["-o", "pid=,time=,rss=", "-p", pids.join(",")], {
         timeout: 2_000,
       });
+      // macOS ps -M prepends its default thread columns even when -o selects a PID.
+      // Read a named trailing PID column for all captured PIDs in one invocation.
+      const threadCounts = await execute(
+        "ps",
+        ["-M", "-c", "-p", pids.join(","), "-o", `pid=${macThreadPidColumn}`],
+        { timeout: 2_000 },
+      ).then(
+        ({ stdout }) => parseMacThreadCounts(stdout, pids),
+        () => new Map<number, number>(),
+      );
       for (const line of result.stdout.trim().split("\n").filter(Boolean)) {
         const [pid, time, rss] = line.trim().split(/\s+/);
-        let threads: number | undefined;
-        try {
-          const result = await execute("ps", ["-M", "-p", pid!, "-o", "pid="], { timeout: 2_000 });
-          const lines = result.stdout.trim().split("\n").filter(Boolean);
-          if (lines.length && lines.every((value) => Number(value.trim()) === Number(pid)))
-            threads = lines.length;
-        } catch {
-          /* The platform field remains absent, never zero. */
-        }
+        const threads = threadCounts.get(Number(pid));
         rows.push({
           pid: Number(pid),
           cpuMs: cpuTime(time ?? ""),

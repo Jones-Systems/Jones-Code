@@ -5,9 +5,26 @@ import { page } from "vite-plus/test/browser";
 import "../../index.css";
 import {
   EnvironmentId,
+  ThreadId,
   type WorkQueueMetadataResult,
   type VoiceReviewRecentList,
 } from "@t3tools/contracts";
+import type { WsRpcProtocolClient } from "@t3tools/client-runtime/rpc";
+import {
+  newPersonalWorkstream,
+  WorkstreamsPersonalError,
+  type AssignPersonalWorkstreamInput,
+  type AssignResult,
+  type PersonalWorkstreamsSnapshot,
+} from "@t3tools/contracts/jones/workstreamsPersonal";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
+import { toastManager } from "../../components/ui/toast";
+import { appAtomRegistry, AppAtomRegistryProvider } from "../../rpc/atomRegistry";
+import {
+  bindPersonalWorkstreams,
+  personalWorkstreamsController,
+} from "../../state/workstreamsPersonal";
 
 const fixture = vi.hoisted(() => ({
   environments: [
@@ -70,7 +87,12 @@ vi.mock("../../components/voiceReview/useVoiceReview", async (importOriginal) =>
   useVoiceReview: () => ({
     fetchList: fixture.voiceList,
     fetchSelfIdentity: fixture.selfIdentity,
-    transport: { get: fixture.voiceGet, mutate: fixture.voiceMutation },
+    transport: {
+      get: fixture.voiceGet,
+      mutate: fixture.voiceMutation,
+      sendOptions: async () => null,
+      sendReviewed: vi.fn(),
+    },
     review: {
       recent: async () => {
         if (fixture.recent === null) throw new Error("Recent prompts unavailable");
@@ -171,6 +193,256 @@ describe("Prompts environment composition", () => {
       throw error;
     }
   }
+
+  function sentAssignmentFixture(conflict = false) {
+    const alpha = EnvironmentId.make("alpha");
+    const beta = EnvironmentId.make("beta");
+    const threadId = ThreadId.make("unassigned-thread");
+    const timestamp = "2026-11-17T00:00:00.000Z";
+    const workstream = (id: string, name: string) =>
+      newPersonalWorkstream({ id, name, orderKey: "n", now: timestamp, origin: "test" });
+    const local = workstream("local", "Local Workstream");
+    const winner = workstream("winner", "Manual winner");
+    const remote = workstream("remote", "Other environment");
+    const unassigned = { threadId, workstreamId: null, revision: 2, updatedAt: timestamp };
+    const current: PersonalWorkstreamsSnapshot = {
+      environmentId: alpha,
+      sequence: 2,
+      importIssue: null,
+      workstreams: [local, winner],
+      assignments: [
+        unassigned,
+        { ...unassigned, threadId: ThreadId.make("assigned-thread"), workstreamId: winner.id },
+      ],
+    };
+    const other: PersonalWorkstreamsSnapshot = {
+      environmentId: beta,
+      sequence: 1,
+      importIssue: null,
+      workstreams: [remote],
+      assignments: [{ ...unassigned, workstreamId: remote.id }],
+    };
+    const assign = vi.fn((input: AssignPersonalWorkstreamInput) => {
+      const assignment = {
+        ...unassigned,
+        workstreamId: conflict ? winner.id : (input.workstream?.id ?? null),
+        revision: 3,
+      };
+      if (conflict) {
+        return Effect.fail(
+          new WorkstreamsPersonalError({
+            code: "precondition_failed",
+            currentAssignment: assignment,
+          }),
+        );
+      }
+      // Leave the subscription one revision behind so the test exercises immediate RPC readback.
+      return Effect.succeed<AssignResult>({
+        outcome: "applied",
+        sequence: 3,
+        assignment,
+        workstream: input.workstream,
+      });
+    });
+    const connections = [alpha, beta].map((environmentId) => ({
+      environmentId,
+      generation: 1,
+      connected: true,
+      capable: true,
+      writable: environmentId === alpha,
+    }));
+    // Keep the other host's definition there while its replication is pending.
+    let finishReplication!: () => void;
+    const replication = new Promise<void>((resolve) => {
+      finishReplication = resolve;
+    });
+    const unmountWorkstreams = appAtomRegistry.mount(personalWorkstreamsController.state);
+    bindPersonalWorkstreams(
+      connections,
+      ({ environmentId }) =>
+        ({
+          "workstreamsPersonal.subscribe": () =>
+            Stream.concat(Stream.succeed(environmentId === alpha ? current : other), Stream.never),
+          "workstreamsPersonal.assign": assign,
+          "workstreamsPersonal.put": ({ workstream }: { workstream: typeof local }) =>
+            Effect.promise(() => replication).pipe(
+              Effect.as({ outcome: "applied", sequence: 4, workstream }),
+            ),
+        }) as unknown as WsRpcProtocolClient,
+    );
+    fixture.environments = fixture.environments.map((environment) => ({
+      ...environment,
+      serverConfig: {
+        environment: {
+          environmentId: environment.environmentId,
+          capabilities: { workQueueMetadata: true },
+        },
+      },
+    }));
+    const observedAt = Date.parse(timestamp);
+    vi.setSystemTime(observedAt);
+    fixture.load.mockResolvedValue({
+      status: "partial",
+      expires_at_ms: observedAt + 60_000,
+      snapshot: {
+        schema: "codex.t3-work-queue-metadata/v2",
+        source: {
+          queue_id: "queue",
+          host_id: "alpha-host",
+          environment_ref: alpha,
+          exporter_instance_id: "exporter",
+        },
+        observed_at_ms: observedAt,
+        snapshot_token: "a".repeat(64),
+        coverage: "partial",
+        authority_effect: "none",
+        items: ["unassigned-thread", "assigned-thread", "foreign-thread", "unconfirmed-thread"].map(
+          (id) => ({
+            request_id: id,
+            workstream_id: local.id,
+            canonical_binding: null,
+            entry_kind: "ordinary",
+            request_kind: "initial",
+            lane: "normal",
+            queue_state: "waiting_remote",
+            submitted_at_ms: null,
+            target: {
+              host_id: id === "foreign-thread" ? "different-host" : "alpha-host",
+              environment_ref: alpha,
+              thread_id: id,
+            },
+            dispatch_status: "accepted",
+            native_command_status: "accepted",
+            finish_line: "not_tracked",
+            payload_sha256: "b".repeat(64),
+            native_handoff:
+              id === "unconfirmed-thread"
+                ? null
+                : {
+                    command_id: `command-${id}`,
+                    message_id: `message-${id}`,
+                    command_status: "accepted",
+                    correlation_status: "exact",
+                    receipt_sequence: 0,
+                    turn_id: `turn-${id}`,
+                    turn_state: "pending",
+                    observed_at_ms: observedAt - 1,
+                  },
+          }),
+        ),
+      },
+    });
+    return {
+      assign,
+      local,
+      threadId,
+      [Symbol.dispose]() {
+        vi.useRealTimers();
+        bindPersonalWorkstreams([], () => undefined);
+        unmountWorkstreams();
+        finishReplication();
+        for (const id of [alpha, beta]) {
+          localStorage.removeItem(`jones.personal-workstreams.snapshot.v1:${id}`);
+        }
+        localStorage.removeItem("jones.prompts.list.sent.v1");
+      },
+    };
+  }
+
+  async function renderSent() {
+    await root.rerender(
+      <AppAtomRegistryProvider>
+        <UnifiedQueuePage defaultView="sent" />
+      </AppAtomRegistryProvider>,
+    );
+    await scope("Alpha");
+  }
+
+  it("filters on live receipt membership and confirms assignment in the selected detail", async () => {
+    await using _fixture = await setupFixture1();
+    using workstreams = sentAssignmentFixture();
+    await renderSent();
+    await root.getByRole("button", { name: "Unassigned", exact: true }).click();
+    const list = root.getByRole("group", { name: "Sent prompts list" });
+    await expect
+      .element(list.getByRole("list", { name: "Sent prompts list: Unassigned" }))
+      .toBeVisible();
+    const row = list.getByRole("button", { name: /unassigned-thread/ });
+    await expect.element(row).toBeVisible();
+    await expect
+      .element(list.getByRole("button", { name: /foreign-thread/ }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(list.getByRole("button", { name: /unconfirmed-thread/ }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(list.getByRole("list", { name: "Sent prompts list: Manual winner" }))
+      .not.toBeInTheDocument();
+    await row.click();
+    await root.getByRole("button", { name: "Assign Workstream" }).click();
+    await expect
+      .element(page.getByRole("menuitem", { name: "Other environment" }))
+      .not.toBeInTheDocument();
+    await page.getByRole("menuitem", { name: "Local Workstream" }).click();
+    await expect
+      .element(root.getByText("This prompt is assigned and has left Unassigned."))
+      .toBeVisible();
+    expect(workstreams.assign).toHaveBeenCalledExactlyOnceWith({
+      threadId: workstreams.threadId,
+      workstream: workstreams.local,
+      expectedRevision: 2,
+    });
+    await root.getByRole("button", { name: "All", exact: true }).click();
+    await expect
+      .element(list.getByRole("list", { name: "Sent prompts list: Local Workstream" }))
+      .toBeVisible();
+    await expect
+      .element(root.getByRole("button", { name: "Assign Workstream" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("keeps a concurrent manual winner without replaying the assignment", async () => {
+    await using _fixture = await setupFixture1();
+    using workstreams = sentAssignmentFixture(true);
+    await renderSent();
+    await root.getByRole("button", { name: "Unassigned", exact: true }).click();
+    await root.getByRole("button", { name: /unassigned-thread/ }).click();
+    await root.getByRole("button", { name: "Assign Workstream" }).click();
+    await page.getByRole("menuitem", { name: "Local Workstream" }).click();
+    await expect
+      .element(root.getByText("This prompt is assigned and has left Unassigned."))
+      .toBeVisible();
+    expect(root.getByText("Manual winner", { exact: true }).elements()).toHaveLength(1);
+    expect(workstreams.assign).toHaveBeenCalledOnce();
+  });
+
+  it("allows another explicit assignment after the controller throws before writing", async () => {
+    await using _fixture = await setupFixture1();
+    using workstreams = sentAssignmentFixture();
+    using toast = vi.spyOn(toastManager, "add");
+    using assign = vi.spyOn(personalWorkstreamsController, "assign").mockImplementationOnce(() => {
+      throw new Error("Assignment could not start");
+    });
+    await renderSent();
+    await root.getByRole("button", { name: "Unassigned", exact: true }).click();
+    await root.getByRole("button", { name: /unassigned-thread/ }).click();
+    const trigger = root.getByRole("button", { name: "Assign Workstream" });
+    await trigger.click();
+    await page.getByRole("menuitem", { name: "Local Workstream" }).click();
+    expect(assign).toHaveBeenCalledOnce();
+    expect(workstreams.assign).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith({
+      type: "error",
+      title: "Couldn’t confirm the assignment. Check the destination thread.",
+    });
+    await expect.element(trigger).not.toHaveAttribute("aria-disabled");
+    await trigger.click();
+    await page.getByRole("menuitem", { name: "Local Workstream" }).click();
+    await expect
+      .element(root.getByText("This prompt is assigned and has left Unassigned."))
+      .toBeVisible();
+    expect(workstreams.assign).toHaveBeenCalledOnce();
+  });
 
   function setConnection(environmentId: string, phase: string) {
     fixture.environments = fixture.environments.map((environment) =>
@@ -526,9 +798,12 @@ describe("Prompts environment composition", () => {
     );
     const action = (label: string) =>
       container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
-    await act(() => action("Edit prompt to Review fixture").click());
     const textarea = () =>
       container.querySelector<HTMLTextAreaElement>('[aria-label="Prompt text to Review fixture"]')!;
+    expect(textarea().value).toBe(draft.text);
+    await act(() => textarea().focus());
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expect(fixture.voiceMutation).not.toHaveBeenCalled();
     await act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
         textarea(),
@@ -536,6 +811,10 @@ describe("Prompts environment composition", () => {
       );
       textarea().dispatchEvent(new Event("input", { bubbles: true }));
     });
+    expect(fixture.voiceMutation).toHaveBeenCalledExactlyOnceWith(draft.id, "edit-begin", {
+      expected_revision: draft.revision,
+    });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
     const others = Array.from({ length: 50 }, (_, i) => ({ ...draft, id: `new-${i}` }));
     fixture.voiceList.mockResolvedValue({ drafts: others });
     await act(() => vi.advanceTimersByTimeAsync(3_000));
@@ -547,11 +826,12 @@ describe("Prompts environment composition", () => {
     await act(() => vi.advanceTimersByTimeAsync(3_000));
     expect(textarea().value).toBe("Local copy");
     await act(() => action("Save prompt to Review fixture and stay paused").click());
-    expect(fixture.voiceMutation).toHaveBeenLastCalledWith(draft.id, "edit-save", {
+    expect(fixture.voiceMutation).toHaveBeenNthCalledWith(2, draft.id, "edit-save", {
       expected_revision: editing.revision,
       edit_handle: "synthetic-edit",
       text: "Local copy",
     });
+    expect(fixture.voiceMutation).toHaveBeenCalledTimes(2);
     expect(onDirtyChange).toHaveBeenLastCalledWith(false);
   });
 
