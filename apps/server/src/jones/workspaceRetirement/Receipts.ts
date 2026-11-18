@@ -56,6 +56,26 @@ export interface RetirementReceipt {
   limits: readonly string[];
   removalDiagnostic?: string;
   bytes: { logical: number | null; allocated: number | null; statvfs_delta: number | null };
+  /** Present once the owner's Retire committed preservable content to a preserve branch. */
+  preserve?: RetirementPreserve;
+}
+export interface RetirementPreserve {
+  /** Branch name without `refs/heads/`, for example `preserve/20261117/host/checkout`. */
+  branch: string;
+  /** The preserve commit; its parent is the checkout's HEAD. */
+  sha: string;
+  /** The remote pushed to, or null when the repository has no remote to push to. */
+  remote: string | null;
+  /** `remote_verified` once `ls-remote` read back `sha`; otherwise only the local branch holds it. */
+  verification: "remote_verified" | "local_only";
+  /** Paths no preserve commit may carry. Any entry holds the checkout. */
+  excluded: { path: string; reason: string }[];
+  /** Recreates the checkout at its old path from the preserve branch. */
+  restore: string;
+  /** Whether removal used its single `--force`, which runs only after the tree verified. */
+  forced: boolean;
+  /** After removal: the branch still names `sha` locally and, when it was pushed, on the remote. */
+  readback?: { local: "verified" | "failed"; remote: "verified" | "failed" | "not_applicable" };
 }
 export interface SettlementIntent {
   event_id: string;
