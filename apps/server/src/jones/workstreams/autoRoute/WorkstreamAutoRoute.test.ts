@@ -29,6 +29,7 @@ import * as Projects from "../../../project/ProjectService.ts";
 import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import personalMigration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
+import lifecycleMigration from "../../persistence/Migrations/159_JonesWorkstreamLifecycleRevision.ts";
 import autoRouteMigration from "../../persistence/Migrations/158_JonesWorkstreamAutoRoute.ts";
 import * as Personal from "../personal/service.ts";
 import * as AutoRoute from "./WorkstreamAutoRoute.ts";
@@ -62,6 +63,7 @@ const makeFixture = () => {
       yield* sql`CREATE TABLE projection_projects(project_id TEXT PRIMARY KEY, title TEXT NOT NULL, deleted_at TEXT)`;
       yield* sql`INSERT INTO projection_projects VALUES(${projectId}, 'Synthetic project', NULL)`;
       yield* personalMigration;
+      yield* lifecycleMigration;
       yield* autoRouteMigration;
     }),
   ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));

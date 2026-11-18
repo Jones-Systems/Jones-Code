@@ -110,6 +110,91 @@ function harness(overrides: Partial<PersonalWorkstreamsTransport> = {}) {
   };
 }
 describe("personal Workstreams controller", () => {
+  it("keeps a woken member in history while showing it in Unassigned until explicit reopen", async () => {
+    const h = harness({
+      members: async () => [{ threadId: thread.id, title: "Finished work", settled: true }],
+    });
+    h.controller.setEnvironments([connection("a")]);
+    h.frames[0]!.emit({
+      ...snapshot("a", [definition()]),
+      assignments: [{ threadId: thread.id, workstreamId: "group", revision: 1, updatedAt: null }],
+    });
+    expect(await h.controller.setLifecycle("group", "completed")).toMatchObject({ ok: true });
+    expect(groupPersonalThreads(h.read(), [thread])).toMatchObject({
+      groups: [],
+      ungrouped: [thread],
+    });
+    expect(h.read().assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId).toBe(
+      "group",
+    );
+    expect(await h.controller.readHistory?.("group")).toMatchObject({
+      complete: true,
+      members: [{ ...thread, title: "Finished work" }],
+    });
+    expect(await h.controller.setLifecycle("group", "active")).toMatchObject({ ok: true });
+    expect(groupPersonalThreads(h.read(), [thread]).groups[0]?.threads).toEqual([thread]);
+    h.close();
+  });
+
+  it("checks every configured environment before writing a close", async () => {
+    const h = harness({
+      members: async (c) =>
+        c.environmentId === "b"
+          ? [{ threadId: thread.id, title: "Still open on B", settled: false }]
+          : [],
+    });
+    h.controller.setEnvironments([connection("a"), connection("b")]);
+    h.frames[0]!.emit(snapshot("a", [definition()]));
+    h.frames[1]!.emit(snapshot("b", [definition()]));
+    expect(await h.controller.setLifecycle("group", "completed")).toMatchObject({
+      ok: false,
+      failure: { reason: "unsettled_threads" },
+    });
+    expect(h.puts).toEqual([]);
+    expect(h.read().workstreams[0]?.lifecycle).toBe("active");
+    h.controller.setEnvironments([connection("a"), connection("b", { connected: false })]);
+    expect(await h.controller.setLifecycle("group", "abandoned")).toMatchObject({
+      ok: false,
+      failure: { reason: "closure_unavailable" },
+    });
+    expect(h.puts).toEqual([]);
+    h.close();
+  });
+
+  it("restores an accepted copy when another environment detects a racing wake", async () => {
+    const firstWrite = deferred<void>();
+    const wakeChecked = deferred<void>();
+    const restorationTargets: string[] = [];
+    const h = harness({
+      members: async () => [],
+      put: async (c, w, expected) => {
+        if (w.lifecycle !== "active") {
+          if (c.environmentId === "b") {
+            await wakeChecked.promise;
+            throw { code: "unsettled_threads" };
+          }
+          firstWrite.resolve();
+          return { outcome: "applied", workstream: w, sequence: 1 };
+        }
+        if (expected) {
+          expect(expected.lifecycle).toBe("abandoned");
+          restorationTargets.push(c.environmentId);
+        }
+        return { outcome: "applied", workstream: w, sequence: 2 };
+      },
+    });
+    h.controller.setEnvironments([connection("a"), connection("b")]);
+    h.frames[0]!.emit(snapshot("a", [definition()]));
+    h.frames[1]!.emit(snapshot("b", [definition()]));
+    const result = h.controller.setLifecycle("group", "abandoned");
+    await firstWrite.promise;
+    expect(h.read().workstreams[0]?.lifecycle).toBe("active");
+    wakeChecked.resolve();
+    expect(await result).toMatchObject({ ok: false, failure: { reason: "unsettled_threads" } });
+    expect(restorationTargets).toEqual(["a"]);
+    expect(h.read().workstreams[0]?.lifecycle).toBe("active");
+    h.close();
+  });
   it("keeps source definitions separate from the merged Workstream winner", () => {
     const h = harness();
     h.controller.setEnvironments([

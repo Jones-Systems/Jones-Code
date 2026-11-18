@@ -137,6 +137,8 @@ const make = Effect.gen(function* () {
       const current = thread.assignment;
       if (current.workstreamId === input.workstreamId)
         return yield* observe("already_satisfied", thread);
+      if (target && P.isClosedPersonalWorkstream(target.lifecycle))
+        return yield* observe("workstream_not_found", thread);
       const holds =
         input.expected.kind === "unassigned"
           ? current.workstreamId === null
@@ -167,6 +169,7 @@ const make = Effect.gen(function* () {
                 case "thread_not_found":
                 case "workstream_not_found":
                 case "workstream_deleted":
+                case "workstream_closed":
                   return evaluate(error.code === "precondition_failed" ? writesLeft - 1 : 0);
                 default:
                   return Effect.fail(error);

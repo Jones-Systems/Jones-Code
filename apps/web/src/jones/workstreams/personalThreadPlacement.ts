@@ -1,7 +1,8 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   groupPersonalThreads,
-  personalThreadKey,
+  openPersonalWorkstreams,
+  visiblePersonalWorkstreamId,
   type PersonalWorkstreamsController,
   type PersonalWorkstreamsFailure,
   type PersonalWorkstreamsState,
@@ -39,14 +40,13 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
   if (!input.canOperate(neighbor ? [thread, neighbor] : [thread])) return false;
   if (
     destinationId !== null &&
-    !input.state.workstreams.some((workstream) => workstream.id === destinationId)
+    !openPersonalWorkstreams(input.state).some((workstream) => workstream.id === destinationId)
   )
     return false;
 
   const movedId = shellKey(thread);
   if (!input.activeKeys.includes(movedId) && thread.pinnedAt == null) return false;
-  const currentGroup =
-    input.state.assignmentsByThreadKey.get(personalThreadKey(thread))?.workstreamId ?? null;
+  const currentGroup = visiblePersonalWorkstreamId(input.state, thread);
   const changesGroup = currentGroup !== destinationId;
   if (changesGroup && !controller.canAssign(thread)) return false;
 

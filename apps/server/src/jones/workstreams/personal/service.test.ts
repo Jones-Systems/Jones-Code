@@ -24,6 +24,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Config from "../../../config.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import migration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
+import lifecycleMigration from "../../persistence/Migrations/159_JonesWorkstreamLifecycleRevision.ts";
 import * as Personal from "./service.ts";
 
 const environmentId = EnvironmentId.make("synthetic-personal-server");
@@ -39,9 +40,10 @@ const w = (id: string) =>
 const database = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
+    yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT, title TEXT NOT NULL DEFAULT 'Historical conversation', payload_json TEXT NOT NULL DEFAULT '{}')`;
     yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
     yield* migration;
+    yield* lifecycleMigration;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 const dependencies = Layer.mergeAll(
@@ -101,6 +103,49 @@ it.effect("desired-first retries, ABA/CAS rollback, LWW and terminal deletion us
     yield* s.put({ ...b, name: "z" });
     yield* s.put({ ...b, name: "c" });
     assert.equal((yield* s.readDefinitions(["b"]))[0]?.name, "z");
+  }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("closure checks settlement and retains membership when a thread wakes", () =>
+  Effect.gen(function* () {
+    const service = yield* Personal.PersonalWorkstreams;
+    const sql = yield* SqlClient.SqlClient;
+    const open = w("history");
+    yield* service.assign({ threadId, workstream: open, expectedRevision: 0 });
+    const completed = P.editPersonalWorkstream(
+      open,
+      { lifecycle: "completed" },
+      "2026-01-02T00:00:00.000Z",
+      "fixture",
+    );
+    assert.equal((yield* service.put(completed).pipe(Effect.flip)).code, "unsettled_threads");
+    const settle = (state: string) =>
+      sql`UPDATE orchestration_v2_projection_threads SET payload_json =
+        json_object('title', 'Historical conversation', 'settledOverride', ${state})
+        WHERE thread_id = ${threadId}`;
+    yield* settle("settled");
+    assert.equal((yield* service.put(completed)).outcome, "applied");
+    yield* settle("active");
+    assert.deepEqual(yield* service.members(open.id), [
+      { threadId, title: "Historical conversation", settled: false },
+    ]);
+    assert.equal((yield* service.readThread(threadId)).assignment.workstreamId, open.id);
+    assert.equal((yield* service.put({ ...open, rev: 100 })).outcome, "superseded");
+    const reopened = P.editPersonalWorkstream(
+      completed,
+      { lifecycle: "active" },
+      "2026-01-03T00:00:00.000Z",
+      "fixture",
+    );
+    assert.equal((yield* service.put(reopened)).outcome, "applied");
+    assert.equal((yield* service.readThread(threadId)).assignment.revision, 1);
+    const abandoned = P.editPersonalWorkstream(
+      reopened,
+      { lifecycle: "abandoned" },
+      "2026-01-04T00:00:00.000Z",
+      "fixture",
+    );
+    assert.equal((yield* service.put(abandoned).pipe(Effect.flip)).code, "unsettled_threads");
   }).pipe(Effect.provide(fixture)),
 );
 
@@ -315,9 +360,10 @@ it.effect(
       const open = () => NodeSqliteClient.layer({ filename: `${dir}/personal.sqlite` });
       const setup = Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
+        yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, deleted_at TEXT, title TEXT NOT NULL DEFAULT 'Historical conversation', payload_json TEXT NOT NULL DEFAULT '{}')`;
         yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
         yield* migration;
+        yield* lifecycleMigration;
         yield* stage();
         const s = yield* fresh;
         yield* s.assign({ threadId, workstream: null, expectedRevision: 1 });
