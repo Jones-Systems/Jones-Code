@@ -650,7 +650,6 @@ function EnvironmentPrompts({
           listView={pane === "pending" ? listView : undefined}
           linkedKey={pane === "pending" ? linkedKey : undefined}
           onLinkSelection={onLinkSelection ? onSelect : undefined}
-          workstreamNamesUnavailable={voice.labelsFailed}
         />
       ) : pane === "pending" ? (
         <p className="text-sm text-muted-foreground">

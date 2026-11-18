@@ -4,7 +4,9 @@ import { createEnvironmentCommand } from "@t3tools/client-runtime/state/runtime"
 import {
   fetchVoiceReviewDraft,
   fetchVoiceReviewDrafts,
+  fetchVoiceReviewSendOptions,
   mutateVoiceReviewDraft,
+  sendReviewedVoiceDraft,
   fetchVoiceReviewRecent,
   fetchThreadRegistrySnapshot,
   fetchThreadRegistryWorkstreams,
@@ -15,6 +17,7 @@ import type {
   EnvironmentId,
   VoiceReviewAction,
   VoiceReviewMutationPayload,
+  VoiceReviewSendReviewedPayload,
   ThreadRegistryAssociationPayload,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -55,6 +58,21 @@ const mutate = createEnvironmentCommand(connectionAtomRuntime, {
     return yield* mutateVoiceReviewDraft({ ...(yield* requestContext), ...input });
   }),
 });
+const sendOptions = createEnvironmentCommand(connectionAtomRuntime, {
+  label: "web-voice-review:send-options",
+  execute: Effect.fn("web-voice-review:send-options")(function* (id: string) {
+    return yield* fetchVoiceReviewSendOptions({ ...(yield* requestContext), id });
+  }),
+});
+const sendReviewed = createEnvironmentCommand(connectionAtomRuntime, {
+  label: "web-voice-review:send-reviewed",
+  execute: Effect.fn("web-voice-review:send-reviewed")(function* (input: {
+    id: string;
+    payload: VoiceReviewSendReviewedPayload;
+  }) {
+    return yield* sendReviewedVoiceDraft({ ...(yield* requestContext), ...input });
+  }),
+});
 
 const recent = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-voice-review:recent",
@@ -93,6 +111,11 @@ export function useVoiceReview(environmentId: EnvironmentId) {
   const runList = useAtomCommand(list, { reportFailure: false, reportDefect: false });
   const runGet = useAtomCommand(get, { reportFailure: false, reportDefect: false });
   const runMutate = useAtomCommand(mutate, { reportFailure: false, reportDefect: false });
+  const runSendOptions = useAtomCommand(sendOptions, { reportFailure: false, reportDefect: false });
+  const runSendReviewed = useAtomCommand(sendReviewed, {
+    reportFailure: false,
+    reportDefect: false,
+  });
   const runRecent = useAtomCommand(recent, { reportFailure: false, reportDefect: false });
   const runRegistry = useAtomCommand(registry, { reportFailure: false, reportDefect: false });
   const runWorkstreams = useAtomCommand(workstreams, { reportFailure: false, reportDefect: false });
@@ -131,6 +154,16 @@ export function useVoiceReview(environmentId: EnvironmentId) {
     return result.value;
   };
   const transport = {
+    sendOptions: async (id: string) => {
+      const result = await runSendOptions({ environmentId, input: id });
+      if (result._tag === "Failure") throw Cause.squash(result.cause);
+      return result.value;
+    },
+    sendReviewed: async (id: string, payload: VoiceReviewSendReviewedPayload) => {
+      const result = await runSendReviewed({ environmentId, input: { id, payload } });
+      if (result._tag === "Failure") throw Cause.squash(result.cause);
+      return result.value;
+    },
     get: async (id: string) => {
       const result = await runGet({ environmentId, input: id });
       if (result._tag === "Failure") throw Cause.squash(result.cause);

@@ -636,7 +636,7 @@ describe("submitted work page integration", () => {
       }));
       const voiceReview = {
         fetchList: async () => ({ drafts: [draft] }),
-        transport: { get: vi.fn(), mutate },
+        transport: { get: vi.fn(), mutate, sendOptions: async () => null, sendReviewed: vi.fn() },
         review: {
           recent: async () => ({
             ...voiceReviewRecentFixture,
