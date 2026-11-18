@@ -21,8 +21,9 @@ export interface SidebarAppearanceHost extends SidebarAppearanceStore {
   readonly presented: SidebarAppearance;
   readonly comparingPreset: SidebarAppearancePresetName | null;
   readonly setComparingPreset: (name: SidebarAppearancePresetName | null) => void;
-  readonly scopeProps: Readonly<Record<string, string>> & {
-    readonly style?: Readonly<Record<string, string>>;
+  readonly scopeProps: {
+    readonly [attribute: `data-${string}`]: string;
+    readonly style: Readonly<Record<string, string>>;
   };
 }
 
