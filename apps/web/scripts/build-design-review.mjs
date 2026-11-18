@@ -53,22 +53,6 @@ function previewHtml(script, css) {
 </head>
 <body>
   <div id="root"></div>
-  <script>
-    // The attachment has an opaque origin. Only renderer-local state is available.
-    for (const name of ["localStorage", "sessionStorage"]) {
-      const values = new Map();
-      Object.defineProperty(window, name, {
-        value: {
-          get length() { return values.size; },
-          clear() { values.clear(); },
-          getItem(key) { return values.get(String(key)) ?? null; },
-          key(index) { return Array.from(values.keys())[index] ?? null; },
-          removeItem(key) { values.delete(String(key)); },
-          setItem(key, value) { values.set(String(key), String(value)); },
-        },
-      });
-    }
-  </script>
   <script>${embeddedScript}</script>
 </body>
 </html>
@@ -93,7 +77,7 @@ if (git("status", "--porcelain", "--untracked-files=normal")) {
   );
 }
 const entry = NodePath.join(webRoot, "src", "jones", "designReview", `${name}-entry.tsx`);
-const result = await build({
+const built = await build({
   configFile: false,
   envFile: false,
   envPrefix: [],
@@ -112,7 +96,8 @@ const result = await build({
     lib: { entry, name: "JonesDesignReview", formats: ["iife"] },
   },
 });
-if (Array.isArray(result) || !("output" in result)) {
+const result = Array.isArray(built) && built.length === 1 ? built[0] : built;
+if (!result || !("output" in result)) {
   throw new Error("The preview must build one self-contained renderer.");
 }
 
@@ -124,7 +109,8 @@ if (
   result.output.length !== 2 ||
   !script ||
   script.imports.length ||
-  script.dynamicImports.length ||
+  // Rolldown can report an inlined dynamic import as a reference to its own chunk.
+  script.dynamicImports.some((name) => name !== script.fileName) ||
   !styles ||
   typeof styles.source !== "string"
 ) {

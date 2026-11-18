@@ -28,13 +28,13 @@ node apps/web/scripts/build-design-review.mjs thread-card "$review_dir/thread-ca
 The builder bundles the production web components, assets, and stylesheet into
 an HTML file for the Jones Code thread viewer. It writes to a new file outside
 the checkout, identifies the source commit, and restricts the page to embedded
-resources. The review uses synthetic threads and
-in-memory choices.
+resources. The review uses synthetic threads and in-memory choices.
 
 Before publishing, verify the rendered card and the intended interactions.
 For this preview, use the slider, confirm only the candidate title changes,
 reset to the baseline, and confirm the copied or selectable text reflects the
-current value. Check a thread-width layout and a narrow layout. Call
+current value. Switch card state and theme, then restart the review. Check a
+thread-width layout and a narrow layout. Call
 `html_preview` with the file, then `html_render` in the requesting thread with
 the observed height. Retain the source revision and result. Use the
 [UI evidence route](contributor-guidance.md#ui-evidence) for interactive
@@ -43,8 +43,11 @@ verification. Remove task-owned scratch after preserving the required evidence.
 ## Reuse
 
 For another small web review, add a named `*-entry.tsx` under
-`apps/web/src/jones/designReview/`. Mount the relevant product components in
-`#root` and use the same builder. Prefer an isolated preview of the actual
-application for flows that need a running backend or a larger workspace.
+`apps/web/src/jones/designReview/`. Follow the import order in
+`thread-card-entry.tsx`: install isolated storage and offline connections
+before loading product code. Use `mountDesignReview` for the app's router and
+state providers, and `ReviewSurface` for shared review controls. Build with
+the same command and the new entry name. Prefer an isolated preview of the
+actual application for flows that need a running backend or a larger workspace.
 For a native review, run the actual simulator build through the Device panel
 and put the scenarios, evidence, and decision summary in the thread.
