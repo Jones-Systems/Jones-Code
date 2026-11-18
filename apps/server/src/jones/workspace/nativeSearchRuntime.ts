@@ -33,7 +33,11 @@ import { PROJECT_FAVICON_EXTENSIONS, isProjectFaviconPath } from "@t3tools/share
 import { scoreSubsequenceMatch } from "@t3tools/shared/searchRanking";
 
 import { CurrentProbeOwner, WorkspaceSearchProbe } from "../serverCompute/searchProbeClient.ts";
-import { PROBE_LIMITS, probeFailure } from "../serverCompute/searchProbeProtocol.ts";
+import {
+  PROBE_LIMITS,
+  probeFailure,
+  type SearchGitProbeFailure,
+} from "../serverCompute/searchProbeProtocol.ts";
 import {
   type IgnoreDecision,
   type IgnoreFile,
@@ -881,54 +885,50 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
       bytes += size;
     }
     if (batch.length) batches.push(batch);
+    const failedProbe = (cause: SearchGitProbeFailure) =>
+      new WorkspaceSearchIndexSearchFailed({ cwd, ...evidence, reason: cause.message, cause });
     const ignored: string[] = [];
     for (const paths of batches) {
-      const result = yield* probes.run({ kind: "ignoredCandidates", repository, paths }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new WorkspaceSearchIndexSearchFailed({
-              cwd,
-              ...evidence,
-              reason: cause.message,
-              cause,
-            }),
-        ),
+      const result = yield* Effect.result(
+        probes.run({ kind: "ignoredCandidates", repository, paths }),
       );
-      if (result.exitCode === 1) continue;
-      if (result.exitCode !== 0 || result.stdoutTruncated || result.stdoutInvalidUtf8) {
-        const presence = yield* probes.run({ kind: "repositoryPresence", repository }).pipe(
-          Effect.mapError(
-            (cause) =>
-              new WorkspaceSearchIndexSearchFailed({
-                cwd,
-                ...evidence,
-                reason: cause.message,
-                cause,
-              }),
-          ),
-        );
-        if (presence.exitCode === 0 && !presence.stdoutTruncated && !presence.stdoutInvalidUtf8)
-          return entries.map((entry) => entry.path);
-        if (
-          presence.exitCode === 128 &&
-          /^fatal: not a git repository(?:[ :(.]|$)/i.test(presence.stderr) &&
-          !presence.stderrTruncated &&
-          !presence.stderrInvalidUtf8
-        )
-          return [];
-        return yield* new WorkspaceSearchIndexSearchFailed({
-          cwd,
-          ...evidence,
-          reason: "Repository presence is unavailable.",
-          cause: probeFailure("process-failed"),
-        });
+      if (result._tag === "Success") {
+        const output = result.success;
+        if (output.exitCode === 1) continue;
+        if (output.exitCode === 0 && !output.stdoutTruncated && !output.stdoutInvalidUtf8) {
+          ignored.push(
+            ...output.stdout
+              .split("\0")
+              .filter(Boolean)
+              .map((relativePath) => (repository ? `${repository}/${relativePath}` : relativePath)),
+          );
+          continue;
+        }
+      } else if (result.failure.reason !== "process-failed") {
+        return yield* failedProbe(result.failure);
       }
-      ignored.push(
-        ...result.stdout
-          .split("\0")
-          .filter(Boolean)
-          .map((relativePath) => (repository ? `${repository}/${relativePath}` : relativePath)),
-      );
+
+      // Git can exit before consuming stdin outside a repository. Require the
+      // separate presence probe to prove absence even when the pipe write failed.
+      const presence = yield* probes
+        .run({ kind: "repositoryPresence", repository })
+        .pipe(Effect.mapError(failedProbe));
+      if (
+        presence.exitCode === 128 &&
+        /^fatal: not a git repository(?:[ :(.]|$)/i.test(presence.stderr) &&
+        !presence.stderrTruncated &&
+        !presence.stderrInvalidUtf8
+      )
+        return [];
+      if (result._tag === "Failure") return yield* failedProbe(result.failure);
+      if (presence.exitCode === 0 && !presence.stdoutTruncated && !presence.stdoutInvalidUtf8)
+        return entries.map((entry) => entry.path);
+      return yield* new WorkspaceSearchIndexSearchFailed({
+        cwd,
+        ...evidence,
+        reason: "Repository presence is unavailable.",
+        cause: probeFailure("process-failed"),
+      });
     }
     return ignored;
   });

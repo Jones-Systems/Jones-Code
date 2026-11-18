@@ -378,6 +378,7 @@ const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
 );
 
 const layerOrchestratorProvided = Orchestrator.layer.pipe(
+  Layer.provide(GitVcsDriver.layer),
   Layer.provide(layerStartAdmission),
   Layer.provide(layerPlannedUpdateContinuityProvided),
   Layer.provide(nativeCreationOwnersProvided),

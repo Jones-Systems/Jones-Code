@@ -9,6 +9,7 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterEach, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { VcsProcessStdinWriteError } from "@t3tools/contracts";
 import { PROJECT_FAVICON_EXTENSIONS, isProjectFaviconPath } from "@t3tools/shared/projectFavicon";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -586,8 +587,31 @@ it.effect("reads symlinks again after the watcher reports a change", () =>
       yield* fileSystem.writeFileString(path.join(cwd, "a.ts"), "");
       yield* fileSystem.symlink("a.ts", path.join(cwd, "old-link.ts"));
       const { directorySearch, notifyWatchers } = fakeSymlinkFinder([]);
-
-      const searchIndex = yield* WorkspaceSearchIndex.make(cwd);
+      const vcsProcess = yield* VcsProcess.VcsProcess;
+      let closedStdin = false;
+      const searchIndex = yield* WorkspaceSearchIndex.make(cwd).pipe(
+        Effect.provideService(VcsProcess.VcsProcess, {
+          run: (input) => {
+            if (
+              !closedStdin &&
+              input.operation === "WorkspaceSearchIndex.listGitIgnored" &&
+              input.stdin !== undefined
+            ) {
+              closedStdin = true;
+              return Effect.fail(
+                new VcsProcessStdinWriteError({
+                  operation: input.operation,
+                  command: input.command,
+                  cwd: input.cwd,
+                  stdinBytes: Buffer.byteLength(input.stdin),
+                  cause: new Error("write EPIPE"),
+                }),
+              );
+            }
+            return vcsProcess.run(input);
+          },
+        }),
+      );
       const concurrent = yield* Effect.all(
         Array.from({ length: 8 }, () => listedPaths(searchIndex)),
         { concurrency: "unbounded" },
@@ -606,6 +630,7 @@ it.effect("reads symlinks again after the watcher reports a change", () =>
       notifyWatchers([{ kind: "modified", path: path.join(cwd, "new-link.ts") }]);
       const afterReplace = yield* listedPaths(searchIndex);
 
+      expect(closedStdin).toBe(true);
       expect(concurrent).toEqual(Array.from({ length: 8 }, () => ["old-link.ts"]));
       expect(beforeNotice).toEqual(["old-link.ts"]);
       expect(afterEdit).toEqual(["old-link.ts"]);
@@ -748,9 +773,9 @@ it.effect("finds symlinks in folders past the first page of the index", () =>
   ).pipe(Effect.provide(testLayer)),
 );
 
-// fff reads HOME on Linux and macOS but the user profile on Windows, so a temp HOME cannot stand in there.
+// A temporary HOME replaces the native home on POSIX. Windows uses the user profile.
 it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
-  "refuses to index a workspace rooted at the home directory",
+  "searches a workspace explicitly rooted at the home directory",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -766,15 +791,10 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
           () => Effect.sync(() => vi.unstubAllEnvs()),
         );
 
-        const result = yield* WorkspaceSearchIndex.make(home).pipe(
-          Effect.flatMap((searchIndex) => searchIndex.search("stl", 50, undefined, false)),
-          Effect.map(({ entries }) => entries),
-          Effect.catchTags({
-            WorkspaceSearchIndexCreateFailed: (error) => Effect.succeed(error._tag),
-          }),
-        );
+        const searchIndex = yield* WorkspaceSearchIndex.make(home);
+        const result = yield* searchIndex.search("stl", 50, undefined, false);
 
-        expect(result).toBe("WorkspaceSearchIndexCreateFailed");
+        expect(result.entries).toEqual([{ kind: "file", path: "OneDrive/Remix/part.stl" }]);
       }),
     ).pipe(Effect.provide(testLayer)),
 );

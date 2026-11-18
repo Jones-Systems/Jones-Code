@@ -61,11 +61,11 @@ import {
   type ClaudeModelLedger,
 } from "../../provider/ClaudeTurnTokenUsage.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
+import { forkClaudeHistorySession } from "../../claudeHistoryWorker.ts";
 import {
   type CanUseTool,
   type ElicitationRequest,
   type ElicitationResult,
-  forkSession as forkClaudeSession,
   type EffortLevel,
   type ForkSessionOptions,
   type ForkSessionResult,
@@ -746,6 +746,7 @@ export class ClaudeAgentSdkQueryRunnerError extends Schema.TaggedError<ClaudeAge
     method: Schema.String,
     cause: Schema.Defect(),
     nativeOutcome: Schema.optional(Schema.Literals(["not_spawned", "unknown"])),
+    unappliedSourceNativeId: Schema.optional(Schema.String),
   },
 ) {
   override get message(): string {
@@ -1289,7 +1290,10 @@ function makeClaudeAgentSdkProtocolLogger(input: {
 const encodeClaudeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeClaudeHistoryFork = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
-    Schema.Struct({ sessionId: Schema.String, headMessageId: Schema.optionalKey(Schema.String) }),
+    Schema.Union([
+      Schema.Struct({ sessionId: Schema.String, headMessageId: Schema.optionalKey(Schema.String) }),
+      Schema.Struct({ unappliedSourceNativeId: Schema.String }),
+    ]),
   ),
 );
 
@@ -2040,11 +2044,12 @@ export const layerQueryRunner: Layer.Layer<
         });
         const usesHostConfig = yield* usesClaudeHostConfig(input.environment);
         const fork: Effect.Effect<
-          ForkSessionResult & { readonly headMessageId?: string },
+          | (ForkSessionResult & { readonly headMessageId?: string })
+          | { readonly unappliedSourceNativeId: string },
           unknown
         > = usesHostConfig
           ? Effect.tryPromise({
-              try: () => forkClaudeSession(input.sessionId, input.options),
+              try: () => forkClaudeHistorySession(input.sessionId, input.options),
               catch: (cause) => queryRunnerError(cause, "forkSession"),
             })
           : forkClaudeSessionInWorker(input).pipe(
@@ -2054,6 +2059,15 @@ export const layerQueryRunner: Layer.Layer<
         const result = yield* fork.pipe(
           Effect.mapError((cause) => queryRunnerError(cause, "forkSession")),
         );
+        if ("unappliedSourceNativeId" in result) {
+          return yield* new ClaudeAgentSdkQueryRunnerError({
+            method: "forkSession",
+            cause: `Session not found: ${input.sessionId}`,
+            ...(result.unappliedSourceNativeId === input.sessionId
+              ? { unappliedSourceNativeId: result.unappliedSourceNativeId }
+              : {}),
+          });
+        }
         yield* logProtocolEvent({
           direction: "incoming",
           stage: "decoded",
@@ -2729,6 +2743,7 @@ function normalizeClaudeSessionTitle(title: string | null | undefined): string |
 }
 
 function makeProviderThread(input: {
+  readonly existing?: OrchestrationV2ProviderThread;
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
   readonly providerInstanceId: ProviderInstanceId;
   readonly appThreadId: OrchestrationV2ProviderThread["appThreadId"];
@@ -2740,15 +2755,17 @@ function makeProviderThread(input: {
   readonly now: DateTime.Utc;
 }): OrchestrationV2ProviderThread {
   return {
-    id: input.idAllocator.derive.providerThread({
-      driver: CLAUDE_PROVIDER,
-      nativeThreadId: input.nativeThreadId,
-    }),
+    id:
+      input.existing?.id ??
+      input.idAllocator.derive.providerThread({
+        driver: CLAUDE_PROVIDER,
+        nativeThreadId: input.nativeThreadId,
+      }),
     driver: CLAUDE_PROVIDER,
     providerInstanceId: input.providerInstanceId,
     providerSessionId: input.providerSessionId,
     appThreadId: input.appThreadId,
-    ownerNodeId: input.ownerNodeId ?? null,
+    ownerNodeId: input.existing?.ownerNodeId ?? input.ownerNodeId ?? null,
     nativeThreadRef: {
       driver: CLAUDE_PROVIDER,
       nativeId: input.nativeThreadId,
@@ -2761,7 +2778,7 @@ function makeProviderThread(input: {
     handoffIds: [],
     forkedFrom: input.forkedFrom ?? null,
     ...(input.nativeMetadata === undefined ? {} : { nativeMetadata: input.nativeMetadata }),
-    createdAt: input.now,
+    createdAt: input.existing?.createdAt ?? input.now,
     updatedAt: input.now,
   };
 }
@@ -14933,6 +14950,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 appliedSessionTitles.set(nativeThreadId, threadInput.title);
               }
               const providerThread = makeProviderThread({
+                ...(threadInput.existingProviderThread === undefined
+                  ? {}
+                  : { existing: threadInput.existingProviderThread }),
                 idAllocator,
                 providerInstanceId: adapterOptions.instanceId,
                 appThreadId: threadInput.threadId,
@@ -15487,6 +15507,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
 
               const source = forkInput.sourceProviderThread;
+              const target = forkInput.targetProviderThread;
+              if (
+                target !== undefined &&
+                (target.id === source.id ||
+                  target.driver !== CLAUDE_PROVIDER ||
+                  target.appThreadId !== forkInput.targetThreadId ||
+                  target.appThreadId === source.appThreadId ||
+                  target.providerInstanceId !== adapterOptions.instanceId ||
+                  target.providerSessionId !== input.providerSessionId ||
+                  target.nativeThreadRef !== null)
+              )
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "The managed fork needs its original unbound destination.",
+                });
               const sourceNativeThreadId = yield* getNativeThreadId(source);
               if (
                 source.driver !== CLAUDE_PROVIDER ||
@@ -15530,6 +15565,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 threadId: forkInput.targetThreadId,
                 providerSessionId: input.providerSessionId,
               });
+              if (
+                !forked.sessionId.trim() ||
+                forked.sessionId === sourceNativeThreadId ||
+                (yield* Ref.get(openedNativeThreads)).has(forked.sessionId)
+              )
+                return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "The native fork did not return a new destination session.",
+                });
               yield* Ref.update(openedNativeThreads, (current) => {
                 const updated = new Set(current);
                 updated.add(forked.sessionId);
@@ -15541,6 +15585,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               const claudeAttachmentBudget =
                 forkInput.sourceProviderThread.nativeMetadata?.claudeAttachmentBudget;
               return makeProviderThread({
+                ...(target === undefined ? {} : { existing: target }),
                 idAllocator,
                 providerInstanceId: adapterOptions.instanceId,
                 appThreadId: forkInput.targetThreadId,
@@ -15573,6 +15618,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     new ProviderAdapter.ProviderAdapterForkThreadError({
                       driver: CLAUDE_PROVIDER,
                       providerThreadId: forkInput.sourceProviderThread.id,
+                      ...(isClaudeAgentSdkQueryRunnerError(cause) &&
+                      cause.method === "forkSession" &&
+                      cause.unappliedSourceNativeId !== undefined &&
+                      cause.unappliedSourceNativeId ===
+                        forkInput.sourceProviderThread.nativeThreadRef?.nativeId
+                        ? { unappliedSourceNativeId: cause.unappliedSourceNativeId }
+                        : {}),
                       cause,
                     }),
                 ),

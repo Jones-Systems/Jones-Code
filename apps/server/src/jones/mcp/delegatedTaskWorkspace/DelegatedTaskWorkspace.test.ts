@@ -13,6 +13,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type ServerProvider,
+  type OrchestrationV2ThreadLaunchWorkspaceStrategy,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -341,10 +342,15 @@ function makeHarness(
     adapter,
     { ...adapter, instanceId: claudeInstanceId, driver: claudeDriver },
   ]);
+  const receivingListWorktrees = vi.fn(listWorktreePaths);
   const orchestrator = ProviderReplayHarness.layerWithRegistry(
     { name: "delegated-task-workspace" },
     registry,
     { databaseLayer: database, runEffectWorker: false },
+  ).pipe(
+    Layer.provide(
+      Layer.mock(GitVcsDriver.GitVcsDriver)({ listWorktreePaths: receivingListWorktrees }),
+    ),
   );
   const serverSettings = ServerSettings.layerTest({
     providerInstances: { [claudeInstanceId]: { driver: claudeDriver, config: {} } },
@@ -382,6 +388,10 @@ function makeHarness(
       Effect.succeed(input.refName !== "refs/heads/t3"),
   );
   const listWorktrees = vi.fn(listWorktreePaths);
+  const renameBranch = vi.fn(
+    (input: Parameters<GitWorkflow.GitWorkflowService["Service"]["renameBranch"]>[0]) =>
+      Effect.succeed({ branch: input.newBranch }),
+  );
   // The runner's project fields are optional strings; an omitted one is recorded as null.
   const setupInputs: Array<{
     readonly projectId: string | null;
@@ -424,7 +434,10 @@ function makeHarness(
       createWorktree,
       removeWorktree,
       hasCommit,
-      renameBranch: (input) => Effect.succeed({ branch: input.newBranch }),
+      repositoryRoot: (cwd) => Effect.succeed(cwd),
+      listLocalBranchNames: () => Effect.succeed([]),
+      deleteLocalBranch: () => Effect.void,
+      renameBranch,
       fetchRemote: () => Effect.void,
       remoteExists: () => Effect.succeed(true),
       listRefs: () =>
@@ -480,6 +493,7 @@ function makeHarness(
     ProviderRegistryMock.layer([claudeProvider]),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
       namedProjectsRoot: "/projects",
+      isScratchProject: () => Effect.succeed(false),
       folderForThread: () => Effect.succeedNone,
     }),
   );
@@ -532,6 +546,8 @@ function makeHarness(
     removeWorktree,
     hasCommit,
     listWorktrees,
+    receivingListWorktrees,
+    renameBranch,
     closeTerminal,
     setupInputs,
     setupObserved,
@@ -588,6 +604,7 @@ const seedProject = (
   });
 
 const startParent = Effect.gen(function* () {
+  yield* seedProject(projectRecord, 2);
   const threads = yield* ThreadManagement.ThreadManagementService;
   const parentThreadId = ThreadId.make("thread:delegated-workspace-parent");
   yield* threads.dispatch({
@@ -1043,7 +1060,7 @@ describe("cross-project delegate_task", () => {
           commandId: string,
           fields: {
             readonly projectId: ProjectId;
-            readonly workspaceStrategy?: typeof hqExistingWorktree;
+            readonly workspaceStrategy?: OrchestrationV2ThreadLaunchWorkspaceStrategy;
           },
         ) =>
           threads.dispatch({
@@ -1062,6 +1079,17 @@ describe("cross-project delegate_task", () => {
           });
 
         yield* request("direct-no-workspace", { projectId: hqProjectId }).pipe(Effect.flip);
+        for (const type of ["root", "auto"] as const) {
+          yield* request(`direct-${type}`, {
+            projectId: hqProjectId,
+            workspaceStrategy: { type },
+          }).pipe(Effect.flip);
+        }
+        yield* request("direct-foreign-worktree", {
+          projectId: hqProjectId,
+          workspaceStrategy: { type: "existing_worktree", worktreePath: "/repo-worktrees/lane" },
+        }).pipe(Effect.flip);
+        assert.deepEqual(harness.receivingListWorktrees.mock.calls, [["/hq"]]);
         yield* request("direct-missing", {
           projectId: ProjectId.make("project:delegated-workspace-missing"),
           workspaceStrategy: hqExistingWorktree,
@@ -1106,6 +1134,17 @@ const existingWorktreeCases = [
     },
   },
   {
+    name: "a supplied worktree with a temporary-looking branch",
+    seedHq: false,
+    request: {
+      workspaceStrategy: {
+        type: "existing_worktree" as const,
+        worktreePath: "/repo-worktrees/lane",
+        branch: "t3code/deadbeef",
+      },
+    },
+  },
+  {
     name: "another project",
     seedHq: true,
     request: { projectId: hqProjectId, workspaceStrategy: hqExistingWorktree },
@@ -1136,6 +1175,7 @@ describe("delegated existing-worktree setup", () => {
         yield* awaitReleased(delegated.childThreadId);
         assert.include(yield* enqueuedRequests(delegated.childThreadId), "provider-turn.start");
         assert.equal(harness.closeTerminal.mock.calls.length, 0);
+        assert.equal(harness.renameBranch.mock.calls.length, 0);
         assert.equal(harness.removeWorktree.mock.calls.length, 0);
       }).pipe(Effect.provide(harness.layer));
     },

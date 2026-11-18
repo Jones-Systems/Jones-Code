@@ -1,4 +1,8 @@
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
+import * as Option from "effect/Option";
+import * as StartAdmission from "../jones/provider/StartAdmission.ts";
+import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   CheckpointId,
   CheckpointRef,
@@ -1408,12 +1412,20 @@ it.effect("merge-back rejects a second fork's context until the first is consume
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 
-const runForkWithFailingNativeSource = (forkFailures: number) => {
+const runForkWithFailingNativeSource = (
+  forkFailures: number,
+  sourceUnavailable = true,
+  mismatch?: "driver" | "source-turn" | "generation" | "record-native" | "reject-portable",
+) => {
   const driver = ProviderDriverKind.make("claudeAgent");
   const instanceId = ProviderInstanceId.make("claudeAgent");
   const modelSelection = { instanceId, model: "test-model" };
   const started = Deferred.makeUnsafe<ProviderAdapter.ProviderAdapterV2TurnInput>();
   let forkCalls = 0;
+  let ensureCalls = 0;
+  let runningWrites = 0;
+  let manager: ProviderSessionManager.ProviderSessionManagerV2["Service"];
+  let checkRetainedFork = Effect.void;
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
     instanceId,
     driver,
@@ -1440,12 +1452,19 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
           },
           events: Stream.never,
           ensureThread: ({ threadId, existingProviderThread }) =>
-            Effect.succeed({
-              ...existingProviderThread!,
-              appThreadId: threadId,
-              nativeThreadRef: { driver, nativeId: "native-fresh-fork", strength: "strong" },
-              status: "idle",
-              updatedAt: now,
+            Effect.sync(() => {
+              ensureCalls++;
+              return {
+                ...existingProviderThread!,
+                appThreadId: threadId,
+                nativeThreadRef: {
+                  driver,
+                  nativeId: "native-fresh-fork",
+                  strength: "strong" as const,
+                },
+                status: "idle" as const,
+                updatedAt: now,
+              };
             }),
           resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
           startTurn: (turn) => Deferred.succeed(started, turn).pipe(Effect.asVoid),
@@ -1454,22 +1473,82 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
           respondToRuntimeRequest: () => Effect.void,
           readThreadSnapshot: () => Effect.die("unused"),
           rollbackThread: () => Effect.die("unused"),
-          forkThread: ({ sourceProviderThread, targetThreadId }) =>
-            ++forkCalls <= forkFailures
-              ? Effect.fail(
-                  new ProviderAdapter.ProviderAdapterForkThreadError({
-                    driver,
+          forkThread: (fork) =>
+            Effect.gen(function* () {
+              const { sourceProviderThread, targetThreadId, targetProviderThread } = fork;
+              if (++forkCalls <= forkFailures) {
+                return yield* new ProviderAdapter.ProviderAdapterForkThreadError({
+                  driver,
+                  providerThreadId: sourceProviderThread.id,
+                  ...(sourceUnavailable
+                    ? { unappliedSourceNativeId: "native-deleted-source" }
+                    : {}),
+                  cause:
+                    "Session not found: native-deleted-source; authorization=BearerSyntheticSecret",
+                });
+              }
+              if (mismatch === "record-native") {
+                const admission = yield* StartAdmission.CurrentRevalidation;
+                const recording = yield* ProviderSessionManager.CurrentForkRecording;
+                checkRetainedFork = Effect.gen(function* () {
+                  const runtime = Option.getOrThrow(yield* manager.get(input.providerSessionId));
+                  const reused = yield* runtime.forkThread(fork);
+                  assert.equal(reused.nativeThreadRef?.nativeId, "native-forked");
+                  const turn = {
+                    id: ProviderTurnId.make("changed-cut"),
                     providerThreadId: sourceProviderThread.id,
-                    cause:
-                      "Session not found: native-deleted-source; authorization=BearerSyntheticSecret",
-                  }),
-                )
-              : Effect.succeed({
-                  ...sourceProviderThread,
-                  appThreadId: targetThreadId,
-                  nativeThreadRef: { driver, nativeId: "native-forked", strength: "strong" },
-                  updatedAt: now,
-                }),
+                    nodeId: NodeId.make("changed-cut-node"),
+                    runAttemptId: null,
+                    nativeTurnRef: null,
+                    ordinal: 1,
+                    status: "completed" as const,
+                    startedAt: now,
+                    completedAt: now,
+                  };
+                  for (const changed of [
+                    { providerTurnId: turn.id },
+                    { sourceProviderTurns: [turn] },
+                  ]) {
+                    const failure = yield* runtime
+                      .forkThread({ ...fork, ...changed })
+                      .pipe(Effect.flip);
+                    assert.equal(failure._tag, "ProviderRuntimeBindingError");
+                    if (failure._tag === "ProviderRuntimeBindingError")
+                      assert.include(failure.detail, "different destination or source point");
+                  }
+                }).pipe(
+                  Effect.provideService(StartAdmission.CurrentRevalidation, admission),
+                  Effect.provideService(ProviderSessionManager.CurrentForkRecording, recording),
+                  Effect.orDie,
+                );
+              }
+              return {
+                ...targetProviderThread!,
+                appThreadId: targetThreadId,
+                ...(mismatch === "generation"
+                  ? {
+                      runtimeIdentity: {
+                        ...ProviderAdapter.identityForRequest(
+                          ProviderAdapter.requestedRuntimeIdentity(modelSelection, driver),
+                        ),
+                        runtimeGeneration: "never-published",
+                      },
+                    }
+                  : {}),
+                forkedFrom: {
+                  providerThreadId: sourceProviderThread.id,
+                  ...(mismatch === "source-turn"
+                    ? { providerTurnId: ProviderTurnId.make("unrequested-turn") }
+                    : {}),
+                },
+                nativeThreadRef: {
+                  driver: mismatch === "driver" ? ProviderDriverKind.make("codex") : driver,
+                  nativeId: "native-forked",
+                  strength: "strong" as const,
+                },
+                updatedAt: now,
+              };
+            }),
         } satisfies ProviderAdapter.ProviderAdapterV2SessionRuntime;
       }),
   };
@@ -1477,6 +1556,34 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const eventSink = yield* EventSink.EventSinkV2;
     const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+    manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    if (mismatch === "record-native" || mismatch === "reject-portable") {
+      const write = eventSink.writeIfRunCurrent;
+      const spy = vi.spyOn(eventSink, "writeIfRunCurrent").mockImplementation((request) => {
+        if (
+          request.events.some(
+            (event) => event.type === "run.updated" && event.payload.status === "running",
+          )
+        ) {
+          runningWrites++;
+          if (mismatch === "reject-portable")
+            return Effect.succeed({ committed: false, storedEvents: [] });
+          if (runningWrites === 1)
+            return checkRetainedFork.pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new EventSink.EventSinkWriteError({
+                    eventCount: request.events.length,
+                    cause: "synthetic transient write failure",
+                  }),
+                ),
+              ),
+            );
+        }
+        return write(request);
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+    }
     const now = yield* DateTime.now;
     const sourceThreadId = ThreadId.make("fork-missing-source");
     const targetThreadId = ThreadId.make("fork-missing-target");
@@ -1608,12 +1715,14 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
     }
 
     const projection = yield* orchestrator.getThreadProjection(targetThreadId);
-    assert.deepEqual(
-      projection.turnItems.flatMap((item) => (item.type === "error" ? [item.title] : [])),
-      [],
-    );
-    assert.equal(projection.runs[0]?.status, "running");
-    return { projection, turn: yield* Deferred.await(started), forkCalls };
+    if (sourceUnavailable && mismatch === undefined) {
+      assert.deepEqual(
+        projection.turnItems.flatMap((item) => (item.type === "error" ? [item.title] : [])),
+        [],
+      );
+      assert.equal(projection.runs[0]?.status, "running");
+    }
+    return { projection, started, forkCalls, ensureCalls, runningWrites };
   }).pipe(
     Effect.provide(
       ProviderReplayHarness.layerWithRegistry(
@@ -1626,7 +1735,8 @@ const runForkWithFailingNativeSource = (forkFailures: number) => {
 
 it.effect("a native fork whose source session is gone starts fresh with the source history", () =>
   Effect.gen(function* () {
-    const { projection, turn } = yield* runForkWithFailingNativeSource(Number.POSITIVE_INFINITY);
+    const { projection, started } = yield* runForkWithFailingNativeSource(Number.POSITIVE_INFINITY);
+    const turn = yield* Deferred.await(started);
     // Resolving the fork transfer stops later sends from retrying the native fork.
     assert.equal(projection.contextTransfers[0]?.status, "resolved_portable");
     assert.isNull(projection.providerThreads[0]?.forkedFrom);
@@ -1646,5 +1756,65 @@ it.effect("a native fork that fails before its last attempt still forks natively
     assert.equal(forkCalls, 2);
     assert.equal(projection.contextTransfers[0]?.status, "consumed");
     assert.equal(projection.contextTransfers[0]?.resolution?.strategy, "native_fork");
+  }),
+);
+
+it.effect("the original fork survives a failed recording and refuses a different source cut", () =>
+  Effect.gen(function* () {
+    const { projection, forkCalls, runningWrites, started } = yield* runForkWithFailingNativeSource(
+      0,
+      true,
+      "record-native",
+    );
+    assert.equal(forkCalls, 1);
+    assert.equal(runningWrites, 2);
+    assert.equal(projection.contextTransfers[0]?.status, "consumed");
+    assert.isTrue(yield* Deferred.isDone(started));
+  }),
+);
+
+it.effect("a rejected running write leaves portable fork history and transfer unresolved", () =>
+  Effect.gen(function* () {
+    const { projection, runningWrites, ensureCalls, started } =
+      yield* runForkWithFailingNativeSource(Infinity, true, "reject-portable");
+    assert.equal(runningWrites, 1);
+    assert.equal(ensureCalls, 1);
+    assert.lengthOf(projection.contextHandoffs, 0);
+    assert.equal(projection.contextTransfers[0]?.status, "pending");
+    assert.isNull(projection.providerThreads[0]?.nativeThreadRef);
+    assert.isFalse(yield* Deferred.isDone(started));
+  }),
+);
+
+it.effect.each(["driver", "source-turn", "generation"] as const)(
+  "a native fork with a mismatched %s is held before it can save or consume the transfer",
+  (mismatch) =>
+    Effect.gen(function* () {
+      const { projection, started, forkCalls, ensureCalls } = yield* runForkWithFailingNativeSource(
+        0,
+        true,
+        mismatch,
+      );
+      assert.equal(forkCalls, 1);
+      assert.equal(ensureCalls, 0);
+      assert.isFalse(yield* Deferred.isDone(started));
+      assert.isNull(projection.providerThreads[0]?.nativeThreadRef);
+      assert.isNull(projection.contextTransfers[0]?.resolution);
+      assert.equal(projection.contextTransfers[0]?.status, "pending");
+      assert.equal(projection.runs[0]?.status, "failed");
+    }),
+);
+
+it.effect("an unconfirmed native fork cannot be retried or replaced from its error text", () =>
+  Effect.gen(function* () {
+    const { projection, started, forkCalls, ensureCalls } = yield* runForkWithFailingNativeSource(
+      1,
+      false,
+    );
+    assert.equal(forkCalls, 1);
+    assert.equal(ensureCalls, 0);
+    assert.isFalse(yield* Deferred.isDone(started));
+    assert.equal(projection.contextTransfers[0]?.status, "pending");
+    assert.equal(projection.runs[0]?.status, "failed");
   }),
 );

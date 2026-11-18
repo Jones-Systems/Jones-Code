@@ -35,6 +35,7 @@ import {
   projectThreadProjectionForWire,
 } from "./WireProjection.ts";
 import { makeCommandObservationQuery } from "./CommandObservation.ts";
+import * as LegacyStorage from "../jones/legacyBootstrap/Storage.ts";
 import * as RetainedRecords from "../jones/legacyBootstrap/RetainedRecords.ts";
 import {
   overlayRetainedRecords,
@@ -1151,6 +1152,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                 Layer.provide(orchestrator),
                 Layer.provide(receipts),
                 Layer.provide(serverSettings),
+                Layer.provide(receivingDatabase),
               );
               const threads = Layer.effect(
                 Threads.ThreadManagementService,
@@ -1467,7 +1469,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                   const actual = yield* EventSink.EventSinkV2;
                   return EventSink.EventSinkV2.of({
                     ...actual,
-                    readByCommandId: (input) => {
+                    readLifecycleByCommandId: (input) => {
                       if (
                         failureReadbackLost &&
                         input.commandId ===
@@ -1481,7 +1483,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                           }),
                         );
                       }
-                      return actual.readByCommandId(input);
+                      return actual.readLifecycleByCommandId(input);
                     },
                   });
                 }),
@@ -1500,6 +1502,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                     orchestrator,
                     store,
                     launchSink,
+                    receivingDatabase,
                   ),
                 ),
               );
@@ -2849,7 +2852,11 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             expect(order).toEqual([]);
             expect(forwarded).toHaveLength(0);
             const dId = CommandId.make(`${bId}:guard-rejection-delete`);
-            const d = yield* receipts.getByCommandId(dId);
+            expect(Option.isNone(yield* receipts.getByCommandId(dId))).toBe(true);
+            const legacyStorage = LegacyStorage.make(yield* SqlClient.SqlClient);
+            const deleteRecord = yield* legacyStorage.readLegacyReceipt(dId);
+            if (deleteRecord !== undefined) expect(deleteRecord.domain).toBe("legacy-delete");
+            const d = Option.fromUndefinedOr(deleteRecord?.receipt);
             const effects = yield* outbox.listByThreadId(threadId);
             if (scenario !== "actual_guard_rejected") {
               expect(frame.exit).toMatchObject({

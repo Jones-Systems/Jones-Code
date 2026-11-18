@@ -662,6 +662,7 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
     threadId: ThreadId,
     runId: RunId | null,
     operation?: LaunchPreparation.LaunchOperation,
+    observeExistingSetup = false,
   ) {
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError(mapError(input, "resolve-project", threadId)),
@@ -1011,8 +1012,8 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
       }
 
       if (
-        reused === undefined &&
-        worktreePath !== null &&
+        createdWorktreePath !== null &&
+        worktreePath === createdWorktreePath &&
         branch !== null &&
         initialMessage !== undefined &&
         (generatedTemporaryBranch || isTemporaryWorktreeBranch(branch))
@@ -1165,7 +1166,9 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
                       setupTracker.appendTail(threadId, "setup-script", line),
                   },
                 }
-              : {}),
+              : observeExistingSetup
+                ? { observeCompletion: {} }
+                : {}),
             project: {
               id: project.id,
               workspaceRoot: project.workspaceRoot,
@@ -1398,6 +1401,27 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
     runId: RunId | null,
   ) {
     const preparation = Effect.gen(function* () {
+      // Existing checkouts remain externally owned. An app-owned delegated task
+      // still owns its setup terminal and waits for synchronous setup before release.
+      const observeExistingSetup =
+        runId !== null &&
+        input.workspaceStrategy.type === "existing_worktree" &&
+        input.reusedWorktree === undefined &&
+        (yield* Effect.gen(function* () {
+          const { thread } = yield* threads.getThreadRecords(threadId, []);
+          const parentId = thread.lineage.parentThreadId;
+          if (thread.lineage.relationshipToParent !== "subagent" || parentId === null) return false;
+          const { subagents } = yield* threads.getThreadRecords(
+            parentId,
+            ["subagents"],
+            thread.forkedFrom?.type === "node"
+              ? { subagentIds: [thread.forkedFrom.nodeId] }
+              : undefined,
+          );
+          return subagents.some(
+            (task) => task.origin === "app_owned" && task.childThreadId === threadId,
+          );
+        }));
       const prepare = Effect.gen(function* () {
         yield* requirePreparationGraph;
         if (runId !== null && input.nativeCreation !== true && Option.isSome(launchPreparation)) {
@@ -1411,16 +1435,18 @@ const make = Effect.fn("ThreadLaunchService.make")(function* (
                 threadId,
                 runId,
                 operation,
+                observeExistingSetup,
               ),
           );
         }
-        return yield* prepareInBackground(input, threadId, runId);
+        return yield* prepareInBackground(input, threadId, runId, undefined, observeExistingSetup);
       });
       if (
         runId === null ||
         (Option.isNone(launchPreparation) &&
           input.workspaceStrategy.type !== "worktree" &&
-          input.reusedWorktree === undefined)
+          input.reusedWorktree === undefined &&
+          !observeExistingSetup)
       ) {
         return yield* prepare;
       }

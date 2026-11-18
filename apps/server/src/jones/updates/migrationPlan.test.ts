@@ -847,7 +847,7 @@ it.each([53, 54])(
   },
 );
 
-it("candidate registration predicts only Jones156 pending after the published155 ledger", () => {
+it("candidate registration predicts the exact pending Jones migrations after release 155", () => {
   withDatabase((databasePath) => {
     const db = new NodeSqlite.DatabaseSync(databasePath);
     try {
@@ -867,7 +867,10 @@ it("candidate registration predicts only Jones156 pending after the published155
         upstream: migrationManifest,
         jones: jonesMigrationEntries.map(([id, name]) => [id, name] as const),
       }),
-    ).toEqual({ status: "ready", migrationPlan: { pendingUpstream: [], pendingJones: [156] } });
+    ).toEqual({
+      status: "ready",
+      migrationPlan: { pendingUpstream: [], pendingJones: [156, 157, 158, 159, 160, 161] },
+    });
     expect(NodeFS.readFileSync(databasePath)).toEqual(before);
   });
 });

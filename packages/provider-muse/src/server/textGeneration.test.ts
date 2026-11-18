@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import type { NotificationHandler } from "@muse-code/sdk";
 import { ProviderInstanceId, type ServerProviderModel } from "@t3tools/contracts";
+import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { MuseSettings } from "../settings.ts";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
@@ -256,7 +257,7 @@ it.layer(NodeServices.layer)("Muse text generation", (it) => {
       expect(test.host.close).toHaveBeenCalledOnce();
 
       const unsupported = fixture();
-      const evaluator = yield* unsupported.make;
+      const evaluator: ProviderTextGeneration = yield* unsupported.make;
       expect(
         yield* evaluator
           .evaluateRemoteRequest({ ...titleInput, message: "Fix the parser" })

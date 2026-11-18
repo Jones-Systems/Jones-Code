@@ -2069,6 +2069,9 @@ export const layer: Layer.Layer<
       let resumedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
+      let validatedFreshClaudeFork = false;
+      let acknowledgeFork: Effect.Effect<void> | undefined;
+      let portableForkEvents: ReadonlyArray<OrchestrationV2DomainEvent> = [];
       let recoveryTurnItem: OrchestrationV2TurnItem | undefined;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
@@ -2096,6 +2099,53 @@ export const layer: Layer.Layer<
               cause: `Native fork transfer ${nativeForkTransfer.id} has no source provider execution.`,
             });
           }
+          const validateForkLoad = Effect.fn("ProviderTurnStartService.validateForkLoad")(
+            function* (loaded: OrchestrationV2ProviderThread, portable: boolean) {
+              const generation = loaded.runtimeIdentity?.runtimeGeneration;
+              if (session.driver !== "claudeAgent" && generation === undefined) return;
+              if (
+                requiredNativeSession !== undefined ||
+                capturedAdmission.nativeCreationGuard !== undefined ||
+                !ProviderAdapter.matchesForkDestination(
+                  loaded,
+                  providerThread,
+                  sourceProviderThread,
+                  portable
+                    ? null
+                    : {
+                        providerThreadId: sourceProviderThread.id,
+                        providerTurnId: sourceProviderTurn?.id,
+                      },
+                )
+              )
+                return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                  driver: session.driver,
+                  detail: "The native load did not return the admitted fork destination.",
+                });
+              if (generation !== undefined) {
+                const binding = ProviderAdapter.runtimeBinding(loaded, generation);
+                yield* assertAdmission(loaded);
+                const rows = yield* projectionStore.getThreadRecords(input.threadId, [
+                  "providerThreads",
+                ]);
+                const current = rows.providerThreads.find((row) => row.id === providerThread.id);
+                const persisted =
+                  current?.runtimeIdentity?.runtimeGeneration === generation
+                    ? ProviderAdapter.runtimeBinding(current, generation)
+                    : undefined;
+                if (
+                  binding === undefined ||
+                  persisted === undefined ||
+                  !equivalentAdmissionBinding(binding, persisted)
+                )
+                  return yield* admissionError(
+                    "The fork result does not match its published runtime binding.",
+                  );
+                return;
+              }
+              validatedFreshClaudeFork = true;
+            },
+          );
           // Providers refuse to fork a busy thread, so a source that started a turn after
           // dispatch planned this fork gets the portable context dispatch gives a busy source.
           const sourceBusy = sourceProjection.runs.some(
@@ -2115,25 +2165,39 @@ export const layer: Layer.Layer<
                 .map((attempt) => attempt.id),
             );
             const forked = yield* Effect.result(
-              session.forkThread({
-                sourceProviderThread,
-                sourceProviderTurns: sourceProjection.providerTurns.filter(
-                  (turn) =>
-                    turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId),
+              session
+                .forkThread({
+                  sourceProviderThread,
+                  sourceProviderTurns: sourceProjection.providerTurns.filter(
+                    (turn) =>
+                      turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId),
+                  ),
+                  targetThreadId: projection.thread.id,
+                  targetProviderThread: providerThread,
+                  modelSelection: run.modelSelection,
+                  runtimePolicy: resolvedRuntimePolicy,
+                  ...(sourceProviderTurn === undefined
+                    ? {}
+                    : { providerTurnId: sourceProviderTurn.id }),
+                })
+                .pipe(
+                  Effect.provideService(ProviderSessionManager.CurrentForkRecording, {
+                    runId,
+                    attemptId: attempt.id,
+                    transferId: nativeForkTransfer.id,
+                    retain: (complete) => {
+                      acknowledgeFork = complete;
+                    },
+                  }),
                 ),
-                targetThreadId: projection.thread.id,
-                targetProviderThread: providerThread,
-                modelSelection: run.modelSelection,
-                runtimePolicy: resolvedRuntimePolicy,
-                ...(sourceProviderTurn === undefined
-                  ? {}
-                  : { providerTurnId: sourceProviderTurn.id }),
-              }),
             );
-            if (forked._tag === "Success") return forked.success;
+            if (forked._tag === "Success") {
+              yield* validateForkLoad(forked.success, false);
+              return forked.success;
+            }
             if (
               input.willRetry === true ||
-              ProviderAdapter.hasUnknownRuntimeBinding(forked.failure)
+              !ProviderAdapter.isUnappliedSourceFork(forked.failure, sourceProviderThread)
             )
               return yield* forked.failure;
             if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
@@ -2185,81 +2249,80 @@ export const layer: Layer.Layer<
               existingProviderThread: nativeForkFailed
                 ? { ...providerThread, nativeThreadRef: null, forkedFrom: null }
                 : { ...providerThread, forkedFrom: null },
-              // The failed fork may have left the adapter's session half-switched.
+              // A confirmed missing source needs a fresh native conversation.
               ...(nativeForkFailed ? { forceNewNativeThread: true } : {}),
             }),
           );
           if (loaded === undefined) return undefined;
+          yield* validateForkLoad(loaded, true);
           portableForkFallback = handoff;
           effectiveHandoffs = [handoff, ...effectiveHandoffs];
-          yield* eventSink.write({
-            events: [
-              {
-                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-                type: "context-handoff.updated",
-                threadId: projection.thread.id,
-                runId: run.id,
-                providerInstanceId: run.providerInstanceId,
-                occurredAt: createdAt,
-                payload: handoff,
+          portableForkEvents = [
+            {
+              id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+              type: "context-handoff.updated",
+              threadId: projection.thread.id,
+              runId: run.id,
+              providerInstanceId: run.providerInstanceId,
+              occurredAt: createdAt,
+              payload: handoff,
+            },
+            {
+              id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+              type: "context-transfer.updated",
+              threadId: projection.thread.id,
+              runId: run.id,
+              providerInstanceId: run.providerInstanceId,
+              occurredAt: createdAt,
+              payload: {
+                ...nativeForkTransfer,
+                targetProviderInstanceId: run.providerInstanceId,
+                status: "resolved_portable",
+                resolution: { strategy: "portable_context", contextHandoffId: handoff.id },
+                error: null,
+                updatedAt: createdAt,
               },
-              {
-                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-                type: "context-transfer.updated",
-                threadId: projection.thread.id,
-                runId: run.id,
-                providerInstanceId: run.providerInstanceId,
-                occurredAt: createdAt,
-                payload: {
-                  ...nativeForkTransfer,
-                  targetProviderInstanceId: run.providerInstanceId,
-                  status: "resolved_portable",
-                  resolution: { strategy: "portable_context", contextHandoffId: handoff.id },
-                  error: null,
-                  updatedAt: createdAt,
-                },
-              },
-              ...(nativeForkFailure === undefined
-                ? []
-                : [
-                    {
-                      id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-                      type: "turn-item.updated" as const,
-                      threadId: projection.thread.id,
-                      runId: run.id,
-                      providerInstanceId: run.providerInstanceId,
-                      occurredAt: createdAt,
-                      payload: {
-                        id: idAllocator.derive.runSignalTurnItem({
-                          runId,
-                          signal: "native-fork-fallback",
-                        }),
-                        threadId: projection.thread.id,
+            },
+            ...(nativeForkFailure === undefined
+              ? []
+              : [
+                  {
+                    id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
+                    type: "turn-item.updated" as const,
+                    threadId: projection.thread.id,
+                    runId: run.id,
+                    providerInstanceId: run.providerInstanceId,
+                    occurredAt: createdAt,
+                    payload: {
+                      id: idAllocator.derive.runSignalTurnItem({
                         runId,
-                        nodeId: rootNode.id,
-                        providerThreadId: providerThread.id,
-                        providerTurnId: null,
-                        nativeItemRef: null,
-                        parentItemId: null,
-                        ordinal:
-                          Math.max(
-                            0,
-                            ...projection.turnItems
-                              .filter((item) => item.runId === runId)
-                              .map((item) => item.ordinal),
-                          ) + 1,
-                        status: "completed" as const,
-                        title: "Native fork failed",
-                        startedAt: createdAt,
-                        completedAt: createdAt,
-                        updatedAt: createdAt,
-                        type: "system_notice" as const,
-                        message: `Could not fork the source conversation natively (${nativeForkFailure}). Started a fresh session with its history.`,
-                      },
+                        signal: "native-fork-fallback",
+                      }),
+                      threadId: projection.thread.id,
+                      runId,
+                      nodeId: rootNode.id,
+                      providerThreadId: providerThread.id,
+                      providerTurnId: null,
+                      nativeItemRef: null,
+                      parentItemId: null,
+                      ordinal:
+                        Math.max(
+                          0,
+                          ...projection.turnItems
+                            .filter((item) => item.runId === runId)
+                            .map((item) => item.ordinal),
+                        ) + 1,
+                      status: "completed" as const,
+                      title: "Native fork failed",
+                      startedAt: createdAt,
+                      completedAt: createdAt,
+                      updatedAt: createdAt,
+                      type: "system_notice" as const,
+                      message: `Could not fork the source conversation natively (${nativeForkFailure}). Started a fresh session with its history.`,
                     },
-                  ]),
-            ],
-          });
+                  },
+                ]),
+          ];
           return loaded;
         }
         if (providerThread.nativeThreadRef === null) {
@@ -2653,6 +2716,7 @@ export const layer: Layer.Layer<
         startedAt: now,
       };
       const events: Array<OrchestrationV2DomainEvent> = [
+        ...portableForkEvents,
         {
           id: yield* idAllocator.allocate.event({
             threadId: projection.thread.id,
@@ -2751,15 +2815,23 @@ export const layer: Layer.Layer<
       // native query has a generation to publish.
       const recordsFreshClaudeId =
         session.driver === "claudeAgent" &&
-        nativeForkTransfer === undefined &&
+        (nativeForkTransfer === undefined || validatedFreshClaudeFork) &&
         requiredNativeSession === undefined &&
         capturedAdmission.nativeCreationGuard === undefined &&
         providerThread.nativeThreadRef === null &&
         providerThread.runtimeIdentity?.runtimeGeneration === undefined &&
         runningProviderThread.nativeThreadRef?.driver === session.driver &&
         runningProviderThread.runtimeIdentity?.runtimeGeneration === undefined;
+      if (validatedFreshClaudeFork && !recordsFreshClaudeId)
+        return yield* admissionError(
+          "The fresh fork no longer has its original unbound destination.",
+        );
       if (recordsFreshClaudeId) yield* capturedAdmission.revalidate;
-      const runningWrite = yield* eventSink.writeIfRunCurrent({
+      const publishedForkGeneration =
+        nativeForkTransfer === undefined
+          ? undefined
+          : loadedProviderThread.runtimeIdentity?.runtimeGeneration;
+      const writeRunning = eventSink.writeIfRunCurrent({
         threadId: projection.thread.id,
         runId: run.id,
         activeAttemptId: attempt.id,
@@ -2771,9 +2843,22 @@ export const layer: Layer.Layer<
                 expectedProviderThreadIdentity: providerThread,
               },
             }
-          : {}),
+          : publishedForkGeneration === undefined
+            ? {}
+            : {
+                runtimeIdentityBoundary: {
+                  expectedGeneration: publishedForkGeneration,
+                  expectedProviderThreadIdentity: loadedProviderThread,
+                },
+              }),
         events,
       });
+      const receipt = acknowledgeFork;
+      const runningWrite = yield* receipt === undefined
+        ? writeRunning
+        : Effect.uninterruptible(
+            writeRunning.pipe(Effect.tap((result) => (result.committed ? receipt : Effect.void))),
+          );
       if (!runningWrite.committed) {
         return;
       }

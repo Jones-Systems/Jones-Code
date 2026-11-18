@@ -393,12 +393,30 @@ export class ProviderAdapterForkThreadError extends Schema.TaggedError<ProviderA
   {
     driver: ProviderDriverKind,
     providerThreadId: ProviderThreadId,
+    /** The adapter proved that this source was unavailable before a native fork was created. */
+    unappliedSourceNativeId: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
     return `Failed to fork ${this.driver} provider thread ${this.providerThreadId}.`;
   }
+}
+
+export function isUnappliedSourceFork(
+  error: ProviderAdapterV2Error,
+  source: OrchestrationV2ProviderThread,
+): boolean {
+  return (
+    error._tag === "ProviderAdapterForkThreadError" &&
+    error.driver === source.driver &&
+    error.providerThreadId === source.id &&
+    source.nativeThreadRef?.driver === source.driver &&
+    source.nativeThreadRef.strength === "strong" &&
+    error.unappliedSourceNativeId !== undefined &&
+    error.unappliedSourceNativeId === source.nativeThreadRef.nativeId &&
+    !hasUnknownRuntimeBinding(error)
+  );
 }
 
 export class ProviderAdapterTurnStartError extends Schema.TaggedError<ProviderAdapterTurnStartError>()(
@@ -824,6 +842,36 @@ export interface ProviderAdapterV2ForkThreadInput {
   readonly ownerNodeId?: NodeId;
   readonly modelSelection?: ModelSelection;
   readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
+}
+
+/** Verify the loader's destination and source point before recording a native fork. */
+export function matchesForkDestination(
+  loaded: OrchestrationV2ProviderThread,
+  target: OrchestrationV2ProviderThread,
+  source: OrchestrationV2ProviderThread,
+  forkedFrom: OrchestrationV2ProviderThread["forkedFrom"],
+): boolean {
+  return (
+    (target.nativeThreadRef === null ||
+      (loaded.runtimeIdentity?.runtimeGeneration !== undefined &&
+        target.runtimeIdentity?.runtimeGeneration === loaded.runtimeIdentity.runtimeGeneration &&
+        target.nativeThreadRef.driver === loaded.driver &&
+        target.nativeThreadRef.nativeId === loaded.nativeThreadRef?.nativeId)) &&
+    loaded.id === target.id &&
+    loaded.driver === target.driver &&
+    loaded.providerInstanceId === target.providerInstanceId &&
+    loaded.providerSessionId === target.providerSessionId &&
+    loaded.appThreadId === target.appThreadId &&
+    loaded.ownerNodeId === target.ownerNodeId &&
+    loaded.nativeThreadRef?.driver === target.driver &&
+    loaded.nativeThreadRef.strength === "strong" &&
+    !!loaded.nativeThreadRef.nativeId?.trim() &&
+    loaded.nativeThreadRef.nativeId !== source.nativeThreadRef?.nativeId &&
+    (forkedFrom === null
+      ? loaded.forkedFrom === null
+      : loaded.forkedFrom?.providerThreadId === forkedFrom.providerThreadId &&
+        loaded.forkedFrom.providerTurnId === forkedFrom.providerTurnId)
+  );
 }
 
 export interface ProviderAdapterV2EventSubscription {

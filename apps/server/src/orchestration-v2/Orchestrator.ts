@@ -40,6 +40,8 @@ import type {
 } from "@t3tools/contracts";
 import * as LegacyStorage from "../jones/legacyBootstrap/Storage.ts";
 import { TerminalManager } from "../terminal/Manager.ts";
+import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
+import { registeredDelegatedWorktree } from "../jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts";
 import { makeDispatchGuard, DispatchGuardRejected } from "./DispatchGuard.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import { hasRetainedGoalStopTarget } from "../jones/goals/stopTarget.ts";
@@ -1851,6 +1853,7 @@ const isDispatchGuardRejected = Schema.is(Schema.suspend(() => DispatchGuardReje
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const terminalOwner = yield* Effect.serviceOption(TerminalManager);
+  const delegatedGit = yield* Effect.serviceOption(GitVcsDriver);
   const validateDispatchGuard = yield* makeDispatchGuard();
   const legacyStorage = LegacyStorage.make(sql);
   const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
@@ -10454,6 +10457,47 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
 
+      const childProjectId = command.projectId ?? parentProjection.thread.projectId;
+      let workspaceStrategy = command.workspaceStrategy;
+      const crossesProjects = childProjectId !== parentProjection.thread.projectId;
+      if (
+        crossesProjects &&
+        workspaceStrategy?.type !== "worktree" &&
+        workspaceStrategy?.type !== "existing_worktree"
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Delegated task in project ${childProjectId} requires a new or existing worktree.`,
+        });
+      }
+      if (crossesProjects || workspaceStrategy?.type === "existing_worktree") {
+        const childProject = yield* projects.get(childProjectId).pipe(mapDispatchError(command));
+        if (Option.isNone(childProject) || childProject.value.deletedAt !== null) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Project ${childProjectId} is not available for a delegated task.`,
+          });
+        }
+        if (workspaceStrategy?.type === "existing_worktree") {
+          if (Option.isNone(delegatedGit)) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause:
+                "Cannot verify the delegated worktree without the receiving environment's Git service.",
+            });
+          }
+          const worktreePath = yield* registeredDelegatedWorktree(
+            delegatedGit.value,
+            { id: childProjectId, workspaceRoot: childProject.value.workspaceRoot },
+            workspaceStrategy.worktreePath,
+          ).pipe(mapDispatchError(command));
+          workspaceStrategy = { ...workspaceStrategy, worktreePath };
+        }
+      }
+
       const targetAdapter = yield* providerAdapters.get(command.modelSelection.instanceId).pipe(
         Effect.mapError(
           (cause) =>
@@ -10497,9 +10541,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
+        projectId: childProjectId,
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
-        ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
+        ...(workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),
       };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,
@@ -10619,14 +10664,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         attachments: [],
         modelSelection: command.modelSelection,
         dispatchMode:
-          command.workspaceStrategy === undefined
+          workspaceStrategy === undefined
             ? { type: "start_immediately" }
-            : { type: "defer_start", workspaceStrategy: command.workspaceStrategy },
+            : { type: "defer_start", workspaceStrategy },
       } satisfies Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>;
       yield* dispatchMessage(childMessageCommand, events, effects).pipe(
         Effect.provideService(
           ConversationPolicy.ParentConversation,
-          command.workspaceStrategy === undefined ? command.parentThreadId : undefined,
+          workspaceStrategy === undefined ? command.parentThreadId : undefined,
         ),
       );
 

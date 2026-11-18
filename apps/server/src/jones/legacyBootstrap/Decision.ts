@@ -76,7 +76,13 @@ export const capture = Effect.fn("LegacyDecision.capture")(function* (
             events.some(
               (event) =>
                 event.type === "run.updated" &&
-                event.payload.legacyPreparationFailureDecision !== undefined,
+                event.payload.id === command.runId &&
+                event.payload.status === "failed" &&
+                // Cancellation readback needs the preparation as it stood at failure,
+                // even when the failure supplies no authority to delete the thread.
+                (event.payload.legacyPreparationFailureDecision !== undefined ||
+                  (event.payload.legacyPreparation !== undefined &&
+                    event.payload.legacyBootstrap !== undefined)),
             )
           ? { kind: "failure", runId: command.runId }
           : policy === undefined

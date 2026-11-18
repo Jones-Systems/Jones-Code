@@ -251,6 +251,22 @@ const runLauncher = async (root: string) => {
   }
 };
 
+// A stop before the launcher acquires its lease cancels recovery. A child spawn
+// proves recovery has started, and stop then drains that transition before returning.
+async function stopAfterChildStarts(launcher: Launcher) {
+  const started = Promise.withResolvers<void>();
+  const previousHook = spawnHook.current;
+  spawnHook.current = (child) => child.once("spawn", started.resolve);
+  const running = launcher.run();
+  try {
+    await Promise.race([started.promise, running]);
+  } finally {
+    spawnHook.current = previousHook;
+    await launcher.stop("SIGTERM");
+    await running;
+  }
+}
+
 const fakeServiceUnit = (
   fs: FileSystem.FileSystem,
   path: Path.Path,
@@ -462,6 +478,9 @@ setInterval(() => {}, 1_000);
       recovered = true;
       yield* Effect.promise(() => vi.advanceTimersByTimeAsync(30_000));
       yield* Effect.promise(() => Promise.race([ready.promise, running]));
+      // The committed reply can reach the child before terminal backup cleanup finishes.
+      yield* Effect.promise(() => launcher.stop("SIGTERM"));
+      yield* Effect.promise(() => running);
       const state = yield* Effect.promise(() => readServiceState(statePath));
       assert.equal(
         state.activeVersion,
@@ -859,9 +878,7 @@ process.exit(0);
             root,
             yield* Effect.promise(() => readServiceState(statePath)),
           );
-          const running = launcher.run();
-          yield* Effect.promise(() => launcher.stop("SIGTERM"));
-          yield* Effect.promise(() => running);
+          yield* Effect.promise(() => stopAfterChildStarts(launcher));
         });
 
       yield* fs.writeFileString(restartPending, "1.0.1\n");
@@ -912,12 +929,7 @@ process.exit(0);
             serviceUnit: unit,
           });
         });
-        const run = (launcher: Launcher) =>
-          Effect.gen(function* () {
-            const running = launcher.run();
-            yield* Effect.promise(() => launcher.stop("SIGTERM"));
-            yield* Effect.promise(() => running);
-          });
+        const run = (launcher: Launcher) => Effect.promise(() => stopAfterChildStarts(launcher));
 
         yield* run(yield* createLauncher);
         assert.equal(yield* fs.readFileString(unit.path), expected);
@@ -1398,9 +1410,7 @@ if (context.update?.status === "pending") {
             yield* Effect.promise(() => readServiceState(statePath)),
             { serviceUnit: unit },
           );
-          const running = fresh.run();
-          yield* Effect.promise(() => fresh.stop("SIGTERM"));
-          yield* Effect.promise(() => running);
+          yield* Effect.promise(() => stopAfterChildStarts(fresh));
         });
       return { fs, root, unit, recover };
     });

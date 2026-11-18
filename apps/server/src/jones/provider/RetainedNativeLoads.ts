@@ -18,6 +18,7 @@ export function makeRetainedNativeLoads<A, E>(scope: Scope.Scope, conflict: () =
     key: string,
     load: Effect.Effect<A, E>,
     recover?: (cause: E) => Effect.Effect<A, E>,
+    releaseUnapplied?: (cause: E) => boolean,
   ) =>
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
@@ -33,7 +34,18 @@ export function makeRetainedNativeLoads<A, E>(scope: Scope.Scope, conflict: () =
           const created = original === undefined;
           if (original !== undefined && original.key !== key) return yield* Effect.fail(conflict());
           if (original === undefined) {
-            const fiber = yield* restore(load).pipe(Effect.forkIn(scope));
+            const fiber = yield* restore(load).pipe(
+              Effect.tapError((cause) =>
+                admission.withPermits(1)(
+                  Effect.sync(() => {
+                    if (originals.get(threadId) === original && releaseUnapplied?.(cause)) {
+                      originals.delete(threadId);
+                    }
+                  }),
+                ),
+              ),
+              Effect.forkIn(scope),
+            );
             original = { key, fiber };
             originals.set(threadId, original);
           }

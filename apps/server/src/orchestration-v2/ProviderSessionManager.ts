@@ -104,6 +104,23 @@ import {
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
+/** The turn-start transaction owns completion of its exact retained native fork. */
+export class CurrentForkRecording extends Context.Reference<
+  | {
+      readonly runId: OrchestrationV2Run["id"];
+      readonly attemptId: NonNullable<OrchestrationV2Run["activeAttemptId"]>;
+      readonly transferId: string;
+      readonly retain: (complete: Effect.Effect<void>) => void;
+    }
+  | undefined
+>("jones/ProviderSessionManager/CurrentForkRecording", {
+  defaultValue: () => undefined,
+}) {}
+
+const encodeForkRecordingKey = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
+
 const isRuntimeUseError = Schema.is(RuntimeUseError);
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -576,6 +593,7 @@ export const layerWithOptions = (
             })
           | undefined;
         readonly loadKey: string;
+        readonly awaitsForkRecording: boolean;
         readonly settings: {
           readonly modelSelection?: ModelSelection;
           readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
@@ -3329,8 +3347,17 @@ export const layerWithOptions = (
           >,
           target?: OrchestrationV2ProviderThread,
           settings: OriginalThreadLoad["settings"] = {},
+          forkSource?: OrchestrationV2ProviderThread,
         ) {
           yield* assertLoadAdmission;
+          const recording = forkSource === undefined ? undefined : yield* CurrentForkRecording;
+          if (recording !== undefined)
+            key = encodeForkRecordingKey([
+              key,
+              recording.runId,
+              recording.attemptId,
+              recording.transferId,
+            ]);
           const loads = originalThreadLoads.get(runtime) ?? new Map<ThreadId, OriginalThreadLoad>();
           originalThreadLoads.set(runtime, loads);
           let original = loads.get(threadId);
@@ -3348,6 +3375,7 @@ export const layerWithOptions = (
                       nativeThreadId: target.nativeThreadRef?.nativeId ?? null,
                     },
               loadKey: key,
+              awaitsForkRecording: forkSource !== undefined && target !== undefined,
               settings,
               linkedEnvironments: undefined,
               binding: undefined,
@@ -3421,6 +3449,11 @@ export const layerWithOptions = (
             return { loaded: current, linkedEnvironments: captured.linkedEnvironments.value };
           });
           if (captured !== undefined && captured.loadKey !== key) {
+            if (captured.awaitsForkRecording)
+              return yield* new ProviderRuntimeBindingError({
+                driver: runtime.driver,
+                detail: "The retained fork belongs to a different destination or source point.",
+              });
             if (captured.publication !== undefined) {
               const recovered = yield* originalLoads(
                 threadId,
@@ -3463,16 +3496,31 @@ export const layerWithOptions = (
               }),
             ),
             recover,
+            (cause) => {
+              if (
+                forkSource === undefined ||
+                captured.binding !== undefined ||
+                captured.publication !== undefined ||
+                loads.get(threadId) !== captured ||
+                !ProviderAdapter.isUnappliedSourceFork(cause, forkSource)
+              )
+                return false;
+              loads.delete(threadId);
+              return true;
+            },
+          );
+          const complete = result.complete.pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                if (loads.get(threadId) === captured) loads.delete(threadId);
+              }),
+            ),
           );
           return {
             ...result.value,
-            complete: result.complete.pipe(
-              Effect.andThen(
-                Effect.sync(() => {
-                  if (loads.get(threadId) === captured) loads.delete(threadId);
-                }),
-              ),
-            ),
+            complete: captured.awaitsForkRecording
+              ? Effect.sync(() => recording?.retain(complete))
+              : complete,
           };
         });
         const assertLoadAdmission = Effect.gen(function* () {
@@ -3841,11 +3889,24 @@ export const layerWithOptions = (
                     "fork",
                     input.targetThreadId,
                     input.sourceProviderThread,
-                    input.targetProviderThread,
+                    input.providerTurnId,
+                    input.sourceProviderTurns
+                      ?.filter((turn) => turn.providerThreadId === input.sourceProviderThread.id)
+                      .map((turn) => [turn.id, turn.ordinal, turn.status, turn.nativeTurnRef]),
+                    // Publication can fill the native ID before the turn-start write retries.
+                    // Match the durable destination here and revalidate the result on every join below.
+                    input.targetProviderThread && [
+                      input.targetProviderThread.id,
+                      input.targetProviderThread.appThreadId,
+                      input.targetProviderThread.driver,
+                      input.targetProviderThread.providerInstanceId,
+                      input.targetProviderThread.providerSessionId,
+                      input.targetProviderThread.ownerNodeId,
+                    ],
                     input.modelSelection,
                     input.runtimePolicy,
                   ]),
-                  runtime.forkThread(input),
+                  Effect.suspend(() => runtime.forkThread(input)),
                   input.targetProviderThread,
                   {
                     ...(input.modelSelection === undefined
@@ -3855,7 +3916,29 @@ export const layerWithOptions = (
                       ? {}
                       : { runtimePolicy: input.runtimePolicy }),
                   },
+                  input.sourceProviderThread,
                 ),
+              ),
+              Effect.filterOrFail(
+                ({ loaded }) =>
+                  (runtime.driver !== "claudeAgent" &&
+                    loaded.runtimeIdentity?.runtimeGeneration === undefined) ||
+                  input.targetProviderThread === undefined ||
+                  ProviderAdapter.matchesForkDestination(
+                    loaded,
+                    input.targetProviderThread,
+                    input.sourceProviderThread,
+                    {
+                      providerThreadId: input.sourceProviderThread.id,
+                      providerTurnId: input.providerTurnId,
+                    },
+                  ),
+                () =>
+                  new ProviderRuntimeBindingError({
+                    driver: runtime.driver,
+                    detail:
+                      "The native fork did not return its exact destination and source point.",
+                  }),
               ),
               Effect.tap(({ loaded: providerThread, linkedEnvironments }) =>
                 markProviderThreadLoaded({
@@ -4924,7 +5007,7 @@ export const layerWithOptions = (
                 !linkedEnvironmentsByThread.has(run.threadId)
               )
                 linkedEnvironmentsByThread.set(run.threadId, linkedEnvironments.value);
-              loads?.delete(run.threadId);
+              if (!original.awaitsForkRecording) loads?.delete(run.threadId);
               return [
                 true,
                 new Map(entries).set(sessionKey(providerSessionId), {
