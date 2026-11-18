@@ -6,7 +6,12 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import * as NodeTimersPromises from "node:timers/promises";
-import { parseLinuxSyscall, parseLinuxWitness, parseMacSample } from "./native-block-proof.mjs";
+import {
+  darwinFffCodeDigest,
+  parseDarwinWitness,
+  parseLinuxSyscall,
+  parseLinuxWitness,
+} from "./native-block-proof.mjs";
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 export const parserSha256 = digest(
@@ -17,6 +22,24 @@ async function boundedRead(path, limit) {
   const file = await NodeFSP.open(path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
   try {
     return await readBoundedEvidence(file, limit);
+  } finally {
+    await file.close();
+  }
+}
+async function readDarwinObservation(table, pid) {
+  const path = NodePath.join(
+    NodePath.dirname(table[0].path),
+    `native-block-observation-${pid}.json`,
+  );
+  const file = await NodeFSP.open(
+    path,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  );
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600)
+      throw new Error("Unowned Mach observation");
+    return JSON.parse(await readBoundedEvidence(file, 12 * 1024));
   } finally {
     await file.close();
   }
@@ -110,18 +133,37 @@ function linuxImages(maps) {
   if (fff.length !== 1 || ffi.length !== 1) throw new Error("Unattributed loaded native images");
   return { fff: fff[0], ffi: ffi[0] };
 }
+export async function readNativeImage(path) {
+  const file = await NodeFSP.open(
+    path,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  );
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size <= 0 || stat.size > 128 * 1024 * 1024)
+      throw new Error("Unhashable loaded image");
+    const bytes = await file.readFile();
+    if (bytes.length !== stat.size) throw new Error("Loaded image changed size");
+    return bytes;
+  } finally {
+    await file.close();
+  }
+}
 async function imageHashes(paths) {
   const result = {};
   for (const [name, path] of Object.entries(paths)) {
-    const stat = await NodeFSP.lstat(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > 128 * 1024 * 1024)
-      throw new Error("Unhashable loaded image");
-    result[name] = digest(await NodeFSP.readFile(path));
+    result[name] = digest(await readNativeImage(path));
   }
   return result;
 }
 // Only the grandparent fixture supplies this captured child binding. No CLI accepts arbitrary PIDs.
-export async function witnessNativeBlock({ subject, capturedParentPid, table, artifact }) {
+export async function witnessNativeBlock({
+  subject,
+  capturedParentPid,
+  table,
+  artifact,
+  requestIssued,
+}) {
   const started = Date.now();
   let raw, proof, binaryPaths, binaryDigests, reason;
   try {
@@ -202,36 +244,44 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
         { timeout: 4000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 },
       );
       const sample = await boundedRead(artifact + ".sample", 4 * 1024 * 1024);
-      const stack = parseMacSample(sample, subject.pid);
       raw = {
         sample,
         sampleArtifact: artifact + ".sample",
         sampleSha256: digest(await NodeFSP.readFile(artifact + ".sample")),
         samplerFinished: true,
-        parsed: stack ?? null,
       };
-      const images = sample.split(/^Binary Images:\s*$/m)[1] ?? "";
-      const paths = images
-        .split("\n")
-        .map((line) => /\s(\/[^\n]+)$/.exec(line)?.[1])
-        .filter(Boolean);
-      const fff = paths.filter((path) => /^libfff(?:_c)?\.dylib$/.test(NodePath.basename(path)));
-      const ffi = paths.filter((path) => /ffi[_-]rs.*\.node$/.test(NodePath.basename(path)));
-      if (fff.length === 1 && ffi.length === 1) {
-        binaryPaths = { fff: fff[0], ffi: ffi[0] };
-        binaryDigests = await imageHashes(binaryPaths);
-        raw.binaryPaths = binaryPaths;
-        raw.binaryDigests = binaryDigests;
+      if (!Number.isSafeInteger(requestIssued)) throw new Error("Native open not issued");
+      raw.mach = await readDarwinObservation(table, subject.pid);
+      const paths = {};
+      for (const [key, base] of [
+        ["fff", "libfff_c.dylib"],
+        ["ffi", "ffi-rs.darwin-arm64.node"],
+      ]) {
+        const images = raw.mach.images?.filter(
+          (image) =>
+            typeof image?.path === "string" &&
+            NodePath.isAbsolute(image.path) &&
+            NodePath.basename(image.path) === base,
+        );
+        if (images?.length !== 1) throw new Error("Unattributed loaded native images");
+        paths[key] = images[0].path;
       }
-      if (!stack)
-        throw new Error("Missing attributable main-thread fff create/log-init/open chain");
-      // sample identifies the phase but does not expose open(2)'s pathname argument.
-      // Do not choose one of the twenty possible siblings by timing or frame-name inference.
-      throw new Error(
-        "macOS sample does not establish the exact generated FIFO pathname; receipt remains unknown",
+      const fff = await readNativeImage(paths.fff);
+      raw.fffCodeSha256 = darwinFffCodeDigest(fff);
+      binaryDigests = { fff: digest(fff), ffi: digest(await readNativeImage(paths.ffi)) };
+      const observation = parseDarwinWitness(
+        raw,
+        subject,
+        table,
+        { issued: requestIssued, finished: Date.now() },
+        binaryDigests,
       );
+      if (!observation) throw new Error("Mach pathname and independent native stack did not match");
+      const { binaryPaths: matched, ...matchedProof } = observation;
+      binaryPaths = matched;
+      proof = matchedProof;
     } else throw new Error("Unsupported qualification observer platform");
-    binaryDigests = await imageHashes(binaryPaths);
+    binaryDigests ??= await imageHashes(binaryPaths);
     const finished = Date.now();
     const evidence = {
       schema: "jones.native-block-witness/v1",

@@ -137,6 +137,29 @@ describe("Jones composer thread matching", () => {
     ).toEqual(["exact", "partial-0", "partial-1", "partial-2", "partial-3"]);
   });
 
+  it("offers matching threads from source connections without a link from the destination", () => {
+    const source = EnvironmentId.make("laptop");
+    const items = matchComposerThreadItems({
+      shells: [
+        shell("matching", "Context discovery", { environmentId: source }),
+        shell("disconnected", "Context discovery", {
+          environmentId: EnvironmentId.make("offline"),
+        }),
+        shell("matching", "Context discovery"),
+      ],
+      environmentId,
+      excludeThreadId: ThreadId.make("matching"),
+      query: "context",
+      referenceEnvironments: new Map([[source, "Laptop"]]),
+    });
+    expect(items.map(({ thread, description }) => ({ thread, description }))).toEqual([
+      {
+        thread: { environmentId: source, threadId: ThreadId.make("matching") },
+        description: "Thread on Laptop",
+      },
+    ]);
+  });
+
   it("excludes only subagents while keeping forks and older shells without lineage", () => {
     expect(
       matches("model", [

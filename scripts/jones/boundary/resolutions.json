@@ -201,7 +201,7 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "96c340b3ef261f0052b155a337a448f297d127789492985fd7f3e70e61970820"
+          "sha256": "4df97cd2394f310a44775020880a3d10225df137140a239fff63c8269d87c955"
         },
         {
           "path": "apps/server/src/binCli.ts",
@@ -238,7 +238,7 @@
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "96c340b3ef261f0052b155a337a448f297d127789492985fd7f3e70e61970820"
+          "sha256": "4df97cd2394f310a44775020880a3d10225df137140a239fff63c8269d87c955"
         },
         {
           "path": "apps/server/src/server.ts",
@@ -253,16 +253,24 @@
     },
     {
       "from": "apps/server/src/bin.ts",
-      "sourceSha256": "9f9eea5cb5da893f912ec4769030696168db44f6c777bc355bb9f4411b75eb64",
+      "sourceSha256": "80cc7b9f794fa17b72b58b49ab5e69085c72698c4f8b37c24c52598e451a5175",
       "expression": "process.execPath",
-      "reason": "Upstream single-executable launch loads the CLI graph embedded in the running executable through require(process.execPath). The target exists only in the packaged executable; exact bin and bundler hashes bind this unsupported computed require, and the target names the embedded CLI source. Packaged executables are not read or claimed verified.",
+      "reason": "Single-executable launch loads one of two embedded entries through require(process.execPath). The private compute command selects the compute asset, and ordinary CLI dispatch selects the CLI asset. Exact launcher and packager hashes bind this computed require to both entry sources. Runtime verification exercises the generated executable separately.",
       "anchors": [
         {
           "path": "apps/server/vite.config.ts",
-          "sha256": "96c340b3ef261f0052b155a337a448f297d127789492985fd7f3e70e61970820"
+          "sha256": "4df97cd2394f310a44775020880a3d10225df137140a239fff63c8269d87c955"
+        },
+        {
+          "path": "apps/server/scripts/cli.ts",
+          "sha256": "9f8d620b216c9c080c76fc8346ce056912946368ac70a878c76bf38af3e278bc"
+        },
+        {
+          "path": "scripts/lib/linux-arm64-sea.ts",
+          "sha256": "347904499b3ea458bc89e4d9653f033735a094a53b494d569d1ae277fedbc5c6"
         }
       ],
-      "targets": ["apps/server/src/binMain.ts"]
+      "targets": ["apps/server/src/binMain.ts", "apps/server/src/jones/serverCompute/worker.ts"]
     },
     {
       "from": "apps/mobile/src/lib/highlights.ts",

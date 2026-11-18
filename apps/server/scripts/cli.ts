@@ -214,8 +214,8 @@ const buildExeCmd = Command.make(
             const spawnCommand = yield* resolveSpawnCommand("vp", ["pack"]);
             const cliAssetDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-asset-" });
             // Each pack records its own durable spawn intent. The leader exited only after the last
-            // pack (or after a failed one, which stops the sequence), never between the two packs.
-            const pack = (packMode: "bundle" | "bootstrap" | "1", last: boolean) =>
+            // pack or after a failed one, which stops the sequence.
+            const pack = (packMode: "bundle" | "compute" | "bootstrap" | "1", last: boolean) =>
               runCommand(
                 ChildProcess.make(spawnCommand.command, spawnCommand.args, {
                   cwd: serverDir,
@@ -243,11 +243,13 @@ const buildExeCmd = Command.make(
 
             yield* pack("bundle", false);
             const cliMainPath = path.join(cliAssetDir, "binMain.mjs");
+            yield* pack("compute", false);
+            const computeAssetPath = path.join(cliAssetDir, "compute", "serverComputeWorker.mjs");
             yield* pack(linuxArm64 ? "bootstrap" : "1", true);
 
             // Executables reject non-builtin imports even when bundling succeeds; inspect the emitted graph.
             const bootstrapPath = path.join(serverDir, "dist-exe/bin.mjs");
-            for (const bundlePath of [bootstrapPath, cliMainPath]) {
+            for (const bundlePath of [bootstrapPath, cliMainPath, computeAssetPath]) {
               const specifiers = findEsmImportsOfExternalPackages(
                 yield* fs.readFileString(bundlePath),
               );
@@ -268,6 +270,7 @@ const buildExeCmd = Command.make(
               yield* injectLinuxArm64Sea({
                 bundlePath: bootstrapPath,
                 cliAssetPath: cliMainPath,
+                computeAssetPath,
                 outputPath: path.join(serverDir, "dist-exe/t3"),
                 nodeVersion: rootPackageJson.engines.node,
                 verbose: config.verbose,

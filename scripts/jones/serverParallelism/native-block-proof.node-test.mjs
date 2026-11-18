@@ -1,9 +1,11 @@
 import * as NodeTest from "node:test";
 import * as NodeAssert from "node:assert/strict";
 import {
+  darwinFffCodeDigest,
   parseLinuxSyscall,
   parseLinuxWitness,
   parseMacSample,
+  parseDarwinWitness,
   nativeBlockReceiptPredicate,
   nativeBlockCohortRetired,
 } from "./native-block-proof.mjs";
@@ -12,6 +14,162 @@ import { readBoundedEvidence } from "./native-block-observer.mjs";
 const H = "a".repeat(64);
 const expected = { os: "linux-x64", form: "source", profile: "laptop", build: H };
 const valid = nativeBlockTestProof;
+
+NodeTest.test("Mach-O fingerprint preserves all bytes outside signature and signer sizes", () => {
+  function image(signatureSize) {
+    const signatureStart = 0x180;
+    const linkeditStart = 0x100;
+    const bytes = Buffer.alloc(signatureStart + signatureSize);
+    bytes.writeUInt32LE(0xfeedfacf, 0);
+    bytes.writeUInt32LE(0x0100000c, 4);
+    bytes.writeUInt32LE(6, 12);
+    bytes.writeUInt32LE(2, 16);
+    bytes.writeUInt32LE(72 + 16, 20);
+    const segment = 32;
+    bytes.writeUInt32LE(0x19, segment);
+    bytes.writeUInt32LE(72, segment + 4);
+    bytes.write("__LINKEDIT", segment + 8);
+    bytes.writeBigUInt64LE(BigInt(256 + signatureSize), segment + 32);
+    bytes.writeBigUInt64LE(BigInt(linkeditStart), segment + 40);
+    bytes.writeBigUInt64LE(BigInt(bytes.length - linkeditStart), segment + 48);
+    const signature = segment + 72;
+    bytes.writeUInt32LE(0x1d, signature);
+    bytes.writeUInt32LE(16, signature + 4);
+    bytes.writeUInt32LE(signatureStart, signature + 8);
+    bytes.writeUInt32LE(signatureSize, signature + 12);
+    bytes.fill(signatureSize, signatureStart);
+    return bytes;
+  }
+  const original = image(32);
+  const resigned = image(64);
+  const fingerprint = darwinFffCodeDigest(original);
+  NodeAssert.match(fingerprint, /^[a-f0-9]{64}$/);
+  NodeAssert.equal(darwinFffCodeDigest(resigned), fingerprint);
+  resigned[0x140] = 42;
+  NodeAssert.notEqual(darwinFffCodeDigest(resigned), fingerprint);
+  NodeAssert.equal(darwinFffCodeDigest(original.subarray(0, -1)), undefined);
+  const invalidOffset = Buffer.from(original);
+  invalidOffset.writeUInt32LE(112, 104 + 8);
+  NodeAssert.equal(darwinFffCodeDigest(invalidOffset), undefined);
+});
+
+NodeTest.test(
+  "macOS requires the same blocked thread, exact FIFO inode and pinned native chain",
+  () => {
+    const subject = {
+      pid: 42,
+      build: H,
+      authorityId: "a",
+      slotId: 0,
+      generation: 1,
+      nonce: "b",
+      requestId: 3,
+    };
+    const table = Array.from({ length: 20 }, (_, i) => ({
+      path: "/owned/native-block+" + (1000 + i) + "+42.log",
+      device: 1,
+      inode: 100 + i,
+      mode: 0o600,
+    }));
+    const fifo = table[13];
+    const observation = {
+      path: fifo.path,
+      device: fifo.device,
+      inode: fifo.inode,
+      ordinal: 5,
+      flags: "16777737",
+      pc: "18123aab8",
+      runState: 3,
+    };
+    const paths = { fff: "/owned/libfff_c.dylib", ffi: "/owned/ffi-rs.darwin-arm64.node" };
+    const digests = {
+      fff: "d052aae92b8d89f4734399aa53f80a327c4931f1b5dea0a7d96f9c488229ba43",
+      ffi: H,
+    };
+    const sample = `Process: node [42]
+Call graph:
+    10 Thread_802  DispatchQueue_1: com.apple.main-thread (serial)
+    +   10 fff_create_instance_with (in libfff_c.dylib) + 508 [0x100039a30]
+    +     10 ??? (in libfff_c.dylib) load address 0x100000000 + 0x1c54a8 [0x1001c54a8]
+    +       10 ??? (in libfff_c.dylib) load address 0x100000000 + 0x2cf7b4 [0x1002cf7b4]
+    +         10 open (in libsystem_kernel.dylib) + 64 [0x18123bbc0]
+    +           10 __open (in libsystem_kernel.dylib) + 8 [0x18123aab8]
+Total number in stack
+Binary Images:
+  0x100000000 - 0x100400000 +libfff_c.dylib (0) <A16BF197-B7BB-31BF-9522-B9F734296D65> /Users/*/libfff_c.dylib
+  0x101000000 - 0x101100000 +ffi-rs.darwin-arm64.node (0) <82A0F874-A6D0-3884-B7AE-E1E6B558B5D9> /Users/*/ffi-rs.darwin-arm64.node
+`;
+    const raw = {
+      sample,
+      samplerFinished: true,
+      fffCodeSha256: "040dff319ec3c6d2c015801dee0bb6f912de2d215749c9638c0dbca10e9331d2",
+      mach: {
+        subject,
+        mainTid: "802",
+        before: { at: 103, observation },
+        after: { at: 127, observation: { ...observation } },
+        images: [
+          { path: paths.fff, base: "100000000" },
+          { path: paths.ffi, base: "101000000" },
+        ],
+      },
+    };
+    const bounds = { issued: 102, finished: 141 };
+    NodeAssert.deepEqual(parseDarwinWitness(raw, subject, table, bounds, digests), {
+      mainTid: "802",
+      fifoPath: fifo.path,
+      binaryPaths: paths,
+    });
+    for (const mutate of [
+      (draft) => {
+        delete draft.fffCodeSha256;
+      },
+      (draft) => {
+        draft.fffCodeSha256 = H;
+      },
+      (draft) => {
+        delete draft.mach;
+      },
+      (draft) => {
+        draft.mach.subject.requestId++;
+      },
+      (draft) => {
+        draft.mach.mainTid = "803";
+      },
+      (draft) => {
+        draft.mach.after.observation.path = table[14].path;
+      },
+      (draft) => {
+        draft.mach.before.observation.inode++;
+        draft.mach.after.observation.inode++;
+      },
+      (draft) => {
+        draft.mach.before.observation.flags = "16777741";
+        draft.mach.after.observation.flags = "16777741";
+      },
+      (draft) => {
+        draft.mach.before.at = bounds.issued - 1;
+      },
+      (draft) => {
+        draft.sample = draft.sample.replace("[0x18123aab8]", "[0x18123aabc]");
+      },
+      (draft) => {
+        draft.sample = draft.sample.replace("[0x1002cf7b4]", "[0x1002cf7b8]");
+      },
+      (draft) => {
+        draft.mach.images[0].base = "100000001";
+      },
+    ]) {
+      const draft = structuredClone(raw);
+      mutate(draft);
+      NodeAssert.equal(parseDarwinWitness(draft, subject, table, bounds, digests), undefined);
+    }
+    NodeAssert.equal(
+      parseDarwinWitness(raw, subject, table, bounds, { ...digests, fff: "invalid" }),
+      undefined,
+    );
+  },
+);
 
 NodeTest.test(
   "OS evidence reads continue through short pages and retain the aggregate byte bound",

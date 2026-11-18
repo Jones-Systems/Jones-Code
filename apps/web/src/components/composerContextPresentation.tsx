@@ -1,5 +1,6 @@
 import ChatMarkdown from "./ChatMarkdown";
 import { isSvgAttachment } from "@t3tools/shared/image";
+import { isThreadContextAvailable } from "@t3tools/shared/composerContextReferences";
 import { ReadOnlySourcePreview } from "./files/AttachmentFilePreview";
 import type {
   EnvironmentContextRecord,
@@ -341,8 +342,7 @@ function ComposerThreadContextChip(props: { record: ThreadContextRecord }) {
       record={props.record}
       unreadable={
         environmentId !== null &&
-        props.record.environmentId !== environmentId &&
-        !linkedEnvironments.has(props.record.environmentId)
+        !isThreadContextAvailable(props.record, environmentId, linkedEnvironments)
       }
     />
   );
