@@ -19,6 +19,8 @@ import { appFailureCodeFromCause } from "../jones/orchestration/appFailureReason
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
 import * as PreSessionFailure from "../jones/workspaceRecreation/PreSessionFailure.ts";
 import * as CheckoutRecreation from "../jones/workspaceRecreation/Runtime.ts";
+import * as CheckoutRecovery from "../jones/workspaceRecreation/Recovery.ts";
+import { buildUserInputRequestRecord } from "../jones/orchestration/userInputRequestRecord.ts";
 import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as TaskContinuationStore from "../jones/taskContinuation/TaskContinuationStore.ts";
 import { requirementFor, loadedSessionMatches } from "../jones/taskContinuation/guard.ts";
@@ -56,6 +58,7 @@ import {
   ProviderRuntimeBinding,
   latestProviderTurnForAttempt,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2RuntimeRequest,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderThread,
@@ -67,6 +70,7 @@ import {
   RunId,
   RunAttemptId,
   NodeId,
+  RuntimeRequestId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -340,6 +344,7 @@ export const layer: Layer.Layer<
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const restoreMissingWorktree = yield* makeRestoreMissingWorktree;
+    const checkoutRecovery = yield* CheckoutRecovery.make;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const selectionTransitions = yield* Effect.serviceOption(
@@ -535,6 +540,11 @@ export const layer: Layer.Layer<
           | "continuity_held"
           | "control_held";
         readonly providerThreadUpdate?: OrchestrationV2ProviderThread;
+        readonly checkoutRecovery?: {
+          readonly node: OrchestrationV2ExecutionNode;
+          readonly item: OrchestrationV2TurnItem;
+          readonly request: OrchestrationV2RuntimeRequest;
+        };
         readonly requireStartClaim?: true;
       }) {
         const { run, rootNode, attempt, turnItems, now, status } = input;
@@ -587,6 +597,16 @@ export const layer: Layer.Layer<
                   payload: input.providerThreadUpdate,
                 },
               ]),
+          ...(input.checkoutRecovery === undefined
+            ? []
+            : [
+                { type: "node.updated" as const, payload: input.checkoutRecovery.node },
+                { type: "turn-item.updated" as const, payload: input.checkoutRecovery.item },
+                {
+                  type: "runtime-request.updated" as const,
+                  payload: input.checkoutRecovery.request,
+                },
+              ]),
         ] as const;
         const events = yield* Effect.forEach(eventPayloads, (event) =>
           Effect.gen(function* () {
@@ -595,7 +615,15 @@ export const layer: Layer.Layer<
               id: yield* idAllocator.allocate.event({ threadId: run.threadId }),
               threadId: run.threadId,
               runId,
-              nodeId: rootNode.id,
+              nodeId:
+                input.checkoutRecovery !== undefined &&
+                ((event.type === "node.updated" &&
+                  event.payload.id === input.checkoutRecovery.node.id) ||
+                  (event.type === "turn-item.updated" &&
+                    event.payload.id === input.checkoutRecovery.item.id) ||
+                  event.type === "runtime-request.updated")
+                  ? input.checkoutRecovery.node.id
+                  : rootNode.id,
               providerInstanceId: input.providerInstanceId,
               occurredAt: now,
             } satisfies OrchestrationV2DomainEvent;
@@ -1360,10 +1388,30 @@ export const layer: Layer.Layer<
               }),
             ),
         });
-      // Jones exact checkout recreation owns retired and missing managed checkouts;
-      // it rebinds the thread only through EventSink's checkout compare-and-bind.
-      let recreatedWorkspace = false;
-      const { worktreePath } = projection.thread;
+      const checkoutAnswer = message.context?.checkoutRecovery;
+      const recoveryRequest =
+        checkoutAnswer === undefined
+          ? undefined
+          : yield* projectionStore.getRuntimeRequest(input.threadId, checkoutAnswer.requestId);
+      const offer =
+        recoveryRequest?.responseCapability.type === "message"
+          ? recoveryRequest.responseCapability.checkoutRecovery
+          : undefined;
+      const answer = recoveryRequest?.answers?.[CheckoutRecovery.questionId];
+      const acceptedOffer =
+        checkoutAnswer !== undefined &&
+        recoveryRequest?.status === "resolved" &&
+        offer?.messageId === message.id &&
+        (answer === checkoutAnswer.choice ||
+          (Array.isArray(answer) && answer.length === 1 && answer[0] === checkoutAnswer.choice));
+      const { worktreePath, branch: savedBranch } = projection.thread;
+      const appliedRecovery =
+        acceptedOffer &&
+        offer.applied?.runId === runId &&
+        offer.applied.path === worktreePath &&
+        offer.applied.branch === savedBranch;
+      let recoverySourcePath = appliedRecovery ? offer.worktreePath : undefined;
+      let recreatedWorkspace = appliedRecovery;
       if (worktreePath !== null) {
         if (input.nativeCreationGuard !== undefined && !(yield* fileSystem.exists(worktreePath)))
           return yield* new ProviderTurnStartError({
@@ -1376,24 +1424,244 @@ export const layer: Layer.Layer<
         );
         if (project !== undefined) {
           const managed = yield* beforeSession("preflight", isManagedWorktreePath(worktreePath));
-          const recreated = yield* beforeSession(
-            "recreation",
-            CheckoutRecreation.prepareTurn({
-              threadId: input.threadId,
-              runId,
-              projectRoot: project.workspaceRoot,
-              worktree: worktreePath,
-              managed,
-              nativeGuarded: input.nativeCreationGuard !== undefined,
-              ...(message.context?.checkoutRecreation === undefined
-                ? {}
-                : { detached: message.context.checkoutRecreation }),
-            }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause }))),
-          );
+          const recovery = appliedRecovery ? undefined : checkoutAnswer;
+          const paths = {
+            cwd: project.workspaceRoot,
+            worktreePath,
+            runId,
+            branch: savedBranch,
+          };
+          const missing = managed && !(yield* fileSystem.exists(worktreePath));
+          const provider =
+            missing && Option.isSome(instanceRegistry)
+              ? yield* instanceRegistry.value.getInstance(run.modelSelection.instanceId)
+              : undefined;
+          const conversationAvailable =
+            Option.isSome(conversations) &&
+            (provider?.driverKind === "codex" || provider?.driverKind === "claudeAgent");
+          const canOfferRecovery =
+            missing &&
+            input.nativeCreationGuard === undefined &&
+            message.createdBy === "user" &&
+            (checkoutAnswer !== undefined ||
+              message.creationSource === "web" ||
+              message.creationSource === "mobile") &&
+            message.scheduledTaskId === undefined &&
+            message.senderThreadId === undefined;
+          const offerRecovery = Effect.fn("CheckoutRecovery.offer")(function* (
+            failure?: string,
+            failedChoice?: typeof recovery,
+          ) {
+            const source =
+              failedChoice?.choice === "branch"
+                ? null
+                : yield* CheckoutRecreation.savedSource(
+                    project.workspaceRoot,
+                    worktreePath,
+                    input.threadId,
+                  ).pipe(Effect.orElseSucceed(() => null));
+            const rememberedBranch =
+              savedBranch ?? source?.branch?.replace(/^refs\/heads\//, "") ?? null;
+            const branch =
+              failedChoice?.choice === "branch"
+                ? null
+                : yield* checkoutRecovery
+                    .availableBranch(project.workspaceRoot, rememberedBranch)
+                    .pipe(
+                      // Keep the known branch visible during a temporary remote outage.
+                      Effect.orElseSucceed(() => rememberedBranch),
+                    );
+            const question = CheckoutRecovery.question({
+              branch,
+              conversationAvailable,
+              ...(failure === undefined ? {} : { failure }),
+              ...(failedChoice === undefined ? {} : { failedChoice: failedChoice.choice }),
+            });
+            const now = yield* DateTime.now;
+            const record = buildUserInputRequestRecord({
+              command: {
+                type: "user_input_request.record",
+                commandId: CommandId.make(`checkout-recovery:${runId}`),
+                threadId: input.threadId,
+                runId,
+                rootNodeId: rootNode.id,
+                providerInstanceId: run.providerInstanceId,
+                requestId: RuntimeRequestId.make(`checkout-recovery:${runId}`),
+                requestNodeId: NodeId.make(`checkout-recovery:${runId}`),
+                turnItemId: idAllocator.derive.runSignalTurnItem({
+                  runId,
+                  signal: "checkout-recovery-request",
+                }),
+                question,
+              },
+              projection: { ...projection, runtimeRequests: [] },
+              now,
+              ordinal:
+                Math.max(
+                  0,
+                  ...projection.turnItems
+                    .filter((item) => item.runId === runId)
+                    .map((item) => item.ordinal),
+                ) + 2,
+              providerTurnId: null,
+            });
+            if ("error" in record) return yield* admissionError(record.error);
+            yield* settleRunBeforeStart({
+              run,
+              rootNode,
+              attempt,
+              turnItems: projection.turnItems,
+              signal: "checkout-recovery-needed",
+              status: "failed",
+              now,
+              providerInstanceId: run.providerInstanceId,
+              itemProviderThreadId: preSessionProviderThreadId,
+              item: {
+                type: "error",
+                title: "Checkout unavailable",
+                failure: {
+                  class: "provider_error",
+                  code:
+                    failure === undefined ? "checkout_recovery_needed" : "checkout_recovery_failed",
+                  message: question.question,
+                  retryable: false,
+                },
+              },
+              checkoutRecovery: {
+                ...record,
+                request: {
+                  ...record.request,
+                  responseCapability: {
+                    type: "message",
+                    checkoutRecovery: {
+                      worktreePath,
+                      branch: savedBranch,
+                      messageId: message.id,
+                      ...(rememberedBranch === null ? {} : { resumeBranch: rememberedBranch }),
+                      ...(source?.head === undefined ? {} : { previousHead: source.head }),
+                    },
+                  },
+                },
+              },
+            });
+          });
+          let recoveryBinding: {
+            readonly path: string | null;
+            readonly branch: string | null;
+          } | null = null;
+          if (recovery !== undefined) {
+            if (
+              !canOfferRecovery ||
+              !acceptedOffer ||
+              offer.applied !== undefined ||
+              offer.worktreePath !== worktreePath ||
+              offer.branch !== savedBranch ||
+              (recovery.choice === "branch" && offer.resumeBranch === undefined)
+            ) {
+              return yield* admissionError(
+                "The checkout recovery choice no longer matches this message or workspace.",
+              );
+            }
+            yield* assertAdmission(providerThread);
+            const selected = recovery.choice;
+            const prepare = Effect.gen(function* () {
+              if (selected === "conversation") {
+                if (!conversationAvailable || Option.isNone(conversations)) {
+                  return yield* admissionError("This provider cannot continue without a checkout.");
+                }
+                const binding = yield* conversations.value.allocate({
+                  threadId: input.threadId,
+                  projectId: project.id,
+                  projectRoot: project.workspaceRoot,
+                  reopenRetired: true,
+                });
+                if (binding.state !== "conversation") {
+                  return yield* admissionError("The conversation workspace could not be opened.");
+                }
+                return { path: null, branch: offer.resumeBranch ?? savedBranch };
+              }
+              return yield* checkoutRecovery.attach({
+                ...paths,
+                branch: offer.resumeBranch ?? savedBranch,
+                ...(offer.previousHead === undefined ? {} : { previousHead: offer.previousHead }),
+                choice: selected,
+                hold: CheckoutRecreation.holdRecoveryTarget,
+              });
+            });
+            const result = yield* Effect.result(guardClaim(prepare));
+            if (result._tag === "Failure") {
+              if (findEffectClaimLost(result.failure) !== undefined) {
+                return yield* admissionError("This run no longer owns checkout recovery.");
+              }
+              const detail = CheckoutRecovery.failureDetail(result.failure);
+              yield* Effect.logWarning("Checkout recovery did not prepare a workspace", {
+                threadId: input.threadId,
+                runId,
+                choice: selected,
+                branch: savedBranch,
+                detail,
+              });
+              yield* offerRecovery(detail, recovery);
+              return;
+            }
+            recoveryBinding = result.success;
+          }
+          const recreated =
+            recoveryBinding ??
+            (yield* beforeSession(
+              "recreation",
+              CheckoutRecreation.prepareTurn({
+                threadId: input.threadId,
+                runId,
+                projectRoot: project.workspaceRoot,
+                worktree: worktreePath,
+                managed,
+                nativeGuarded: input.nativeCreationGuard !== undefined,
+                ...(message.context?.checkoutRecreation === undefined
+                  ? {}
+                  : { detached: message.context.checkoutRecreation }),
+              }).pipe(
+                Effect.catchIf(
+                  (cause) =>
+                    canOfferRecovery &&
+                    recovery === undefined &&
+                    message.context?.checkoutRecreation === undefined &&
+                    CheckoutRecovery.needsOwnerChoice(cause),
+                  () => Effect.void,
+                ),
+                Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })),
+              ),
+            ));
+          if (recreated === undefined) {
+            yield* offerRecovery();
+            return;
+          }
           if (recreated !== null) {
             const recreatedBranch = recreated.branch?.replace(/^refs\/heads\//, "") ?? null;
             const now = yield* DateTime.now;
-            yield* eventSink.writeIfRunCurrent({
+            const stamped =
+              recoveryBinding === null || recoveryRequest === undefined || offer === undefined
+                ? []
+                : [
+                    {
+                      type: "runtime-request.updated" as const,
+                      id: yield* idAllocator.allocate.event({ threadId: input.threadId }),
+                      threadId: input.threadId,
+                      nodeId: recoveryRequest.nodeId,
+                      occurredAt: now,
+                      payload: {
+                        ...recoveryRequest,
+                        responseCapability: {
+                          type: "message" as const,
+                          checkoutRecovery: {
+                            ...offer,
+                            applied: { runId, path: recreated.path, branch: recreatedBranch },
+                          },
+                        },
+                      },
+                    },
+                  ];
+            const committed = yield* eventSink.writeIfRunCurrent({
               threadId: input.threadId,
               runId,
               activeAttemptId: attempt.id,
@@ -1412,8 +1680,11 @@ export const layer: Layer.Layer<
                     updatedAt: now,
                   },
                 },
+                ...stamped,
               ],
             });
+            if (!committed.committed)
+              return yield* admissionError("Checkout recovery lost its turn.");
             projection = yield* beforeSession(
               "preflight",
               projectionStore.getTurnStartContext(input.threadId, runId),
@@ -1432,6 +1703,7 @@ export const layer: Layer.Layer<
                 ),
               );
             recreatedWorkspace = true;
+            if (recoveryBinding !== null) recoverySourcePath = worktreePath;
           }
         }
       }
@@ -1523,6 +1795,7 @@ export const layer: Layer.Layer<
             ),
           ),
         ),
+        recoverySourcePath,
       ).pipe(
         Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, providerSessions),
         Effect.provideService(EventSink.EventSinkV2, eventSink),
@@ -1554,7 +1827,9 @@ export const layer: Layer.Layer<
             expired === undefined
               ? "Previous provider writer could not retire"
               : "Previous provider is still releasing this conversation",
-          ...(expired === undefined ? {} : { message: expired.message }),
+          ...(expired !== undefined || failure._tag === "WorkspaceRecoveryProviderBusyError"
+            ? { message: expired?.message ?? failure.message }
+            : {}),
           error: preparation.failure,
         });
         return;

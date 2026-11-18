@@ -31,6 +31,9 @@ class TurnClaims extends Context.Service<
   { readonly hold: (path: string) => Effect.Effect<void, RetirementError> }
 >()("t3/jones/workspaceRecreation/Runtime/TurnClaims") {}
 
+export const holdRecoveryTarget = (path: string) =>
+  Effect.flatMap(TurnClaims, (claims) => claims.hold(path));
+
 const observe = <A>(target: string, owner: string, action: () => Promise<A>) =>
   Effect.tryPromise({
     try: action,
@@ -122,6 +125,21 @@ const retiredSource = Effect.fn("CheckoutRecreation.retiredSource")(function* (w
       ? {}
       : { sparsePatterns: receipt.qualification.sparsePatterns }),
   } satisfies RecreationSource;
+});
+
+export const savedSource = Effect.fn("CheckoutRecovery.savedSource")(function* (
+  cwd: string,
+  worktree: string,
+  threadId: string,
+) {
+  const receipt = yield* retiredSource(worktree);
+  if (receipt !== null) return receipt;
+  return yield* observe(worktree, threadId, () => missingSource(cwd, worktree)).pipe(
+    Effect.catchIf(
+      (error) => error.reason === "source_unavailable",
+      () => Effect.succeed(null),
+    ),
+  );
 });
 
 export const prepareTurn = Effect.fn("CheckoutRecreation.prepareTurn")(function* (input: {

@@ -11,16 +11,36 @@ export function bindRecreatedCheckout(
   expected: ExpectedCheckout,
   events: readonly OrchestrationV2DomainEvent[],
 ): readonly OrchestrationV2DomainEvent[] | null {
+  const [event, recoveryEvent] = events;
   if (
     current.deletedAt !== null ||
     current.worktreePath !== expected.worktreePath ||
     current.branch !== expected.branch ||
-    events.length !== 1 ||
-    events[0]?.type !== "thread.metadata-updated" ||
-    events[0].threadId !== current.id
+    events.length > 2 ||
+    event?.type !== "thread.metadata-updated" ||
+    event.threadId !== current.id
   )
     return null;
-  const event = events[0];
+  if (recoveryEvent !== undefined) {
+    if (
+      recoveryEvent.type !== "runtime-request.updated" ||
+      recoveryEvent.threadId !== current.id ||
+      recoveryEvent.payload.kind !== "user_input" ||
+      recoveryEvent.payload.status !== "resolved" ||
+      recoveryEvent.payload.responseCapability.type !== "message"
+    )
+      return null;
+    const recovery = recoveryEvent.payload.responseCapability.checkoutRecovery;
+    if (
+      recovery?.worktreePath !== expected.worktreePath ||
+      recovery.branch !== expected.branch ||
+      recovery.applied === undefined ||
+      recovery.applied.runId !== event.runId ||
+      recovery.applied.path !== event.payload.worktreePath ||
+      recovery.applied.branch !== event.payload.branch
+    )
+      return null;
+  }
   return [
     {
       ...event,
@@ -31,5 +51,6 @@ export function bindRecreatedCheckout(
         updatedAt: event.payload.updatedAt,
       },
     },
+    ...(recoveryEvent === undefined ? [] : [recoveryEvent]),
   ];
 }

@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 import { ThreadReferenceExcerpt } from "./jones/threadReferenceExcerpt.ts";
-import { CheckoutRecreationRequest } from "./jones/workspaceRecreation.ts";
+import { CheckoutRecreationRequest, CheckoutRecoveryAnswer } from "./jones/workspaceRecreation.ts";
 
 import { AssistantCitation } from "./assistantCitations.ts";
 import {
@@ -315,6 +315,7 @@ export type GuestMessageAttribution = typeof GuestMessageAttribution.Type;
 export const OrchestrationMessageContext = Schema.Struct({
   version: Schema.Literal(1),
   checkoutRecreation: Schema.optional(CheckoutRecreationRequest),
+  checkoutRecovery: Schema.optional(CheckoutRecoveryAnswer),
   guest: Schema.optional(GuestMessageAttribution),
   records: Schema.Array(Schema.Unknown)
     .check(

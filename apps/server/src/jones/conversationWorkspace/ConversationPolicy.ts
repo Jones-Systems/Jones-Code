@@ -174,6 +174,7 @@ export interface ConversationAllocationInput {
   readonly projectRoot: string;
   readonly baseRef?: string;
   readonly excluded?: readonly string[];
+  readonly reopenRetired?: boolean;
 }
 
 export const ParentConversation = Context.Reference<string | undefined>(
@@ -353,7 +354,10 @@ const make = Effect.gen(function* () {
   ) {
     yield* assertOwner(input);
     const previous = yield* lookup(input.threadId);
-    if (previous !== null) return previous;
+    const reopening =
+      input.reopenRetired === true &&
+      (previous?.state === "attached" || previous?.state === "disposed");
+    if (previous !== null && !reopening) return previous;
     const { snapshot, excluded, registered } = yield* resolvePlacement(input);
     const directory = yield* io(input.threadId, "storage", () =>
       createConversationDirectory(config.stateDir, excluded, registered),
@@ -366,7 +370,29 @@ const make = Effect.gen(function* () {
       ownerThreadId: input.threadId,
       state: "conversation",
     };
-    yield* save(binding).pipe(
+    const publish = reopening
+      ? Effect.gen(function* () {
+          const current = yield* lookup(input.threadId);
+          if (current?.path !== previous.path || current.state !== previous.state)
+            return yield* new ConversationWorkspaceError({
+              threadId: input.threadId,
+              reason: "handoff_conflict",
+            });
+          const rows = yield* sql<{
+            record: string;
+          }>`SELECT record FROM jones_conversation_handoffs WHERE thread_id=${input.threadId}`;
+          const handoff = rows[0] === undefined ? null : yield* decodeHandoff(rows[0].record);
+          if (handoff !== null && handoff.phase !== "done")
+            return yield* new ConversationWorkspaceError({
+              threadId: input.threadId,
+              reason: "handoff_conflict",
+            });
+          if (handoff !== null)
+            yield* sql`DELETE FROM jones_conversation_handoffs WHERE thread_id=${input.threadId}`;
+          yield* save(binding);
+        }).pipe(sql.withTransaction, wrap(input.threadId))
+      : save(binding);
+    yield* publish.pipe(
       Effect.onError(() =>
         lookup(input.threadId).pipe(
           Effect.flatMap((persisted) =>

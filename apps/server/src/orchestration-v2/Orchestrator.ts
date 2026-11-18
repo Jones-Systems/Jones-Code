@@ -63,6 +63,7 @@ import {
 } from "../jones/orchestration/WaitingRunSettlement.ts";
 import { retryWorkspacePreparationRead } from "../jones/orchestration/WorkspacePreparationRead.ts";
 import { buildUserInputRequestRecord } from "../jones/orchestration/userInputRequestRecord.ts";
+import { questionId as checkoutRecoveryQuestionId } from "../jones/workspaceRecreation/Recovery.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 import * as CapturedRuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import type * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
@@ -12265,6 +12266,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? ("cancelled" as const)
           : ("completed" as const);
       const replies: string[] = [];
+      const checkoutRecovery =
+        runtimeRequest.responseCapability.type === "message"
+          ? runtimeRequest.responseCapability.checkoutRecovery
+          : undefined;
+      let recoveryMessage: OrchestrationV2ConversationMessage | undefined;
+      let recoveryChoice: "conversation" | "branch" | "default" | undefined;
       if (
         runtimeRequest.responseCapability.type === "message" &&
         resolvedNodeStatus !== "cancelled"
@@ -12327,6 +12334,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             commandType: command.type,
             cause: "Enter an answer before sending.",
           });
+        }
+        if (checkoutRecovery !== undefined) {
+          const answer = answers?.[checkoutRecoveryQuestionId];
+          const choice = Array.isArray(answer) && answer.length === 1 ? answer[0] : answer;
+          const question = approvalTurnItem.questions.find(
+            (item) => item.id === checkoutRecoveryQuestionId,
+          );
+          if (
+            (choice !== "conversation" && choice !== "branch" && choice !== "default") ||
+            question?.options.every((option) => option.value !== choice) !== false ||
+            thread.worktreePath !== checkoutRecovery.worktreePath ||
+            thread.branch !== checkoutRecovery.branch
+          ) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "The recovery choice is unavailable or the thread's checkout has changed.",
+            });
+          }
+          recoveryMessage = (yield* projectionStore
+            .getMessagesById(command.threadId, [checkoutRecovery.messageId])
+            .pipe(mapDispatchError(command))).get(checkoutRecovery.messageId);
+          if (recoveryMessage?.role !== "user" || recoveryMessage.runId !== context.node?.runId) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "The original recovery message is no longer waiting for this choice.",
+            });
+          }
+          recoveryChoice = choice;
         }
       }
 
@@ -12476,6 +12513,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       if (runtimeRequest.responseCapability.type === "message") {
         if (resolvedNodeStatus === "cancelled") return;
+        if (recoveryMessage !== undefined && recoveryChoice !== undefined) {
+          yield* dispatchMessage(
+            {
+              type: "message.dispatch",
+              commandId: command.commandId,
+              threadId: command.threadId,
+              messageId: recoveryMessage.id,
+              text: recoveryMessage.text,
+              attachments: recoveryMessage.attachments,
+              context: {
+                version: 1,
+                records: [],
+                ...recoveryMessage.context,
+                checkoutRecovery: { requestId: command.requestId, choice: recoveryChoice },
+              },
+              createdBy: "user",
+              creationSource: "server",
+              dispatchMode: { type: "queue_after_active" },
+            },
+            events,
+            effects,
+          );
+          return;
+        }
         let dispatchMode: Extract<
           OrchestrationV2ServerCommand,
           { type: "message.dispatch" }

@@ -79,6 +79,15 @@ export class ExecutionSessionRevalidationUnavailableError extends Schema.TaggedE
     return "Provider start could not read the current run state after retirement. No provider work was started.";
   }
 }
+export class WorkspaceRecoveryProviderBusyError extends Schema.TaggedError<WorkspaceRecoveryProviderBusyError>()(
+  "WorkspaceRecoveryProviderBusyError",
+  { runId: RunId },
+) {
+  override get message(): string {
+    return "The previous provider still has background work. Wait for it to finish or stop it, then send the message again.";
+  }
+}
+
 const sameNativeRef = Schema.toEquivalence(OrchestrationV2ProviderRef);
 const isExecutionSessionRevalidationUnavailable = Schema.is(
   ExecutionSessionRevalidationUnavailableError,
@@ -128,6 +137,7 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     void,
     ExecutionSessionRevalidationError | ExecutionSessionRevalidationUnavailableError
   > = Effect.void,
+  previousWorktreePath?: string,
 ) {
   const transitions = yield* Switch.ProviderSwitchServiceV2;
   const sessions = yield* Sessions.ProviderSessionManagerV2;
@@ -148,7 +158,21 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     });
   const deadline = (yield* Clock.currentTimeMillis) + RETIREMENT_ADMISSION_BUDGET_MS;
   const events: Array<OrchestrationV2DomainEvent> = [];
-  for (const providerSessionId of plan.releaseProviderSessionIds) {
+  const previousWorkspaceSession =
+    previousWorktreePath === undefined
+      ? undefined
+      : projection.providerSessions.find(
+          (session) =>
+            session.id === provider.providerSessionId && session.cwd === previousWorktreePath,
+        );
+  const releases = new Set(plan.releaseProviderSessionIds);
+  if (
+    previousWorkspaceSession !== undefined &&
+    Option.isSome(yield* sessions.get(previousWorkspaceSession.id))
+  ) {
+    releases.add(previousWorkspaceSession.id);
+  }
+  for (const providerSessionId of releases) {
     const retired = projection.providerSessions.find((session) => session.id === providerSessionId);
     if (retired === undefined)
       return yield* new ExecutionSessionRevalidationError({
@@ -158,15 +182,22 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     // Detaching ends background work in the provider process. A handoff runs in its own session,
     // so a busy one stays up; the queue holds a busy restart before it reaches admission.
     if (
-      plan.transition.type !== "restart_and_resume" &&
+      (providerSessionId === previousWorkspaceSession?.id ||
+        plan.transition.type !== "restart_and_resume") &&
       (yield* sessionHasBackgroundWork(sessions, retired, projection.providerThreads))
-    )
+    ) {
+      if (providerSessionId === previousWorkspaceSession?.id)
+        return yield* new WorkspaceRecoveryProviderBusyError({ runId: run.id });
       continue;
+    }
     yield* awaitRetirementForAdmission(
       sessions.detach({
         providerSessionId,
         threadId: run.threadId,
-        detail: "Selection changed at normal run admission.",
+        detail:
+          providerSessionId === previousWorkspaceSession?.id
+            ? "Checkout recovered at a different workspace."
+            : "Selection changed at normal run admission.",
         requireWriterRetirement: true,
       }),
       deadline,
@@ -196,7 +227,10 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       payload: {
         providerSessionId,
         detachedAt: occurredAt,
-        reason: "Selection changed at normal run admission.",
+        reason:
+          providerSessionId === previousWorkspaceSession?.id
+            ? "Checkout recovered at a different workspace."
+            : "Selection changed at normal run admission.",
       },
     });
   }
@@ -285,6 +319,7 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
   const replacement =
     retiredWriter ||
     stoppedRuntime ||
+    previousWorkspaceSession !== undefined ||
     plan.transition.type === "restart_and_resume" ||
     (run.restartContinuationOfRunId !== undefined &&
       (plan.transition.type === "switch_model_in_session" ||

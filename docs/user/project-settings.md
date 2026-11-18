@@ -244,7 +244,15 @@ Active sessions and shared worktrees prevent removal. **Keep worktrees with loca
 to **Uncommitted changes**, which protects tracked edits and untracked files but deletes ignored
 files such as `.env` and build output. **Any local files** also protects ignored files other than
 `node_modules`. **Edited tracked files** protects only tracked edits and allows untracked and
-ignored files to be deleted. Branches and thread history stay; starting another turn recreates the checkout.
+ignored files to be deleted. Branches and thread history stay.
+
+Jones Code automatically recreates a managed checkout when it can verify the saved checkout and
+branch. When it needs a decision, **Needs input** lets you restore the saved branch if available
+or create a fresh worktree from the latest default branch.
+Codex and Claude threads can also continue without a checkout and attach one later. If restoring
+the saved branch fails, Jones Code shows the reason and offers the remaining choices. Your
+original message resumes after the selected workspace is ready.
+
 Merge cleanup requires a merged pull request whose commits are included in the remote default
 branch. A squash or rebase merge on GitHub also counts when the pull request targeted the default
 branch and the worktree is still at the pull request's last commit.

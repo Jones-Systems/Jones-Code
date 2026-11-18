@@ -122,6 +122,9 @@
         "apps/server/src/jones/workspaceRecreation/Native.test.ts",
         "apps/server/src/jones/workspaceRecreation/Runtime.test.ts",
         "apps/server/src/jones/workspaceRecreation/BindingCommit.test.ts",
+        "apps/server/src/jones/workspaceRecreation/Recovery.test.ts",
+        "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.test.ts",
         "packages/contracts/src/jones/workspaceRecreation.test.ts",
         "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
         "apps/server/src/jones/workspaceLifecycle/NativeSource.test.ts",
@@ -141,7 +144,7 @@
         "packages/contracts/src/settings.test.ts",
         "packages/shared/src/projectSettings.test.ts"
       ],
-      "scope": "C8 claim-held recreation from terminal receipts, exact stale registration removal with reflog refs, typed branch holds, explicit receipt-bound detached requests, new breadcrumbs and source-generation invalidation, and settlement restore deferring checkout work to the next turn. Pre-session failure settlement uses a Jones-owned phase classifier and a narrow start-service hook: exhausted ordinary reads and positively typed source refusals fail only the captured starting attempt, preserve failed-effect receipts, and use fixed provider_error notices. Pending lifecycle transitions are checked before source refusal. The existing shared start-test harness registers Jones-owned cases instead of being copied; real terminal-event queue reaction preserves waiting text, order and holds. Native-creation custody, interruptions, claim loss and unknown recreation retain their existing owners. V3 branch-only registry wire schema remains unchanged; detached recreation has native duty exclusion and provenance without claiming branch-only registry registration."
+      "scope": "C8 claim-held recreation from terminal receipts, exact stale registration removal with reflog refs, typed branch holds, explicit receipt-bound detached requests, new breadcrumbs and source-generation invalidation, and settlement restore deferring checkout work to the next turn. Pre-session failure settlement uses a Jones-owned phase classifier and a narrow start-service hook: exhausted ordinary reads and positively typed source refusals fail only the captured starting attempt, preserve failed-effect receipts, and use fixed provider_error notices. Pending lifecycle transitions are checked before source refusal. The existing shared start-test harness registers Jones-owned cases instead of being copied; real terminal-event queue reaction preserves waiting text, order and holds. Native-creation custody, interruptions, claim loss and unknown recreation retain their existing owners. V3 branch-only registry wire schema remains unchanged; detached recreation has native duty exclusion and provenance without claiming branch-only registry registration. Direct owner sends offer a durable workspace choice before opening a provider. Recovery uses the stored branch and a current fetch or an isolated conversation workspace and records the resulting binding with the selected answer. The existing start and command harnesses cover the cross-boundary hooks, and the recovery fixture exercises native Git history and remote updates."
     },
     {
       "id": "workspace-retirement-settlement",

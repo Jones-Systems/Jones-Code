@@ -12,12 +12,30 @@
     "apps/server/src/jones/workspaceRecreation/PreSessionFailure.testkit.ts",
     "apps/server/src/jones/workspaceRecreation/PreSessionFailure.ts",
     "apps/server/src/jones/workspaceRecreation/PreSessionQueue.testkit.ts",
+    "apps/server/src/jones/workspaceRecreation/Recovery.test.ts",
+    "apps/server/src/jones/workspaceRecreation/Recovery.ts",
     "apps/server/src/jones/workspaceRecreation/Runtime.test.ts",
     "apps/server/src/jones/workspaceRecreation/Runtime.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/workspaceRecreation/Recovery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/orchestration/userInputRequestRecord.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/workspaceRecreation/Recovery.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/jones/workspaceRecreation.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
       "to": "apps/server/src/jones/workspaceRetirement/Filesystem.ts"

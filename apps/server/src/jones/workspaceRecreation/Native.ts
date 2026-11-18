@@ -267,7 +267,7 @@ async function probeMissingRemoval() {
   }
 }
 
-async function removeStale(input: RecreationInput) {
+async function removeStale(input: Pick<RecreationInput, "source" | "owner" | "cwd">) {
   const { source, owner, cwd } = input,
     target = source.binding.path;
   const hold = (fact: string, cause?: unknown) =>
@@ -374,6 +374,18 @@ async function removeStale(input: RecreationInput) {
       "Reconcile this original registration removal through readback; do not repeat removal.",
       { cause: failure },
     );
+}
+
+export async function releaseMissingBranchRegistration(input: {
+  readonly cwd: string;
+  readonly path: string;
+  readonly branch: string;
+  readonly owner: string;
+}) {
+  const entry = (await registrations(input.cwd)).find((candidate) => candidate.path === input.path);
+  if (entry?.branch !== `refs/heads/${input.branch}`) return;
+  const source = await missingSource(input.cwd, input.path);
+  await removeStale({ cwd: input.cwd, source, owner: input.owner });
 }
 
 export async function readBreadcrumb(gitDirectory: string): Promise<RecreationResult | null> {

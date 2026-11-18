@@ -19,6 +19,7 @@ import { assertTerminalQueueReaction } from "./PreSessionQueue.testkit.ts";
 
 interface Input {
   readonly text: string;
+  readonly unattended?: boolean;
   readonly identity?: string;
   readonly driver?: "codex" | "claudeAgent";
   readonly nativeResume?: "same";
@@ -64,7 +65,7 @@ const native = <A>(action: () => Promise<A>) =>
 
 export function registerPreSessionFailureTests<E>(makeHarness: (input: Input) => Harness<E>) {
   it.effect.each(["codex", "claudeAgent"] as const)(
-    "settles exhausted missing-source starts once with sanitized evidence (%s)",
+    "settles unattended missing-source starts with sanitized evidence (%s)",
     (driver) =>
       Effect.gen(function* () {
         const f = yield* Effect.acquireRelease(native(acquireNativeFixture), (fixture) =>
@@ -79,6 +80,7 @@ export function registerPreSessionFailureTests<E>(makeHarness: (input: Input) =>
         yield* native(() => git(f.repo, ["worktree", "prune"]));
         const harness = makeHarness({
           text: "Continue",
+          unattended: true,
           driver,
           fileSystem: fs,
           worktreePath: worktree,
