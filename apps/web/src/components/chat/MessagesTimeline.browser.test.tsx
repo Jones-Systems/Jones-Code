@@ -253,34 +253,43 @@ it("fits expanded assistant tables to their content within the conversation row"
     expect(tables).toHaveLength(2);
     return [tables.item(0), tables.item(1)] as const;
   });
-  const lane = wide.closest(".chat-content-lane")!.getBoundingClientRect();
-  const frame = wide.closest(".messages-timeline-row-frame")!.getBoundingClientRect();
-  const expanded = wide.getBoundingClientRect();
-  expect(expanded.left).toBeLessThan(lane.left);
-  expect(expanded.right).toBeGreaterThan(lane.right);
-  expect(expanded.left).toBeGreaterThanOrEqual(frame.left);
-  expect(expanded.right).toBeLessThanOrEqual(frame.right);
-  expect(small.getBoundingClientRect().width).toBeLessThan(lane.width);
-
-  const header = wide.querySelector("thead")!.getBoundingClientRect();
-  const headerY = header.top + header.height / 2;
-  expect(wide.contains(document.elementFromPoint((expanded.left + lane.left) / 2, headerY))).toBe(
-    true,
-  );
-  expect(wide.contains(document.elementFromPoint((expanded.right + lane.right) / 2, headerY))).toBe(
-    true,
-  );
-
   const collapse = screen.button("Collapse table");
-  const buttonRect = collapse.getBoundingClientRect();
-  expect(
-    collapse.contains(
-      document.elementFromPoint(
-        buttonRect.left + buttonRect.width / 2,
-        buttonRect.top + buttonRect.height / 2,
-      ),
-    ),
-  ).toBe(true);
+  // The list can mount the row before its initial scroll position and hit areas settle.
+  const { lane, expanded } = await vi.waitFor(() => {
+    const lane = wide.closest(".chat-content-lane")!.getBoundingClientRect();
+    const frame = wide.closest(".messages-timeline-row-frame")!.getBoundingClientRect();
+    const expanded = wide.getBoundingClientRect();
+    expect(expanded.left).toBeLessThan(lane.left);
+    expect(expanded.right).toBeGreaterThan(lane.right);
+    expect(expanded.left).toBeGreaterThanOrEqual(frame.left);
+    expect(expanded.right).toBeLessThanOrEqual(frame.right);
+    expect(small.getBoundingClientRect().width).toBeLessThan(lane.width);
+
+    const header = wide.querySelector("thead")!.getBoundingClientRect();
+    const headerY = header.top + header.height / 2;
+    const button = collapse.getBoundingClientRect();
+    const probes = [
+      { label: "left table edge", target: wide, x: (expanded.left + lane.left) / 2, y: headerY },
+      { label: "right table edge", target: wide, x: (expanded.right + lane.right) / 2, y: headerY },
+      {
+        label: "collapse button",
+        target: collapse,
+        x: button.x + button.width / 2,
+        y: button.y + button.height / 2,
+      },
+    ];
+    for (const { label, target, x, y } of probes) {
+      if (target.contains(document.elementFromPoint(x, y))) continue;
+      const elements = document
+        .elementsFromPoint(x, y)
+        .slice(0, 4)
+        .map((element) => `${element.tagName}.${element.className}`);
+      throw new Error(
+        `${label} at (${x}, ${y}) in a ${window.innerWidth}×${window.innerHeight} viewport hit ${elements.join(" > ") || "nothing"}`,
+      );
+    }
+    return { lane, expanded };
+  });
 
   await click(collapse);
   expect(wide.getBoundingClientRect().width).toBeLessThanOrEqual(lane.width);
