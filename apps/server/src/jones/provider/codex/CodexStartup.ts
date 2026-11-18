@@ -95,7 +95,12 @@ export function makeCodexStartup(
     attempts.add(attempt);
     uncertain.set(attempt.producer, attempts);
     if (admission !== undefined && attempt.target !== undefined && attempt.hold === undefined) {
-      attempt.hold = yield* admission.holdStartup(attempt.target);
+      const hold = yield* admission.holdStartup(attempt.target);
+      if (!attempt.mayHaveIssued) {
+        yield* admission.resolveStartup(hold, { kind: "not_applied" }).pipe(Effect.ignore);
+        return;
+      }
+      attempt.hold = hold;
       holdOwners.set(attempt.hold, attempt);
     }
   });
@@ -324,18 +329,21 @@ export function makeCodexStartup(
               }),
             ),
             Effect.tapError((error) =>
-              isNonApplyingStartupRejection(error, method) || isPreDispatchRefusal(error)
-                ? Effect.gen(function* () {
-                    if (attempt.abandoned) return;
-                    attempt.mayHaveIssued = previouslyIssued;
-                    if (previouslyIssued) return;
-                    if (attempt.hold !== undefined && admission !== undefined) {
-                      yield* admission.resolveStartup(attempt.hold, { kind: "not_applied" });
-                    }
-                    clearAttempt(attempt);
-                    attempt.hold = undefined;
-                  })
-                : Effect.void,
+              Effect.gen(function* () {
+                // The exact native rejection can resolve this attempt even after its caller stops.
+                if (
+                  !isNonApplyingStartupRejection(error, method) &&
+                  (attempt.abandoned || !isPreDispatchRefusal(error))
+                )
+                  return;
+                attempt.mayHaveIssued = previouslyIssued;
+                if (previouslyIssued) return;
+                if (attempt.hold !== undefined && admission !== undefined) {
+                  yield* admission.resolveStartup(attempt.hold, { kind: "not_applied" });
+                }
+                clearAttempt(attempt);
+                attempt.hold = undefined;
+              }),
             ),
             Effect.forkIn(producer.scope, { startImmediately: true }),
           );
