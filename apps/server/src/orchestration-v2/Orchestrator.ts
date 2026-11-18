@@ -7207,13 +7207,65 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           threadId: input.command.threadId,
         }),
       );
-      restartProviderThread = {
-        ...providerThread,
-        providerInstanceId: input.modelSelection.instanceId,
-        providerSessionId: nextProviderSessionId,
-        status: "not_loaded",
-        updatedAt: now,
-      };
+      if (canResumeAcrossInstances) {
+        // The restart effect still controls the original account's writer. Only the new
+        // attempt uses the destination account's record of this native conversation.
+        const destination = rootProviderThreadsForProvider(
+          input.projection,
+          input.modelSelection.instanceId,
+        ).find(
+          (candidate) =>
+            candidate.driver === providerThread.driver &&
+            candidate.nativeThreadRef?.driver === providerThread.nativeThreadRef?.driver &&
+            candidate.nativeThreadRef?.nativeId === providerThread.nativeThreadRef?.nativeId,
+        );
+        if (
+          destination?.providerSessionId != null &&
+          input.projection.providerSessions.some(
+            (session) =>
+              session.id === destination?.providerSessionId &&
+              session.status !== "stopped" &&
+              session.status !== "error",
+          )
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: input.command.commandId,
+            commandType: input.command.type,
+            cause: "The destination account already owns a live session for this conversation.",
+          });
+        restartProviderThread = {
+          ...(destination ?? {
+            id: idAllocator.derive.providerThread({
+              driver: providerThread.driver,
+              nativeThreadId: `pending:${targetRun.id}:attempt:${attemptOrdinal}`,
+            }),
+            appThreadId: input.command.threadId,
+            ownerNodeId: null,
+            driver: providerThread.driver,
+            firstRunOrdinal: targetRun.ordinal,
+            handoffIds: [],
+            forkedFrom: null,
+            createdAt: now,
+          }),
+          providerInstanceId: input.modelSelection.instanceId,
+          providerSessionId: nextProviderSessionId,
+          nativeThreadRef: providerThread.nativeThreadRef,
+          nativeConversationHeadRef: providerThread.nativeConversationHeadRef,
+          nativeMetadata: providerThread.nativeMetadata,
+          runtimeIdentity: undefined,
+          status: "not_loaded",
+          lastRunOrdinal: targetRun.ordinal,
+          updatedAt: now,
+        };
+      } else {
+        restartProviderThread = {
+          ...providerThread,
+          providerInstanceId: input.modelSelection.instanceId,
+          providerSessionId: nextProviderSessionId,
+          status: "not_loaded",
+          updatedAt: now,
+        };
+      }
       restartSessionTransition = {
         type: "replace",
         replacementProviderSessionId: nextProviderSessionId,

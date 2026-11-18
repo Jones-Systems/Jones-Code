@@ -39,10 +39,14 @@ export const deliverWithHandoffRecovery = <
           // Metadata restoration must not re-open native start admission.
           restore: delivery.restore ?? delivery.persist,
           persist: (handoff) =>
-            recovery.revalidate.pipe(
-              Effect.andThen(markDelivery),
-              Effect.andThen(delivery.persist(handoff)),
-            ),
+            // A provider may settle before returning its start acknowledgment. Recording
+            // delivery after that acknowledgment must not require the run to still be active.
+            handoff.delivery?.status === "inline"
+              ? delivery.persist(handoff)
+              : recovery.revalidate.pipe(
+                  Effect.andThen(markDelivery),
+                  Effect.andThen(delivery.persist(handoff)),
+                ),
           ...(delivery.inject === undefined
             ? {}
             : {

@@ -31,7 +31,7 @@ export const prepare = Effect.fn("RemoteSendPreparation.prepare")(function* <A, 
   owner: SendPreparationPorts,
   commandId: CommandId,
   preparation: Effect.Effect<A, E, R>,
-) {
+): Effect.fn.Return<A, E | RemoteSendReceiptError, R> {
   if (!(yield* IncomingLinkedMessage)) return yield* preparation;
   if (owner.remoteSendReceipts === undefined)
     return yield* Effect.fail({

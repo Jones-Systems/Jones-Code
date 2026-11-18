@@ -1044,6 +1044,18 @@ it.live.each(["active", "idle", "selection-command", "pooled", "separate-home"] 
             ?.providerInstanceId,
           providerInstanceId,
         );
+        if (mode === "active") {
+          assert.equal(
+            second.attempts.find((attempt) => attempt.id === first.runs[0]?.activeAttemptId)
+              ?.providerThreadId,
+            originalThread.id,
+          );
+          assert.equal(
+            second.providerThreads.find((thread) => thread.id === originalThread.id)
+              ?.providerSessionId,
+            originalThread.providerSessionId,
+          );
+        }
         assert.deepEqual(targetThread.nativeThreadRef, originalThread.nativeThreadRef);
         assert.equal(targetThread.providerInstanceId, targetId);
         assert.notEqual(targetThread.providerSessionId, originalThread.providerSessionId);

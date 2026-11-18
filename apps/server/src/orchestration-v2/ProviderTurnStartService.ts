@@ -3227,7 +3227,7 @@ export const layer: Layer.Layer<
                   // failure must not settle a replacement attempt committed by steering.
                   yield* providerTurn.pipe(
                     Effect.catchCauseIf(
-                      (cause) => !Cause.hasInterruptsOnly(cause),
+                      (cause) => !Cause.hasInterruptsOnly(cause) && !terminalStartFailure(cause),
                       (cause) =>
                         Effect.logWarning(
                           "Run execution failed after starting",

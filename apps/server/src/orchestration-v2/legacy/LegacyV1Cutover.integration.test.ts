@@ -577,9 +577,18 @@ const dispatchMessageAwaitingRun = Effect.fn("LegacyV1Cutover.dispatchMessageAwa
       ),
       Stream.take(1),
       Stream.runForEach((event) =>
-        Effect.sync(() =>
-          assert.equal(event.payload.status, "completed", `Run for ${messageId} did not complete`),
-        ),
+        Effect.gen(function* () {
+          if (event.payload.status === "completed") return;
+          const projection = yield* orchestrator.getThreadProjection(input.threadId);
+          const failures = projection.turnItems
+            .filter((item) => item.type === "error" && item.runId === event.payload.id)
+            .map((item) => (item.type === "error" ? item.failure.message : ""));
+          assert.equal(
+            event.payload.status,
+            "completed",
+            `Run for ${messageId} did not complete: ${failures.join(", ")}`,
+          );
+        }),
       ),
     );
     yield* orchestrator.dispatch({
@@ -1088,7 +1097,7 @@ describe("orchestration v2 legacy v1 cutover", () => {
           ),
         );
 
-        assert.isTrue(
+        assert.isFalse(
           boot2Logs.some((log) => String(log.message).includes("migration history diverges")),
         );
 

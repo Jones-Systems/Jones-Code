@@ -2065,7 +2065,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
         };
       });
 
-      const finalizeTurn = Effect.fnUntraced(function* (state: PiThreadState, readUsage = true) {
+      const finalizeTurn = Effect.fnUntraced(function* (
+        state: PiThreadState,
+        readUsage = true,
+        evidenceKind: "provider_result" | "attributed_abort" | "local_failure" = "provider_result",
+      ) {
         const turn = state.activeTurn;
         if (turn === null) return;
         state.activeTurn = null;
@@ -2097,20 +2101,25 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
           ? yield* readTokenUsage(turn.latestCompactionAfterTokens, completedAt)
           : undefined;
         const failure = interrupted ? null : (turn.rejectedPromptFailure ?? turn.failure);
+        const settledProviderTurn: OrchestrationV2ProviderTurn = {
+          ...turn.providerTurn,
+          ...(treeRefs === null || treeRefs.nativeTurnRef === undefined
+            ? {}
+            : { nativeTurnRef: treeRefs.nativeTurnRef }),
+          status: interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
+          completedAt,
+          ...(tokenUsage === undefined ? {} : { tokenUsage }),
+          ...(turn.reportedModel === undefined ? {} : { model: turn.reportedModel }),
+        };
+        const terminalEvidence =
+          turn.interrupted && evidenceKind === "provider_result"
+            ? "attributed_abort"
+            : evidenceKind;
         yield* emit({
           type: "provider_turn.updated",
           driver: PI_PROVIDER,
           threadId: turn.turnInput.threadId,
-          providerTurn: {
-            ...turn.providerTurn,
-            ...(treeRefs === null || treeRefs.nativeTurnRef === undefined
-              ? {}
-              : { nativeTurnRef: treeRefs.nativeTurnRef }),
-            status: interrupted ? "interrupted" : failure !== null ? "failed" : "completed",
-            completedAt,
-            ...(tokenUsage === undefined ? {} : { tokenUsage }),
-            ...(turn.reportedModel === undefined ? {} : { model: turn.reportedModel }),
-          },
+          providerTurn: settledProviderTurn,
         });
         yield* updateProviderThread(
           state,
@@ -2159,6 +2168,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             providerTurnId: turn.providerTurn.id,
             runOrdinal: turn.turnInput.runOrdinal,
             failureItemOrdinal: itemOrdinal(turn, failureItemId),
+            providerTurn: settledProviderTurn,
+            evidenceKind: terminalEvidence,
             status: "failed",
             failure,
             ...(turn.activeProviderRetry === null
@@ -2176,6 +2187,8 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             providerThreadId: state.providerThread.id,
             providerTurnId: turn.providerTurn.id,
             runOrdinal: turn.turnInput.runOrdinal,
+            providerTurn: settledProviderTurn,
+            evidenceKind: terminalEvidence,
             status: interrupted ? "interrupted" : "completed",
             failure: null,
             threadDisposition: "reusable",
@@ -2753,7 +2766,7 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             }
             if (probeFailed) {
               if (!settleAfterAgentActivity) {
-                if (state !== null) yield* finalizeTurn(state);
+                if (state !== null) yield* finalizeTurn(state, true, "local_failure");
                 return;
               }
               if (attempt < SETTLE_PROBE_MAX_ATTEMPTS) {
@@ -2870,7 +2883,11 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
                       message: "Pi process exited unexpectedly.",
                       class: "transport_error",
                     });
-                yield* finalizeTurn(state, false);
+                yield* finalizeTurn(
+                  state,
+                  false,
+                  interrupted ? "attributed_abort" : "local_failure",
+                );
               } else {
                 yield* cancelPendingPrompts(yield* DateTime.now);
               }

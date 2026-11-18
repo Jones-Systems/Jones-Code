@@ -164,7 +164,11 @@ export const layerExecutor: Layer.Layer<
     ) =>
       providerTurnStart.start({ threadId: effect.threadId, runId, willRetry }).pipe(
         Effect.catchCauseIf(
-          (cause) => !willRetry && !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            !willRetry &&
+            !Cause.hasInterruptsOnly(cause) &&
+            findEffectClaimLost(cause) === undefined &&
+            findProviderControlOutcomeUnknown(cause) === undefined,
           (cause) =>
             Effect.logWarning(
               "Last run start attempt failed",

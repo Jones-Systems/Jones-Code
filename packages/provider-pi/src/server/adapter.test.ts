@@ -2587,7 +2587,11 @@ describe("PiAdapterV2", () => {
         const forkFake = yield* makeFakePi;
         const expectedFile =
           operation === "ensure" ? FAKE_SESSION_FILE : "/fake/managed-fork.jsonl";
-        forkFake.queueState({ sessionFile: expectedFile });
+        if (operation === "fork") {
+          forkFake.queueState({ sessionFile: expectedFile });
+          fake.queueState({ sessionFile: FAKE_SESSION_FILE });
+          fake.queueState({ sessionFile: expectedFile });
+        }
         const order: string[] = [];
         const generation = "pi-test-runtime-generation";
         const publicationStarted =

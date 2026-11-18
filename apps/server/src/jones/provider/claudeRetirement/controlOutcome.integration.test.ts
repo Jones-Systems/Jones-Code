@@ -219,7 +219,9 @@ it.effect.each(["rejected", "silent"] as const)(
         assert.equal(closes, 1);
         assert.isFalse(yield* Deferred.isDone(nativeExit));
         yield* TestClock.adjust("8 seconds");
-        const completionFailure = yield* outbox.awaitCompletion([stopId]).pipe(Effect.flip);
+        const completion = yield* outbox.awaitCompletion([stopId]).pipe(Effect.result);
+        assert.ok(completion._tag === "Failure", "Stop must fail without native retirement");
+        const completionFailure = completion.failure;
         assert.equal(completionFailure.operation, "await-completion");
         assert.equal(completionFailure.effectId, stopId);
         yield* outbox.awaitCompletion([nextId]);
@@ -326,9 +328,11 @@ it.effect.each(["rejected", "silent"] as const)(
         } else {
           assert.equal(startOwner, nextCommand);
         }
-        const replacementFailure = yield* outbox
+        const replacement = yield* outbox
           .awaitCompletion(admissionEffects.map((effect) => effect.id))
-          .pipe(Effect.flip);
+          .pipe(Effect.result);
+        assert.ok(replacement._tag === "Failure", "Replacement start must stay fenced");
+        const replacementFailure = replacement.failure;
         assert.equal(replacementFailure.operation, "await-completion");
         assert.equal(replacementFailure.effectId, admissionEffects[0]!.id);
         const settledAdmission = Option.getOrThrow(yield* outbox.get(admissionEffects[0]!.id));
