@@ -215,6 +215,15 @@ async function withSidebar(
 
 it("traverses Unassigned before named Workstreams and skips collapsed groups", async () => {
   await withSidebar(async ({ router, rows, visit, step }) => {
+    const header = page.getByRole("button", { name: "Hide all Workstreams", exact: true });
+    const unassigned = page.getByRole("button", { name: "Collapse Unassigned", exact: true });
+    const firstNamed = page.getByRole("button", { name: "Collapse alpha", exact: true });
+    expect(header.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      unassigned.element().getBoundingClientRect().top,
+    );
+    expect(unassigned.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      firstNamed.element().getBoundingClientRect().top,
+    );
     const order = rows();
     expect(order.slice(0, 2).sort()).toEqual(["u1", "u2"]);
     expect(order.slice(2, 7).every((id) => id.startsWith("a"))).toBe(true);

@@ -901,6 +901,18 @@ export function WorkstreamSidebarSection({
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInsertion(null);
       }}
     >
+      {openWorkstreams.length > 0 ? (
+        <PersonalWorkstreamsHeader
+          summary={namedSummary}
+          hidden={namedHidden}
+          onHiddenChange={setNamedHidden}
+          onExpandAll={() => setPersonalGroupsCollapsed(namedIds, false)}
+          onCollapseAll={() => setPersonalGroupsCollapsed(namedIds, true)}
+          statusFilter={sharedStatus.filter}
+          onStatusFilterChange={sharedStatus.setFilter}
+          controlsId={namedGroupsId}
+        />
+      ) : null}
       <div data-workstream-group-slot className="relative py-1">
         <section
           data-native-workstream="null"
@@ -933,18 +945,6 @@ export function WorkstreamSidebarSection({
           {!unassignedCollapsed ? renderMembers(null) : null}
         </section>
       </div>
-      {openWorkstreams.length > 0 ? (
-        <PersonalWorkstreamsHeader
-          summary={namedSummary}
-          hidden={namedHidden}
-          onHiddenChange={setNamedHidden}
-          onExpandAll={() => setPersonalGroupsCollapsed(namedIds, false)}
-          onCollapseAll={() => setPersonalGroupsCollapsed(namedIds, true)}
-          statusFilter={sharedStatus.filter}
-          onStatusFilterChange={sharedStatus.setFilter}
-          controlsId={namedGroupsId}
-        />
-      ) : null}
       {/* The container stays mounted so the disclosure's aria-controls always resolves. */}
       <div id={namedGroupsId} hidden={namedHidden} className="relative">
         {!namedHidden
