@@ -1,3 +1,7 @@
+import { useSidebarDevicePresentation } from "../../jones/sidebarAppearance/useSidebarDevicePresentation";
+import { useEnvironment } from "../../state/environments";
+import { deviceDisplayLabel } from "@t3tools/contracts/jones/devicePresentation";
+import { usePendingSidebarThread } from "../../jones/pendingSends/sidebar";
 import { useAtomMount } from "@effect/atom-react";
 import { asLaunchingThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
@@ -394,6 +398,7 @@ function SnoozeMenuButton(props: {
                 <button
                   type="button"
                   aria-label="Snooze thread"
+                  onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => event.stopPropagation()}
                   onDoubleClick={(event) => event.stopPropagation()}
                   className="inline-flex h-full cursor-pointer items-center gap-0.5 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
@@ -406,7 +411,7 @@ function SnoozeMenuButton(props: {
         </TooltipTrigger>
         <TooltipPopup>Snooze thread</TooltipPopup>
       </Tooltip>
-      <MenuPopup side="bottom" align="end">
+      <MenuPopup side="bottom" align="end" onPointerDown={(event) => event.stopPropagation()}>
         {presets.map((preset) => (
           <MenuItem
             key={preset.id}
@@ -486,15 +491,30 @@ export function SortableThreadRow(
     scopeThreadRef(rowProps.thread.environmentId, rowProps.thread.id),
   );
   // A runtime on the arranged copy but not the run-less live shell is the list's launch overlay.
-  const thread =
+  const projectedThread =
     liveThread === null
       ? rowProps.thread
       : rowProps.thread.runtime !== null
         ? asLaunchingThread(liveThread)
         : liveThread;
+  const thread = usePendingSidebarThread(projectedThread);
   // Keyed by variant so a card/slim switch remounts the row.
   return <SidebarThreadRow key={rowProps.variant} {...rowProps} thread={thread} sortable={bag} />;
 }
+// Workstream rows belong to the Workstream drag surface, not the native sidebar sorter.
+// Keep their streaming subscription in this leaf as for sortable native rows.
+export function NonSortableThreadRow(props: Omit<SidebarThreadRowProps, "sortable">) {
+  const liveThread = useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id));
+  const projectedThread =
+    liveThread === null
+      ? props.thread
+      : props.thread.runtime !== null
+        ? asLaunchingThread(liveThread)
+        : liveThread;
+  const thread = usePendingSidebarThread(projectedThread);
+  return <SidebarThreadRow key={props.variant} {...props} thread={thread} />;
+}
+
 export type SidebarSweepAction = "settle" | "unsettle" | "unsnooze";
 const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
   pin: (
@@ -829,15 +849,24 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     ? getTriggerDisplayModelName(selectedModel, providerEntry?.driverKind)
     : thread.modelSelection.model;
 
-  const isRemote = thread.environmentId !== props.currentEnvironmentId;
-  const showsScratchMachine = !checkoutThread.branch && props.scratchMachineLabel !== null;
+  const device = useEnvironment(thread.environmentId);
+  const deviceLabel =
+    device?.displayLabel ??
+    deviceDisplayLabel(props.environmentLabel ?? "Unknown environment", props.environmentMachine);
+
+  const devicePresentation = useSidebarDevicePresentation({
+    label: device?.label ?? props.environmentLabel,
+    kind: props.environmentMachine,
+    visibleLabel: deviceLabel,
+    iconOverridden: device?.serverConfig?.settings.environmentIcon != null,
+  });
 
   const detailsTooltip = (
     <SidebarThreadTooltip
       thread={checkoutThread}
       project={props.project}
       projectDisplayName={props.projectDisplayName}
-      environmentLabel={props.environmentLabel}
+      environmentLabel={devicePresentation.hidden ? deviceLabel : props.environmentLabel}
       environmentMachine={props.environmentMachine}
       providerEntry={providerEntry}
       providerEntryByInstanceId={props.providerEntryByInstanceId}
@@ -1034,6 +1063,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isActive: props.isActive,
   });
 
+  const titleTone = shouldRecede
+    ? "receded"
+    : variant !== "slim"
+      ? status === "failed" && !isUnread && !isWoke
+        ? "failed-read"
+        : "primary"
+      : props.isActive || isWoke || status === "input" || status === "request"
+        ? "primary"
+        : isUnread
+          ? "unread"
+          : "idle";
   const title = isRenaming ? (
     <ThreadRenameInput
       title={renamingTitle}
@@ -1043,25 +1083,28 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     />
   ) : (
     <span
+      aria-hidden
+      data-jones-thread-title={titleTone}
+      data-jones-thread-title-branch={variant === "slim" ? "slim" : "card"}
       className={cn(
         "min-w-0 flex-1 text-start text-sm transition-opacity motion-reduce:transition-none",
-        shouldRecede ? "font-normal" : "font-medium",
+        titleTone === "receded" ? "font-normal" : "font-medium",
         variant !== "slim"
           ? cn(
               "truncate",
-              shouldRecede
+              titleTone === "receded"
                 ? "text-foreground/75 group-hover/sidebar-row:text-foreground group-focus-visible/sidebar-row:text-foreground"
-                : status === "failed" && !isUnread && !isWoke
+                : titleTone === "failed-read"
                   ? "text-foreground/95"
                   : "text-foreground",
             )
           : cn(
               "truncate group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
-              shouldRecede
+              titleTone === "receded"
                 ? "text-secondary-label"
-                : props.isActive || isWoke || status === "input" || status === "request"
+                : titleTone === "primary"
                   ? "text-foreground"
-                  : isUnread
+                  : titleTone === "unread"
                     ? "text-muted-foreground"
                     : "text-secondary-label/70",
             ),
@@ -1152,42 +1195,21 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     )
   ) : null;
 
-  const remoteMachineIcon =
-    isRemote && !showsScratchMachine ? (
-      <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
-        <EnvironmentMachineIcon aria-hidden kind={props.environmentMachine} className="size-3.5" />
-      </span>
-    ) : null;
   const diff = latestRunDiff(thread);
-  // Only the trailing icons would remain, so the row moves them to the title line instead.
-  const metaLineEmpty =
-    !checkoutThread.branch &&
-    !showsScratchMachine &&
-    prBadge === null &&
-    diff === null &&
-    runningTerminalIds.length === 0;
-  const metaLine = metaLineEmpty ? null : (
+  const metaLine = (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
-      {checkoutThread.branch ? (
-        <>
-          <ThreadWorktreeIndicator thread={checkoutThread} />
-          <span className="flex min-w-0 flex-1">
-            <MiddleTruncate value={checkoutThread.branch} showTitle={false} />
-          </span>
-        </>
-      ) : showsScratchMachine ? (
-        <>
-          <EnvironmentMachineIcon
-            aria-hidden
-            kind={props.environmentMachine}
-            className="size-3 shrink-0"
-          />
-          <span className="min-w-0 flex-1 truncate">{props.scratchMachineLabel}</span>
-        </>
-      ) : (
-        <span className="flex-1" />
-      )}
+      <EnvironmentMachineIcon
+        aria-hidden
+        label={device?.label ?? props.environmentLabel}
+        override={device?.serverConfig?.settings.environmentIcon != null}
+        kind={props.environmentMachine}
+        className="size-3 shrink-0"
+      />
+      <span data-jones-device-label className="min-w-0 flex-1 truncate">
+        {devicePresentation.hidden ? null : deviceLabel}
+      </span>
       {terminalStatusIcon}
+      <ThreadWorktreeIndicator thread={checkoutThread} />
       {prBadge}
       {diff ? (
         <span className="shrink-0 font-mono">
@@ -1199,7 +1221,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         aria-hidden
         className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"
       >
-        {remoteMachineIcon}
         <SidebarProviderStack
           thread={thread}
           providerEntryByInstanceId={props.providerEntryByInstanceId}
@@ -1207,15 +1228,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       </span>
     </div>
   );
-  const titleLineIcons = metaLineEmpty ? (
-    <span aria-hidden className="inline-flex shrink-0 items-center gap-1">
-      {remoteMachineIcon}
-      <SidebarProviderStack
-        thread={thread}
-        providerEntryByInstanceId={props.providerEntryByInstanceId}
-      />
-    </span>
-  ) : null;
 
   if (variant !== "card") {
     const multiline = variant === "folder-multiline";
@@ -1227,7 +1239,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         {...(fileDropHandlers ?? {})}
         className={cn(
           "list-none [content-visibility:auto] [contain-intrinsic-size:auto_--spacing(9)]",
-          metaLine !== null && multiline && "[contain-intrinsic-size:auto_--spacing(13.5)]",
+          multiline && "[contain-intrinsic-size:auto_--spacing(13.5)]",
           sortable?.isDragging && "relative z-20",
         )}
       >
@@ -1240,7 +1252,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 tabIndex={0}
                 data-sidebar-row={threadKey}
                 data-sidebar-parent={props.navigationParent}
-                aria-label={accessibility.label}
+                aria-label={accessibility.label + devicePresentation.accessibleSuffix}
                 aria-current={accessibility.current}
                 data-testid={inFolder ? "sidebar-row-folder" : "sidebar-row-slim"}
                 aria-busy={isRegeneratingTitle || undefined}
@@ -1276,7 +1288,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {draftIndicator}
               {title}
-              {multiline ? titleLineIcons : null}
               {pinIndicator}
               {multiline ? null : terminalStatusIcon}
               {isRegeneratingTitle ? (
@@ -1417,6 +1428,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   return (
     <li
+      data-jones-sidebar-card=""
       data-thread-item={threadKey}
       {...sortableRootProps}
       {...(fileDropHandlers ?? {})}
@@ -1424,7 +1436,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       // that have not rendered yet, so a hint off by a pixel lands it a pixel short per row above.
       className={cn(
         "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
-        metaLineEmpty && "[contain-intrinsic-size:auto_60px]",
         sortable?.isDragging && "relative z-20",
       )}
     >
@@ -1437,7 +1448,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               tabIndex={0}
               data-sidebar-row={threadKey}
               data-sidebar-parent={props.navigationParent}
-              aria-label={accessibility.label}
+              aria-label={accessibility.label + devicePresentation.accessibleSuffix}
               aria-current={accessibility.current}
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
@@ -1450,9 +1461,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           }
         >
           <div
+            data-jones-sidebar-card-content=""
             className={cn(
               "relative z-10 h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
-              metaLineEmpty && "h-auto",
             )}
           >
             <div className="flex h-5 min-w-0 items-center gap-1.5">
@@ -1613,7 +1624,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   Regenerating title
                 </span>
               ) : null}
-              {titleLineIcons}
             </div>
             {metaLine}
           </div>
@@ -1657,8 +1667,14 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
   onSelect: () => void;
   onFileDropThreads: (threadRef: ScopedThreadRef, files: File[]) => void;
 }) {
-  const thread =
-    useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
+  const liveThread = useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id));
+  const projectedThread =
+    liveThread === null
+      ? props.thread
+      : props.thread.runtime !== null
+        ? asLaunchingThread(liveThread)
+        : liveThread;
+  const thread = usePendingSidebarThread(projectedThread);
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
     statusLabel: null,

@@ -46,15 +46,17 @@ let container: HTMLDivElement;
 function Fixture({
   layout,
   rows = [working, input, done, idle],
+  active = idle,
 }: {
   layout: "current" | "legacy";
+  active?: ReturnType<typeof makeThreadFixture>;
   rows?: ReturnType<typeof makeThreadFixture>[];
 }) {
   const state = useThreadStatusFilter(
     rows,
     layout,
     undefined,
-    scopedThreadKey(scopeThreadRef(idle.environmentId, idle.id)),
+    scopedThreadKey(scopeThreadRef(active.environmentId, active.id)),
   );
   return (
     <>
@@ -115,6 +117,9 @@ describe.each(["current", "legacy"] as const)("%s status shortcut", (layout) => 
     await act(async () => await root.rerender(<Fixture layout={layout} />));
     const target = button();
     const bounds = target.getBoundingClientRect();
+    expect(getComputedStyle(target).cursor).toBe("pointer");
+    for (const segment of target.querySelectorAll("span"))
+      expect(getComputedStyle(segment).cursor).toBe("pointer");
     await clickAt(1000);
     expect(titles()).toEqual(["Working"]);
     await clickAt(1250);
@@ -176,6 +181,34 @@ describe.each(["current", "legacy"] as const)("%s status shortcut", (layout) => 
     await clickAt(1501);
     expect(titles()).toEqual(rows.map((row) => row.title));
     expect(button().getAttribute("aria-label")).toContain("Showing all threads.");
+  });
+  it("removes the selected input row and counts down to zero when snoozed, then restores it on wake", async () => {
+    await using _fixture = await setupTest();
+    const question = { ...input, pendingUserInputAt: "2026-01-01T00:00:00.000Z" };
+    await act(
+      async () =>
+        await root.rerender(<Fixture layout={layout} rows={[question]} active={question} />),
+    );
+    await clickAt(1000);
+    await clickAt(1500);
+    expect(titles()).toEqual(["Input"]);
+    const snoozed = {
+      ...question,
+      snoozedAt: "2026-01-02T00:00:00.000Z",
+      snoozedUntil: "2099-01-01T00:00:00.000Z",
+    };
+    await act(
+      async () =>
+        await root.rerender(<Fixture layout={layout} rows={[snoozed]} active={snoozed} />),
+    );
+    expect(titles()).toEqual([]);
+    expect(button().getAttribute("aria-label")).toContain("0 needs input");
+    await act(
+      async () =>
+        await root.rerender(<Fixture layout={layout} rows={[question]} active={question} />),
+    );
+    expect(titles()).toEqual(["Input"]);
+    expect(button().getAttribute("aria-label")).toContain("1 needs input");
   });
   it("cycles at 251 ms even if the operating system would group the clicks", async () => {
     await using _fixture = await setupTest();

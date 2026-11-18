@@ -1,0 +1,45 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "device-presentation",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/devicePresentation/PersonalMachineSymbol.tsx",
+    "apps/web/src/jones/devicePresentation/DeviceDisplayNameEditor.tsx",
+    "apps/web/src/jones/devicePresentation/identityProtection.test.ts",
+    "apps/web/src/jones/devicePresentation/SidebarDevice.browser.test.tsx",
+    "apps/web/src/jones/devicePresentation/DeviceDisplayNameEditor.browser.test.tsx",
+    "apps/server/src/jones/devicePresentation/settings.test.ts",
+    "apps/web/src/jones/devicePresentation/PersonalMachineSymbol.browser.test.tsx"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/settings.ts",
+      "to": "packages/contracts/src/jones/devicePresentation.ts"
+    },
+    {
+      "from": "apps/web/src/state/environments.ts",
+      "to": "packages/contracts/src/jones/devicePresentation.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarThreadRow.tsx",
+      "to": "packages/contracts/src/jones/devicePresentation.ts"
+    },
+    {
+      "from": "apps/web/src/components/EnvironmentMachineIcon.tsx",
+      "to": "apps/web/src/jones/devicePresentation/PersonalMachineSymbol.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/SavedEnvironmentRows.tsx",
+      "to": "apps/web/src/jones/devicePresentation/DeviceDisplayNameEditor.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/ConnectionsSettings.tsx",
+      "to": "apps/web/src/jones/devicePresentation/DeviceDisplayNameEditor.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
+      "to": "packages/contracts/src/jones/devicePresentation.ts"
+    }
+  ]
+}

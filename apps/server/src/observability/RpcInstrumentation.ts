@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import * as References from "effect/References";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
+import * as RpcSchema from "effect/rpc/RpcSchema";
 
 import { rpcRequestDuration, rpcRequestsTotal, withMetrics } from "./Metrics.ts";
 
@@ -12,6 +13,18 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 // Trace queries and dashboards depend on these labels, including deviations from method prefixes.
 const RPC_AGGREGATES = {
+  [ORCHESTRATION_V2_WS_METHODS.listLinkedThreads]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.linkThreads]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.unlinkThreads]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.acceptThreadHandoff]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.reselectProviderConversation]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget]: "orchestrationV2",
+  [WS_METHODS.pullRequestsCiStatus]: "pull-requests",
+  [WS_METHODS.serverReadTokenAccounting]: "server",
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getNativeChildWork]: "orchestration",
@@ -30,6 +43,7 @@ const RPC_AGGREGATES = {
   [ORCHESTRATION_V2_WS_METHODS.getWorktreeThreadIds]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getOlderSettledThreads]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.getThreadReferenceExcerpt]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.launchThread]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: "orchestrationV2",
@@ -233,6 +247,10 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeServerConfig]: "server",
   [WS_METHODS.subscribeServerLifecycle]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",
+  "workstreamsPersonal.subscribe": "workstreamsPersonal",
+  "workstreamsPersonal.members": "workstreamsPersonal",
+  "workstreamsPersonal.put": "workstreamsPersonal",
+  "workstreamsPersonal.assign": "workstreamsPersonal",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";
@@ -277,6 +295,8 @@ export const rpcInstrumentationLayer = Layer.succeed(RpcInstrumentation)((effect
             ...DEFAULT_RPC_SPAN_ATTRIBUTES,
             "rpc.method": method,
             "rpc.aggregate": RPC_AGGREGATES[method as WsRpcMethod],
+            // Streaming spans last for the subscription. Trace queries can exclude them from latency.
+            "rpc.stream": RpcSchema.isStreamSchema(rpc.successSchema),
           },
         }),
       ),

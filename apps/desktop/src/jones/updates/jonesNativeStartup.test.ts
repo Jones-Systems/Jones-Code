@@ -5,6 +5,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { expect, it } from "vite-plus/test";
 import desktopPackage from "../../../package.json" with { type: "json" };
 import {
@@ -16,6 +17,8 @@ import {
 import { JonesNativeStartupRefusal } from "@t3tools/shared/jones/nativeWriterFence";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { resolveJonesColdBackendPermit } from "./jonesColdBackendCustody.ts";
+
+const nativePlatform = HostProcess.Platform.defaultValue();
 
 it("keeps warm startup unchanged and refuses cold startup before profile access", () => {
   const input = {
@@ -264,6 +267,7 @@ it("exits even if both refusal output channels fail", () => {
 
 async function settlementFixture(body: (home: string) => Promise<void>) {
   const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-startup-settle-"));
+  let failure: unknown;
   try {
     const home = await NodeFSP.realpath(root);
     await NodeFSP.mkdir(NodePath.join(home, "runtime", "jones-updates"), {
@@ -271,11 +275,257 @@ async function settlementFixture(body: (home: string) => Promise<void>) {
       mode: 0o700,
     });
     await body(home);
+  } catch (cause) {
+    failure = cause;
+    throw cause;
   } finally {
-    await NodeFSP.rm(root, { recursive: true, force: true });
-    await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    try {
+      await NodeFSP.rm(root, { recursive: true, force: true });
+      await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    } catch (cleanup) {
+      if (failure === undefined) throw cleanup;
+      throw new AggregateError([failure, cleanup], "Startup fixture failed before cleanup", {
+        cause: failure,
+      });
+    }
   }
 }
+
+async function interruptedStartupFixture(
+  phase: string,
+  body: (fixture: {
+    home: string;
+    directory: string;
+    journal: string;
+    transactionId: string;
+    run: (script: string, lockHeld?: boolean) => NodeChildProcess.SpawnSyncReturns<string>;
+  }) => Promise<void>,
+) {
+  await settlementFixture(async (home) => {
+    const profile = NodePath.join(home, "profile");
+    const databasePath = NodePath.join(home, "userdata", "statev2.sqlite");
+    await NodeFSP.mkdir(profile);
+    await NodeFSP.mkdir(NodePath.dirname(databasePath));
+    await NodeFSP.writeFile(databasePath, "opaque application state");
+    const expected = {
+      protocol: 1,
+      owner: "desktop",
+      generation: "previous",
+      transactionId: "bootstrap",
+      home,
+      databasePath,
+      profile,
+      appPath: NodePath.join(home, "Jones Code.app"),
+      environmentId: "fixture",
+      version: "fixture",
+      sourceSha: "a".repeat(40),
+      sourceTree: "b".repeat(40),
+    };
+    await NodeFSP.writeFile(
+      NodePath.join(home, "runtime", "jones-active-install.json"),
+      JSON.stringify(expected),
+      { mode: 0o600 },
+    );
+    const transactionId = "c".repeat(64);
+    const directory = NodePath.join(
+      home,
+      "runtime",
+      "jones-updates",
+      "transactions",
+      transactionId,
+    );
+    await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
+    const intent = {
+      protocol: 1,
+      transactionId,
+      expected,
+      staged: { handle: "d".repeat(64) },
+      continuationReceipt: NodePath.join(directory, "continuation.json"),
+      processes: [{ pid: 42, role: "main" }],
+      listener: "fixture-listener",
+    };
+    await NodeFSP.writeFile(NodePath.join(directory, "intent.json"), JSON.stringify(intent));
+    const journal = NodePath.join(directory, "journal.json");
+    if (phase !== "intent-only")
+      await NodeFSP.writeFile(journal, JSON.stringify({ intent, phase }));
+    const env = {
+      HOME: home,
+      PATH: "/usr/bin:/bin",
+      TMPDIR: home,
+      T3CODE_HOME: home,
+      T3CODE_DESKTOP_USER_DATA_DIR: profile,
+    };
+    const input = {
+      platform: nativePlatform,
+      env,
+      homeDirectory: home,
+      appDataDirectory: home,
+      version: expected.version,
+      metadata: {
+        name: "t3code",
+        jonesSource: {
+          repository: "Jones-Systems/Jones-Code",
+          sha: expected.sourceSha,
+          tree: expected.sourceTree,
+        },
+      },
+    };
+    const prelude = `
+      import assert from 'node:assert/strict';
+      const fs = process.getBuiltinModule('node:fs');
+      const sqlite = process.getBuiltinModule('node:sqlite');
+      const protectedPaths = ${JSON.stringify([NodePath.dirname(databasePath), profile])};
+      const opened = [];
+      function guard(path) {
+        if (protectedPaths.some(root => String(path) === root || String(path).startsWith(root + '/'))) {
+          opened.push(String(path));
+          throw new Error('Application state opened before admission');
+        }
+      }
+      const open = fs.openSync;
+      fs.openSync = (path, ...args) => { guard(path); return open(path, ...args); };
+      const Database = sqlite.DatabaseSync;
+      sqlite.DatabaseSync = class extends Database {
+        constructor(path, ...args) { guard(path); super(path, ...args); }
+      };
+      process.getBuiltinModule('node:module').syncBuiltinESMExports();
+      const m = await import(${JSON.stringify(new URL("./jonesNativeStartup.ts", import.meta.url).href)});
+      const input = ${JSON.stringify(input)};
+    `;
+    const run = (script: string, lockHeld = false) => {
+      const args = ["--input-type=module", "-e", prelude + script];
+      if (lockHeld) {
+        const holder = String.raw`
+import fcntl, subprocess, sys
+with open(sys.argv[1], 'x+') as lock:
+    lock.write('jones-activation-lock-v1\n')
+    lock.flush()
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    result = subprocess.run(sys.argv[2:], timeout=12)
+raise SystemExit(result.returncode)
+`;
+        return NodeChildProcess.spawnSync(
+          "/usr/bin/python3",
+          [
+            "-c",
+            holder,
+            NodePath.join(home, "runtime", "jones-activation.lock"),
+            process.execPath,
+            ...args,
+          ],
+          { env, encoding: "utf8", timeout: 15000, maxBuffer: 65536 },
+        );
+      }
+      return NodeChildProcess.spawnSync(process.execPath, args, {
+        env,
+        encoding: "utf8",
+        timeout: 15000,
+        maxBuffer: 65536,
+      });
+    };
+    await body({ home, directory, journal, transactionId, run });
+    expect(await NodeFSP.readFile(databasePath, "utf8")).toBe("opaque application state");
+    expect(await NodeFSP.readdir(NodePath.dirname(databasePath))).toEqual(["statev2.sqlite"]);
+    expect(await NodeFSP.readdir(profile)).toEqual([]);
+  });
+}
+
+it.skipIf(nativePlatform !== "darwin").each(["intent", "preparing", "quiescent", "intent-only"])(
+  "joins the real startup fence and default embedded helper for interrupted %s",
+  async (phase) =>
+    interruptedStartupFixture(phase, async ({ home, journal, run }) => {
+      const result = run(`
+        m.holdJonesDesktopNativeWriterFence(input);
+        assert.equal(typeof m.currentJonesDesktopOwner(), 'function');
+        const journal = ${JSON.stringify(journal)};
+        const before = fs.readFileSync(journal, 'utf8');
+        const info = fs.statSync(journal, { bigint: true });
+        m.holdJonesDesktopNativeWriterFence(input);
+        assert.equal(typeof m.currentJonesDesktopOwner(), 'function');
+        assert.equal(fs.readFileSync(journal, 'utf8'), before);
+        assert.equal(fs.statSync(journal, { bigint: true }).ino, info.ino);
+        assert.equal(fs.statSync(journal, { bigint: true }).mtimeNs, info.mtimeNs);
+        assert.deepEqual(opened, []);
+        process.stdout.write('admitted-twice');
+      `);
+      expect(result.error).toBeUndefined();
+      expect(result.signal).toBeNull();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe("admitted-twice");
+      expect(JSON.parse(await NodeFSP.readFile(journal, "utf8"))).toMatchObject({
+        phase: "rolled-back",
+        legacySettlement: {
+          settledBy: "startup",
+          basis: phase === "intent-only" ? "unstarted-activation" : "interrupted-preparation",
+        },
+      });
+      const hash = NodeCrypto.createHash("sha256").update(jonesNativeHelperSource).digest("hex");
+      expect(
+        await NodeFSP.readFile(
+          NodePath.join(home, "runtime", "jones-updates", "activate-v1-" + hash + ".py"),
+          "utf8",
+        ),
+      ).toBe(jonesNativeHelperSource);
+    }),
+);
+
+it.skipIf(nativePlatform !== "darwin").each(["blocked", "pair-present", "activation-lock-held"])(
+  "reports a real startup refusal for %s without opening application state",
+  async (fault) =>
+    interruptedStartupFixture(
+      fault === "blocked" ? "blocked" : "preparing",
+      async ({ directory, journal, transactionId, run }) => {
+        if (fault === "pair-present") {
+          await NodeFSP.mkdir(NodePath.join(directory, "previous-pair"));
+          await NodeFSP.writeFile(NodePath.join(directory, "previous-pair", "pair.json"), "{}");
+        }
+        const before = await NodeFSP.readFile(journal, "utf8");
+        const result = run(
+          `
+          let failure;
+          try { m.holdJonesDesktopNativeWriterFence(input); } catch (cause) { failure = cause; }
+          assert.ok(failure, 'Unsafe startup admitted');
+          assert.deepEqual(opened, []);
+          const calls = [];
+          m.reportJonesNativeStartupRefusal(failure, {
+            showErrorBox: (title, content) => calls.push({ type: 'dialog', title, content }),
+            writeStderr: line => calls.push({ type: 'stderr', line }),
+            exit: code => { calls.push({ type: 'exit', code }); process.exitCode = code; },
+          });
+          process.stdout.write(JSON.stringify({ code: failure.code, transactionId: failure.transactionId, message: failure.message, calls }));
+          `,
+          fault === "activation-lock-held",
+        );
+        expect(result.error).toBeUndefined();
+        expect(result.signal).toBeNull();
+        expect(result.status, result.stderr).toBe(1);
+        const refusal = JSON.parse(result.stdout);
+        const code =
+          fault === "activation-lock-held" ? "transaction-settleable" : "transaction-unsettled";
+        expect(refusal).toMatchObject({ code, transactionId });
+        if (fault === "activation-lock-held")
+          expect(refusal.message).toBe("Native startup settlement refused: activation-running");
+        expect(refusal.calls.map((call: { type: string }) => call.type)).toEqual([
+          "dialog",
+          "stderr",
+          "exit",
+        ]);
+        expect(refusal.calls[0]).toMatchObject({ title: "Jones Code could not start safely" });
+        expect(refusal.calls[0].content).toBe(
+          "Startup refused (" +
+            code +
+            ").\nTransaction: " +
+            transactionId +
+            "\nRecovery help: https://github.com/Jones-Systems/Jones-Code/blob/main/docs/user/updating.md#if-an-update-fails",
+        );
+        expect(refusal.calls[1].line).toBe(
+          "Jones Code refused native startup: " + refusal.message + "\n",
+        );
+        expect(refusal.calls[2]).toEqual({ type: "exit", code: 1 });
+        expect(await NodeFSP.readFile(journal, "utf8")).toBe(before);
+      },
+    ),
+);
 
 it("materializes the current embedded helper exclusively and bounds its exact invocation", async () =>
   settlementFixture(async (home) => {

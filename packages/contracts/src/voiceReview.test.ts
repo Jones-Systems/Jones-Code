@@ -1,15 +1,30 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import {
+  VoiceReviewDraft,
   VoiceReviewQueueDeliveryLinks,
   VoiceReviewRevisionPayload,
   VoiceReviewEditSavePayload,
   VoiceReviewEditCancelPayload,
+  VoiceReviewSendOptions,
+  VoiceReviewSendReviewedPayload,
 } from "./voiceReview.ts";
 
 const decodeRevision = Schema.decodeUnknownSync(VoiceReviewRevisionPayload);
 const decodeEditSave = Schema.decodeUnknownSync(VoiceReviewEditSavePayload);
 const decodeEditCancel = Schema.decodeUnknownSync(VoiceReviewEditCancelPayload);
+
+it("decodes broker dependency objects and still emits draft IDs for existing clients", () => {
+  const shape = Schema.Struct({ dependencies: VoiceReviewDraft.fields.dependencies });
+  const decode = Schema.decodeUnknownSync(shape);
+  const encode = Schema.encodeSync(shape);
+  const dependency = { draft_id: "prior-capture", revision: 2, kind: "follows" };
+  const result = decode({ dependencies: ["legacy-id", dependency] });
+  expect(result).toEqual({ dependencies: ["legacy-id", "prior-capture"] });
+  expect(encode(result)).toEqual(result);
+  expect(decode({})).toEqual({});
+  expect(() => decode({ dependencies: [{ ...dependency, revision: 0 }] })).toThrow();
+});
 
 describe("voice review mutation wire contract", () => {
   it("rejects coercion, nonpositive revisions, and extra fields", () => {
@@ -33,6 +48,65 @@ describe("voice review mutation wire contract", () => {
     expect(() => decode({ ...valid, text: "a".repeat(100_001) })).toThrow();
     expect(() => decode({ ...valid, edit_handle: "" })).toThrow();
     expect(() => decodeEditCancel({ expected_revision: 1 })).toThrow();
+  });
+});
+
+describe("versioned reviewed send wires", () => {
+  it("requires a closed v1 options response with explicit availability", () => {
+    const decode = Schema.decodeUnknownSync(VoiceReviewSendOptions);
+    const empty = {
+      schema: "voice.reviewed-send/v1",
+      workstream_ids: [],
+      can_send_without_workstream: false,
+    };
+    expect(decode(empty)).toEqual(empty);
+    expect(decode({ ...empty, workstream_ids: ["workstream:fixture"] }).workstream_ids).toEqual([
+      "workstream:fixture",
+    ]);
+    for (const value of [
+      null,
+      { ...empty, schema: "voice.reviewed-send/v2" },
+      { ...empty, workstream_ids: [null] },
+      { ...empty, workstream_ids: [" "] },
+      { ...empty, can_send_without_workstream: "false" },
+      { schema: empty.schema, workstream_ids: [] },
+      { ...empty, expected_revision: 1 },
+    ]) {
+      expect(() => decode(value)).toThrow();
+    }
+  });
+
+  it("requires a nullable choice and keeps omitted fields distinct from null", () => {
+    const decode = Schema.decodeUnknownSync(VoiceReviewSendReviewedPayload);
+    const unassigned = { expected_revision: 1, workstream_id: null };
+    const named = {
+      ...unassigned,
+      workstream_id: "workstream:fixture",
+      text: " <script>literal</script> ",
+      additional_instructions: "Keep formatting.",
+      edit_handle: "opaque",
+    };
+    expect(decode(unassigned)).toEqual(unassigned);
+    expect(decode({ ...unassigned, text: " \n " })).toEqual({ ...unassigned, text: " \n " });
+    expect(decode(named)).toEqual(named);
+    for (const value of [
+      { expected_revision: 1 },
+      { ...unassigned, expected_revision: "1" },
+      { ...unassigned, workstream_id: undefined },
+      { ...unassigned, workstream_id: "" },
+      { ...unassigned, workstream_id: false },
+      { ...unassigned, text: null },
+      { ...unassigned, text: undefined },
+      { ...unassigned, text: "a".repeat(100_001) },
+      { ...unassigned, additional_instructions: null },
+      { ...unassigned, additional_instructions: " \n " },
+      { ...unassigned, edit_handle: null },
+      { ...unassigned, edit_handle: "" },
+      { ...unassigned, source_id: "another-source" },
+    ]) {
+      expect(() => decode(value)).toThrow();
+    }
+    expect(() => decodeRevision(unassigned)).toThrow();
   });
 });
 

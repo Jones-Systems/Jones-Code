@@ -243,7 +243,9 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Delete now",
     to: "/settings/maintenance",
     scope: "environment-defaults",
-    searchTerms: ["storage cleanup run now results report removed kept failed"],
+    searchTerms: [
+      "storage cleanup run now results report removed kept failed propose proposal retire retirement reclaim space recover disk worktrees",
+    ],
   },
   {
     id: "storage-worktrees",

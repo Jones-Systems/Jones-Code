@@ -7,13 +7,29 @@ import * as NodeChildProcess from "node:child_process";
 import { fixture, command, completeConsumers } from "./Conformance.testkit.ts";
 import { canonical, openAbsolute, openRelative } from "./Filesystem.ts";
 import { attest, binding, contentManifest, manifestBytes, verify } from "./OutputAttestation.ts";
-import { classifyIgnored } from "./IgnoredClassifier.ts";
+import { classifyIgnored, coveredClasses, REGENERABLE_ROOT_NAMES } from "./IgnoredClassifier.ts";
 import { participantGuard } from "./ParticipantGuard.ts";
 import { beginProduction, finishProduction, outputObligations } from "./ProducerFinalizer.ts";
 import { qualify, finalCheck } from "./Qualification.ts";
+import { policyProbe } from "./LinuxInfrastructureEvidence.testkit.ts";
 import { consumerDecision, processProbe, serviceProbe } from "./ConsumerProbe.ts";
 
 export const behaviorCases: Record<string, () => Promise<void>> = {
+  "fresh valid exclusion qualifies while changed valid basis invalidates proposal and final check":
+    async () =>
+      fixture(async ({ input }) => {
+        input.consumers.process = await policyProbe();
+        const first = await qualify(input);
+        NodeAssert.equal(first.outcome, "retirable");
+        input.consumers.process = await policyProbe();
+        input.consumers.process.observedAt -= 1;
+        NodeAssert.equal((await finalCheck(input, first)).conflict, false);
+        input.consumers.process = await policyProbe("b".repeat(64));
+        const changed = await finalCheck(input, first);
+        NodeAssert.equal(changed.result.outcome, "retirable");
+        NodeAssert.equal(changed.conflict, true);
+        NodeAssert.notEqual(changed.result.fingerprint, first.fingerprint);
+      }),
   "descriptor-relative root duplication retains the directory and rejects symlink entries":
     async () =>
       fixture(async ({ base, worktree }) => {
@@ -384,6 +400,205 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
         NodeAssert.equal(stale.authority_effect, "none");
         NodeAssert.equal((await binding(worktree)).ino, input.expected.ino);
       }),
+  "the default regenerable classes cover the named roots only when the class is selected":
+    async () =>
+      fixture(async ({ repo, worktree }) => {
+        const common = await command(repo, ["rev-parse", "--git-common-dir"]).then((dir) =>
+          NodePath.resolve(repo, dir),
+        );
+        const classify = (root: string, classes?: string[]) =>
+          classifyIgnored({
+            worktree,
+            root,
+            common,
+            targets: [worktree],
+            coverage: classes ? { classes } : undefined,
+          });
+        for (const name of [...REGENERABLE_ROOT_NAMES, "notes"]) {
+          const root = NodePath.join(worktree, name);
+          await NodeFSP.mkdir(root);
+          await NodeFSP.writeFile(NodePath.join(root, "file"), "generated\n");
+          const covered = await classify(root, ["regenerable_output"]);
+          if (name === "notes") {
+            NodeAssert.equal(covered.reason, "unattested_ignored", name);
+            continue;
+          }
+          NodeAssert.deepEqual(
+            [covered.outcome, covered.basis],
+            ["disposable", "regenerable_output"],
+            name,
+          );
+          // Nothing but the selected class makes these roots disposable.
+          NodeAssert.equal((await classify(root)).reason, "unattested_ignored", name);
+          NodeAssert.equal((await classify(root, ["declared_cache"])).reason, "unattested_ignored");
+        }
+        const mod = NodePath.join(worktree, "gopath/pkg/mod");
+        await NodeFSP.mkdir(NodePath.join(mod, "example.com/m@v1.0.0"), { recursive: true });
+        await NodeFSP.writeFile(NodePath.join(mod, "example.com/m@v1.0.0/main.go"), "package m\n");
+        await NodeFSP.chmod(NodePath.join(mod, "example.com/m@v1.0.0/main.go"), 0o444);
+        for (const directory of ["example.com/m@v1.0.0", "example.com", ""])
+          await NodeFSP.chmod(NodePath.join(mod, directory), 0o555);
+        try {
+          NodeAssert.equal((await classify(mod, ["regenerable_output"])).outcome, "disposable");
+          // Git reports the topmost ignored directory, here the container of the module cache.
+          NodeAssert.equal(
+            (await classify(NodePath.join(worktree, "gopath"), ["regenerable_output"])).outcome,
+            "disposable",
+          );
+          // A container with any file outside a regenerable directory is not regenerable.
+          await NodeFSP.mkdir(NodePath.join(worktree, "mixed/node_modules"), { recursive: true });
+          await NodeFSP.writeFile(NodePath.join(worktree, "mixed/node_modules/dep"), "x\n");
+          await NodeFSP.writeFile(NodePath.join(worktree, "mixed/notes.txt"), "unique\n");
+          NodeAssert.equal(
+            (await classify(NodePath.join(worktree, "mixed"), ["regenerable_output"])).reason,
+            "unattested_ignored",
+          );
+          // Only pkg/mod is a module cache; another directory under pkg is not.
+          await NodeFSP.mkdir(NodePath.join(worktree, "other/pkg/data"), { recursive: true });
+          await NodeFSP.writeFile(NodePath.join(worktree, "other/pkg/data/file"), "unique\n");
+          NodeAssert.equal(
+            (await classify(NodePath.join(worktree, "other/pkg"), ["regenerable_output"])).reason,
+            "unattested_ignored",
+          );
+        } finally {
+          for (const directory of ["", "example.com", "example.com/m@v1.0.0"])
+            await NodeFSP.chmod(NodePath.join(mod, directory), 0o755);
+        }
+      }),
+  "dependency roots skip the name walk, output roots hold only user-placed secret names, and a nested repository holds every kind":
+    async () =>
+      fixture(async ({ repo, worktree }) => {
+        const common = NodePath.resolve(
+          repo,
+          await command(repo, ["rev-parse", "--git-common-dir"]),
+        );
+        const classify = (root: string, classes = ["regenerable_output"]) =>
+          classifyIgnored({ worktree, root, common, targets: [worktree], coverage: { classes } });
+        const put = async (relative: string) => {
+          const path = NodePath.join(worktree, relative);
+          await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+          await NodeFSP.writeFile(path, "x\n");
+          return path;
+        };
+        // Dependency-install roots come from a package manager: no name is examined.
+        for (const relative of [
+          "node_modules/a/credentials.js",
+          "node_modules/b/.env.local",
+          ".venv/lib/.pypirc",
+          "venv/lib/id_rsa",
+          "node_modules/c/deploy.pem",
+          "gopath/pkg/mod/example.com/m@v1/.npmrc",
+        ]) {
+          await put(relative);
+          const result = await classify(NodePath.join(worktree, relative.split("/")[0]!));
+          NodeAssert.equal(result.outcome, "disposable", relative);
+          NodeAssert.equal(result.basis, "regenerable_output", relative);
+        }
+        // Build, output and cache roots hold the exact user-placed secret path.
+        for (const relative of [
+          "build/.env",
+          "dist/cert.pem",
+          "out/server.key",
+          "target/bundle.p12",
+          "coverage/client.pfx",
+          ".cache/.netrc",
+          ".next/nested/.env.production",
+        ]) {
+          const path = await put(relative);
+          const result = await classify(NodePath.join(worktree, relative.split("/")[0]!));
+          NodeAssert.equal(result.outcome, "hold", relative);
+          NodeAssert.equal(result.reason, "sensitive_ignored", relative);
+          NodeAssert.deepEqual(result.paths, [path], relative);
+        }
+        // The broader preserve-set names never apply inside a regenerable root.
+        for (const relative of [
+          "__pycache__/service-credentials.json",
+          ".tox/id_ed25519",
+          ".mypy_cache/.pypirc",
+          ".turbo/.npmrc",
+          ".gradle/credentials.properties",
+        ]) {
+          await put(relative);
+          const result = await classify(NodePath.join(worktree, relative.split("/")[0]!));
+          NodeAssert.equal(result.outcome, "disposable", relative);
+        }
+        // An owner who names the exact path accepts its loss.
+        const secret = await put("DerivedData/.env");
+        NodeAssert.equal(
+          (
+            await classifyIgnored({
+              worktree,
+              root: NodePath.join(worktree, "DerivedData"),
+              common,
+              targets: [worktree],
+              coverage: { classes: ["regenerable_output"], sensitivePaths: [secret] },
+            })
+          ).outcome,
+          "disposable",
+        );
+        // A nested repository holds both kinds, including one inside a sensitive-named directory.
+        for (const relative of [
+          "node_modules/pkg/.git/HEAD",
+          "coverage/.git/HEAD",
+          ".venv/lib/credentials/.git/HEAD",
+        ]) {
+          await put(relative);
+          const result = await classify(NodePath.join(worktree, relative.split("/")[0]!));
+          NodeAssert.equal(result.outcome, "hold", relative);
+          // The general walk does not descend a sensitive-named directory, so it may report that instead.
+          NodeAssert.ok(
+            ["nested_repository", "sensitive_ignored"].includes(result.reason ?? ""),
+            relative,
+          );
+          if (!relative.includes("credentials"))
+            NodeAssert.equal(result.reason, "nested_repository", relative);
+        }
+        // A bare repository has no .git entry.
+        await NodeFSP.mkdir(NodePath.join(worktree, "build/bare/objects"), { recursive: true });
+        await NodeFSP.mkdir(NodePath.join(worktree, "build/bare/refs"), { recursive: true });
+        await put("build/bare/HEAD");
+        await NodeFSP.rm(NodePath.join(worktree, "build/.env"));
+        const bare = await classify(NodePath.join(worktree, "build"));
+        NodeAssert.equal(bare.reason, "nested_repository");
+        // Sample, example and template env files are not secrets.
+        await put(".nuxt/.env.example");
+        NodeAssert.equal((await classify(NodePath.join(worktree, ".nuxt"))).outcome, "disposable");
+        // Without the class the same roots stay held.
+        NodeAssert.equal(
+          (await classify(NodePath.join(worktree, "venv"), [])).reason,
+          "sensitive_ignored",
+        );
+      }),
+  "the regenerable switch defaults on in the rules and narrows when saved off": async () =>
+    fixture(async ({ repo, worktree }) => {
+      const common = NodePath.resolve(repo, await command(repo, ["rev-parse", "--git-common-dir"]));
+      const root = NodePath.join(worktree, "dist");
+      await NodeFSP.mkdir(root);
+      await NodeFSP.writeFile(NodePath.join(root, "out.js"), "x\n");
+      const outcome = (rules: Parameters<typeof coveredClasses>[0]) =>
+        classifyIgnored({
+          worktree,
+          root,
+          common,
+          targets: [worktree],
+          coverage: { classes: coveredClasses(rules) },
+        });
+      NodeAssert.deepEqual(
+        coveredClasses({
+          worktreeCoveredDiscard: ["declared_cache"],
+          worktreeRegenerableDiscard: true,
+        }),
+        ["declared_cache", "regenerable_output"],
+      );
+      NodeAssert.equal(
+        (await outcome({ worktreeCoveredDiscard: [], worktreeRegenerableDiscard: true })).outcome,
+        "disposable",
+      );
+      NodeAssert.equal(
+        (await outcome({ worktreeCoveredDiscard: [], worktreeRegenerableDiscard: false })).reason,
+        "unattested_ignored",
+      );
+    }),
   "setup unknown effects survive missing producer records": async () =>
     fixture(async ({ worktree, input }) => {
       await NodeFSP.mkdir(NodePath.join(worktree, ".t3"));

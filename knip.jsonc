@@ -30,6 +30,9 @@
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
         "knip-schemas.ts",
+        // Companion declarations for the shared native/source scenario's .mjs modules.
+        "jones/updates/packaged-picker-memory-ipc.d.mts",
+        "jones/updates/packaged-picker-scenario.d.mts",
         // Retained release CLI; publication workflows stay disabled for this sync.
         "resolve-nightly-release.ts",
         "linux-after-pack.ts",
@@ -41,6 +44,8 @@
         "jones/serverParallelism/*.mjs",
         "jones/ci/chromium-setup.mjs",
         "jones/ci/chromium-setup.node-test.mjs",
+        // Companion declarations for the CommonJS selection module check-changed.ts imports.
+        "jones/ci/local-selection.d.cts",
         "jones/server-shard-weights/select.ts",
         "jones/server-shard-weights/aggregate-cli.ts",
         // Xvfb invokes this native Chromium qualifier through a wrapper command.
@@ -131,6 +136,8 @@
         "src/snapShot/RegionSnapShotWorker.ts!",
         "src/snapShot/SnapShotAccessibilityWorker.ts!",
         "src/jones/updates/jonesStagingWorker.ts!",
+        "src/jones/updates/pickerVerificationMain.ts!",
+        "src/jones/updates/pickerVerificationPreload.ts!",
         "src/boot.ts!",
         "src/compileCache.ts!",
         "src/serverCompileCache.ts!",

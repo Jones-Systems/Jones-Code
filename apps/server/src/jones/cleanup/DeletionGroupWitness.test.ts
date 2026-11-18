@@ -319,6 +319,7 @@ it.effect(
       const rules = {
         worktreeSettledScope: "branch-retained" as const,
         worktreeCoveredDiscard: [],
+        worktreeRegenerableDiscard: true,
         worktreeKeepWhen: "uncommitted-changes" as const,
         worktreeAfterDays: null,
         worktreeSettledAfterDays: null,
@@ -383,6 +384,7 @@ it.effect.each(["lineage", "pending-child", "active-turn"] as const)(
       const rules = {
         worktreeSettledScope: "branch-retained" as const,
         worktreeCoveredDiscard: [],
+        worktreeRegenerableDiscard: true,
         worktreeKeepWhen: "uncommitted-changes" as const,
         worktreeAfterDays: null,
         worktreeSettledAfterDays: null,

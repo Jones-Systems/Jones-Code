@@ -44,7 +44,7 @@ describe("buildThreadActionMenuItems", () => {
     },
   );
   it.each([false, true])(
-    "puts assignment directly above Snooze/Wake with read-only gating (snoozed: %s)",
+    "puts assignment first in the action section above title regeneration with read-only gating (snoozed: %s)",
     (isSnoozed) => {
       const assignmentItems = [
         { id: "assign-workstream:group:alpha" as const, label: "alpha" },
@@ -57,9 +57,12 @@ describe("buildThreadActionMenuItems", () => {
           canOperate,
           assignmentItems,
         });
-        const snooze = items.findIndex((item) => item.id === (isSnoozed ? "unsnooze" : "snooze"));
-        expect(items[snooze - 1]).toMatchObject({ id: "assign-thread", label: "Assign thread" });
-        expect(items[snooze - 1]?.children).toEqual(
+        const regenerate = items.findIndex((item) => item.id === "regenerate-title");
+        expect(items[regenerate - 1]).toMatchObject({
+          id: "assign-thread",
+          label: "Assign thread",
+        });
+        expect(items[regenerate - 1]?.children).toEqual(
           canOperate
             ? assignmentItems
             : assignmentItems.map((item) => ({ ...item, disabled: true })),
@@ -67,6 +70,14 @@ describe("buildThreadActionMenuItems", () => {
       }
     },
   );
+
+  it("keeps title and sidebar items identical except Find below auto-settle", () => {
+    const sidebar = buildThreadActionMenuItems(baseState);
+    const title = buildThreadActionMenuItems({ ...baseState, canFind: true });
+    expect(title.filter((item) => item.id !== "find")).toEqual(sidebar);
+    const autoSettle = title.findIndex((item) => item.id === "auto-settle");
+    expect(title[autoSettle + 1]?.id).toBe("find");
+  });
 
   it("places Stop after snooze and keeps it reachable without session details", () => {
     const items = buildThreadActionMenuItems(baseState);

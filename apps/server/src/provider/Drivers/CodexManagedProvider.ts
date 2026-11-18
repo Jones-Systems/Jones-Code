@@ -11,7 +11,7 @@ import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 import { ChildProcessSpawner } from "effect/process";
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
-import { makeCodexRemoteRequestEvaluation } from "../../textGeneration/jones/CodexRemoteRequestEvaluation.ts";
+import { makeCodexToolFreeTextGeneration } from "../../textGeneration/jones/CodexRemoteRequestEvaluation.ts";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { chatGptModels } from "../CodexChatGptModels.ts";
 import { makeCodexManagedRuntime } from "../CodexManagedRuntime.ts";
@@ -283,13 +283,12 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
           }),
       ),
     );
-  const evaluateRemoteRequest = yield* makeCodexRemoteRequestEvaluation({
+  const toolFree = yield* makeCodexToolFreeTextGeneration({
     instanceId,
     access: runtime.auth.access,
   });
   const textGeneration: ProviderInstance["textGeneration"] = {
-    evaluateRemoteRequest: (value) =>
-      protect("evaluateRemoteRequest", evaluateRemoteRequest(value)),
+    evaluateRemoteRequest: (value) => protect("evaluateRemoteRequest", toolFree.evaluate(value)),
     generateCommitMessage: (value) =>
       protect("generateCommitMessage", nativeGeneration.generateCommitMessage(value)),
     generatePrContent: (value) =>
@@ -316,6 +315,8 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     snapshot,
     orchestrationAdapter,
     textGeneration,
+    generatePromptOnlyText: (value) =>
+      protect("generatePromptOnlyText", toolFree.generatePromptOnlyText(value)),
     auth: runtime.auth.controller,
     snapshotForCwd: (cwd: string) =>
       enabled

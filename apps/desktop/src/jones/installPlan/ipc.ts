@@ -5,11 +5,11 @@ import {
   JonesInstallPlanResult,
 } from "@t3tools/contracts/jones/installPlan";
 import * as DesktopIpc from "../../ipc/DesktopIpc.ts";
-import { DesktopUpdates } from "../../updates/DesktopUpdates.ts";
+import { DesktopUpdates } from "../../updates/DesktopUpdatesService.ts";
 
-const INSTALL_PLAN_CHANNEL = "desktop:jones-install-plan";
+import * as JonesUpdateChannels from "../updates/ipcChannels.ts";
 export const installPlan = DesktopIpc.makeIpcMethod({
-  channel: INSTALL_PLAN_CHANNEL,
+  channel: JonesUpdateChannels.INSTALL_PLAN,
   payload: JonesInstallPlanRequest,
   result: JonesInstallPlanResult,
   handler: Effect.fn("desktop.ipc.jonesInstallPlan")(function* (request) {
@@ -21,7 +21,7 @@ export const installPlan = DesktopIpc.makeIpcMethod({
 });
 
 export const installPlanAvailable = DesktopIpc.makeSyncIpcMethod({
-  channel: "desktop:jones-install-plan-available",
+  channel: JonesUpdateChannels.INSTALL_PLAN_AVAILABLE,
   result: Schema.Boolean,
   handler: Effect.fn("desktop.ipc.jonesInstallPlanAvailable")(function* () {
     const updates = yield* DesktopUpdates;

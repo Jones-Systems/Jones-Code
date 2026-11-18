@@ -64,6 +64,7 @@ it.effect.each([
       const body = JSON.parse(String(init?.body));
       expect(body.model).toBe("some/model");
       expect(body.messages).toEqual([{ role: "user", content: "Name this thread." }]);
+      expect(body).not.toHaveProperty("tools");
       return Response.json(api.reply);
     });
     const generators = yield* TextGenerators.TextGenerators.pipe(
@@ -75,6 +76,21 @@ it.effect.each([
       Effect.provideService(FetchHttpClient.Fetch, upstream),
     );
     expect(result).toEqual({ title: "Fix login" });
+    const promptOnly = yield* generators
+      .generatePromptOnlyText(request)
+      .pipe(Effect.provideService(FetchHttpClient.Fetch, upstream));
+    expect(promptOnly).toBe('{"title":"Fix login"}');
+    const beforeInvalid = upstream.mock.calls.length;
+    yield* generators
+      .generatePromptOnlyText({
+        ...request,
+        modelSelection: {
+          ...request.modelSelection,
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
+      })
+      .pipe(Effect.provideService(FetchHttpClient.Fetch, upstream), Effect.flip);
+    expect(upstream.mock.calls).toHaveLength(beforeInvalid);
     expect(yield* generators.runner(ProviderInstanceId.make("codex"))).toBeUndefined();
 
     upstream.mockResolvedValueOnce(
@@ -84,6 +100,40 @@ it.effect.each([
       run!(request).pipe(Effect.provideService(FetchHttpClient.Fetch, upstream)),
     );
     expect(failure.detail).toMatch(/rejected the API key: Incorrect API key provided$/);
+  }),
+);
+
+it.effect.each([
+  {
+    kind: "openaiCompatible",
+    reply: { choices: [{ finish_reason: "tool_calls", message: { content: "{}" } }] },
+  },
+  {
+    kind: "openaiCompatible",
+    reply: {
+      choices: [
+        { finish_reason: "stop", message: { content: "{}", tool_calls: [{ id: "synthetic" }] } },
+      ],
+    },
+  },
+  {
+    kind: "anthropic",
+    reply: {
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "{}" }, { type: "tool_use" }],
+    },
+  },
+] as const)("prompt-only $kind rejects tool-call replies", ({ kind, reply }) =>
+  Effect.gen(function* () {
+    const generators = yield* TextGenerators.TextGenerators.pipe(
+      Effect.provide(layer({ kind, apiKey: "synthetic" })),
+    );
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(reply));
+    const failure = yield* generators
+      .generatePromptOnlyText(request)
+      .pipe(Effect.provideService(FetchHttpClient.Fetch, fetch), Effect.flip);
+    expect(failure.detail).toContain("did not finish with text only");
+    expect(fetch).toHaveBeenCalledOnce();
   }),
 );
 

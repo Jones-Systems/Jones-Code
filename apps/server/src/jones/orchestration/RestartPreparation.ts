@@ -383,7 +383,36 @@ const make = Effect.gen(function* () {
         yield* interrupt;
         stage = "detach";
         retirement = yield* readRetirement;
-        yield* detach;
+        yield* detach.pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
+              retirement ??= yield* readRetirement;
+              if (retirement === null || binding === undefined)
+                return yield* Effect.failCause(cause);
+              // Detach's short caller deadline does not cancel its captured worker.
+              // Await that worker's proof once; never dispatch retirement again.
+              const receipt = yield* retirement.awaitRetired.pipe(
+                Effect.timeout("2 minutes"),
+                Effect.catchCause((observationCause) =>
+                  Cause.hasInterruptsOnly(observationCause)
+                    ? Effect.failCause(
+                        Cause.fromReasons<never>(
+                          observationCause.reasons.filter(Cause.isInterruptReason),
+                        ),
+                      )
+                    : Effect.failCause(cause),
+                ),
+              );
+              if (
+                !Object.entries(binding).every(
+                  ([key, value]) => receipt.binding[key as keyof ProviderRuntimeBinding] === value,
+                )
+              )
+                return yield* Effect.failCause(cause);
+            }),
+          ),
+        );
       });
       const result = yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {

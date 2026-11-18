@@ -102,6 +102,7 @@ import type { Pluggable, PluggableList } from "unified";
 import { defaultUrlTransform } from "react-markdown";
 import { parseAssistantCitationHref } from "@t3tools/shared/assistantCitations";
 import { parseComposerContextHref } from "@t3tools/shared/composerContextReferences";
+import { parseRemoteFileHref, remoteFileName } from "../jones/remoteFileLinks/remoteFileLink";
 import { parseThreadLinkHref } from "@t3tools/shared/threadLinks";
 import { AssistantCitationEmbed } from "./chat/AssistantCitationChip";
 import { MarkdownThreadLink } from "./chat/MarkdownThreadLink";
@@ -428,7 +429,7 @@ const CHAT_MARKDOWN_LITERAL_HTML_REHYPE_PLUGINS = [
 function markdownUrlTransform(href: string) {
   if (parseAssistantCitationHref(href)) return href;
   if (parseComposerContextHref(href)) return href;
-  if (parseThreadLinkHref(href)) return href;
+  if (parseThreadLinkHref(href) || parseRemoteFileHref(href)) return href;
   if (isWindowsDrivePathHref(href)) return href;
   if (isLocalEditorFileHref(href)) return href;
   return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
@@ -1186,6 +1187,29 @@ const CHAT_MARKDOWN_COMPONENTS = {
     const trailing = after !== undefined && CITATION_ENDS_BLOCK.test(text.slice(after));
     if (citation) {
       return <AssistantCitationEmbed citation={citation} leading={leading} trailing={trailing} />;
+    }
+    const remoteFile = href ? parseRemoteFileHref(href) : null;
+    if (remoteFile && href) {
+      const written = hastPlainTextDeep(node);
+      const label = (written !== href && written) || remoteFileName(remoteFile.absolutePath);
+      return threadRef ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                className="chat-markdown-file-link cursor-pointer text-primary hover:underline"
+                onClick={() => useRightPanelStore.getState().openRemoteFile(threadRef, href)}
+              >
+                {label}
+              </button>
+            }
+          />
+          <TooltipPopup>{remoteFile.absolutePath}</TooltipPopup>
+        </Tooltip>
+      ) : (
+        <span>{label}</span>
+      );
     }
     const threadLink = href ? parseThreadLinkHref(href) : null;
     if (threadLink) {

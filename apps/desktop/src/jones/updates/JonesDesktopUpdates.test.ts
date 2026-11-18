@@ -33,8 +33,8 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...original, execFile: vi.fn(original.execFile), spawn: vi.fn(original.spawn) };
 });
 
-vi.mock("./jonesMacStaging.ts", async (importOriginal) => {
-  const original = await importOriginal<typeof import("./jonesMacStaging.ts")>();
+vi.mock("./jonesMacStagingChecks.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./jonesMacStagingChecks.ts")>();
   return {
     ...original,
     preflightJonesCandidateStartupGate: vi.fn(original.preflightJonesCandidateStartupGate),

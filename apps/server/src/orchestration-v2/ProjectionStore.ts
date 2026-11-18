@@ -1867,6 +1867,9 @@ export function threadShellFromProjection(
     unsettledAt: projection.thread.unsettledAt ?? null,
     snoozedUntil: projection.thread.snoozedUntil ?? null,
     snoozedAt: projection.thread.snoozedAt ?? null,
+    ...(projection.thread.lastSnoozeWakeAt == null
+      ? {}
+      : { lastSnoozeWakeAt: projection.thread.lastSnoozeWakeAt }),
     pinnedAt: projection.thread.pinnedAt ?? null,
 
     autoSettleDisabledAt: projection.thread.autoSettleDisabledAt ?? null,
@@ -2164,6 +2167,9 @@ function shellFromState(input: {
     unsettledAt: input.state.thread.unsettledAt ?? null,
     snoozedUntil: input.state.thread.snoozedUntil ?? null,
     snoozedAt: input.state.thread.snoozedAt ?? null,
+    ...(input.state.thread.lastSnoozeWakeAt == null
+      ? {}
+      : { lastSnoozeWakeAt: input.state.thread.lastSnoozeWakeAt }),
     pinnedAt: input.state.thread.pinnedAt ?? null,
 
     autoSettleDisabledAt: input.state.thread.autoSettleDisabledAt ?? null,

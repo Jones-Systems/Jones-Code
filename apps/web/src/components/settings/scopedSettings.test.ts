@@ -161,6 +161,7 @@ describe("scoped settings writes", () => {
             worktreeKeepWhen: "uncommitted-changes",
             worktreeSettledScope: "branch-retained",
             worktreeCoveredDiscard: [],
+            worktreeRegenerableDiscard: true,
           },
         },
       },
@@ -188,6 +189,7 @@ describe("scoped settings writes", () => {
         worktreeKeepWhen: "uncommitted-changes",
         worktreeSettledScope: "branch-retained",
         worktreeCoveredDiscard: [],
+        worktreeRegenerableDiscard: true,
       },
       {
         worktreeAfterDays: null,
@@ -198,6 +200,7 @@ describe("scoped settings writes", () => {
         worktreeKeepWhen: "uncommitted-changes",
         worktreeSettledScope: "branch-retained",
         worktreeCoveredDiscard: [],
+        worktreeRegenerableDiscard: true,
       },
     ]);
   });
@@ -408,6 +411,7 @@ describe("scoped settings writes", () => {
                 worktreeKeepWhen: "uncommitted-changes",
                 worktreeSettledScope: "branch-retained",
                 worktreeCoveredDiscard: [],
+                worktreeRegenerableDiscard: true,
               },
             },
           },
@@ -441,6 +445,7 @@ describe("scoped settings writes", () => {
               worktreeKeepWhen: "uncommitted-changes",
               worktreeSettledScope: "branch-retained",
               worktreeCoveredDiscard: [],
+              worktreeRegenerableDiscard: true,
             },
           },
         },
@@ -458,6 +463,7 @@ describe("scoped settings writes", () => {
               worktreeKeepWhen: "uncommitted-changes",
               worktreeSettledScope: "branch-retained",
               worktreeCoveredDiscard: [],
+              worktreeRegenerableDiscard: true,
             },
           },
         },

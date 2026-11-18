@@ -2,6 +2,8 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "composer-shortcuts-extraction",
   "jonesOwnedPaths": [
+    "apps/web/src/jones/composer/ComposerLayout.tsx",
+    "apps/web/src/jones/composer/ComposerLayout.module.css",
     "apps/web/src/jones/composer/ComposerShortcutPlate.tsx",
     "apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts",
     "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx",
@@ -42,6 +44,14 @@
     "apps/web/src/components/chat/composerShortcutRails.ts"
   ],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/composer/ComposerLayout.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/composer/ComposerLayout.tsx"
+    },
     {
       "from": "apps/web/src/components/ChatView.tsx",
       "to": "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx"

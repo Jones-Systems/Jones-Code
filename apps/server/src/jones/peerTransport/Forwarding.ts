@@ -31,6 +31,9 @@ import * as PeerMcpClient from "../../peer/PeerMcpClient.ts";
 import type { LinkedMessageOrigin } from "./LinkedMessageOrigin.ts";
 import * as RequestContextSender from "./RequestContextSender.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
+import * as OriginDelivery from "../remoteAdmissionOrigin/OriginDelivery.ts";
+import { REMOTE_ADMISSION_OBSERVATION_VERSION } from "@t3tools/contracts/jones/remoteAdmissionReview";
+import type { ObservationRow } from "../remoteAdmissionOrigin/OriginStore.ts";
 const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const isLinkedThreadOriginLink = Schema.is(LinkedThreadOriginLink);
 const encodeDependencyRequest = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -55,6 +58,7 @@ export const make = Effect.gen(function* () {
           yield* dependencyChanges.value.publish({ threadIds: [threadId], sequence });
         }).pipe(Effect.orDie);
   const projects = yield* ProjectService.ProjectService;
+  const originDelivery = yield* Effect.serviceOption(OriginDelivery.OriginDelivery);
 
   /**
    * Forward the caller's own limits because the peer sees only the link credential; refuse local authority first.
@@ -112,6 +116,66 @@ export const make = Effect.gen(function* () {
     }
     if (typeof args.clientRequestId === "string") {
       args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
+    }
+    let launchObservation: ObservationRow | undefined;
+    if (
+      toolName === "t3_thread_launch" &&
+      caller.caller !== undefined &&
+      args.delegatedFrom === undefined
+    ) {
+      if (typeof args.clientRequestId !== "string")
+        args.clientRequestId = yield* scopedRequestId(
+          scope.requestNamespace,
+          yield* random.uuidV4().pipe(Effect.mapError(unavailable)),
+        );
+      const capabilities = yield* peers.call({
+        environmentId,
+        tool: "orchestrator_capabilities",
+        arguments: {},
+        limits,
+        success: OrchestratorMcpCapabilitiesResult,
+      });
+      if (
+        capabilities.features.remoteAdmissionObservationVersion ===
+        REMOTE_ADMISSION_OBSERVATION_VERSION
+      ) {
+        if (Option.isNone(originDelivery))
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Durable linked launch observation is not configured. Nothing was sent.",
+          });
+        const records = yield* threads
+          .getThreadRecords(caller.caller.id, ["runs"])
+          .pipe(Effect.mapError(unavailable));
+        const key = `origin:${environmentId}:${args.clientRequestId}`;
+        const prepared = yield* originDelivery.value.prepare({
+          environmentId,
+          clientRequestId: String(args.clientRequestId),
+          limits,
+          fingerprint: Hex.encode(
+            yield* digest
+              .digest(Digest.sha256, new TextEncoder().encode(encodeDependencyRequest(args)))
+              .pipe(Effect.orDie),
+          ),
+          binding: {
+            rootObservationKey: key,
+            originThreadId: caller.caller.id,
+            returnRouteKey: key,
+            waiterGeneration,
+            waiterRunId:
+              records.runs
+                .filter(ThreadManagement.isActiveRun)
+                .toSorted((a, b) => b.ordinal - a.ordinal)[0]?.id ?? null,
+          },
+        });
+        if (!prepared.transmit)
+          return yield* new OrchestratorMcpFailure({
+            code: "request_conflict",
+            message:
+              "This launch key already has durable intent. Its outcome must be observed; it was not transmitted again.",
+          });
+        launchObservation = prepared;
+      }
     }
     let origin: LinkedMessageOrigin | undefined;
     let tracked: Dependency | undefined;
@@ -278,6 +342,9 @@ export const make = Effect.gen(function* () {
       .call({
         environmentId,
         tool: toolName,
+        ...(launchObservation === undefined
+          ? {}
+          : { expectedGeneration: launchObservation.link_generation }),
         arguments: args,
         limits,
         ...(origin === undefined ? {} : { origin }),
@@ -285,6 +352,22 @@ export const make = Effect.gen(function* () {
         success: success as Schema.Decoder<A>,
       })
       .pipe(
+        Effect.tap(() =>
+          launchObservation && Option.isSome(originDelivery)
+            ? originDelivery.value.release(launchObservation.observation_key)
+            : Effect.void,
+        ),
+        Effect.tapError((error) =>
+          !launchObservation || Option.isNone(originDelivery)
+            ? Effect.void
+            : error.code === "remote_admission_pending"
+              ? originDelivery.value.pending(launchObservation.observation_key, "held")
+              : ["invalid_request", "capability_denied", "remote_admission_denied"].includes(
+                    error.code,
+                  )
+                ? originDelivery.value.release(launchObservation.observation_key)
+                : originDelivery.value.pending(launchObservation.observation_key, "sent_unknown"),
+        ),
         Effect.tap(() =>
           !tracked || !dependencies || Option.isNone(dependencySql)
             ? Effect.void

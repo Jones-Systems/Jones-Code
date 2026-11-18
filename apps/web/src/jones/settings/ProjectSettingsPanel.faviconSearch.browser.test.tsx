@@ -164,6 +164,7 @@ const environments: ReturnType<
 >["environments"] = [primaryId, remoteId].map((environmentId) => ({
   environmentId,
   label: environmentId,
+  displayLabel: environmentId,
   displayUrl: null,
   relayManaged: false,
   entry: {

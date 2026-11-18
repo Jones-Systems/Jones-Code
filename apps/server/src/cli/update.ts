@@ -22,6 +22,8 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
+import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
+import * as SystemBootService from "../jones/hostService/systemBootService.ts";
 import {
   ensurePinnedRuntimeInstalled,
   findPosixLauncher,
@@ -45,6 +47,7 @@ import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntim
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import { createUpdateProgress } from "./updateProgress.ts";
 import * as CliService from "./service.ts";
+import { classifyJonesManagedRuntime } from "../jones/cli/managedRuntime.ts";
 
 export class CliUpdateError extends Schema.TaggedError<CliUpdateError>()("CliUpdateError", {
   reason: Schema.String,
@@ -73,7 +76,8 @@ export const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(funct
   const environment = yield* HostProcess.Environment;
   const githubToken = environment.GH_TOKEN?.trim() || environment.GITHUB_TOKEN?.trim() || undefined;
   for (let page = 1; page <= RELEASE_INDEX_MAX_PAGES; page += 1) {
-    const request = HttpClientRequest.get(cliReleaseIndexPageUrl(page)).pipe(
+    const releaseIndexUrl = cliReleaseIndexPageUrl(page);
+    const request = HttpClientRequest.get(releaseIndexUrl).pipe(
       HttpClientRequest.setHeader("Accept", "application/vnd.github+json"),
     );
     const authenticatedRequest =
@@ -83,22 +87,34 @@ export const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(funct
     const body = yield* httpClient.execute(authenticatedRequest).pipe(
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.flatMap((response) => response.text),
-      Effect.mapError(() => new CliUpdateError({ reason: "Could not list t3 releases." })),
+      Effect.mapError(
+        () => new CliUpdateError({ reason: `Could not list t3 releases from ${releaseIndexUrl}.` }),
+      ),
       Effect.timeoutOrElse({
         duration: RELEASE_INDEX_TIMEOUT,
-        orElse: () => Effect.fail(new CliUpdateError({ reason: "Timed out listing t3 releases." })),
+        orElse: () =>
+          Effect.fail(
+            new CliUpdateError({
+              reason: `Timed out listing t3 releases from ${releaseIndexUrl}.`,
+            }),
+          ),
       }),
     );
     const releases = yield* decodeReleaseIndex(body).pipe(
       Effect.mapError(
-        () => new CliUpdateError({ reason: "The t3 release index had an unexpected shape." }),
+        () =>
+          new CliUpdateError({
+            reason: `The t3 release index from ${releaseIndexUrl} had an unexpected shape.`,
+          }),
       ),
     );
     const version = newestCliReleaseVersion(releases, channel);
     if (version !== undefined) return version;
     if (releases.length === 0) break;
   }
-  return yield* new CliUpdateError({ reason: `No published ${channel} release was found.` });
+  return yield* new CliUpdateError({
+    reason: `No published ${channel} release was found in ${cliReleaseIndexPageUrl(1)}.`,
+  });
 });
 
 /** The version an update mirror's feed file for this platform offers on `channel`. */
@@ -285,7 +301,26 @@ export const updateCommand = Command.make("update", {
   ),
 );
 
+/** Release updates cannot replace a source-qualified Jones runtime through a version-only request. */
+export const assertReleaseUpdateAllowed = Effect.fn("cli.update.assert_release_update_allowed")(
+  function* (baseDir: string, version: string) {
+    const management = yield* classifyJonesManagedRuntime(baseDir, version);
+    if (management === "unreadable-service-state")
+      return yield* new CliUpdateError({
+        reason:
+          "The existing native service state requires reconciliation before a version-only update.",
+      });
+    if (management === "managed") {
+      return yield* new CliUpdateError({
+        reason:
+          "This Jones runtime requires source-qualified staging and an explicit Install through its host updater. A version-only release update is unavailable.",
+      });
+    }
+  },
+);
+
 const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(function* (input: {
+  readonly baseDir: string;
   readonly serverRuntimeStatePath: string;
   readonly serviceInstalled: boolean;
 }) {
@@ -293,19 +328,37 @@ const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(func
   if (Option.isNone(state) || state.value.serviceManaged || !isProcessAlive(state.value.pid)) {
     return undefined;
   }
-  if (input.serviceInstalled && (yield* belongsToBootService(state.value.pid))) return undefined;
+  if (input.serviceInstalled && (yield* belongsToBootService(state.value.pid, input.baseDir)))
+    return undefined;
   return state.value;
 });
 
+export function isJonesBootServiceCgroup(contents: string, boundSystemUnit?: string): boolean {
+  if (boundSystemUnit !== undefined)
+    return SystemBootService.systemServiceUnitFromCgroup(contents) === boundSystemUnit;
+  return contents
+    .split("\n")
+    .some((line) =>
+      line
+        .split(":")
+        .slice(2)
+        .join(":")
+        .split("/")
+        .includes(JONES_BOOT_SERVICE_IDENTITY.systemdUnitFile),
+    );
+}
+
 const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(function* (
   pid: number,
+  baseDir: string,
 ) {
   const platform = yield* HostProcess.Platform;
   const fs = yield* FileSystem.FileSystem;
   const runner = yield* ProcessRunner.ProcessRunner;
   if (platform === "linux") {
     const cgroup = yield* fs.readFileString(`/proc/${pid}/cgroup`).pipe(Effect.option);
-    return Option.isSome(cgroup) && cgroup.value.includes("/t3code.service");
+    const binding = yield* SystemBootService.readBinding(baseDir);
+    return Option.isSome(cgroup) && isJonesBootServiceCgroup(cgroup.value, binding?.systemUnit);
   }
   if (platform === "darwin") {
     const parent = yield* runner
@@ -349,6 +402,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   const mirror = managedUpdateMirror(policy.document);
 
   const currentVersion = packageJson.version;
+  yield* assertReleaseUpdateAllowed(input.baseDir, currentVersion);
   const channel = input.channel ?? cliReleaseChannelOf(currentVersion);
   const refusal = managedUpdateRefusal(
     policy.document,
@@ -405,6 +459,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     path.resolve(status.installedBaseDir) === path.resolve(input.baseDir);
   const serviceInstalled = status.supported && status.installed && servesThisHome;
   const foreground = yield* findForegroundServer({
+    baseDir: input.baseDir,
     serverRuntimeStatePath: input.serverRuntimeStatePath,
     serviceInstalled,
   });
@@ -541,10 +596,32 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     );
     servicePlan = yield* BootService.BootService.pipe(
       Effect.flatMap((target) =>
-        target.install({ allowDowngrade: input.allowDowngrade, start: restartService }),
+        Effect.gen(function* () {
+          const targetStatus = yield* target.status;
+          if (
+            !targetStatus.supported ||
+            !targetStatus.installed ||
+            targetStatus.otherBaseDir !== undefined ||
+            targetStatus.installedBaseDir === undefined ||
+            !path.isAbsolute(status.unitPath) ||
+            !path.isAbsolute(targetStatus.unitPath) ||
+            path.resolve(targetStatus.installedBaseDir) !== path.resolve(input.baseDir) ||
+            path.resolve(targetStatus.unitPath) !== path.resolve(status.unitPath)
+          ) {
+            return yield* new BootService.BootServiceInstallError({
+              cause: undefined,
+              reason:
+                "The background service binding changed or could not be verified; reconcile this home's exact service before retrying.",
+            });
+          }
+          return yield* target.install({
+            allowDowngrade: input.allowDowngrade,
+            start: restartService,
+          });
+        }),
       ),
       Effect.provide(
-        BootService.layer({
+        CliService.jonesBootServiceLayer({
           baseDir: input.baseDir,
           logsDir: input.logsDir,
           cliVersion: targetVersion,

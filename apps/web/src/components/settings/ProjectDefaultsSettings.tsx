@@ -9,10 +9,9 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { useNavigate } from "@tanstack/react-router";
 
 import { useClientSettings } from "../../hooks/useSettings";
-import {
-  defaultModelSelectionsAreMixed,
-  getCustomModelOptionsByInstance,
-} from "../../modelSelection";
+import { DefaultModelPicker } from "../../jones/settings/DefaultModelPicker";
+import { defaultModelSelectionsAreMixed } from "../../jones/settings/modelSelectionCorrespondence";
+import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import { providerInstanceEntriesFor } from "../../providerInstances";
 import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { firstManagedDenial } from "../../state/managedPolicy";
@@ -49,7 +48,7 @@ function isWorktreeSubmodules(value: string | null): value is WorktreeSubmodules
 }
 
 export function ProjectDefaultsSettings({ category }: { category: ProjectSettingsCategory }) {
-  const { scope, target, targets, connectedEnvironments } = useSettingsScope();
+  const { scope, search, target, targets, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
   const clientSettings = useClientSettings();
   const updateSettings = useUpdateScopedSettings();
@@ -77,7 +76,6 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     selection?.instanceId,
     selection?.model,
   );
-  const activeEntry = entries.find((entry) => entry.instanceId === selection?.instanceId);
   const mixedModel = defaultModelSelectionsAreMixed(
     clientSettings,
     targets.map((candidate) => ({
@@ -152,45 +150,32 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
         ) : null
       }
       control={
-        selection ? (
-          <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-            <ProviderModelPicker
-              environmentId={representative?.environmentId ?? null}
-              activeInstanceId={selection.instanceId}
-              model={selection.model}
-              lockedProvider={null}
-              instanceEntries={entries}
-              modelOptionsByInstance={modelOptions}
-              triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-              {...(mixedModel
-                ? { triggerLabel: automaticModel ? "Automatic (mixed)" : "Mixed" }
-                : {})}
-              getModelDisabledReason={modelDisabledReason}
-              onOpenProviderSetup={(instanceId) => {
-                if (representative)
-                  void navigate({
-                    to: "/settings/providers",
-                    search: { environmentId: representative.environmentId, instanceId },
-                  });
-              }}
-              onInstanceModelChange={(instanceId, model) =>
-                setModel(pickModelSelection(mixedModel ? null : selection, instanceId, model))
-              }
-            />
-            {!mixedModel && !presentation.providerNote && !effortDisabledReason && activeEntry ? (
-              <TraitsPicker
-                provider={activeEntry.driverKind}
-                models={activeEntry.models}
-                model={selection.model}
-                modelOptions={selection.options ?? []}
-                allowPromptInjectedEffort={false}
-                triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                onModelOptionsChange={(options) =>
-                  setModel(createModelSelection(selection.instanceId, selection.model, options))
-                }
-              />
-            ) : null}
-          </div>
+        selection && entries.length > 0 ? (
+          <DefaultModelPicker
+            key={JSON.stringify([
+              search.project,
+              search.machine,
+              search.checkout,
+              representative?.environmentId,
+            ])}
+            environmentId={representative?.environmentId ?? null}
+            selection={selection}
+            instanceEntries={entries}
+            modelOptionsByInstance={modelOptions}
+            triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+            {...(mixedModel
+              ? { triggerLabel: automaticModel ? "Automatic (mixed)" : "Mixed" }
+              : {})}
+            getModelDisabledReason={modelDisabledReason}
+            onOpenProviderSetup={(instanceId) => {
+              if (representative)
+                void navigate({
+                  to: "/settings/providers",
+                  search: { environmentId: representative.environmentId, instanceId },
+                });
+            }}
+            onSave={setModel}
+          />
         ) : (
           <span className="text-sm text-muted-foreground">
             {mixedModel ? "Mixed" : "No providers available"}

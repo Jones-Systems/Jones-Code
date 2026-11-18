@@ -2,6 +2,16 @@ import type { Bootstrap, Request } from "../serverCompute/protocol.ts";
 import type { ComputeRequestTiming } from "./observations.ts";
 import type { SqliteReaderObservation } from "@t3tools/shared/jones/sqliteReaderContracts";
 
+export const periodicResourceGapMs = 10;
+export const observerModes = {
+  full: { platform: "linux", resourceGapMs: periodicResourceGapMs },
+  "cpu-stat-only": { platform: "linux", resourceGapMs: periodicResourceGapMs },
+  "cadence-standard": { platform: "darwin", resourceGapMs: periodicResourceGapMs },
+  "cadence-reduced": { platform: "darwin", resourceGapMs: 250 },
+} as const;
+
+export type ObserverMode = keyof typeof observerModes;
+
 export interface DiagnosticIdentity {
   readonly pid?: number | undefined;
   readonly bootstrap?: Bootstrap | undefined;
@@ -31,6 +41,7 @@ export type DiagnosticEvent = DiagnosticIdentity & {
         readonly kind: "resource";
         readonly readId: number;
         readonly stage: ResourceStage;
+        readonly periodic?: boolean | undefined;
         readonly edge: "begin" | "end" | "error";
         readonly attempted?: number | undefined;
         readonly completed?: number | undefined;

@@ -123,11 +123,13 @@ installation.
 ## Mac desktop artifact
 
 The companion **Mac Desktop Artifact** workflow builds an Apple Silicon
-DMG on `macos-15`. It runs on main pushes and manual dispatch, and on matching pull requests whose
+DMG on `macos-15`. It runs on main pushes, a nightly schedule (04:45 America/New_York)
+and manual dispatch, and on matching pull requests whose
 base is `main` or `work/jones-rebuild/staging` and whose head belongs to the same repository. Other dependency-base
 pull requests do not trigger this workflow;
-use a separate manual run for DMG evidence when needed. It follows the same seven-day
-Actions download process, with artifact name
+use a separate manual run for DMG evidence when needed. Download it the same way
+as the CLI artifacts, but its artifacts are retained for only 7 days, not 30.
+The artifact name is
 `desktop-mac-arm64-RUN_ID-RUN_ATTEMPT--VERSION`. Confirm the source revision in its run
 summary and downloaded `SOURCE_COMMIT`/`ARTIFACT.json`. After downloading into an empty directory on a Mac, verify:
 
@@ -141,58 +143,43 @@ The build stamps the exact source commit and tree and checks the packaged
 The app retains its native update helper and install-time startup handshake.
 Artifact production does not run the retired legacy bootstrap or offline
 preparation producer, and no source, worker or lockfile byte pin controls whether
-the DMG can be built. The workflow verifies the DMG container and writes its
-SHA-256 checksum; it does not launch the packaged app against user state.
+the DMG can be built. The workflow verifies the DMG container, writes its SHA-256
+checksum and checks the shipped app's signature from a read-only mount; it does
+not launch the packaged app against user state.
 
-The DMG has no Developer ID signing or notarization. Container and checksum
-validation do not establish Gatekeeper acceptance or successful application
-launch. Installation, Gatekeeper changes, application launch against a real T3
-home, and replacing an existing Mac installation require a separate approved
-trial plan. Download and verification alone do not perform those steps.
+The build seals the whole `Jones Code.app` with an ad hoc signature
+(electron-builder's `identity: "-"`), without hardened runtime or a secure
+timestamp. The run fails, and uploads no DMG, unless
+`codesign --verify --deep --strict` passes on the mounted app and its signature
+is ad hoc, with no team identifier or certificate. The DMG container itself is
+not signed. `ARTIFACT.json` records `signing: "ad-hoc"`, `signed: false` and
+`notarized: false`: `signed` means publisher-authenticated signing, which ad hoc
+signing does not provide. Earlier builds can carry only Electron's linker
+signature on the main executable and fail strict verification.
+
+The workflow requests ad hoc signing with `T3CODE_DESKTOP_MAC_ADHOC_SIGN=true`
+on a runner with no signing identities. electron-builder searches the keychain
+for an identity whose name contains `-` before it falls back to ad hoc, so set
+the variable only on a Mac whose keychain holds no Developer ID or Mac Developer
+identity. The build refuses it for signed or non-Mac builds.
+
+The DMG has no Developer ID signing or notarization. A valid ad hoc signature,
+container and checksum do not establish Gatekeeper acceptance or successful
+application launch. Download and verification alone install nothing.
+
+To update a Mac where Jones Code is already installed and adopted, use
+**Install status** in the app, as described in
+[Updating Jones Code](../user/updating.md#install-status). It downloads the
+newest green main build, verifies it, keeps recovery material and activates it.
+Do not drag a newer DMG over an adopted install: the startup fence described
+below refuses it. A first install on a Mac without Jones Code, Gatekeeper
+changes, launching against a real T3 home outside the updater, and replacing an
+installation by hand each require a separate approved plan. This page does not
+define a verified first-install procedure.
 
 ### Installed Mac desktop facts
 
 These facts hold for the DMG above and affect any install or update plan:
-
-- To permanently retire selected backup SQLite files while preserving the live
-  database, settings copies, `pair.json` bytes, receipts, journals and apps, use
-  the source helper's explicit database retirement route. Select each finished
-  backup as `--snapshot manual:ID` or `--snapshot warm:ID`; unresolved recovery,
-  cold maintenance, unknown payloads and a busy activation lock hold the action.
-  Both actions require an existing activation lock; inspect creates nothing.
-  Use a reviewed source commit with green required CI. Materialize it on an
-  Apple Silicon Mac with Node 24 and Python 3.9 or newer, without installing or
-  restarting the app:
-
-  ```sh
-  WT=/absolute/path/to/reviewed/worktree
-  S=$(mktemp -d "${TMPDIR:-/tmp}/jones-db-retire.XXXXXX")
-  node --input-type=module -e '
-  const [src, dir] = process.argv.slice(1);
-  const { pathToFileURL } = await import("node:url");
-  const fs = await import("node:fs");
-  const { jonesNativeHelperSource: source } = await import(pathToFileURL(src).href);
-  fs.writeFileSync(dir + "/helper.py", source, { flag: "wx", mode: 0o700 });
-  ' "$WT/apps/desktop/src/jones/updates/jonesNativeHelperSource.ts" "$S"
-  /usr/bin/python3 -I -B "$S/helper.py" --manifest "$HOME/.t3/runtime/jones-active-install.json" \
-    --inspect-database-retirement --snapshot manual:ID --snapshot warm:ID
-  /usr/bin/python3 -I -B "$S/helper.py" --manifest "$HOME/.t3/runtime/jones-active-install.json" \
-    --retire-database-snapshots --snapshot manual:ID --snapshot warm:ID --plan-sha256 PLAN
-  ```
-
-  Substitute the exact IDs and the plan hash returned by inspect. The execute
-  command deletes only the approved `state.sqlite`, `state.sqlite-wal` and
-  `state.sqlite-shm` files in those backups. This is irreversible: those
-  generations can no longer restore their database. After `uncertain`, inspect
-  again; resume with the same selection and hash only when inspect reports
-  `ready` with `reconciliation: true`. A repeated completed action returns
-  `retired`. Restore refuses on a marker or publication scratch file; current
-  retention readers hold until the marker is bound and retired. Older restore
-  and warm-payload inventory guards also reject these extra files. Retain the
-  JSON results, then remove the exact
-  scratch helper and directory (`rm "$S/helper.py"; rmdir "$S"`). Report
-  observed free space separately from logical bytes: shared clone blocks and
-  local snapshots can make physical reclaim much smaller.
 
 - The DMG is named `T3-Code-VERSION-arm64.dmg`, but it contains `Jones Code.app`
   with bundle identifier `com.t3tools.t3code`. Upstream T3 Code builds, such as
@@ -200,8 +187,9 @@ These facts hold for the DMG above and affect any install or update plan:
   same identifier. Launch Services can then route `t3code://` links and app
   lookups to either app. If both are installed, verify which app Launch
   Services selects before using those links or lookups.
-- In one observed laptop trial, Gatekeeper rejected the ad hoc signed bundle;
-  first launch there required a deliberate local override.
+- In one observed laptop trial, Gatekeeper rejected an earlier build. First
+  launch there required a deliberate local override. Gatekeeper behavior for
+  a quarantined copy of the sealed preview is unverified.
 - There is no Electron or Squirrel update feed. Packaged preview builds use the
   Jones updater instead (`apps/desktop/src/updates/DesktopUpdates.ts`). It
   checks 15 seconds after launch and then every 4 minutes, on the fixed
@@ -221,13 +209,17 @@ These facts hold for the DMG above and affect any install or update plan:
   is refused when the version or source differs from that record or an
   activation transaction requires reconciliation. A qualified activation trial
   can start with its matching trial descriptor in an allowed transaction phase.
-  The startup fence
-  (`packages/shared/src/jones/nativeWriterFence.ts`) prints the reason to
-  stderr and exits with status 1. For example:
-  `The native writer does not match the admitted source generation.` A
-  Finder or Dock launch shows no message: the app simply does not appear. So
-  simply copying a newer build containing this fence over an adopted install
-  does not update its admission record. Use the Jones updater or the
+  On a refusal, the startup fence
+  (`packages/shared/src/jones/nativeWriterFence.ts`) shows a **Jones Code could
+  not start safely** dialog with `Startup refused (<code>)` and a link to
+  [If an update fails](../user/updating.md#if-an-update-fails), whose
+  [If Jones Code refuses to start](../user/updating.md#if-jones-code-refuses-to-start)
+  section explains each code.
+  It also prints the reason to stderr, prefixed `Jones Code refused native
+  startup:`, and exits with status 1. For example, a `writer-mismatch` refusal
+  prints `The native writer does not match the admitted source generation.`
+  Copying a newer build containing this fence over an adopted install does not
+  update its admission record, so that build refuses to start. Use the Jones updater or the
   [native helper's manual-install route](../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts)
   (`--inspect-manual-install` and `--manual-install`) with an approved,
   hash-bound plan. To see a startup refusal while no Jones Code process is
@@ -280,9 +272,49 @@ These facts hold for the DMG above and affect any install or update plan:
 
 - A successful activation keeps the replaced bundle beside the stable app as
   `Jones Code.app.jones-previous-GENERATION`. Staging can also leave
-  `Jones Code.app.jones-incoming-GENERATION`. These siblings are recovery
-  material. Remove them only after confirming that no update transaction or
+  `Jones Code.app.jones-incoming-TRANSACTION`, named with the update
+  transaction ID. These siblings are recovery material. Remove them only after confirming that no update transaction or
   recovery hold still refers to them.
+
+- To permanently retire selected backup SQLite files while preserving the live
+  database, settings copies, `pair.json` bytes, receipts, journals and apps, use
+  the source helper's explicit database retirement route. Select each finished
+  backup as `--snapshot manual:ID` or `--snapshot warm:ID`; unresolved recovery,
+  cold maintenance, unknown payloads and a busy activation lock hold the action.
+  Both actions require an existing activation lock; inspect creates nothing.
+  Use a reviewed source commit with green required CI. Materialize it on an
+  Apple Silicon Mac with Node 24 and Python 3.9 or newer, without installing or
+  restarting the app:
+
+  ```sh
+  WT=/absolute/path/to/reviewed/worktree
+  S=$(mktemp -d "${TMPDIR:-/tmp}/jones-db-retire.XXXXXX")
+  node --input-type=module -e '
+  const [src, dir] = process.argv.slice(1);
+  const { pathToFileURL } = await import("node:url");
+  const fs = await import("node:fs");
+  const { jonesNativeHelperSource: source } = await import(pathToFileURL(src).href);
+  fs.writeFileSync(dir + "/helper.py", source, { flag: "wx", mode: 0o700 });
+  ' "$WT/apps/desktop/src/jones/updates/jonesNativeHelperSource.ts" "$S"
+  /usr/bin/python3 -I -B "$S/helper.py" --manifest "$HOME/.t3/runtime/jones-active-install.json" \
+    --inspect-database-retirement --snapshot manual:ID --snapshot warm:ID
+  /usr/bin/python3 -I -B "$S/helper.py" --manifest "$HOME/.t3/runtime/jones-active-install.json" \
+    --retire-database-snapshots --snapshot manual:ID --snapshot warm:ID --plan-sha256 PLAN
+  ```
+
+  Substitute the exact IDs and the plan hash returned by inspect. The execute
+  command deletes only the approved `state.sqlite`, `state.sqlite-wal` and
+  `state.sqlite-shm` files in those backups. This is irreversible: those
+  generations can no longer restore their database. After `uncertain`, inspect
+  again; resume with the same selection and hash only when inspect reports
+  `ready` with `reconciliation: true`. A repeated completed action returns
+  `retired`. Restore refuses on a marker or publication scratch file; current
+  retention readers hold until the marker is bound and retired. Older restore
+  and warm-payload inventory guards also reject these extra files. Retain the
+  JSON results, then remove the exact
+  scratch helper and directory (`rm "$S/helper.py"; rmdir "$S"`). Report
+  observed free space separately from logical bytes: shared clone blocks and
+  local snapshots can make physical reclaim much smaller.
 
 ## Public Connect configuration and provenance
 

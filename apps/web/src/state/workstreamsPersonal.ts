@@ -8,6 +8,9 @@ import { PersonalWorkstreamsSnapshot } from "@t3tools/contracts/jones/workstream
 import * as Schema from "effect/Schema";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import { Atom } from "effect/reactivity";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { PersonalWorkstreamAssignment } from "@t3tools/contracts/jones/workstreamsPersonal";
 import type { WsRpcProtocolClient } from "@t3tools/client-runtime/rpc";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 
@@ -34,6 +37,16 @@ function writerOrigin() {
 }
 const decodeCacheSnapshot = Schema.decodeUnknownSync(PersonalWorkstreamsSnapshot);
 const cacheKey = (id: string) => `jones.personal-workstreams.snapshot.v1:${id}`;
+type LiveAssignments = ReadonlyMap<ThreadId, PersonalWorkstreamAssignment>;
+const liveAssignments = Atom.make<ReadonlyMap<EnvironmentId, LiveAssignments>>(new Map()).pipe(
+  Atom.keepAlive,
+);
+function publishLiveAssignments(environmentId: EnvironmentId, assignments: LiveAssignments | null) {
+  const next = new Map(appAtomRegistry.get(liveAssignments));
+  if (assignments) next.set(environmentId, assignments);
+  else next.delete(environmentId);
+  appAtomRegistry.set(liveAssignments, next);
+}
 const rpcTransport = createPersonalWorkstreamsRpcTransport((connection) => {
   const entry = clients.get(connection.environmentId);
   // oxlint-disable-next-line t3code/no-rpc-permission-bypass -- Resolver boundary for C1 transport; C1 gates every write by the captured ordinary operate permission.
@@ -44,11 +57,28 @@ export const personalWorkstreamsController = createPersonalWorkstreamsController
   origin: writerOrigin(),
   transport: {
     ...rpcTransport,
-    subscribe: (connection, onSnapshot, onError) =>
-      rpcTransport.subscribe(
+    subscribe: (connection, onSnapshot, onError) => {
+      const { environmentId, generation } = connection;
+      let active = true;
+      let sequence = -1;
+      const stop = rpcTransport.subscribe(
         connection,
         (snapshot) => {
-          onSnapshot(snapshot);
+          if (
+            !active ||
+            clients.get(environmentId)?.generation !== generation ||
+            snapshot.environmentId !== environmentId ||
+            snapshot.sequence < sequence
+          )
+            return;
+          sequence = snapshot.sequence;
+          Atom.batch(() => {
+            publishLiveAssignments(
+              environmentId,
+              new Map(snapshot.assignments.map((assignment) => [assignment.threadId, assignment])),
+            );
+            onSnapshot(snapshot);
+          });
           // Cached copies are display-only; the controller alone decides precedence.
           if (clients.get(connection.environmentId)?.generation !== connection.generation) return;
           try {
@@ -57,8 +87,20 @@ export const personalWorkstreamsController = createPersonalWorkstreamsController
             /* Storage can be unavailable. */
           }
         },
-        onError,
-      ),
+        (error) => {
+          if (!active) return;
+          Atom.batch(() => {
+            publishLiveAssignments(environmentId, null);
+            onError(error);
+          });
+        },
+      );
+      return () => {
+        active = false;
+        stop();
+        publishLiveAssignments(environmentId, null);
+      };
+    },
   },
 });
 export function bindPersonalWorkstreams(
@@ -90,4 +132,17 @@ export function usePersonalWorkstreams() {
     controller: personalWorkstreamsController,
     state: useAtomValue(personalWorkstreamsController.state),
   };
+}
+
+/** Exact live membership, before the controller's sidebar projection masks unavailable groups. */
+const noLiveAssignments = Atom.make<LiveAssignments | null>(null);
+const liveAssignmentsFor = Atom.family((environmentId: EnvironmentId) =>
+  Atom.map(liveAssignments, (byEnvironment) => byEnvironment.get(environmentId) ?? null),
+);
+export function useLivePersonalAssignments(environmentId: EnvironmentId | null) {
+  return useAtomValue(environmentId ? liveAssignmentsFor(environmentId) : noLiveAssignments);
+}
+
+export function readLivePersonalAssignments(environmentId: EnvironmentId) {
+  return appAtomRegistry.get(liveAssignments).get(environmentId) ?? null;
 }

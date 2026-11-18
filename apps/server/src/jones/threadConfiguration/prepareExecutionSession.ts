@@ -1,3 +1,8 @@
+import * as Clock from "effect/Clock";
+import {
+  awaitRetirementForAdmission,
+  RETIREMENT_ADMISSION_BUDGET_MS,
+} from "../providerRetirement/admissionWait.ts";
 import {
   EventId,
   ProviderSessionId,
@@ -85,6 +90,7 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
   const sink = yield* Sink.EventSinkV2;
   const plan = yield* transitions.plan({ projection, targetModelSelection: run.modelSelection });
   if (run.activeAttemptId === null) return yield* Effect.fail("Run has no active attempt.");
+  const deadline = (yield* Clock.currentTimeMillis) + RETIREMENT_ADMISSION_BUDGET_MS;
   const events: Array<OrchestrationV2DomainEvent> = [];
   for (const providerSessionId of plan.releaseProviderSessionIds) {
     const retired = projection.providerSessions.find((session) => session.id === providerSessionId);
@@ -97,12 +103,16 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       (yield* sessionHasBackgroundWork(sessions, retired, projection.providerThreads))
     )
       continue;
-    yield* sessions.detach({
-      providerSessionId,
-      threadId: run.threadId,
-      detail: "Selection changed at normal run admission.",
-      requireWriterRetirement: true,
-    });
+    yield* awaitRetirementForAdmission(
+      sessions.detach({
+        providerSessionId,
+        threadId: run.threadId,
+        detail: "Selection changed at normal run admission.",
+        requireWriterRetirement: true,
+      }),
+      deadline,
+      revalidateReplacement,
+    );
     const occurredAt = yield* DateTime.now;
     events.push({
       id: EventId.make(
@@ -121,11 +131,13 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       },
     });
   }
-  yield* (
+  yield* awaitRetirementForAdmission(
     sessions.awaitThreadRetirement?.({
       threadId: run.threadId,
       instanceId: run.modelSelection.instanceId,
-    }) ?? Effect.void
+    }) ?? Effect.void,
+    deadline,
+    revalidateReplacement,
   );
   const revalidation = yield* Effect.result(revalidateReplacement);
   if (revalidation._tag === "Failure") {

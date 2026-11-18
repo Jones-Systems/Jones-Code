@@ -1,3 +1,4 @@
+import { DeviceDisplayNameEditor } from "../../jones/devicePresentation/DeviceDisplayNameEditor";
 import { clientServerBuildDetail, clientServerBuildLabels } from "../../jones/updates/buildPairs";
 import { FleetEnrollmentControls } from "../../jones/fleetUpdates/FleetEnrollmentControls";
 import { JonesUpdateControls } from "../../jones/updates/JonesUpdateControls";
@@ -237,7 +238,9 @@ export function SavedBackendListRow({
   return (
     <EnvironmentRow
       kind={machineKind}
-      label={environment.label}
+      machineLabel={environment.label}
+      iconOverride={environment.serverConfig?.settings.environmentIcon != null}
+      label={environment.displayLabel}
       dimmed={!enabled}
       subtitle={
         <span className="flex min-w-0 items-center gap-1">
@@ -429,6 +432,7 @@ export function SavedBackendListRow({
           <EllipsisIcon className="size-3.5" />
         </MenuTrigger>
         <MenuPopup align="end">
+          <DeviceDisplayNameEditor environmentId={environmentId} />
           <EnvironmentIconMenu
             environmentId={environmentId}
             serverConfig={environment.serverConfig}

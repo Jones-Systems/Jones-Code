@@ -1,4 +1,6 @@
 import { makeRemoteAdmissionHttpGroup } from "./remoteAdmissionHttp.ts";
+import { makeRemoteAdmissionReviewHttpGroup } from "./remoteAdmissionReview.ts";
+import { makePersonalWorkstreamsHttpGroup } from "./workstreamsPersonalHttp.ts";
 import {
   ImportedHistoryStart,
   ImportedHistoryReview,
@@ -48,6 +50,9 @@ import {
   VoiceReviewRevisionPayload,
   VoiceReviewEditSavePayload,
   VoiceReviewEditCancelPayload,
+  VoiceReviewSendOptions,
+  VoiceReviewSendReviewedPayload,
+  VoiceReviewSendReviewedResult,
 } from "../voiceReview.ts";
 import {
   ThreadRegistryComposedSnapshot,
@@ -312,6 +317,23 @@ export const makeJonesHttpGroups = ({
         params: VoiceReviewParams,
         payload: VoiceReviewRevisionPayload,
         success: VoiceReviewMutationResult,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("sendOptions", "/api/voice-review/drafts/:id/send-options", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        success: Schema.NullOr(VoiceReviewSendOptions),
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("sendReviewed", "/api/voice-review/drafts/:id/send-reviewed", {
+        headers: VoiceReviewHeaders,
+        params: VoiceReviewParams,
+        payload: VoiceReviewSendReviewedPayload,
+        success: VoiceReviewSendReviewedResult,
         error: VoiceReviewErrors,
       }).middleware(EnvironmentAuthenticatedAuth),
     )
@@ -588,7 +610,20 @@ export const makeJonesHttpGroups = ({
     ) {}
 
   return {
+    EnvironmentRemoteAdmissionReviewHttpApi: makeRemoteAdmissionReviewHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentInternalError,
+    }),
     EnvironmentRemoteAdmissionHttpApi: makeRemoteAdmissionHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+      EnvironmentHttpBadRequestError,
+      EnvironmentHttpConflictError,
+    }),
+    EnvironmentPersonalWorkstreamsHttpApi: makePersonalWorkstreamsHttpGroup({
       OptionalBearerHeaders,
       EnvironmentAuthenticatedAuth,
       EnvironmentScopeRequiredError,

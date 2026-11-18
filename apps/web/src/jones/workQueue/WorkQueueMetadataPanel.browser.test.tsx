@@ -1,7 +1,3 @@
-import producerV4Raw from "../../../../../packages/contracts/src/jones/fixtures/work_queue_metadata_v4.json.fixture?raw";
-import { publishWorkQueueLocalNames } from "@t3tools/client-runtime/work-queue-metadata";
-import * as Schema from "effect/Schema";
-import { WorkQueueMetadata as MetadataSchema } from "@t3tools/contracts";
 import { act, fakeTimers, render as renderScreen, type Screen } from "../../../test/render";
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { WorkQueueMetadata, WorkQueueMetadataResult } from "@t3tools/contracts";
@@ -16,9 +12,6 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-
-const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(MetadataSchema);
-const compiledDecodeSync2 = Schema.decodeSync(MetadataSchema);
 
 describe("submitted work metadata", () => {
   let root: Screen;
@@ -108,112 +101,46 @@ describe("submitted work metadata", () => {
     snapshot: sample(),
     expires_at_ms: vi.getMockedSystemTime()!.getTime() + 60_000,
   });
-  it("shows all ten assignment states, reasons and distinct destinations without write controls", async () => {
-    await using _fixture = await setupFixture1();
-    const snapshot = compiledDecodeUnknownSync1(JSON.parse(producerV4Raw));
-    const release = publishWorkQueueLocalNames("env", [
-      { workstreamId: "assigned-work", name: "Desired project" },
-      { workstreamId: "other-work", name: "<img src=x onerror=alert(1)>" },
-    ]);
-    try {
-      await render(async () => ({ status: "stale", snapshot, expires_at_ms: 30_100 }));
-      for (const label of [
-        "Issued",
-        "Pending",
-        "Satisfied",
-        "Conflict",
-        "Rejected",
-        "Unavailable",
-        "Unsupported",
-        "Permanent hold",
-        "Excluded",
-        "Cancelled",
-      ]) {
-        expect(container.textContent).toContain(`Assignment: ${label}`);
-      }
-      expect(container.textContent).toContain(
-        "Desired workstream: Desired project (assigned-work)",
-      );
-      expect(container.textContent).toContain("Observed workstream: Not observed");
-      expect(container.textContent).toContain(
-        "Observed workstream: <img src=x onerror=alert(1)> (other-work)",
-      );
-      expect(container.textContent).toContain("Assignment information unavailable");
-      expect(container.textContent).not.toContain("Unassigned");
-      expect(container.textContent).toContain("Reason: Thread belongs to another workstream");
-      expect(container.textContent).toContain("Stale sample");
-      expect(container.querySelector("img,textarea,input")).toBeNull();
-      expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual(
-        ["Refresh metadata"],
-      );
-      await act(() => release());
-      expect(container.textContent).toContain("Desired workstream: assigned-work");
-      expect(container.textContent).not.toContain("Desired project");
-    } finally {
-      release();
-    }
-  });
-  it.each(["v2", "v3"] as const)(
-    "keeps %s display free of invented assignment claims",
-    async (version) => {
-      await using _fixture = await setupFixture1();
-      const snapshot = compiledDecodeSync2({
-        ...sample(),
-        schema: `codex.t3-work-queue-metadata/${version}`,
-        items: sample().items.map((item) => ({
-          ...item,
-          payload_sha256: null,
-          native_handoff: null,
-        })),
-      });
-      await render(async () => ({
-        status: "ready",
-        snapshot,
-        expires_at_ms: vi.getMockedSystemTime()!.getTime() + 60_000,
-      }));
-      expect(container.textContent).toContain("request-legacy");
-      expect(container.textContent).not.toContain("Assignment:");
-      expect(container.textContent).not.toContain("Assignment information unavailable");
-    },
-  );
-  it("shows raw and canonical identities, unknown outcomes and no mutation controls", async () => {
+  it("states provenance in a closed disclosure and offers only a refresh", async () => {
     await using _fixture = await setupFixture1();
     await render(async () => ready());
-    expect([...container.querySelectorAll("th")].map((heading) => heading.textContent)).toEqual([
-      "Request / workstream",
-      "Target",
-      "Queue state",
-      "Handoff",
-    ]);
     const details = [...container.querySelectorAll("details")];
-    expect(details).toHaveLength(3);
-    for (const detail of details) {
-      expect(detail.open).toBe(false);
-      await act(() => detail.querySelector("summary")!.click());
-      expect(detail.open).toBe(true);
-    }
+    expect(details).toHaveLength(1);
+    expect(details[0]!.open).toBe(false);
+    await act(() => details[0]!.querySelector("summary")!.click());
+    expect(details[0]!.open).toBe(true);
     const text = container.textContent;
     for (const value of [
-      "raw-legacy-id",
-      "exact-canonical-id",
-      "Legacy / unverified",
-      "Canonical binding verified at sample",
-      "membership",
-      "observed_terminal",
-      "Dispatch: unknown",
-      "Native command: Not observed",
-      "Not tracked",
+      "Ready sample",
       "does not prove a handoff or completed work",
-      "Handoff: unconfirmed in this sample",
+      "Coverage: complete",
+      "2 requests in this sample",
       "Source: queue",
+      "Host: host",
+      "Environment: environment",
+      "Exporter: worker",
       "Sampled",
     ]) {
       expect(text).toContain(value);
     }
-    expect(container.querySelector("textarea,input")).toBeNull();
+    expect(container.querySelector("textarea,input,select,table")).toBeNull();
     expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
-      "Refresh metadata",
+      "Refresh queue",
     ]);
+  });
+  it("renders the caller's rows and publishes each committed result", async () => {
+    await using _fixture = await setupFixture1();
+    const onResult = vi.fn();
+    const result = ready();
+    await act(() =>
+      root.rerender(
+        <WorkQueueMetadataPanel load={async () => result} onResult={onResult}>
+          <p>Supplied queue rows</p>
+        </WorkQueueMetadataPanel>,
+      ),
+    );
+    expect(container.textContent).toContain("Supplied queue rows");
+    expect(onResult).toHaveBeenLastCalledWith(result);
   });
   it.each(["partial", "stale"] as const)(
     "keeps %s rows visible with their sample status",
@@ -228,7 +155,8 @@ describe("submitted work metadata", () => {
         status === "stale" ? "Stale sample" : "Partial sample",
       );
       expect(container.textContent).toContain("Coverage: partial");
-      expect(container.textContent).toContain("request-legacy");
+      expect(container.textContent).toContain("Current queue may differ.");
+      expect(container.textContent).toContain("2 requests in this sample");
     },
   );
   it.each([
@@ -247,8 +175,8 @@ describe("submitted work metadata", () => {
             ? "the sample timestamp is in the future"
             : "the source cannot be read",
       );
-      expect(container.textContent).not.toContain("No submitted work");
-      expect(container.querySelector("table")).toBeNull();
+      expect(container.textContent).not.toContain("requests in this sample");
+      expect(container.textContent).not.toContain("Nothing in the queue");
     },
   );
   it("marks a cached sample stale when its validity expires without polling", async () => {
@@ -275,27 +203,43 @@ describe("submitted work metadata", () => {
     expect(oldSignal?.aborted).toBe(true);
     await act(() => oldRead.resolve(ready()));
     expect(container.textContent).toContain("not configured");
-    expect(container.textContent).not.toContain("request-legacy");
+    expect(container.textContent).not.toContain("requests in this sample");
   });
-  it("refreshes explicitly and reports a failed read without displaying old rows as current", async () => {
+  it.each(["rejection", "source_unavailable"] as const)(
+    "keeps the earlier sample and marks it stale after a %s refresh",
+    async (failure) => {
+      await using _fixture = await setupFixture1();
+      const onFailedChange = vi.fn();
+      const load = vi.fn<WorkQueueMetadataLoader>().mockResolvedValueOnce(ready());
+      if (failure === "rejection") load.mockRejectedValueOnce(new Error("offline"));
+      else load.mockResolvedValueOnce({ status: "unavailable", reason: failure });
+      await act(() =>
+        root.rerender(<WorkQueueMetadataPanel load={load} onFailedChange={onFailedChange} />),
+      );
+      expect(container.textContent).toContain("Ready sample");
+      expect(onFailedChange).toHaveBeenLastCalledWith(false);
+      await act(() => container.querySelector<HTMLButtonElement>("button")!.click());
+      expect(container.textContent).toContain(
+        "Refresh failed. The queue sample below is from an earlier read.",
+      );
+      expect(container.textContent).toContain("Stale sample");
+      expect(container.textContent).not.toContain("Ready sample");
+      expect(onFailedChange).toHaveBeenLastCalledWith(true);
+    },
+  );
+  it("reports a failed first read without inventing a sample", async () => {
     await using _fixture = await setupFixture1();
-    const load = vi
-      .fn<WorkQueueMetadataLoader>()
-      .mockResolvedValueOnce(ready())
-      .mockRejectedValueOnce(new Error("offline"));
-    await render(load);
-    expect(container.textContent).toContain("request-legacy");
-    await act(() => container.querySelector<HTMLButtonElement>("button")!.click());
-    expect(container.textContent).toContain("Queue metadata unavailable");
-    expect(container.textContent).not.toContain("request-legacy");
-    expect(container.textContent).not.toContain("No submitted work");
+    await render(async () => {
+      throw new Error("offline");
+    });
+    expect(container.textContent).toContain("Queue metadata unavailable. Refresh to try again.");
+    expect(container.textContent).not.toContain("sample ·");
   });
-  it("distinguishes loading from an observed empty sample", async () => {
+  it("distinguishes loading from an observed sample", async () => {
     await using _fixture = await setupFixture1();
     const read = deferred<WorkQueueMetadataResult>();
     await render(() => read.promise);
     expect(container.textContent).toContain("Loading queue metadata");
-    expect(container.textContent).not.toContain("No submitted work");
     expect(container.querySelector<HTMLButtonElement>("button")!.disabled).toBe(true);
     await act(() =>
       read.resolve({
@@ -305,11 +249,12 @@ describe("submitted work metadata", () => {
       }),
     );
     expect(container.textContent).not.toContain("Loading queue metadata");
-    expect(container.textContent).toContain("No submitted work in this sample");
+    expect(container.textContent).toContain("Ready sample");
+    expect(container.textContent).toContain("0 requests in this sample");
     expect(container.querySelector<HTMLButtonElement>("button")!.disabled).toBe(false);
   });
   it.each(["partial", "stale"] as const)(
-    "never describes an empty %s sample as an empty queue",
+    "never describes an empty %s sample as current",
     async (status) => {
       await using _fixture = await setupFixture1();
       await render(async () => ({
@@ -321,11 +266,10 @@ describe("submitted work metadata", () => {
         },
         expires_at_ms: vi.getMockedSystemTime()!.getTime() + 60_000,
       }));
-      expect(container.textContent).toContain("the current queue may contain work");
-      expect(container.textContent).not.toContain("No submitted work");
       expect(container.querySelector("[role='status']")!.textContent).toContain(
         status === "stale" ? "Stale sample" : "Partial sample",
       );
+      expect(container.textContent).toContain("Current queue may differ.");
     },
   );
 });

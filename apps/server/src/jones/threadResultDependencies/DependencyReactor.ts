@@ -22,6 +22,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
+import { forkParked, ServerActivation } from "../../serverActivation.ts";
 import type * as Invocation from "../../mcp/McpInvocationContext.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import * as PeerMonitor from "../remoteDelegation/PeerMonitor.ts";
@@ -207,157 +208,174 @@ const make = Effect.gen(function* () {
     // Failure propagates before any subscriber/follower is admitted; it is not readiness.
     const domainEvents = yield* orchestrator.acquireDomainEvents;
     const subscription = yield* changes.subscribe;
-    const reconcile = Effect.fn("DependencyReactor.reconcile")(function* (
-      threadIds?: ReadonlyArray<ThreadId>,
-    ) {
-      const dependencies =
-        threadIds === undefined
-          ? yield* store.dependencies()
-          : (yield* Effect.forEach(threadIds, (id) => store.dependencies(id))).flat();
-      for (const dependency of dependencies) {
-        const previous = running.get(dependency.dependencyId);
-        if (
-          dependency.state === "released" ||
-          dependency.state === "delivered" ||
-          (dependency.state === "resolved" && !wakeEligible(dependency)) ||
-          (previous?.generation !== undefined && previous.generation !== dependency.generation)
-        ) {
-          if (previous) {
-            running.delete(dependency.dependencyId);
-            if (previous.fiber) yield* Fiber.interrupt(previous.fiber);
+    const run = Effect.gen(function* () {
+      const reconcile = Effect.fn("DependencyReactor.reconcile")(function* (
+        threadIds?: ReadonlyArray<ThreadId>,
+      ) {
+        const dependencies =
+          threadIds === undefined
+            ? yield* store.dependencies()
+            : (yield* Effect.forEach(threadIds, (id) => store.dependencies(id))).flat();
+        for (const dependency of dependencies) {
+          const previous = running.get(dependency.dependencyId);
+          if (
+            dependency.state === "released" ||
+            dependency.state === "delivered" ||
+            (dependency.state === "resolved" && !wakeEligible(dependency)) ||
+            (previous?.generation !== undefined && previous.generation !== dependency.generation)
+          ) {
+            if (previous) {
+              running.delete(dependency.dependencyId);
+              if (previous.fiber) yield* Fiber.interrupt(previous.fiber);
+            }
           }
+          if (
+            ["released", "delivered"].includes(dependency.state) ||
+            (dependency.state === "resolved" && !wakeEligible(dependency)) ||
+            running.has(dependency.dependencyId) ||
+            changes.isSending(dependency.dependencyId)
+          )
+            continue;
+          const entry: { generation: number; fiber?: Fiber.Fiber<void> } = {
+            generation: dependency.generation,
+          };
+          running.set(dependency.dependencyId, entry);
+          const fiber = yield* followWithRetry(dependency).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (running.get(dependency.dependencyId) === entry)
+                  running.delete(dependency.dependencyId);
+              }),
+            ),
+            Effect.forkIn(scope),
+          );
+          entry.fiber = fiber;
         }
-        if (
-          ["released", "delivered"].includes(dependency.state) ||
-          (dependency.state === "resolved" && !wakeEligible(dependency)) ||
-          running.has(dependency.dependencyId) ||
-          changes.isSending(dependency.dependencyId)
-        )
-          continue;
-        const entry: { generation: number; fiber?: Fiber.Fiber<void> } = {
-          generation: dependency.generation,
-        };
-        running.set(dependency.dependencyId, entry);
-        const fiber = yield* followWithRetry(dependency).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              if (running.get(dependency.dependencyId) === entry)
-                running.delete(dependency.dependencyId);
-            }),
-          ),
-          Effect.forkIn(scope),
-        );
-        entry.fiber = fiber;
-      }
-      for (const threadId of threadIds ?? []) {
-        if ((yield* store.duties(threadId)).outgoing !== 0) continue;
-        yield* orchestrator.finalizeDelegatedTask(threadId);
-      }
-    });
-    // Run a subscriber for the life of the startup scope. If it ends or fails, back off and
-    // resubscribe, then reconcile everything once so changes made while it was down are seen.
-    // The first run uses the baseline acquired above, which fences startup.
-    const supervise = Effect.fn("DependencyReactor.supervise")(function* (
-      name: string,
-      first: Effect.Effect<void, Orchestrator.OrchestratorV2Error>,
-      resubscribe: Effect.Effect<
-        Effect.Effect<void, Orchestrator.OrchestratorV2Error>,
-        Orchestrator.OrchestratorV2Error,
-        Scope.Scope
-      >,
-    ) {
-      let run = first;
-      for (let attempt = 0; ; attempt++) {
-        const exit = yield* Effect.exit(run);
-        if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)) return yield* Effect.interrupt;
-        const delayMs = retryDelayMs(attempt);
-        yield* Effect.logWarning(`Dependency ${name} subscriber stopped; resubscribing`, {
-          delayMs,
-          ...(Exit.isFailure(exit) ? { cause: exit.cause } : {}),
-        });
-        yield* Effect.sleep(delayMs);
-        run = Effect.scoped(
-          resubscribe.pipe(
-            Effect.flatMap((next) =>
-              reconcile().pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("Dependency recovery failed", { cause }),
+        for (const threadId of threadIds ?? []) {
+          if ((yield* store.duties(threadId)).outgoing !== 0) continue;
+          yield* orchestrator.finalizeDelegatedTask(threadId);
+        }
+      });
+      // Run a subscriber for the life of the startup scope. If it ends or fails, back off and
+      // resubscribe, then reconcile everything once so changes made while it was down are seen.
+      // The first run uses the baseline acquired above, which fences startup.
+      const supervise = Effect.fn("DependencyReactor.supervise")(function* (
+        name: string,
+        first: Effect.Effect<void, Orchestrator.OrchestratorV2Error>,
+        resubscribe: Effect.Effect<
+          Effect.Effect<void, Orchestrator.OrchestratorV2Error>,
+          Orchestrator.OrchestratorV2Error,
+          Scope.Scope
+        >,
+      ) {
+        let run = first;
+        for (let attempt = 0; ; attempt++) {
+          const exit = yield* Effect.exit(run);
+          if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause))
+            return yield* Effect.interrupt;
+          const delayMs = retryDelayMs(attempt);
+          yield* Effect.logWarning(`Dependency ${name} subscriber stopped; resubscribing`, {
+            delayMs,
+            ...(Exit.isFailure(exit) ? { cause: exit.cause } : {}),
+          });
+          yield* Effect.sleep(delayMs);
+          run = Effect.scoped(
+            resubscribe.pipe(
+              Effect.flatMap((next) =>
+                reconcile().pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("Dependency recovery failed", { cause }),
+                  ),
+                  Effect.andThen(next),
                 ),
-                Effect.andThen(next),
+              ),
+            ),
+          );
+        }
+      });
+      const consumeChanges = (source: typeof subscription) =>
+        Stream.fromSubscription(source).pipe(
+          Stream.runForEach((change) =>
+            reconcile(change.threadIds).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Dependency change reconciliation failed", { cause }),
               ),
             ),
           ),
         );
-      }
-    });
-    const consumeChanges = (source: typeof subscription) =>
-      Stream.fromSubscription(source).pipe(
-        Stream.runForEach((change) =>
-          reconcile(change.threadIds).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Dependency change reconciliation failed", { cause }),
-            ),
+      const consumeEvents = (source: typeof domainEvents) =>
+        source.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "provider-turn.updated" ||
+              event.type === "run.updated" ||
+              event.type === "thread.unarchived" ||
+              event.type === "thread.unsettled",
           ),
-        ),
-      );
-    const consumeEvents = (source: typeof domainEvents) =>
-      source.pipe(
-        Stream.filter(
-          (event) =>
-            event.type === "provider-turn.updated" ||
-            event.type === "run.updated" ||
-            event.type === "thread.unarchived" ||
-            event.type === "thread.unsettled",
-        ),
-        Stream.runForEach((event) =>
-          Effect.gen(function* () {
-            if (event.type === "provider-turn.updated") {
-              for (const hold of yield* store.wakes.armedBy(event.id)) {
-                const open = Option.isSome(probe) ? yield* probe.value.open(event.threadId) : false;
-                yield* mutate(store.wakes.finishArming(hold, open));
+          Stream.runForEach((event) =>
+            Effect.gen(function* () {
+              if (event.type === "provider-turn.updated") {
+                for (const hold of yield* store.wakes.armedBy(event.id)) {
+                  const open = Option.isSome(probe)
+                    ? yield* probe.value.open(event.threadId)
+                    : false;
+                  yield* mutate(store.wakes.finishArming(hold, open));
+                }
               }
-            }
-            yield* reconcile([event.threadId]);
-          }).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Dependency event reconciliation failed", { cause }),
+              yield* reconcile([event.threadId]);
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Dependency event reconciliation failed", { cause }),
+              ),
             ),
           ),
+        );
+      yield* supervise(
+        "changes",
+        consumeChanges(subscription),
+        changes.subscribe.pipe(Effect.map(consumeChanges)),
+      ).pipe(Effect.forkScoped);
+      yield* supervise(
+        "event",
+        consumeEvents(domainEvents),
+        orchestrator.acquireDomainEvents.pipe(Effect.map(consumeEvents)),
+      ).pipe(Effect.forkScoped);
+      yield* sql
+        .withTransaction(store.prune)
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Dependency retention deferred", { cause }),
+          ),
+        );
+      yield* reconcile().pipe(
+        Effect.catchCause((cause) => Effect.logWarning("Dependency recovery failed", { cause })),
+      );
+      // Retention also runs while the server stays up; the startup pass alone never repeats.
+      yield* Effect.sleep(PRUNE_INTERVAL_MS).pipe(
+        Effect.andThen(
+          sql
+            .withTransaction(store.prune)
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Dependency retention deferred", { cause }),
+              ),
+            ),
         ),
+        Effect.forever,
+        Effect.forkScoped,
       );
-    yield* supervise(
-      "changes",
-      consumeChanges(subscription),
-      changes.subscribe.pipe(Effect.map(consumeChanges)),
-    ).pipe(Effect.forkScoped);
-    yield* supervise(
-      "event",
-      consumeEvents(domainEvents),
-      orchestrator.acquireDomainEvents.pipe(Effect.map(consumeEvents)),
-    ).pipe(Effect.forkScoped);
-    yield* sql
-      .withTransaction(store.prune)
-      .pipe(
-        Effect.catchCause((cause) => Effect.logWarning("Dependency retention deferred", { cause })),
-      );
-    yield* reconcile().pipe(
-      Effect.catchCause((cause) => Effect.logWarning("Dependency recovery failed", { cause })),
-    );
-    // Retention also runs while the server stays up; the startup pass alone never repeats.
-    yield* Effect.sleep(PRUNE_INTERVAL_MS).pipe(
-      Effect.andThen(
-        sql
-          .withTransaction(store.prune)
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Dependency retention deferred", { cause }),
-            ),
-          ),
-      ),
-      Effect.forever,
-      Effect.forkScoped,
-    );
+    });
+    // Routes must finish acquisition before trial recovery can begin. Acquire the
+    // observation baseline eagerly, then park all reconciliation until recovery
+    // and activation finish so recovery cannot cancel an already delivered wake.
+    const activation = yield* ServerActivation;
+    if (activation === undefined) yield* run;
+    else yield* forkParked(run);
   });
   return DependencyReactor.of({ start });
 });
 export const layer = Layer.effect(DependencyReactor, make);
+
+export const layerWorker = Layer.effectDiscard(
+  DependencyReactor.pipe(Effect.flatMap((reactor) => reactor.start())),
+).pipe(Layer.provide(layer));

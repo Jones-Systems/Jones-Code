@@ -23,12 +23,22 @@ import { canonical, exists, git, inside, readBounded } from "./Filesystem.ts";
 import { binding } from "./OutputAttestation.ts";
 import { outputObligations, resolveProductions } from "./ProducerFinalizer.ts";
 import { Receipts, layer, RetirementError, type RetirementReceipt } from "./Receipts.ts";
+import { coveredClasses } from "./IgnoredClassifier.ts";
 import { qualify, type QualificationInput } from "./Qualification.ts";
 import type { Probe } from "./ConsumerProbe.ts";
 import { NativeObservations } from "./NativeObservations.ts";
 import * as GitDriver from "../../vcs/GitVcsDriver.ts";
-import { settlementAdmission } from "./SettlementAdmission.ts";
-import { retire } from "./RetirementExecutor.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  finalCheckpointSettled,
+  legacySettlementAdmission,
+  settlementAdmission,
+} from "./SettlementAdmission.ts";
+import { nativeWorktreeRemoval, retire } from "./RetirementExecutor.ts";
+import { interruptedRetirement } from "./InterruptedRetirement.ts";
+import { forgetWorktreeOutputs } from "./OutputFinalization.ts";
+import { preserveRemote } from "./PreserveBranch.ts";
+import { confirmedPaths, preserveOutcome, recoverabilityOutcome } from "./PreserveOutcome.ts";
 
 const unavailable = (limit: string): Probe => ({
   observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()),
@@ -96,6 +106,9 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           Effect.provideService(ProcessRunner.ProcessRunner, runner.value),
           Effect.provideService(EffectPath.Path, effectPath.value),
         );
+  // A checkout removed before a restart cannot be bound; only its own interrupted receipt is settled.
+  const interrupted = yield* interruptedRetirement(request, store, registry, projections);
+  if (interrupted) return interrupted;
   const bound = yield* io(request.worktree, () => binding(request.worktree));
   const projectCommon = yield* io(request.worktree, async () =>
     NodeFSP.realpath(
@@ -167,11 +180,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
         return yield* new RetirementError({ target: request.worktree, reason: "binding_changed" });
       const checkpoints = yield* projections.getCheckpointContext(thread.id);
       const last = [...checkpoints.runs].sort((a, b) => b.ordinal - a.ordinal)[0];
-      const ready =
-        last === undefined ||
-        (["completed", "cancelled", "interrupted"].includes(last.status) &&
-          checkpoints.checkpoints.some((c) => c.runId === last.id && c.status === "ready"));
-      if (!ready)
+      if (!finalCheckpointSettled(last, checkpoints.checkpoints))
         return yield* new RetirementError({
           target: request.worktree,
           reason: "final_checkpoint_unfinished",
@@ -182,11 +191,17 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
         request.worktree,
         DateTime.formatIso(thread.settledAt),
       );
-      if (intent === null)
-        return yield* new RetirementError({
-          target: request.worktree,
-          reason: "settlement_intent_missing",
+      if (intent === null) {
+        const legacy = legacySettlementAdmission({
+          settledAt: DateTime.toEpochMillis(thread.settledAt),
+          now: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+          execute: request.execute,
+          ownerConfirmed: request.cause === "owner_action" && request.ownerCoverage !== undefined,
         });
+        if (legacy !== null)
+          return yield* new RetirementError({ target: request.worktree, reason: legacy });
+        continue;
+      }
       const admission = settlementAdmission({
         script: intent.script_state,
         startedAt: Date.parse(intent.script_started_at ?? intent.settled_at),
@@ -199,8 +214,21 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
     }
   }).pipe(mapError);
   let ownerPaths: readonly string[] = [];
+  // Duties, threads and registry outputs may record either the requested spelling or the
+  // canonical binding path; both name this checkout.
+  const spellings = [...new Set([request.worktree, bound.path])];
+  const within = (path: string) => spellings.some((spelling) => inside(path, spelling));
+  // The interrupted-retirement reconcile runs before the first observation, so `outputs` is still empty.
+  let outputsObserved = false;
   const observe = Effect.gen(function* () {
-    const claims = yield* store.claims(request.worktree);
+    outputsObserved = true;
+    const claims = [
+      ...new Map(
+        (yield* Effect.forEach(spellings, (spelling) => store.claims(spelling)))
+          .flat()
+          .map((claim) => [claim.claim_id, claim]),
+      ).values(),
+    ];
     const dutyDetails = claims.map((claim) => {
       let missingFact: string | null = null;
       try {
@@ -248,7 +276,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
     }>`SELECT workspace_root FROM projection_projects WHERE deleted_at IS NULL`;
     const native = yield* sql<{
       payload_json: string;
-    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE json_extract(payload_json,'$.worktreePath')=${request.worktree} AND deleted_at IS NULL`;
+    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE json_extract(payload_json,'$.worktreePath') IN (${request.worktree},${bound.path}) AND deleted_at IS NULL`;
     const active = native.some((r) => {
       const t = JSON.parse(r.payload_json);
       return (
@@ -261,8 +289,15 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
       nativeObservations.services(request.worktree),
     );
     const workloads = yield* nativeObservations.workloads(sql, request.worktree);
-    let registryProbe = unavailable("build-output registry is not configured"),
-      obligations = unavailable("lifecycle registry is not configured");
+    const notApplicable = (limit: string): Probe => ({ ...observed([]), limits: [limit] });
+    let registryProbe =
+        selected === null && registry === null
+          ? notApplicable("not-applicable: build-output registry is not configured")
+          : unavailable("build-output registry observation is unavailable"),
+      obligations =
+        selected === null && registry === null
+          ? notApplicable("not-applicable: lifecycle registry is not configured")
+          : unavailable("lifecycle registry observation is unavailable");
     if (registry) {
       const current = yield* registry.show(request.worktree);
       if (firstGeneration === undefined) firstGeneration = current.generation;
@@ -280,6 +315,8 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           ? [request.worktree]
           : [],
       );
+      if (!registry.outputs && selected?.outputs === undefined)
+        registryProbe = notApplicable("not-applicable: build-output registry is not configured");
       if (registry.outputs) {
         outputs = yield* registry.outputs(request.worktree);
         const own = outputs.filter(
@@ -295,11 +332,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           });
         registryProbe = observed(
           own
-            .filter(
-              (r) =>
-                inside(r.path, request.worktree) &&
-                (r.state !== "active" || r.class === "evidence"),
-            )
+            .filter((r) => within(r.path) && (r.state !== "active" || r.class === "evidence"))
             .map((r) => r.path),
         );
       }
@@ -359,7 +392,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
       nativeRecreation: nativeGuard.length ? "unsupported" : "supported",
       coverage: {
         keepMode: request.rules.worktreeKeepWhen,
-        classes: request.rules.worktreeCoveredDiscard,
+        classes: coveredClasses(request.rules),
         exactRoots,
         sensitivePaths: ownerPaths,
       },
@@ -480,6 +513,11 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           );
     }
     yield* assess;
+    // Only the owner's Retire of a confirmed proposal may preserve to a branch, push and force removal.
+    const preserve =
+      Option.isSome(gitDriver) && request.cause === "owner_action" && request.ownerCoverage
+        ? { git: gitDriver.value, host: yield* HostProcess.Hostname }
+        : undefined;
     return yield* retire({
       cause: request.cause,
       worktree: request.worktree,
@@ -490,32 +528,19 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
       revalidate: scriptGate.pipe(Effect.andThen(request.revalidate)),
       ...(Option.isSome(gitDriver)
         ? {
-            remove: gitDriver.value
-              .execute({
-                operation: "WorkspaceRetirement.remove",
-                cwd: request.projectRoot,
-                args: ["worktree", "remove", "--", request.worktree],
-                allowNonZeroExit: true,
-              })
-              .pipe(
-                Effect.flatMap((result) =>
-                  result.exitCode === 0
-                    ? Effect.void
-                    : Effect.fail(
-                        new RetirementError({
-                          target: request.worktree,
-                          reason: "git_removal_refused",
-                          cause: `git worktree remove: ${result.stderr.trim().split(/\r?\n/)[0] ?? "native removal refused"}`,
-                        }),
-                      ),
-                ),
-                mapError,
-              ),
+            remove: nativeWorktreeRemoval(gitDriver.value, {
+              projectRoot: request.projectRoot,
+              worktree: request.worktree,
+            }).pipe(mapError),
           }
         : {}),
+      ...(preserve ? { preserve } : {}),
       finalizeOutputs: (receipt) => {
+        // The interrupted reconcile settles before any observation, so read the registry as the
+        // absent-checkout finish does.
+        if (!outputsObserved) return forgetWorktreeOutputs(registry, [...spellings], receipt);
         const internal = outputs.filter(
-          (r) => inside(r.path, request.worktree) && r.state === "active" && r.class !== "evidence",
+          (r) => within(r.path) && r.state === "active" && r.class !== "evidence",
         );
         return registry?.forgetOutputs
           ? registry.forgetOutputs(internal).pipe(mapError)
@@ -579,6 +604,18 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           nextAction: `Have the recorded producer owner run node scripts/jones/direct-producers/resolve.ts --worktree '${record.binding.path.replaceAll("'", "'\\''")}' --json on the workspace-owning server; reobserve the reported holder or host limitation, then reevaluate this checkout.`,
         })),
       );
+  // A proposal names the remote a preserve push would target; an unresolved remote stays unstated.
+  const proposalRemote =
+    !request.execute &&
+    qualification?.recoverability?.verdict === "retirable_after_preserve" &&
+    Option.isSome(gitDriver)
+      ? yield* preserveRemote(gitDriver.value, {
+          cwd: request.worktree,
+          branch: qualification.branch ?? null,
+        }).pipe(Effect.orElseSucceed(() => undefined))
+      : undefined;
+  const recoverability = recoverabilityOutcome(qualification, proposalRemote);
+  const preserved = preserveOutcome("preserve" in result ? result.preserve : undefined);
   const outcome: WorkspaceRetirementOutcome = {
     state: result.state,
     reasonCodes: [...new Set([...result.reasons, ...nativeDetails.map((detail) => detail.reason)])],
@@ -586,14 +623,19 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
     fingerprint: qualification?.fingerprint ?? null,
     paths: qualification
       ? [
-          ...new Set([
-            ...(qualification.ignored ?? []).flatMap((r) => [r.path, ...(r.paths ?? [])]),
-            ...(qualification.untrackedPaths ?? []).map((p) =>
-              NodePath.resolve(request.worktree, p),
+          ...new Set(
+            confirmedPaths(
+              recoverability?.verdict,
+              (qualification.ignored ?? []).flatMap((r) => [r.path, ...(r.paths ?? [])]),
+              (qualification.untrackedPaths ?? []).map((p) =>
+                NodePath.resolve(request.worktree, p),
+              ),
             ),
-          ]),
+          ),
         ]
       : [],
+    ...(recoverability ? { recoverability } : {}),
+    ...(preserved ? { preserve: preserved } : {}),
     details: [
       ...(qualification?.details ?? []),
       ...nativeDetails,
@@ -611,14 +653,19 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
           fact:
             "removalDiagnostic" in result &&
             typeof result.removalDiagnostic === "string" &&
-            reason === "git_removal_refused"
+            (reason === "git_removal_refused" || reason === "removal_interrupted")
               ? result.removalDiagnostic
               : reason === "settle_script_unfinished"
                 ? "Durable settle-script completion has not been recorded."
                 : reason === "final_checkpoint_unfinished"
                   ? "The latest run has no ready final checkpoint."
-                  : reason,
-          missingFact: reason,
+                  : reason === "observation_failed" && qualification?.observationFailure
+                    ? `Qualification observation failed at ${qualification.observationFailure.stage} (${qualification.observationFailure.errorClass}).`
+                    : reason,
+          missingFact:
+            reason === "observation_failed" && qualification?.observationFailure
+              ? `fresh_complete_${qualification.observationFailure.stage}_observation`
+              : reason,
           lineage: request.threadId ? [{ threadId: request.threadId }] : [],
           nextAction:
             reason === "settle_script_unfinished"

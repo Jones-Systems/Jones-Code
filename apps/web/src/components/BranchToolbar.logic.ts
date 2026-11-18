@@ -17,6 +17,8 @@ export interface EnvironmentOption {
   environmentId: EnvironmentId;
   projectId: ProjectId | null;
   label: string;
+  /** Cosmetic name; the original label remains available for machine identity. */
+  displayLabel?: string;
   isPrimary: boolean;
   machine: EnvironmentMachineKind;
 }

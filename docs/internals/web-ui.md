@@ -9,6 +9,21 @@ Don't style a raw `<button>`, `<input>`, `<select>`, or `<textarea>` to look lik
 primitive provides. Raw elements are right when the element isn't that control: semantic rows, tabs,
 resize handles, swatches, editor surfaces, anything whose behavior or geometry differs by design.
 
+### Dropdown sizing
+
+Standalone dropdown triggers should normally hug the selected value or placeholder, with room
+for padding and the disclosure icon, and grow or shrink when that text changes. Do not reserve
+the width of the longest possible option. Repeated dropdowns in aligned question or form lists
+may share a consistent column width when that improves scanning. Size the opened menu separately
+so its options remain readable.
+
+Show the full selected text and placeholder without ellipsis or clipping, including short values
+such as `1 day` and placeholders such as `Choose Duration`. Preserve minimum hit areas, keyboard
+access and room for the disclosure icon. For narrow widths, localization, right-to-left text or
+text enlargement, reflow the surrounding controls or use a wrapping full-value presentation.
+Keep neighboring action targets stable and reachable as the dropdown changes width; reserve an
+action column or move actions to another row instead of sizing every trigger to its longest option.
+
 ## Styles
 
 Style with Tailwind classes in the component that renders the element.

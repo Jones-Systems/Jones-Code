@@ -9,7 +9,12 @@ export function ThreadContextDragGhost() {
   return createPortal(
     <div
       aria-hidden="true"
-      className="pointer-events-none fixed left-0 top-0 z-[100] flex max-w-72 items-center gap-2 rounded-lg border bg-popover px-3 py-2 text-sm shadow-lg"
+      data-thread-context-drag-preview={ghost.sidebarCard ? "card" : "mention"}
+      className={
+        ghost.sidebarCard
+          ? "pointer-events-none fixed left-0 top-0 z-[100] flex min-h-16 w-56 max-w-72 items-start gap-2 rounded-md border border-sidebar-border bg-sidebar text-sidebar-foreground px-3 py-3 text-sm shadow-lg"
+          : "pointer-events-none fixed left-0 top-0 z-[100] flex max-w-72 items-center gap-2 rounded-lg border bg-popover px-3 py-2 text-sm shadow-lg"
+      }
       style={{ transform: `translate(${ghost.x + 12}px, ${ghost.y + 12}px)` }}
     >
       <MessagesSquareIcon className="size-4 shrink-0 text-secondary-label" />

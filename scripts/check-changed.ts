@@ -40,6 +40,12 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
+import {
+  TEST_FILE,
+  ciNotes,
+  requiresFullQualification,
+  splitTests,
+} from "./jones/ci/local-selection.cjs";
 
 const GiB = 1024 ** 3;
 
@@ -222,16 +228,7 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 
 // CI's lint and knip also read Astro components' frontmatter.
 const CODE = /\.(?:[cm]?[jt]sx?|astro)$/;
-const TEST = /\.test\.[cm]?[jt]sx?$/;
-// CI runs the .github/scripts tests with `node --test`; vitest passes a failing node:test file.
-const NODE_TEST = /^\.github[/\\]scripts[/\\]/;
-export const splitTests = (tests: Iterable<string>) => {
-  const all = [...tests];
-  return {
-    vitestTests: all.filter((file) => !NODE_TEST.test(file)),
-    nodeTests: all.filter((file) => NODE_TEST.test(file)),
-  };
-};
+const TEST = TEST_FILE;
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // A flag wins over its environment variable; either must be a positive integer.
@@ -349,7 +346,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const present = yield* Effect.filter(files, (file) => fs.exists(inRoot(file)));
   const code = present.filter((file) => CODE.test(file));
   const packages = readWorkspace();
-  const { affected, outputs } = decide(files, packages, false);
+  const { affected, outputs } = decide(files, packages, requiresFullQualification(files));
 
   // Changed test files, and the test files beside a changed source file
   // (foo.ts -> foo.test.ts, foo.browser.test.tsx). Vitest's import-graph
@@ -556,6 +553,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
             "exec",
             "node",
             "--test",
+            "--test-concurrency=1",
             ...nodeTests,
           ]),
         ]
@@ -596,6 +594,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     "release smoke": outputs.release_smoke,
   }).flatMap(([job, runs]) => (runs ? [job] : []));
   if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
+  summary.push(...ciNotes(files, packages));
   if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
   if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
   yield* Console.log(`\n${summary.join("\n")}`);

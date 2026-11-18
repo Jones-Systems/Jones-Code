@@ -356,12 +356,70 @@ precedence. Do not request separate permission for each covered step; report
 an actual unmet gate and continue independent work within scope.
 
 Use a conventional commit title in plain language, such as
-`fix(web): new threads no longer spike CPU`. Describe the problem in a sentence
-or two, then explain the fix. End with the model and harness that performed
-the work. Keep one concern per PR; split unrelated additions.
+`fix(web): new threads no longer spike CPU`. Keep one concern per PR; split
+unrelated additions. Write the description in this order:
 
-UI changes need before/after images; motion or timing changes need a short
-video. For each evidence set, record:
+- When true, start with `**Needs M Jones:** <one owner-only decision>`,
+  `**Hold:** <what releases it>`, `Stacked on #N`, or `Supersedes #N`.
+  Use at most two; already-authorized delivery steps are not owner decisions.
+- Give one to three summary bullets, result first, in plain words.
+- For a small PR, add one `Checked:` bullet and `Not checked:` only for a real
+  gap, then stop. For larger PRs, use only the needed headings, in order:
+  `Problem`, `Change`, `Visuals`, `Verification`, `Not in this PR`.
+- Bottom lines appear only when they exist: `Fixes #N` for an issue actually
+  resolved by this PR, otherwise `Refs #N`; `Record: <link>`; contributing
+  threads; model and harness. Copy thread names, IDs and roles as recorded;
+  publish names and IDs only when public-safe, otherwise use the role alone.
+  Use one line for up to two contributors, a collapsed block for more, and
+  list threads used only as sources separately.
+
+Open with a clear sentence or lead bullet explaining what changes and why.
+Keep top-level bullets to one clear point, usually one visual line and at most
+two where practical. Add one or more indented sub-bullets wherever a short lead
+would be ambiguous: explain what it means, why it matters or what remains
+unfinished. Supporting bullets may use short sentences and take more space
+when needed; clarity wins over rigid length limits or unexplained fragments.
+Link deeper reproducibility detail from the evidence comment. Bold key statuses,
+decisions or important words sparingly, rather than every line. Use descriptive
+Markdown hyperlinks for PRs, issues, documents, evidence and available thread
+references; avoid bare URLs and unlinked numbers. Preserve machine-consumed
+reference syntax where required.
+
+Keep the effect, reason, material trade-offs, checks, material limits, holds and
+owner decisions in the body. Keep the few numbers and identities that make a
+claim true, including distinct capture and candidate revisions. Put full hashes,
+commands, tool versions, admission samples and other reproducibility detail in
+one author-written evidence comment. Publish it and open its link before moving
+text out of the body; otherwise retain that text in a collapsed block at the
+bottom. Link the comment with `Record:`. An authoritative findings ledger stays
+where the PR declares it. Do not repeat GitHub's draft, check or merge status or
+file counts. Never commit working notes or PR-only media, and never use a local
+path, an expiring artifact alone, or a private link as the only public record.
+
+When a measurable claim is made, report observed before/after numbers, scenario
+and revisions, with a link to the run. A deterministic repair needs the scenario
+that failed before and passes after, not invented rates. On an already-measured
+path, report the existing check's result even without a performance claim.
+Reuse the CI thread-transfer budget (job summary and 30-day
+`thread-transfer-results` artifact), `scripts/render-metrics.ts`, the agent
+context budget test and `vp run test:perf:v2-wire` as applicable. If no harness
+exists, say "not measured" and why; do not create a benchmark or reporting bot
+for one PR.
+
+Decide visual evidence needs before implementation so a before state is still
+available. When rendered UI or other rendered output changes, include `Visuals`
+with exactly one outcome: **Captured**, **Blocked** (exact gap, evidence location
+and blocker owner), or **No visible change** (reason). Omit the section when
+there is nothing to see; record that decision in task-local notes. If applicability
+is unclear, say so in Verification. UI changes need before/after images; motion,
+timing or sequence claims need a recording and words saying what to watch for.
+Stills never prove motion. Use a two-column table for one before/after pair;
+stack larger sets. Phone rendering of fixed-width tables remains unverified.
+
+The body keeps one capture identity line stating its relation to the PR head,
+and the coverage limits. A base plus a patch is never described as a clean
+commit capture. For each evidence set, keep the detailed record in the evidence
+comment (or the collapsed fallback):
 
 - Comparison and candidate revisions; for a dirty tree, its base and patch
   identity.
@@ -371,10 +429,54 @@ video. For each evidence set, record:
   source builds.
 - The integration revision and constituent heads for a combined preview.
 
-Refresh exact-head claims after the PR head changes. Upload PR evidence to
-GitHub; never commit PR-only screenshots or assets such as `.github/pr-assets/`.
-Use the [CLI attachment workflow](../../.agents/skills/capture-ui-evidence/references/runner-output-and-limits.md#sharing-evidence)
+**Captured** means hosted links are in the body, each image has been opened and
+each recording played in the reader's view, and the evidence remains current
+after the last body edit and head change affecting the UI. Label older captures
+historical; refresh exact-head claims after the PR head changes. A Markdown
+link or HTTP success alone does not prove rendering. Public evidence uses only
+synthetic or example data; private capture publication requires separate authority.
+Upload PR evidence to GitHub; never commit PR-only screenshots or assets such
+as `.github/pr-assets/`. A chat attachment, localhost link or expiring artifact
+is not published PR evidence. Use the
+[CLI attachment workflow](../../.agents/skills/capture-ui-evidence/references/runner-output-and-limits.md#sharing-evidence)
 with existing GitHub CLI authentication before requesting browser sign-in.
+
+### Editing a published description
+
+The current raw published body is the only source; never replace it from an old
+local draft. One writer saves the complete raw body and head OID as a preimage,
+edits that text, then re-reads both immediately before writing. If either moved,
+rebuild from the new text. Write once and read back the complete body. Preserve
+machine lines (`Lift-PR: N`, `Form-PR: N`), HTML comments, the Blacksmith footer
+block, closing keywords and hosted media links byte for byte; preserve stack
+lines, authoritative findings ledgers, holds and stated unknown effects in meaning.
+Confirm protected content and media survived and no local media path remains.
+Reconcile interleaved edits; never restore a stale whole body or blindly repeat
+a write with an unknown effect. Recheck that pictures open and recordings play
+after the edit and immediately before merge.
+
+### Waiting and closing without merging
+
+Open PRs carry no labels. For a real unanswered owner-only decision, use the
+`Needs M Jones` top line and assign the PR to M Jones; unassign when every ask
+is answered. Other holds use `Hold` without a label.
+
+When authorized to close without merging, post one closing comment whose first
+line is one of:
+
+- `Landed via #N`: base containment verified, or explicitly "claimed, not verified".
+- `Superseded by #N` (or `OWNER/REPO#N`): replacement, not proof of landing.
+- `Superseded — replacement not yet published`: add the actual link later as a reply.
+- `Not planned`: dropped.
+
+Follow with two short bullets, `**Why:**` and `**Kept:**` (preserved commit,
+branch or other material). Order: comment, close, then one label: `superseded`
+for the first three forms, `wontfix` for `Not planned`. The `superseded` label
+means "Closed without merging; the closing comment says where the work went."
+No label means nothing was recorded; it does not mean in progress or merged.
+Keep `resolution:*` on issues; do not reuse `duplicate` for a rewrite. Do not
+rewrite a merged successor to add a reciprocal `Supersedes` line. These rules
+do not authorize closure or change issue lifecycle, merge authority or holds.
 
 Do not invoke automated PR review services or reviewer bots for Jones-Systems
 PRs, including `@codex review`, Codex Code Review, or Copilot PR review.

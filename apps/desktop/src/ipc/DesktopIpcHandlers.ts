@@ -1,11 +1,10 @@
+import { registerDesktopUpdateIpc } from "../jones/updates/updateIpcRegistration.ts";
 import * as Effect from "effect/Effect";
 
 import { receiveProviderAuthCallback, cancelProviderAuthCallback } from "./methods/providerAuth.ts";
 import * as DesktopIpc from "./DesktopIpc.ts";
 import * as CompanionIpc from "../jones/previewCompanion/ipcMethods.ts";
 import { openDeviceMediaTunnel, closeDeviceMediaTunnel } from "../jones/deviceMedia/ipcMethods.ts";
-import * as InstallPlanIpc from "../jones/installPlan/ipc.ts";
-import * as JonesUpdatesIpc from "../jones/updates/ipcMethods.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import {
@@ -36,17 +35,6 @@ import {
   resolveSshHost,
   resolveSshPasswordPrompt,
 } from "./methods/sshEnvironment.ts";
-import {
-  checkForUpdate,
-  downloadUpdate,
-  discardUpdate,
-  fleetUpdates,
-  getUpdateState,
-  installUpdate,
-  listJonesUpdateBuilds,
-  selectJonesUpdateBuild,
-  setUpdateChannel,
-} from "./methods/updates.ts";
 import {
   getAppBranding,
   getPreviewAutomationRuntimeIdentity,
@@ -185,18 +173,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(revealWindow);
   yield* ipc.handle(syncHtmlFullscreen);
   yield* ipc.handle(probeRemoteEditors);
-  yield* ipc.handle(getUpdateState);
-  yield* ipc.handle(setUpdateChannel);
-  yield* ipc.handle(downloadUpdate);
-  yield* ipc.handle(listJonesUpdateBuilds);
-  yield* ipc.handle(selectJonesUpdateBuild);
-  yield* ipc.handle(discardUpdate);
-  yield* ipc.handle(JonesUpdatesIpc.setBackgroundPreparation);
-  yield* ipc.handle(InstallPlanIpc.installPlan);
-  yield* ipc.handleSync(InstallPlanIpc.installPlanAvailable);
-  yield* ipc.handle(fleetUpdates);
-  yield* ipc.handle(installUpdate);
-  yield* ipc.handle(checkForUpdate);
+  yield* registerDesktopUpdateIpc(ipc);
   yield* ipc.handle(getCliCommandState);
   yield* ipc.handle(installCliCommand);
   yield* ipc.handle(uninstallCliCommand);

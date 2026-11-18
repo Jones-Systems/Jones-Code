@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import { ThreadRegistryAssociation } from "./threadRegistry.ts";
 import { NonNegativeInt, PositiveInt, IsoDateTime } from "./baseSchemas.ts";
 
@@ -25,8 +26,26 @@ export const VoiceReviewText = Schema.String.check(
   Schema.isMaxLength(100_000),
   Schema.isPattern(/\S/),
 );
+const VoiceReviewDraftId = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256));
+// The broker supplies structured dependencies. Jones clients have always received draft IDs.
+const VoiceReviewDependency = Schema.Union([
+  Schema.String,
+  Schema.Struct({
+    draft_id: VoiceReviewDraftId,
+    revision: PositiveInt,
+    kind: Schema.Literals(["follows", "routing"]),
+  }),
+]).pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transform({
+      decode: (dependency) => (typeof dependency === "string" ? dependency : dependency.draft_id),
+      encode: (id) => id,
+    }),
+  ),
+);
 export const VoiceReviewDraft = Schema.Struct({
-  id: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
+  id: VoiceReviewDraftId,
   source_id: Schema.String,
   state: VoiceReviewState,
   revision: PositiveInt,
@@ -55,7 +74,7 @@ export const VoiceReviewDraft = Schema.Struct({
   ),
   routing_ref: Schema.optional(Schema.NullOr(Schema.String)),
   routing_target: Schema.optional(Schema.NullOr(Schema.String)),
-  dependencies: Schema.optional(Schema.Array(Schema.String)),
+  dependencies: Schema.optional(Schema.Array(VoiceReviewDependency)),
 });
 export type VoiceReviewDraft = typeof VoiceReviewDraft.Type;
 export const VoiceReviewDraftList = Schema.Struct({
@@ -99,6 +118,34 @@ export type VoiceReviewMutationPayload =
   | typeof VoiceReviewRevisionPayload.Type
   | typeof VoiceReviewEditSavePayload.Type
   | typeof VoiceReviewEditCancelPayload.Type;
+
+const ReviewedSendWorkstreamId = Schema.String.check(
+  Schema.isPattern(/\S/),
+  Schema.isMaxLength(256),
+);
+export const VoiceReviewSendOptions = strictPayload({
+  schema: Schema.Literal("voice.reviewed-send/v1"),
+  workstream_ids: Schema.Array(ReviewedSendWorkstreamId),
+  can_send_without_workstream: Schema.Boolean,
+});
+export type VoiceReviewSendOptions = typeof VoiceReviewSendOptions.Type;
+
+export const VoiceReviewSendReviewedPayload = strictPayload({
+  expected_revision: PositiveInt,
+  workstream_id: Schema.NullOr(ReviewedSendWorkstreamId),
+  text: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(100_000))),
+  additional_instructions: Schema.optionalKey(VoiceReviewText),
+  edit_handle: Schema.optionalKey(
+    Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
+  ),
+});
+export type VoiceReviewSendReviewedPayload = typeof VoiceReviewSendReviewedPayload.Type;
+
+export const VoiceReviewSendReviewedResult = strictPayload({
+  draft: VoiceReviewDraft,
+  edit_handle: Schema.Null,
+});
+export type VoiceReviewSendReviewedResult = typeof VoiceReviewSendReviewedResult.Type;
 
 export class VoiceReviewNotConfiguredError extends Schema.TaggedError<VoiceReviewNotConfiguredError>()(
   "VoiceReviewNotConfiguredError",

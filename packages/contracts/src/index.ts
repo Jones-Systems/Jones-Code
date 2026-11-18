@@ -120,6 +120,7 @@ export * from "./jones/clientLaunch.ts";
 export * from "./jones/remoteAdmission.ts";
 
 export * from "./jones/remoteAdmissionHttp.ts";
+export * from "./jones/remoteAdmissionReview.ts";
 
 export * from "./jones/threadSelfConfiguration.ts";
 export * from "./jones/remoteTaskObservation.ts";
@@ -133,3 +134,4 @@ export * from "./jones/guardedThreadSettlement.ts";
 export * from "./jones/threadResultDependency.ts";
 
 export * from "./jones/workspaceRetirement.ts";
+export * from "./jones/storageCleanupReport.ts";

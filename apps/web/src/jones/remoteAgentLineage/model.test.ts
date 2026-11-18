@@ -64,9 +64,9 @@ const local = (status: string): ThreadRelationshipWalkRow =>
 describe("machine identity", () => {
   it.each([
     [" VPS ", "vps", "VPS"],
-    ["TEST_server", "test", "TSV"],
-    ["mac-mini", "mini", "MINI"],
-    ["Laptop", "laptop", "LAP"],
+    ["TEST_server", "test", "Test Server"],
+    ["mac-mini", "mini", "Mini"],
+    ["Laptop", "laptop", "Laptop"],
   ])("resolves exact normalized %s", (label, identity, shortLabel) => {
     expect(resolveMachineIdentity(label)).toMatchObject({ identity, shortLabel });
   });

@@ -16,6 +16,7 @@ import { JonesBuildStartedAt, JonesSourceIdentity } from "./jones/fleetUpdates/s
 import {
   EnvironmentId,
   ForwardCompatibleOptional,
+  PositiveInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -117,6 +118,8 @@ export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCa
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
   workstreamsPersonal: Schema.optionalKey(Schema.Struct({ version: Schema.Literal(1) })),
+  /** Bearer HTTP list/assign for personal Workstreams; a later version stays decodable. */
+  workstreamsPersonalHttp: Schema.optionalKey(Schema.Struct({ version: PositiveInt })),
   queuedSteerBatch: Schema.optionalKey(QueuedSteerBatchCapability),
   workQueueMetadata: Schema.optionalKey(Schema.Boolean),
   settlementOrigins: Schema.optionalKey(SettlementOriginsCapability),
@@ -225,6 +228,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   ignoredFileListing: Schema.optionalKey(Schema.Boolean),
   /** projects.listIgnoredFiles honors `query`. Older servers ignore it. */
   ignoredFileSearch: Schema.optionalKey(Schema.Boolean),
+  deviceDisplayName: Schema.optionalKey(Schema.Boolean),
   environmentIcon: Schema.optionalKey(Schema.Boolean),
   desktopAppUpdate: Schema.optionalKey(Schema.Boolean),
   /** The desktop app switches update tracks when a server update request names one. */

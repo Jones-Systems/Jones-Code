@@ -21,6 +21,9 @@ import {
   VoiceReviewRevisionPayload,
   VoiceReviewEditSavePayload,
   VoiceReviewEditCancelPayload,
+  VoiceReviewSendOptions,
+  VoiceReviewSendReviewedPayload,
+  VoiceReviewSendReviewedResult,
   VoiceReviewNotConfiguredError,
   VoiceReviewForbiddenError,
   VoiceReviewNotFoundError,
@@ -53,6 +56,7 @@ import {
 export const VOICE_REVIEW_MAX_REQUEST_BYTES = 610_000;
 const MAX_RESPONSE_BYTES = 24_000_000;
 const REQUEST_TIMEOUT_MS = 10_000;
+const missingSendOptionsRoute = Symbol("missingSendOptionsRoute");
 const Token = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(4096),
@@ -66,6 +70,11 @@ const decodeVoiceReviewMutationResult = Schema.decodeUnknownSync(VoiceReviewMuta
 const decodeVoiceReviewEditSavePayload = Schema.decodeUnknownSync(VoiceReviewEditSavePayload);
 const decodeVoiceReviewEditCancelPayload = Schema.decodeUnknownSync(VoiceReviewEditCancelPayload);
 const decodeVoiceReviewRevisionPayload = Schema.decodeUnknownSync(VoiceReviewRevisionPayload);
+const decodeVoiceReviewSendOptions = Schema.decodeUnknownSync(VoiceReviewSendOptions);
+const decodeVoiceReviewSendReviewedPayload = Schema.decodeUnknownSync(
+  VoiceReviewSendReviewedPayload,
+);
+const decodeVoiceReviewSendReviewedResult = Schema.decodeUnknownSync(VoiceReviewSendReviewedResult);
 const isVoiceReviewNotFoundError = Schema.is(VoiceReviewNotFoundError);
 const isVoiceReviewConflictError = Schema.is(VoiceReviewConflictError);
 const isVoiceReviewForbiddenError = Schema.is(VoiceReviewForbiddenError);
@@ -119,9 +128,9 @@ const readToken = async (path: string): Promise<string> => {
   }
 };
 
-const boundedJson = async (response: Response): Promise<unknown> => {
+const boundedJson = async (response: Response, maxBytes = MAX_RESPONSE_BYTES): Promise<unknown> => {
   const size = response.headers.get("content-length");
-  if (size !== null && (!/^\d+$/.test(size) || Number(size) > MAX_RESPONSE_BYTES)) {
+  if (size !== null && (!/^\d+$/.test(size) || Number(size) > maxBytes)) {
     await response.body?.cancel();
     throw new VoiceReviewUnavailableError({});
   }
@@ -134,7 +143,7 @@ const boundedJson = async (response: Response): Promise<unknown> => {
       const next = await reader.read();
       if (next.done) break;
       bytes += next.value.byteLength;
-      if (bytes > MAX_RESPONSE_BYTES) throw new VoiceReviewUnavailableError({});
+      if (bytes > maxBytes) throw new VoiceReviewUnavailableError({});
       chunks.push(next.value);
     }
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -143,6 +152,20 @@ const boundedJson = async (response: Response): Promise<unknown> => {
     reader.releaseLock();
   }
 };
+
+const isMissingBrokerRoute = async (response: Response): Promise<boolean> => {
+  // FastAPI's unmatched route has this body. The broker's draft and grant errors use other details.
+  const body = await boundedJson(response, 1024).catch(() => undefined);
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "detail" in body &&
+    body.detail === "Not Found" &&
+    Object.keys(body).length === 1
+  );
+};
+
+const draftPath = (id: string) => `/v1/prompt-review/drafts/${encodeURIComponent(id)}`;
 
 export interface VoiceReviewThreadIdentity {
   readonly source_instance_id: string;
@@ -190,8 +213,9 @@ export const makeVoiceReviewBridge = (
     trusted: VoiceReviewConfig,
     path: string,
     payload?: unknown,
-    receiptSignal?: AbortSignal,
+    options?: { readonly receiptSignal?: AbortSignal; readonly allowMissingRoute?: boolean },
   ) => {
+    const receiptSignal = options?.receiptSignal;
     const controller = new AbortController();
     // @effect-diagnostics-next-line globalTimers:off - native fetch deadline; cleared on every completion.
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -218,11 +242,16 @@ export const makeVoiceReviewBridge = (
         ...(body === undefined ? {} : { body }),
       });
       if (!response.ok) {
+        if (options?.allowMissingRoute && response.status === 404) {
+          if (await isMissingBrokerRoute(response)) return missingSendOptionsRoute;
+          throw new VoiceReviewNotFoundError({});
+        }
         await response.body?.cancel();
         if (receiptSignal !== undefined && response.status === 403)
           throw new VoiceReviewForbiddenError({});
         if (response.status === 404) throw new VoiceReviewNotFoundError({});
         if (response.status === 409 || response.status === 422 || response.status === 400) {
+          if (options?.allowMissingRoute) throw new VoiceReviewUnavailableError({});
           throw new VoiceReviewConflictError({});
         }
         throw new VoiceReviewUnavailableError({});
@@ -246,13 +275,33 @@ export const makeVoiceReviewBridge = (
     entries: readonly VoiceReviewRecentEntry[],
     deadline: number,
   ): Promise<readonly VoiceReviewRecentEntry[]> => {
+    // A broker result governs its own entry and prevents a legacy read for the same command.
+    const advertisedCommands = new Set<string>();
+    for (const entry of entries) {
+      if (entry.queue_delivery_links === undefined) continue;
+      if (entry.command_id !== null) advertisedCommands.add(entry.command_id);
+      if (entry.draft.command_id !== null) advertisedCommands.add(entry.draft.command_id);
+    }
+    const projected = entries.map((entry) => {
+      const { command_id: id, queue_delivery_links: embedded, draft } = entry;
+      if (embedded !== undefined) {
+        if (embedded?.status !== "ready") return entry;
+        if (entry.text_state !== "available") return { ...entry, queue_delivery_links: null };
+        if (draft.state !== "released" || id === null || id !== draft.command_id || id !== draft.id)
+          return { ...entry, queue_delivery_links: unavailableLinks("invalid_receipt") };
+        return entry;
+      }
+      if (id === null) return { ...entry, queue_delivery_links: null };
+      if (entry.text_state !== "available" || advertisedCommands.has(id))
+        return { ...entry, queue_delivery_links: unavailableLinks("source_unavailable") };
+      return entry;
+    });
+
     const links = new Map<string, VoiceReviewQueueDeliveryLinks>();
     const commands = Array.from(
       new Set(
-        entries.flatMap((entry) =>
-          entry.command_id !== null &&
-          entry.draft.state !== "deleted" &&
-          entry.draft.state !== "expired"
+        projected.flatMap((entry) =>
+          entry.queue_delivery_links === undefined && entry.command_id !== null
             ? [entry.command_id]
             : [],
         ),
@@ -283,12 +332,9 @@ export const makeVoiceReviewBridge = (
           }
           let raw: unknown;
           try {
-            raw = await request(
-              trusted,
-              `/v1/commands/${encodeURIComponent(id)}`,
-              undefined,
-              controller.signal,
-            );
+            raw = await request(trusted, `/v1/commands/${encodeURIComponent(id)}`, undefined, {
+              receiptSignal: controller.signal,
+            });
           } catch (error) {
             if (!controller.signal.aborted) {
               links.set(
@@ -359,21 +405,18 @@ export const makeVoiceReviewBridge = (
         clearTimeout(timeout);
       }
     }
-    return entries.map((entry) => ({
-      ...entry,
-      queue_delivery_links:
-        entry.command_id === null
-          ? null
-          : entry.draft.state === "deleted" || entry.draft.state === "expired"
-            ? unavailableLinks("source_unavailable")
-            : (links.get(entry.command_id) ?? unavailableLinks("limit")),
-    }));
+    return projected.map((entry) =>
+      entry.queue_delivery_links !== undefined || entry.command_id === null
+        ? entry
+        : {
+            ...entry,
+            queue_delivery_links: links.get(entry.command_id) ?? unavailableLinks("limit"),
+          },
+    );
   };
   const get = async (principal: EnvironmentSessionPrincipalShape, id: string, mutation = false) => {
     const trusted = authorize(principal, mutation);
-    const draft = decodeVoiceReviewDraft(
-      await request(trusted, `/v1/prompt-review/drafts/${encodeURIComponent(id)}`),
-    );
+    const draft = decodeVoiceReviewDraft(await request(trusted, draftPath(id)));
     if (draft.id !== id || draft.source_id !== trusted.source_id)
       throw new VoiceReviewNotFoundError({});
     return draft;
@@ -416,6 +459,7 @@ export const makeVoiceReviewBridge = (
           `/v1/prompt-review/recent?source_id=${encodeURIComponent(trusted.source_id)}&limit=${checkedLimit(limit)}`,
         ),
       );
+      const brokerTime = Date.parse(result.server_now);
       return {
         ...result,
         entries: await enrichRecent(
@@ -423,20 +467,28 @@ export const makeVoiceReviewBridge = (
           result.entries
             .filter((entry) => entry.draft.source_id === trusted.source_id)
             .map((entry) => {
-              const terminal = entry.draft.state === "deleted" || entry.draft.state === "expired";
-              const unavailable = terminal || entry.text_state !== "available";
-              return unavailable
-                ? {
-                    ...entry,
-                    text: null,
-                    original_source_text: null,
-                    text_origin: null,
-                    text_state: terminal
-                      ? (entry.draft.state as "deleted" | "expired")
-                      : entry.text_state,
-                    draft: { ...entry.draft, text: null },
-                  }
-                : entry;
+              const expiresAt = Date.parse(entry.draft.expires_at);
+              let textState = entry.text_state;
+              if (entry.draft.state === "deleted" || entry.draft.state === "expired") {
+                textState = entry.draft.state;
+              } else if (textState === "available" && brokerTime >= expiresAt) {
+                textState = "expired";
+              } else if (
+                textState === "available" &&
+                entry.queue_delivery_links?.status === "ready" &&
+                (entry.text === null || !(brokerTime < expiresAt))
+              ) {
+                textState = "unavailable";
+              }
+              if (textState === "available") return entry;
+              return {
+                ...entry,
+                text: null,
+                original_source_text: null,
+                text_origin: null,
+                text_state: textState,
+                draft: { ...entry.draft, text: null },
+              };
             }),
           deadline,
         ),
@@ -578,11 +630,7 @@ export const makeVoiceReviewBridge = (
             : decodeVoiceReviewRevisionPayload(payload);
       await get(principal, id, true);
       const result = decodeVoiceReviewMutationResult(
-        await request(
-          trusted,
-          `/v1/prompt-review/drafts/${encodeURIComponent(id)}/${action}`,
-          validated,
-        ),
+        await request(trusted, `${draftPath(id)}/${action}`, validated),
       );
       if (
         result.draft.id !== id ||
@@ -590,6 +638,39 @@ export const makeVoiceReviewBridge = (
         (action !== "edit-begin" && result.edit_handle !== null)
       )
         throw new VoiceReviewUnavailableError({});
+      return result;
+    },
+    sendOptions: async (principal: EnvironmentSessionPrincipalShape, id: string) => {
+      const trusted = authorize(principal, true);
+      if (id === "." || id === "..") throw new VoiceReviewNotFoundError({});
+      await get(principal, id, true);
+      const result = await request(trusted, `${draftPath(id)}/send-options`, undefined, {
+        allowMissingRoute: true,
+      });
+      return result === missingSendOptionsRoute ? null : decodeVoiceReviewSendOptions(result);
+    },
+    sendReviewed: async (
+      principal: EnvironmentSessionPrincipalShape,
+      id: string,
+      payload: VoiceReviewSendReviewedPayload,
+    ) => {
+      const trusted = authorize(principal, true);
+      if (id === "." || id === "..") throw new VoiceReviewNotFoundError({});
+      const validated = decodeVoiceReviewSendReviewedPayload(payload);
+      await get(principal, id, true);
+      // After a lost response, the owner observes this draft before any new attempt.
+      const result = decodeVoiceReviewSendReviewedResult(
+        await request(trusted, `${draftPath(id)}/send-reviewed`, validated),
+      );
+      if (
+        result.draft.id !== id ||
+        result.draft.source_id !== trusted.source_id ||
+        result.draft.revision <= validated.expected_revision ||
+        result.draft.state !== "released" ||
+        !result.draft.command_id
+      ) {
+        throw new VoiceReviewUnavailableError({});
+      }
       return result;
     },
   };
@@ -652,6 +733,15 @@ export class VoiceReview extends Context.Service<
       action: VoiceReviewAction,
       payload: VoiceReviewMutationPayload,
     ) => Effect.Effect<VoiceReviewMutationResult, VoiceReviewError>;
+    readonly sendOptions: (
+      principal: EnvironmentSessionPrincipalShape,
+      id: string,
+    ) => Effect.Effect<VoiceReviewSendOptions | null, VoiceReviewError>;
+    readonly sendReviewed: (
+      principal: EnvironmentSessionPrincipalShape,
+      id: string,
+      payload: VoiceReviewSendReviewedPayload,
+    ) => Effect.Effect<VoiceReviewSendReviewedResult, VoiceReviewError>;
   }
 >()("t3/voiceReview/bridge/VoiceReview") {}
 
@@ -710,6 +800,12 @@ const make = Effect.gen(function* () {
     get: Effect.fn("VoiceReview.get")((principal, id) => call(() => bridge.get(principal, id))),
     mutate: Effect.fn("VoiceReview.mutate")((principal, id, action, payload) =>
       call(() => bridge.mutate(principal, id, action, payload)),
+    ),
+    sendOptions: Effect.fn("VoiceReview.sendOptions")((principal, id) =>
+      call(() => bridge.sendOptions(principal, id)),
+    ),
+    sendReviewed: Effect.fn("VoiceReview.sendReviewed")((principal, id, payload) =>
+      call(() => bridge.sendReviewed(principal, id, payload)),
     ),
   });
 });

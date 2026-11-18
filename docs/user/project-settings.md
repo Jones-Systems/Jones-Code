@@ -199,6 +199,12 @@ applies when the project and environment are both on **Inherit**.
 
 ## Worktree location
 
+Your project folder is the persistent checkout Jones Code uses to create new
+task worktrees. Keep that folder and its repository storage available, even
+after the thread that originally created it finishes. A project folder can
+itself be a linked worktree; automatic cleanup keeps it while it remains
+registered as a project. Apply the same rule when cleaning up folders manually.
+
 New worktrees go in the `worktrees` folder of the T3 home directory. To put them somewhere else,
 such as another drive, set **Settings → Worktrees → Worktree location** to an absolute path like
 `D:\worktrees` or `~/worktrees`. The setting is per machine. Existing worktrees stay where they
@@ -252,6 +258,21 @@ Choose **Delete now** to run the enabled rules immediately. The latest results s
 worktrees were removed or kept and why, plus any failures.
 Results also list folders in the worktree folder that no thread uses, with their sizes; cleanup never removes them, so remove them manually if you want.
 
+On a server that supports it, **Propose retirements** reviews settled checkouts without deleting
+anything and opens **Last run**. Checkouts listed under **Ready to retire** have a **Retire**
+button; the confirmation lists the exact paths it authorizes, and the summary reports about how
+much space was recovered. If the server stops part-way through a retirement, the next **Retire**
+of that checkout first confirms the earlier server process has ended, then retries a checkout that
+was left untouched; a partly removed checkout stays held. If that checkout was already fully
+removed, **Propose retirements** lists it under **Ready to retire**, and **Retire** records it as
+retired once its branch reads back, without deleting anything. If Git already dropped the checkout
+but its directory remains (read-only folders, such as a Go module cache, can stop a removal),
+**Retire** makes those regenerable folders writable and deletes the leftover, but only when it holds
+nothing else: tracked files that match the branch, folders the retirement already covered, and
+empty folders. Any other file keeps the checkout held and is named in the result. **Retire** is not
+offered for a checkout that covers more than 200 paths, and the result says so. The status line
+under **Delete now** shows the last run even when no cleanup rule is on.
+
 The inactive and settled retention periods also apply to the folders of
 [threads without a project](./thread-sidebar.md#start-without-a-project). Those folders are not
 Git repositories, so their files are deleted with them and cannot be recovered; the thread stays,
@@ -263,6 +284,57 @@ are listed here too.
 
 Browser captures and rotated logs have separate retention periods. Expired capture links stop
 working. Current logs, message attachments, and browser profiles are kept.
+
+### How Retire treats content that Git does not have
+
+A checkout can hold work that no branch or remote has: edited tracked files, staged changes,
+untracked files that are not ignored, and commits that were never pushed. **Propose retirements**
+says what **Retire** will do with each checkout before you press the button:
+
+- **Safe to retire.** Everything is already in a branch you keep or can be regenerated. Nothing is
+  lost.
+- **Saved to a branch first.** The proposal says how many files, and how many bytes, will be saved
+  to a new `preserve/<date>/<machine>/<checkout>` branch, and which remote the branch is pushed to,
+  or that it stays local-only when the repository has no remote or the remote refuses the push.
+  Pressing **Retire** is your approval. The checkout is removed with `--force` only after the saved
+  content is read back and verified to match what is in the checkout; if anything changed since the
+  proposal, nothing is removed and the result says why.
+- **Held.** The checkout stays, and the proposal names each file that cannot be saved.
+
+After a retirement, the result shows the branch, its short commit, the remote and a
+**Remote-verified** or **Local-only** badge, whether `--force` was used, and whether the branch read
+back. It also shows a restore command you can copy, which recreates the checkout at its old path
+from the branch:
+
+```sh
+git -C /path/to/project worktree add /path/to/checkout preserve/20261117/my-mac/feature-one
+```
+
+To continue the work in a checkout you already have, run
+`git switch -c feature-one preserve/20261117/my-mac/feature-one` there instead. The branch holds the
+saved work as one commit on top of the checkout's last commit.
+
+Preserve branches are never deleted automatically. Delete one yourself, with `git branch -D` and
+`git push <remote> --delete`, once you no longer need what it holds.
+A **Local-only** branch lives in the project's repository on that machine, so it is kept only when
+that repository outlasts the checkout; otherwise **Retire** holds the checkout instead of removing it.
+
+Some content is never saved to a branch, and holds the checkout until you move or remove it:
+
+- Files that look like secrets: names such as `.env` (but not `.env.example`), `*.pem`, `*.key`,
+  `*.p12`, `*.pfx`, `id_*`, `.netrc`, `.npmrc`, `.pypirc` and anything with `credentials` in the name,
+  and text files whose content matches a known secret format such as a private key or access token.
+  The result names the file and the kind of match, never the matched text.
+- Files over 50 MiB, or more than 500 MiB in total.
+- Nested Git repositories.
+
+**Discard regenerable build output** (`worktreeRegenerableDiscard`, in **Settings → Worktrees →
+Cleanup**) is on by default. It lets **Retire** delete ignored dependency installs, build output and
+caches, such as `node_modules`, `.venv`, `dist`, `build`, `target`, `coverage` and Go module
+caches, together with the checkout because they can be regenerated. A nested repository, or a
+`.env` or key file inside build output, still holds the checkout. Turn the setting off to keep
+those folders protected. Ignored folders of any other name stay held until you name them in
+the **Retire** confirmation.
 
 ## Project icons
 

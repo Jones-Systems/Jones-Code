@@ -1,4 +1,8 @@
 import * as DateTime from "effect/DateTime";
+import {
+  effectiveSnoozed,
+  type ThreadSnoozeShell,
+} from "@t3tools/client-runtime/state/thread-settled";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import type { SidebarThreadSummary } from "../../types";
 import {
@@ -14,7 +18,7 @@ export type ThreadStatusCounts = Record<ThreadStatus, number>;
 export type StatusThread = Parameters<typeof resolveThreadStatusPill>[0]["thread"] & {
   latestUserMessageAt?: string | null | undefined;
   source?: SidebarThreadSummary["source"] | undefined;
-};
+} & Pick<ThreadSnoozeShell, "snoozedAt" | "snoozedUntil" | "pendingUserInputAt">;
 export type ThreadActivityWindow = Pick<
   ClientSettings,
   "threadActivityWindowEnabled" | "threadActivityWindowAmount" | "threadActivityWindowUnit"
@@ -72,6 +76,18 @@ export function classifyThreadStatus(
   activityWindow?: ThreadActivityWindow,
   now = Date.now(),
 ): ThreadStatus | null {
+  if (
+    effectiveSnoozed(
+      {
+        ...thread,
+        source: { pendingRuntimeRequest: thread.source?.pendingRuntimeRequest ?? null },
+        latestUserMessageAt: thread.latestUserMessageAt ?? null,
+        pendingGuestMessageCount: thread.pendingGuestMessageCount ?? 0,
+      },
+      { now: new Date(now).toISOString() },
+    )
+  )
+    return null;
   if (activityWindow?.threadActivityWindowEnabled) {
     if (!threadIsInActivityWindow(thread, activityWindow, now)) return null;
     const status = resolveSidebarThreadStatus(thread);

@@ -3,10 +3,12 @@ import * as NodeChildProcess from "node:child_process";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/sql/SqlClient";
-import { inside, nativePlatform } from "./Filesystem.ts";
+import { inside, nativePlatform, subprocessTimeout } from "./Filesystem.ts";
 import type { Probe } from "./ConsumerProbe.ts";
 
 export interface ServiceIO {
+  // Epoch milliseconds; defaults to the server clock.
+  now?: () => number;
   uid: () => number | undefined;
   command: (file: string, args: string[], remainingMs: number) => Promise<string>;
 }
@@ -19,7 +21,7 @@ const nativeIO: ServiceIO = {
         file,
         args,
         {
-          timeout: Math.max(1, Math.min(1500, remainingMs)),
+          timeout: subprocessTimeout(remainingMs, 1500),
           maxBuffer: 2 * 1024 * 1024,
           encoding: "utf8",
         },
@@ -70,14 +72,18 @@ function launchdPaths(text: string) {
   if (argumentsBlock) throw new Error("launchd_service_projection_incomplete");
   return selected.join("\n");
 }
-export async function nativeServices(
-  target: string,
-  platform: NodeJS.Platform = nativePlatform,
-  io: ServiceIO = nativeIO,
-): Promise<Probe> {
-  const observedAt = DateTime.toEpochMillis(DateTime.nowUnsafe()),
-    started = performance.now(),
-    paths = new Set<string>();
+type ServiceCapture = {
+  observedAt: number;
+  // Bounded projections only: argv, program, working directory and unit paths, never environment.
+  projections: readonly string[];
+} & ({ ok: true } | { ok: false; count: number; reason: string });
+async function captureServices(
+  platform: NodeJS.Platform,
+  io: ServiceIO,
+  observedAt: number,
+): Promise<ServiceCapture> {
+  const started = performance.now(),
+    projections: string[] = [];
   let count = 0;
   const run = (file: string, args: string[]) => {
     const remaining = 5000 - (performance.now() - started);
@@ -100,13 +106,16 @@ export async function nativeServices(
         .trim()
         .split("\n")
         .filter(Boolean)
-        .map((line) => line.trim().split(/\s+/)[0]!);
+        .map((line) => {
+          const [unit, loadState] = line.trim().split(/\s+/);
+          return { unit: unit!, loadState };
+        });
       if (
         units.length > 2000 ||
-        units.some((unit) => !unit.endsWith(".service") || !/^[A-Za-z0-9_.@\\:-]+$/.test(unit))
+        units.some(({ unit }) => !unit.endsWith(".service") || !/^[A-Za-z0-9_.@\\:-]+$/.test(unit))
       )
         throw new Error("native_service_unit_bound_or_identity");
-      for (const unit of units) {
+      for (const { unit, loadState } of units) {
         // No Environment or arbitrary unit content is requested.
         const projection = await run("systemctl", [
           "--user",
@@ -115,9 +124,29 @@ export async function nativeServices(
           "--no-pager",
           "--property=Id,LoadState,WorkingDirectory,RootDirectory,ExecStart,FragmentPath",
         ]);
-        if (!projection.includes("LoadState=loaded"))
+        const fields = new Map<string, string>();
+        for (const line of projection.replace(/\n$/, "").split("\n")) {
+          const separator = line.indexOf("=");
+          const key = line.slice(0, separator);
+          if (separator < 1 || fields.has(key))
+            throw new Error("native_service_projection_malformed");
+          fields.set(key, line.slice(separator + 1));
+        }
+        const definitionFields = ["WorkingDirectory", "RootDirectory", "ExecStart", "FragmentPath"];
+        if (
+          fields.size !== definitionFields.length + 2 ||
+          fields.get("Id") !== unit ||
+          definitionFields.some((key) => !fields.has(key))
+        )
+          throw new Error("native_service_projection_malformed");
+        if (fields.get("LoadState") !== loadState)
           throw new Error("native_service_load_state_changed");
-        if (uses(projection, target)) paths.add(target);
+        if (loadState === "not-found" && definitionFields.every((key) => fields.get(key) === "")) {
+          count++;
+          continue;
+        }
+        if (loadState !== "loaded") throw new Error("native_service_load_state_unavailable");
+        projections.push(projection);
         count++;
       }
     } else if (platform === "darwin") {
@@ -127,34 +156,80 @@ export async function nativeServices(
         const labels = launchdServices(await run("/bin/launchctl", ["print", domain]));
         if (count + labels.length > 2000) throw new Error("native_service_unit_bound_exceeded");
         for (const label of labels) {
-          const projection = launchdPaths(
-            await run("/bin/launchctl", ["print", `${domain}/${label}`]),
+          projections.push(
+            launchdPaths(await run("/bin/launchctl", ["print", `${domain}/${label}`])),
           );
-          if (uses(projection, target)) paths.add(target);
           count++;
         }
       }
     } else throw new Error("native_service_manager_unsupported");
+    return { ok: true, observedAt, projections };
+  } catch (cause) {
     return {
+      ok: false,
       observedAt,
+      projections,
+      count,
+      reason:
+        cause instanceof Error ? cause.message : "native_service_manager_observation_unavailable",
+    };
+  }
+}
+function projectServices(target: string, capture: ServiceCapture): Probe {
+  const paths = capture.projections.some((projection) => uses(projection, target)) ? [target] : [];
+  if (capture.ok)
+    return {
+      observedAt: capture.observedAt,
       status: "complete",
-      paths: [...paths],
+      paths,
       limits: [
         "same-user loaded service domains only; other-user/root and remote services excluded",
       ],
     };
-  } catch (cause) {
-    return {
-      observedAt,
-      status: count ? "partial" : "unavailable",
-      paths: [...paths],
-      limits: [
-        cause instanceof Error ? cause.message : "native_service_manager_observation_unavailable",
-        "Re-observe this target's same-user loaded service definitions through its owning service manager; do not stop or rewrite services.",
-      ],
-    };
-  }
+  return {
+    observedAt: capture.observedAt,
+    status: capture.count ? "partial" : "unavailable",
+    paths,
+    limits: [
+      capture.reason,
+      "Re-observe this target's same-user loaded service definitions through its owning service manager; do not stop or rewrite services.",
+    ],
+  };
 }
+const epochNow = () => DateTime.toEpochMillis(DateTime.nowUnsafe());
+export async function nativeServices(
+  target: string,
+  platform: NodeJS.Platform = nativePlatform,
+  io: ServiceIO = nativeIO,
+): Promise<Probe> {
+  return projectServices(target, await captureServices(platform, io, (io.now ?? epochNow)()));
+}
+export const SERVICE_PROJECTION_REUSE_MS = 30000;
+// One service-manager capture serves every target for a bounded window. observedAt stays the
+// capture time, so the consumer decision's staleness rule still judges the reused evidence.
+// Failed captures are never reused.
+export function cachedNativeServices(
+  platform: NodeJS.Platform = nativePlatform,
+  io: ServiceIO = nativeIO,
+) {
+  const now = io.now ?? epochNow;
+  let cached: Promise<ServiceCapture> | undefined;
+  let capturedAt = Number.NaN;
+  return async (target: string): Promise<Probe> => {
+    const at = now(),
+      age = at - capturedAt;
+    if (cached === undefined || !(age >= 0 && age < SERVICE_PROJECTION_REUSE_MS)) {
+      const capture = captureServices(platform, io, at);
+      cached = capture;
+      capturedAt = at;
+      void capture.then((result) => {
+        if (!result.ok && cached === capture) cached = undefined;
+      });
+    }
+    return projectServices(target, await cached);
+  };
+}
+export const sharedNativeServices = cachedNativeServices();
 
 export const nativeWorkloads = Effect.fn("WorkspaceRetirement.nativeWorkloads")(function* (
   sql: SqlClient.SqlClient,

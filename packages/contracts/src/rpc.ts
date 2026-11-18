@@ -8,6 +8,7 @@ import {
 import {
   SubscribePersonalWorkstreamsRpc,
   PutPersonalWorkstreamRpc,
+  ReadPersonalWorkstreamMembersRpc,
   AssignPersonalWorkstreamRpc,
 } from "./jones/workstreamsPersonalRpc.ts";
 import {
@@ -2432,6 +2433,7 @@ export const WsRpcGroup = RpcGroup.make(
   AcceptThreadHandoffRpc,
   SubscribePersonalWorkstreamsRpc,
   PutPersonalWorkstreamRpc,
+  ReadPersonalWorkstreamMembersRpc,
   AssignPersonalWorkstreamRpc,
   WsReselectProviderConversationRpc,
   WsObserveCurrentThreadRuntimeStopRpc,

@@ -34,6 +34,8 @@ import {
   BuildCommandFailedError,
   parseWslRuntimeArchiveMembers,
   DesktopBuildDependencyResolutionError,
+  DesktopMacAdHocSigningConflictError,
+  MAC_AD_HOC_SIGNING,
   readWorkspaceConfig,
   createBuildConfig,
   createStagePatchedDependencies,
@@ -903,6 +905,84 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         iconTextSize: 12,
       });
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect("ad hoc signs unsigned macOS previews only when the workflow opts in", () =>
+    Effect.gen(function* () {
+      const macWith = (
+        env: Record<string, string>,
+        signed = false,
+        platform: "mac" | "linux" = "mac",
+      ) =>
+        createBuildConfig(
+          platform,
+          platform === "mac" ? "dmg" : "AppImage",
+          "1.2.3",
+          signed,
+          false,
+          undefined,
+          undefined,
+        ).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
+
+      const ordinary = (yield* macWith({})).mac as Record<string, unknown>;
+      for (const key of ["identity", "hardenedRuntime", "timestamp"])
+        assert.notProperty(ordinary, key);
+
+      const adHoc = (yield* macWith({ T3CODE_DESKTOP_MAC_ADHOC_SIGN: "true" })).mac as Record<
+        string,
+        unknown
+      >;
+      assert.deepInclude(adHoc, { identity: "-", hardenedRuntime: false, timestamp: "none" });
+      assert.deepInclude(adHoc, MAC_AD_HOC_SIGNING);
+      assert.notProperty(adHoc, "sign");
+
+      for (const [signed, platform] of [
+        [true, "mac"],
+        [false, "linux"],
+      ] as const) {
+        const conflict = yield* Effect.flip(
+          macWith({ T3CODE_DESKTOP_MAC_ADHOC_SIGN: "true" }, signed, platform),
+        );
+        assert.instanceOf(conflict, DesktopMacAdHocSigningConflictError);
+      }
+    }),
+  );
+
+  it.effect("gates the uploaded preview DMG on the shipped app's ad hoc signature", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const workflow = yield* fs.readFileString(
+        path.join(import.meta.dirname, "../.github/workflows/artifact-desktop-mac.yml"),
+      );
+      assert.match(workflow, /\n {6}T3CODE_DESKTOP_SIGNED: "false"\n/);
+      assert.match(workflow, /\n {6}T3CODE_DESKTOP_MAC_ADHOC_SIGN: "true"\n/);
+      const step = (name: string) => {
+        const start = workflow.indexOf(`\n      - name: ${name}\n`);
+        assert.isAtLeast(start, 0, name);
+        const end = workflow.indexOf("\n      - name: ", start + 1);
+        return { start, body: workflow.slice(start, end === -1 ? undefined : end) };
+      };
+      const gate = step("Verify the shipped app's ad-hoc signature");
+      const upload = step("Upload DMG and checksum");
+      assert.isBelow(step("Verify DMG and write checksum").start, gate.start);
+      assert.isBelow(gate.start, upload.start);
+      // Any failed earlier step, including the gate, skips the default-conditioned upload.
+      assert.notMatch(upload.body, /\n {8}if:/);
+      assert.notMatch(gate.body, /\n {8}(if|continue-on-error):/);
+      for (const check of [
+        "hdiutil attach -readonly -nobrowse -noautoopen",
+        'trap \'hdiutil detach "$mount" || hdiutil detach -force "$mount"\' EXIT',
+        'codesign --verify --deep --strict --verbose=2 "$app"',
+        "'Signature=adhoc'",
+        "'TeamIdentifier=not set'",
+        "'^Authority='",
+        "'^Sealed Resources version=2 '",
+        "flags=.*runtime",
+      ])
+        assert.include(gate.body, check);
+      assert.include(workflow, 'signing: "ad-hoc", signed: false, notarized: false,');
+    }),
   );
 
   it.effect.skipIf(!symlinksSupported)(

@@ -101,6 +101,9 @@ receipt; an ordinary subsequent send selects a fresh logical session while
 preserving its saved native conversation. An unavailable observer or an old
 completed-unknown receipt remains unknown. Shared-process thread retirement
 uses its own exact closure proof without stopping healthy sibling conversations.
+That proof can arrive minutes after a Codex turn ends, so run admission treats
+a still-pending retirement as a bounded wait on the same observer, not as a
+startup failure to retry; only a failed proof ends the run.
 
 ## Setup must not happen as a health-check side effect
 
@@ -168,6 +171,12 @@ changed since the advisory, and reports success only when the refreshed provider
 with a readable, current version.
 
 ## Protocol traps
+
+Restart recovery reuses the saved Codex conversation and sends the recorded
+continuation instruction as turn input. `thread/resume` alone does not establish
+an application-owned turn, and Codex rejects `turn/start` with empty input.
+The instruction retains the warning to reconcile actions interrupted by shutdown
+before repeating them. Other providers keep their supported native continuation.
 
 Codex async questions arrive as notifications and are answered with a new user message. There is
 no pending RPC response to send. The

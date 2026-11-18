@@ -1369,6 +1369,8 @@ export function planComposerTurn(input: {
       ? "queue"
       : input.dispatchMode;
   return {
+    shouldStartConversation:
+      isFirstMessage && input.sendEnvMode === "auto" && input.worktreePath === null,
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
     missingWorktreeBaseBranch:

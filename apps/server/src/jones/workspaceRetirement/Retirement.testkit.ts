@@ -1,7 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Exact disposable fixtures execute production storage, qualification, reservation and unlink/removal paths.
+import { policyProbe } from "./LinuxInfrastructureEvidence.testkit.ts";
+import { consumerDecision, CONSUMER_LIMITS } from "./ConsumerProbe.ts";
 import { canonical } from "./Filesystem.ts";
 import { ClaimAbsence } from "./ClaimReconciliation.ts";
-import type { RetirementReceipt } from "./Receipts.ts";
+import type { JournalEntry, RetirementReceipt } from "./Receipts.ts";
+import { makeRootsWritable } from "./ReadOnlyRemoval.ts";
+import { forgetWorktreeOutputs } from "./OutputFinalization.ts";
+import type { WorkspaceRetirementOutcome } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
 import { DutyIdentityJson, NativeDutyOwnerJson, RetirementReceiptJson } from "./DurableCodecs.ts";
@@ -13,7 +18,13 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { fixture, command } from "./Conformance.testkit.ts";
 import { Receipts, layer, RetirementError, RetirementReservationOwner } from "./Receipts.ts";
-import { retire } from "./RetirementExecutor.ts";
+import {
+  REMOVAL_TIMEOUT_MS,
+  interruptedCheckoutAbsent,
+  interruptedCheckoutUnregistered,
+  nativeWorktreeRemoval,
+  retire,
+} from "./RetirementExecutor.ts";
 import {
   acquireReservation,
   holderIdentity,
@@ -26,13 +37,15 @@ import { enumerateDisposal, disposePath } from "./Disposal.ts";
 import { dutyIdentity, terminalWorkspace, revalidateTerminalWorkspace } from "./DutyIdentity.ts";
 import { captureNativeOwner, observeNativeOwner, type NativeOwnerIO } from "./NativeDutyOwner.ts";
 import { nativePid } from "./Reservation.ts";
-import { nativeServices, type ServiceIO } from "./NativeConsumers.ts";
 import { events } from "./EventIntegration.ts";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { settlementAdmission } from "./SettlementAdmission.ts";
+import { finalCheckpointSettled, settlementAdmission } from "./SettlementAdmission.ts";
+import { qualify, type QualificationInput } from "./Qualification.ts";
+import { readReservation } from "./Reservation.ts";
+import * as NodeChildProcess from "node:child_process";
 
-async function fixtureSql(
+export async function fixtureSql(
   path: string,
   after?: (query: string, values: unknown[]) => Promise<void>,
   migrate = true,
@@ -95,7 +108,234 @@ const compiledMain3acaCodec10 = Schema.decodeEffect(RetirementReceiptJson);
 
 const compiledMain3acaCodec9 = Schema.encodeEffect(RetirementReceiptJson);
 
+type Holder = Pick<ReservationRecord, "host" | "boot_id" | "pid" | "process_start">;
+const processStart = (pid: number) =>
+  new Promise<string>((resolve, reject) =>
+    NodeChildProcess.execFile(
+      "/bin/ps",
+      ["-p", String(pid), "-o", "lstart="],
+      { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } },
+      (error, out) => (error ? reject(error) : resolve(out.trim())),
+    ),
+  );
+// A PID whose process has exited, recorded with a start time it never had.
+const exitedHolder = async (): Promise<Holder> => {
+  const child = NodeChildProcess.spawn("/usr/bin/true");
+  await new Promise((resolve) => child.once("exit", resolve));
+  return {
+    ...(await holderIdentity()),
+    pid: child.pid!,
+    process_start: "Mon Jan  1 00:00:00 2024",
+  };
+};
+// The durable state an executor leaves when the server stops after begin and before any terminal write.
+async function interruptedRetirement(
+  f: Awaited<ReturnType<typeof fixtureSql>>,
+  input: QualificationInput,
+  holder: Holder,
+  journal?: readonly JournalEntry[],
+) {
+  const bound = input.expected,
+    id = "interrupted-receipt";
+  const record: ReservationRecord = {
+    schema: "workspace-reservation/v1",
+    admin_id: bound.admin_id,
+    incarnation: incarnation(bound),
+    executor: "jones",
+    receipt: id,
+    ...holder,
+  };
+  await acquireReservation(bound, record);
+  const receipt: RetirementReceipt = {
+    schema: "worktree-retirement/v1",
+    id,
+    cause: "owner_action",
+    state: "intent",
+    binding: bound,
+    incarnation: record.incarnation,
+    qualification: await qualify(input),
+    coverage: {},
+    preservationRefs: [],
+    journal: id,
+    disposed: [],
+    reasons: [],
+    limits: CONSUMER_LIMITS,
+    bytes: { logical: null, allocated: null, statvfs_delta: null },
+  };
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* Receipts;
+      yield* store.begin(receipt);
+      if (journal) yield* store.journal(id, journal);
+      yield* store.finish(receipt);
+    }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+  );
+  return record;
+}
+// A Go-module-cache-shaped tree: `go mod download` leaves every directory 0555 and every file 0444.
+async function goCacheTree(root: string) {
+  const mod = NodePath.join(root, "mcpjungle-setup/gopath/pkg/mod");
+  for (let n = 0; n < 12; n++)
+    for (const module of [`github.com/a${n}/x@v1.0.0`, `golang.org/z${n}@v0.3.0/sub/deep`]) {
+      const dir = NodePath.join(mod, module);
+      await NodeFSP.mkdir(dir, { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(dir, "main.go"), "package x\n");
+    }
+  const lock = async (directory: string): Promise<void> => {
+    for (const entry of await NodeFSP.readdir(directory, { withFileTypes: true })) {
+      const path = NodePath.join(directory, entry.name);
+      if (entry.isDirectory()) await lock(path);
+      else await NodeFSP.chmod(path, 0o444);
+    }
+    await NodeFSP.chmod(directory, 0o555);
+  };
+  await lock(root);
+}
+const unlockTree = (path: string) =>
+  new Promise<void>((resolve) =>
+    NodeChildProcess.execFile("/bin/chmod", ["-R", "u+w", path], () => resolve()),
+  );
+const modeOf = async (path: string) => (await NodeFSP.lstat(path)).mode & 0o777;
+// Git stops on the read-only tree after dropping the registration, leaving the directory behind.
+// A superuser can delete read-only trees, so there is nothing to reproduce for one.
+async function deregisterWithResidue(repo: string, worktree: string) {
+  try {
+    await command(repo, ["worktree", "remove", "--", worktree]);
+    return false;
+  } catch {
+    const listed = await command(repo, ["worktree", "list", "--porcelain"]);
+    NodeAssert.equal(listed.includes(worktree), false);
+    return true;
+  }
+}
+const retireRequest = (repo: string, worktree: string, input: QualificationInput) => ({
+  cause: "owner_action" as const,
+  projectRoot: repo,
+  worktree,
+  maxLevel: "branch-retained" as const,
+  admit: Effect.void,
+  observe: Effect.succeed(input),
+  revalidate: Effect.void,
+  finalizeOutputs: () => Effect.void,
+});
+export const receiptRow = (f: Awaited<ReturnType<typeof fixtureSql>>, id: string) => {
+  const row = f.db
+    .prepare(
+      "SELECT state,receipt_json FROM jones_workspace_retirement_receipts WHERE receipt_id=?",
+    )
+    .get(id);
+  return { state: row?.state, receipt: compiledMain3acaCodec14(String(row?.receipt_json)) };
+};
+
 export const retirementCases: Record<string, () => Promise<void>> = {
+  "both final stages reject changed valid process basis; fresh timestamps alone permit retirement":
+    async () => {
+      for (const changeAt of [2, 3, 0])
+        await fixture(async ({ base, repo, worktree, input }) => {
+          const f = await fixtureSql(NodePath.join(base, "policy.sqlite3"));
+          let observations = 0,
+            removals = 0;
+          try {
+            const result = await Effect.runPromise(
+              retire({
+                cause: "sweep",
+                projectRoot: repo,
+                worktree,
+                maxLevel: "branch-retained",
+                admit: Effect.void,
+                observe: Effect.tryPromise({
+                  try: async () => {
+                    observations++;
+                    const process = await policyProbe(
+                      changeAt && observations >= changeAt ? "b".repeat(64) : undefined,
+                    );
+                    process.observedAt -= observations;
+                    return { ...input, consumers: { ...input.consumers, process } };
+                  },
+                  catch: (cause) =>
+                    new RetirementError({ reason: "observation_failed", target: worktree, cause }),
+                }),
+                revalidate: Effect.void,
+                finalizeOutputs: () => Effect.void,
+                remove: Effect.tryPromise({
+                  try: async () => {
+                    removals++;
+                    await command(repo, ["worktree", "remove", "--", worktree]);
+                  },
+                  catch: (cause) =>
+                    new RetirementError({ reason: "remove_failed", target: worktree, cause }),
+                }),
+              }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+            );
+            NodeAssert.equal(removals, changeAt ? 0 : 1);
+            NodeAssert.equal(result.state, changeAt ? "not_retired" : "retired");
+            if (changeAt)
+              NodeAssert.ok(
+                result.reasons.includes(
+                  changeAt === 2 ? "final_check_conflict" : "remaining_fact_changed",
+                ),
+              );
+          } finally {
+            f.close();
+          }
+        });
+    },
+  "old and optional policy receipts roundtrip; malformed policy stays rejected": async () =>
+    fixture(async ({ input }) => {
+      const process = await policyProbe();
+      const consumers = consumerDecision(
+        input.worktree,
+        { ...input.consumers, process },
+        process.observedAt,
+      );
+      const receipt: RetirementReceipt = {
+        schema: "worktree-retirement/v1",
+        id: "policy",
+        cause: "sweep",
+        state: "not_retired",
+        binding: input.expected,
+        incarnation: incarnation(input.expected),
+        qualification: {
+          schema: "workspace-qualification/v1",
+          authority_effect: "none",
+          outcome: "unknown",
+          level: null,
+          reasons: [],
+          decision: "unknown",
+          observationMs: 0,
+          consumers,
+        },
+        coverage: {},
+        preservationRefs: [],
+        journal: "policy",
+        disposed: [],
+        reasons: [],
+        limits: [],
+        bytes: { logical: null, allocated: null, statvfs_delta: null },
+      };
+      for (const policy of [undefined, process.processPolicy]) {
+        if (policy) consumers.coverage.process!.processPolicy = policy;
+        else delete consumers.coverage.process!.processPolicy;
+        const decoded = await Effect.runPromise(
+          compiledMain3acaCodec10(await Effect.runPromise(compiledMain3acaCodec9(receipt))),
+        );
+        NodeAssert.deepEqual(decoded, receipt);
+        NodeAssert.deepEqual(decoded.qualification.consumers?.limits, CONSUMER_LIMITS);
+      }
+      const original = process.processPolicy!;
+      for (const patch of [
+        { policy: "wrong" },
+        { basisDigest: "bad" },
+        { deniedInstances: -1 },
+        { verifiedExclusions: 0 },
+        { unclassifiedInstances: 1 },
+        { assurance: "non-use" },
+        { reasons: { identity: -1 } },
+      ]) {
+        consumers.coverage.process!.processPolicy = { ...original, ...patch } as typeof original;
+        await NodeAssert.rejects(Effect.runPromise(compiledMain3acaCodec10(canonical(receipt))));
+      }
+    }),
   "receipt codecs retain absent hold/unknown qualification evidence and reject invalid authority fields":
     () =>
       fixture(async ({ input }) => {
@@ -195,45 +435,6 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         f.close();
       }
     }),
-  "loaded native service observations use bounded manager projections and retain unknown coverage":
-    async () => {
-      const calls: string[][] = [];
-      const linux: ServiceIO = {
-        uid: () => 501,
-        command: async (_file, args) => {
-          calls.push(args);
-          return args.includes("list-units")
-            ? "fixture.service loaded inactive dead Fixture\n"
-            : "Id=fixture.service\nLoadState=loaded\nWorkingDirectory=/fixture/checkout\nExecStart={ path=/outside/tool ; argv[]=/outside/tool ; }\n";
-        },
-      };
-      const result = await nativeServices("/fixture/checkout", "linux", linux);
-      NodeAssert.equal(result.status, "complete");
-      NodeAssert.deepEqual(result.paths, ["/fixture/checkout"]);
-      NodeAssert.equal(
-        calls.some((args) => args.some((a) => a.includes("Environment"))),
-        false,
-      );
-      const darwin: ServiceIO = {
-        uid: () => 501,
-        command: async (_file, args) =>
-          args[1]?.split("/").length === 2
-            ? "domain = {\n\tservices = {\n\t\t0 0 fixture.service\n\t}\n}\n"
-            : "fixture = {\n program = /outside/tool\n working directory = /fixture/checkout\n environment = {\n SECRET = never-returned\n }\n}\n",
-      };
-      const projected = await nativeServices("/fixture/checkout", "darwin", darwin);
-      NodeAssert.equal(projected.status, "complete");
-      NodeAssert.deepEqual(projected.paths, ["/fixture/checkout"]);
-      NodeAssert.equal(JSON.stringify(projected).includes("never-returned"), false);
-      const unavailable = await nativeServices("/fixture/checkout", "darwin", {
-        ...darwin,
-        command: async () => {
-          throw Error("controlled manager unavailable");
-        },
-      });
-      NodeAssert.equal(unavailable.status, "unavailable");
-      NodeAssert.equal(unavailable.paths.length, 0);
-    },
   "event admission uses batch birth binding without eager projection lookups and releases actual terminal runs":
     () =>
       fixture(async ({ base, worktree }) => {
@@ -812,6 +1013,114 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         f.close();
       }
     }),
+  "removal timeout with the checkout still present is partial, never not_retired": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "removal-timeout.sqlite3"));
+      // The driver's timeout, kill and spawn failures arrive as errors, not as a git exit code.
+      const remove = Effect.fail(
+        new RetirementError({
+          target: worktree,
+          reason: "removal_interrupted",
+          cause: "Git command timed out.",
+        }),
+      );
+      try {
+        const result = await Effect.runPromise(
+          retire({
+            cause: "owner_action",
+            projectRoot: repo,
+            worktree,
+            maxLevel: "branch-retained",
+            admit: Effect.void,
+            observe: Effect.succeed(input),
+            revalidate: Effect.void,
+            finalizeOutputs: () => Effect.void,
+            remove,
+          }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+        );
+        NodeAssert.equal(result.state, "partial");
+        NodeAssert.deepEqual(result.reasons, ["removal_interrupted"]);
+        const receipt = JSON.parse(
+          String(
+            f.db.prepare("SELECT receipt_json FROM jones_workspace_retirement_receipts").get()!
+              .receipt_json,
+          ),
+        );
+        NodeAssert.equal(receipt.state, "partial");
+        NodeAssert.match(receipt.removalDiagnostic, /timed out/);
+        NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true);
+      } finally {
+        f.close();
+      }
+    }),
+  "owner retirement passes an explicit removal timeout": async () => {
+    const seen: { operation: string; args: readonly string[]; timeoutMs: number }[] = [];
+    const driver = (exitCode: number, fail?: unknown) => ({
+      execute: (request: {
+        operation: string;
+        args: readonly string[];
+        allowNonZeroExit: boolean;
+        timeoutMs: number;
+      }) => {
+        NodeAssert.equal(request.allowNonZeroExit, true);
+        seen.push(request);
+        return fail === undefined
+          ? Effect.succeed({ exitCode, stderr: "fatal: refused\nsecond line" })
+          : Effect.fail(fail);
+      },
+    });
+    const call = async (d: ReturnType<typeof driver>) => {
+      const outcome = await Effect.runPromise(
+        nativeWorktreeRemoval(d as never, { projectRoot: "/project", worktree: "/project/w" }).pipe(
+          Effect.result,
+        ),
+      );
+      if (outcome._tag !== "Failure") throw new Error("expected the removal to fail");
+      return outcome.failure;
+    };
+    NodeAssert.equal(REMOVAL_TIMEOUT_MS, 30 * 60 * 1000);
+    await Effect.runPromise(
+      nativeWorktreeRemoval(driver(0) as never, {
+        projectRoot: "/project",
+        worktree: "/project/w",
+      }),
+    );
+    NodeAssert.equal(seen[0]?.operation, "WorkspaceRetirement.remove");
+    NodeAssert.deepEqual(seen[0]?.args, ["worktree", "remove", "--", "/project/w"]);
+    NodeAssert.equal(seen[0]?.timeoutMs, REMOVAL_TIMEOUT_MS);
+    const refused = await call(driver(128));
+    NodeAssert.equal(refused.reason, "git_removal_refused");
+    NodeAssert.equal(refused.cause, "git worktree remove: fatal: refused");
+    const timedOut = await call(driver(0, new Error("Git command timed out.")));
+    NodeAssert.equal(timedOut.reason, "removal_interrupted");
+    NodeAssert.equal(
+      seen.every((r) => r.timeoutMs === REMOVAL_TIMEOUT_MS),
+      true,
+    );
+  },
+  "final checkpoint gate is unchanged: only runs with a ready checkpoint settle, failed and rolled_back still hold":
+    async () => {
+      // Checkpoint statuses are ready | missing | error | stale; none means "in progress", and capture
+      // never runs for failed or rolled_back runs. Admitting those runs needs an owner decision.
+      const ready = (runId: string) => [{ runId, status: "ready" }];
+      for (const status of ["failed", "rolled_back"]) {
+        NodeAssert.equal(finalCheckpointSettled({ id: "run", status }, []), false);
+        NodeAssert.equal(finalCheckpointSettled({ id: "run", status }, ready("run")), false);
+      }
+      for (const status of ["completed", "cancelled", "interrupted"]) {
+        NodeAssert.equal(finalCheckpointSettled({ id: "run", status }, ready("run")), true);
+        NodeAssert.equal(finalCheckpointSettled({ id: "run", status }, ready("other")), false);
+        NodeAssert.equal(
+          finalCheckpointSettled({ id: "run", status }, [{ runId: "run", status: "stale" }]),
+          false,
+        );
+      }
+      NodeAssert.equal(
+        finalCheckpointSettled({ id: "run", status: "running" }, ready("run")),
+        false,
+      );
+      NodeAssert.equal(finalCheckpointSettled(undefined, []), true);
+    },
   "tracked changes journal precedes no-follow symlink disposal and keeps the external target": () =>
     fixture(async ({ base, repo, worktree, input }) => {
       const external = NodePath.join(base, "outside");
@@ -995,4 +1304,776 @@ export const retirementCases: Record<string, () => Promise<void>> = {
       await NodeAssert.rejects(disposePath(input.expected, journal[0]!));
       NodeAssert.equal(await NodeFSP.readFile(NodePath.join(outside, "a"), "utf8"), "protected");
     }),
+  "absent holder with intact checkout reconciles to not_retired and a retry succeeds": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "interrupted-intact.sqlite3"));
+      try {
+        await interruptedRetirement(f, input, await exitedHolder());
+        const result = await Effect.runPromise(
+          retire(retireRequest(repo, worktree, input)).pipe(
+            Effect.provide(layer),
+            Effect.provideService(SqlClient.SqlClient, f.sql),
+          ),
+        );
+        const stale = receiptRow(f, "interrupted-receipt");
+        NodeAssert.equal(stale.state, "not_retired");
+        NodeAssert.deepEqual(stale.receipt.reasons, ["interrupted_before_effect"]);
+        NodeAssert.equal(result.state, "retired");
+        NodeAssert.notEqual("id" in result ? result.id : null, "interrupted-receipt");
+        NodeAssert.equal(
+          await NodeFSP.lstat(worktree).then(
+            () => true,
+            () => false,
+          ),
+          false,
+        );
+        NodeAssert.equal(
+          (await command(repo, ["show-ref", "--verify", "refs/heads/task"])).length > 0,
+          true,
+        );
+        NodeAssert.equal(await readReservation(input.expected), null);
+      } finally {
+        f.close();
+      }
+    }),
+  "absent holder with removed checkout reconciles to retired": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "interrupted-removed.sqlite3"));
+      let observed = 0;
+      try {
+        await interruptedRetirement(f, input, {
+          ...(await holderIdentity()),
+          boot_id: "a boot before the restart",
+        });
+        await command(repo, ["worktree", "remove", "--", worktree]);
+        const result = await Effect.runPromise(
+          retire({
+            ...retireRequest(repo, worktree, input),
+            observe: Effect.sync(() => {
+              observed++;
+              return input;
+            }),
+          }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+        );
+        NodeAssert.equal(result.state, "retired");
+        NodeAssert.equal("id" in result ? result.id : null, "interrupted-receipt");
+        NodeAssert.deepEqual(result.reasons, ["interrupted_after_removal"]);
+        NodeAssert.equal(observed, 0);
+        NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "retired");
+        NodeAssert.equal(
+          f.db.prepare("SELECT state FROM jones_workspace_retirement_state").get()?.state,
+          "retired",
+        );
+        NodeAssert.equal(
+          (await command(repo, ["show-ref", "--verify", "refs/heads/task"])).length > 0,
+          true,
+        );
+        NodeAssert.equal(await readReservation(input.expected), null);
+      } finally {
+        f.close();
+      }
+    }),
+  "half-removed checkout stays partial and holds": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "interrupted-half.sqlite3"));
+      const run = () =>
+        Effect.runPromise(
+          retire(retireRequest(repo, worktree, input)).pipe(
+            Effect.provide(layer),
+            Effect.provideService(SqlClient.SqlClient, f.sql),
+          ),
+        );
+      try {
+        await interruptedRetirement(f, input, {
+          ...(await holderIdentity()),
+          boot_id: "a boot before the restart",
+        });
+        // An unforced removal deletes tracked files before Git drops the registration.
+        await NodeFSP.unlink(NodePath.join(worktree, "tracked"));
+        const result = await run();
+        NodeAssert.equal(result.state, "partial");
+        NodeAssert.deepEqual(result.reasons, ["interrupted_tracked_deletions"]);
+        const stale = receiptRow(f, "interrupted-receipt");
+        NodeAssert.equal(stale.state, "partial");
+        NodeAssert.match(
+          stale.receipt.qualification.details?.at(-1)?.nextAction ?? "",
+          /do not force/,
+        );
+        NodeAssert.equal(
+          f.db.prepare("SELECT state FROM jones_workspace_retirement_state").get()?.state,
+          "retiring",
+        );
+        NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true);
+        await NodeAssert.rejects(run(), /retiring/);
+        NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "partial");
+        NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true);
+      } finally {
+        f.close();
+      }
+    }),
+  "live holder is never recovered": async () => {
+    const live = { ...(await holderIdentity()), pid: process.ppid };
+    live.process_start = await processStart(process.ppid);
+    for (const holder of [live, { ...live, host: "another-host.invalid" }])
+      await fixture(async ({ base, repo, worktree, input }) => {
+        const f = await fixtureSql(NodePath.join(base, "interrupted-live.sqlite3"));
+        let removals = 0;
+        try {
+          const record = await interruptedRetirement(f, input, holder);
+          await NodeAssert.rejects(
+            Effect.runPromise(
+              retire({
+                ...retireRequest(repo, worktree, input),
+                remove: Effect.sync(() => {
+                  removals++;
+                }),
+              }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+            ),
+            /retiring/,
+          );
+          NodeAssert.equal(removals, 0);
+          NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "intent");
+          NodeAssert.equal(canonical(await readReservation(input.expected)), canonical(record));
+          NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true);
+        } finally {
+          f.close();
+        }
+      });
+  },
+  "a read-only Go-cache-shaped ignored tree no longer stops removal": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const build = NodePath.join(worktree, "build");
+      await goCacheTree(build);
+      input.coverage = { keepMode: "uncommitted-changes", exactRoots: [build] };
+      const f = await fixtureSql(NodePath.join(base, "readonly-tree.sqlite3"));
+      try {
+        NodeAssert.equal(await modeOf(build), 0o555);
+        const result = await Effect.runPromise(
+          retire(retireRequest(repo, worktree, input)).pipe(
+            Effect.provide(layer),
+            Effect.provideService(SqlClient.SqlClient, f.sql),
+          ),
+        );
+        NodeAssert.equal(result.state, "retired");
+        NodeAssert.deepEqual(result.reasons, []);
+        NodeAssert.equal(
+          await NodeFSP.lstat(worktree).then(
+            () => true,
+            () => false,
+          ),
+          false,
+        );
+        NodeAssert.equal(
+          (await command(repo, ["show-ref", "--verify", "refs/heads/task"])).length > 0,
+          true,
+        );
+      } finally {
+        await unlockTree(worktree);
+        f.close();
+      }
+    }),
+  "making ignored roots writable never follows a symlink or leaves the target": () =>
+    fixture(async ({ base, worktree, input }) => {
+      const outside = NodePath.join(base, "outside"),
+        build = NodePath.join(worktree, "build");
+      await NodeFSP.mkdir(NodePath.join(outside, "inner"), { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(outside, "file"), "protected");
+      await NodeFSP.chmod(NodePath.join(outside, "inner"), 0o555);
+      await NodeFSP.chmod(outside, 0o555);
+      await NodeFSP.mkdir(NodePath.join(build, "mod/sub"), { recursive: true });
+      await NodeFSP.symlink(outside, NodePath.join(build, "mod/escape"));
+      await NodeFSP.symlink(NodePath.join(outside, "file"), NodePath.join(build, "mod/filelink"));
+      await NodeFSP.symlink(outside, NodePath.join(worktree, "linkroot"));
+      for (const dir of ["mod/sub", "mod", ""])
+        await NodeFSP.chmod(NodePath.join(build, dir), 0o555);
+      try {
+        const result = await makeRootsWritable(input.expected, [
+          build,
+          NodePath.join(worktree, "linkroot"),
+          NodePath.join(worktree, "absent"),
+        ]);
+        NodeAssert.equal(result.changed, 3);
+        NodeAssert.deepEqual(result.skipped, ["linkroot"]);
+        for (const dir of ["mod/sub", "mod", ""])
+          NodeAssert.equal(await modeOf(NodePath.join(build, dir)), 0o755);
+        // Nothing the links point at was entered or changed.
+        NodeAssert.equal(await modeOf(outside), 0o555);
+        NodeAssert.equal(await modeOf(NodePath.join(outside, "inner")), 0o555);
+        NodeAssert.equal(await modeOf(NodePath.join(outside, "file")), 0o644);
+        NodeAssert.equal(
+          (await NodeFSP.lstat(NodePath.join(build, "mod/escape"))).isSymbolicLink(),
+          true,
+        );
+        // A root outside the target, the target itself and the checkout's own metadata are refused.
+        for (const root of [outside, worktree, NodePath.join(worktree, ".git")])
+          await NodeAssert.rejects(makeRootsWritable(input.expected, [root]), /identity_mismatch/);
+        NodeAssert.equal(await modeOf(outside), 0o555);
+      } finally {
+        await unlockTree(outside);
+        await unlockTree(build);
+      }
+    }),
+  "a read-only tree reached through a symlink leaves the external target unchanged on removal":
+    () =>
+      fixture(async ({ base, repo, worktree, input }) => {
+        const outside = NodePath.join(base, "outside"),
+          build = NodePath.join(worktree, "build");
+        await NodeFSP.mkdir(outside);
+        await NodeFSP.writeFile(NodePath.join(outside, "file"), "protected");
+        await NodeFSP.chmod(outside, 0o555);
+        await goCacheTree(build);
+        await NodeFSP.chmod(build, 0o755);
+        await NodeFSP.symlink(outside, NodePath.join(build, "escape"));
+        await NodeFSP.chmod(build, 0o555);
+        input.coverage = { keepMode: "uncommitted-changes", exactRoots: [build] };
+        const f = await fixtureSql(NodePath.join(base, "readonly-link.sqlite3"));
+        try {
+          const result = await Effect.runPromise(
+            retire(retireRequest(repo, worktree, input)).pipe(
+              Effect.provide(layer),
+              Effect.provideService(SqlClient.SqlClient, f.sql),
+            ),
+          );
+          NodeAssert.equal(result.state, "retired");
+          NodeAssert.equal(await modeOf(outside), 0o555);
+          NodeAssert.equal(
+            await NodeFSP.readFile(NodePath.join(outside, "file"), "utf8"),
+            "protected",
+          );
+        } finally {
+          await unlockTree(outside);
+          await unlockTree(worktree);
+          f.close();
+        }
+      }),
+  "interrupted probes match the canonical and a symlinked spelling of the checkout": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const alias = NodePath.join(base, "alias");
+      await NodeFSP.symlink(base, alias);
+      const spelled = NodePath.join(alias, "checkout");
+      const f = await fixtureSql(NodePath.join(base, "interrupted-spelling.sqlite3"));
+      const run = <A>(effect: Effect.Effect<A, RetirementError, Receipts>) =>
+        Effect.runPromise(
+          effect.pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+        );
+      try {
+        await interruptedRetirement(f, input, await exitedHolder());
+        await command(repo, ["worktree", "remove", "--", worktree]);
+        for (const name of [worktree, spelled])
+          NodeAssert.equal(
+            (await run(interruptedCheckoutAbsent(name)))?.receipt.id,
+            "interrupted-receipt",
+          );
+        // A registered or present checkout is not an unregistered leftover under either spelling.
+        for (const name of [worktree, spelled])
+          NodeAssert.equal(await run(interruptedCheckoutUnregistered(name, repo)), null);
+      } finally {
+        f.close();
+      }
+    }),
+  "the absent-checkout probe reports only an intent receipt whose checkout is gone": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "interrupted-probe.sqlite3"));
+      const probe = () =>
+        Effect.runPromise(
+          interruptedCheckoutAbsent(worktree).pipe(
+            Effect.provide(layer),
+            Effect.provideService(SqlClient.SqlClient, f.sql),
+          ),
+        );
+      try {
+        NodeAssert.equal(await probe(), null);
+        await interruptedRetirement(f, input, await exitedHolder());
+        NodeAssert.equal(await probe(), null);
+        await command(repo, ["worktree", "remove", "--", worktree]);
+        NodeAssert.equal((await probe())?.receipt.id, "interrupted-receipt");
+        f.db.exec("UPDATE jones_workspace_retirement_receipts SET state='partial'");
+        NodeAssert.equal(await probe(), null);
+      } finally {
+        f.close();
+      }
+    }),
+};
+
+interface EvaluatedRetirement {
+  readonly state: string;
+  readonly reasons: readonly string[];
+  readonly outcome: {
+    readonly state: string;
+    readonly reasonCodes: readonly string[];
+    readonly receiptId: string | null;
+    readonly fingerprint: string | null;
+    readonly details: readonly { readonly nextAction: string }[];
+    readonly paths: readonly string[];
+    readonly recoverability?: WorkspaceRetirementOutcome["recoverability"];
+    readonly preserve?: WorkspaceRetirementOutcome["preserve"];
+  };
+}
+export interface OutputStub {
+  readonly id: string;
+  readonly path: string;
+  readonly owner: string;
+  readonly class: string;
+  readonly state: string;
+  readonly worktree: null;
+}
+/** The two registry operations a settled retirement's output finalization uses. */
+export interface RegistryStub {
+  readonly outputs: (worktree: string) => Effect.Effect<readonly OutputStub[]>;
+  readonly forgetOutputs: (records: readonly OutputStub[]) => Effect.Effect<void>;
+}
+/** Settings evaluation for this fixture's checkout; the runner supplies the configured services. */
+export type EvaluateRetirement = (
+  sql: SqlClient.SqlClient,
+  request: {
+    readonly worktree: string;
+    readonly projectRoot: string;
+    readonly execute: boolean;
+    readonly cause: RetirementReceipt["cause"];
+    readonly ownerCoverage?: { readonly fingerprint: string; readonly paths: readonly string[] };
+    readonly registry?: RegistryStub;
+    // Runs where the executor admits a retirement, before it reconciles an interrupted receipt.
+    readonly admit?: Effect.Effect<void>;
+  },
+) => Effect.Effect<EvaluatedRetirement, Error>;
+// Durable retirement state that must not move unless the owner's Retire settles the receipt.
+const durableState = async (f: Awaited<ReturnType<typeof fixtureSql>>, input: QualificationInput) =>
+  canonical({
+    receipt: receiptRow(f, "interrupted-receipt"),
+    target: f.db.prepare("SELECT state,receipt_id FROM jones_workspace_retirement_state").all(),
+    reservation: await readReservation(input.expected),
+  });
+// A checkout fully removed before the restart cannot be bound; these run through Settings evaluation.
+export const absentCheckoutCases = (
+  settingsEvaluation: EvaluateRetirement,
+): Record<string, () => Promise<void>> => {
+  const evaluate = (...args: Parameters<EvaluateRetirement>) =>
+    Effect.runPromise(settingsEvaluation(...args));
+  return {
+    "owner Retire finishes an interrupted retirement whose checkout is gone": () =>
+      fixture(async ({ base, repo, worktree, input }) => {
+        const f = await fixtureSql(NodePath.join(base, "absent-retire.sqlite3"));
+        try {
+          await interruptedRetirement(f, input, {
+            ...(await holderIdentity()),
+            boot_id: "a boot before the restart",
+          });
+          await command(repo, ["worktree", "remove", "--", worktree]);
+          const proposal = await evaluate(f.sql, {
+            worktree,
+            projectRoot: repo,
+            execute: false,
+            cause: "owner_action",
+          });
+          const result = await evaluate(f.sql, {
+            worktree,
+            projectRoot: repo,
+            execute: true,
+            cause: "owner_action",
+            ownerCoverage: { fingerprint: proposal.outcome.fingerprint!, paths: [] },
+          });
+          NodeAssert.equal(result.state, "retired");
+          NodeAssert.deepEqual(result.reasons, ["interrupted_after_removal"]);
+          NodeAssert.equal(result.outcome.state, "retired");
+          NodeAssert.equal(result.outcome.receiptId, "interrupted-receipt");
+          NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "retired");
+          NodeAssert.equal(
+            f.db.prepare("SELECT state FROM jones_workspace_retirement_state").get()?.state,
+            "retired",
+          );
+          NodeAssert.equal(await readReservation(input.expected), null);
+          NodeAssert.equal(
+            (await command(repo, ["show-ref", "--verify", "refs/heads/task"])).length > 0,
+            true,
+          );
+        } finally {
+          f.close();
+        }
+      }),
+    "Propose, an automatic run or a stale fingerprint leaves an interrupted absent checkout held":
+      () =>
+        fixture(async ({ base, repo, worktree, input }) => {
+          const f = await fixtureSql(NodePath.join(base, "absent-propose.sqlite3"));
+          try {
+            await interruptedRetirement(f, input, {
+              ...(await holderIdentity()),
+              boot_id: "a boot before the restart",
+            });
+            await command(repo, ["worktree", "remove", "--", worktree]);
+            const before = await durableState(f, input);
+            const proposal = await evaluate(f.sql, {
+              worktree,
+              projectRoot: repo,
+              execute: false,
+              cause: "owner_action",
+            });
+            NodeAssert.equal(proposal.state, "held");
+            NodeAssert.equal(proposal.outcome.state, "held");
+            NodeAssert.deepEqual(proposal.outcome.reasonCodes, [
+              "interrupted_retirement_checkout_absent",
+            ]);
+            NodeAssert.equal(proposal.outcome.fingerprint, "interrupted-receipt");
+            NodeAssert.match(proposal.outcome.details[0]?.nextAction ?? "", /Run Retire to finish/);
+            const automatic = await evaluate(f.sql, {
+              worktree,
+              projectRoot: repo,
+              execute: true,
+              cause: "settlement",
+              ownerCoverage: { fingerprint: "interrupted-receipt", paths: [] },
+            });
+            NodeAssert.deepEqual(automatic.reasons, ["interrupted_retirement_checkout_absent"]);
+            const stale = await evaluate(f.sql, {
+              worktree,
+              projectRoot: repo,
+              execute: true,
+              cause: "owner_action",
+              ownerCoverage: { fingerprint: "another-proposal", paths: [] },
+            });
+            NodeAssert.deepEqual(stale.reasons, ["proposal_changed"]);
+            NodeAssert.equal(await durableState(f, input), before);
+            NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "intent");
+          } finally {
+            f.close();
+          }
+        }),
+    "owner Retire never recovers an absent checkout from a live holder": () =>
+      fixture(async ({ base, repo, worktree, input }) => {
+        const f = await fixtureSql(NodePath.join(base, "absent-live.sqlite3"));
+        try {
+          const live = { ...(await holderIdentity()), pid: process.ppid };
+          live.process_start = await processStart(process.ppid);
+          await interruptedRetirement(f, input, live);
+          await command(repo, ["worktree", "remove", "--", worktree]);
+          const before = await durableState(f, input);
+          await NodeAssert.rejects(
+            evaluate(f.sql, {
+              worktree,
+              projectRoot: repo,
+              execute: true,
+              cause: "owner_action",
+              ownerCoverage: { fingerprint: "interrupted-receipt", paths: [] },
+            }),
+            /retiring/,
+          );
+          NodeAssert.equal(await durableState(f, input), before);
+          NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "intent");
+        } finally {
+          f.close();
+        }
+      }),
+    "owner Retire finishes a deregistered checkout left behind by read-only trees": () =>
+      fixture(async ({ base, repo, worktree, input }) => {
+        const f = await fixtureSql(NodePath.join(base, "residue-retire.sqlite3"));
+        const build = NodePath.join(worktree, "build");
+        try {
+          await goCacheTree(build);
+          input.coverage = { keepMode: "uncommitted-changes", exactRoots: [build] };
+          await interruptedRetirement(
+            f,
+            input,
+            { ...(await holderIdentity()), boot_id: "a boot before the restart" },
+            await enumerateDisposal(input.expected, "uncommitted-changes"),
+          );
+          if (!(await deregisterWithResidue(repo, worktree))) return;
+          // Git deletes entries in directory order before it stops on the read-only tree, so which tracked
+          // files survive depends on the filesystem. Leave one that matches HEAD, as macOS does.
+          const tracked = NodePath.join(worktree, "tracked");
+          if (
+            !(await NodeFSP.lstat(tracked).then(
+              () => true,
+              () => false,
+            ))
+          )
+            await NodeFSP.writeFile(tracked, "original\n");
+          NodeAssert.equal(await modeOf(build), 0o555);
+          const leftover = async () => (await NodeFSP.readdir(worktree)).sort();
+          const leftoverBefore = await leftover();
+          NodeAssert.ok(leftoverBefore.includes("build") && leftoverBefore.includes("tracked"));
+          const before = await durableState(f, input);
+          const proposal = await evaluate(f.sql, {
+            worktree,
+            projectRoot: repo,
+            execute: false,
+            cause: "owner_action",
+          });
+          NodeAssert.equal(proposal.state, "held");
+          NodeAssert.deepEqual(proposal.outcome.reasonCodes, [
+            "interrupted_retirement_checkout_unregistered",
+          ]);
+          NodeAssert.equal(proposal.outcome.fingerprint, "interrupted-receipt");
+          NodeAssert.match(
+            proposal.outcome.details[0]?.nextAction ?? "",
+            /Anything else stays held/,
+          );
+          const automatic = await evaluate(f.sql, {
+            worktree,
+            projectRoot: repo,
+            execute: true,
+            cause: "settlement",
+            ownerCoverage: { fingerprint: "interrupted-receipt", paths: [] },
+          });
+          NodeAssert.deepEqual(automatic.reasons, ["interrupted_retirement_checkout_unregistered"]);
+          const stale = await evaluate(f.sql, {
+            worktree,
+            projectRoot: repo,
+            execute: true,
+            cause: "owner_action",
+            ownerCoverage: { fingerprint: "another-proposal", paths: [] },
+          });
+          NodeAssert.deepEqual(stale.reasons, ["proposal_changed"]);
+          // Propose, an automatic run and a stale fingerprint delete and chmod nothing.
+          NodeAssert.equal(await durableState(f, input), before);
+          NodeAssert.equal(await modeOf(build), 0o555);
+          NodeAssert.deepEqual(await leftover(), leftoverBefore);
+          NodeAssert.equal(await NodeFSP.readFile(tracked, "utf8"), "original\n");
+          const result = await evaluate(f.sql, {
+            worktree,
+            projectRoot: repo,
+            execute: true,
+            cause: "owner_action",
+            ownerCoverage: { fingerprint: proposal.outcome.fingerprint!, paths: [] },
+          });
+          NodeAssert.equal(result.state, "retired");
+          NodeAssert.deepEqual(result.reasons, ["interrupted_residue_removed"]);
+          NodeAssert.equal(result.outcome.receiptId, "interrupted-receipt");
+          NodeAssert.equal(
+            await NodeFSP.lstat(worktree).then(
+              () => true,
+              () => false,
+            ),
+            false,
+          );
+          NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "retired");
+          NodeAssert.equal(
+            f.db.prepare("SELECT state FROM jones_workspace_retirement_state").get()?.state,
+            "retired",
+          );
+          NodeAssert.equal(await readReservation(input.expected), null);
+          NodeAssert.equal(
+            (await command(repo, ["show-ref", "--verify", "refs/heads/task"])).length > 0,
+            true,
+          );
+        } finally {
+          await unlockTree(worktree);
+          f.close();
+        }
+      }),
+    "owner Retire finishes a deregistered checkout named by a symlinked spelling": () =>
+      fixture(async ({ base, repo, worktree, input }) => {
+        const f = await fixtureSql(NodePath.join(base, "residue-spelling.sqlite3"));
+        const build = NodePath.join(worktree, "build");
+        try {
+          await goCacheTree(build);
+          input.coverage = { keepMode: "uncommitted-changes", exactRoots: [build] };
+          await interruptedRetirement(
+            f,
+            input,
+            { ...(await holderIdentity()), boot_id: "a boot before the restart" },
+            await enumerateDisposal(input.expected, "uncommitted-changes"),
+          );
+          if (!(await deregisterWithResidue(repo, worktree))) return;
+          // On Linux Git removes `tracked` before it stops on the read-only tree; finish from that shape too.
+          await NodeFSP.rm(NodePath.join(worktree, "tracked"), { force: true });
+          const alias = NodePath.join(base, "alias");
+          await NodeFSP.symlink(base, alias);
+          const spelled = NodePath.join(alias, "checkout");
+          const result = await evaluate(f.sql, {
+            worktree: spelled,
+            projectRoot: repo,
+            execute: true,
+            cause: "owner_action",
+            ownerCoverage: { fingerprint: "interrupted-receipt", paths: [] },
+          });
+          NodeAssert.equal(result.state, "retired");
+          NodeAssert.deepEqual(result.reasons, ["interrupted_residue_removed"]);
+          NodeAssert.equal(
+            await NodeFSP.lstat(worktree).then(
+              () => true,
+              () => false,
+            ),
+            false,
+          );
+        } finally {
+          await unlockTree(worktree);
+          f.close();
+        }
+      }),
+    "a deregistered checkout stays held, naming the path, when unrecognized content remains":
+      async () => {
+        const leftovers: Record<string, [(worktree: string) => Promise<void>, string]> = {
+          "an untracked file": [
+            (worktree) => NodeFSP.writeFile(NodePath.join(worktree, "notes.txt"), "keep me"),
+            "notes.txt",
+          ],
+          "an edited tracked file": [
+            (worktree) => NodeFSP.writeFile(NodePath.join(worktree, "tracked"), "edited\n"),
+            "tracked",
+          ],
+          "a sensitive file inside a covered ignored root": [
+            async (worktree) => {
+              const build = NodePath.join(worktree, "build");
+              await NodeFSP.chmod(build, 0o755);
+              await NodeFSP.writeFile(NodePath.join(build, ".env"), "SECRET=1");
+              await NodeFSP.chmod(build, 0o555);
+            },
+            "build (sensitive_ignored)",
+          ],
+          "a nested directory with untracked content": [
+            async (worktree) => {
+              await NodeFSP.mkdir(NodePath.join(worktree, "extra"));
+              await NodeFSP.writeFile(NodePath.join(worktree, "extra/file"), "keep me");
+            },
+            "extra",
+          ],
+        };
+        for (const [label, [change, named]] of Object.entries(leftovers))
+          await fixture(async ({ base, repo, worktree, input }) => {
+            const f = await fixtureSql(NodePath.join(base, "residue-held.sqlite3"));
+            const build = NodePath.join(worktree, "build");
+            try {
+              await goCacheTree(build);
+              input.coverage = { keepMode: "uncommitted-changes", exactRoots: [build] };
+              await interruptedRetirement(
+                f,
+                input,
+                { ...(await holderIdentity()), boot_id: "a boot before the restart" },
+                await enumerateDisposal(input.expected, "uncommitted-changes"),
+              );
+              if (!(await deregisterWithResidue(repo, worktree))) return;
+              await change(worktree);
+              const result = await evaluate(f.sql, {
+                worktree,
+                projectRoot: repo,
+                execute: true,
+                cause: "owner_action",
+                ownerCoverage: { fingerprint: "interrupted-receipt", paths: [] },
+              });
+              NodeAssert.equal(result.state, "partial", label);
+              NodeAssert.deepEqual(
+                result.reasons,
+                ["interrupted_residue_unrecognized_content"],
+                label,
+              );
+              const next = result.outcome.details.map((d) => d.nextAction).join("\n");
+              NodeAssert.ok(
+                next.includes(`Paths: ${named}`) || next.includes(named),
+                label + ": " + next,
+              );
+              // Nothing was made writable and nothing was deleted.
+              NodeAssert.equal(await modeOf(build), 0o555, label);
+              NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true, label);
+              NodeAssert.equal(
+                await NodeFSP.lstat(NodePath.join(build, "mcpjungle-setup")).then(
+                  () => true,
+                  () => false,
+                ),
+                true,
+                label,
+              );
+              NodeAssert.equal(receiptRow(f, "interrupted-receipt").state, "partial", label);
+              NodeAssert.equal(
+                f.db.prepare("SELECT state FROM jones_workspace_retirement_state").get()?.state,
+                "retiring",
+                label,
+              );
+            } finally {
+              await unlockTree(worktree);
+              f.close();
+            }
+          });
+      },
+    "settling an interrupted retirement forgets the checkout's active non-evidence outputs on both paths":
+      async () => {
+        const forgotten: string[] = [];
+        const records = (worktree: string): readonly OutputStub[] => [
+          ...["active-build", "evidence-log", "retired-build"].map((id) => ({
+            id,
+            path: NodePath.join(worktree, "build", id),
+            owner: "producer",
+            class: id === "evidence-log" ? "evidence" : "build",
+            state: id === "retired-build" ? "forgotten" : "active",
+            worktree: null,
+          })),
+          {
+            id: "other-worktree",
+            path: NodePath.join(NodePath.dirname(worktree), "elsewhere", "build"),
+            owner: "producer",
+            class: "build",
+            state: "active",
+            worktree: null,
+          },
+        ];
+        const registry = (worktree: string): RegistryStub => ({
+          outputs: () => Effect.succeed(records(worktree)),
+          forgetOutputs: (settled) =>
+            Effect.sync(() => {
+              forgotten.push(...settled.map((r) => r.id));
+            }),
+        });
+        // The absent-checkout finish.
+        await fixture(async ({ base, repo, worktree, input }) => {
+          const f = await fixtureSql(NodePath.join(base, "outputs-absent.sqlite3"));
+          try {
+            await interruptedRetirement(f, input, {
+              ...(await holderIdentity()),
+              boot_id: "a boot before the restart",
+            });
+            await command(repo, ["worktree", "remove", "--", worktree]);
+            const result = await evaluate(f.sql, {
+              worktree,
+              projectRoot: repo,
+              execute: true,
+              cause: "owner_action",
+              ownerCoverage: { fingerprint: "interrupted-receipt", paths: [] },
+              registry: registry(worktree),
+            });
+            NodeAssert.equal(result.state, "retired");
+            NodeAssert.deepEqual(forgotten, ["active-build"]);
+          } finally {
+            f.close();
+          }
+        });
+        forgotten.length = 0;
+        // Both settle paths share this finalization, and either spelling of the path finds the entries.
+        await fixture(async ({ base, worktree, input }) => {
+          const alias = NodePath.join(base, "alias");
+          await NodeFSP.symlink(base, alias);
+          const spelled = NodePath.join(alias, "checkout");
+          const settled = { binding: input.expected } as RetirementReceipt;
+          const run = (spellings: readonly string[]) =>
+            Effect.runPromise(
+              forgetWorktreeOutputs(registry(worktree) as never, spellings, settled),
+            );
+          await run([spelled]);
+          NodeAssert.deepEqual(forgotten, ["active-build"]);
+          forgotten.length = 0;
+          await run([worktree, spelled]);
+          NodeAssert.deepEqual(forgotten, ["active-build"]);
+        });
+      },
+    "an absent checkout without an interrupted receipt keeps the binding failure": () =>
+      fixture(async ({ base, repo, worktree }) => {
+        const f = await fixtureSql(NodePath.join(base, "absent-plain.sqlite3"));
+        try {
+          await command(repo, ["worktree", "remove", "--", worktree]);
+          for (const execute of [false, true])
+            await NodeAssert.rejects(
+              evaluate(f.sql, {
+                worktree,
+                projectRoot: repo,
+                execute,
+                cause: "owner_action",
+                ownerCoverage: { fingerprint: "any", paths: [] },
+              }),
+              /observation_failed/,
+            );
+          NodeAssert.equal(
+            f.db.prepare("SELECT COUNT(*) AS n FROM jones_workspace_retirement_receipts").get()?.n,
+            0,
+          );
+        } finally {
+          f.close();
+        }
+      }),
+  };
 };

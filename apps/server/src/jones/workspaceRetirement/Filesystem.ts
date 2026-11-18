@@ -28,14 +28,27 @@ export const inside = (path: string, root: string) =>
   path === root || path.startsWith(root + NodePath.sep);
 export const snapshot = (s: NodeFS.BigIntStats) =>
   [s.dev, s.ino, s.mode, s.size, s.mtimeNs, s.ctimeNs].join(":");
-export const sensitive = (name: string) => {
+/**
+ * User-placed secret names. Regenerable build, output and cache roots hold a
+ * path with one of these names; nothing broader applies inside them.
+ */
+export const outputSecretName = (name: string) => {
   const n = name.toLowerCase();
   return (
     (n.startsWith(".env") && ![".example", ".sample", ".template"].some((x) => n.endsWith(x))) ||
-    /\.(pem|key|p12)$/.test(n) ||
+    /\.(pem|key|p12|pfx)$/.test(n) ||
+    n === ".netrc"
+  );
+};
+/** The preserve-set names: the user-placed secret names plus `id_*`, `.npmrc`, `.pypirc` and `*credentials*`. */
+export const sensitive = (name: string) => {
+  const n = name.toLowerCase();
+  return (
+    outputSecretName(name) ||
     n.startsWith("id_") ||
-    n === ".netrc" ||
-    n === ".npmrc"
+    n === ".npmrc" ||
+    n === ".pypirc" ||
+    n.includes("credentials")
   );
 };
 const directoryPaths = new Map<number, string>();
@@ -115,6 +128,11 @@ export async function readBounded(path: string, limit: number) {
     await file.close();
   }
 }
+export function subprocessTimeout(budgetMs: number, maximumMs = Infinity) {
+  if (!Number.isFinite(budgetMs) || budgetMs <= 0)
+    throw new Error("subprocess_timeout_budget_invalid");
+  return Math.max(1, Math.floor(Math.min(maximumMs, budgetMs)));
+}
 export function git(cwd: string, args: readonly string[], timeout = 10000): Promise<Buffer> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -148,7 +166,7 @@ export function git(cwd: string, args: readonly string[], timeout = 10000): Prom
         cwd,
         ...args,
       ],
-      { env, encoding: "buffer", timeout, maxBuffer: 32 * 1024 * 1024 },
+      { env, encoding: "buffer", timeout: subprocessTimeout(timeout), maxBuffer: 32 * 1024 * 1024 },
       (error, stdout) => (error ? reject(error) : resolve(stdout)),
     ),
   );

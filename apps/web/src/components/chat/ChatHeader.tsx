@@ -44,6 +44,7 @@ import {
 import { observeResize } from "~/lib/observeResize";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
+import { useThreadTitleDrag } from "../../jones/threadTitleDrag/threadTitleDrag";
 import { GuestShareIndicator } from "./GuestShareControls";
 
 interface ChatHeaderProps {
@@ -103,6 +104,7 @@ export const ChatHeader = memo(function ChatHeader({
   );
   const [collapseParentTitle, setCollapseParentTitle] = useState(false);
   const activeThreadRef = scopeThreadRef(activeThreadEnvironmentId, activeThreadId);
+  const startThreadTitleDrag = useThreadTitleDrag(activeThreadRef, activeThreadTitle);
   const canOperateThread = useEnvironmentScope(
     activeThreadEnvironmentId,
     AuthOrchestrationOperateScope,
@@ -374,12 +376,16 @@ export const ChatHeader = memo(function ChatHeader({
                     aria-label={`Thread actions for ${activeThreadTitle}`}
                     aria-haspopup="menu"
                     onClick={openMenuFromTitle}
+                    onPointerDown={startThreadTitleDrag}
                     onDoubleClick={canOperateThread ? handleTitleDoubleClick : undefined}
                     className="group/thread-title inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1 rounded-sm text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   />
                 }
               >
-                <h2 className="min-w-0" dir={textDirection(activeThreadTitle)}>
+                <h2
+                  className="min-w-0 cursor-grab touch-none active:cursor-grabbing"
+                  dir={textDirection(activeThreadTitle)}
+                >
                   <WorkspaceBreadcrumbText>{activeThreadTitle}</WorkspaceBreadcrumbText>
                 </h2>
                 <ChevronDownIcon

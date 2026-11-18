@@ -1,10 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Pre-compiler admission uses only Node built-ins.
-import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import { createLocalMacAdmission } from "../worktree-setup/local-mac-admission.ts";
+import { tryCapacityLock } from "./capacity-lock.ts";
 
 /** GitHub's hosted-runner metadata retains its separate policy; CI alone selects nothing. */
 export function usesLocalMacCapacity(platform: string, environment: NodeJS.ProcessEnv) {
@@ -103,12 +103,13 @@ const defaults: Dependencies = {
 /** Participating launches only: a sample is neither a reservation nor an OS quota. */
 export async function withLocalMacCapacity<T>(
   options: CapacityOptions,
-  run: (budget: number) => Promise<T>,
+  run: (budget: number, lease: { confirmClosure: () => void }) => Promise<T>,
   dependencies: Dependencies = defaults,
 ): Promise<T> {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Admission measures the physical host before starting the application/compiler runtime.
   const platform = options.platform ?? NodeOS.platform();
-  if (!usesLocalMacCapacity(platform, options.environment ?? process.env)) return run(options.jobs);
+  if (!usesLocalMacCapacity(platform, options.environment ?? process.env))
+    return run(options.jobs, { confirmClosure: () => {} });
   compilerBudget(1, 0, 0, options.jobs);
   const duration = options.deadlineMs ?? 600_000;
   if (!Number.isFinite(duration) || duration <= 0 || duration > 600_000)
@@ -118,33 +119,18 @@ export async function withLocalMacCapacity<T>(
   const directory =
     options.directory ?? NodePath.join(NodeOS.homedir(), ".cache/jones/local-mac-capacity");
   privateDirectory(directory);
-  const lock = NodePath.join(directory, "build.lock");
-  let held = false;
+  let lease: ReturnType<typeof tryCapacityLock>;
   const check = () => {
     options.signal.throwIfAborted();
     if (d.now() >= deadline) throw new Error("Compiler lock/admission deadline exceeded");
   };
   for (;;) {
     check();
-    try {
-      NodeFS.mkdirSync(lock, { mode: 0o700 });
-      held = true;
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      await d.wait(100, options.signal);
-    }
+    lease = tryCapacityLock(directory);
+    if (lease) break;
+    await d.wait(100, options.signal);
   }
-  const owner = JSON.stringify({ pid: process.pid, nonce: NodeCrypto.randomUUID() });
-  NodeFS.writeFileSync(NodePath.join(lock, "owner.json"), owner, { flag: "wx", mode: 0o600 });
-  const release = () => {
-    if (!held) return;
-    if (NodeFS.readFileSync(NodePath.join(lock, "owner.json"), "utf8") !== owner)
-      throw new Error("Capacity lock ownership changed; retained");
-    NodeFS.unlinkSync(NodePath.join(lock, "owner.json"));
-    NodeFS.rmdirSync(lock);
-    held = false;
-  };
+  const { lock, release } = lease;
   let entered = false;
   try {
     for (;;) {
@@ -171,15 +157,19 @@ export async function withLocalMacCapacity<T>(
       check();
       if (d.now() - started > 35_000) throw new Error("Compiler admission stale before launch");
       d.report({ memory, root: options.root, budget });
+      lease.producer();
       entered = true;
       if (options.processLifetime) process.once("exit", release);
-      const value = await run(budget);
-      if (!options.processLifetime) release();
+      const value = await run(budget, lease);
+      if (!options.processLifetime) {
+        lease.confirmClosure();
+        release();
+      }
       return value;
     }
   } catch (error) {
     // A callback rejection can mean unknown native closure. Never unlock for a replacement.
-    if (!entered) release();
+    if (!entered || lease.closed) release();
     else {
       if (options.processLifetime) process.removeListener("exit", release);
       d.report({ retainedLock: lock, reason: "producer closure not established after rejection" });

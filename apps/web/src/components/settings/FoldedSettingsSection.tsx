@@ -12,7 +12,9 @@ export function FoldedSettingsSection({
   summary,
   control,
   headerPlacement = "inside",
+  wrapHeader = true,
   collapsedContent,
+  openKey,
   children,
 }: {
   readonly id: string;
@@ -20,8 +22,11 @@ export function FoldedSettingsSection({
   readonly summary?: string | null;
   readonly control?: ReactNode;
   readonly headerPlacement?: "inside" | "outside";
+  readonly wrapHeader?: boolean;
   /** Shown under the header only while folded. */
   readonly collapsedContent?: ReactNode;
+  /** Opens the fold each time this key changes to a new non-null value. The fold still starts closed. */
+  readonly openKey?: string | null;
   readonly children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -31,6 +36,12 @@ export function FoldedSettingsSection({
   const [openedForTarget, setOpenedForTarget] = useState<string | null>(null);
   if (searchTargetId === id && openedForTarget !== id) {
     setOpenedForTarget(id);
+    if (!open) setOpen(true);
+  }
+
+  const [openedForKey, setOpenedForKey] = useState<string | null>(null);
+  if (openKey != null && openedForKey !== openKey) {
+    setOpenedForKey(openKey);
     if (!open) setOpen(true);
   }
 
@@ -69,8 +80,8 @@ export function FoldedSettingsSection({
   return (
     <section id={id} ref={targetRef} tabIndex={-1} className="outline-none">
       <Collapsible open={open} onOpenChange={setOpen} render={<SettingsGroup divided={false} />}>
-        {/* On a narrow screen the controls drop below the title instead of covering it. */}
-        <div className="flex flex-wrap items-center gap-x-4 px-3 sm:px-4">
+        {/* Most controls may wrap; completion timestamps stay alongside their title. */}
+        <div className={cn("flex items-center gap-x-4 px-3 sm:px-4", wrapHeader && "flex-wrap")}>
           <CollapsibleTrigger className="flex min-h-11 min-w-0 flex-1 basis-40 items-center gap-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring rounded-md">
             <ChevronRightIcon
               aria-hidden
@@ -85,7 +96,14 @@ export function FoldedSettingsSection({
             ) : null}
           </CollapsibleTrigger>
           {control ? (
-            <div className="ms-auto flex max-w-full items-center py-1.5">{control}</div>
+            <div
+              className={cn(
+                "ms-auto flex max-w-full items-center py-1.5",
+                !wrapHeader && "min-w-0",
+              )}
+            >
+              {control}
+            </div>
           ) : null}
         </div>
         {!open && collapsedContent ? (

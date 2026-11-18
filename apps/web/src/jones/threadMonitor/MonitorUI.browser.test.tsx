@@ -405,7 +405,12 @@ describe("real monitor renderer interactions", () => {
       )
       .toBe("Reply to Done thread");
     const editor = container.querySelector<HTMLTextAreaElement>("[data-monitor-reply] textarea")!;
+    // fill() focuses without moving the pointer off the row's hover/tooltip trigger.
+    // Enter the editor first so those timers cannot race this IME-only scenario.
+    await userEvent.click(editor);
     await userEvent.fill(editor, "composed reply");
+    expect(document.activeElement).toBe(editor);
+    expect(editor.getAttribute("aria-label")).toBe("Reply to Done thread");
     await act(() => {
       editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
       editor.dispatchEvent(

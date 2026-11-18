@@ -9,13 +9,24 @@ const required = JSON.parse(
   await NodeFSP.readFile(new URL("../../../package.json", import.meta.url), "utf8"),
 ).engines.node;
 if (process.versions.node !== required) throw new Error(`Node ${required} required`);
+const rootActions = {
+  "incomplete-measurement": "Obtain complete timing and event-loop samples for all three windows",
+  "inconsistent-threshold-flags": "Reconcile the reported threshold flags with the timed windows",
+  "synchronous-encode": "Implement SP-SNAPSHOT and requalify this exact candidate",
+  "decode-or-projection-attribution":
+    "Measure contiguous blocking in the flagged decode or projection windows",
+  "loop-target-exceeded": "Attribute the event-loop target breaches in the flagged windows",
+  "elapsed-phases-bounded": null,
+  "within-thresholds": null,
+};
 let report;
 try {
   const measurement = await measureSnapshotPipeline(Number(count));
-  const activationDecision = snapshotDecision(measurement);
+  const decision = snapshotDecision(measurement);
+  const { activationDecision, activationReason } = decision;
   report = {
     ...measurement,
-    activationDecision,
+    ...decision,
     source: process.env.JONES_SP_SOURCE_SHA ?? null,
     threadCount: Number(count),
     outcome:
@@ -24,12 +35,7 @@ try {
         : activationDecision === "activate"
           ? "failed"
           : "unknown",
-    rootAction:
-      activationDecision === "activate"
-        ? "Implement SP-SNAPSHOT and requalify this exact candidate"
-        : activationDecision === "unknown"
-          ? "Attribute loop delay before deciding activation"
-          : null,
+    rootAction: rootActions[activationReason],
     limitation:
       "Actual synthetic pipeline on this source/host; combined representative workload attribution remains separate",
   };

@@ -228,3 +228,86 @@ describe("planWorkstreamThreadReorder", () => {
     ).toBeNull();
   });
 });
+
+describe("cross-group placement planning", () => {
+  it.each([
+    {
+      movedId: "u2",
+      neighborId: "a2",
+      after: false,
+      destinationGroupId: "a",
+      expected: ["a1", "u2", "a2"],
+    },
+    {
+      movedId: "a1",
+      neighborId: "u1",
+      after: true,
+      destinationGroupId: null,
+      expected: ["u1", "a1", "u2"],
+    },
+  ])("plans membership and position together for $movedId", (scenario) => {
+    const input = fixture(
+      ["u1", "a1", "b1", "u2", "a2"],
+      [
+        ["a1", "a"],
+        ["a2", "a"],
+        ["b1", "b"],
+      ],
+    );
+    const assignments = planWorkstreamThreadReorder({ ...input, ...scenario });
+    expect(assignments).not.toBeNull();
+    const membership = new Map(input.groupIdByKey);
+    membership.set(scenario.movedId, scenario.destinationGroupId);
+    let rows = input.rows;
+    for (const { id, orderKey } of assignments!) {
+      expect(membership.get(id) ?? null).toBe(scenario.destinationGroupId);
+      rows = rows.map((row) => (row.id === id ? { ...row, activeOrderKey: orderKey } : row));
+      expect(groupOrder(rows, membership, "b")).toEqual(["b1"]);
+    }
+    expect(groupOrder(rows, membership, scenario.destinationGroupId)).toEqual(scenario.expected);
+  });
+
+  it("includes a pinned thread entering the active list in the indicated destination position", () => {
+    const input = fixture(
+      ["a1", "a2", "pinned"],
+      [
+        ["a1", "a"],
+        ["a2", "a"],
+      ],
+    );
+    const assignments = planWorkstreamThreadReorder({
+      ...input,
+      movedId: "pinned",
+      neighborId: "a1",
+      after: true,
+      destinationGroupId: "a",
+    });
+    expect(assignments).not.toBeNull();
+    const membership = new Map(input.groupIdByKey).set("pinned", "a");
+    const keys = new Map(assignments!.map(({ id, orderKey }) => [id, orderKey]));
+    const rows = input.rows.map((row) => ({
+      ...row,
+      activeOrderKey: keys.get(row.id) ?? row.activeOrderKey,
+    }));
+    expect(groupOrder(rows, membership, "a")).toEqual(["a1", "pinned", "a2"]);
+  });
+
+  it("rejects a neighbor from a different destination before any assignment", () => {
+    const input = fixture(
+      ["u1", "a1", "b1"],
+      [
+        ["a1", "a"],
+        ["b1", "b"],
+      ],
+    );
+    expect(
+      planWorkstreamThreadReorder({
+        ...input,
+        movedId: "u1",
+        neighborId: "b1",
+        after: false,
+        destinationGroupId: "a",
+      }),
+    ).toBeNull();
+  });
+});

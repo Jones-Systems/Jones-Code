@@ -484,6 +484,12 @@ it.effect(
           [153, "PersonalWorkstreams"],
           [154, "StartRefusals"],
           [155, "PeerWakeObligations"],
+          [156, "WorkspaceDutyLifetimes"],
+          [157, "RemoteAdmissionReview"],
+          [158, "WorkstreamAutoRoute"],
+          [159, "WorkstreamLifecycleRevision"],
+          [160, "WorkstreamSnooze"],
+          [161, "WorkstreamNameIcons"],
         ],
       );
       assert.deepStrictEqual(
@@ -721,6 +727,12 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [153, "PersonalWorkstreams"],
       [154, "StartRefusals"],
       [155, "PeerWakeObligations"],
+      [156, "WorkspaceDutyLifetimes"],
+      [157, "RemoteAdmissionReview"],
+      [158, "WorkstreamAutoRoute"],
+      [159, "WorkstreamLifecycleRevision"],
+      [160, "WorkstreamSnooze"],
+      [161, "WorkstreamNameIcons"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

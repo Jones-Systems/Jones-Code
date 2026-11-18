@@ -169,6 +169,22 @@ export const prepareTurn = Effect.fn("CheckoutRecreation.prepareTurn")(function*
       return null;
     }
   }
+  // A missing-source refusal must not obscure an earlier invoking transition.
+  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  if (Option.isSome(sql)) {
+    const pending = yield* sql.value`SELECT 1 FROM jones_workspace_lifecycle_transitions
+      WHERE worktree=${input.worktree} AND state!='confirmed' LIMIT 1`;
+    if (pending.length)
+      return yield* Effect.fail(
+        new RecreationHold(
+          "unknown",
+          input.worktree,
+          input.threadId,
+          "an earlier lifecycle transition still requires reconciliation",
+          "Reconcile its original transition before recreating this checkout.",
+        ),
+      );
+  }
   if (source === null)
     source = yield* observe(input.worktree, input.threadId, () =>
       missingSource(input.projectRoot, input.worktree),
@@ -189,21 +205,6 @@ export const prepareTurn = Effect.fn("CheckoutRecreation.prepareTurn")(function*
     `${NodePath.basename(input.worktree)}-recreated-${NodeCrypto.randomUUID()}`,
   );
   const selectedSource = source;
-  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
-  if (Option.isSome(sql)) {
-    const pending = yield* sql.value`SELECT 1 FROM jones_workspace_lifecycle_transitions
-      WHERE worktree=${input.worktree} AND state!='confirmed' LIMIT 1`;
-    if (pending.length)
-      return yield* Effect.fail(
-        new RecreationHold(
-          "unknown",
-          input.worktree,
-          input.threadId,
-          "an earlier lifecycle transition still requires reconciliation",
-          "Reconcile its original transition before recreating this checkout.",
-        ),
-      );
-  }
   const target = yield* observe(input.worktree, input.threadId, () =>
     plannedPath(selectedSource, alternate),
   );

@@ -50,6 +50,7 @@ function resourceEmitter(diagnostic: ResourceDiagnostics | undefined, pid?: numb
 }
 const statStart = (text: string) => text.slice(text.lastIndexOf(")") + 2).split(" ")[19];
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
+const macResourceColumns = "pid=JONES_SP_PID,time=JONES_SP_TIME,rss=JONES_SP_RSS";
 let clockTicks: Promise<number> | undefined;
 export interface LinuxThreadScheduling {
   readonly startTimeTicks: string;
@@ -325,6 +326,32 @@ export function processResourceSample(
 }
 
 export type QualificationPredicate = boolean | "unknown";
+
+export function parseMacProcessResources(
+  output: string,
+  pids: readonly number[],
+): readonly ProcessResources[] | undefined {
+  const [header, ...lines] = output.trimEnd().split("\n");
+  if (!/\s+JONES_SP_PID\s+JONES_SP_TIME\s+JONES_SP_RSS$/.test(header ?? "")) return undefined;
+
+  const processes = new Map<number, ProcessResources & { threads: number }>();
+  const requested = new Set(pids);
+  for (const line of lines) {
+    // The earlier USER column can exceed its header width.
+    const fields = /\s+(\d+)\s+(\S+)\s+(\d+)\s*$/.exec(line);
+    if (!fields) return undefined;
+    const pid = Number(fields[1]);
+    const cpuMs = cpuTime(fields[2] ?? "");
+    const rssBytes = Number(fields[3]) * 1024;
+    if (!requested.has(pid) || !valid({ pid, cpuMs, rssBytes })) return undefined;
+
+    const process = processes.get(pid);
+    if (process && (process.cpuMs !== cpuMs || process.rssBytes !== rssBytes)) return undefined;
+    processes.set(pid, { pid, cpuMs, rssBytes, threads: (process?.threads ?? 0) + 1 });
+  }
+  return [...processes.values()];
+}
+
 export function resourcePredicates(
   samples: readonly ProcessResourceSample[],
   parentPid: number,
@@ -476,27 +503,16 @@ export async function sampleProcesses(
         }
       }
     } else if (HostProcess.Platform.defaultValue() === "darwin") {
-      const result = await execute("ps", ["-o", "pid=,time=,rss=", "-p", pids.join(",")], {
-        timeout: 2_000,
-      });
-      for (const line of result.stdout.trim().split("\n").filter(Boolean)) {
-        const [pid, time, rss] = line.trim().split(/\s+/);
-        let threads: number | undefined;
-        try {
-          const result = await execute("ps", ["-M", "-p", pid!, "-o", "pid="], { timeout: 2_000 });
-          const lines = result.stdout.trim().split("\n").filter(Boolean);
-          if (lines.length && lines.every((value) => Number(value.trim()) === Number(pid)))
-            threads = lines.length;
-        } catch {
-          /* The platform field remains absent, never zero. */
-        }
-        rows.push({
-          pid: Number(pid),
-          cpuMs: cpuTime(time ?? ""),
-          rssBytes: Number(rss) * 1024,
-          ...(threads === undefined ? {} : { threads }),
-        });
-      }
+      // ps -M repeats process-wide time and RSS for each thread. Collect all
+      // three fields in one pass so polling does less work on the measured host.
+      const result = await execute(
+        "ps",
+        ["-M", "-c", "-ww", "-p", pids.join(","), "-o", macResourceColumns],
+        { timeout: 2_000 },
+      );
+      const processes = parseMacProcessResources(result.stdout, pids);
+      if (processes) rows.push(...processes);
+      else errors.push("macos-resource-table-invalid");
     } else errors.push("unsupported-platform");
   } catch (cause) {
     resourceEmitter(diagnostic)("clock-ticks", "error", { errors: 1, ...diagnosticError(cause) });

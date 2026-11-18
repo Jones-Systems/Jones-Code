@@ -8,10 +8,11 @@ export function planWorkstreamThreadReorder(input: {
   readonly after: boolean;
   readonly writableKeys: ReadonlySet<string>;
   readonly groupIdByKey: ReadonlyMap<string, string | null | undefined>;
+  readonly destinationGroupId?: string | null;
 }): ReturnType<typeof planWritableSidebarReorder> {
   const { activeOrder, keysById, movedId, neighborId, after, writableKeys, groupIdByKey } = input;
   if (
-    !activeOrder.includes(movedId) ||
+    (!activeOrder.includes(movedId) && input.destinationGroupId === undefined) ||
     !activeOrder.includes(neighborId) ||
     !writableKeys.has(movedId) ||
     !writableKeys.has(neighborId)
@@ -19,9 +20,14 @@ export function planWorkstreamThreadReorder(input: {
     return null;
   }
 
-  const groupId = groupIdByKey.get(movedId) ?? null;
+  const groupId =
+    input.destinationGroupId === undefined
+      ? (groupIdByKey.get(movedId) ?? null)
+      : input.destinationGroupId;
   if ((groupIdByKey.get(neighborId) ?? null) !== groupId) return null;
-  const order = activeOrder.filter((key) => (groupIdByKey.get(key) ?? null) === groupId);
+  const order = activeOrder.filter(
+    (key) => key === movedId || (groupIdByKey.get(key) ?? null) === groupId,
+  );
   if (movedId === neighborId) return [];
   const next = order.filter((key) => key !== movedId);
   next.splice(next.indexOf(neighborId) + (after ? 1 : 0), 0, movedId);

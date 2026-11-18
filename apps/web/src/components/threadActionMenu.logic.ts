@@ -131,9 +131,6 @@ export function buildThreadActionMenuItems(
     scope_missing: "This connection can't change threads.",
   };
   const items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> = [
-    ...(state.canFind
-      ? [{ id: "find" as const, label: "Find in thread", icon: "text-search" }]
-      : []),
     ...(!state.canOperate &&
     state.environmentAccessStatus &&
     state.environmentAccessStatus !== "granted"
@@ -160,6 +157,17 @@ export function buildThreadActionMenuItems(
             : { id: "settle" as const, label: "Settle thread", icon: "circle-check" },
         ]
       : []),
+    ...(state.assignmentItems
+      ? [
+          {
+            id: "assign-thread" as const,
+            label: "Assign thread",
+            icon: "folder",
+            separatorBefore: true,
+            children: state.assignmentItems,
+          },
+        ]
+      : []),
     ...(state.supports.titleRegeneration
       ? [
           {
@@ -167,18 +175,7 @@ export function buildThreadActionMenuItems(
             label: state.isRegeneratingTitle ? "Regenerating…" : "Regenerate title",
             icon: "refresh-cw",
             disabled: state.isRegeneratingTitle,
-            separatorBefore: true,
-          },
-        ]
-      : []),
-    ...(state.assignmentItems
-      ? [
-          {
-            id: "assign-thread" as const,
-            label: "Assign thread",
-            icon: "folder",
-            separatorBefore: !state.supports.titleRegeneration,
-            children: state.assignmentItems,
+            separatorBefore: !state.assignmentItems,
           },
         ]
       : []),
@@ -276,6 +273,9 @@ export function buildThreadActionMenuItems(
             ],
           },
         ]
+      : []),
+    ...(state.canFind
+      ? [{ id: "find" as const, label: "Find in thread", icon: "text-search" }]
       : []),
     {
       id: "copy",

@@ -1,17 +1,30 @@
+import { DesktopUpdates, makeDesktopUpdateStateCell } from "./DesktopUpdatesService.ts";
+export { DesktopUpdates } from "./DesktopUpdatesService.ts";
+import { makeJonesDesktopUpdates } from "../jones/updates/jonesDesktopUpdatesService.ts";
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Native plan adapter supplies UUIDs and its scheduling clock.
+import * as NodeCrypto from "node:crypto";
 import {
   DESKTOP_UPDATE_RESTART_MARKER_FILE,
   DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
   DESKTOP_UPDATE_IN_PROGRESS_TTL_MS,
   DesktopUpdateChannelSchema,
   type DesktopRuntimeInfo,
-  type DesktopUpdateActionResult,
   type DesktopUpdateChannel,
-  type DesktopUpdateCheckResult,
   type DesktopUpdateState,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import {
+  JonesDesktopUpdateController,
+  jonesNativeProcessRoles,
+} from "../jones/updates/JonesDesktopUpdates.ts";
+import {
+  jonesNativeBootstrapCredential,
+  prepareJonesNativeInstall,
+} from "../jones/updates/jonesNativePreparation.ts";
+import { currentJonesDesktopOwner } from "../jones/updates/jonesNativeStartup.ts";
 import { errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
-import * as Context from "effect/Context";
+import type * as Mac from "effect/crypto/Mac";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -19,20 +32,21 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as PubSub from "effect/PubSub";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import { makeCompanionProductUpdates } from "../jones/previewCompanion/CompanionProductUpdates.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
+import * as DesktopUserData from "../app/DesktopUserData.ts";
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
@@ -66,10 +80,6 @@ const AUTO_UPDATE_POLL_INTERVAL = "4 hours";
 const UPDATE_CHECK_WAIT = Duration.seconds(90);
 
 type UpdateAction = "check" | "download" | "install" | "install-recovery" | "channel";
-
-interface DesktopPreparedUpdateInstallResult extends DesktopUpdateActionResult {
-  readonly failed: boolean;
-}
 
 const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
 type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
@@ -188,41 +198,6 @@ export const DesktopUpdateSetChannelError = Schema.Union([
   DesktopUpdateChannelManagedError,
 ]);
 export type DesktopUpdateSetChannelError = typeof DesktopUpdateSetChannelError.Type;
-
-export class DesktopUpdates extends Context.Service<
-  DesktopUpdates,
-  {
-    readonly getState: Effect.Effect<DesktopUpdateState>;
-    readonly isActionActive: Effect.Effect<boolean>;
-    readonly isInstallActive: Effect.Effect<boolean>;
-    readonly subscribe: Effect.Effect<
-      {
-        readonly latest: DesktopUpdateState;
-        readonly changes: Stream.Stream<DesktopUpdateState>;
-      },
-      never,
-      Scope.Scope
-    >;
-    readonly emitState: Effect.Effect<void>;
-    readonly disabledReason: Effect.Effect<Option.Option<string>>;
-    readonly configure: Effect.Effect<void, never, Scope.Scope>;
-    /** `minimumVersion` is a track switch's checked release; nothing older is offered after. */
-    readonly setChannel: (
-      channel: DesktopUpdateChannel,
-      options?: { readonly minimumVersion?: string | undefined },
-    ) => Effect.Effect<DesktopUpdateState, DesktopUpdateSetChannelError>;
-    /** `allowDowngrade` is for a guarded track switch, which checked that older release. */
-    readonly check: (
-      reason: string,
-      options?: { readonly allowDowngrade?: boolean },
-    ) => Effect.Effect<DesktopUpdateCheckResult>;
-    readonly download: Effect.Effect<DesktopUpdateActionResult>;
-    readonly install: Effect.Effect<DesktopUpdateActionResult>;
-    readonly installPrepared: (
-      expectedVersion: string,
-    ) => Effect.Effect<DesktopPreparedUpdateInstallResult>;
-  }
->()("@t3tools/desktop/updates/DesktopUpdates") {}
 
 const {
   logInfo: logUpdaterInfo,
@@ -374,13 +349,21 @@ function isArm64HostRunningIntelBuild(runtimeInfo: DesktopRuntimeInfo): boolean 
 
 /** @public */
 export const make = Effect.gen(function* () {
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const electronWindow = yield* ElectronWindow.ElectronWindow;
+  if (environment.previewCompanionProduct) {
+    return makeCompanionProductUpdates({
+      version: environment.appVersion,
+      runtimeInfo: environment.runtimeInfo,
+      channel: environment.defaultDesktopSettings.updateChannel,
+      emit: (state) => electronWindow.sendAll(IpcChannels.UPDATE_STATE_CHANNEL, state),
+    });
+  }
   const config = yield* DesktopConfig.DesktopConfig;
   const pool = yield* DesktopBackendPool.DesktopBackendPool;
   const sshEnvironment = yield* DesktopSshEnvironment.DesktopSshEnvironment;
   const desktopState = yield* DesktopState.DesktopState;
   const electronUpdater = yield* ElectronUpdater.ElectronUpdater;
-  const electronWindow = yield* ElectronWindow.ElectronWindow;
-  const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const policy = yield* DesktopUpdatePolicy.DesktopUpdatePolicy;
@@ -410,38 +393,118 @@ export const make = Effect.gen(function* () {
             : desktopUpdateChannelOf(environment.appVersion) === state.channel),
       ),
     );
-  const updateStateRef = yield* Ref.make<DesktopUpdateState>(
-    createInitialDesktopUpdateState(
-      environment.appVersion,
-      environment.runtimeInfo,
-      environment.defaultDesktopSettings.updateChannel,
-    ),
-  );
-
-  const stateChanges = yield* PubSub.sliding<DesktopUpdateState>(16);
-  // Serialize writes and publishes against subscription so snapshots cannot overlap the first change.
-  const stateMutex = yield* Semaphore.make(1);
-
-  const emitState = Ref.get(updateStateRef).pipe(
-    Effect.flatMap((state) => electronWindow.sendAll(IpcChannels.UPDATE_STATE_CHANNEL, state)),
-  );
-
-  const setState = (state: DesktopUpdateState): Effect.Effect<void> =>
-    stateMutex
-      .withPermits(1)(
-        Ref.set(updateStateRef, state).pipe(Effect.andThen(PubSub.publish(stateChanges, state))),
-      )
-      .pipe(Effect.andThen(emitState));
-
-  const updateState = (
-    f: (state: DesktopUpdateState) => DesktopUpdateState,
-  ): Effect.Effect<DesktopUpdateState> =>
-    Ref.get(updateStateRef).pipe(
-      Effect.flatMap((state) => {
-        const nextState = f(state);
-        return setState(nextState).pipe(Effect.as(nextState));
-      }),
+  const { updateStateRef, stateChanges, stateMutex, emitState, setState, updateState } =
+    yield* makeDesktopUpdateStateCell(
+      createInitialDesktopUpdateState(
+        environment.appVersion,
+        environment.runtimeInfo,
+        environment.defaultDesktopSettings.updateChannel,
+      ),
+      (state) => electronWindow.sendAll(IpcChannels.UPDATE_STATE_CHANNEL, state),
     );
+
+  // Unsigned Jones previews use qualified Actions artifacts and a native activation
+  // helper. They never create a synthetic Electron/Squirrel update feed.
+  if (
+    environment.platform === "darwin" &&
+    environment.isPackaged &&
+    !environment.isDevelopment &&
+    !mockUpdates &&
+    /-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(environment.appVersion)
+  ) {
+    // The native preparation credential derives its rotating token through `Mac`.
+    const context = yield* Effect.context<Mac.Mac>();
+    const processEnv = yield* HostProcess.Environment;
+    const executablePath = yield* HostProcess.ExecutablePath;
+    const profile = yield* DesktopUserData.resolveUserDataPath(environment);
+    return yield* makeJonesDesktopUpdates({
+      createController: (options) => new JonesDesktopUpdateController(options),
+      home: environment.baseDir,
+      appRoot: environment.appRoot,
+      appPath: environment.path.resolve(environment.resourcesPath, "../.."),
+      executablePath,
+      profile,
+      bundleDirectory: environment.dirname,
+      stateDirectory: environment.stateDir,
+      activeGeneration: processEnv.T3CODE_JONES_ACTIVE_GENERATION,
+      architecture: environment.runtimeInfo.hostArch === "arm64" ? "arm64" : "x64",
+      disabledByEnv: config.disableAutoUpdate || policy.mode === "off",
+      cell: { updateStateRef, stateChanges, stateMutex, emitState, setState, updateState },
+      timestamp: () => Effect.runPromiseWith(context)(currentIsoTimestamp),
+      now: Date.now,
+      uuid: NodeCrypto.randomUUID,
+      broadcastPlan: (state) =>
+        Effect.runPromiseWith(context)(
+          electronWindow.sendAll("desktop:jones-install-plan-state", state),
+        ),
+      schedule: {
+        startupDelay: AUTO_UPDATE_STARTUP_DELAY,
+        pollInterval: AUTO_UPDATE_POLL_INTERVAL,
+      },
+      native: {
+        ordinaryRecoveryReadiness: async () => {
+          const primary = await Effect.runPromiseWith(context)(pool.primary);
+          const before = await Effect.runPromiseWith(context)(primary.snapshot);
+          const config = await Effect.runPromiseWith(context)(primary.currentConfig);
+          if (
+            !before.ready ||
+            Option.isNone(before.activePid) ||
+            Option.isNone(config) ||
+            config.value.jonesColdBackendPermit !== undefined ||
+            config.value.bootstrapDelivery !== "fd3"
+          )
+            return undefined;
+          const owner = config.value.jonesDesktopOwner?.();
+          if (owner === undefined || currentJonesDesktopOwner()?.() !== owner) return undefined;
+          owner.assertCurrent();
+          const after = await Effect.runPromiseWith(context)(primary.snapshot);
+          const current = await Effect.runPromiseWith(context)(primary.currentConfig);
+          if (
+            !after.ready ||
+            Option.isNone(after.activePid) ||
+            after.activePid.value !== before.activePid.value ||
+            Option.isNone(current) ||
+            current.value !== config.value
+          )
+            return undefined;
+          owner.assertCurrent();
+          return { owner, backendPid: after.activePid.value, run: config.value };
+        },
+        prepareNative: async (handle, transactionId, active) => {
+          const primary = await Effect.runPromiseWith(context)(pool.primary);
+          const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
+          if (Option.isNone(backend)) throw new Error("Native backend preparation is unavailable.");
+          const token = await Effect.runPromiseWith(context)(
+            jonesNativeBootstrapCredential(backend.value.bootstrap),
+          );
+          if (typeof token !== "string")
+            throw new Error("Native backend preparation is unavailable.");
+          return prepareJonesNativeInstall({
+            listener: backend.value.httpBaseUrl.toString(),
+            bootstrapToken: token,
+            stagedHandle: handle,
+            transactionId,
+            active,
+          });
+        },
+        processProofs: async () => {
+          const instances = await Effect.runPromiseWith(context)(pool.list);
+          const pids: number[] = [];
+          for (const instance of instances) {
+            const snapshot = await Effect.runPromiseWith(context)(instance.snapshot);
+            if (Option.isSome(snapshot.activePid)) pids.push(snapshot.activePid.value);
+          }
+          return jonesNativeProcessRoles(process.pid, pids);
+        },
+        listener: async () => {
+          const primary = await Effect.runPromiseWith(context)(pool.primary);
+          const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
+          if (Option.isNone(backend)) throw new Error("Native backend listener is unavailable.");
+          return backend.value.httpBaseUrl.origin;
+        },
+      },
+    });
+  }
 
   const readAppUpdateYml = fileSystem.readFileString(environment.appUpdateYmlPath, "utf-8").pipe(
     Effect.option,

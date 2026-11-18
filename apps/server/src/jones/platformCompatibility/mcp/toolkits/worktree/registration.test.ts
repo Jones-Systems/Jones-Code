@@ -35,7 +35,10 @@ import * as ScheduledTaskService from "../../../../../scheduledTasks/ScheduledTa
 import * as SecretRequests from "../../../../../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../../../../../peer/RemoteDelegation.ts";
 import * as RemoteAdmissionIntake from "../../../../remoteAdmissionIntegration/RemoteAdmissionIntake.ts";
+import * as ReceiverInspection from "../../../../remoteAdmissionIntegration/Inspection.ts";
+import * as ReceiverProtocol from "../../../../remoteAdmissionIntegration/protocolTools.ts";
 import * as ServerSettings from "../../../../../serverSettings.ts";
+import * as StorageCleanup from "../../../../../storageCleanup.ts";
 import * as VcsStatusBroadcaster from "../../../../../vcs/VcsStatusBroadcaster.ts";
 import * as ServerSecretStore from "../../../../../auth/ServerSecretStore.ts";
 import * as AssetSigner from "../../../../../assets/AssetSigner.ts";
@@ -59,6 +62,8 @@ type TurnAttachment = Parameters<
 >[0];
 const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
   Layer.mergeAll(
+    Layer.mock(ReceiverInspection.ReceiverInspection)({}),
+    Layer.mock(ReceiverProtocol.ReceiverPeerProtocol)({}),
     Layer.mock(ConversationPolicy.ConversationPolicy)({
       ownsPath: () => false,
       registerTurnAttachment: (attach) => Effect.sync(() => onAttachment(attach)),
@@ -83,11 +88,15 @@ const layerStubServices = (onAttachment: (attach: TurnAttachment) => void) =>
     Layer.mock(PeerForwarding.PeerForwarding)({}),
     Layer.mock(SecretRequests.SecretRequests)({}),
     Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-    Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
+    Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({
+      isLiveClaim: () => false,
+      register: () => {},
+    }),
     Layer.mock(ProjectService.ProjectService)({}),
     Layer.succeed(DocumentText.DocumentText, { ensure: () => Effect.sync(() => undefined) }),
     Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
     ServerSettings.layerTest({}),
+    Layer.mock(StorageCleanup.StorageCleanup)({}),
     Layer.mock(GitWorkflowService.GitWorkflowService)({}),
     Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
     Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),

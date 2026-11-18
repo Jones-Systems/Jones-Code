@@ -3,6 +3,9 @@ const actions = {
   create: "create the Workstream",
   rename: "rename the Workstream",
   recolor: "change the color",
+  nameIcon: "change the name icon",
+  snooze: "snooze the Workstream",
+  unsnooze: "unsnooze the Workstream",
   lifecycle: "change the status",
   reorder: "reorder Workstreams",
   delete: "delete the Workstream",
@@ -25,8 +28,19 @@ export function personalWorkstreamFailureText(
       return "Couldn't move this thread. It no longer exists.";
     case "workstream_deleted":
       return "That Workstream was deleted.";
+    case "workstream_closed":
+      return "That Workstream is closed. Reopen it before moving threads there.";
+    case "unsettled_threads":
+      return "Settle or move every assigned thread before closing this Workstream.";
+    case "closure_unavailable":
+      return "Couldn't verify every environment. Connect and update each environment, then try again.";
     case "changed_elsewhere":
-      return "This thread was moved somewhere else. Try again.";
+      return failure.action === "lifecycle" ||
+        failure.action === "nameIcon" ||
+        failure.action === "snooze" ||
+        failure.action === "unsnooze"
+        ? "This Workstream changed elsewhere. Try again."
+        : "This thread was moved somewhere else. Try again.";
     case "unconfirmed":
       return "Couldn't confirm that change. Check the Workstream and try again.";
     case "failed":

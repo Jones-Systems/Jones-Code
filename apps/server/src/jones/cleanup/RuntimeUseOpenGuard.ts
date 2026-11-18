@@ -44,6 +44,8 @@ import {
   assertRuntimeUseDefaultWorkspace,
 } from "./RuntimeUseWorkspace.ts";
 
+import { OpenDutyClaim } from "../workspaceRetirement/DutyLifetimeLink.ts";
+
 interface OpenInput {
   readonly threadId: string;
   readonly providerSessionId: string;
@@ -271,6 +273,8 @@ export const make = Effect.gen(function* () {
     if (Option.isNone(context) || canonical(context.value.input) !== canonical(input))
       return yield* new RuntimeUseError({ reason: "runtime_use_open_outside_workspace_exclusion" });
     const use = yield* context.value.prepare(driver);
+    const dutyClaim = yield* Effect.serviceOption(OpenDutyClaim);
+    if (Option.isSome(dutyClaim)) yield* dutyClaim.value.link(use.binding);
     const sql = storage.value;
     let openedSession: { readonly createdAt: string; readonly cwd: string } | undefined;
     const lifetime = yield* makeRuntimeUseLifetime({

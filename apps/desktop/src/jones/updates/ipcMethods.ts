@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import * as DesktopIpc from "../../ipc/DesktopIpc.ts";
-import * as DesktopUpdates from "../../updates/DesktopUpdates.ts";
+import * as DesktopUpdates from "../../updates/DesktopUpdatesService.ts";
 import * as JonesUpdateChannels from "./ipcChannels.ts";
 
 export const setBackgroundPreparation = DesktopIpc.makeIpcMethod({

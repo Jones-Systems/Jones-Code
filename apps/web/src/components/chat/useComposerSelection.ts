@@ -249,7 +249,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
           envMode: mode,
           newWorktreesStartFromOrigin: activeProjectSettings.settings.newWorktreesStartFromOrigin,
         }),
-        ...(mode === "worktree" && draftThread?.worktreePath ? { worktreePath: null } : {}),
+        ...(mode !== "local" && draftThread?.worktreePath ? { worktreePath: null } : {}),
       });
     }
     scheduleComposerFocus();

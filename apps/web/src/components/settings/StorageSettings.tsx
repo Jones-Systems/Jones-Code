@@ -1,4 +1,15 @@
 import { requestConfirmDialog } from "~/confirmDialog";
+import { CleanupResults } from "../../jones/storageCleanupResults/CleanupResults";
+import { retireConfirmation } from "../../jones/storageCleanupResults/retirementCopy";
+import {
+  cleanupFleetTimestamp,
+  cleanupReportSummary,
+  cleanupRequestSummary,
+  cleanupRequestIsOutstanding,
+  type CleanupOperation,
+  type CleanupRequest,
+} from "../../jones/storageCleanupResults/runStatus";
+import { useClientSettings } from "../../hooks/useSettings";
 import type {
   StorageCleanupReport,
   StorageCleanupSettings,
@@ -6,22 +17,20 @@ import type {
 } from "@t3tools/contracts";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { formatBytes } from "../../lib/formatBytes";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useDebouncedValue } from "../../state/queries";
 import { AnimatedHeight } from "../AnimatedHeight";
 import { Button } from "../ui/button";
-import { toastManager } from "../ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -285,170 +294,6 @@ const COVERAGE_LABEL = {
   format_recognized: "Discard recognized format files",
 } as const;
 
-function factsWithKeys<A>(values: readonly A[], identity: (value: A) => string) {
-  const occurrences = new Map<string, number>();
-  return values.map((value) => {
-    const fact = identity(value);
-    const occurrence = occurrences.get(fact) ?? 0;
-    occurrences.set(fact, occurrence + 1);
-    return { value, key: `${fact}:${occurrence}` };
-  });
-}
-
-function lineageIdentity(lineage: Readonly<Record<string, string>>) {
-  return JSON.stringify(
-    Object.entries(lineage).sort(([left], [right]) => left.localeCompare(right)),
-  );
-}
-
-function CleanupResults({
-  report,
-  environmentLabel,
-  onRetire,
-}: {
-  report: StorageCleanupReport;
-  environmentLabel: string;
-  onRetire?: (entry: StorageCleanupReport["entries"][number]) => void;
-}) {
-  return (
-    <>
-      {report.entries.map((entry, index) => {
-        const name =
-          entry.kind === "worktree"
-            ? ((entry.threadId === null
-                ? entry.path
-                : entry.path?.split(/[\\/]/).findLast(Boolean)) ?? "Worktrees")
-            : entry.kind === "logs"
-              ? "Rotated logs"
-              : "Browser artifacts";
-        return (
-          <SettingsRow
-            key={`${entry.path ?? entry.kind}:${entry.threadId ?? index}`}
-            title={<span className="wrap-anywhere select-text">{name}</span>}
-            description={
-              <span className="block space-y-2 wrap-anywhere select-text">
-                <span className={`block ${entry.outcome === "failed" ? "text-destructive" : ""}`}>
-                  {entry.reason}
-                </span>
-                <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-border/60 pl-3">
-                  <span>Machine</span>
-                  <span className="text-foreground/80">{environmentLabel}</span>
-                  {entry.projectPath && (
-                    <>
-                      <span>Project</span>
-                      <code className="text-foreground/80">{entry.projectPath}</code>
-                    </>
-                  )}
-                  {entry.path && (
-                    <>
-                      <span>Folder</span>
-                      <code className="text-foreground/80">{entry.path}</code>
-                    </>
-                  )}
-                  {entry.threadTitle && (
-                    <>
-                      <span>Thread</span>
-                      <span>{entry.threadTitle}</span>
-                    </>
-                  )}
-                </span>
-              </span>
-            }
-            control={
-              <>
-                {onRetire &&
-                  entry.threadId &&
-                  entry.path &&
-                  entry.retirement?.fingerprint &&
-                  entry.retirement.paths.length <= 200 &&
-                  entry.retirement.reasonCodes.every((reason) =>
-                    ["unattested_ignored", "sensitive_ignored", "untracked"].includes(reason),
-                  ) &&
-                  entry.retirement.state !== "retired" && (
-                    <Button variant="outline" size="sm" onClick={() => onRetire(entry)}>
-                      Retire
-                    </Button>
-                  )}
-                {(entry.outcome === "removed" ||
-                  (entry.outcome === "kept" && entry.bytes !== null)) && (
-                  <span className="text-xs text-muted-foreground">
-                    {[
-                      entry.kind !== "worktree" && entry.files !== null
-                        ? `${entry.files.toLocaleString()} ${entry.files === 1 ? "file" : "files"}`
-                        : null,
-                      entry.bytes !== null ? formatBytes(entry.bytes) : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </span>
-                )}
-              </>
-            }
-          >
-            {entry.retirement &&
-              (entry.retirement.receiptId ||
-                entry.retirement.details.length > 0 ||
-                entry.retirement.outputObligations.length > 0) && (
-                <details className="pb-2 text-xs text-muted-foreground wrap-anywhere select-text">
-                  <summary className="cursor-pointer">Retirement details</summary>
-                  <span className="mt-1 block space-y-1">
-                    {entry.retirement.receiptId && (
-                      <span className="block">
-                        Receipt: {entry.retirement.receiptId} · {entry.retirement.state}
-                      </span>
-                    )}
-                    {factsWithKeys(entry.retirement.details, (detail) =>
-                      JSON.stringify([
-                        detail.target,
-                        detail.root,
-                        detail.reason,
-                        detail.fact,
-                        detail.missingFact,
-                        detail.nextAction,
-                        detail.lineage.map(lineageIdentity),
-                      ]),
-                    ).map(({ value: detail, key }) => (
-                      <span key={key} className="block">
-                        <code>{detail.root}</code>: {detail.fact}{" "}
-                        {detail.missingFact ? `Missing: ${detail.missingFact}. ` : ""}
-                        {detail.nextAction}
-                        {factsWithKeys(detail.lineage, lineageIdentity).map(
-                          ({ value: lineage, key }) => (
-                            <span key={key} className="block">
-                              {Object.entries(lineage)
-                                .map(([key, value]) => `${key}: ${value}`)
-                                .join(" · ")}
-                            </span>
-                          ),
-                        )}
-                      </span>
-                    ))}
-                    {entry.retirement.outputObligations.map((output) => (
-                      <span key={output.id} className="block">
-                        Output {output.id}: <code>{output.path}</code> · Owner {output.owner} ·{" "}
-                        {output.state}
-                      </span>
-                    ))}
-                  </span>
-                </details>
-              )}
-          </SettingsRow>
-        );
-      })}
-      {report.omittedCount > 0 && (
-        <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-          {environmentLabel}: {report.omittedCount.toLocaleString()} more results.
-        </p>
-      )}
-      {report.entries.length === 0 && report.omittedCount === 0 && (
-        <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
-          {environmentLabel}: Nothing needed cleanup.
-        </p>
-      )}
-    </>
-  );
-}
-
 const storageCleanupReportsAtom = environmentAtomList(
   "web-storage-cleanup-reports",
   (environmentId) => serverEnvironment.storageCleanupReport({ environmentId, input: {} }),
@@ -459,10 +304,16 @@ const storageCleanupPermissionsAtom = environmentAtomList(
 );
 
 function CleanupSection() {
+  const timestampId = useId();
   const nowMinute = useNowMinute();
   const nowMs = Date.parse(`${nowMinute}:00.000Z`);
-  const { connectedEnvironments } = useSettingsScope();
+  const { scope, connectedEnvironments } = useSettingsScope();
   const [pending, setPending] = useState(false);
+  const [requests, setRequests] = useState<Record<string, CleanupRequest & { label: string }>>({});
+  // Set when a proposal or retirement report arrives in this view; it opens Last run so the owner sees the results.
+  // Kept apart from `requests`, which are dropped once the retained report catches up.
+  const [arrivedReportKey, setArrivedReportKey] = useState<string | null>(null);
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   const run = useAtomCommand(serverEnvironment.runStorageCleanup);
   const supported = connectedEnvironments.filter(
     (environment) => environment.serverConfig?.environment.capabilities.storageCleanupRun === true,
@@ -480,6 +331,15 @@ function CleanupSection() {
       failed: query._tag === "Failure",
     };
   });
+  const acknowledgedIds = state.flatMap(({ environmentId, report }) => {
+    const request = requests[environmentId];
+    return request && !cleanupRequestIsOutstanding(request, report) ? [environmentId] : [];
+  });
+  if (acknowledgedIds.length > 0) {
+    const remaining = { ...requests };
+    for (const environmentId of acknowledgedIds) delete remaining[environmentId];
+    setRequests(remaining);
+  }
   const hasRules = supported.some((environment) => {
     const settings = environment.serverConfig?.settings;
     if (!settings) return false;
@@ -499,100 +359,148 @@ function CleanupSection() {
       )
     );
   });
-  if (supported.length === 0) return null;
-  const summaries = supported.map((environment) => {
-    const query = state.find((entry) => entry.environmentId === environment.environmentId);
-    const report = query?.report ?? null;
-    return {
-      environment,
-      report,
+  const displayTargets = [
+    ...supported.map((environment) => ({
+      environmentId: environment.environmentId,
       label: settingsScopeEnvironmentLabel(environment, connectedEnvironments),
-      counts: report
-        ? `${report.counts.removed} removed, ${report.counts.kept} kept${report.counts.failed > 0 ? `, ${report.counts.failed} failed` : ""}`
-        : "",
+    })),
+    ...Object.entries(requests).flatMap(([environmentId, request]) =>
+      scope.environmentIds.some((id) => id === environmentId) &&
+      !supportedIds.some((id) => id === environmentId)
+        ? [{ environmentId, label: request.label }]
+        : [],
+    ),
+  ];
+  if (displayTargets.length === 0) return null;
+  const summaries = displayTargets.map(({ environmentId, label }) => {
+    const query = state.find((entry) => entry.environmentId === environmentId);
+    const request = requests[environmentId];
+    const report = query
+      ? query.report
+      : request?.status === "completed"
+        ? (request.report ?? null)
+        : null;
+    return {
+      environmentId,
+      report,
+      label,
+      counts:
+        request && request.status !== "completed"
+          ? cleanupRequestSummary(request)
+          : report
+            ? cleanupReportSummary(report)
+            : query?.failed
+              ? "Report unavailable"
+              : query?.loading
+                ? "Loading report…"
+                : "No completed report available",
       description: report
-        ? `Last run ${formatRelativeTimeLabel(report.finishedAt, nowMs)}. ${report.entries.some((entry) => entry.retirement && entry.bytes === null) ? "Recovered bytes unavailable" : `${formatBytes(report.bytesFreed)} recovered`}.${report.counts.failed > 0 ? ` ${report.counts.failed} ${report.counts.failed === 1 ? "item" : "items"} couldn't be removed.` : ""}`
+        ? cleanupReportSummary(report)
         : query?.failed
-          ? "Could not load the last run."
+          ? "Could not load the last report."
           : query?.loading
-            ? "Loading last run…"
-            : "Cleanup hasn't run yet.",
+            ? "Loading last report…"
+            : "No completed report available for this server session.",
     };
   });
-  const propose = async () => {
-    if (pending) return;
-    setPending(true);
+  const timestamp = cleanupFleetTimestamp(summaries, timestampFormat, nowMs);
+  const execute = async (
+    environment: (typeof supported)[number],
+    operation: CleanupOperation,
+    input: Parameters<typeof run>[0]["input"],
+  ) => {
+    const { environmentId } = environment;
+    const label = settingsScopeEnvironmentLabel(environment, connectedEnvironments);
+    const update = (request: CleanupRequest) =>
+      setRequests((current) => ({ ...current, [environmentId]: { ...request, label } }));
+    update({ operation, status: "running" });
     try {
-      for (const environment of supported.filter(
-        (e) =>
-          e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true &&
-          state.some((s) => s.environmentId === e.environmentId && s.allowed),
-      )) {
-        const result = await run({
-          environmentId: environment.environmentId,
-          input: { retirement: { action: "propose" } },
+      const result = await run({ environmentId, input });
+      if (result._tag === "Success") {
+        update({ operation, status: "completed", report: result.value });
+        if (operation === "propose" || operation === "retire")
+          setArrivedReportKey(
+            JSON.stringify([environmentId, result.value.startedAt, result.value.finishedAt]),
+          );
+      } else {
+        update({
+          operation,
+          status: "unconfirmed",
+          detail: isAtomCommandInterrupted(result)
+            ? "The request was interrupted; check the retained report before trying again."
+            : String(squashAtomCommandFailure(result)),
         });
-        if (result._tag === "Failure" && !isAtomCommandInterrupted(result))
-          toastManager.add({
-            type: "error",
-            title: `Could not propose retirements on ${environment.label}`,
-            description: String(squashAtomCommandFailure(result)),
-          });
       }
     } catch (error) {
-      setPending(false);
-      toastManager.add({
-        type: "error",
-        title: "Could not propose checkout retirements",
-        description: error instanceof Error ? error.message : String(error),
+      update({
+        operation,
+        status: "unconfirmed",
+        detail: error instanceof Error ? error.message : String(error),
       });
-      return;
     }
-    setPending(false);
+  };
+  const propose = async () => {
+    if (pending) return;
+    const targets = supported.filter(
+      (environment) =>
+        environment.serverConfig?.environment.capabilities.settledWorktreeRetirement === true &&
+        state.some((entry) => entry.environmentId === environment.environmentId && entry.allowed),
+    );
+    setPending(true);
+    setRequests((current) => ({
+      ...current,
+      ...Object.fromEntries(
+        targets.map((environment) => [
+          environment.environmentId,
+          {
+            operation: "propose",
+            status: "queued",
+            label: settingsScopeEnvironmentLabel(environment, connectedEnvironments),
+          } as const,
+        ]),
+      ),
+    }));
+    await targets
+      .reduce(
+        (previous, environment) =>
+          previous.then(() =>
+            execute(environment, "propose", { retirement: { action: "propose" } }),
+          ),
+        Promise.resolve(),
+      )
+      .finally(() => setPending(false));
   };
   const retireTarget = async (
     environmentId: (typeof supportedIds)[number],
     entry: StorageCleanupReport["entries"][number],
   ) => {
     if (pending || !entry.threadId || !entry.path || !entry.retirement?.fingerprint) return;
+    const environment = supported.find((candidate) => candidate.environmentId === environmentId);
+    if (
+      !environment ||
+      !state.some((entry) => entry.environmentId === environmentId && entry.allowed)
+    )
+      return;
     const coveredPaths = entry.retirement.paths;
     const confirmed = await (requestConfirmDialog(
-      `Retire ${entry.path}? Branches and recovery references are kept. This authorizes disposal only of these exact selections, including additions within the listed roots:
-${coveredPaths.length ? coveredPaths.join("\n") : "No local content selected."}
-Live consumers, tracked edits, nested repositories and other protections still hold.`,
+      retireConfirmation({
+        path: entry.path,
+        coveredPaths,
+        recoverability: entry.retirement.recoverability,
+      }),
       { variant: "destructive" },
     ) ?? Promise.resolve(false));
     if (!confirmed) return;
     setPending(true);
-    try {
-      const result = await run({
-        environmentId,
-        input: {
-          retirement: {
-            action: "retire",
-            threadId: entry.threadId,
-            worktreePath: entry.path,
-            expectedFingerprint: entry.retirement.fingerprint,
-            coveredPaths,
-          },
-        },
-      });
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result))
-        toastManager.add({
-          type: "error",
-          title: "Checkout retirement failed",
-          description: String(squashAtomCommandFailure(result)),
-        });
-    } catch (error) {
-      setPending(false);
-      toastManager.add({
-        type: "error",
-        title: "Checkout retirement failed",
-        description: error instanceof Error ? error.message : String(error),
-      });
-      return;
-    }
-    setPending(false);
+    await execute(environment, "retire", {
+      retirement: {
+        action: "retire",
+        threadId: entry.threadId,
+        worktreePath: entry.path,
+        expectedFingerprint: entry.retirement.fingerprint,
+        coveredPaths,
+      },
+    }).finally(() => setPending(false));
   };
   const deleteNow = async () => {
     if (pending) return;
@@ -602,24 +510,7 @@ Live consumers, tracked edits, nested repositories and other protections still h
         .filter((environment) =>
           state.some((entry) => entry.environmentId === environment.environmentId && entry.allowed),
         )
-        .map(async (environment) => {
-          const result = await run({ environmentId: environment.environmentId, input: {} });
-          if (result._tag === "Success") {
-            const failures = result.value.entries.filter((entry) => entry.outcome === "failed");
-            if (failures.length > 0)
-              toastManager.add({
-                type: "error",
-                title: `Cleanup failed on ${environment.label}`,
-                description: failures[0]!.reason,
-              });
-          } else if (!isAtomCommandInterrupted(result)) {
-            toastManager.add({
-              type: "error",
-              title: `Could not run cleanup on ${environment.label}`,
-              description: String(squashAtomCommandFailure(result)),
-            });
-          }
-        }),
+        .map((environment) => execute(environment, "cleanup", {})),
     ).finally(() => setPending(false));
   };
   return (
@@ -629,14 +520,15 @@ Live consumers, tracked edits, nested repositories and other protections still h
           {...searchableSetting("storage-delete-now")}
           description={
             <span>
-              {!hasRules
-                ? "Turn on a cleanup rule to use this."
-                : summaries.map(({ environment, label, description }) => (
-                    <span key={environment.environmentId} className="block">
-                      {supported.length > 1 ? `${label}: ` : ""}
-                      {description}
-                    </span>
-                  ))}
+              {summaries.map(({ environmentId, label, description }) => (
+                <span key={environmentId} className="block">
+                  {displayTargets.length > 1 ? `${label}: ` : ""}
+                  {description}
+                </span>
+              ))}
+              {!hasRules && (
+                <span className="block">Turn on a cleanup rule to use Delete now.</span>
+              )}
             </span>
           }
           control={
@@ -647,7 +539,18 @@ Live consumers, tracked edits, nested repositories and other protections still h
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={pending || !state.some((e) => e.allowed)}
+                  disabled={
+                    pending ||
+                    !supported.some(
+                      (environment) =>
+                        environment.serverConfig?.environment.capabilities
+                          .settledWorktreeRetirement === true &&
+                        state.some(
+                          (entry) =>
+                            entry.environmentId === environment.environmentId && entry.allowed,
+                        ),
+                    )
+                  }
                   onClick={() => void propose()}
                 >
                   Propose retirements
@@ -659,43 +562,102 @@ Live consumers, tracked edits, nested repositories and other protections still h
                 disabled={pending || !hasRules || !state.some((entry) => entry.allowed)}
                 onClick={() => void deleteNow()}
               >
-                {pending ? "Working…" : "Delete now"}
+                Delete now
               </Button>
             </>
           }
         />
       </SettingsGroup>
-      {summaries.some(({ report }) => report !== null) && (
-        <FoldedSettingsSection
-          id="storage-cleanup-last-run"
-          title="Last run"
-          headerPlacement="inside"
-          summary={lastRunSummary(
-            summaries.filter(({ report }) => report !== null),
-            connectedEnvironments.length,
-          )}
-        >
-          {summaries.map(
-            ({ environment, label, report }) =>
-              report && (
-                <CleanupResults
-                  key={environment.environmentId}
-                  report={report}
-                  environmentLabel={label}
-                  {...(!pending &&
-                  environment.serverConfig?.environment.capabilities.settledWorktreeRetirement ===
-                    true &&
-                  state.some((e) => e.environmentId === environment.environmentId && e.allowed)
-                    ? {
-                        onRetire: (entry: StorageCleanupReport["entries"][number]) =>
-                          void retireTarget(environment.environmentId, entry),
-                      }
-                    : {})}
-                />
-              ),
-          )}
-        </FoldedSettingsSection>
-      )}
+      <FoldedSettingsSection
+        id="storage-cleanup-last-run"
+        title="Last run"
+        headerPlacement="inside"
+        wrapHeader={false}
+        openKey={arrivedReportKey}
+        summary={lastRunSummary(summaries, scope.environmentIds.length)}
+        control={
+          <Tooltip>
+            <TooltipTrigger
+              render={<span tabIndex={0} />}
+              className="truncate whitespace-nowrap text-right text-xs text-muted-foreground"
+              aria-label={`Last completed run: ${timestamp.exact}`}
+              aria-describedby={timestampId}
+            >
+              {timestamp.label}
+            </TooltipTrigger>
+            <TooltipPopup role="tooltip" id={timestampId}>
+              {timestamp.exact}
+            </TooltipPopup>
+          </Tooltip>
+        }
+      >
+        <div className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
+          Reports are retained until each server restarts. Manual reports stay visible ahead of
+          automatic cleanup. Progress is shown for requests started in this view.
+        </div>
+        {summaries.map(({ environmentId, label, report }) => {
+          const request = requests[environmentId];
+          const query = state.find((entry) => entry.environmentId === environmentId);
+          if (request && cleanupRequestIsOutstanding(request, report))
+            return (
+              <p key={environmentId} role="status" className="px-3 py-2.5 text-xs sm:px-4">
+                {label}: {cleanupRequestSummary(request)}{" "}
+                {request.status === "completed"
+                  ? query?.failed
+                    ? "Could not load the retained report."
+                    : "Waiting for the retained report to update."
+                  : ""}{" "}
+                {report
+                  ? "Previous completed report shown below."
+                  : "No completed report available."}
+              </p>
+            );
+          if (!report)
+            return (
+              <p
+                key={environmentId}
+                role="status"
+                className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4"
+              >
+                {label}:{" "}
+                {query?.failed
+                  ? "Could not load the last report."
+                  : query?.loading
+                    ? "Loading last report…"
+                    : "No completed report available for this server session."}
+              </p>
+            );
+          return null;
+        })}
+        <CleanupResults
+          selectedEnvironmentIds={displayTargets.map(({ environmentId }) => environmentId)}
+          reports={summaries.flatMap(({ environmentId, label, report }) => {
+            const environment = supported.find(
+              (candidate) => candidate.environmentId === environmentId,
+            );
+            return report
+              ? [
+                  {
+                    environmentId,
+                    environmentLabel: label,
+                    report,
+                    timestampFormat,
+                    nowMs,
+                    ...(!pending &&
+                    environment?.serverConfig?.environment.capabilities
+                      .settledWorktreeRetirement === true &&
+                    state.some((e) => e.environmentId === environment.environmentId && e.allowed)
+                      ? {
+                          onRetire: (entry: StorageCleanupReport["entries"][number]) =>
+                            void retireTarget(environment.environmentId, entry),
+                        }
+                      : {}),
+                  },
+                ]
+              : [];
+          })}
+        />
+      </FoldedSettingsSection>
     </SettingsSection>
   );
 }
@@ -945,6 +907,21 @@ export function WorktreeCleanupSection() {
                             <SelectItem value="branch-retained">Branch retained</SelectItem>
                           </SelectPopup>
                         </Select>
+                      }
+                    />
+                    <SettingsRow
+                      managedPaths={lockablePath("worktreeRegenerableDiscard")}
+                      title="Discard regenerable build output"
+                      description="Dependency installs, build output and caches such as node_modules, dist and build. A nested repository, or a .env or key file in build output, stays protected."
+                      serverScoped={!isProjectScope}
+                      control={
+                        <Switch
+                          aria-label="Discard regenerable build output"
+                          checked={settings.worktreeRegenerableDiscard}
+                          onCheckedChange={(worktreeRegenerableDiscard) =>
+                            updateWorktree({ worktreeRegenerableDiscard })
+                          }
+                        />
                       }
                     />
                     {(

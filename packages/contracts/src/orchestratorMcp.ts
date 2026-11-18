@@ -1,3 +1,12 @@
+import {
+  ThreadResultRequestDescriptor,
+  ThreadResultDependencyBinding,
+  ThreadResultDependency,
+  ThreadResultRequest,
+} from "./jones/threadResultDependency.ts";
+import { LinkedMessagePolicy, RemoteTaskObservation } from "./jones/remoteTaskObservation.ts";
+import { RemoteAdmissionDigest, RemoteAdmissionStatus } from "./jones/remoteAdmission.ts";
+import { SettlementProjectRemaining } from "./jones/settlementOrigins.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -37,6 +46,8 @@ import { hasOnlyPairedSurrogates } from "./threadMetadataMcp.ts";
 import { LastThreadTitleRegeneration, ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2Actor,
+  OrchestrationV2PendingBackgroundTask,
+  OrchestrationV2ProviderGoal,
   OrchestrationV2CreationSource,
   OrchestrationV2DelegatedFrom,
   OrchestrationV2RunStatus,
@@ -44,6 +55,15 @@ import {
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { DelegatedTaskWorkspaceFields } from "./jones/delegatedTaskWorkspace.ts";
+import { DelegatedTaskSupervisionFields } from "./jones/delegatedTaskSupervision.ts";
+import { DelegatedTaskNativeSession } from "./jones/delegatedTaskNativeSession.ts";
+import {
+  ThreadContentEvidence,
+  ThreadContentEvidenceCapability,
+  ThreadContentEvidenceRequest,
+  isThreadContentEvidenceSelection,
+} from "./jones/threadContentEvidence.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
 const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -176,9 +196,10 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
-        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out.",
+        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out. Not with workspaceStrategy.",
     }),
   ),
+  ...DelegatedTaskWorkspaceFields,
   mode: Schema.optional(
     Schema.Literals(["async", "wait"]).annotate({
       description:
@@ -192,10 +213,15 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   runtimeMode: Schema.optional(
     OrchestratorMcpRuntimeMode.annotate({
       description:
-        "Omit unless the user asks for a supervised child. Narrow modes pause for human approval, not read-only. Above yours is rejected.",
+        "Omit to inherit yours. Narrower modes pause the child for human approval and need supervisionRequestedByUser. Above yours is rejected.",
     }),
   ),
-  interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
+  interactionMode: Schema.optional(
+    OrchestratorMcpInteractionMode.annotate({
+      description: "Omit to inherit yours. plan from default needs supervisionRequestedByUser.",
+    }),
+  ),
+  ...DelegatedTaskSupervisionFields,
 });
 export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTaskInput.Type;
 
@@ -212,6 +238,8 @@ const OrchestratorMcpExecutedModel = Schema.NullOr(Schema.String).annotate({
 });
 
 export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
+  nativeSession: Schema.optional(DelegatedTaskNativeSession),
+  remoteObservation: Schema.optional(RemoteTaskObservation),
   taskId: NodeId,
   /** Null for a task that runs in a linked environment; see `remoteChild`. */
   childThreadId: Schema.NullOr(ThreadId),
@@ -370,6 +398,14 @@ export const OrchestratorMcpThreadListInput = Schema.Struct({
 });
 export type OrchestratorMcpThreadListInput = typeof OrchestratorMcpThreadListInput.Type;
 
+export const OrchestratorMcpThreadActivityObservation = Schema.Struct({
+  foreground: Schema.NullOr(
+    Schema.Literals(["working", "waiting_approval", "waiting_input", "waiting_plan"]),
+  ),
+  background: Schema.NullOr(Schema.Literals(["working", "monitoring"])),
+  backgroundStatus: Schema.Literals(["known", "unknown"]),
+  reason: Schema.optional(Schema.String),
+});
 /** state is null until the host is read. */
 export const OrchestratorMcpThreadPullRequest = Schema.Struct({
   ...ThreadPullRequestKey.fields,
@@ -381,6 +417,21 @@ export const OrchestratorMcpThreadPullRequest = Schema.Struct({
 });
 export type OrchestratorMcpThreadPullRequest = typeof OrchestratorMcpThreadPullRequest.Type;
 
+const OrchestratorMcpThreadBackgroundWorkFields = {
+  pendingBackgroundTasks: Schema.optional(
+    Schema.Array(OrchestrationV2PendingBackgroundTask),
+  ).annotate({
+    description:
+      "Authoritative shell background work. Absent means unknown; list rosters are capped at 20.",
+  }),
+  backgroundHoldsCompletion: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Whether the full background roster holds completion, including omitted tasks. Absent means unknown.",
+  }),
+  pendingBackgroundTasksTruncated: Schema.optional(Schema.Boolean).annotate({
+    description: "Whether the returned background roster omits tasks. Absent means unknown.",
+  }),
+};
 /** Background work still open on the thread, as its provider reported it. */
 export const OrchestratorMcpThreadBackgroundTask = Schema.Struct({
   taskId: TrimmedNonEmptyString,
@@ -393,6 +444,11 @@ export const OrchestratorMcpThreadBackgroundTask = Schema.Struct({
 export type OrchestratorMcpThreadBackgroundTask = typeof OrchestratorMcpThreadBackgroundTask.Type;
 
 export const OrchestratorMcpThreadListItem = Schema.Struct({
+  ...OrchestratorMcpThreadBackgroundWorkFields,
+  waitingOn: Schema.optional(Schema.Array(ThreadResultDependency)),
+  goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)),
+  goalSource: Schema.optional(Schema.Literal("provider_projection")),
+  activityObservation: Schema.optional(OrchestratorMcpThreadActivityObservation),
   threadId: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
@@ -405,6 +461,7 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   model: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  threadMessagesBlocked: Schema.optional(Schema.Boolean),
   linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),
   /** Up to 5 open linked pull requests, watched first; list_thread_pull_requests pages all of them. */
   pullRequests: Schema.optional(Schema.Array(OrchestratorMcpThreadPullRequest)),
@@ -419,7 +476,6 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   /** Absent from linked environments that predate it. */
   blockedOnThreadWait: Schema.optional(Schema.Boolean),
   /** Absent from linked environments that predate it. */
-  pendingBackgroundTasks: Schema.optional(Schema.Array(OrchestratorMcpThreadBackgroundTask)),
   parentThreadId: Schema.NullOr(ThreadId),
   relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
   /** The linked environment's thread that delegated this one; absent otherwise. */
@@ -440,7 +496,9 @@ export const OrchestratorMcpThreadListResult = Schema.Struct({
 });
 export type OrchestratorMcpThreadListResult = typeof OrchestratorMcpThreadListResult.Type;
 
-export const OrchestratorMcpThreadReadInput = Schema.Struct({
+const OrchestratorMcpThreadReadFields = Schema.Struct({
+  contentEvidence: Schema.optional(ThreadContentEvidenceRequest),
+  childProgressForRunId: Schema.optional(RunId),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   itemId: Schema.optional(TurnItemId),
@@ -450,13 +508,31 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
   beforePosition: Schema.optional(NonNegativeInt),
   limit: Schema.optional(clampedPositiveInt(100)).annotate({ description: "Max 100." }),
   runLimit: Schema.optional(clampedPositiveInt(50)).annotate({ description: "Max 50." }),
-  maxCharsPerItem: Schema.optional(clampedPositiveInt(20_000)).annotate({
-    description: "Max 20000.",
+  maxCharsPerItem: Schema.optional(clampedPositiveInt(50_000)).annotate({
+    description: "Max 20000 ordinarily; 50000 with negotiated Jones content evidence.",
   }),
-});
+}).check(Schema.makeFilter(isThreadContentEvidenceSelection));
+// The ordinary 20000 cap applies after wire decoding; the decoded side keeps branded ids.
+export const OrchestratorMcpThreadReadInput = OrchestratorMcpThreadReadFields.pipe(
+  Schema.decodeTo(
+    Schema.toType(OrchestratorMcpThreadReadFields),
+    SchemaTransformation.transform({
+      decode: (input) =>
+        input.maxCharsPerItem === undefined || input.contentEvidence !== undefined
+          ? input
+          : { ...input, maxCharsPerItem: Math.min(input.maxCharsPerItem, 20_000) },
+      encode: (input) => input,
+    }),
+  ),
+);
 export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInput.Type;
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
+  ...OrchestratorMcpThreadBackgroundWorkFields,
+  waitingOn: Schema.optional(Schema.Array(ThreadResultDependency)),
+  owedRequests: Schema.optional(Schema.Array(ThreadResultRequest)),
+  goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)),
+  goalSource: Schema.optional(Schema.Literal("provider_projection")),
   threadId: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
@@ -470,6 +546,7 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   model: Schema.String,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  threadMessagesBlocked: Schema.optional(Schema.Boolean),
   linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),
   /** Up to 5 open linked pull requests, watched first, on the first page only; list_thread_pull_requests pages all of them. */
   pullRequests: Schema.optional(Schema.Array(OrchestratorMcpThreadPullRequest)),
@@ -496,7 +573,6 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   /** Absent from linked environments that predate it. */
   blockedOnThreadWait: Schema.optional(Schema.Boolean),
   /** Absent from linked environments that predate it. */
-  pendingBackgroundTasks: Schema.optional(Schema.Array(OrchestratorMcpThreadBackgroundTask)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -516,6 +592,7 @@ export const OrchestratorMcpThreadRun = Schema.Struct({
 export type OrchestratorMcpThreadRun = typeof OrchestratorMcpThreadRun.Type;
 
 export const OrchestratorMcpThreadTimelineItem = Schema.Struct({
+  contentEvidence: Schema.optional(ThreadContentEvidence),
   position: NonNegativeInt,
   visibility: Schema.Literals(["local", "inherited", "synthetic"]),
   sourceThreadId: ThreadId,
@@ -537,6 +614,8 @@ export const OrchestratorMcpThreadTimelineItem = Schema.Struct({
 export type OrchestratorMcpThreadTimelineItem = typeof OrchestratorMcpThreadTimelineItem.Type;
 
 export const OrchestratorMcpThreadReadResult = Schema.Struct({
+  remoteMessagePolicy: Schema.optional(LinkedMessagePolicy),
+  remoteObservation: Schema.optional(RemoteTaskObservation),
   thread: OrchestratorMcpThreadDetail,
   recentRuns: Schema.Array(OrchestratorMcpThreadRun),
   items: Schema.Array(OrchestratorMcpThreadTimelineItem),
@@ -548,10 +627,14 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
+  /** Compare the target incarnation under its command lock before SEND; unsupported fences fail closed. */
+  expectedThreadCreatedAt: Schema.optional(IsoDateTime),
+  awaitResult: Schema.optional(Schema.Boolean),
+  resultRequest: Schema.optional(ThreadResultRequestDescriptor),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
-  mode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
+  mode: Schema.optional(Schema.Literals(["auto", "queue", "separate_turn", "steer", "restart"])),
   freshContext: Schema.optional(
     Schema.Boolean.annotate({
       description:
@@ -563,6 +646,7 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
 export type OrchestratorMcpThreadSendInput = typeof OrchestratorMcpThreadSendInput.Type;
 
 export const OrchestratorMcpThreadSendResult = Schema.Struct({
+  dependency: Schema.optional(ThreadResultDependencyBinding),
   threadId: ThreadId,
   link: Schema.optional(Schema.String),
   messageId: MessageId,
@@ -573,7 +657,55 @@ export const OrchestratorMcpThreadSendResult = Schema.Struct({
 });
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
 
+export const REMOTE_FOLLOW_UP_RECEIPT_VERSION = "jones.remote-followup-receipt/v1";
+
+// Receipt identity must not be silently stripped before the authenticated owner validates it.
+const remoteFollowUpStruct = <Fields extends Schema.Struct.Fields>(fields: Fields) =>
+  Schema.flip(
+    Schema.flip(Schema.Struct(fields)).check(
+      Schema.makeFilter((value) =>
+        Reflect.ownKeys(value).every((key) => Object.hasOwn(fields, key)),
+      ),
+    ),
+  );
+
+/** Read-only lookup in the same authenticated origin namespace as SEND. No dispatch on a miss. */
+export const OrchestratorMcpThreadSendReceiptLookupInput = remoteFollowUpStruct({
+  threadId: ThreadId,
+  clientRequestId: Schema.NonEmptyString,
+  requestDigest: Schema.NonEmptyString,
+});
+export type OrchestratorMcpThreadSendReceiptLookupInput =
+  typeof OrchestratorMcpThreadSendReceiptLookupInput.Type;
+
+const RemoteFollowUpReceiptIdentity = {
+  version: Schema.Literal(REMOTE_FOLLOW_UP_RECEIPT_VERSION),
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  clientRequestId: Schema.NonEmptyString,
+  requestDigest: Schema.NonEmptyString,
+};
+
+/** A missing/pruned receipt is unknown; rejected requires a durable pre-effect refusal. */
+export const OrchestratorMcpThreadSendReceiptLookupResult = Schema.Union([
+  remoteFollowUpStruct({
+    ...RemoteFollowUpReceiptIdentity,
+    outcome: Schema.Literal("accepted"),
+    sent: remoteFollowUpStruct(OrchestratorMcpThreadSendResult.fields),
+  }).check(Schema.makeFilter((value) => value.sent.threadId === value.threadId)),
+  remoteFollowUpStruct({
+    ...RemoteFollowUpReceiptIdentity,
+    outcome: Schema.Literals(["rejected", "unknown"]),
+    sent: Schema.Null,
+  }),
+]);
+export type OrchestratorMcpThreadSendReceiptLookupResult =
+  typeof OrchestratorMcpThreadSendReceiptLookupResult.Type;
+
 export const OrchestratorMcpThreadWaitInput = Schema.Struct({
+  childProgressForRunId: Schema.optional(RunId),
+  observeBlockingQuestions: Schema.optional(Schema.Boolean),
+  questionResumeToken: Schema.optional(Schema.String.check(Schema.isMaxLength(16_384))),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   runId: Schema.optional(RunId),
@@ -588,6 +720,8 @@ export const OrchestratorMcpThreadWaitInput = Schema.Struct({
 export type OrchestratorMcpThreadWaitInput = typeof OrchestratorMcpThreadWaitInput.Type;
 
 export const OrchestratorMcpThreadWaitResult = Schema.Struct({
+  observationChanged: Schema.optional(Schema.Boolean),
+  remoteObservation: Schema.optional(RemoteTaskObservation),
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
   status: OrchestratorMcpThreadStatus,
@@ -692,6 +826,18 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
   features: Schema.Struct({
+    // Optional acceptance only. The server advertises both only after the full mechanism exists.
+    remoteFollowUpSendVersion: Schema.optional(Schema.Literal(REMOTE_FOLLOW_UP_RECEIPT_VERSION)),
+    remoteFollowUpReceiptVersion: Schema.optional(Schema.Literal(REMOTE_FOLLOW_UP_RECEIPT_VERSION)),
+    threadContentEvidence: Schema.optional(ThreadContentEvidenceCapability),
+    remoteTaskObservationVersion: Schema.optional(Schema.String),
+    remoteAdmissionObservationVersion: Schema.optional(Schema.String),
+    remoteAdmissionPeerStatusVersion: Schema.optional(Schema.String),
+    remoteAdmissionRetryObservationVersion: Schema.optional(Schema.String),
+    remoteAdmissionRecoveryStatusVersion: Schema.optional(Schema.String),
+    remoteAdmissionRecoveredResultObservationVersion: Schema.optional(Schema.String),
+    remoteAdmissionCapabilitiesRegisterVersion: Schema.optional(Schema.String),
+    threadResultRequestVersion: Schema.optional(Schema.String),
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,
     cancellation: Schema.Boolean,
@@ -941,6 +1087,8 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
   "OrchestratorMcpFailure",
   {
     code: Schema.Literals([
+      "remote_admission_pending",
+      "remote_admission_denied",
       "capability_denied",
       "parent_not_active",
       "provider_unavailable",
@@ -953,11 +1101,43 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "run_not_found",
       "thread_not_sendable",
       "thread_not_interruptible",
+      "attach_required",
       "invalid_request",
+      "content_revision_mismatch",
+      "content_evidence_unavailable",
+      "request_conflict",
+      "launch_fenced",
       "orchestration_error",
       "thread_credential_required",
       "target_required",
     ]),
     message: Schema.String,
+    dependency: Schema.optionalKey(ThreadResultDependencyBinding),
+    remoteAdmission: Schema.optionalKey(
+      Schema.Struct({
+        id: Schema.NonEmptyString,
+        bindingDigest: RemoteAdmissionDigest,
+        status: RemoteAdmissionStatus,
+      }),
+    ),
   },
 ) {}
+
+export const OrchestratorMcpThreadSettleInput = Schema.Struct({
+  projectRemaining: Schema.optional(
+    SettlementProjectRemaining.annotate({
+      description:
+        "Known remaining project work to show as notification bullets after this thread settles. Up to 64 nonempty printable single-line items, each at most 2048 UTF-8 bytes. Retries preserve the originally accepted items.",
+    }),
+  ),
+  clientRequestId: OrchestratorMcpClientRequestId,
+});
+export type OrchestratorMcpThreadSettleInput = typeof OrchestratorMcpThreadSettleInput.Type;
+
+export const OrchestratorMcpThreadSettleResult = Schema.Struct({
+  status: Schema.Literal("accepted"),
+  threadId: ThreadId,
+  runId: RunId,
+  clientRequestId: OrchestratorMcpClientRequestId,
+});
+export type OrchestratorMcpThreadSettleResult = typeof OrchestratorMcpThreadSettleResult.Type;

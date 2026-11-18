@@ -26,6 +26,7 @@ import {
   OrchestrationV2ThreadProjectionJson,
   ScheduledTaskId,
   type ServerProvider,
+  type TerminalError,
   ThreadId,
   TextGenerationError,
   ServerSettingsError,
@@ -52,6 +53,8 @@ import * as ProjectStore from "./ProjectStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import * as ProviderInstances from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
@@ -62,6 +65,11 @@ import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EventSink from "./EventSink.ts";
+import * as EventStore from "./EventStore.ts";
+import * as Fiber from "effect/Fiber";
+import { EventId } from "@t3tools/contracts";
+import { legacyBootstrapCreateCommandId } from "./LegacyBootstrap.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
@@ -122,8 +130,13 @@ const claudeAdapter = {
   openSession: () => Effect.die("provider execution is disabled in launch tests"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
+// The plain close overload: launch fixtures never issue legacy terminal control.
+type CloseTerminal = (
+  input: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[0],
+) => Effect.Effect<void, TerminalError>;
+
 interface HarnessOptions {
-  readonly closeTerminal?: TerminalManager.TerminalManager["Service"]["close"];
+  readonly closeTerminal?: CloseTerminal;
   readonly adapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
@@ -135,6 +148,8 @@ interface HarnessOptions {
   readonly generateTitle?: TextGeneration.TextGeneration["Service"]["generateThreadTitle"];
   readonly generateBranchName?: TextGeneration.TextGeneration["Service"]["generateBranchName"];
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
+  readonly conversationLayer?: Layer.Layer<ConversationPolicy.ConversationPolicy>;
+  readonly conversationDriver?: "cursor";
   readonly getLaunchSettings?: ServerSettings.ServerSettingsService["Service"]["getSettings"];
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
@@ -155,6 +170,7 @@ function makeHarness(options: HarnessOptions = {}) {
     Layer.provide(layerOrchestrator),
     Layer.provide(layerServerSettings),
     Layer.provide(layerReceipts),
+    Layer.provide(layerDatabase),
   );
   const layerOutbox = EffectOutbox.layer.pipe(Layer.provide(layerDatabase));
   const createWorktree = vi.fn(
@@ -178,7 +194,7 @@ function makeHarness(options: HarnessOptions = {}) {
   const runSetup = vi.fn(
     options.runSetup ?? (() => Effect.succeed({ status: "no-script" as const })),
   );
-  const closeTerminal = vi.fn(options.closeTerminal ?? (() => Effect.void));
+  const closeTerminal = vi.fn<CloseTerminal>(options.closeTerminal ?? (() => Effect.void));
   const generateBranchName = vi.fn(
     options.generateBranchName ?? (() => Effect.succeed({ branch: "generated-branch" })),
   );
@@ -247,13 +263,24 @@ function makeHarness(options: HarnessOptions = {}) {
         folderForThread: () => Effect.succeedNone,
       }),
   );
-  const layerLaunch = ThreadLaunch.layer.pipe(
+  const layerLaunch = ThreadLaunch.layerRawForTests.pipe(
+    Layer.provide(options.conversationLayer ?? Layer.empty),
+    Layer.provide(
+      Layer.mock(ProviderInstances.ProviderInstanceRegistry)({
+        getCatalogSource: () => undefined,
+        getInstance: () =>
+          Effect.succeed({ driverKind: options.conversationDriver ?? "codex" } as never),
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         layerExternalServices,
         layerThreadManagement,
         layerReceipts,
         layerOrchestrator,
+        layerDatabase,
+        layerOutbox,
+        EventStore.layer.pipe(Layer.provide(layerDatabase)),
         IdAllocator.layer,
         options.getLaunchSettings === undefined
           ? Layer.empty
@@ -306,6 +333,11 @@ function makeHarness(options: HarnessOptions = {}) {
       layerOutbox,
       layerDatabase,
       layerExternalServices,
+      // The same memoized receipt store and event sink the launch service records through.
+      layerReceipts,
+      Layer.effect(EventSink.EventSinkV2, EventSink.EventSinkV2).pipe(
+        Layer.provide(layerOrchestrator),
+      ),
     ),
     createWorktree,
     removeWorktree,
@@ -2341,7 +2373,7 @@ it.effect(
           message: "Resume preparation",
           workspace: { type: "worktree", baseRef: "main" },
         });
-        const messageId = MessageId.make("message:launch:accepted-before-fork");
+        const messageId = input.initialMessage!.messageId;
 
         yield* threads.dispatch({
           type: "thread.create",
@@ -2486,6 +2518,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     };
     const failed = yield* ThreadMessageIntake.launchThread(input).pipe(
       Effect.provideService(ThreadLaunch.ThreadLaunchService, {
+        ...launches,
         launch: (request) =>
           launches.launch(request).pipe(
             Effect.andThen(
@@ -2497,10 +2530,6 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
               }),
             ),
           ),
-        checkWorktreeBase: launches.checkWorktreeBase,
-        isNonGitProject: launches.isNonGitProject,
-        retryPreparation: launches.retryPreparation,
-        prepareRun: launches.prepareRun,
       }),
       Effect.flip,
     );
@@ -3004,6 +3033,7 @@ it.effect.each([0, 1])("releases an async setup before its completion with exit 
         Effect.succeed({
           status: "started" as const,
           async: true,
+          writeCompletion: Effect.void,
           scriptId: "setup",
           scriptName: "Setup",
           scriptCommand: "vp install",
@@ -3066,6 +3096,7 @@ it.effect("shows an async setup as done while the agent still waits for its bran
         Effect.succeed({
           status: "started" as const,
           async: true,
+          writeCompletion: Effect.void,
           scriptId: "setup",
           scriptName: "Setup",
           scriptCommand: "vp install",
@@ -3308,3 +3339,251 @@ it.effect("replays an accepted send after the project disables the instance", ()
     }
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
+
+it.effect(
+  "legacy preparation keeps original C absent until the persisted release and replays that receipt",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const continueSetup = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        runSetup: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(continueSetup)),
+            Effect.as({ status: "no-script" as const }),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const layerOutbox = yield* EffectOutbox.EffectOutboxV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const projectCommandId = CommandId.make("legacy:original-C:project-fixture");
+        yield* sink.commitProjectCommand({
+          commandId: projectCommandId,
+          projectId,
+          commandType: "project.create",
+          acceptedAt: yield* DateTime.now,
+          event: {
+            eventId: EventId.make(`${projectCommandId}:event`),
+            aggregateKind: "project",
+            aggregateId: projectId,
+            occurredAt: project.createdAt,
+            commandId: projectCommandId,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "project.created",
+            payload: {
+              projectId,
+              title: project.title,
+              workspaceRoot: project.workspaceRoot,
+              defaultModelSelection: project.defaultModelSelection,
+              scripts: [],
+              createdAt: project.createdAt,
+              updatedAt: project.updatedAt,
+            },
+          },
+        });
+        const base = launchInput({
+          command: "legacy:original-C",
+          thread: "legacy:thread",
+          message: "Legacy prompt",
+        });
+        const createCommandId = legacyBootstrapCreateCommandId(base.threadId, base.commandId);
+        const policy = {
+          version: 1 as const,
+          createCommandId,
+          birthCommandId: CommandId.make(`${createCommandId}:initial-message`),
+          releaseCommandId: base.commandId,
+          projectId,
+          threadId: base.threadId,
+          messageId: base.initialMessage!.messageId,
+          payloadHash: "fixture-hash",
+          ownsNewThread: true,
+        };
+        const input = {
+          ...base,
+          commandId: createCommandId,
+          preparationReleaseCommandId: base.commandId,
+          legacyBootstrap: policy,
+        };
+        const request = yield* launches.launch(input).pipe(Effect.forkChild);
+        yield* Effect.race(
+          Deferred.await(entered),
+          Fiber.join(request).pipe(
+            Effect.andThen(Effect.die("Legacy launch completed before its held setup milestone.")),
+          ),
+        );
+        const preparing = yield* threads.getLegacyBootstrapRecords(base.threadId);
+        assert.equal(preparing.runs[0]?.status, "preparing");
+        assert.deepEqual(preparing.thread.legacyBootstrapClaim, policy);
+        assert.deepEqual(preparing.runs[0]?.legacyBootstrap, {
+          ...policy,
+          runId: preparing.runs[0]!.id,
+        });
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(base.commandId)));
+        assert.isEmpty(yield* layerOutbox.listByCommandId(base.commandId));
+        yield* Deferred.succeed(continueSetup, undefined);
+        const launched = yield* Fiber.join(request);
+        assert.equal(launched.projection.runs[0]?.status, "starting");
+        assert.equal(
+          launched.legacyReleaseSequence,
+          (yield* receipts.getByCommandId(base.commandId)).pipe(
+            Option.map((receipt) => receipt.resultSequence),
+            Option.getOrThrow,
+          ),
+        );
+        const effects = yield* layerOutbox.listByCommandId(base.commandId);
+        assert.lengthOf(
+          effects.filter(({ request }) => request.type === "provider-turn.start"),
+          1,
+        );
+        const replayed = yield* launches.launch(input);
+        assert.isTrue(replayed.resumed);
+        assert.equal(replayed.projection.runs[0]?.status, "starting");
+        const release = yield* threads.dispatch({
+          type: "prepared-run.release",
+          commandId: base.commandId,
+          threadId: base.threadId,
+          runId: launched.projection.runs[0]!.id,
+          legacyBootstrap: { ...policy, runId: launched.projection.runs[0]!.id },
+        });
+        assert.isTrue(
+          release.storedEvents.some(
+            ({ event }) =>
+              event.type === "run.updated" &&
+              event.payload.legacyBootstrap?.releaseCommandId === base.commandId,
+          ),
+        );
+        assert.isEmpty(
+          yield* layerOutbox.listByCommandId(CommandId.make(`${createCommandId}:release`)),
+        );
+        const changed = yield* launches
+          .launch({ ...input, legacyBootstrap: { ...policy, payloadHash: "changed" } })
+          .pipe(Effect.flip);
+        assert.equal(changed._tag, "ThreadLaunchError");
+        assert.lengthOf((yield* threads.getThreadProjection(base.threadId)).runs, 1);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect.each([
+  "message",
+  "empty",
+  "reuse-empty-with-message",
+  "eager",
+  "project-eager",
+  "project-on-write",
+  "capability-unavailable",
+  "explicit",
+  "unsupported",
+] as const)("conversation launch %s selects allocation without idle preparation", (kind) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "c9-launch-seam-" });
+    let allocated = 0;
+    let fallback = 0;
+    const bindings = new Map<string, ConversationPolicy.Binding>();
+    const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
+      ownsPath: (path) => path === cwd,
+      allocate: (input) =>
+        Effect.sync(() => {
+          allocated++;
+          const binding: ConversationPolicy.Binding = {
+            threadId: input.threadId,
+            projectId: input.projectId,
+            ownerThreadId: input.threadId,
+            path: cwd,
+            device: "fixture",
+            inode: "fixture",
+            state: "conversation",
+            commonDirectory: "/objects",
+            commit: "a".repeat(40),
+            baseRef: "main",
+          };
+          bindings.set(input.threadId, binding);
+          return binding;
+        }),
+      lookup: (threadId) => Effect.succeed(bindings.get(threadId) ?? null),
+      fallback: () =>
+        Effect.sync(() => {
+          fallback++;
+        }),
+    });
+    const projectSettings: HarnessOptions["serverSettings"] =
+      kind === "project-eager" || kind === "project-on-write"
+        ? {
+            worktreeAllocation: "eager",
+            projectSettingsOverrides: {
+              [projectId]: {
+                worktreeAllocation: kind === "project-eager" ? "eager" : "on-write",
+              },
+            },
+          }
+        : undefined;
+    const harness = makeHarness({
+      ...(kind === "capability-unavailable" ? {} : { conversationLayer }),
+      ...(projectSettings === undefined ? {} : { serverSettings: projectSettings }),
+      ...(kind === "eager" ? { serverSettings: { worktreeAllocation: "eager" } } : {}),
+      ...(kind === "unsupported" ? { conversationDriver: "cursor" } : {}),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = launchInput({
+        command: `command:c9:${kind}`,
+        thread: `thread:c9:${kind}`,
+        workspace: kind === "explicit" ? { type: "root" } : { type: "auto", baseRef: "main" },
+        ...(kind === "empty" ? {} : { message: "Inspect the source." }),
+      });
+      if (kind === "reuse-empty-with-message") {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("command:c9:empty-shell"),
+          threadId: input.threadId,
+          projectId,
+          title: input.title,
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          branch: "main",
+          worktreePath: null,
+          createdBy: input.createdBy,
+          creationSource: input.creationSource,
+        });
+      }
+      const result = yield* launches.launch({
+        ...input,
+        ...(kind === "reuse-empty-with-message" ? { reuseExistingThread: true } : {}),
+      });
+      if (kind !== "empty") yield* preparationSettled(result.threadId);
+      const isConversation =
+        kind === "empty" ||
+        kind === "message" ||
+        kind === "reuse-empty-with-message" ||
+        kind === "project-on-write";
+      assert.equal(allocated, isConversation ? 1 : 0);
+      assert.equal(fallback, 0);
+      assert.equal(
+        harness.createWorktree.mock.calls.length,
+        kind === "eager" ||
+          kind === "project-eager" ||
+          kind === "capability-unavailable" ||
+          kind === "unsupported"
+          ? 1
+          : 0,
+      );
+      if (isConversation) {
+        assert.equal(bindings.get(result.threadId)?.path, cwd);
+        assert.equal(harness.runSetup.mock.calls.length, 0);
+        const sql = yield* SqlClient.SqlClient;
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM jones_idle_worktree_admission WHERE thread_id=${result.threadId}`,
+          0,
+        );
+      }
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
