@@ -1524,6 +1524,7 @@
     "apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx": "upstream-deleted",
     "apps/web/src/components/ThreadNotificationCoordinator.tsx": "accepted-shared",
     "apps/web/src/components/ThreadRouteView.tsx": "hook",
+    "apps/web/src/components/ThreadTerminalDrawer.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/ThreadTerminalDrawer.tsx": "hook",
     "apps/web/src/components/WorkspacePageHeader.tsx": "hook",
     "apps/web/src/components/auth/ConnectAgentSurface.tsx": "accepted-shared",

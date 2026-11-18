@@ -1,5 +1,8 @@
 import { isShellRunTerminal } from "@t3tools/contracts/jones/shellDestinationFence";
-import { TerminalContentsFrame } from "../jones/shellDestination/TerminalContentsFrame";
+import {
+  TerminalContentsFrame,
+  TerminalCopyButton,
+} from "../jones/shellDestination/TerminalContentsFrame";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import {
@@ -39,9 +42,11 @@ import { AsyncResult } from "effect/reactivity";
 import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Ref,
   useEffect,
   useContext,
   useEffectEvent,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
@@ -464,6 +469,10 @@ export function shouldHandleTerminalExit(
   );
 }
 
+interface TerminalContentsHandle {
+  getText: () => string;
+}
+
 interface TerminalViewportProps {
   advancedTypography: boolean;
   threadRef: ScopedThreadRef;
@@ -474,6 +483,7 @@ interface TerminalViewportProps {
   /** Reattach a known run without creating or restarting a missing shell. */
   attachExistingOnly?: boolean;
   showCopyButton?: boolean;
+  contentsRef?: Ref<TerminalContentsHandle> | undefined;
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
   providerInstanceId?: ProviderInstanceId;
@@ -513,6 +523,7 @@ function TerminalSessionViewport({
   cwd,
   attachExistingOnly = false,
   showCopyButton = false,
+  contentsRef,
   worktreePath,
   runtimeEnv,
   providerInstanceId,
@@ -525,6 +536,11 @@ function TerminalSessionViewport({
   const containerRef = useRef<HTMLDivElement>(null);
   const autoFocusedRef = useRef(false);
   const terminalRef = useRef<GhosttyTerminalSurface | null>(null);
+  useImperativeHandle(
+    contentsRef,
+    () => ({ getText: () => terminalRef.current?.getText() ?? "" }),
+    [],
+  );
   const visibleRef = useRef(visible);
   const environmentId = threadRef.environmentId;
   const canOperateTerminal = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
@@ -1294,6 +1310,7 @@ function TerminalSplitPanes({
   terminalIds,
   splitDirection,
   activeTerminalId,
+  activeContentsRef,
   terminalLabelById,
   resolveLaunchLocation,
   onActiveTerminalChange,
@@ -1308,6 +1325,7 @@ function TerminalSplitPanes({
   terminalIds: readonly string[];
   splitDirection: "horizontal" | "vertical";
   activeTerminalId: string;
+  activeContentsRef: Ref<TerminalContentsHandle>;
   terminalLabelById: ReadonlyMap<string, string>;
   resolveLaunchLocation: (terminalId: string) => TerminalLaunchLocation;
   onActiveTerminalChange: (terminalId: string) => void;
@@ -1354,6 +1372,7 @@ function TerminalSplitPanes({
                 threadRef={threadRef}
                 threadId={threadId}
                 terminalId={terminalId}
+                contentsRef={terminalId === activeTerminalId ? activeContentsRef : undefined}
                 terminalLabel={terminalLabelById.get(terminalId) ?? "Terminal"}
                 cwd={terminalLaunchLocation.cwd}
                 {...(terminalLaunchLocation.worktreePath !== undefined
@@ -1510,6 +1529,7 @@ export default function ThreadTerminalDrawer({
     Schema.Boolean,
   );
   const drawerRef = useRef<HTMLElement | null>(null);
+  const activeContentsRef = useRef<TerminalContentsHandle>(null);
   const [drawerLayout, setDrawerLayout] = useState(() => readDrawerLayout(null));
   const maxDrawerHeight = resolveTerminalDrawerMaxHeight({ ...drawerLayout, composerHeight });
   const drawerHeight = clampDrawerHeight(height, maxDrawerHeight);
@@ -1823,6 +1843,14 @@ export default function ThreadTerminalDrawer({
     );
   }
 
+  const copyButton = (
+    <TerminalCopyButton
+      key={resolvedActiveTerminalId}
+      getText={() => activeContentsRef.current?.getText() ?? ""}
+      size="icon-micro"
+    />
+  );
+
   return (
     <aside
       ref={drawerRef}
@@ -1840,6 +1868,8 @@ export default function ThreadTerminalDrawer({
       {!hasTerminalSidebar && (
         <div className="pointer-events-none absolute right-2 top-2 z-20">
           <div className="pointer-events-auto inline-flex items-center overflow-hidden rounded-md border border-border/80 bg-background shadow-xs">
+            {copyButton}
+            <div className="h-4 w-px bg-border/80" />
             <TerminalActionButton
               disabled={!canOperateTerminal}
               className={`p-1 text-foreground/90 transition-colors ${
@@ -1899,6 +1929,7 @@ export default function ThreadTerminalDrawer({
               terminalIds={visibleTerminalIds}
               splitDirection={splitDirection}
               activeTerminalId={resolvedActiveTerminalId}
+              activeContentsRef={activeContentsRef}
               terminalLabelById={terminalLabelById}
               resolveLaunchLocation={resolveTerminalLaunchLocation}
               onActiveTerminalChange={onActiveTerminalChange}
@@ -1917,6 +1948,7 @@ export default function ThreadTerminalDrawer({
               <div className="flex h-[22px] items-stretch justify-end border-b border-border/70">
                 {/* Sits above the taller touch resize handle so its buttons keep their taps. */}
                 <div className="inline-flex h-full items-stretch any-pointer-coarse:relative any-pointer-coarse:z-30">
+                  <div className="flex items-center">{copyButton}</div>
                   <TerminalActionButton
                     disabled={!canOperateTerminal}
                     className={`inline-flex h-full items-center px-1 text-foreground/90 transition-colors ${

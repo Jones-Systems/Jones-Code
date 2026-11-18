@@ -28,6 +28,7 @@ const fixture = vi.hoisted(() => ({
   pressKey: null as ((event: KeyboardEvent) => boolean) | null,
   writes: [] as Array<{ threadId: string; data: string }>,
   messages: [] as string[],
+  surfaceText: [] as string[],
   resetSessions: () => {},
   setSession: (
     _thread: ScopedThreadRef,
@@ -49,30 +50,33 @@ const fixture = vi.hoisted(() => ({
 }));
 
 // Every other surface method is a no-op; `then` stays undefined so awaiting the surface resolves to it.
-const fakeSurface: object = new Proxy(
-  {
-    input: document.createElement("textarea"),
-    write: (data: string) => fixture.messages.push(data),
-    // The real surface re-reports its measured grid.
-    resendSize: () => {
-      const size = fixture.reportedSize;
-      if (size) fixture.surfaceOptions.at(-1)!.onResize(size.cols, size.rows);
+const fakeSurface = (getText: () => string): object =>
+  new Proxy(
+    {
+      input: document.createElement("textarea"),
+      getText,
+      write: (data: string) => fixture.messages.push(data),
+      // The real surface re-reports its measured grid.
+      resendSize: () => {
+        const size = fixture.reportedSize;
+        if (size) fixture.surfaceOptions.at(-1)!.onResize(size.cols, size.rows);
+      },
     },
-  },
-  {
-    get: (target, key) =>
-      key === "then" ? undefined : key in target ? Reflect.get(target, key) : () => undefined,
-  },
-);
+    {
+      get: (target, key) =>
+        key === "then" ? undefined : key in target ? Reflect.get(target, key) : () => undefined,
+    },
+  );
 vi.mock("~/terminal/ghostty/surface", () => ({
   GhosttyTerminalSurface: {
     create: (_mount: HTMLElement, options: GhosttyTerminalSurfaceOptions) =>
       new Promise((resolve) => {
+        const surfaceIndex = fixture.surfaceOptions.length;
         fixture.surfaceOptions.push(options);
         fixture.pendingSurfaces.push(() => {
           fixture.typeIntoSurface = options.onData;
           fixture.pressKey = options.beforeKey ?? null;
-          resolve(fakeSurface);
+          resolve(fakeSurface(() => fixture.surfaceText[surfaceIndex] ?? ""));
         });
       }),
   },
@@ -216,16 +220,19 @@ function Drawer(props: {
   cwd?: string;
   onCloseTerminal: (terminalId: string, threadRef?: ScopedThreadRef) => void;
   keybindings?: ResolvedKeybindingsConfig;
+  terminalIds?: string[];
+  activeTerminalId?: string;
 }) {
+  const terminalIds = props.terminalIds ?? ["term-1"];
   return (
     <ThreadTerminalDrawer
       threadRef={props.threadRef}
       threadId={props.threadRef.threadId}
       cwd={props.cwd ?? "/repo"}
       height={240}
-      terminalIds={["term-1"]}
-      activeTerminalId="term-1"
-      terminalGroups={[{ id: "group-1", terminalIds: ["term-1"] }]}
+      terminalIds={terminalIds}
+      activeTerminalId={props.activeTerminalId ?? "term-1"}
+      terminalGroups={[{ id: "group-1", terminalIds }]}
       activeTerminalGroupId="group-1"
       onSplitTerminal={() => {}}
       onSplitTerminalVertical={() => {}}
@@ -258,6 +265,7 @@ function setup(originalStatus: "starting" | "exited" = "exited") {
   fixture.pressKey = null;
   fixture.writes = [];
   fixture.messages = [];
+  fixture.surfaceText = [];
   fixture.surfaceOptions = [];
   fixture.reportedSize = null;
   fixture.runResize = () => Promise.resolve(AsyncResult.success(undefined));
@@ -267,6 +275,32 @@ function setup(originalStatus: "starting" | "exited" = "exited") {
   useTerminalUiStateStore.setState(useTerminalUiStateStore.getInitialState());
   return { original, other };
 }
+
+it("copies output from the active terminal in both toolbar layouts", async () => {
+  const { other: threadRef } = setup();
+  const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  const writeText = vi.fn(async (_text: string) => {});
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  const drawer = { threadRef, onCloseTerminal: () => {} };
+  try {
+    await using screen = await render(<Drawer {...drawer} />);
+    await act(async () => fixture.pendingSurfaces.shift()?.());
+    fixture.surfaceText[0] = "First terminal output";
+    await screen.getByRole("button", { name: "Copy terminal contents" }).click();
+    await expect.poll(() => writeText.mock.lastCall?.[0]).toBe("First terminal output");
+
+    await screen.rerender(
+      <Drawer {...drawer} terminalIds={["term-1", "term-2"]} activeTerminalId="term-2" />,
+    );
+    await act(async () => fixture.pendingSurfaces.shift()?.());
+    fixture.surfaceText[1] = "Second terminal output";
+    await screen.getByRole("button", { name: "Copy terminal contents" }).click();
+    await expect.poll(() => writeText.mock.lastCall?.[0]).toBe("Second terminal output");
+  } finally {
+    if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  }
+});
 
 it("drops input until the shell runs instead of failing a write for every key", async () => {
   const { original } = setup("starting");
