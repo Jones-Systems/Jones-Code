@@ -1615,14 +1615,19 @@ const CODEX_DIRECT_ONLY_T3_TOOLS = ["t3_thread_wait", "delegate_task"];
 export function codexThreadRuntimeParams(input: {
   readonly threadId: ThreadId | null;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
-  readonly modelSelection?: { readonly model: string };
+  readonly modelSelection?: ModelSelection;
+  readonly includeServiceTier?: boolean;
   readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
 }): {
   readonly cwd?: string;
   readonly model?: string;
+  readonly serviceTier?: string;
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const { mcpSession } = input;
+  const serviceTier = input.includeServiceTier
+    ? getCodexServiceTierOptionValue(input.modelSelection)
+    : undefined;
   const t3Server =
     mcpSession === undefined
       ? undefined
@@ -1634,6 +1639,7 @@ export function codexThreadRuntimeParams(input: {
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
+    ...(serviceTier === undefined ? {} : { serviceTier }),
     config: {
       ...CODEX_THREAD_CONFIG,
       // One app-server serves many threads, so the id goes in per-thread shell config, not its env.
@@ -10484,6 +10490,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       threadId: threadInput.threadId,
                       mcpSession,
                       modelSelection: threadInput.modelSelection,
+                      includeServiceTier: adapterOptions.resolveRuntime === undefined,
                       runtimePolicy: threadInput.runtimePolicy,
                     }),
                     ...(IdAllocator.isDelegatedTaskThread(threadInput.threadId)
@@ -10567,6 +10574,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ...codexThreadRuntimeParams({
                   threadId: appThreadId,
                   mcpSession: yield* readMcpSession(appThreadId),
+                  includeServiceTier: adapterOptions.resolveRuntime === undefined,
                   ...(threadInput.modelSelection === undefined
                     ? {}
                     : { modelSelection: threadInput.modelSelection }),
@@ -11898,6 +11906,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ...codexThreadRuntimeParams({
                     threadId: threadInput.targetThreadId,
                     mcpSession,
+                    includeServiceTier: adapterOptions.resolveRuntime === undefined,
                     ...(threadInput.modelSelection === undefined
                       ? {}
                       : { modelSelection: threadInput.modelSelection }),
