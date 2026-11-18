@@ -3,6 +3,8 @@ import { qualificationFixtureId } from "../../../apps/server/src/jones/serverPar
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as Effect from "effect/Effect";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { runNativeQualification } from "../../../apps/server/src/jones/serverParallelism/nativeQualification.ts";
 import { minimalWorkerEnvironment } from "../../../apps/server/src/jones/serverCompute/workerCommand.ts";
 import { qualificationDecision, requiredNativePredicates } from "./qualificationResult.mjs";
@@ -44,10 +46,15 @@ const command = {
 };
 let macNativePoolCensus;
 if (process.env.JONES_SP_MAC_NATIVE_POOL_CENSUS === "1") {
-  if (process.platform !== "darwin") throw new Error("The native pool census requires macOS");
+  if (Effect.runSync(HostProcess.Platform) !== "darwin")
+    throw new Error("The native pool census requires macOS");
   const census = NodePath.join(NodeOS.tmpdir(), "jones-macos-native-pool-census");
   const stat = await NodeFSP.lstat(census);
-  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0)
+  if (
+    !stat.isFile() ||
+    stat.uid !== Effect.runSync(HostProcess.UserId) ||
+    (stat.mode & 0o022) !== 0
+  )
     throw new Error("The native pool census must be a runner-owned regular file");
   macNativePoolCensus = census;
 }
