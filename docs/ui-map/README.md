@@ -39,6 +39,14 @@ manager; renderer-only checks do not prove minimize or stacking.
 The [host-status companion entry](host-status.md) covers telemetry continuity
 across thread, draft, panel and Settings navigation, with focused runtime evidence.
 
+The desktop sidebar's [Install status](../user/updating.md#install-status)
+opens from the update pill and offers All and single-device views. In the
+isolated [install renderer fixture](../../apps/web/jones-install-fixture.html),
+choose **Show manual install recovery**, switch to a device and back, then use
+**I installed manually**. The stale plan closes and **Last update** retains the
+running versions or an unverified status. The fixture uses a synthetic bridge
+and preserves native installation and host state.
+
 The [destination shell journey](thread-chat.md#destination-shell-blocks) covers
 exact computer targeting, inline terminal lifetime, disabled states and shared
 Markdown toolbar consumers. PR #521 supplies two isolated-environment runtime

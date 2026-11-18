@@ -1,5 +1,6 @@
 import { createScriptedInstallPlan } from "./install-preview-plan";
 import { installStatusStore } from "../../installStatus/panelUi";
+import { requestConfirmDialog } from "../../../confirmDialog";
 import {
   DesktopUpdateActionResultSchema,
   DesktopUpdateStateSchema,
@@ -202,6 +203,7 @@ export function installPreviewBridge(
     record,
     storageKey: `${key}:plan`,
     store: installStatusStore,
+    confirmManualClosure: async (message) => (await requestConfirmDialog(message)) ?? false,
     nextLaptopOutcome: (action) => {
       const outcome = action === "download" ? stored.nextDownload : stored.nextInstall;
       stored = {

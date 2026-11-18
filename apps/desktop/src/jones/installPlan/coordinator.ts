@@ -92,6 +92,45 @@ const ordinaryProof = (evidence: JonesInstallPlanLaptopEvidence) => {
     : undefined;
 };
 
+function manualCloseReview(
+  plan: JonesInstallPlan,
+  evidence: JonesInstallPlanLaptopEvidence,
+): JonesInstallPlanState["view"]["manualClose"] {
+  // Closing records the bound running build. The publication path separately requires rollout proof.
+  const { activeSource, activeTree, activeVersion, activeGeneration } = evidence;
+  if (
+    evidence.environmentId !== plan.laptop.environmentId ||
+    evidence.activationBlocked ||
+    activeGeneration === undefined ||
+    activeSource === undefined ||
+    activeTree === undefined ||
+    activeVersion === undefined ||
+    activeVersion.length > 128
+  )
+    return undefined;
+
+  const closedGate = plan.laptop.gateClosed;
+  const differentBuild =
+    activeSource !== plan.target.sourceSha || activeTree !== plan.target.sourceTree;
+  const changedFromStart =
+    activeVersion !== plan.from.version ||
+    (plan.from.sourceSha !== undefined && activeSource !== plan.from.sourceSha);
+  if (
+    closedGate?.reason !== "changed" &&
+    !(
+      (plan.laptop.gate === undefined || closedGate !== undefined) &&
+      differentBuild &&
+      changedFromStart
+    )
+  )
+    return undefined;
+
+  return {
+    activeGeneration,
+    laptop: { version: activeVersion, sourceSha: activeSource, sourceTree: activeTree },
+  };
+}
+
 const commandBody = (request: JonesInstallPlanRequest) =>
   NodeCrypto.createHash("sha256").update(canonicalJonesCommand(request)).digest("hex");
 
@@ -182,20 +221,23 @@ export function createInstallPlanCoordinator(options: {
     snapshot: PlanSnapshot,
     evidence: JonesInstallPlanLaptopEvidence,
     document = snapshot.document,
-  ): JonesInstallPlanState => ({
-    schema: 1,
-    current: document.current,
-    last: document.last,
-    clientCommands: 1,
-    laptop: evidence,
-    view: {
-      complete:
-        snapshot.readOnly === undefined &&
-        document.current !== null &&
-        isPlanComplete(document.current),
-    },
-    ...(snapshot.readOnly === undefined ? {} : { readOnly: snapshot.readOnly }),
-  });
+  ): JonesInstallPlanState => {
+    const current = document.current;
+    const editable = snapshot.readOnly === undefined && current !== null;
+    const manualClose = editable ? manualCloseReview(current, evidence) : undefined;
+    return {
+      schema: 1,
+      current,
+      last: document.last,
+      clientCommands: 1,
+      laptop: evidence,
+      view: {
+        complete: editable && isPlanComplete(current),
+        ...(manualClose === undefined ? {} : { manualClose }),
+      },
+      ...(snapshot.readOnly === undefined ? {} : { readOnly: snapshot.readOnly }),
+    };
+  };
   const gate = (
     plan: JonesInstallPlan,
     evidence: JonesInstallPlanLaptopEvidence,
@@ -1045,6 +1087,56 @@ export function createInstallPlanCoordinator(options: {
               }
             }
           } else await recordLaptop(req.action, req.review);
+        } else if (req.type === "close-after-manual-install") {
+          const review = manualCloseReview(plan, evidence);
+          const selected = plan.devices.filter((device) => device.membership === "selected");
+          if (req.expectedRevision !== plan.revision) refuse("stale-revision", "The plan changed.");
+          else if (
+            review === undefined ||
+            req.activeGeneration !== review.activeGeneration ||
+            !same(req.laptop, review.laptop)
+          )
+            refuse(
+              "invalid-evidence",
+              "The running Laptop build changed. Check the devices again.",
+            );
+          else if (
+            active.size > 0 ||
+            options.controller.busy !== null ||
+            pendingLaptop() ||
+            plan.devices.some((device) => device.operations.some(outstanding))
+          )
+            refuse(
+              "outstanding-operation",
+              "Check the outstanding update work before closing this plan.",
+            );
+          else if (
+            req.devices.length !== selected.length ||
+            !selected.every((device) =>
+              req.devices.some((observation) => observation.environmentId === device.environmentId),
+            )
+          )
+            refuse("invalid-evidence", "The review must include each selected device.");
+          else if (
+            req.devices.some((reading) => {
+              const age = options.now() - reading.observedAt;
+              return age < 0 || age > LEASE_MS;
+            })
+          )
+            refuse("invalid-evidence", "The device readings expired. Check the devices again.");
+          else {
+            document = {
+              ...document,
+              current: null,
+              last: {
+                ...plan,
+                dismissedAt: now(),
+                revision: plan.revision + 1,
+                manualClosure: { ...review, devices: req.devices },
+              },
+            };
+            plan = null;
+          }
         } else if (req.type === "dismiss") {
           if (req.expectedRevision !== plan.revision) refuse("stale-revision", "The plan changed.");
           else if (!isPlanComplete(plan))

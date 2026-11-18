@@ -109,6 +109,7 @@ export function createScriptedInstallPlan(input: {
   readonly now?: () => number;
   readonly store?: InstallStatusStore;
   readonly nextLaptopOutcome?: (action: "download" | "install") => "accept" | "reject" | "refuse";
+  readonly confirmManualClosure?: (message: string) => Promise<boolean>;
 }) {
   const now = input.now ?? Date.now;
   const iso = () => new Date(now()).toISOString();
@@ -185,7 +186,7 @@ export function createScriptedInstallPlan(input: {
   const notify = () => {
     native = {
       ...native,
-      view: { complete: native.current !== null && isPlanComplete(native.current) },
+      view: { ...native.view, complete: native.current !== null && isPlanComplete(native.current) },
     };
     if (input.storageKey !== undefined)
       sessionStorage.setItem(input.storageKey, JSON.stringify(native));
@@ -428,6 +429,25 @@ export function createScriptedInstallPlan(input: {
       notify();
       return result();
     }
+    if (request.type === "close-after-manual-install") {
+      if (request.expectedRevision !== plan.revision)
+        return refuse("stale-revision", "The plan changed before closing.");
+      if (!native.view.manualClose)
+        return refuse("invalid-evidence", "The fixture has no proof of manual installation.");
+      native = {
+        ...native,
+        current: null,
+        last: {
+          ...plan,
+          revision: plan.revision + 1,
+          dismissedAt: iso(),
+          manualClosure: { ...native.view.manualClose, devices: request.devices },
+        },
+        view: { complete: false },
+      };
+      notify();
+      return result();
+    }
     if (request.type === "laptop")
       return request.action === "preflight"
         ? refuse("unsupported", "Fixture recovery capability is not advertised.")
@@ -612,6 +632,12 @@ export function createScriptedInstallPlan(input: {
   const services = (bridge: InstallPlanServices["bridge"]): InstallPlanServices => ({
     bridge,
     devices,
+    readStatus: async (environmentId) => {
+      input.record("fixture-host-status-read", { environmentId });
+      return reachability.get(environmentId)?.freshness === "stale"
+        ? null
+        : (hosts.get(environmentId) ?? null);
+    },
     observe: async (id) => {
       const d = devices().find((d) => d.environmentId === id);
       if (d === undefined) throw new Error("Unknown fixture host.");
@@ -660,6 +686,8 @@ export function createScriptedInstallPlan(input: {
     host: async (id) => fleets.get(id)!,
     confirm: async (message) => {
       input.record("fixture-review", { message });
+      if (native.view.manualClose !== undefined && input.confirmManualClosure !== undefined)
+        return input.confirmManualClosure(message);
       return true;
     },
     chooseRecovery: async () => null,
@@ -1020,11 +1048,47 @@ export function createScriptedInstallPlan(input: {
     native = { ...native, current: { ...plan, devices: devicesWithProof } };
     notify();
   };
+  const showcaseManualInstall = () => {
+    showcaseSourceProof();
+    const plan = native.current!;
+    const laptop = {
+      version: "0.1.0-manual.3",
+      sourceSha: "1".repeat(40),
+      sourceTree: "2".repeat(40),
+    };
+    const activeGeneration = "3".repeat(64);
+    const vps = FIXTURE_HOSTS[0]!.environmentId;
+    const mini = FIXTURE_HOSTS[1]!.environmentId;
+    hosts.set(vps, {
+      ...hosts.get(vps)!,
+      currentVersion: laptop.version,
+      installedSource: {
+        repository: plan.target.repository,
+        sha: laptop.sourceSha,
+        tree: laptop.sourceTree,
+      },
+    });
+    hosts.set(mini, { ...hosts.get(mini)!, currentVersion: plan.target.version });
+    native = {
+      ...native,
+      current: {
+        ...plan,
+        revision: plan.revision + 1,
+        laptop: { ...plan.laptop, gateClosed: { at: iso(), reason: "changed" } },
+        devices: plan.devices.filter(
+          (device) => device.environmentId !== FIXTURE_SHOWCASE_HOST.environmentId,
+        ),
+      },
+      view: { complete: false, manualClose: { laptop, activeGeneration } },
+    };
+    notify();
+  };
   notify();
   return {
     request,
     showcaseStepProgress,
     showcaseSourceProof,
+    showcaseManualInstall,
     onInstallPlan: (listener: (state: JonesInstallPlanState) => void) => {
       listeners.add(listener);
       return () => {

@@ -213,6 +213,89 @@ function fixture() {
   };
 }
 afterEach(() => vi.restoreAllMocks());
+it("keeps ordinary Done separate from closing a plan superseded by a manual install", async () => {
+  const f = fixture();
+  const plan = await f.start();
+  const grant = (await f.claim(plan.planId)).grant!;
+  const nextGeneration = "1".repeat(64);
+  f.setEvidence({
+    activeGeneration: nextGeneration,
+    activeSource: old,
+    activeVersion: "manual build",
+    committedTransactionId: undefined,
+  });
+  const observed = (await f.coordinator.request({ type: "read" })).state;
+  expect(observed.current?.laptop.gateClosed?.reason).toBe("changed");
+  const done = await f.coordinator.request({
+    type: "dismiss",
+    planId: plan.planId,
+    expectedRevision: observed.current!.revision,
+  });
+  expect(done.refused?.code).toBe("not-complete");
+  expect(done.state.current?.planId).toBe(plan.planId);
+  const retained = f.snapshot().dispositions;
+  const publication = { type: "publication", acceptOrdinaryRecovery: 1 } as const;
+  const before = (await f.coordinator.request(publication)).publication;
+  const close = {
+    type: "close-after-manual-install",
+    planId: plan.planId,
+    expectedRevision: observed.current!.revision,
+    ...observed.view.manualClose!,
+    devices: [{ environmentId: remote, kind: "unverified", observedAt: Date.parse(timestamp) }],
+  } as const;
+  expect((await f.coordinator.request(close)).refused?.code).toBe("outstanding-operation");
+  const receipt = f.receipt(grant, "completed");
+  const reported = await f.coordinator.request({
+    type: "report",
+    planId: plan.planId,
+    environmentId: remote,
+    operationId: grant.operationId,
+    evidence: { kind: "receipt", receipt },
+  });
+  const settled = { ...close, expectedRevision: reported.state.current!.revision };
+  expect((await f.coordinator.request(close)).refused?.code).toBe("stale-revision");
+  expect((await f.coordinator.request({ ...settled, devices: [] })).refused?.code).toBe(
+    "invalid-evidence",
+  );
+  expect(
+    (await f.coordinator.request({ ...settled, activeGeneration: transaction })).refused?.code,
+  ).toBe("invalid-evidence");
+  f.advance();
+  expect((await f.coordinator.request(settled)).refused?.code).toBe("invalid-evidence");
+  const fresh = { ...settled, devices: [{ ...close.devices[0], observedAt: f.options.now() }] };
+  const closed = await f.coordinator.request(fresh);
+  expect(closed.refused).toBeUndefined();
+  expect(closed.state.current).toBeNull();
+  expect(closed.state.last).toMatchObject({
+    planId: plan.planId,
+    manualClosure: {
+      activeGeneration: nextGeneration,
+      laptop: close.laptop,
+      devices: fresh.devices,
+    },
+    devices: [{ operations: [{ receipt }] }],
+  });
+  expect(f.snapshot().dispositions).toEqual(retained);
+  expect((await f.coordinator.request(publication)).publication).toEqual(before);
+  expect((await f.claim(plan.planId)).refused?.code).toBe("plan-mismatch");
+  f.setEvidence({
+    ordinaryRecovery: {
+      activeGeneration: nextGeneration,
+      transactionId: `manual-${nextGeneration}`,
+      manifestSha256: "2".repeat(64),
+      receiptSha256: "3".repeat(64),
+    },
+  });
+  const next = await f.coordinator.request({
+    type: "start",
+    origin: "update-button",
+    target: { ...target, sourceSha: old, version: close.laptop.version },
+    select: [],
+  });
+  expect(next.refused).toBeUndefined();
+  expect(next.state.current?.planId).not.toBe(plan.planId);
+});
+
 describe("ordinary recovery proof", () => {
   const proof = {
     transactionId: `manual-${transaction}`,

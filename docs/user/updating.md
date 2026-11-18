@@ -9,6 +9,7 @@ notice.
 
 In the desktop app, open **Install status** in the sidebar footer, just above the
 machine filters. The update button also opens it while work is in progress.
+Use **All** for the overview, or choose a machine to see its steps and actions.
 A new plan includes **Laptop** only. Choose **Edit** to include other available
 machines, then the small **Done** to apply your selection. Escape or collapsing
 the panel discards an unfinished edit. Selection applies to this plan and does
@@ -73,6 +74,13 @@ changes or a request is not confirmed, the panel stays open; use Done again only
 after reading the current status. Confirmed partial progress is kept. Other
 downloaded stages and unresolved results keep the plan open. Reopening **Last update** is
 read-only. The next plan starts with Laptop only.
+
+If you finished a manual install and the panel still shows an older plan,
+choose **I installed manually**. Jones Code checks the running Laptop build and
+the selected machines before asking you to close the plan. **Last update** keeps
+the observed versions and identifies machines it could not verify. Resolve any
+outstanding update work first. Closing ends the plan's queue and leaves installed
+builds, staged downloads and follower settings in place.
 
 ### Recovery space
 

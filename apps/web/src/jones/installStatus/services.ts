@@ -24,6 +24,7 @@ export interface InstallPlanServices {
   >;
   readonly devices: () => readonly InstallStatusDevice[];
   readonly observe: (environmentId: EnvironmentId) => Promise<InstallStatusDevice>;
+  readonly readStatus?: (environmentId: EnvironmentId) => Promise<JonesUpdateState | null>;
   readonly legacy: (
     environmentId: EnvironmentId,
     request: JonesAction,
