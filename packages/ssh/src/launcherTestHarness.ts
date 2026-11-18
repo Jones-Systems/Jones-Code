@@ -222,7 +222,9 @@ esac
 }
 ${script}`,
       encoding: "utf8",
-      timeout: 30_000,
+      // Archive polls start the real helper CLI in a fresh process. Budget for
+      // that work separately from the fake clock that the tests assert.
+      timeout: options.archive ? 50_000 : 30_000,
       env: {
         ...process.env,
         HOME: home,
