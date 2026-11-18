@@ -1,25 +1,28 @@
-import { execFileSync } from "node:child_process";
-import { realpath, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 import react from "@vitejs/plugin-react";
 import tailwind from "@tailwindcss/vite";
 import { build } from "vite";
 
-const webRoot = fileURLToPath(new URL("../", import.meta.url));
-const repository = resolve(webRoot, "../..");
+const webRoot = NodeURL.fileURLToPath(new URL("../", import.meta.url));
+const repository = NodePath.resolve(webRoot, "../..");
 const maximumPageBytes = 25 * 1024 * 1024;
 const viewportHeight = /(?<![\w.+/])(\d+(?:\.\d+)?|\.\d+)[sld]?vh(?![\w-])/gi;
 
 function git(...args) {
-  return execFileSync("git", args, { cwd: repository, encoding: "utf8" }).trim();
+  return NodeChildProcess.execFileSync("git", args, { cwd: repository, encoding: "utf8" }).trim();
 }
 
 async function outputPath(filename) {
-  const destination = resolve(filename);
-  const target = join(await realpath(dirname(destination)), basename(destination));
-  const fromRepository = relative(await realpath(repository), target);
-  if (!isAbsolute(fromRepository) && !fromRepository.startsWith(`..${sep}`)) {
+  const destination = NodePath.resolve(filename);
+  const target = NodePath.join(
+    await NodeFSP.realpath(NodePath.dirname(destination)),
+    NodePath.basename(destination),
+  );
+  const fromRepository = NodePath.relative(await NodeFSP.realpath(repository), target);
+  if (!NodePath.isAbsolute(fromRepository) && !fromRepository.startsWith(`..${NodePath.sep}`)) {
     throw new Error("Write the preview into an owned directory outside the checkout.");
   }
   return target;
@@ -89,7 +92,7 @@ if (git("status", "--porcelain", "--untracked-files=normal")) {
     "Build a clean, committed candidate so the preview can identify its exact source.",
   );
 }
-const entry = join(webRoot, "src", "jones", "designReview", `${name}-entry.tsx`);
+const entry = NodePath.join(webRoot, "src", "jones", "designReview", `${name}-entry.tsx`);
 const result = await build({
   configFile: false,
   envFile: false,
@@ -137,5 +140,5 @@ if (
 ) {
   throw new Error("The source changed during the preview build.");
 }
-await writeFile(destination, html, { flag: "wx" });
+await NodeFSP.writeFile(destination, html, { flag: "wx" });
 console.log(`Built ${destination} from ${source}`);
