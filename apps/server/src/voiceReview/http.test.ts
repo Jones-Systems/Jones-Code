@@ -160,7 +160,7 @@ it("protects both reviewed-send endpoints and rejects malformed reviewed sends b
     ),
   );
   const draftUrl = "http://local/api/voice-review/drafts/capture";
-  const send = (headers: HeadersInit, payload: unknown, action = "send-reviewed") =>
+  const send = (headers: RequestInit["headers"], payload: unknown, action = "send-reviewed") =>
     app.handler(
       new Request(`${draftUrl}/${action}`, {
         method: "POST",
