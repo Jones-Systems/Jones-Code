@@ -124,6 +124,41 @@ describe("decideAggregate", () => {
     expect(outcome).toMatchObject({ status: "ineligible", exitCode: 0 });
   });
 
+  it("qualifies complete mixed evidence without publishing timing weights", () => {
+    const baseline = inputs();
+    const receipt = JSON.stringify({
+      schema: "jones.server-result-cache/v1",
+      commit: baseline.sha,
+      run: baseline.runId,
+      attempt: String(baseline.runAttempt),
+      shard: "6/6",
+      weightsDigest: null,
+    });
+    const cacheReceipts = new Map([[6, receipt]]);
+    expect(
+      decideAggregate(inputs({ captures: shards([1, 2, 3, 4, 5]), cacheReceipts })),
+    ).toMatchObject({
+      status: "ineligible",
+      exitCode: 0,
+      reason: expect.stringContaining("per-file"),
+    });
+    expect(
+      decideAggregate(inputs({ captures: shards([1, 2, 3, 4]), cacheReceipts })),
+    ).toMatchObject({ status: "rejected", reason: expect.stringContaining("missing-shard") });
+    expect(decideAggregate(inputs({ cacheReceipts }))).toMatchObject({
+      status: "rejected",
+      reason: expect.stringContaining("conflicting evidence"),
+    });
+    expect(
+      decideAggregate(
+        inputs({ captures: shards([1, 2, 3, 4, 5]), cacheReceipts: new Map([[6, "{}"]]) }),
+      ),
+    ).toMatchObject({
+      status: "rejected",
+      reason: expect.stringContaining("invalid cache receipt"),
+    });
+  });
+
   it("publishes a full rerun as that attempt's measurement", () => {
     const rerun = shards(ALL, { attempt: 2 });
     const outcome = decideAggregate(inputs({ runAttempt: 2, captures: rerun }));

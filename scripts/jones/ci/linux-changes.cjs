@@ -107,6 +107,8 @@ function changedPaths(eventName, event, run) {
     return {
       files,
       serverCachePilot: pilotComparison !== undefined && files.includes(SERVER_CACHE_DRIVER),
+      serverCacheEligible:
+        pilotComparison !== undefined && metadata.head?.repo?.full_name === repository,
       reason: `Exact PR diff ${pr.base.sha}..${pr.head.sha} (renames include both paths)`,
     };
   } catch (error) {
@@ -149,6 +151,7 @@ function main() {
   }
   console.error(change.reason);
   const outputs = select(change.files, readWorkspace());
+  outputs.server_cache_eligible = change.serverCacheEligible === true;
   outputs.server_cache_pilot =
     change.serverCachePilot === true && fs.existsSync(SERVER_CACHE_DRIVER);
   const lines =

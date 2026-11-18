@@ -107,6 +107,14 @@ test("workflow enrolls every required job in Check and keeps the cache pilot adv
   assert.match(jobs.server_cache_cold, /outputs\.server_cache_pilot == 'true'/);
   assert.match(jobs.server_cache_warm, /needs\.server_cache_cold\.result == 'success'/);
   assert.match(jobs.server_cache_warm, /needs\.test_server\.result == 'success'/);
+  assert.match(jobs.test_server, /vars\.JONES_SERVER_RESULT_CACHE == 'on'/);
+  assert.match(jobs.test_server, /outputs\.server_cache_eligible == 'true'/);
+  assert.match(jobs.test_server, /steps\.result_restore\.outcome == 'success'/);
+  assert.match(
+    jobs.test_server,
+    /else\n +echo "Running the server shard fresh\."\n +\$\{\{ env\.TEST_COMMAND \}\}/,
+  );
+  assert.doesNotMatch(jobs.server_timings, /vars\.JONES_SERVER_RESULT_CACHE/);
   for (const [job, output] of Object.entries(LINUX_GATES))
     assert.ok(jobs[job].includes(`needs.linux_changes.outputs.${output} != 'false'`), job);
   for (const [job, output] of Object.entries(NATIVE_GATES))

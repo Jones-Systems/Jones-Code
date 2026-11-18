@@ -67,6 +67,7 @@ jobs:
       test_web: ${{ steps.detect.outputs.test_web }}
       test_server: ${{ steps.detect.outputs.test_server }}
       server_cache_pilot: ${{ steps.detect.outputs.server_cache_pilot }}
+      server_cache_eligible: ${{ steps.detect.outputs.server_cache_eligible }}
       test_desktop: ${{ steps.detect.outputs.test_desktop }}
       test_mobile: ${{ steps.detect.outputs.test_mobile }}
       test_client_runtime: ${{ steps.detect.outputs.test_client_runtime }}
@@ -962,6 +963,9 @@ jobs:
     if: ${{ !cancelled() && needs.linux_changes.outputs.test_server != 'false' && needs.server_weights.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -1082,24 +1086,100 @@ jobs:
               ;;
           esac
 
+      # Read the repository setting in each shard attempt. A failed-job rerun
+      # must not inherit a previous attempt's on/off choice from a needs output.
+      - name: Prepare server result cache
+        id: result_cache
+        if: >-
+          ${{ vars.JONES_SERVER_RESULT_CACHE == 'on' &&
+              needs.linux_changes.outputs.server_cache_eligible == 'true' }}
+        continue-on-error: true
+        env:
+          JONES_RESULT_CACHE_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d "$RUNNER_TEMP/server-result-cache.XXXXXXXX")"
+          cache="$RUNNER_TEMP/jones-server-result-rollout"
+          mkdir "$cache"
+          JONES_RESULT_CACHE_DIR="$work" node scripts/jones/ci/server-result-cache.mjs select-rollout
+          {
+            echo "JONES_RESULT_CACHE_DIR=$work"
+            echo "JONES_RESULT_CACHE_PATH=$cache"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore server result cache
+        id: result_restore
+        if: steps.result_cache.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/cache/restore@v6
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "1"
+        with:
+          path: ${{ env.JONES_RESULT_CACHE_PATH }}
+          key: ${{ steps.result_cache.outputs.key }}
+          restore-keys: ${{ steps.result_cache.outputs.prefix }}
+
+      - name: Check result cache storage headroom
+        id: result_budget
+        if: steps.result_restore.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Use the included cache allowance and leave room for other caches.
+          # GitHub reports usage with a delay; this is a best-effort guard.
+          if used="$(gh api "repos/$GITHUB_REPOSITORY/actions/cache/usage" --jq .active_caches_size_in_bytes)" \
+            && [[ "$used" =~ ^(0|[1-9][0-9]{0,14})$ ]] \
+            && (( used + 128 * 1024 * 1024 <= 10 * 1024 * 1024 * 1024 )); then
+            echo "allow_save=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Result cache storage headroom is low or unknown. Skipping new archives."
+          fi
+
       - name: Test
         id: tests
         env:
           T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
           T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
           JONES_SERVER_SHARD_TIMINGS_PATH: ${{ runner.temp }}/server-timings.ndjson
+          JONES_RESULT_CACHE_READY: >-
+            ${{ steps.result_restore.outcome == 'success' &&
+                (steps.result_restore.outputs.cache-matched-key != '' ||
+                 steps.result_budget.outputs.allow_save == 'true') }}
+          JONES_RESULT_CACHE_RESTORED_KEY: ${{ steps.result_restore.outputs.cache-matched-key }}
         run: |
           # pipefail keeps the test command's exit status through the filter.
           set -o pipefail
           # The runner's trace writer can crash on surrogate pairs in test output
           # (upstream d51bc58f5e0). Escape non-ASCII in the log only; the JSON
           # report and the timings files are written directly by the test run.
-          ${{ env.TEST_COMMAND }} 2>&1 | python3 -u -c '
+          run_shard() {
+            if [[ "$JONES_RESULT_CACHE_READY" == true ]]; then
+              echo "TEST_COMMAND=node scripts/jones/ci/server-result-cache.mjs run-rollout --shard ${{ matrix.shard }}/${{ strategy.job-total }}" >> "$GITHUB_ENV"
+              env -u JONES_SERVER_SHARD_TIMINGS_PATH VITE_CACHE_PATH="$JONES_RESULT_CACHE_PATH" VP_REMOTE_CACHE=off \
+                node scripts/jones/ci/server-result-cache.mjs run-rollout
+            else
+              echo "Running the server shard fresh."
+              ${{ env.TEST_COMMAND }}
+            fi
+          }
+          run_shard 2>&1 | python3 -u -c '
           import sys
           sys.stdin.reconfigure(errors="backslashreplace")
           for line in sys.stdin:
               sys.stdout.write(line.encode("ascii", "backslashreplace").decode("ascii"))
           '
+
+      - name: Save validated server results
+        if: >-
+          ${{ steps.tests.outcome == 'success' && steps.tests.outputs.save_cache == 'true' &&
+              steps.result_budget.outputs.allow_save == 'true' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.JONES_RESULT_CACHE_PATH }}
+          key: ${{ steps.result_cache.outputs.key }}
 
       - *test_receipt
       - *test_receipt_upload
@@ -1117,6 +1197,7 @@ jobs:
           path: |
             ${{ runner.temp }}/server-timings.ndjson
             ${{ runner.temp }}/server-case-events.ndjson
+            ${{ runner.temp }}/server-result-cache.json
           if-no-files-found: warn
           retention-days: 7
 
@@ -1147,6 +1228,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: thread-transfer-results
+          overwrite: true
           path: ${{ runner.temp }}/thread-transfer-result.json
           if-no-files-found: ignore
           retention-days: 30
@@ -1158,7 +1240,10 @@ jobs:
     needs: [linux_changes, server_weights]
     if: >-
       ${{ !cancelled() && needs.server_weights.result == 'success' &&
-          (inputs.server_cache_pilot == true || needs.linux_changes.outputs.server_cache_pilot == 'true') }}
+          (inputs.server_cache_pilot == true ||
+            (needs.linux_changes.outputs.server_cache_pilot == 'true' &&
+              (vars.JONES_SERVER_RESULT_CACHE != 'on' ||
+               needs.linux_changes.outputs.server_cache_eligible != 'true'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

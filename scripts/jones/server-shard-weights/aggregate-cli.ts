@@ -29,6 +29,8 @@ export interface AggregateInputs {
   selection: { mode: string; digest: string; sourceRunId: string };
   /** Shard index to capture text, for this attempt's artifacts that exist. */
   captures: ReadonlyMap<number, string>;
+  /** Cache receipts for this attempt identify shards that did not measure fresh Vitest timings. */
+  cacheReceipts?: ReadonlyMap<number, string>;
 }
 
 export type AggregateOutcome =
@@ -57,18 +59,42 @@ export function decideAggregate(inputs: AggregateInputs): AggregateOutcome {
       reason: `server tests ended ${inputs.testResult || "unknown"}`,
     };
   }
-  if (inputs.captures.size < inputs.shardCount && inputs.runAttempt > 1) {
+  const rejected = (reason: string) => ({ status: "rejected", exitCode: 1, reason }) as const;
+  const cacheReceipts = inputs.cacheReceipts ?? new Map<number, string>();
+  for (const [shard, bytes] of cacheReceipts) {
+    if (inputs.captures.has(shard)) return rejected(`conflicting evidence for shard ${shard}`);
+    try {
+      const receipt = JSON.parse(bytes);
+      if (
+        receipt.schema !== "jones.server-result-cache/v1" ||
+        receipt.commit !== inputs.sha ||
+        receipt.run !== inputs.runId ||
+        receipt.attempt !== String(inputs.runAttempt) ||
+        receipt.shard !== `${shard}/${inputs.shardCount}` ||
+        receipt.weightsDigest !== (inputs.selection.digest || null)
+      )
+        return rejected(`invalid cache receipt for shard ${shard}`);
+    } catch {
+      return rejected(`unreadable cache receipt for shard ${shard}`);
+    }
+  }
+  const shards = inputs.captures.size + cacheReceipts.size;
+  if (shards < inputs.shardCount && inputs.runAttempt > 1) {
     return {
       status: "ineligible",
       exitCode: 0,
-      reason: `attempt ${inputs.runAttempt} reran ${inputs.captures.size} of ${inputs.shardCount} shards`,
+      reason: `attempt ${inputs.runAttempt} reran ${shards} of ${inputs.shardCount} shards`,
     };
   }
-  const rejected = (reason: string) => ({ status: "rejected", exitCode: 1, reason }) as const;
-  if (inputs.captures.size < inputs.shardCount) {
-    return rejected(
-      `missing-shard: ${inputs.captures.size} of ${inputs.shardCount} shards uploaded captures`,
-    );
+  if (shards < inputs.shardCount) {
+    return rejected(`missing-shard: ${shards} of ${inputs.shardCount} shards uploaded captures`);
+  }
+  if (cacheReceipts.size > 0) {
+    return {
+      status: "ineligible",
+      exitCode: 0,
+      reason: `${cacheReceipts.size} shards used per-file test tasks; no full-shard timing measurement`,
+    };
   }
   let result: ReturnType<typeof aggregateServerShardCaptures>;
   try {
@@ -116,13 +142,14 @@ export function decideAggregate(inputs: AggregateInputs): AggregateOutcome {
 export function readCaptures(
   directory: string,
   { attempt, shardCount }: { attempt: number; shardCount: number },
+  fileName = CAPTURE_FILE_NAME,
 ): Map<number, string> {
   const captures = new Map<number, string>();
   for (let shard = 1; shard <= shardCount; shard++) {
     const path = NodePath.join(
       directory,
       captureArtifactName(attempt, shard, shardCount),
-      CAPTURE_FILE_NAME,
+      fileName,
     );
     if (!NodeFS.existsSync(path)) continue;
     if (NodeFS.statSync(path).size > MAX_CAPTURE_BYTES) {
@@ -177,6 +204,8 @@ function main(): number {
   }
   let outcome: AggregateOutcome;
   try {
+    const directory = testResult === "success" ? required("CAPTURES_DIR") : null;
+    const attempt = { attempt: runAttempt, shardCount };
     outcome = decideAggregate({
       testResult,
       shardCount,
@@ -190,10 +219,10 @@ function main(): number {
         sourceRunId: process.env.WEIGHTS_SOURCE_RUN_ID ?? "",
       },
       // Only read captures when the tests passed; a failed run is not measured.
-      captures:
-        testResult === "success"
-          ? readCaptures(required("CAPTURES_DIR"), { attempt: runAttempt, shardCount })
-          : new Map(),
+      captures: directory ? readCaptures(directory, attempt) : new Map(),
+      cacheReceipts: directory
+        ? readCaptures(directory, attempt, "server-result-cache.json")
+        : new Map(),
     });
   } catch (error) {
     if (!(error instanceof TimingRejection)) throw error;
