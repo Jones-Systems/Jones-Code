@@ -275,13 +275,33 @@ export const makeVoiceReviewBridge = (
     entries: readonly VoiceReviewRecentEntry[],
     deadline: number,
   ): Promise<readonly VoiceReviewRecentEntry[]> => {
+    // A broker result governs its own entry and prevents a legacy read for the same command.
+    const advertisedCommands = new Set<string>();
+    for (const entry of entries) {
+      if (entry.queue_delivery_links === undefined) continue;
+      if (entry.command_id !== null) advertisedCommands.add(entry.command_id);
+      if (entry.draft.command_id !== null) advertisedCommands.add(entry.draft.command_id);
+    }
+    const projected = entries.map((entry) => {
+      const { command_id: id, queue_delivery_links: embedded, draft } = entry;
+      if (embedded !== undefined) {
+        if (embedded?.status !== "ready") return entry;
+        if (entry.text_state !== "available") return { ...entry, queue_delivery_links: null };
+        if (draft.state !== "released" || id === null || id !== draft.command_id || id !== draft.id)
+          return { ...entry, queue_delivery_links: unavailableLinks("invalid_receipt") };
+        return entry;
+      }
+      if (id === null) return { ...entry, queue_delivery_links: null };
+      if (entry.text_state !== "available" || advertisedCommands.has(id))
+        return { ...entry, queue_delivery_links: unavailableLinks("source_unavailable") };
+      return entry;
+    });
+
     const links = new Map<string, VoiceReviewQueueDeliveryLinks>();
     const commands = Array.from(
       new Set(
-        entries.flatMap((entry) =>
-          entry.command_id !== null &&
-          entry.draft.state !== "deleted" &&
-          entry.draft.state !== "expired"
+        projected.flatMap((entry) =>
+          entry.queue_delivery_links === undefined && entry.command_id !== null
             ? [entry.command_id]
             : [],
         ),
@@ -385,15 +405,14 @@ export const makeVoiceReviewBridge = (
         clearTimeout(timeout);
       }
     }
-    return entries.map((entry) => ({
-      ...entry,
-      queue_delivery_links:
-        entry.command_id === null
-          ? null
-          : entry.draft.state === "deleted" || entry.draft.state === "expired"
-            ? unavailableLinks("source_unavailable")
-            : (links.get(entry.command_id) ?? unavailableLinks("limit")),
-    }));
+    return projected.map((entry) =>
+      entry.queue_delivery_links !== undefined || entry.command_id === null
+        ? entry
+        : {
+            ...entry,
+            queue_delivery_links: links.get(entry.command_id) ?? unavailableLinks("limit"),
+          },
+    );
   };
   const get = async (principal: EnvironmentSessionPrincipalShape, id: string, mutation = false) => {
     const trusted = authorize(principal, mutation);
@@ -440,6 +459,7 @@ export const makeVoiceReviewBridge = (
           `/v1/prompt-review/recent?source_id=${encodeURIComponent(trusted.source_id)}&limit=${checkedLimit(limit)}`,
         ),
       );
+      const brokerTime = Date.parse(result.server_now);
       return {
         ...result,
         entries: await enrichRecent(
@@ -447,20 +467,28 @@ export const makeVoiceReviewBridge = (
           result.entries
             .filter((entry) => entry.draft.source_id === trusted.source_id)
             .map((entry) => {
-              const terminal = entry.draft.state === "deleted" || entry.draft.state === "expired";
-              const unavailable = terminal || entry.text_state !== "available";
-              return unavailable
-                ? {
-                    ...entry,
-                    text: null,
-                    original_source_text: null,
-                    text_origin: null,
-                    text_state: terminal
-                      ? (entry.draft.state as "deleted" | "expired")
-                      : entry.text_state,
-                    draft: { ...entry.draft, text: null },
-                  }
-                : entry;
+              const expiresAt = Date.parse(entry.draft.expires_at);
+              let textState = entry.text_state;
+              if (entry.draft.state === "deleted" || entry.draft.state === "expired") {
+                textState = entry.draft.state;
+              } else if (textState === "available" && brokerTime >= expiresAt) {
+                textState = "expired";
+              } else if (
+                textState === "available" &&
+                entry.queue_delivery_links?.status === "ready" &&
+                (entry.text === null || !(brokerTime < expiresAt))
+              ) {
+                textState = "unavailable";
+              }
+              if (textState === "available") return entry;
+              return {
+                ...entry,
+                text: null,
+                original_source_text: null,
+                text_origin: null,
+                text_state: textState,
+                draft: { ...entry.draft, text: null },
+              };
             }),
           deadline,
         ),

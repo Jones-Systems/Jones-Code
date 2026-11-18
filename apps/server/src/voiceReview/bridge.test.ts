@@ -9,6 +9,7 @@ import {
   VoiceReviewUnavailableError,
   type EnvironmentSessionPrincipalShape,
   type VoiceReviewDraft,
+  type VoiceReviewRecentEntry,
   ThreadRegistryAssociationPayload,
   ThreadRegistryLabelPayload,
   ThreadRegistrySnapshot,
@@ -681,7 +682,7 @@ describe("voice command queue receipt enrichment", () => {
   const recentEntry = (
     command_id: string | null,
     state: VoiceReviewDraft["state"] = "released",
-  ) => ({
+  ): VoiceReviewRecentEntry => ({
     draft: { ...draft, state, command_id },
     text: "retained transcript",
     original_source_text: null,
@@ -713,6 +714,163 @@ describe("voice command queue receipt enrichment", () => {
     transcript: "private command transcript",
     deliveries: [delivery],
   });
+  const inlineLinks = {
+    status: "ready",
+    reason: null,
+    deliveries: [
+      {
+        delivery_id: delivery.id,
+        queue_request_id: delivery.queue_request_id,
+        payload_sha256: delivery.queue_payload_sha256,
+        destination: delivery.destination,
+      },
+    ],
+    unlinked_delivery_count: 0,
+  } as const;
+  const inlineEntry = (id = "command"): VoiceReviewRecentEntry => {
+    const entry = recentEntry(id);
+    return { ...entry, draft: { ...entry.draft, id }, queue_delivery_links: inlineLinks };
+  };
+
+  it("retains reviewer-scoped inline queue links and text with only the recent request", async () =>
+    withFixture(async (tokenFile) => {
+      const entry = inlineEntry();
+      const foreign = { ...entry, draft: { ...entry.draft, source_id: "foreign" } };
+      const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+        expect(url).toBe(
+          "http://127.0.0.1:7000/v1/prompt-review/recent?source_id=microphone&limit=50",
+        );
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          "Bearer fixture-reviewer-token",
+        );
+        return Response.json(recent([foreign, entry]));
+      });
+
+      const result = await makeVoiceReviewBridge(config(tokenFile), fetcher).recent(principal);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(result.entries).toEqual([entry]);
+    }));
+
+  it("keeps present results authoritative without sharing links with legacy entries", async () =>
+    withFixture(async (tokenFile) => {
+      const ready = inlineEntry("ready");
+      const unavailable = (
+        ["forbidden", "invalid_receipt", "limit", "source_unavailable"] as const
+      ).map((reason): VoiceReviewRecentEntry => ({
+        ...inlineEntry(reason),
+        queue_delivery_links: { status: "unavailable", reason, deliveries: [] },
+      }));
+      const empty = { ...inlineEntry("empty"), queue_delivery_links: null };
+      const legacy = recentEntry("legacy");
+      const foreign = {
+        ...legacy,
+        draft: { ...legacy.draft, source_id: "foreign" },
+        queue_delivery_links: null,
+      };
+      const modern = [ready, ...unavailable, empty];
+      const duplicates = modern.map((entry) => recentEntry(entry.command_id));
+      const fetcher = vi.fn<typeof fetch>(async (url) =>
+        String(url).includes("/recent?")
+          ? Response.json(recent([...duplicates, ...modern, foreign, legacy]))
+          : new Response(null, { status: 401 }),
+      );
+
+      const result = await makeVoiceReviewBridge(config(tokenFile), fetcher).recent(principal);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher.mock.calls[1]?.[0]).toBe("http://127.0.0.1:7000/v1/commands/legacy");
+      const denied = { status: "unavailable", reason: "source_unavailable", deliveries: [] };
+      expect(result.entries).toEqual([
+        ...duplicates.map((entry) => ({ ...entry, queue_delivery_links: denied })),
+        ...modern,
+        { ...legacy, queue_delivery_links: denied },
+      ]);
+    }));
+
+  it("rejects inline ready links unless the released draft binds all command identities", async () =>
+    withFixture(async (tokenFile) => {
+      const entry = inlineEntry();
+      const fetcher = vi.fn<typeof fetch>(async () =>
+        Response.json(
+          recent([
+            { ...entry, command_id: "different" },
+            { ...entry, command_id: null },
+            { ...entry, draft: { ...entry.draft, id: "different" } },
+            { ...entry, draft: { ...entry.draft, state: "held" } },
+          ]),
+        ),
+      );
+
+      const result = await makeVoiceReviewBridge(config(tokenFile), fetcher).recent(principal);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(result.entries.map((item) => item.queue_delivery_links)).toEqual(
+        Array.from({ length: 4 }, () => ({
+          status: "unavailable",
+          reason: "invalid_receipt",
+          deliveries: [],
+        })),
+      );
+    }));
+
+  it("redacts ready links and retained text when the entry is terminal or past retention", async () =>
+    withFixture(async (tokenFile) => {
+      const entry = { ...inlineEntry(), original_source_text: "original transcript" };
+      const fetcher = vi.fn<typeof fetch>(async () =>
+        Response.json(
+          recent([
+            { ...entry, draft: { ...entry.draft, state: "deleted" } },
+            { ...entry, draft: { ...entry.draft, state: "expired" } },
+            { ...entry, text_state: "unavailable" },
+            { ...entry, draft: { ...entry.draft, expires_at: draft.server_now } },
+            { ...entry, draft: { ...entry.draft, expires_at: "unknown" } },
+            { ...entry, text: null },
+          ]),
+        ),
+      );
+
+      const result = await makeVoiceReviewBridge(config(tokenFile), fetcher).recent(principal);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(result.entries.map((item) => item.text_state)).toEqual([
+        "deleted",
+        "expired",
+        "unavailable",
+        "expired",
+        "unavailable",
+        "unavailable",
+      ]);
+      for (const item of result.entries) {
+        expect(item).toMatchObject({
+          text: null,
+          original_source_text: null,
+          text_origin: null,
+          draft: { text: null },
+          queue_delivery_links: null,
+        });
+      }
+    }));
+
+  it("fails closed on malformed inline receipt evidence without a legacy read", async () =>
+    withFixture(async (tokenFile) => {
+      const entry = inlineEntry();
+      const fetcher = vi.fn<typeof fetch>(async () =>
+        Response.json(
+          recent([
+            {
+              ...entry,
+              queue_delivery_links: {
+                ...inlineLinks,
+                deliveries: [{ ...inlineLinks.deliveries[0], payload_sha256: "invalid" }],
+              },
+            },
+          ]),
+        ),
+      );
+
+      await expect(
+        makeVoiceReviewBridge(config(tokenFile), fetcher).recent(principal),
+      ).rejects.toThrow();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    }));
+
   it("deduplicates lookups, projects only explicit queue metadata and skips terminal entries", async () =>
     withFixture(async (tokenFile) => {
       const fetcher = vi.fn<typeof fetch>(async (url, init) => {
@@ -851,7 +1009,14 @@ describe("voice command queue receipt enrichment", () => {
           "invalid_receipt",
         ],
         [() => new Response("not json"), "invalid_receipt"],
-        [() => Response.json({ ...command(), deliveries: Array(201).fill(delivery) }), "limit"],
+        [
+          () =>
+            Response.json({
+              ...command(),
+              deliveries: Array.from({ length: 201 }, () => ({ ...delivery })),
+            }),
+          "limit",
+        ],
       ];
       for (const [response, reason] of variants) {
         const fetcher = vi.fn<typeof fetch>(async (url) =>
