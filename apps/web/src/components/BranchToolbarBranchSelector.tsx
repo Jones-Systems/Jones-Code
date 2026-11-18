@@ -1,4 +1,7 @@
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
+import { useAtomValue } from "@effect/atom-react";
+import { usesVerifiedDefault } from "../jones/composer/firstSendWorktree";
+import { serverEnvironment } from "../state/server";
 import { ComposerContextLabel } from "./ComposerContextLabel";
 import { useRightPanelStore } from "../rightPanelStore";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -156,6 +159,8 @@ export function BranchToolbarBranchSelector({
       ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
       : null;
   const activeProject = useProject(activeProjectRef);
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const verifiedDefault = usesVerifiedDefault(serverConfig, activeProject?.id);
 
   const activeThreadId = serverThread?.id ?? (draftThread ? threadId : undefined);
   const activeThreadBranch =
@@ -307,7 +312,12 @@ export function BranchToolbarBranchSelector({
     ? `__create_new_branch__:${trimmedBranchQuery}`
     : null;
   const pickerCreateBranchItemValue = hasExactBranchMatch ? null : createBranchItemValue;
+  const defaultBaseItem =
+    verifiedDefault && isSelectingWorktreeBase && effectiveEnvMode === "worktree"
+      ? "Default branch"
+      : null;
   const branchPickerItems = [
+    ...(defaultBaseItem === null ? [] : [defaultBaseItem]),
     ...(checkoutPullRequestItemValue ? [checkoutPullRequestItemValue] : []),
     ...refs.map((refName) => refName.name),
     ...(pickerCreateBranchItemValue ? [pickerCreateBranchItemValue] : []),
@@ -630,7 +640,7 @@ export function BranchToolbarBranchSelector({
   const threadStarted = serverSession !== null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- writes a default base branch to the server thread or draft once branches load for a new worktree thread
   useEffect(() => {
-    if (threadStarted) return;
+    if (threadStarted || (verifiedDefault && effectiveEnvMode === "worktree")) return;
     const branch = resolveAutomaticWorktreeBaseBranch({
       effectiveEnvMode,
       envLocked,
@@ -649,6 +659,7 @@ export function BranchToolbarBranchSelector({
     envLocked,
     setThreadBranch,
     threadStarted,
+    verifiedDefault,
     worktreeBaseBranchCandidate,
   ]);
 
@@ -676,13 +687,20 @@ export function BranchToolbarBranchSelector({
     [handleOpenChange, isBranchActionPending, isInitialBranchesLoadPending],
   );
 
-  const triggerLabel = resolveBranchTriggerLabel({
-    activeWorktreePath,
-    effectiveEnvMode,
-    resolvedActiveBranch,
-    resolvedActiveBranchIsRemote,
-    startFromOrigin,
-  });
+  const usesAutomaticVerifiedBase =
+    verifiedDefault &&
+    isSelectingWorktreeBase &&
+    effectiveEnvMode === "worktree" &&
+    activeThreadBranch === null;
+  const triggerLabel = usesAutomaticVerifiedBase
+    ? "Default branch"
+    : resolveBranchTriggerLabel({
+        activeWorktreePath,
+        effectiveEnvMode,
+        resolvedActiveBranch,
+        resolvedActiveBranchIsRemote,
+        startFromOrigin,
+      });
 
   const branchPrBranch = resolveBranchToolbarPrBranch({
     activeThreadBranch,
@@ -706,7 +724,17 @@ export function BranchToolbarBranchSelector({
   const openPrLink = useOpenPrLink(threadRef);
 
   function selectPickerItem(itemValue: string) {
-    if (itemValue === checkoutPullRequestItemValue && prReference && onCheckoutPullRequestRequest) {
+    if (itemValue === defaultBaseItem) {
+      latestSelectionIdRef.current++;
+      if (setThreadBranch(null, null)) {
+        handleOpenChange(false);
+        onComposerFocusRequest?.();
+      }
+    } else if (
+      itemValue === checkoutPullRequestItemValue &&
+      prReference &&
+      onCheckoutPullRequestRequest
+    ) {
       latestSelectionIdRef.current++;
       handleOpenChange(false);
       onComposerFocusRequest?.();
@@ -720,6 +748,19 @@ export function BranchToolbarBranchSelector({
   }
 
   function renderPickerItem(itemValue: string, index: number) {
+    if (itemValue === defaultBaseItem) {
+      return (
+        <ComboboxItem
+          key={itemValue}
+          index={index}
+          value={itemValue}
+          disabled={!canUpdateThreadBranch}
+          onClick={() => selectPickerItem(itemValue)}
+        >
+          <span className="truncate">{itemValue}</span>
+        </ComboboxItem>
+      );
+    }
     if (checkoutPullRequestItemValue && itemValue === checkoutPullRequestItemValue) {
       return (
         <ComboboxItem
@@ -790,7 +831,7 @@ export function BranchToolbarBranchSelector({
       open={isBranchMenuOpen}
       onOpenChange={handleOpenChange}
       onSelectItem={selectPickerItem}
-      value={resolvedActiveBranch}
+      value={usesAutomaticVerifiedBase ? defaultBaseItem : resolvedActiveBranch}
       query={branchQuery}
       onQueryChange={setBranchQuery}
       hasNextPage={hasNextPage}
@@ -812,7 +853,11 @@ export function BranchToolbarBranchSelector({
       }
       originControl={
         isSelectingWorktreeBase && effectiveEnvMode === "worktree"
-          ? { checked: startFromOrigin, onCheckedChange: onStartFromOriginChange }
+          ? {
+              checked: startFromOrigin,
+              onCheckedChange: onStartFromOriginChange,
+              fetchDefaultNow: usesAutomaticVerifiedBase,
+            }
           : undefined
       }
       popupProps={{

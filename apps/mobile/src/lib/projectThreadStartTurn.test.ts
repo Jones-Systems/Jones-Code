@@ -48,6 +48,18 @@ describe("project thread worktree bootstrap", () => {
     },
   );
 
+  it.each(["verified", "fetch-now"] as const)(
+    "keeps the requested %s mode for an automatic base",
+    (baseFreshness) => {
+      const input = buildProjectThreadStartTurnInput({ ...spec, baseFreshness });
+      expect(input.bootstrap.prepareWorktree).toEqual({
+        projectCwd: spec.projectCwd,
+        branch: spec.worktreeBranchName,
+        baseFreshness,
+      });
+    },
+  );
+
   it("preserves the chosen base and independent origin flag", () => {
     const input = buildProjectThreadStartTurnInput({
       ...spec,

@@ -6,11 +6,28 @@
     "apps/server/src/jones/git/RepoFreshness.test.ts",
     "apps/server/src/jones/git/repoFreshnessGit.ts",
     "apps/server/src/jones/git/repoFreshnessLaunch.ts",
-    "apps/server/src/jones/git/repoFreshnessLaunch.test.ts"
+    "apps/server/src/jones/git/repoFreshnessLaunch.test.ts",
+    "apps/web/src/jones/composer/firstSendWorktree.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/chat/useMultipleModelSend.ts",
+      "to": "apps/web/src/jones/composer/firstSendWorktree.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/composer/firstSendWorktree.ts"
+    },
+    {
+      "from": "apps/web/src/components/BranchToolbarBranchSelector.tsx",
+      "to": "apps/web/src/jones/composer/firstSendWorktree.ts"
+    },
+    {
+      "from": "apps/web/src/hooks/useHandleNewThread.ts",
+      "to": "apps/web/src/jones/composer/firstSendWorktree.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
       "to": "apps/server/src/jones/git/repoFreshnessLaunch.ts"

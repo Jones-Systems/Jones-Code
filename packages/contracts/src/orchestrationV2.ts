@@ -742,6 +742,9 @@ export const OrchestrationV2RunBackgroundWorkCancelled = Schema.Struct({
 export type OrchestrationV2RunBackgroundWorkCancelled =
   typeof OrchestrationV2RunBackgroundWorkCancelled.Type;
 
+export const OrchestrationV2WorktreeBaseFreshness = Schema.Literals(["verified", "fetch-now"]);
+export type OrchestrationV2WorktreeBaseFreshness = typeof OrchestrationV2WorktreeBaseFreshness.Type;
+
 export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("auto"),
@@ -762,7 +765,7 @@ export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
     baseRef: Schema.optional(TrimmedNonEmptyString),
     branch: Schema.optional(TrimmedNonEmptyString),
     startFromOrigin: Schema.optional(Schema.Boolean),
-    baseFreshness: Schema.optional(Schema.Literals(["verified", "fetch-now"])),
+    baseFreshness: Schema.optional(OrchestrationV2WorktreeBaseFreshness),
   }),
 ]);
 export type OrchestrationV2ThreadLaunchWorkspaceStrategy =

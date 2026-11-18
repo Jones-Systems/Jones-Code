@@ -54,6 +54,7 @@ interface ComposerSelectionInput {
   readonly activeProjectSettings: {
     readonly settings: { readonly newWorktreesStartFromOrigin: boolean };
   };
+  readonly verifiedDefault?: boolean;
   readonly settings: UnifiedSettings;
   readonly providerStatuses: ReadonlyArray<ServerProvider>;
   readonly lockedProvider: ReturnType<typeof deriveLockedProvider>;
@@ -88,6 +89,7 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     activeThread,
     activeRuntime,
     activeProjectSettings,
+    verifiedDefault,
     settings,
     providerStatuses,
     lockedProvider,
@@ -287,7 +289,8 @@ export function useComposerSelection(input: ComposerSelectionInput) {
         envMode: mode,
         startFromOrigin: resolveNewDraftStartFromOrigin({
           envMode: mode,
-          newWorktreesStartFromOrigin: activeProjectSettings.settings.newWorktreesStartFromOrigin,
+          newWorktreesStartFromOrigin:
+            !verifiedDefault && activeProjectSettings.settings.newWorktreesStartFromOrigin,
         }),
         ...(mode !== "local" && draftThread?.worktreePath ? { worktreePath: null } : {}),
       });

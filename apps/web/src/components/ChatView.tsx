@@ -150,6 +150,7 @@ import { orchestrationV2WorktreePending } from "@t3tools/shared/orchestrationV2T
 import { resolveThreadReferenceCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import { useAtomValue } from "@effect/atom-react";
+import { usesVerifiedDefault } from "../jones/composer/firstSendWorktree";
 import {
   type MouseEvent as ReactMouseEvent,
   type SetStateAction,
@@ -1748,9 +1749,8 @@ export default function ChatView(props: ChatViewProps) {
   });
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const backgroundThread = use(BackgroundThreadContext);
-  const scriptKeybindings =
-    useAtomValue(serverEnvironment.configValueAtom(environmentId))?.keybindings ??
-    DEFAULT_RESOLVED_KEYBINDINGS;
+  const composerEnvironmentConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const scriptKeybindings = composerEnvironmentConfig?.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS;
   const openInEnvironmentId = activeThread?.environmentId ?? environmentId;
   const availableEditors =
     useAtomValue(serverEnvironment.configValueAtom(openInEnvironmentId))?.availableEditors ?? [];
@@ -2332,11 +2332,12 @@ export default function ChatView(props: ChatViewProps) {
     canOverrideServerThreadEnvMode && pendingServerThreadBranchEntryForThread !== null
       ? pendingServerThreadBranchEntryForThread.branch
       : (activeThread?.branch ?? null);
+  const verifiedDefault = usesVerifiedDefault(composerEnvironmentConfig, activeProject?.id);
   const startFromOrigin = isLocalDraftThread
     ? (draftThread?.startFromOrigin ?? false)
     : canOverrideServerThreadEnvMode
       ? (pendingServerThreadStartFromOriginByThreadId[activeThread?.id ?? ""] ??
-        activeProjectSettings.settings.newWorktreesStartFromOrigin)
+        (!verifiedDefault && activeProjectSettings.settings.newWorktreesStartFromOrigin))
       : false;
   const sendEnvMode = resolveSendEnvMode({
     requestedEnvMode: envMode,
@@ -2973,6 +2974,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThread,
     activeRuntime,
     activeProjectSettings,
+    verifiedDefault,
     settings,
     providerStatuses,
     lockedProvider,

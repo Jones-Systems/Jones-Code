@@ -5,6 +5,7 @@ import {
   type ChatAttachment,
   type ModelSelection,
   type OrchestrationMessageContext,
+  type OrchestrationV2WorktreeBaseFreshness,
   type ProjectId,
   type ProviderInteractionMode,
   type RuntimeMode,
@@ -34,6 +35,7 @@ export interface ProjectThreadStartTurnSpec {
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin: boolean;
+  readonly baseFreshness?: OrchestrationV2WorktreeBaseFreshness;
   readonly serverResolvesWorktreeBase?: boolean;
   readonly worktreeBranchName: string;
 }
@@ -77,7 +79,11 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
               projectCwd: spec.projectCwd,
               ...(spec.branch !== null ? { baseBranch: spec.branch } : {}),
               branch: spec.worktreeBranchName,
-              ...(spec.startFromOrigin ? { startFromOrigin: true } : {}),
+              ...(spec.baseFreshness !== undefined
+                ? { baseFreshness: spec.baseFreshness }
+                : spec.startFromOrigin
+                  ? { startFromOrigin: true }
+                  : {}),
             },
             runSetupScript: true,
           }

@@ -42,6 +42,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentSummaries } from "../state/presentation";
 import { environmentServerConfigsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
+import { usesVerifiedDefault } from "../jones/composer/firstSendWorktree";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { getClientSettings } from "./useSettings";
 import { getLocalStorageItem, useLocalStorage } from "./useLocalStorage";
@@ -108,8 +109,9 @@ export function createNewThreadHandler(router: AnyRouter) {
     const projectGroupingSettings = selectProjectGroupingSettings(getClientSettings());
     // Read at call time; status pushes replace the config map and would recreate every sidebar handler.
     const environmentServerConfigs = appAtomRegistry.get(environmentServerConfigsAtom);
-    const targetServerSettings =
-      environmentServerConfigs.get(projectRef.environmentId)?.settings ?? DEFAULT_SERVER_SETTINGS;
+    const targetServerConfig = environmentServerConfigs.get(projectRef.environmentId);
+    const targetServerSettings = targetServerConfig?.settings ?? DEFAULT_SERVER_SETTINGS;
+    const verifiedDefault = usesVerifiedDefault(targetServerConfig, projectRef.projectId);
     const {
       getComposerDraft,
       getDraftSessionByLogicalProjectKey,
@@ -304,7 +306,8 @@ export function createNewThreadHandler(router: AnyRouter) {
             envMode: defaultEnvMode,
             startFromOrigin: resolveNewDraftStartFromOrigin({
               envMode: defaultEnvMode,
-              newWorktreesStartFromOrigin: projectSettings.settings.newWorktreesStartFromOrigin,
+              newWorktreesStartFromOrigin:
+                !verifiedDefault && projectSettings.settings.newWorktreesStartFromOrigin,
             }),
           };
         }
@@ -430,7 +433,8 @@ export function createNewThreadHandler(router: AnyRouter) {
           options?.startFromOrigin ??
           resolveNewDraftStartFromOrigin({
             envMode: initialEnvMode,
-            newWorktreesStartFromOrigin: projectSettings.settings.newWorktreesStartFromOrigin,
+            newWorktreesStartFromOrigin:
+              !verifiedDefault && projectSettings.settings.newWorktreesStartFromOrigin,
           }),
         runtimeMode: defaultRuntimeMode,
         ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
