@@ -6,7 +6,10 @@ import {
   personalSidebarRoster,
   personalSidebarSummaryThreads,
 } from "../jones/workstreams/personalPresentation";
-import { registerThreadMenuOwner } from "../jones/workstreams/threadMenuBridge";
+import {
+  registerThreadMenuOwner,
+  type HeaderThreadMenuActions,
+} from "../jones/workstreams/threadMenuBridge";
 import {
   SidebarAppearanceProvider,
   useSidebarAppearanceHost,
@@ -44,6 +47,8 @@ import { usePersonalSidebarActiveThreads } from "../jones/workstreams/personalSi
 import { usePersonalStatusSelection } from "../jones/workstreams/personalStatusFilter";
 import { placePersonalThread } from "../jones/workstreams/personalThreadPlacement";
 import { usePersonalWorkstreams } from "../state/workstreamsPersonal";
+import { personalThreadAssignmentMenu } from "../jones/workstreams/personalThreadAssignmentMenu";
+import { WorkstreamPicker } from "../jones/workstreams/WorkstreamPicker";
 import {
   groupPersonalThreads,
   personalThreadKey,
@@ -54,7 +59,6 @@ import {
 } from "../jones/workstreams/personalNotifications";
 import {
   WorkstreamNativeSidebar,
-  type NativeThreadAssignmentMenu,
   type NativeThreadExternalDrop,
 } from "./workstreams/WorkstreamNativeSidebar";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
@@ -1531,9 +1535,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       })),
     );
   }, [primaryEnvironmentId, workstreamController.state.workstreams]);
-  const workstreamAssignmentMenuRef = useRef<
-    ((thread: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
-  >(null);
+  const [assignmentPickerThread, setAssignmentPickerThread] =
+    useState<EnvironmentThreadShell | null>(null);
   const workstreamExternalDropRef = useRef<NativeThreadExternalDrop | null>(null);
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
@@ -2973,15 +2976,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     (
       threadRef: ScopedThreadRef,
       position: { x: number; y: number },
-      assignment?: NativeThreadAssignmentMenu,
-      onFind?: (threadRef: ScopedThreadRef) => void,
+      headerActions?: HeaderThreadMenuActions,
     ) => {
       void (async () => {
         const api = readLocalApi();
         if (!api) return;
         const threadKey = scopedThreadKey(threadRef);
         const selectionState = useThreadSelectionStore.getState();
-        if (selectionState.hasSelection() && selectionState.selectedThreadKeys.has(threadKey)) {
+        if (
+          headerActions === undefined &&
+          selectionState.selectedThreadKeys.has(threadKey) &&
+          threadByKeyRef.current.has(threadKey)
+        ) {
           await handleMultiSelectContextMenu(position);
           return;
         }
@@ -2991,7 +2997,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           threadRef.environmentId,
           AuthOrchestrationOperateScope,
         );
-        const assignmentMenu = workstreamAssignmentMenuRef.current?.(thread) ?? assignment;
+        const assignmentMenu = workstreamsEnabled
+          ? personalThreadAssignmentMenu({
+              controller: workstreamController.controller,
+              state: visibleWorkstreamState,
+              thread,
+              canOperate: () =>
+                readEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope),
+              openPicker: () => setAssignmentPickerThread(thread),
+            })
+          : undefined;
         const threadWorkspacePath =
           thread.worktreePath ??
           projectByKey.get(`${thread.environmentId}:${thread.projectId}`)?.workspaceRoot ??
@@ -3028,7 +3043,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 canOperate,
                 environmentAccessStatus: environmentAccess.status,
                 assignmentItems: assignmentMenu?.items,
-                canFind: onFind !== undefined,
+                canFind: headerActions?.onFind !== undefined,
                 branch: thread.branch ?? null,
                 // An archived project is not a filter choice.
                 projectFilter:
@@ -3105,7 +3120,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         }
         switch (clicked.value) {
           case "find":
-            onFind?.(threadRef);
+            headerActions?.onFind?.(threadRef);
             return;
           case "filter-by-project":
             if (threadProjectGroup) {
@@ -3215,7 +3230,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             return;
           }
           case "rename":
-            startThreadRename(threadRef, thread.title);
+            if (headerActions) headerActions.onStartRename();
+            else startThreadRename(threadRef, thread.title);
             return;
           case "share-guest":
             openGuestShareDialog(threadRef);
@@ -3323,13 +3339,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   );
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish the mounted sidebar's complete thread menu to the chat header; retire only this registration.
-  useEffect(
-    () =>
-      registerThreadMenuOwner((threadRef, position, onFind) =>
-        handleThreadContextMenu(threadRef, position, undefined, onFind),
-      ),
-    [handleThreadContextMenu],
-  );
+  useEffect(() => registerThreadMenuOwner(handleThreadContextMenu), [handleThreadContextMenu]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to window keydown for thread navigation shortcuts using the current thread list
   useEffect(() => {
@@ -3836,7 +3846,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           section: SidebarSection,
                           // The tree row of the project folder this row sits in.
                           folderRow?: string,
-                          assignment?: NativeThreadAssignmentMenu,
+                          ownedByWorkstream = false,
                         ) => {
                           const threadKey = scopedThreadKey(
                             scopeThreadRef(thread.environmentId, thread.id),
@@ -3850,8 +3860,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             : isCard
                               ? "card"
                               : "slim";
-                          const ThreadRow =
-                            assignment === undefined ? SortableThreadRow : NonSortableThreadRow;
+                          const ThreadRow = ownedByWorkstream
+                            ? NonSortableThreadRow
+                            : SortableThreadRow;
                           return (
                             <ThreadRow
                               key={threadKey}
@@ -3953,9 +3964,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               onCancelRename={cancelThreadRename}
                               isRenaming={renamingThreadKey === threadKey}
                               renamingTitle={renamingThreadKey === threadKey ? renamingTitle : ""}
-                              onContextMenu={(ref, position) =>
-                                handleThreadContextMenu(ref, position, assignment)
-                              }
+                              onContextMenu={handleThreadContextMenu}
                               onSettle={attemptSettle}
                               onActionSweepStart={startActionSweep}
                               onUnsettle={attemptUnsettle}
@@ -3974,7 +3983,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               <WorkstreamNativeSidebar
                                 controller={workstreamController.controller}
                                 nameIconProjects={nameIconProjects}
-                                assignmentMenuRef={workstreamAssignmentMenuRef}
                                 externalDropRef={workstreamExternalDropRef}
                                 canOperate={(thread) =>
                                   readEnvironmentScope(
@@ -3991,8 +3999,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                     scopeThreadRef(thread.environmentId, thread.id),
                                   )
                                 }
-                                renderThread={(thread, assignment) =>
-                                  renderThreadRow(thread, "active", undefined, assignment)
+                                renderThread={(thread) =>
+                                  renderThreadRow(thread, "active", undefined, true)
                                 }
                                 canReorder={(thread) =>
                                   !workingShelfEnabled &&
@@ -4221,6 +4229,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             ) : null}
           </SidebarGroup>
         </SidebarContent>
+        {assignmentPickerThread !== null ? (
+          <WorkstreamPicker
+            controller={workstreamController.controller}
+            thread={assignmentPickerThread}
+            onClose={() => setAssignmentPickerThread(null)}
+          />
+        ) : null}
         <SidebarChromeFooter />
       </SidebarFolderDrop>
     </SidebarAppearanceProvider>

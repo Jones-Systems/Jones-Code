@@ -10,6 +10,7 @@ import type { PersonalWorkstreamsState } from "@t3tools/client-runtime/jones/wor
 import { personalThreadKey } from "@t3tools/client-runtime/jones/workstreams/personal";
 import * as Schema from "effect/Schema";
 import { AppRoot } from "~/AppRoot";
+import { useThreadRouteTarget } from "~/hooks/useThreadRouteTarget";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
 import { usePersonalWorkstreams } from "~/state/workstreamsPersonal";
@@ -24,10 +25,32 @@ import {
   type FakeDriver,
 } from "../../../test/fakeEnvironment";
 import { render } from "../../../test/render";
+import { ChatHeader } from "../../components/chat/ChatHeader";
+import { useThreadSelectionStore } from "../../threadSelectionStore";
 
-// Navigation exercises the real Sidebar and router. Conversation layout,
-// timeline measurement and composer effects are covered by their own tests.
-vi.mock("~/components/ChatView", () => ({ default: () => null }));
+const showHeader = vi.hoisted(() => ({ value: false }));
+vi.mock("~/components/ChatView", () => ({
+  default: function TestChatView() {
+    const target = useThreadRouteTarget();
+    if (!showHeader.value || target?.kind !== "server") return null;
+    const { environmentId, threadId } = target.threadRef;
+    return (
+      <header className="drag-region flex">
+        <ChatHeader
+          activeThreadEnvironmentId={environmentId}
+          activeThreadId={threadId}
+          activeThreadTitle={threadId}
+          isServerThread
+          activeProject={null}
+          parentThreadLink={null}
+          onOpenThread={() => {}}
+          rightPanelOpen={false}
+          onNewThreadInProject={() => {}}
+        />
+      </header>
+    );
+  },
+}));
 vi.mock(import("~/state/workstreamsPersonal"), async (original) => ({
   ...(await original()),
   usePersonalWorkstreams: vi.fn(),
@@ -70,8 +93,10 @@ async function withSidebar(
     visit: (id: string) => Promise<void>;
     step: (direction: "next" | "previous", expected: string) => Promise<void>;
     threadIds: readonly string[];
+    assign: ReturnType<typeof vi.fn>;
   }) => Promise<void>,
   pinnedFixture = false,
+  writableFixture = false,
 ) {
   const threadIds = [
     "a1",
@@ -138,16 +163,18 @@ async function withSidebar(
   const unexpectedMutation = vi.fn(async () => {
     throw new Error("Navigation must not mutate Workstreams");
   });
+  const assign = vi.fn(async () => ({ ok: true as const, value: undefined }));
+  showHeader.value = writableFixture;
   const controller: ReturnType<typeof usePersonalWorkstreams>["controller"] = {
     state: Atom.make(state),
-    canAssign: () => false,
+    canAssign: () => writableFixture,
     create: unexpectedMutation,
     rename: unexpectedMutation,
     setColor: unexpectedMutation,
     setLifecycle: unexpectedMutation,
     reorder: unexpectedMutation,
     remove: unexpectedMutation,
-    assign: unexpectedMutation,
+    assign: writableFixture ? assign : unexpectedMutation,
     createAndAssign: unexpectedMutation,
     setEnvironments: vi.fn(),
     loadCache: vi.fn(),
@@ -156,6 +183,7 @@ async function withSidebar(
   vi.mocked(usePersonalWorkstreams).mockReturnValue({ controller, state });
   using _restore = {
     [Symbol.dispose]() {
+      showHeader.value = false;
       vi.mocked(usePersonalWorkstreams).mockReset();
       for (const key of [
         "jones:workstreams:collapsed:alpha",
@@ -209,7 +237,7 @@ async function withSidebar(
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${expected}`),
     );
   };
-  await inspect({ router, rows, visit, step, threadIds });
+  await inspect({ router, rows, visit, step, threadIds, assign });
 }
 
 it("traverses displayed Workstreams then Unassigned and skips collapsed groups", async () => {
@@ -386,4 +414,84 @@ it("shows assigned pinned members once inside Workstreams above the remaining pi
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${rows()[0]}`),
     );
   }, true);
+});
+
+it("offers single-thread actions from the header even when Workstream filters hide a selected thread", async () => {
+  await withSidebar(
+    async ({ rows, visit, assign }) => {
+      const threadId = rows().find((id) => id.startsWith("a"))!;
+      await visit(threadId);
+      const row = page.getByTestId("sidebar-row-card").filter({ hasText: threadId });
+      const header = page.getByRole("button", { name: `Thread actions for ${threadId}` });
+      const previousSelection = useThreadSelectionStore.getState();
+      using _selection = {
+        [Symbol.dispose]: () =>
+          useThreadSelectionStore.setState({
+            selectedThreadKeys: previousSelection.selectedThreadKeys,
+            anchorThreadKey: previousSelection.anchorThreadKey,
+          }),
+      };
+      const setFilter = (filter: "working" | "hide-working") =>
+        writeLocalStorageValue(
+          personalStatusFilterKey("alpha"),
+          filter,
+          filter,
+          Schema.Literals(["working", "hide-working"]),
+        );
+      const assignToBeta = async (trigger: typeof header) => {
+        const previousCalls = assign.mock.calls.length;
+        await userEvent.click(trigger, { button: "right", timeout: 3000 });
+        await expect
+          .element(page.getByRole("menuitem", { name: "Mark unread" }), { timeout: 3000 })
+          .toBeVisible();
+        await userEvent.click(page.getByRole("menuitem", { name: "Assign thread" }), {
+          timeout: 3000,
+        });
+        await userEvent.click(page.getByRole("menuitemradio", { name: "beta", exact: true }), {
+          timeout: 3000,
+        });
+        await vi.waitFor(() => {
+          expect(assign).toHaveBeenCalledTimes(previousCalls + 1);
+          expect(assign).toHaveBeenLastCalledWith(
+            expect.objectContaining({ id: threadId }),
+            "beta",
+          );
+        });
+      };
+
+      await assignToBeta(header);
+      setFilter("working");
+      await expect.element(row).toBeVisible();
+      await expect
+        .element(
+          page.getByRole("list", { name: "alpha threads" }).getByTestId("sidebar-row-card").first(),
+        )
+        .toHaveAccessibleName(new RegExp(`^Thread ${threadId}, Working`));
+      await assignToBeta(row);
+      await userEvent.click(row, { modifiers: ["Meta"] });
+      await userEvent.click(row, { button: "right" });
+      await expect
+        .element(page.getByRole("menuitem", { name: "Settle (1)", exact: true }))
+        .toBeVisible();
+      await userEvent.keyboard("{Escape}");
+      await assignToBeta(header);
+
+      setFilter("hide-working");
+      await vi.waitFor(() => expect(rows()).not.toContain(threadId));
+      await assignToBeta(header);
+      await userEvent.click(header, { button: "right" });
+      await userEvent.click(page.getByRole("menuitem", { name: "Rename thread", exact: true }));
+      await expect.element(page.getByRole("textbox", { name: "Thread title" })).toBeVisible();
+      await userEvent.keyboard("{Escape}");
+
+      await page.getByRole("combobox", { name: "Search threads" }).fill("synthetic search");
+      await expect
+        .element(page.getByRole("list", { name: "beta threads" }))
+        .not.toBeInTheDocument();
+      await assignToBeta(header);
+      expect(assign).toHaveBeenCalledTimes(5);
+    },
+    false,
+    true,
+  );
 });

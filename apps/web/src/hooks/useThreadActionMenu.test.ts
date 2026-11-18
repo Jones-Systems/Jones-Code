@@ -232,7 +232,10 @@ describe("thread menu permissions", () => {
     const onFind = vi.fn();
     try {
       createMenu({ onFind }).openMenu(position);
-      expect(owner).toHaveBeenCalledExactlyOnceWith(target, position, onFind);
+      expect(owner).toHaveBeenCalledExactlyOnceWith(target, position, {
+        onFind,
+        onStartRename: expect.any(Function),
+      });
       expect(state.show).not.toHaveBeenCalled();
     } finally {
       unregister();

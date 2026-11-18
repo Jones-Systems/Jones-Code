@@ -55,6 +55,7 @@
     "apps/web/src/jones/workstreams/personalSidebarOrder.browser.test.tsx",
     "apps/web/src/jones/workstreams/personalSidebarOrder.ts",
     "apps/web/src/jones/workstreams/personalThreadDrag.browser.test.tsx",
+    "apps/web/src/jones/workstreams/personalThreadAssignmentMenu.ts",
     "apps/web/src/jones/workstreams/personalThreadDrag.ts",
     "apps/web/src/jones/workstreams/personalThreadPlacement.test.ts",
     "apps/web/src/jones/workstreams/personalThreadPlacement.ts",
@@ -949,6 +950,14 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/jones/workstreams/threadMenuBridge.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/personalThreadAssignmentMenu.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/WorkstreamPicker.tsx"
     },
     {
       "from": "apps/web/src/hooks/useThreadActionMenu.ts",

@@ -1,9 +1,14 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 
+export interface HeaderThreadMenuActions {
+  readonly onFind?: ((threadRef: ScopedThreadRef) => void) | undefined;
+  readonly onStartRename: () => void;
+}
+
 type ThreadMenuOwner = (
   threadRef: ScopedThreadRef,
   position: { x: number; y: number },
-  onFind?: (threadRef: ScopedThreadRef) => void,
+  headerActions: HeaderThreadMenuActions,
 ) => void;
 
 let owner: ThreadMenuOwner | null = null;

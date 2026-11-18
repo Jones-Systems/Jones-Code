@@ -1975,6 +1975,7 @@
     "apps/web/src/jones/workstreams/SetupStatusContent.tsx": "jones-owned",
     "apps/web/src/jones/workstreams/WorkstreamPicker.browser.test.tsx": "jones-owned",
     "apps/web/src/jones/workstreams/WorkstreamPicker.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/personalThreadAssignmentMenu.ts": "jones-owned",
     "apps/web/src/jones/workstreams/WorkstreamsSetupStatus.tsx": "jones-owned",
     "apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts": "jones-owned",
     "apps/web/src/jones/workstreams/environmentWorkstreamsRequest.ts": "jones-owned",

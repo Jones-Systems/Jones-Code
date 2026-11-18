@@ -124,7 +124,10 @@ export function useThreadActionMenu(input: {
   const openMenu = (position: { x: number; y: number }) => {
     if (threadRef === null) return;
     // Unloaded threads keep this path's "not loaded yet" notice; the sidebar menu closes silently.
-    if (readThreadShell(threadRef) !== null && openOwnedThreadMenu(threadRef, position, onFind)) {
+    if (
+      readThreadShell(threadRef) !== null &&
+      openOwnedThreadMenu(threadRef, position, { onFind, onStartRename })
+    ) {
       return;
     }
     void (async () => {
