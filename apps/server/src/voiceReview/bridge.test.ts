@@ -119,7 +119,11 @@ describe("reviewed send broker transport", () => {
         fetcher
           .mockImplementationOnce(async (url) => {
             expect(url).toBe(brokerDraftUrl);
-            return Response.json(draft);
+            return Response.json({
+              ...draft,
+              routing_state: "awaiting_dependency",
+              dependencies: [{ draft_id: "prior-capture", revision: 2, kind: "follows" }],
+            });
           })
           .mockImplementationOnce(async (url, init) => {
             expect(url).toBe(`${brokerDraftUrl}/send-options`);

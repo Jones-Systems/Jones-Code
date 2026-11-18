@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import {
+  VoiceReviewDraft,
   VoiceReviewQueueDeliveryLinks,
   VoiceReviewRevisionPayload,
   VoiceReviewEditSavePayload,
@@ -12,6 +13,18 @@ import {
 const decodeRevision = Schema.decodeUnknownSync(VoiceReviewRevisionPayload);
 const decodeEditSave = Schema.decodeUnknownSync(VoiceReviewEditSavePayload);
 const decodeEditCancel = Schema.decodeUnknownSync(VoiceReviewEditCancelPayload);
+
+it("decodes broker dependency objects and still emits draft IDs for existing clients", () => {
+  const shape = Schema.Struct({ dependencies: VoiceReviewDraft.fields.dependencies });
+  const decode = Schema.decodeUnknownSync(shape);
+  const encode = Schema.encodeSync(shape);
+  const dependency = { draft_id: "prior-capture", revision: 2, kind: "follows" };
+  const result = decode({ dependencies: ["legacy-id", dependency] });
+  expect(result).toEqual({ dependencies: ["legacy-id", "prior-capture"] });
+  expect(encode(result)).toEqual(result);
+  expect(decode({})).toEqual({});
+  expect(() => decode({ dependencies: [{ ...dependency, revision: 0 }] })).toThrow();
+});
 
 describe("voice review mutation wire contract", () => {
   it("rejects coercion, nonpositive revisions, and extra fields", () => {
