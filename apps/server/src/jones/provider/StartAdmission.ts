@@ -43,14 +43,14 @@ export const CurrentHandoffReplacement = Context.Reference<
 >("jones/provider/CurrentHandoffReplacement", { defaultValue: () => undefined });
 
 // Only the provider owning an acknowledged turn may continue it after the start claim settles.
-export const CurrentCapacityContinuation = Context.Reference<
+export const CurrentStartedTurnContinuation = Context.Reference<
   | {
       readonly runId: RunId;
       readonly attemptId: RunAttemptId;
       readonly binding: ProviderRuntimeBinding;
     }
   | undefined
->("jones/provider/CurrentCapacityContinuation", { defaultValue: () => undefined });
+>("jones/provider/CurrentStartedTurnContinuation", { defaultValue: () => undefined });
 
 export interface CapturedStartAdmission {
   readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;

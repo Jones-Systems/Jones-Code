@@ -204,7 +204,7 @@ export const layer = Layer.effect(
           return true;
         });
         const revalidate = Effect.gen(function* () {
-          const continuation = yield* StartAdmission.CurrentCapacityContinuation;
+          const continuation = yield* StartAdmission.CurrentStartedTurnContinuation;
           if (
             continuation !== undefined &&
             (continuation.runId !== input.run.id ||
