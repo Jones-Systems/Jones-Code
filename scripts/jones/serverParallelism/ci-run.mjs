@@ -13,11 +13,13 @@ const [output, installedRoot, scope = "full", priorDirectory] = process.argv.sli
 const diagnosticModes =
   scope === "observer-cadence"
     ? ["cadence-standard", "cadence-reduced"]
-    : scope === "observer-control"
-      ? ["cpu-stat-only"]
-      : scope === "observer-diagnostic" || scope === "observer-residency"
-        ? ["full"]
-        : [];
+    : scope === "observer-writer"
+      ? ["full", "writer-inline-readers"]
+      : scope === "observer-control"
+        ? ["cpu-stat-only"]
+        : scope === "observer-diagnostic" || scope === "observer-residency"
+          ? ["full"]
+          : [];
 const diagnosticScope = diagnosticModes.length > 0;
 if (
   diagnosticScope &&

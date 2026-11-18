@@ -487,7 +487,7 @@ async function main(args) {
     !output.endsWith(".json")
   )
     throw new Error(
-      "observer-diagnostic.mjs <absolute source manifest> <absolute output.json> <absolute bound baseline> <full|cpu-stat-only|cadence-standard|cadence-reduced> [absolute inspected full receipt]",
+      "observer-diagnostic.mjs <absolute source manifest> <absolute output.json> <absolute bound baseline> <observer mode> [absolute inspected full receipt]",
     );
   const root = NodePath.resolve(import.meta.dirname, "../../.."),
     entry = NodePath.join(root, "apps/server/src/bin.ts");

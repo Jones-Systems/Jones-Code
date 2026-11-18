@@ -5,6 +5,7 @@ import type { SqliteReaderObservation } from "@t3tools/shared/jones/sqliteReader
 export const periodicResourceGapMs = 10;
 export const observerModes = {
   full: { platform: "linux", resourceGapMs: periodicResourceGapMs },
+  "writer-inline-readers": { platform: "linux", resourceGapMs: periodicResourceGapMs },
   "cpu-stat-only": { platform: "linux", resourceGapMs: periodicResourceGapMs },
   "cadence-standard": { platform: "darwin", resourceGapMs: periodicResourceGapMs },
   "cadence-reduced": { platform: "darwin", resourceGapMs: 250 },

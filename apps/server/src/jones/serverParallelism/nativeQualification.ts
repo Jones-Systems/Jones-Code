@@ -101,6 +101,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
   const resourceGapMs = options.diagnostic
     ? observerModes[options.diagnostic.mode].resourceGapMs
     : periodicResourceGapMs;
+  const useReaderPool = options.diagnostic?.mode !== "writer-inline-readers";
   await NodeFSP.mkdir(directory, { recursive: false, mode: 0o700 });
   const observationStream = qualificationStream<ComputeObservation>(
     workload.capacities.observations,
@@ -766,6 +767,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
           },
           () => observations.slice(observationStart),
           options.diagnostic ? (event) => diagnosticSink({ ...event, phase }) : undefined,
+          useReaderPool,
         );
         await phaseCheckpoint();
         windowsResult.push({
@@ -1013,6 +1015,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
               cpuResources: cpuResourceStream.rows,
               cpuRetention: cpuResourceStream.report(),
               nominalSamplingGapMs: resourceGapMs,
+              readerPlacement: useReaderPool ? "pool" : "writer-connection",
               cpuMeaning:
                 "Read/phase wall spans overlap work; process CPU includes reader/checkpoint threads. Thread CPU includes interleaved parent work, not observer-exclusive CPU.",
             },

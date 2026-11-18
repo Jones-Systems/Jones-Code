@@ -131,6 +131,13 @@ NodeTest.test("admits only the exact Linux source workload, build and unchanged 
   );
 });
 
+NodeTest.test("admits the inline writer diagnostic only with current Linux inputs", () => {
+  const inline = { ...admission, mode: "writer-inline-readers" };
+  NodeAssert.doesNotThrow(() => validateDiagnosticAdmission(inline));
+  NodeAssert.throws(() => validateDiagnosticAdmission({ ...inline, prior }));
+  NodeAssert.throws(() => validateDiagnosticAdmission({ ...inline, platform: "darwin" }));
+});
+
 NodeTest.test("admits both cadence arms only on macOS with the same baseline", () => {
   for (const mode of ["cadence-standard", "cadence-reduced"]) {
     const mac = { ...admission, mode, platform: "darwin" };

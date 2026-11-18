@@ -60,6 +60,7 @@ export async function combinedReaderWriterWindow(
   compute: () => Promise<void>,
   computeObservations?: () => readonly ComputeObservation[],
   diagnostic?: DiagnosticSink,
+  useReaderPool = true,
 ) {
   const emit = (
     event: Extract<DiagnosticEvent, { kind: "combined" }>["event"],
@@ -90,17 +91,19 @@ export async function combinedReaderWriterWindow(
     filename,
     checkpointWorker: true,
     readerFailureMode: "fail",
-    readerPool: readerPoolOptions(count, (event) => {
-      if (observations.length < 100_000) observations.push(event);
-      if (diagnostic)
-        observeSafely(diagnostic)({
-          kind: "combined",
-          event: "reader-observation",
-          atMs: performance.now(),
-          phase: "combined",
-          observation: { ...event },
-        });
-    }),
+    readerPool: useReaderPool
+      ? readerPoolOptions(count, (event) => {
+          if (observations.length < 100_000) observations.push(event);
+          if (diagnostic)
+            observeSafely(diagnostic)({
+              kind: "combined",
+              event: "reader-observation",
+              atMs: performance.now(),
+              phase: "combined",
+              observation: { ...event },
+            });
+        })
+      : undefined,
   });
   try {
     await Effect.runPromise(
