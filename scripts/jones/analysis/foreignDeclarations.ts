@@ -36,7 +36,7 @@ export const sourcePins = {
   compiler: {
     "tsconfig.base.json": "68c74b9c2b2295b28221b027a457f3837da638b59d89ee8a88a745cd1c981fe3",
     "apps/web/tsconfig.json": "87733dd7a4202fad909854cabde0a2970d2377578a10b19875d61641474cf4c0",
-    "apps/web/vite.config.ts": "76b3b2b0938fde1b16a03887e877f1af7303585c0dc3e02f359aed227c035762",
+    "apps/web/vite.config.ts": "4505e22976f69bfec3f580562ffa5f1ef12491540cb7b168642e2ac9a99fb673",
     "scripts/jones/tsrs/typecheck.ts":
       "b9035485249e0e8c48a28554ea9f250de1efadf6e9b74a9c1e99a667d91bfd77",
     "scripts/jones/tsrs/local-mac-capacity.ts":
