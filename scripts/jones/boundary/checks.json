@@ -3530,7 +3530,7 @@
         "apps/server/src/vcs/GitVcsDriverCore.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/git/remoteFetchObservation.test.ts apps/server/src/vcs/GitVcsDriverCore.test.ts --maxWorkers=1 --no-file-parallelism -t 'remote and coverage|orders late completion|latest fetched remote commit|cached remote divergence|upstream status fetch|claimed status fetch|running status fetch|worktree.*base'",
+        "vp test run apps/server/src/jones/git/remoteFetchObservation.test.ts apps/server/src/vcs/GitVcsDriverCore.test.ts --maxWorkers=1 --no-file-parallelism -t 'remote and coverage|orders late completion|evicted observation|latest fetched remote commit|cached remote divergence|upstream status fetch|claimed status fetch|running status fetch|worktree.*base'",
         "vp lint apps/server/src/jones/git/remoteFetchObservation.ts apps/server/src/jones/git/remoteFetchObservation.test.ts apps/server/src/vcs/GitVcsDriver.ts apps/server/src/vcs/GitVcsDriverCore.ts",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"

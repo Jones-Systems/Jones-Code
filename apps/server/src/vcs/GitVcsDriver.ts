@@ -376,6 +376,10 @@ export class GitVcsDriver extends Context.Service<
     readonly readRemoteFetchObservation: (
       input: RemoteFetchTarget & { readonly cwd: string },
     ) => Effect.Effect<RemoteFetchObservation>;
+    readonly bindRemoteFetchObservations: (
+      cwd: string,
+      remoteName: string,
+    ) => Effect.Effect<(coverage: RemoteFetchTarget["coverage"]) => RemoteFetchObservation>;
     /** Refs, HEAD and shallow boundaries. Null when the snapshot cannot be read. */
     readonly readRefSnapshot: (cwd: string) => Effect.Effect<string | null>;
     readonly prepareCommitContext: (

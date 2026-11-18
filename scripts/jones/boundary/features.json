@@ -2261,7 +2261,7 @@
     {
       "id": "remote-fetch-observation",
       "tests": ["apps/server/src/jones/git/remoteFetchObservation.test.ts"],
-      "scope": "The Git driver owns in-memory remote fetch evidence keyed by physical Git common directory, remote name and coverage. The existing status writer observes configured refspecs, and the worktree-base writer observes its selected branch. Driver hooks bind evidence to the fetch command result before status or launch fallbacks. The server-only read method uses fresh Git identity and returns unknown on a new driver. Jones tests use local Git fixtures and a controlled clock for coverage, shared worktree identity, skipped attempts, failures, timeouts and concurrent completion order."
+      "scope": "The Git driver owns bounded in-memory evidence keyed by physical Git common directory, effective remote URL configuration and coverage. The existing status writer observes captured configured refspecs, and the worktree-base writer observes its selected branch. Driver hooks run Git with the captured physical admin directory and pinned effective remote URL, and return the branch SHA from the fetch's own result. The server-only read methods bind a fresh identity for one or multiple coverage reads. Jones tests cover alias swaps, retargeting, refspec changes, failures, timeouts, eviction and completion order with synthetic Git fixtures."
     },
     {
       "id": "vcs-cache-efficiency",
