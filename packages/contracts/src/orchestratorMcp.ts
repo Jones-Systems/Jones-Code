@@ -32,6 +32,7 @@ import {
 import {
   ScheduledTaskRunStatus,
   ScheduledTaskSchedule,
+  ScheduledTaskThreadMode,
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 import { ProviderInteractionMode, ProviderRequestKind, RuntimeMode } from "./providerPolicy.ts";
@@ -873,10 +874,22 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
 
+const ScheduledTaskModelEdit = Schema.optional(
+  Schema.Struct({
+    instanceId: ProviderInstanceId,
+    model: TrimmedNonEmptyString,
+    options: Schema.optional(OrchestratorMcpTargetOptions),
+  }).annotate({
+    description:
+      "Replace the saved account, model and explicit options for an existing new-thread task. Send only scheduledTaskId and modelSelection for the edit. Read the current account with list_scheduled_tasks and allowed options with orchestrator_capabilities. Omitted options use provider defaults.",
+  }),
+);
+
 /** `schedule_task` creates a task, or updates one when `scheduledTaskId` is given. */
 export const OrchestratorMcpSaveScheduledTaskInput = Schema.Struct({
   ...OrchestratorMcpScheduleTaskInput.fields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
+  modelSelection: ScheduledTaskModelEdit,
   prompt: Schema.optional(OrchestratorMcpPrompt),
   schedule: Schema.optional(OrchestratorMcpSchedule),
 });
@@ -891,6 +904,17 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   projectId: ProjectId,
   boundThreadId: Schema.NullOr(ThreadId),
   freshSession: Schema.Boolean,
+  threadMode: Schema.optional(ScheduledTaskThreadMode),
+  modelSelection: Schema.optional(
+    Schema.Struct({
+      instanceId: ProviderInstanceId,
+      model: TrimmedNonEmptyString,
+      options: Schema.optional(Schema.Array(ProviderOptionSelection)),
+    }).annotate({
+      description:
+        "Saved model selection for launching a thread. Bound turns use their thread's model.",
+    }),
+  ),
   schedule: ScheduledTaskSchedule,
   nextRunAt: Schema.NullOr(IsoDateTime),
   lastRunStatus: ScheduledTaskRunStatus,
@@ -929,6 +953,7 @@ export type OrchestratorMcpListScheduledTasksResult =
 export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
   scheduledTaskId: ScheduledTaskId,
+  modelSelection: ScheduledTaskModelEdit,
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
   schedule: Schema.optional(OrchestratorMcpSchedule),

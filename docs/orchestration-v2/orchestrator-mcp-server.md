@@ -476,6 +476,18 @@ Explicit `bindToCurrentThread: true` without a caller thread in that project
 is rejected. Pausing uses `schedule_task` with `scheduledTaskId` and `enabled: false`;
 deletion is permanent.
 
+To change the launch model for a task that starts a new thread every run,
+read it by `scheduledTaskId` with `list_scheduled_tasks`. The result includes
+the saved `modelSelection` and `threadMode`. Use `orchestrator_capabilities`
+to check the account's model and option IDs. Call `schedule_task` with the
+same `scheduledTaskId` and a `modelSelection` containing `instanceId`, `model`,
+and any explicit `options`. For a Codex model that advertises these values,
+`{"reasoningEffort":"xhigh","serviceTier":"default"}` selects Extra High and
+standard service. Omitted options use provider defaults. Read the task again
+to verify the saved selection. The model edit preserves the prompt, workspace,
+thread destination, enabled state, and next run. Bound tasks use the target
+thread's model settings.
+
 ## Delegated Task Lifecycle
 
 The MCP server is a command ingress into V2. It does not call provider adapters

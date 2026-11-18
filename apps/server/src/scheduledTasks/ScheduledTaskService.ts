@@ -1,3 +1,4 @@
+import { compareAndSetModelSelection } from "../jones/scheduledTasks/compareAndSetModelSelection.ts";
 import { makePendingWebhookRuns } from "../jones/scheduledTasks/webhookRunRecovery.ts";
 import { hasQueuedWake, queuedWakeSkipReason } from "../jones/scheduledTasks/queuedWake.ts";
 import { makeFifoPermit, type FifoPermit } from "../jones/scheduledTasks/fifoPermit.ts";
@@ -10,6 +11,7 @@ import {
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ProjectId,
+  type ModelSelection,
   ScheduledTask,
   ScheduledTaskError,
   ScheduledTaskId,
@@ -270,6 +272,10 @@ export class ScheduledTaskService extends Context.Service<
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
+    readonly setModelSelection: (
+      expected: ScheduledTask,
+      selection: ModelSelection,
+    ) => Effect.Effect<ScheduledTask, ScheduledTaskError>;
     readonly setEnabled: (
       input: ScheduledTaskSetEnabledInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
@@ -1618,6 +1624,27 @@ export const layer = Layer.effect(
       return { task: (yield* findTask(id)) ?? task };
     });
 
+    const setModelSelection: ScheduledTaskService["Service"]["setModelSelection"] = Effect.fn(
+      "ScheduledTaskService.setModelSelection",
+    )(function* (expected, selection) {
+      const updatedAt = iso(yield* localNow);
+      const rows = yield* compareAndSetModelSelection(sql, expected, selection, updatedAt).pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not save scheduled task model selection.", {
+            taskId: expected.id,
+            cause,
+          }),
+        ),
+      );
+      if (rows.length === 0) {
+        return yield* taskError("The scheduled task changed. Read it again before retrying.", {
+          taskId: expected.id,
+        });
+      }
+      yield* notifyChanged;
+      return yield* loadTask(expected.id);
+    });
+
     const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = Effect.fn(
       "ScheduledTaskService.setEnabled",
     )(function* (input) {
@@ -2782,6 +2809,7 @@ export const layer = Layer.effect(
       list,
       subscribeList,
       upsert,
+      setModelSelection,
       setEnabled,
       delete: deleteTask,
       deleteForThread,
