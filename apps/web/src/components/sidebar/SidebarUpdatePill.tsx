@@ -2,6 +2,7 @@ import { classifiedCheckFeedback } from "../../jones/installStatus/checkFeedback
 import {
   canOpenInstallStatusPill,
   routeInstallStatusPill,
+  targetForDesktop,
 } from "../../jones/installStatus/entrypoints";
 import { useInstallPlan } from "../../jones/installStatus/useInstallPlan";
 import {
@@ -56,7 +57,11 @@ import {
 import { SidebarUpdateReleaseNotes } from "./SidebarUpdateReleaseNotes";
 import { SidebarUpdateCapsule } from "./SidebarUpdateCapsule";
 import { UpdateEverythingDialog } from "./UpdateEverythingDialog";
-import type { UpdateEverythingRun, UpdateRunLocalState } from "./updateEverything.logic";
+import {
+  type UpdateEverythingRun,
+  type UpdateRunLocalState,
+  updateEverythingRowHasWork,
+} from "./updateEverything.logic";
 import {
   clearSavedUpdateEverythingResult,
   saveUpdateEverythingResult,
@@ -379,7 +384,16 @@ function SidebarUpdateControl() {
   const isDownloading = state?.status === "downloading";
   const localUpdateVersion =
     state && action !== "none" ? getDesktopUpdateDownloadedVersion(state) : null;
-  const everything = useUpdateEverything(localUpdateVersion);
+  const desktopJonesTarget =
+    state !== null && action !== "none" && !isDesktopUpdateButtonDisabled(state)
+      ? targetForDesktop(state)
+      : undefined;
+  const everything = useUpdateEverything(
+    localUpdateVersion,
+    undefined,
+    (isConfirmingEverything ? reviewedBuild?.sourceSha : undefined) ??
+      desktopJonesTarget?.sourceSha,
+  );
   const checkProviderUpdates = useCheckProviderUpdates();
   const bridge = typeof window === "undefined" ? undefined : window.desktopBridge;
   const offeredBuild =
@@ -412,9 +426,9 @@ function SidebarUpdateControl() {
   const tooltip = opensInstallStatus
     ? "Open Install status"
     : runsEverything
-      ? offeredBuild === undefined
-        ? everything.summary
-        : `Review Jones Code ${offeredBuild.version} · ${offeredBuild.sourceSha.slice(0, 8)}`
+      ? offeredBuild !== undefined && !everything.rows.some(updateEverythingRowHasWork)
+        ? `Review Jones Code ${offeredBuild.version} · ${offeredBuild.sourceSha.slice(0, 8)}`
+        : everything.summary
       : showUpdateDetails
         ? state
           ? getDesktopUpdateButtonTooltip(state)
