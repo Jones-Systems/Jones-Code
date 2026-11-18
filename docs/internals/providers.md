@@ -101,9 +101,9 @@ receipt; an ordinary subsequent send selects a fresh logical session while
 preserving its saved native conversation. An unavailable observer or an old
 completed-unknown receipt remains unknown. Shared-process thread retirement
 uses its own exact closure proof without stopping healthy sibling conversations.
-That proof can arrive minutes after a Codex turn ends, so run admission treats
-a still-pending retirement as a bounded wait on the same observer, not as a
-startup failure to retry; only a failed proof ends the run.
+That proof can arrive minutes after a Codex turn ends. Run admission waits
+up to 110 seconds on the same observer. If the wait expires, a later send
+can rejoin the observer without repeating the retirement request.
 
 ## Setup must not happen as a health-check side effect
 
