@@ -343,25 +343,27 @@ describe("personal Workstream thread windows", () => {
         expect(navigation("traversal")).toEqual(ids(traversal));
       });
     };
-    const tail = [...setup.beta, ...setup.unassigned];
     await assertNavigation(
-      [...setup.alpha.slice(0, 5), ...tail],
-      [...setup.alpha.slice(0, 5), currentThread, ...tail],
+      [...setup.unassigned, ...setup.alpha.slice(0, 5), ...setup.beta],
+      [...setup.unassigned, ...setup.alpha.slice(0, 5), currentThread, ...setup.beta],
     );
     await chooseLimit("Alpha", 10);
     await assertNavigation(
-      [...setup.alpha.slice(0, 10), ...tail],
-      [...setup.alpha.slice(0, 10), currentThread, ...tail],
+      [...setup.unassigned, ...setup.alpha.slice(0, 10), ...setup.beta],
+      [...setup.unassigned, ...setup.alpha.slice(0, 10), currentThread, ...setup.beta],
     );
     await userEvent.click(showMore("Alpha", 3));
-    await assertNavigation([...setup.alpha, ...tail]);
+    await assertNavigation([...setup.unassigned, ...setup.alpha, ...setup.beta]);
     await userEvent.click(showFewer("Alpha", 10));
     await assertNavigation(
-      [...setup.alpha.slice(0, 10), ...tail],
-      [...setup.alpha.slice(0, 10), currentThread, ...tail],
+      [...setup.unassigned, ...setup.alpha.slice(0, 10), ...setup.beta],
+      [...setup.unassigned, ...setup.alpha.slice(0, 10), currentThread, ...setup.beta],
     );
     await userEvent.click(page.getByRole("button", { name: "Collapse Alpha", exact: true }));
-    await assertNavigation(tail, [currentThread, ...tail]);
+    await assertNavigation(
+      [...setup.unassigned, ...setup.beta],
+      [...setup.unassigned, currentThread, ...setup.beta],
+    );
     await userEvent.click(page.getByRole("button", { name: "Collapse Unassigned", exact: true }));
     await assertNavigation(setup.beta, [currentThread, ...setup.beta]);
     await userEvent.click(page.getByRole("button", { name: "Expand Alpha", exact: true }));
