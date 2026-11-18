@@ -2100,6 +2100,7 @@
     "docs/user/work-mode.md": "jones-owned",
     "docs/user/workstreams.md": "policy",
     "evals/mcp-tool-use/backgroundWait.ts": "accepted-shared",
+    "evals/mcp-tool-use/cases/scheduled-tasks.ndjson": "jones-tests-in-upstream",
     "evals/mcp-tool-use/run.ts": "accepted-shared",
     "evals/package.json": "accepted-shared",
     "evals/vite.config.ts": "hook",
