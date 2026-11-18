@@ -1,3 +1,4 @@
+import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import { EnvironmentId, NonNegativeInt, ThreadId } from "../baseSchemas.ts";
 import { compareWorkstreamNameIcons, preserveWorkstreamNameIcon } from "./workstreamNameIcon.ts";
@@ -277,7 +278,10 @@ export const editPersonalWorkstream = (
           projectKey: patch.nameIconProjectKey,
           updatedAt:
             base.nameIcon && base.nameIcon.updatedAt >= now
-              ? new Date(Date.parse(base.nameIcon.updatedAt) + 1).toISOString()
+              ? DateTime.makeUnsafe(base.nameIcon.updatedAt).pipe(
+                  DateTime.add({ milliseconds: 1 }),
+                  DateTime.formatIso,
+                )
               : now,
         };
   return decodeWorkstream({
