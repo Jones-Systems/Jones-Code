@@ -15,7 +15,9 @@ import * as NodeSqlite from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import * as ServerConfig from "../../config.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 import Migration from "../persistence/Migrations/139_JonesConversationWorkspace.ts";
 import * as Policy from "./ConversationPolicy.ts";
 
@@ -68,7 +70,19 @@ it.effect(
           Layer.provide(NodeServices.layer),
           Layer.orDie,
         );
-        const policyLayer = Policy.layer.pipe(Layer.provideMerge(database), Layer.provide(config));
+        let managed:
+          | Pick<
+              typeof DEFAULT_SERVER_SETTINGS,
+              "worktreesDirectory" | "previousWorktreesDirectories"
+            >
+          | undefined;
+        const settings = Layer.mock(ServerSettings.ServerSettingsService)({
+          getSettings: Effect.sync(() => ({ ...DEFAULT_SERVER_SETTINGS, ...managed })),
+        });
+        const policyLayer = Policy.layer.pipe(
+          Layer.provideMerge(Layer.merge(database, settings)),
+          Layer.provideMerge(config),
+        );
         yield* Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* Migration;
@@ -82,8 +96,49 @@ it.effect(
             projectRoot: repo,
             baseRef: "main",
           };
+          const config = yield* ServerConfig.ServerConfig;
+          const stateRoot = NodePath.join(config.stateDir, "conversation-workspaces");
+          for (const dirs of [
+            { worktreesDirectory: state, previousWorktreesDirectories: [] },
+            { worktreesDirectory: "", previousWorktreesDirectories: [state] },
+          ]) {
+            managed = dirs;
+            const error = yield* service.preflight(input).pipe(Effect.flip);
+            assert.equal(error.placementRule, "excluded_root");
+          }
+          managed = undefined;
+          yield* service.preflight(input);
+          assert.isFalse(
+            yield* Effect.promise(async () =>
+              NodeFSP.access(stateRoot).then(
+                () => true,
+                () => false,
+              ),
+            ),
+          );
+          assert.lengthOf(yield* sql`SELECT thread_id FROM jones_conversation_bindings`, 0);
           yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES('conversation','{"id":"conversation","projectId":"project"}',NULL),('delegate','{"id":"delegate","projectId":"project"}',NULL)`;
-          const binding = yield* service.allocate(input);
+          yield* sql`CREATE TRIGGER fixture_binding_failure BEFORE INSERT ON jones_conversation_bindings
+            BEGIN SELECT RAISE(ABORT, 'fixture refuses conversation binding'); END`;
+          let failures = 0;
+          yield* service
+            .allocate(
+              input,
+              Effect.sync(() => {
+                failures++;
+              }),
+            )
+            .pipe(Effect.flip);
+          assert.equal(failures, 1);
+          assert.isNull(yield* service.lookup(input.threadId));
+          assert.deepEqual(yield* Effect.promise(() => NodeFSP.readdir(stateRoot)), []);
+          yield* sql`DROP TRIGGER fixture_binding_failure`;
+          const [binding, concurrentBinding] = yield* Effect.all(
+            [service.allocate(input), service.allocate(input)],
+            { concurrency: 2 },
+          );
+          assert.deepEqual(concurrentBinding, binding);
+          assert.lengthOf(yield* Effect.promise(() => NodeFSP.readdir(stateRoot)), 1);
           assert.deepEqual(yield* service.allocate(input), binding);
           assert.deepEqual(yield* Effect.promise(() => NodeFSP.readdir(binding.path)), []);
           const first = yield* service.startTurn(input.threadId, "turn:first");

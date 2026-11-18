@@ -1,6 +1,5 @@
 import type {
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
-  ProjectId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -60,23 +59,36 @@ export const make = Effect.gen(function* () {
           reason: "eager: setting or adapter proof unavailable",
         });
 
-  /** Binds a recorded conversation launch to its workspace; allocation is idempotent per thread. */
-  const allocate = Effect.fn("AutoLaunchStrategy.allocate")(function* (
+  const allocationInput = (
     strategy: AutoStrategy,
-    target: {
-      readonly threadId: ThreadId;
-      readonly projectId: ProjectId;
-      readonly projectRoot: string;
-    },
-  ) {
-    if (Option.isNone(conversations)) return;
-    yield* conversations.value.allocate({
-      threadId: target.threadId,
-      projectId: target.projectId,
-      projectRoot: target.projectRoot,
-      ...(strategy.baseRef === undefined ? {} : { baseRef: strategy.baseRef }),
-    });
+    target: Pick<
+      ConversationPolicy.ConversationAllocationInput,
+      "threadId" | "projectId" | "projectRoot"
+    >,
+  ): ConversationPolicy.ConversationAllocationInput => ({
+    ...target,
+    ...(strategy.baseRef === undefined ? {} : { baseRef: strategy.baseRef }),
   });
 
-  return { resolve, observeFallback, allocate };
+  const lookup = (threadId: ThreadId) =>
+    Option.isNone(conversations) ? Effect.succeed(null) : conversations.value.lookup(threadId);
+  const preflight = (input: ConversationPolicy.ConversationAllocationInput) =>
+    Option.isNone(conversations) ? Effect.void : conversations.value.preflight(input);
+  const allocate = (
+    input: ConversationPolicy.ConversationAllocationInput,
+    onUnboundFailure?: Effect.Effect<void>,
+  ) =>
+    Option.isNone(conversations)
+      ? Effect.void
+      : conversations.value.allocate(input, onUnboundFailure).pipe(Effect.asVoid);
+
+  return {
+    resolve,
+    observeFallback,
+    available: Option.isSome(conversations),
+    allocationInput,
+    lookup,
+    preflight,
+    allocate,
+  };
 });

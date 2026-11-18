@@ -162,7 +162,7 @@ export const sourceCases = {
         await NodeAssert.rejects(NodeFSP.lstat(planned), { code: "ENOENT" });
 
         const alias = NodePath.join(root, "state-alias");
-        await NodeFSP.symlink(state, alias, NodeOS.platform() === "win32" ? "junction" : "dir");
+        await NodeFSP.symlink(state, alias, NodePath.sep === "\\" ? "junction" : "dir");
         await NodeAssert.rejects(checkConversationDirectoryPlacement(state, [alias]), {
           rule: "excluded_root",
         });
@@ -189,11 +189,7 @@ export const sourceCases = {
           rule: "git_checkout",
         });
         await NodeFSP.unlink(gitFile);
-        await NodeFSP.symlink(
-          root,
-          conversationRoot,
-          NodeOS.platform() === "win32" ? "junction" : "dir",
-        );
+        await NodeFSP.symlink(root, conversationRoot, NodePath.sep === "\\" ? "junction" : "dir");
         await NodeAssert.rejects(checkConversationDirectoryPlacement(state, []), {
           rule: "invalid_root",
         });

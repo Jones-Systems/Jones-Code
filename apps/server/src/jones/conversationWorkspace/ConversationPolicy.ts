@@ -9,6 +9,7 @@ import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Path from "effect/Path";
 import * as Context from "effect/Context";
+import type * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -17,6 +18,7 @@ import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import { managedWorktreesDirectories } from "../../worktreesDirectory.ts";
 import {
+  checkConversationDirectoryPlacement,
   ConversationPlacementError,
   createConversationDirectory,
   placementRefusals,
@@ -161,6 +163,19 @@ const io = <A>(
         : new ConversationWorkspaceError({ threadId, reason, cause }),
   });
 
+export const FailedLaunchCleanup = Context.Reference<DateTime.Utc | undefined>(
+  "jones/conversationWorkspace/FailedLaunchCleanup",
+  { defaultValue: () => undefined },
+);
+
+export interface ConversationAllocationInput {
+  readonly threadId: string;
+  readonly projectId: string;
+  readonly projectRoot: string;
+  readonly baseRef?: string;
+  readonly excluded?: readonly string[];
+}
+
 export const ParentConversation = Context.Reference<string | undefined>(
   "jones/conversationWorkspace/ParentConversation",
   { defaultValue: () => undefined },
@@ -186,13 +201,13 @@ export class ConversationPolicy extends Context.Service<
     readonly lookup: (
       threadId: string,
     ) => Effect.Effect<Binding | null, ConversationWorkspaceError>;
-    readonly allocate: (input: {
-      threadId: string;
-      projectId: string;
-      projectRoot: string;
-      baseRef?: string;
-      excluded?: readonly string[];
-    }) => Effect.Effect<Binding, ConversationWorkspaceError>;
+    readonly preflight: (
+      input: ConversationAllocationInput,
+    ) => Effect.Effect<void, ConversationWorkspaceError>;
+    readonly allocate: (
+      input: ConversationAllocationInput,
+      onUnboundFailure?: Effect.Effect<void>,
+    ) => Effect.Effect<Binding, ConversationWorkspaceError>;
     readonly fallback: (
       threadId: string,
       driver: string,
@@ -276,35 +291,28 @@ const make = Effect.gen(function* () {
     },
     (effect, threadId) => effect.pipe(wrap(threadId)),
   );
+  const assertOwner = Effect.fn("ConversationPolicy.assertOwner")(function* (input: {
+    readonly threadId: string;
+    readonly projectId: string;
+  }) {
+    const owners = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${input.threadId} AND deleted_at IS NULL`;
+    const owner =
+      owners[0] === undefined ? null : yield* decodeBindingOwner(owners[0].payload_json);
+    if (owner?.id !== input.threadId || owner.projectId !== input.projectId)
+      return yield* new ConversationWorkspaceError({ threadId: input.threadId, reason: "storage" });
+  });
   const save = Effect.fn("ConversationPolicy.save")(
     function* (binding: Binding) {
-      const owners = yield* sql<{
-        payload_json: string;
-      }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${binding.threadId} AND deleted_at IS NULL`;
-      if (!owners[0])
-        return yield* new ConversationWorkspaceError({
-          threadId: binding.threadId,
-          reason: "storage",
-        });
-      const owner = yield* decodeBindingOwner(owners[0].payload_json);
-      if (owner.id !== binding.threadId || owner.projectId !== binding.projectId)
-        return yield* new ConversationWorkspaceError({
-          threadId: binding.threadId,
-          reason: "storage",
-        });
+      yield* assertOwner(binding);
       yield* sql`INSERT INTO jones_conversation_bindings(thread_id,binding) VALUES(${binding.threadId},${yield* encodeBinding(binding)}) ON CONFLICT(thread_id) DO UPDATE SET binding=excluded.binding`;
     },
     (effect, binding) => effect.pipe(sql.withTransaction, wrap(binding.threadId)),
   );
-  const allocate = Effect.fn("ConversationPolicy.allocate")(function* (input: {
-    threadId: string;
-    projectId: string;
-    projectRoot: string;
-    baseRef?: string;
-    excluded?: readonly string[];
-  }) {
-    const previous = yield* lookup(input.threadId);
-    if (previous !== null) return previous;
+  const resolvePlacement = Effect.fn("ConversationPolicy.resolvePlacement")(function* (
+    input: ConversationAllocationInput,
+  ) {
     const snapshot = yield* io(input.threadId, "source", () =>
       resolveSource(input.projectRoot, input.baseRef),
     );
@@ -328,6 +336,25 @@ const make = Effect.gen(function* () {
       ...projectRoots.map((row) => row.root),
       ...checkoutRoots.flatMap((row) => (row.root === null ? [] : [row.root])),
     ];
+    return { snapshot, excluded, registered };
+  });
+  const preflight = Effect.fn("ConversationPolicy.preflight")(
+    function* (input: ConversationAllocationInput) {
+      if ((yield* lookup(input.threadId)) !== null) return;
+      const { excluded, registered } = yield* resolvePlacement(input);
+      yield* io(input.threadId, "storage", () =>
+        checkConversationDirectoryPlacement(config.stateDir, excluded, registered),
+      );
+    },
+    (effect, input) => effect.pipe(wrap(input.threadId)),
+  );
+  const allocate = Effect.fn("ConversationPolicy.allocate")(function* (
+    input: ConversationAllocationInput,
+  ) {
+    yield* assertOwner(input);
+    const previous = yield* lookup(input.threadId);
+    if (previous !== null) return previous;
+    const { snapshot, excluded, registered } = yield* resolvePlacement(input);
     const directory = yield* io(input.threadId, "storage", () =>
       createConversationDirectory(config.stateDir, excluded, registered),
     );
@@ -341,7 +368,12 @@ const make = Effect.gen(function* () {
     };
     yield* save(binding).pipe(
       Effect.onError(() =>
-        io(input.threadId, "storage", () => disposeConversationDirectory(directory)).pipe(
+        lookup(input.threadId).pipe(
+          Effect.flatMap((persisted) =>
+            persisted?.path === directory.path
+              ? Effect.succeed("retained" as const)
+              : io(input.threadId, "storage", () => disposeConversationDirectory(directory)),
+          ),
           Effect.tap((outcome) =>
             outcome === "conversation_dir_nonempty"
               ? Effect.logError("conversation_dir_nonempty", {
@@ -605,10 +637,31 @@ const make = Effect.gen(function* () {
     ownsPath: (cwd) => ownsConversationPath(config.stateDir, cwd),
     lookup,
     sharing,
-    allocate: Effect.fn("ConversationPolicy.allocate")((input) =>
+    preflight,
+    allocate: Effect.fn("ConversationPolicy.allocate")((input, onUnboundFailure) =>
       directoryLocks.withLock(
         input.threadId,
-        allocate(input).pipe(Effect.uninterruptible, wrap(input.threadId)),
+        allocate(input).pipe(
+          wrap(input.threadId),
+          Effect.tapError(() =>
+            onUnboundFailure === undefined
+              ? Effect.void
+              : lookup(input.threadId).pipe(
+                  Effect.matchEffect({
+                    onFailure: (cause) =>
+                      Effect.logError(
+                        "Conversation binding outcome is unresolved after launch failure",
+                        {
+                          threadId: input.threadId,
+                          cause,
+                        },
+                      ),
+                    onSuccess: (binding) => (binding === null ? onUnboundFailure : Effect.void),
+                  }),
+                ),
+          ),
+          Effect.uninterruptible,
+        ),
       ),
     ),
     inherit,

@@ -367,6 +367,12 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
           message: error.message,
         });
       }
+      if (error._tag === "ThreadLaunchError" && error.conversationFailure !== undefined) {
+        return new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message: error.message,
+        });
+      }
       // The administrator's ceiling refuses the mode; say so rather than "unavailable".
       if (error._tag === "ThreadLaunchError" && isAboveCeilingError(error.cause)) {
         return new OrchestratorMcpFailure({
