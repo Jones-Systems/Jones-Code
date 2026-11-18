@@ -79,7 +79,7 @@ test("missing or malformed classifier decisions fail Check even when fallback jo
   }
 });
 
-test("workflow enrolls every job in Check and preserves conditional and always-run boundaries", () => {
+test("workflow enrolls every required job in Check and keeps the cache pilot advisory", () => {
   const workflow = readFileSync(
     new URL("../../../.github/workflows/ci.yml", `file://${__filename}`),
     "utf8",
@@ -95,7 +95,7 @@ test("workflow enrolls every job in Check and preserves conditional and always-r
     Object.keys(jobs)
       .filter((name) => name !== "check")
       .sort(),
-    [...REQUIRED_JOBS].sort(),
+    [...REQUIRED_JOBS, "server_cache_cold", "server_cache_warm"].sort(),
   );
   const needed = jobs.check
     .match(/needs:\s*\[([\s\S]*?)\]/)[1]
@@ -103,6 +103,10 @@ test("workflow enrolls every job in Check and preserves conditional and always-r
     .map((name) => name.trim())
     .filter(Boolean);
   assert.deepEqual(needed.sort(), [...REQUIRED_JOBS].sort());
+  assert.match(jobs.server_cache_cold, /inputs\.server_cache_pilot == true/);
+  assert.match(jobs.server_cache_cold, /outputs\.server_cache_pilot == 'true'/);
+  assert.match(jobs.server_cache_warm, /needs\.server_cache_cold\.result == 'success'/);
+  assert.match(jobs.server_cache_warm, /needs\.test_server\.result == 'success'/);
   for (const [job, output] of Object.entries(LINUX_GATES))
     assert.ok(jobs[job].includes(`needs.linux_changes.outputs.${output} != 'false'`), job);
   for (const [job, output] of Object.entries(NATIVE_GATES))

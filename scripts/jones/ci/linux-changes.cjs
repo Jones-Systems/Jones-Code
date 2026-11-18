@@ -4,6 +4,8 @@ const fs = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const { decide, readWorkspace } = require("../../../.github/scripts/ci-changes.cjs");
 
+const SERVER_CACHE_DRIVER = "scripts/jones/ci/server-result-cache.mjs";
+
 const SPLIT_PACKAGES = {
   test_desktop: "@t3tools/desktop",
   test_mobile: "@t3tools/mobile",
@@ -53,6 +55,7 @@ function select(files, packages) {
 
 function changedPaths(eventName, event, run) {
   if (eventName !== "pull_request") return { files: null, reason: "Non-PR full qualification" };
+  let pilotComparison;
   try {
     const pr = event.pull_request;
     const sha = /^[0-9a-f]{40}$/;
@@ -80,6 +83,9 @@ function changedPaths(eventName, event, run) {
     ) {
       throw new Error("Stack or non-default PR base requires full qualification");
     }
+    if (pr.head.repo?.full_name === repository) {
+      pilotComparison = `repos/${repository}/compare/${pr.base.sha}...${pr.head.sha}`;
+    }
     const paths = run("git", [
       "diff",
       "--no-renames",
@@ -100,27 +106,51 @@ function changedPaths(eventName, event, run) {
     }
     return {
       files,
+      serverCachePilot: pilotComparison !== undefined && files.includes(SERVER_CACHE_DRIVER),
       reason: `Exact PR diff ${pr.base.sha}..${pr.head.sha} (renames include both paths)`,
     };
   } catch (error) {
-    return { files: null, reason: `Full fallback: ${error.message}` };
+    return {
+      files: null,
+      serverCachePilot: pilotComparison !== undefined && pilotDriverChanged(run, pilotComparison),
+      reason: `Full fallback: ${error.message}`,
+    };
+  }
+}
+
+function pilotDriverChanged(run, comparison) {
+  // A positive match in this bounded response can enroll the advisory pilot.
+  // It cannot select any required job out of a full fallback.
+  try {
+    const { files } = JSON.parse(run("gh", ["api", comparison]));
+    return (
+      Array.isArray(files) &&
+      files.some(
+        (file) =>
+          file.filename === SERVER_CACHE_DRIVER &&
+          ["added", "modified", "renamed"].includes(file.status),
+      )
+    );
+  } catch (error) {
+    console.error(`Could not compare the cache pilot driver: ${error.message}`);
+    return false;
   }
 }
 
 function main() {
   let change = { files: null, reason: "Missing event evidence; full qualification" };
   try {
-    change = changedPaths(
-      process.env.GITHUB_EVENT_NAME,
-      JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")),
-      (command, args) =>
-        execFileSync(command, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }),
+    const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+    change = changedPaths(process.env.GITHUB_EVENT_NAME, event, (command, args) =>
+      execFileSync(command, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }),
     );
   } catch (error) {
     console.error(`Could not read event: ${error.message}`);
   }
   console.error(change.reason);
   const outputs = select(change.files, readWorkspace());
+  outputs.server_cache_pilot =
+    change.serverCachePilot === true && fs.existsSync(SERVER_CACHE_DRIVER);
   const lines =
     Object.entries(outputs)
       .map(([key, value]) => `${key}=${value}`)

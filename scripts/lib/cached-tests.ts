@@ -28,6 +28,17 @@ interface TaskRunSummary {
 const runTask = "test-cache:run";
 const runCommand = (run: string) => `node -e "" ${run}`;
 
+export const testResultDirectory = "node_modules/.cache/test-cache-reports";
+
+export function cachedTestTaskName(files: ReadonlyArray<string>) {
+  const key = NodeCrypto.createHash("sha256").update(files.join("\0")).digest("hex");
+  return `test-cache:${key}`;
+}
+
+export function cachedTestReportPath(taskName: string) {
+  return `${testResultDirectory}/${taskName.slice("test-cache:".length)}.json`;
+}
+
 export function readRunSummary(cacheRoot: string, run: string): TaskRunSummary | undefined {
   try {
     for (const entry of NodeFS.readdirSync(cacheRoot)) {
@@ -74,6 +85,7 @@ export function cachedTestTasks(
     throw new Error("Invalid cached test request");
   }
   const uncached = "uncached" in request ? request.uncached : [];
+  const reportResults = "reportResults" in request && request.reportResults === true;
   if (!Array.isArray(uncached) || !uncached.every((file) => typeof file === "string")) {
     throw new Error("Invalid uncached test files");
   }
@@ -126,10 +138,21 @@ export function cachedTestTasks(
     }
     groups.push(...entries.filter((file) => uncached.includes(file)).map((file) => [file]));
     for (const group of groups) {
-      const key = NodeCrypto.createHash("sha256").update(group.join("\0")).digest("hex");
-      tasks[`test-cache:${key}`] = {
+      const name = cachedTestTaskName(group);
+      const report = reportResults ? cachedTestReportPath(name) : undefined;
+      const paths = group.map(
+        (file) =>
+          `'${NodePath.relative(directory, NodePath.join(root, file)).replaceAll("'", "'\"'\"'")}'`,
+      );
+      tasks[name] = {
         dependsOn: [runTask],
-        command: `${command} ${group.map((file) => `'${NodePath.relative(directory, NodePath.join(root, file)).replaceAll("'", "'\"'\"'")}'`).join(" ")}`,
+        command: [
+          command,
+          ...paths,
+          ...(report
+            ? ["--reporter=default", "--reporter=json", `--outputFile.json=${report}`]
+            : []),
+        ].join(" "),
         ...(directory === root ? {} : { cwd: NodePath.relative(root, directory) }),
         cache: uncached.includes(group[0]!)
           ? false
@@ -140,7 +163,8 @@ export function cachedTestTasks(
                 "!**/node_modules/.vite/**",
                 "!**/node_modules/.vitest-cache/**",
               ],
-              output: [],
+              // These tasks are declared by the root package, even with a package cwd.
+              output: report ? [NodePath.relative(root, NodePath.join(directory, report))] : [],
             },
       };
     }

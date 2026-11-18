@@ -164,6 +164,37 @@ test("unavailable commits, malformed events and truncated or ambiguous diffs run
   }
 });
 
+test("an exact GitHub comparison can opt the cache pilot in while the required matrix stays full", () => {
+  const driver = "scripts/jones/ci/server-result-cache.mjs";
+  const headRepo = event.repository;
+  const pr = { ...event.pull_request, head: { ...event.pull_request.head, repo: headRepo } };
+  const compare = `repos/${headRepo.full_name}/compare/${pr.base.sha}...${pr.head.sha}`;
+  for (const [repo, paths, expected] of [
+    [headRepo, [{ filename: driver, status: "modified" }], true],
+    [headRepo, [{ filename: driver, status: "removed" }], false],
+    [{ full_name: "contributor/fork" }, [{ filename: driver, status: "modified" }], false],
+  ]) {
+    const candidate = { ...pr, head: { ...pr.head, repo } };
+    let compared = false;
+    const result = changedPaths(
+      "pull_request",
+      { ...event, pull_request: candidate },
+      (cmd, args) => {
+        if (cmd === "git") throw new Error("base object missing from shallow checkout");
+        if (args[1] === compare) {
+          compared = true;
+          return JSON.stringify({ files: paths });
+        }
+        return JSON.stringify(candidate);
+      },
+    );
+    assert.equal(result.files, null);
+    assert.equal(select(result.files, packages).test_server, true);
+    assert.equal(result.serverCachePilot, expected);
+    assert.equal(compared, repo === headRepo);
+  }
+});
+
 test("package execution accepts known selected names, and missing/malformed outputs run the full batch", () => {
   const available = packageBatch(packages);
   assert.deepEqual(selectPackages("[]", available), []);

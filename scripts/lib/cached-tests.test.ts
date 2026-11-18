@@ -6,7 +6,13 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import { cachedTestTasks, matchesTestPath, readRunSummary } from "./cached-tests.ts";
+import {
+  cachedTestReportPath,
+  cachedTestTaskName,
+  cachedTestTasks,
+  matchesTestPath,
+  readRunSummary,
+} from "./cached-tests.ts";
 
 describe("cachedTestTasks", () => {
   it("selects every test for a checkout-root path", () => {
@@ -100,8 +106,11 @@ describe("cachedTestTasks", () => {
   it("reuses individual results, invalidates filesystem inputs, and never caches failures", async () => {
     const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cached-tests-"));
     const root = NodePath.resolve(import.meta.dirname, "../..");
+    const pkg = NodePath.join(directory, "server");
+    const a = "server/a.test.ts";
+    const b = "server/b.test.ts";
     let runId = 0;
-    const run = (files = ["a.test.ts", "b.test.ts"], uncached: Array<string> = []) =>
+    const run = (files = [a, b], uncached: Array<string> = []) =>
       new Promise<number | null>((resolve, reject) => {
         runId += 1;
         const child = NodeChildProcess.spawn(
@@ -118,6 +127,7 @@ describe("cachedTestTasks", () => {
                 files,
                 groupSize: 1,
                 uncached,
+                reportResults: true,
               }),
               VITE_CACHE_PATH: NodePath.join(directory, "cache"),
               PATH: `${NodePath.join(root, "node_modules/.bin")}${NodePath.delimiter}${process.env.PATH}`,
@@ -134,6 +144,19 @@ describe("cachedTestTasks", () => {
       ).length;
     try {
       await NodeFSP.mkdir(NodePath.join(directory, "node_modules"));
+      await NodeFSP.mkdir(pkg);
+      await NodeFSP.writeFile(
+        NodePath.join(directory, "pnpm-workspace.yaml"),
+        "packages: [server]\n",
+      );
+      await NodeFSP.writeFile(
+        NodePath.join(pkg, "package.json"),
+        '{"name":"server","type":"module"}',
+      );
+      await NodeFSP.writeFile(
+        NodePath.join(pkg, "vite.config.ts"),
+        'export default {test:{include:["*.test.ts"]}};',
+      );
       await NodeFSP.symlink(
         NodePath.join(root, "node_modules/vite-plus"),
         NodePath.join(directory, "node_modules/vite-plus"),
@@ -145,37 +168,54 @@ describe("cachedTestTasks", () => {
         `import {cachedTestTasks} from ${JSON.stringify(NodeURL.pathToFileURL(NodePath.join(root, "scripts/lib/cached-tests.ts")).href)}; export default {run:{tasks:cachedTestTasks(process.env.T3_CACHED_TESTS, import.meta.dirname)},test:{include:["*.test.ts"]}};`,
       );
       await NodeFSP.writeFile(
-        NodePath.join(directory, "a.test.ts"),
+        NodePath.join(pkg, "a.test.ts"),
         'import {test,expect} from "vite-plus/test"; import {readFileSync} from "node:fs"; test("fixture",()=>expect(readFileSync("fixture.txt","utf8")).toMatch(/^hello/));',
       );
       await NodeFSP.writeFile(
-        NodePath.join(directory, "b.test.ts"),
+        NodePath.join(pkg, "b.test.ts"),
         'import {test,expect} from "vite-plus/test"; test("independent",()=>expect(1).toBe(1));',
       );
-      await NodeFSP.writeFile(NodePath.join(directory, "fixture.txt"), "hello");
+      await NodeFSP.writeFile(NodePath.join(pkg, "fixture.txt"), "hello");
       expect(await run()).toBe(0);
+      const report = NodePath.join(pkg, cachedTestReportPath(cachedTestTaskName([a])));
+      const originalReport = await NodeFSP.readFile(report, "utf8");
+      expect(JSON.parse(originalReport).numPassedTests).toBe(1);
+      await NodeFSP.unlink(report);
       expect(await run()).toBe(0);
       expect(await summary()).toBe(2);
-      expect(await run(["b.test.ts"])).toBe(0);
+      expect(await NodeFSP.readFile(report, "utf8")).toBe(originalReport);
+      expect(await run([b])).toBe(0);
       expect(await summary()).toBe(1);
       expect(await run()).toBe(0);
       expect(await summary()).toBe(2);
-      await NodeFSP.writeFile(NodePath.join(directory, "fixture.txt"), "hello changed");
+      await NodeFSP.writeFile(NodePath.join(pkg, "fixture.txt"), "hello changed");
       expect(await run()).toBe(0);
       expect(await summary()).toBe(1);
-      await NodeFSP.writeFile(NodePath.join(directory, "fixture.txt"), "broken");
+      await NodeFSP.writeFile(NodePath.join(pkg, "fixture.txt"), "broken");
       expect(await run()).toBe(1);
       expect(await run()).toBe(1);
       expect(await summary()).toBe(1);
-      await NodeFSP.writeFile(NodePath.join(directory, "fixture.txt"), "hello again");
+      await NodeFSP.writeFile(NodePath.join(pkg, "fixture.txt"), "hello again");
       await NodeFSP.writeFile(
-        NodePath.join(directory, "b.test.ts"),
-        'import {test} from "vite-plus/test";import {writeFileSync} from "node:fs";test("report",()=>writeFileSync("report.json","{}"));',
+        NodePath.join(pkg, "b.test.ts"),
+        `import {test} from "vite-plus/test";
+import {writeFileSync} from "node:fs";
+import {execFileSync} from "node:child_process";
+test("report", () => {
+  const observed = execFileSync(process.execPath, ["-p", "JSON.stringify(process.env)"], {
+    env: {},
+    encoding: "utf8",
+  });
+  const childEnv = JSON.parse(observed);
+  const tracingVars = ["FSPY_PAYLOAD", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"]
+    .filter((key) => key in childEnv);
+  writeFileSync("report.json", JSON.stringify(tracingVars));
+});`,
       );
-      expect(await run(undefined, ["b.test.ts"])).toBe(0);
-      await NodeFSP.unlink(NodePath.join(directory, "report.json"));
-      expect(await run(undefined, ["b.test.ts"])).toBe(0);
-      expect(await NodeFSP.readFile(NodePath.join(directory, "report.json"), "utf8")).toBe("{}");
+      expect(await run(undefined, [b])).toBe(0);
+      await NodeFSP.unlink(NodePath.join(pkg, "report.json"));
+      expect(await run(undefined, [b])).toBe(0);
+      expect(await NodeFSP.readFile(NodePath.join(pkg, "report.json"), "utf8")).toBe("[]");
     } finally {
       await NodeFSP.rm(directory, { recursive: true, force: true });
     }

@@ -29,6 +29,10 @@ on:
         type: string
         required: false
         default: ""
+      server_cache_pilot:
+        description: Measure cold and warm test-result caching for one Linux server shard
+        type: boolean
+        default: false
       native_jobs:
         description: Run the macOS native jobs even when none of the files they check changed
         type: boolean
@@ -62,6 +66,7 @@ jobs:
       test_packages: ${{ steps.detect.outputs.test_packages }}
       test_web: ${{ steps.detect.outputs.test_web }}
       test_server: ${{ steps.detect.outputs.test_server }}
+      server_cache_pilot: ${{ steps.detect.outputs.server_cache_pilot }}
       test_desktop: ${{ steps.detect.outputs.test_desktop }}
       test_mobile: ${{ steps.detect.outputs.test_mobile }}
       test_client_runtime: ${{ steps.detect.outputs.test_client_runtime }}
@@ -964,7 +969,8 @@ jobs:
     env:
       TEST_COMMAND: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=github-actions --reporter=../../scripts/jones/ci-test-progress-reporter.ts --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
     steps:
-      - name: Checkout
+      - &server_checkout
+        name: Checkout
         shell: bash
         env:
           GITHUB_REPOSITORY: Jones-Systems/Jones-Code
@@ -1007,7 +1013,8 @@ jobs:
           git checkout --detach "$JONES_CHECKOUT_SHA"
           test "$(git rev-parse HEAD)" = "$JONES_CHECKOUT_SHA"
 
-      - name: Setup Vite+
+      - &server_setup_vp
+        name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version: 26.13.1
@@ -1016,27 +1023,32 @@ jobs:
 
       # No Electron setup here: `t3` (apps/server) has no Electron dependency
       # and none of its tests touch the runtime. Desktop tests run separately.
-      - name: Resolve Playwright version
+      - &server_playwright_version
+        name: Resolve Playwright version
         id: playwright_version
         run: echo "version=$(node scripts/jones/ci/chromium-setup.mjs apps/server version)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache Chromium
+      - &server_chromium_cache
+        name: Cache Chromium
         id: chromium_cache
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
 
-      - name: Install Chromium for server browser integration tests
+      - &server_install_chromium
+        name: Install Chromium for server browser integration tests
         if: steps.chromium_cache.outputs.cache-hit != 'true'
         run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
 
-      - name: Verify Chromium and repair missing system dependencies
+      - &server_verify_chromium
+        name: Verify Chromium and repair missing system dependencies
         run: node scripts/jones/ci/chromium-setup.mjs apps/server
 
       # Every shard must use the same weights, so a map that fails its digest
       # fails the shard rather than falling back on its own.
-      - name: Load server shard weights
+      - &server_load_weights
+        name: Load server shard weights
         env:
           WEIGHTS_MODE: ${{ needs.server_weights.outputs.mode }}
           WEIGHTS: ${{ needs.server_weights.outputs.weights }}
@@ -1138,6 +1150,131 @@ jobs:
           path: ${{ runner.temp }}/thread-transfer-result.json
           if-no-files-found: ignore
           retention-days: 30
+
+  # The required test matrix remains the fresh control. This opt-in pilot
+  # saves one cold result archive and restores it on a separate runner.
+  server_cache_cold:
+    name: Server Result Cache (cold pilot)
+    needs: [linux_changes, server_weights]
+    if: >-
+      ${{ !cancelled() && needs.server_weights.result == 'success' &&
+          (inputs.server_cache_pilot == true || needs.linux_changes.outputs.server_cache_pilot == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      JONES_RESULT_CACHE_PHASE: cold
+      JONES_RESULT_CACHE_SHARDS: ${{ needs.server_weights.outputs.shard_count }}
+      VP_REMOTE_CACHE: "off"
+    steps: &server_cache_steps
+      - *server_checkout
+      - *server_setup_vp
+      - *server_playwright_version
+      - *server_chromium_cache
+      - *server_install_chromium
+      - *server_verify_chromium
+      - *server_load_weights
+
+      - name: Select the shard containing the transfer budget test
+        id: select
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d "$RUNNER_TEMP/server-result-cache.XXXXXXXX")"
+          echo "JONES_RESULT_CACHE_DIR=$work" >> "$GITHUB_ENV"
+          # The Actions cache version includes the archive path.
+          cache="$RUNNER_TEMP/jones-server-result-cache"
+          mkdir "$cache"
+          echo "VITE_CACHE_PATH=$cache" >> "$GITHUB_ENV"
+          JONES_RESULT_CACHE_DIR="$work" node scripts/jones/ci/server-result-cache.mjs select
+
+      - name: Download the cold result receipt
+        if: env.JONES_RESULT_CACHE_PHASE == 'warm'
+        uses: actions/download-artifact@v8
+        with:
+          name: server-result-cache-cold-a${{ github.run_attempt }}
+          path: ${{ env.JONES_RESULT_CACHE_DIR }}/cold
+
+      - name: Start the measurement
+        run: echo "JONES_RESULT_CACHE_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
+
+      - name: Restore candidate task results
+        if: env.JONES_RESULT_CACHE_PHASE == 'warm'
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.VITE_CACHE_PATH }}
+          key: ${{ steps.select.outputs.key }}
+          fail-on-cache-miss: true
+
+      - name: Run server test tasks serially
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          node scripts/jones/ci/server-result-cache.mjs "$JONES_RESULT_CACHE_PHASE" 2>&1 | python3 -u -c '
+          import sys
+          sys.stdin.reconfigure(errors="backslashreplace")
+          for line in sys.stdin:
+              sys.stdout.write(line.encode("ascii", "backslashreplace").decode("ascii"))
+          '
+
+      - name: Save successful cold task results
+        if: env.JONES_RESULT_CACHE_PHASE == 'cold'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.VITE_CACHE_PATH }}
+          key: ${{ steps.select.outputs.key }}
+
+      - name: Download the fresh case report
+        if: env.JONES_RESULT_CACHE_PHASE == 'warm'
+        uses: actions/download-artifact@v8
+        with:
+          name: test-cases-test_server-a${{ github.run_attempt }}-s${{ steps.select.outputs.index }}
+          path: ${{ env.JONES_RESULT_CACHE_DIR }}/control
+
+      - name: Download the fresh shard timings
+        if: env.JONES_RESULT_CACHE_PHASE == 'warm'
+        uses: actions/download-artifact@v8
+        with:
+          name: server-timings-a${{ github.run_attempt }}-s${{ steps.select.outputs.shard }}-of-${{ env.JONES_RESULT_CACHE_SHARDS }}
+          path: ${{ env.JONES_RESULT_CACHE_DIR }}/control
+
+      - name: Compare with the fresh control
+        if: env.JONES_RESULT_CACHE_PHASE == 'warm'
+        run: node scripts/jones/ci/server-result-cache.mjs compare
+
+      - name: Upload cache experiment evidence
+        if: always() && env.JONES_RESULT_CACHE_DIR != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-result-cache-${{ env.JONES_RESULT_CACHE_PHASE }}-a${{ github.run_attempt }}
+          path: |
+            ${{ env.JONES_RESULT_CACHE_DIR }}/pilot.json
+            ${{ env.JONES_RESULT_CACHE_DIR }}/comparison.json
+            ${{ env.JONES_RESULT_CACHE_DIR }}/transfer.json
+            ${{ env.JONES_RESULT_CACHE_DIR }}/transfer.md
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Remove the experiment's runner directory
+        if: always() && env.JONES_RESULT_CACHE_DIR != ''
+        run: |
+          case "$JONES_RESULT_CACHE_DIR" in
+            "$RUNNER_TEMP"/server-result-cache.????????) rm -rf -- "$JONES_RESULT_CACHE_DIR" ;;
+            *) exit 1 ;;
+          esac
+          if [[ "${VITE_CACHE_PATH:-}" == "$RUNNER_TEMP/jones-server-result-cache" ]]; then
+            rm -rf -- "$VITE_CACHE_PATH"
+          fi
+
+  server_cache_warm:
+    name: Server Result Cache (warm pilot)
+    needs: [server_weights, server_cache_cold, test_server]
+    if: ${{ !cancelled() && needs.server_cache_cold.result == 'success' && needs.test_server.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      JONES_RESULT_CACHE_PHASE: warm
+      JONES_RESULT_CACHE_SHARDS: ${{ needs.server_weights.outputs.shard_count }}
+      VP_REMOTE_CACHE: "off"
+    steps: *server_cache_steps
 
   transfer-report:
     name: Transfer report artifact
