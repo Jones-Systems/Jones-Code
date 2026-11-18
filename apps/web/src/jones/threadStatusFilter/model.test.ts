@@ -36,6 +36,7 @@ const base: StatusThread = {
   interactionMode: "default",
   latestRun: null,
   runtime: null,
+  settledOverride: null,
 };
 const runtime = (status: NonNullable<StatusThread["runtime"]>["status"]) => ({
   status,

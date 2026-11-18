@@ -18,7 +18,8 @@ export type ThreadStatusCounts = Record<ThreadStatus, number>;
 export type StatusThread = Parameters<typeof resolveThreadStatusPill>[0]["thread"] & {
   latestUserMessageAt?: string | null | undefined;
   source?: SidebarThreadSummary["source"] | undefined;
-} & Pick<ThreadSnoozeShell, "snoozedAt" | "snoozedUntil" | "pendingUserInputAt">;
+} & Pick<SidebarThreadSummary, "settledOverride"> &
+  Pick<ThreadSnoozeShell, "snoozedAt" | "snoozedUntil" | "pendingUserInputAt">;
 export type ThreadActivityWindow = Pick<
   ClientSettings,
   "threadActivityWindowEnabled" | "threadActivityWindowAmount" | "threadActivityWindowUnit"
@@ -76,6 +77,7 @@ export function classifyThreadStatus(
   activityWindow?: ThreadActivityWindow,
   now = Date.now(),
 ): ThreadStatus | null {
+  if (thread.settledOverride === "settled") return null;
   if (
     effectiveSnoozed(
       {
