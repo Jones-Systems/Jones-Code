@@ -53,7 +53,7 @@ Known shared consumers:
   native approvals retain precedence. Working includes displayed Waiting rows in
   its count and selection; double-click Hide working excludes both. Filtering
   preserves the roster order, including pin order. Counts and positive status
-  selections include only top-level threads, excluding forks, subagents and
+  selections include only unsettled top-level threads, excluding forks, subagents and
   delegated tasks even when their parent is unavailable. The optional activity window
   in Settings → Jones Code limits status counts and positive selections to real
   message/run activity and includes read successful completions with reliable

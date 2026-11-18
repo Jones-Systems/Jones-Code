@@ -290,12 +290,12 @@ try {
     "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs",
   ]);
   const sourceManifest = NodePath.join(output, "source-command.json");
-  await node("manifest-source", [
+  const sourceAvailable = await node("manifest-source", [
     "scripts/jones/serverParallelism/source-command.mjs",
     NodePath.join(root, "apps/server/src/bin.ts"),
     sourceManifest,
   ]);
-  const manifests = [{ form: "source", path: sourceManifest }];
+  const manifests = [{ form: "source", path: sourceManifest, available: sourceAvailable }];
   if (scope === "full") {
     // Loading Electron can download its runtime, which only the full matrix measures.
     const requireDesktop = NodeModule.createRequire(
@@ -322,14 +322,14 @@ try {
       ["sea", sea, "-"],
     ]) {
       const path = NodePath.join(output, `${form}-command.json`);
-      await node(`manifest-${form}`, [
+      const available = await node(`manifest-${form}`, [
         "scripts/jones/serverParallelism/artifact-command.mjs",
         form,
         executable,
         entry,
         path,
       ]);
-      manifests.push({ form, path });
+      manifests.push({ form, path, available });
     }
   }
   if (writerTiming) {
@@ -417,7 +417,19 @@ try {
   } else {
     for (const profile of ["laptop", "vps"]) {
       const baseline = await runBaseline(profile);
-      for (const { form, path } of manifests) {
+      for (const { form, path, available } of manifests) {
+        if (!available) {
+          const cases =
+            scope === "full"
+              ? ["packaging", "native", "native-block", "fault", "native-block-receipt"]
+              : ["packaging", "dispatch", "native"];
+          for (const kind of cases) {
+            const name = `${kind}-${form}-${profile}`;
+            predicates[name] = "unknown";
+            results.push({ name, outcome: "unknown", reason: "command-manifest-not-produced" });
+          }
+          continue;
+        }
         const smoke = NodePath.join(output, `packaging-${form}-${profile}.json`);
         await node(`packaging-${form}-${profile}`, [
           "scripts/jones/serverParallelism/packaging-smoke.mjs",
@@ -457,27 +469,6 @@ try {
         // This bounded diagnosis stops before unrelated packaging/fault cohorts.
         // Full qualification remains explicitly unknown until the complete matrix runs.
         if (scope === "source-evidence") continue;
-        let manifestExists = true;
-        try {
-          await NodeFSP.readFile(path);
-        } catch {
-          manifestExists = false;
-        }
-        if (!manifestExists) {
-          blockExpected.push({
-            os: HostProcess.Platform.defaultValue() === "linux" ? "linux-x64" : "macos-arm64",
-            form,
-            profile,
-            build: "unknown",
-          });
-          predicates[`fault-${form}-${profile}`] = "unknown";
-          results.push({
-            name: `fault-${form}-${profile}`,
-            outcome: "unknown",
-            reason: "missing-command-manifest; vitest skip cannot qualify",
-          });
-          continue;
-        }
         const blockOutput = NodePath.join(output, `native-block-${form}-${profile}`);
         const binding = {
           os: HostProcess.Platform.defaultValue() === "linux" ? "linux-x64" : "macos-arm64",
