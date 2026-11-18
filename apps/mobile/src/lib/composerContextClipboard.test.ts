@@ -13,6 +13,8 @@ import {
 
 const mocks = vi.hoisted(() => ({
   execute: vi.fn(),
+  capture: vi.fn(),
+  sourceConnected: false,
   download: vi.fn(),
   persist: vi.fn(),
   remove: vi.fn(),
@@ -42,6 +44,10 @@ vi.mock("../state/session", () => ({
   environmentSession: { preparedConnectionValueAtom: vi.fn() },
 }));
 vi.mock("../state/assets", () => ({ assetEnvironment: { createUrl: (value: unknown) => value } }));
+vi.mock("../jones/threadReferenceExcerpt/capture", () => ({
+  canCaptureThreadReference: () => mocks.sourceConnected,
+  captureThreadReference: mocks.capture,
+}));
 vi.mock("../state/threads", () => ({
   environmentThreadShells: { threadShellAtom: (value: unknown) => value },
 }));
@@ -318,6 +324,39 @@ describe("mobile context clipboard imports", () => {
       { ...foreignThread, contextId: expect.any(String) },
       { ...localThread, contextId: expect.any(String) },
     ]);
+  });
+
+  it("attaches recent source context when the destination has no link back", async () => {
+    const excerpt = {
+      status: "captured" as const,
+      capturedAt: "2026-10-21T00:00:00.000Z",
+      sourceSnapshotSequence: 12,
+      earlierHistory: "omitted" as const,
+      text: "Synthetic source history",
+    };
+    mocks.sourceConnected = true;
+    mocks.capture.mockImplementationOnce(async (record) => ({ ...record, excerpt }));
+    try {
+      const result = await importComposerContextClipboard(
+        mixedClipboard,
+        0,
+        new AbortController().signal,
+        0,
+        localThread.environmentId,
+      );
+      expect(mocks.capture).toHaveBeenCalledWith({
+        ...foreignThread,
+        contextId: expect.any(String),
+      });
+      expect(result?.skippedThreads).toEqual([]);
+      expect(result?.context.records[0]).toEqual({
+        ...foreignThread,
+        contextId: expect.any(String),
+        excerpt,
+      });
+    } finally {
+      mocks.sourceConnected = false;
+    }
   });
 
   it("preserves both machines' thread references when pasting without a destination", async () => {

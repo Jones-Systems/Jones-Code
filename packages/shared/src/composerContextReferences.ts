@@ -478,8 +478,19 @@ export function composerContextProviderTextForDisplay(text: string): string {
   return result + text.slice(cursor);
 }
 
-// An agent reads threads on its own machine and on those it links to, even when a draft
-// moves between machines.
+export function isThreadContextAvailable(
+  record: ThreadContextRecord,
+  environmentId: EnvironmentId,
+  linkedEnvironments: ReadonlyMap<EnvironmentId, string>,
+): boolean {
+  return (
+    record.excerpt?.status === "captured" ||
+    record.environmentId === environmentId ||
+    linkedEnvironments.has(record.environmentId)
+  );
+}
+
+// The receiving agent can use an attached snapshot even without a live route to the source.
 export function threadContextsOutsideEnvironment(input: {
   text: string;
   records: ReadonlyArray<ComposerContextRecord>;
@@ -494,8 +505,7 @@ export function threadContextsOutsideEnvironment(input: {
       record.kind === "thread" &&
       "threadId" in record &&
       referenced.has(record.contextId) &&
-      record.environmentId !== input.environmentId &&
-      !input.linkedEnvironments.has(record.environmentId),
+      !isThreadContextAvailable(record, input.environmentId, input.linkedEnvironments),
   );
 }
 

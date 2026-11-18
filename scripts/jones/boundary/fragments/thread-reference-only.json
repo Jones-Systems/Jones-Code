@@ -2,6 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "thread-reference-only",
   "jonesOwnedPaths": [
+    "apps/mobile/src/jones/threadReferenceExcerpt/capture.ts",
     "apps/web/src/jones/threadReferenceExcerpt/capture.test.ts",
     "apps/web/src/jones/threadReferenceExcerpt/capture.ts",
     "apps/web/src/jones/threadReferenceExcerpt/useThreadReferenceCapture.ts",
@@ -12,6 +13,7 @@
     "packages/shared/src/jones/threadReferenceProjection.test.ts"
   ],
   "hookPaths": [
+    "apps/mobile/src/lib/composerContextClipboard.ts",
     "packages/client-runtime/src/state/orchestration.ts",
     "packages/contracts/src/composerContext.ts"
   ],
@@ -23,6 +25,10 @@
     "apps/web/src/lib/threadContextAttachment.test.ts"
   ],
   "allowedImports": [
+    {
+      "from": "apps/mobile/src/lib/composerContextClipboard.ts",
+      "to": "apps/mobile/src/jones/threadReferenceExcerpt/capture.ts"
+    },
     {
       "from": "packages/contracts/src/composerContext.ts",
       "to": "packages/contracts/src/jones/threadReferenceExcerpt.ts"

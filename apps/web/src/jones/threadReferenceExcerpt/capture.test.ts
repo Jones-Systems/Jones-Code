@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
+  formatComposerContextReference,
+  projectComposerContextForProvider,
+  threadContextsOutsideEnvironment,
+} from "@t3tools/shared/composerContextReferences";
+import {
   DraftId,
   partializeComposerDraftStoreState,
   useComposerDraftStore,
@@ -70,6 +75,31 @@ describe("bounded thread capture lifecycle", () => {
       useComposerDraftStore.getInitialState(),
     );
     expect(hydrated.draftsByThreadKey[target]?.threadContexts[0]?.excerpt).toEqual(excerpt);
+  });
+
+  it("sends source history to an unrelated destination once capture finishes", async () => {
+    const source = record();
+    const destination = EnvironmentId.make("destination");
+    const text = `Continue from ${formatComposerContextReference(source)}`;
+    const unavailable = () =>
+      threadContextsOutsideEnvironment({
+        text,
+        records: read(),
+        environmentId: destination,
+        linkedEnvironments: new Map(),
+      });
+    addThreadContextsWithCapture({
+      target,
+      records: [source],
+      request: async () => result,
+      isCurrent: () => true,
+    });
+    expect(unavailable()).toEqual([source]);
+    await flush();
+    expect(unavailable()).toEqual([]);
+    const prompt = projectComposerContextForProvider({ text, records: read() });
+    expect(prompt).toContain(excerpt.text);
+    expect(prompt).toContain('t3_thread_read({"threadId":"related","environmentId":"source"})');
   });
 
   it("does not refresh duplicate drops or copied snapshots", async () => {

@@ -380,6 +380,11 @@ an address you trust: the code is sent there.
 
 - The access you pick is the most agents from this machine may do there. An
   agent also never gets more there than its own mode here.
+- Choose **Read only** to let an agent retrieve thread history without opening a
+  request or granting permission to send messages. For example, select the Mini
+  as the link origin and the laptop as the destination so a Mini agent can read
+  laptop threads. This grants read access across the laptop environment, and
+  each direction is configured separately.
 - Threads a link starts are marked **From** and this machine's name there.
 - A full-access link works there like that machine's own agents. Below full
   access, the link's agents can change only threads it started, not that

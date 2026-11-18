@@ -16,6 +16,7 @@ export interface JonesComposerThreadMatchInput {
   readonly excludeThreadId: ThreadId | null;
   readonly query: string;
   readonly linkedEnvironments?: ReadonlyMap<EnvironmentId, string>;
+  readonly referenceEnvironments?: ReadonlyMap<EnvironmentId, string>;
   /** Accepted for callers sharing the upstream interface; Jones ranking uses updatedAt. */
   readonly now?: number;
 }
@@ -61,12 +62,13 @@ function rankComposerThreadCandidates<
 export function matchJonesComposerThreadItems(
   input: JonesComposerThreadMatchInput,
 ): ComposerThreadItem[] {
+  const referenceEnvironments = input.referenceEnvironments ?? input.linkedEnvironments;
   return rankComposerThreadCandidates(
     input.shells.filter(
       (shell) =>
         (shell.environmentId === input.environmentId ||
-          input.linkedEnvironments?.has(shell.environmentId) === true) &&
-        shell.id !== input.excludeThreadId &&
+          referenceEnvironments?.has(shell.environmentId) === true) &&
+        !(shell.environmentId === input.environmentId && shell.id === input.excludeThreadId) &&
         shell.archivedAt === null &&
         shell.lineage?.relationshipToParent !== "subagent",
     ),
@@ -81,6 +83,6 @@ export function matchJonesComposerThreadItems(
       description:
         shell.environmentId === input.environmentId
           ? "Thread"
-          : `Thread on ${input.linkedEnvironments?.get(shell.environmentId) ?? shell.environmentId}`,
+          : `Thread on ${referenceEnvironments?.get(shell.environmentId) ?? shell.environmentId}`,
     }));
 }

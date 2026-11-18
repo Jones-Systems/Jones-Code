@@ -1,4 +1,37 @@
+import { pinOrderKeyBetween } from "@t3tools/client-runtime/state/thread-sort";
+
 import { planWritableSidebarReorder } from "./sidebarThreadDrop";
+
+function planKeylessMemberPlacement(
+  order: readonly string[],
+  movedIndex: number,
+  keysById: ReadonlyMap<string, string | null | undefined>,
+  writableKeys: ReadonlySet<string>,
+) {
+  const firstKeyed = order.findIndex(
+    (id, index) => index !== movedIndex && keysById.get(id) != null,
+  );
+  const end = firstKeyed === -1 ? order.length : firstKeyed;
+  if (movedIndex >= end || order.slice(end).some((id) => keysById.get(id) == null)) {
+    return undefined;
+  }
+
+  const reserved = new Set(keysById.values());
+  const assignments: Array<{ id: string; orderKey: string }> = [];
+  let upper = firstKeyed === -1 ? null : (keysById.get(order[firstKeyed]!) ?? null);
+  // Keyless members sort first. Save the affected tail from the end so each
+  // applied write preserves the relative order of the other members.
+  for (let index = end - 1; index >= movedIndex; index--) {
+    const id = order[index]!;
+    if (!writableKeys.has(id)) return null;
+    let key = pinOrderKeyBetween(null, upper);
+    while (key !== null && reserved.has(key)) key = pinOrderKeyBetween(null, key);
+    if (key === null) return undefined;
+    assignments.push({ id, orderKey: key });
+    upper = key;
+  }
+  return assignments;
+}
 
 export function planWorkstreamThreadReorder(input: {
   readonly activeOrder: readonly string[];
@@ -30,8 +63,14 @@ export function planWorkstreamThreadReorder(input: {
   );
   if (movedId === neighborId) return [];
   const next = order.filter((key) => key !== movedId);
-  next.splice(next.indexOf(neighborId) + (after ? 1 : 0), 0, movedId);
+  const movedIndex = next.indexOf(neighborId) + (after ? 1 : 0);
+  next.splice(movedIndex, 0, movedId);
   if (next.every((key, index) => key === order[index])) return [];
+
+  if (groupId !== null && groupIdByKey.get(movedId) === groupId) {
+    const keyless = planKeylessMemberPlacement(next, movedIndex, keysById, writableKeys);
+    if (keyless !== undefined) return keyless;
+  }
 
   const assignments = planWritableSidebarReorder(next, keysById, movedId, writableKeys);
   if (assignments === null) return null;

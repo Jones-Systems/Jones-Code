@@ -37,6 +37,57 @@ const groupOrder = (
     .map(({ id }) => id);
 
 describe("planWorkstreamThreadReorder", () => {
+  it.each([false, true])(
+    "preserves every other member's order as a short move streams back (keyed tail: %s)",
+    (keyedTail) => {
+      const members = ["a1", "a2", "a3", "a4", "a5", "moved", "a6", "a7"];
+      const input = fixture(
+        ["a1", "u1", "a2", "a3", "a4", "a5", "moved", "a6", "a7"],
+        members.map((id) => [id, "a"]),
+        keyedTail
+          ? [
+              ["a6", "m"],
+              ["a7", "t"],
+              ["hidden", "g"],
+            ]
+          : [],
+      );
+      const assignments = planWorkstreamThreadReorder({
+        ...input,
+        movedId: "moved",
+        neighborId: "a3",
+        after: false,
+      });
+      expect(assignments).not.toBeNull();
+      const stationary = members.filter((id) => id !== "moved");
+      let rows = input.rows;
+      for (const { id, orderKey } of assignments!) {
+        rows = rows.map((row) => (row.id === id ? { ...row, activeOrderKey: orderKey } : row));
+        expect(groupOrder(rows, input.groupIdByKey, "a").filter((id) => id !== "moved")).toEqual(
+          stationary,
+        );
+        expect(orderKey).not.toBe(input.keysById.get("hidden"));
+      }
+      expect(groupOrder(rows, input.groupIdByKey, "a")).toEqual([
+        "a1",
+        "a2",
+        "moved",
+        "a3",
+        "a4",
+        "a5",
+        "a6",
+        "a7",
+      ]);
+      expect(assignments!.map(({ id }) => id)).toEqual([
+        ...(keyedTail ? [] : ["a7", "a6"]),
+        "a5",
+        "a4",
+        "a3",
+        "moved",
+      ]);
+    },
+  );
+
   it("writes only the source workstream and preserves Unassigned order after every assignment", () => {
     const input = fixture(
       ["a1", "u1", "a2", "u2", "b1", "u3", "a3"],

@@ -14,11 +14,13 @@ import {
   encodeComposerContextFragment,
 } from "@t3tools/shared/composerContextClipboard";
 import {
+  isThreadContextAvailable,
   threadContextsOutsideEnvironment,
   threadLinkContextReferences,
 } from "@t3tools/shared/composerContextReferences";
 import { executeAtomQuery, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { appAtomRegistry } from "../state/atom-registry";
 import { assetEnvironment } from "../state/assets";
@@ -38,6 +40,10 @@ import {
   waitForComposerDraftsLoaded,
 } from "../state/use-composer-drafts";
 import { loadLocalAttachmentPreview } from "./localAttachmentPreview";
+import {
+  canCaptureThreadReference,
+  captureThreadReference,
+} from "../jones/threadReferenceExcerpt/capture";
 
 export interface NativeContextClipboard {
   readonly text: string;
@@ -77,15 +83,15 @@ export async function importComposerContextClipboard(
 ) {
   const copied =
     decodeComposerContextFragment(input.fragment) ?? decodeComposerContextClipboardHtml(input.html);
-  // A thread link becomes a chip only where this agent can read its machine; others stay links.
+  // Keep plain links when neither live access nor a client-side capture is available.
   const threads = threadLinkContextReferences(
     input.text,
     copied?.records ?? [],
     (ref) => appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref))?.title,
     (record) =>
       destinationEnvironmentId === undefined ||
-      record.environmentId === destinationEnvironmentId ||
-      linkedEnvironments.has(record.environmentId)
+      isThreadContextAvailable(record, destinationEnvironmentId, linkedEnvironments) ||
+      canCaptureThreadReference(record.environmentId)
         ? record.contextId
         : undefined,
   );
@@ -107,17 +113,33 @@ export async function importComposerContextClipboard(
     records: fragment.records,
   });
   const imported = reidentifyComposerContext(threads.text, selected?.records ?? [], uuidv4);
+  const recordsWithExcerpts = await Effect.runPromise(
+    Effect.forEach(
+      imported.context.records,
+      (record): Effect.Effect<ComposerContextRecord> =>
+        destinationEnvironmentId !== undefined &&
+        record.kind === "thread" &&
+        "threadId" in record &&
+        !isThreadContextAvailable(record, destinationEnvironmentId, linkedEnvironments) &&
+        canCaptureThreadReference(record.environmentId)
+          ? Effect.promise(() => captureThreadReference(record))
+          : Effect.succeed(record),
+      { concurrency: 4 },
+    ),
+    { signal },
+  );
+  checkAborted(signal);
   const skippedThreads =
     destinationEnvironmentId === undefined
       ? []
       : threadContextsOutsideEnvironment({
           text: imported.text,
-          records: imported.context.records,
+          records: recordsWithExcerpts,
           environmentId: destinationEnvironmentId,
           linkedEnvironments,
         });
   const skippedIds = new Set(skippedThreads.map((record) => record.contextId));
-  const retained = imported.context.records.filter((record) => !skippedIds.has(record.contextId));
+  const retained = recordsWithExcerpts.filter((record) => !skippedIds.has(record.contextId));
   if (existingContextCount + retained.length > COMPOSER_CONTEXT_MAX_RECORDS)
     throw new Error("Remove some context items from the draft before pasting more.");
   const attachments: DraftComposerAttachment[] = [];
