@@ -215,6 +215,7 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
       capturedParentPid: child.pid,
       table,
       artifact: NodePath.join(artifacts, `${mode}-witness.json`),
+      requestIssued: issued.requestIssued,
     });
     if (box.returned) throw new Error("Native request already returned");
     child.send({ type: "witness-finished", finished: witness.finished });

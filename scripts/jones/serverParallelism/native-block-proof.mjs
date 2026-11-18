@@ -85,7 +85,7 @@ export function parseLinuxWitness(raw, subject, fifoPaths) {
   return { mainTid: String(subject.pid), fifoPath: raw.pathname };
 }
 
-export function parseMacSample(text, pid) {
+function macMainThread(text, pid) {
   if (
     !positive(pid) ||
     typeof text !== "string" ||
@@ -102,7 +102,13 @@ export function parseMacSample(text, pid) {
   );
   if (main.length !== 1) return undefined;
   const tid = /^\s*\d+ Thread_(\S+)/m.exec(main[0])?.[1];
-  const rows = main[0].split("\n").filter((line) => /\(in .+\)/.test(line));
+  return tid ? { tid, section: main[0] } : undefined;
+}
+
+export function parseMacSample(text, pid) {
+  const main = macMainThread(text, pid);
+  if (!main) return undefined;
+  const rows = main.section.split("\n").filter((line) => /\(in .+\)/.test(line));
   const create = rows.findIndex((line) => /\bfff_create_instance_with\b/.test(line));
   const init = rows.findIndex(
     (line, i) => i > create && /(?:fff.*log.*init_tracing|init_tracing.*fff)/.test(line),
@@ -113,7 +119,7 @@ export function parseMacSample(text, pid) {
   const open = rows.findIndex(
     (line, i) => i > log && /\b(?:__open|__open_nocancel|open)\b/.test(line),
   );
-  if (!tid || create < 0 || init < 0 || log < 0 || open < 0) return undefined;
+  if (create < 0 || init < 0 || log < 0 || open < 0) return undefined;
   // No branch may occur between the native creation and blocking-open frames.
   const depth = (line) => line.indexOf(line.trimStart().replace(/^[+!:| ]*/, ""));
   if (
@@ -123,7 +129,158 @@ export function parseMacSample(text, pid) {
   const images = [create, init, log].map((i) => /\(in ([^)]+)\)/.exec(rows[i])?.[1]);
   if (images.some((name) => name !== images[0]) || !/^libfff(?:[._-].*)?$/.test(images[0] ?? ""))
     return undefined;
-  return { mainTid: tid, image: images[0] };
+  return { mainTid: main.tid, image: images[0] };
+}
+
+// The pinned arm64 library strips two frames between fff_create_instance_with and _open.
+// In this build the preceding BL instructions at 0x39a2c, 0x1c54a4 and 0x2cf7b0 form
+// the observed chain. The final destination, 0x3e4b44, is the _open symbol stub.
+const darwinFff = {
+  name: "libfff_c.dylib",
+  sha256: "d052aae92b8d89f4734399aa53f80a327c4931f1b5dea0a7d96f9c488229ba43",
+  uuid: "A16BF197-B7BB-31BF-9522-B9F734296D65",
+  returnAddresses: [0x39a30n, 0x1c54a8n, 0x2cf7b4n],
+};
+const darwinFfiName = "ffi-rs.darwin-arm64.node";
+const decimal = (value) => typeof value === "string" && /^[0-9]{1,20}$/.test(value);
+const hexadecimal = (value) => typeof value === "string" && /^[a-f0-9]{1,16}$/i.test(value);
+const lowerHex = (value) => BigInt("0x" + value);
+
+function darwinImages(sample, observed, digests) {
+  if (
+    !Array.isArray(observed) ||
+    observed.length !== 2 ||
+    digests?.fff !== darwinFff.sha256 ||
+    !hash(digests.ffi)
+  )
+    return undefined;
+  const images = sample.split(/^Binary Images:\s*$/m)[1]?.split("\n");
+  if (!images) return undefined;
+  const result = {};
+  for (const [key, name] of [
+    ["fff", darwinFff.name],
+    ["ffi", darwinFfiName],
+  ]) {
+    const matches = observed.filter(
+      (row) =>
+        closed(row, ["path", "base"]) &&
+        path(row.path) &&
+        row.path.endsWith("/" + name) &&
+        hexadecimal(row.base),
+    );
+    const shown = images
+      .map((row) =>
+        /^\s*0x([a-f0-9]+)\s+-\s+0x[a-f0-9]+\s+\+?(\S+).*?<([A-F0-9-]{36})>\s/i.exec(row),
+      )
+      .filter((row) => row?.[2] === name);
+    if (
+      matches.length !== 1 ||
+      shown.length !== 1 ||
+      lowerHex(matches[0].base) !== lowerHex(shown[0][1]) ||
+      (key === "fff" && shown[0][3].toUpperCase() !== darwinFff.uuid)
+    )
+      return undefined;
+    result[key] = matches[0];
+  }
+  return result;
+}
+
+function darwinStackAtOpen(text, pid, threadId, fffBase, pc) {
+  const main = macMainThread(text, pid);
+  if (main?.tid !== threadId) return false;
+  const frames = main.section
+    .split("\n")
+    .map((line) => /^([\s+!:|]+)\d+\s+(\S.*?)\s+\(in ([^)]+)\).*?\[0x([a-f0-9]+)\]\s*$/i.exec(line))
+    .filter(Boolean);
+  const create = frames.findIndex(
+    (frame) =>
+      frame[2] === "fff_create_instance_with" &&
+      frame[3] === darwinFff.name &&
+      lowerHex(frame[4]) === fffBase + darwinFff.returnAddresses[0],
+  );
+  const chain = frames.slice(create, create + 5);
+  if (create < 0 || chain.length !== 5) return false;
+  return (
+    darwinFff.returnAddresses.every(
+      (offset, i) => chain[i][3] === darwinFff.name && lowerHex(chain[i][4]) === fffBase + offset,
+    ) &&
+    chain[3][2] === "open" &&
+    /^__open(?:_nocancel)?$/.test(chain[4][2]) &&
+    chain.slice(3).every((frame) => frame[3] === "libsystem_kernel.dylib") &&
+    lowerHex(chain[4][4]) === pc &&
+    chain.slice(1).every((frame, i) => frame[1].length > chain[i][1].length)
+  );
+}
+
+export function parseDarwinWitness(raw, subject, fifoTable, bounds, binaryDigests) {
+  const mach = raw?.mach;
+  if (
+    !positive(subject?.pid) ||
+    raw?.samplerFinished !== true ||
+    typeof raw.sample !== "string" ||
+    raw.sample.length > 4 * 1024 * 1024 ||
+    !closed(mach, ["subject", "mainTid", "before", "after", "images"]) ||
+    !decimal(mach.mainTid) ||
+    BigInt(mach.mainTid) === 0n ||
+    !closed(mach.subject, [
+      "pid",
+      "build",
+      "authorityId",
+      "slotId",
+      "generation",
+      "nonce",
+      "requestId",
+    ]) ||
+    !Object.keys(mach.subject).every((key) => mach.subject[key] === subject[key]) ||
+    !closed(mach.before, ["at", "observation"]) ||
+    !closed(mach.after, ["at", "observation"]) ||
+    !positive(mach.before.at) ||
+    !positive(mach.after.at) ||
+    !positive(bounds?.issued) ||
+    !positive(bounds?.finished) ||
+    mach.before.at < bounds.issued ||
+    mach.after.at <= mach.before.at ||
+    mach.after.at > bounds.finished ||
+    JSON.stringify(mach.before.observation) !== JSON.stringify(mach.after.observation)
+  )
+    return undefined;
+  const observed = mach.after.observation;
+  if (
+    !closed(observed, ["path", "device", "inode", "flags", "ordinal", "pc", "runState"]) ||
+    !path(observed.path) ||
+    !decimal(observed.flags) ||
+    (BigInt(observed.flags) & 0x20fn) !== 0x209n ||
+    ![5, 398].includes(observed.ordinal) ||
+    !hexadecimal(observed.pc) ||
+    observed.runState !== 3 ||
+    !Array.isArray(fifoTable) ||
+    fifoTable.length !== 20 ||
+    !fifoTable.some(
+      (fifo) =>
+        fifo.path === observed.path &&
+        fifo.device === observed.device &&
+        fifo.inode === observed.inode &&
+        fifo.mode === 0o600,
+    )
+  )
+    return undefined;
+  const images = darwinImages(raw.sample, mach.images, binaryDigests);
+  if (
+    !images ||
+    !darwinStackAtOpen(
+      raw.sample,
+      subject.pid,
+      mach.mainTid,
+      lowerHex(images.fff.base),
+      lowerHex(observed.pc),
+    )
+  )
+    return undefined;
+  return {
+    mainTid: mach.mainTid,
+    fifoPath: observed.path,
+    binaryPaths: { fff: images.fff.path, ffi: images.ffi.path },
+  };
 }
 
 export function nativeBlockReceiptPredicate(value, expected) {

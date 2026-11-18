@@ -397,6 +397,18 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
             createOptions = { logFilePath: qualification.logFileHint };
           }
           const scope = await Effect.runPromise(Scope.make());
+          const observer =
+            createOptions &&
+            platform === "darwin" &&
+            HostProcess.Architecture.defaultValue() === "arm64"
+              ? (
+                  await import("./nativeBlockDarwinObservation.ts")
+                ).startDarwinNativeBlockObservation(
+                  createOptions.logFilePath,
+                  boot,
+                  request.requestId,
+                )
+              : undefined;
           try {
             const runtime = await executeRequest(
               make(key.cwd, key.variant, createOptions).pipe(
@@ -411,6 +423,8 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
             // Best-effort cleanup is not native exit proof. The parent retires this failed generation.
             await Effect.runPromise(Scope.close(scope, Exit.void));
             throw cause;
+          } finally {
+            void observer?.terminate().catch(() => {});
           }
         } else if (!resident || !sameToken(resident.token, request.token))
           throw computeFailure("protocol");

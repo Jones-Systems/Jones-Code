@@ -4,6 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import {
   nativeBlockReceiptPredicate,
   nativeBlockCohortRetired,
+  parseDarwinWitness,
   parseLinuxWitness,
 } from "./native-block-proof.mjs";
 import { proveAbsent } from "../../../apps/server/src/jones/serverCompute/journal.ts";
@@ -38,6 +39,31 @@ export async function verifyNativeBlockRetirement(receipt, directory, count) {
   } catch {
     return false;
   }
+}
+async function parseRetainedWitness(os, evidence, cohort, mode, directory) {
+  if (os === "linux-x64") {
+    return parseLinuxWitness(
+      evidence.raw,
+      evidence.subject,
+      cohort.table.map((item) => item.path),
+    );
+  }
+  if (os !== "macos-arm64") return undefined;
+  const samplePath = NodePath.join(directory, `${mode}-witness.json.sample`);
+  const sample = await ownedEvidence(samplePath, directory);
+  if (
+    evidence.raw?.sampleArtifact !== samplePath ||
+    evidence.raw.sampleSha256 !== digest(sample) ||
+    evidence.raw.sample !== sample.toString("utf8")
+  )
+    return undefined;
+  return parseDarwinWitness(
+    evidence.raw,
+    evidence.subject,
+    cohort.table,
+    { issued: cohort.issued?.requestIssued, finished: evidence.finished },
+    evidence.binaryDigests,
+  );
 }
 
 export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
@@ -92,7 +118,6 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
       !same(killed.candidate?.children, proof.allocation.registeredChildren)
     )
       return false;
-    if (expected.os !== "linux-x64") return false; // No exact-path macOS evidence format is qualified yet.
     const journal = killed.journalBeforeKill;
     if (
       !journal ||
@@ -117,15 +142,12 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
       selectedGeneration.nonce !== proof.subject.nonce
     )
       return false;
-    const parsed = parseLinuxWitness(
-      evidence.raw,
-      evidence.subject,
-      killed.table.map((item) => item.path),
-    );
+    const parsed = await parseRetainedWitness(expected.os, evidence, killed, "kill", directory);
     if (
       !parsed ||
       parsed.fifoPath !== proof.blocker.fifoPath ||
       parsed.mainTid !== proof.subject.mainTid ||
+      (expected.os === "macos-arm64" && !same(parsed.binaryPaths, proof.binaryPaths)) ||
       !same({ ...evidence.subject, mainTid: parsed.mainTid }, proof.subject)
     )
       return false;
@@ -145,7 +167,8 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
         !stat.isFile() ||
         stat.isSymbolicLink() ||
         stat.size > 128 * 1024 * 1024 ||
-        !evidence.raw.maps.split("\n").some((line) => line.endsWith(" " + path)) ||
+        (expected.os === "linux-x64" &&
+          !evidence.raw.maps.split("\n").some((line) => line.endsWith(" " + path))) ||
         digest(await NodeFSP.readFile(path)) !== proof.binaryDigests[name]
       )
         return false;
@@ -161,11 +184,13 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
       killed.preNative.finished > killed.issued.requestIssued ||
       digest(beforeBytes) !== killed.preNative.witness?.sha256 ||
       !same(before.subject, evidence.subject) ||
-      parseLinuxWitness(
-        before.raw,
-        before.subject,
-        killed.table.map((item) => item.path),
-      )
+      (expected.os === "linux-x64"
+        ? parseLinuxWitness(
+            before.raw,
+            before.subject,
+            killed.table.map((item) => item.path),
+          )
+        : before.raw?.mach !== undefined)
     )
       return false;
     const negativeBytes = await ownedEvidence(
@@ -173,10 +198,12 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
       directory,
     );
     const negative = JSON.parse(negativeBytes);
-    const negativeParsed = parseLinuxWitness(
-      negative.raw,
-      negative.subject,
-      released.table.map((item) => item.path),
+    const negativeParsed = await parseRetainedWitness(
+      expected.os,
+      negative,
+      released,
+      "release",
+      directory,
     );
     if (
       released.witness?.outcome !== true ||
@@ -189,6 +216,7 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
       released.parentExit?.signal !== null ||
       negative.subject.build !== expected.build ||
       !same(negative.binaryDigests, proof.binaryDigests) ||
+      (expected.os === "macos-arm64" && !same(negativeParsed.binaryPaths, negative.binaryPaths)) ||
       digest(negativeBytes) !== released.witness.witness.sha256 ||
       negativeParsed.fifoPath !== released.witness.fifoPath ||
       negative.parserSha256 !== proof.witness.parserSha256 ||
