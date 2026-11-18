@@ -133,10 +133,8 @@ export async function createPickerVerificationCore(input: PickerVerificationInpu
     );
   return {
     nativeCalls,
-    // The Electron main owner builds the update IPC registration with its real
-    // ipcMain and window/top-frame sender guard, as production's DesktopIpc.layer
-    // does. IPC construction reaches Electron, so the core only runs the
-    // registration in its scope with its update service.
+    // The host supplies Electron's ipcMain and the trusted window. The core
+    // runs the registration in its own scope with its update service.
     register: (
       registration: Effect.Effect<void, DesktopIpcRegistrationError, Scope.Scope | DesktopUpdates>,
     ) => run(registration),

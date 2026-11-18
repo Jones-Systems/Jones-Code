@@ -3,6 +3,7 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { app, BrowserWindow, ipcMain, session } from "electron";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import {
   createPickerVerificationCore,
   type PickerVerificationInput,
@@ -84,15 +85,11 @@ export async function createHost(
             ipcMain.on(channel, listener);
           },
         },
-        // Production's guard, bound to the picker window: only its own top frame is trusted.
-        (event) =>
-          Effect.sync(
-            () =>
-              window !== undefined &&
-              !window.isDestroyed() &&
-              event.sender.id === window.webContents.id &&
-              event.senderFrame === window.webContents.mainFrame,
+        DesktopIpc.windowSenderGuard(
+          Effect.sync(() =>
+            window !== undefined && !window.isDestroyed() ? Option.some(window) : Option.none(),
           ),
+        ),
       ),
     ),
   );

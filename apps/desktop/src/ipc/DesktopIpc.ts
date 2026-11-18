@@ -5,8 +5,6 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
-import * as ElectronWindow from "../electron/ElectronWindow.ts";
-
 export interface DesktopIpcInvokeEvent {
   readonly sender: { readonly id: number };
   readonly senderFrame?: unknown;
@@ -179,22 +177,20 @@ export const make = (
     }),
   });
 
-export const layer = (ipcMain: DesktopIpcMain) =>
-  Layer.effect(
-    DesktopIpc,
-    Effect.gen(function* () {
-      const electronWindow = yield* ElectronWindow.ElectronWindow;
-      return make(ipcMain, (event) =>
-        Effect.map(
-          electronWindow.main,
-          (main) =>
-            Option.isSome(main) &&
-            main.value.webContents.id === event.sender.id &&
-            main.value.webContents.mainFrame === event.senderFrame,
-        ),
-      );
-    }),
-  );
+export const windowSenderGuard =
+  (
+    window: Effect.Effect<
+      Option.Option<{ readonly webContents: { readonly id: number; readonly mainFrame: unknown } }>
+    >,
+  ): DesktopIpcSenderGuard =>
+  (event) =>
+    Effect.map(
+      window,
+      (main) =>
+        Option.isSome(main) &&
+        main.value.webContents.id === event.sender.id &&
+        main.value.webContents.mainFrame === event.senderFrame,
+    );
 
 export const layerTest = (ipcMain: DesktopIpcMain) =>
   Layer.succeed(

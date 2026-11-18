@@ -177,6 +177,8 @@
     "apps/desktop/src/boot.ts": "accepted-shared",
     "apps/desktop/src/electron/ElectronWindow.test.ts": "jones-tests-in-upstream",
     "apps/desktop/src/electron/ElectronWindow.ts": "hook",
+    "apps/desktop/src/ipc/DesktopIpc.test.ts": "accepted-shared",
+    "apps/desktop/src/ipc/DesktopIpc.ts": "accepted-shared",
     "apps/desktop/src/ipc/DesktopIpcHandlers.ts": "hook",
     "apps/desktop/src/ipc/channels.ts": "accepted-shared",
     "apps/desktop/src/ipc/methods/connectionCatalog.ts": "accepted-shared",

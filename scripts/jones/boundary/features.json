@@ -1454,6 +1454,7 @@
         "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts",
         "apps/web/src/jones/updates/qualifiedBuildReview.browser.test.tsx",
         "packages/contracts/src/jones/jonesUpdates.catalog.test.ts",
+        "apps/desktop/src/ipc/DesktopIpc.test.ts",
         "apps/desktop/src/jones/updates/pickerVerificationCore.graph.test.ts",
         "apps/desktop/src/jones/updates/pickerVerificationCore.test.ts",
         "scripts/jones/updates/packaged-picker-scenario.test.ts",

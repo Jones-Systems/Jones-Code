@@ -5490,6 +5490,7 @@
     {
       "id": "jones-packaged-picker",
       "tests": [
+        "apps/desktop/src/ipc/DesktopIpc.test.ts",
         "apps/desktop/src/jones/updates/pickerVerificationCore.graph.test.ts",
         "apps/desktop/src/jones/updates/pickerVerificationCore.test.ts",
         "scripts/jones/updates/packaged-picker-scenario.test.ts",
@@ -5501,8 +5502,11 @@
         "apps/desktop/src/jones/updates/stagingWorkerClient.test.ts"
       ],
       "commands": [
-        "vp test run apps/desktop/src/jones/updates/pickerVerificationCore.graph.test.ts apps/desktop/src/jones/updates/pickerVerificationCore.test.ts scripts/jones/updates/packaged-picker-scenario.test.ts scripts/jones/updates/packaged-picker-smoke.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts apps/desktop/src/jones/updates/stagingJobs.test.ts apps/desktop/src/jones/updates/stagingAdmission.test.ts apps/desktop/src/jones/updates/stagingWorkerClient.test.ts",
+        "vp test run apps/desktop/src/ipc/DesktopIpc.test.ts apps/desktop/src/jones/updates/pickerVerificationCore.graph.test.ts apps/desktop/src/jones/updates/pickerVerificationCore.test.ts scripts/jones/updates/packaged-picker-scenario.test.ts scripts/jones/updates/packaged-picker-smoke.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesMacStagingLifecycle.test.ts apps/desktop/src/jones/updates/stagingJobs.test.ts apps/desktop/src/jones/updates/stagingAdmission.test.ts apps/desktop/src/jones/updates/stagingWorkerClient.test.ts",
         "vp run --filter @t3tools/desktop typecheck",
+        "vp run --filter @t3tools/desktop build:bundle",
+        "node scripts/jones/updates/packaged-picker-smoke.ts --scan apps/desktop/dist-electron/jones/updates/pickerVerificationMain.cjs",
+        "node scripts/jones/updates/packaged-picker-smoke.ts --scan apps/desktop/dist-electron/jones/updates/pickerVerificationPreload.cjs preload",
         "vp run --filter @t3tools/scripts typecheck",
         "vp run knip:check",
         "node scripts/jones/check-boundary.ts --strict",
