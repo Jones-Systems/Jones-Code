@@ -33,6 +33,7 @@ const run = Effect.fn("LinuxArm64Sea.run")(function* (args: Array<string>, verbo
 export const injectLinuxArm64Sea = Effect.fn("LinuxArm64Sea.inject")(function* (input: {
   bundlePath: string;
   cliAssetPath: string;
+  computeAssetPath: string;
   outputPath: string;
   nodeVersion: string;
   verbose: boolean;
@@ -52,7 +53,10 @@ export const injectLinuxArm64Sea = Effect.fn("LinuxArm64Sea.inject")(function* (
     configPath,
     yield* encodeJson({
       main: input.bundlePath,
-      assets: { "binMain.mjs": input.cliAssetPath },
+      assets: {
+        "binMain.mjs": input.cliAssetPath,
+        "serverComputeWorker.mjs": input.computeAssetPath,
+      },
       output: blobPath,
       mainFormat: "module",
       disableExperimentalSEAWarning: true,

@@ -5,11 +5,8 @@ import * as NodeURL from "node:url";
 
 import { isEntrypoint } from "./entrypoint.ts";
 
-// Loads the CLI outside the launcher's module graph. Packaged builds embed it as a raw asset.
-async function loadCliMain(): Promise<typeof import("./binMain.ts")> {
-  if (!NodeSea.isSea()) return import("./binMain.ts");
-
-  // Keep the executable's module URL so the CLI finds the web client and native packages beside it.
+// Keep the executable's module URL so embedded entries resolve their installed assets beside it.
+function loadSeaEntry<T>(asset: "binMain.mjs" | "serverComputeWorker.mjs"): T {
   const require = NodeModule.createRequire(import.meta.url);
   // require() resolves links in the executable path, such as a Windows junction.
   const cliUrl = NodeURL.pathToFileURL(require.resolve(process.execPath)).href;
@@ -18,16 +15,21 @@ async function loadCliMain(): Promise<typeof import("./binMain.ts")> {
       if (url !== cliUrl) return next(url, context);
       return {
         format: "module",
-        source: new Uint8Array(NodeSea.getRawAsset("binMain.mjs")),
+        source: new Uint8Array(NodeSea.getRawAsset(asset)),
         shortCircuit: true,
       };
     },
   });
   try {
-    return require(process.execPath) as typeof import("./binMain.ts");
+    return require(process.execPath) as T;
   } finally {
     hook.deregister();
   }
+}
+
+// Keep the CLI outside the launcher's module graph.
+async function loadCliMain(): Promise<typeof import("./binMain.ts")> {
+  return NodeSea.isSea() ? loadSeaEntry("binMain.mjs") : import("./binMain.ts");
 }
 
 function ignoreOutputError(): void {}
@@ -53,6 +55,10 @@ if (
   const launcherOptions = launcher?.parseServiceLauncherArgs(process.argv.slice(3));
   if (launcher !== undefined && launcherOptions !== undefined) {
     await launcher.runServiceLauncherCli(launcherOptions);
+  } else if (process.argv[2] === "__jones-server-compute" && NodeSea.isSea()) {
+    const { runServerComputeWorkerCommand } =
+      loadSeaEntry<typeof import("./jones/serverCompute/worker.ts")>("serverComputeWorker.mjs");
+    await runServerComputeWorkerCommand(process.argv.slice(3));
   } else {
     const { runCliCommand } = await loadCliMain();
     await runCliCommand();

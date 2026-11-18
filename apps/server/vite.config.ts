@@ -41,12 +41,13 @@ if (!TELEMETRY_CHANNELS.includes(telemetryChannel)) {
 }
 
 // tsdown SEA needs one chunk (sourcemaps count) and Node >=25.7, so package separately.
-// "bundle" emits the embedded CLI. "1" builds dist-exe/t3 from the bootstrap.
+// "bundle" and "compute" emit the embedded entries. "1" builds dist-exe/t3 from the bootstrap.
 // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
 // "bootstrap" stops at bin.mjs for scripts/cli.ts to inject (linux-arm64).
 const packMode = process.env.T3CODE_PACK_EXE;
 const packBootstrap = packMode === "1" || packMode === "bootstrap";
-const packExecutable = packBootstrap || packMode === "bundle";
+const packCompute = packMode === "compute";
+const packExecutable = packBootstrap || packCompute || packMode === "bundle";
 const cliAssetDir = process.env.T3CODE_CLI_ASSET_DIR ?? "";
 if (packExecutable && !cliAssetDir) throw new Error("Build the executable with build:exe.");
 // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
@@ -121,14 +122,18 @@ export default mergeConfig(
       // SEA embeds one entry; expose the history worker as a hidden subcommand.
       entry: packBootstrap
         ? ["src/bin.ts"]
-        : packExecutable
-          ? ["src/binMain.ts"]
-          : ["src/bin.ts", "src/claude-history-worker.ts"],
+        : packCompute
+          ? { serverComputeWorker: "src/jones/serverCompute/worker.ts" }
+          : packExecutable
+            ? ["src/binMain.ts"]
+            : ["src/bin.ts", "src/claude-history-worker.ts"],
       outDir: packBootstrap
         ? "dist-exe"
-        : packExecutable
-          ? cliAssetDir
-          : serverBundlePackProfile.outDir,
+        : packCompute
+          ? NodePath.join(cliAssetDir, "compute")
+          : packExecutable
+            ? cliAssetDir
+            : serverBundlePackProfile.outDir,
       sourcemap: !packExecutable,
       clean: serverBundlePackProfile.clean,
       // SEA can only resolve built-ins; keep dynamic imports inside each emitted module.
@@ -144,7 +149,13 @@ export default mergeConfig(
                 useCodeCache: false,
                 // The bootstrap loads the embedded CLI with require(esm).
                 execArgv: ["--require-module"],
-                assets: { "binMain.mjs": NodePath.join(cliAssetDir, "binMain.mjs") },
+                assets: {
+                  "binMain.mjs": NodePath.join(cliAssetDir, "binMain.mjs"),
+                  "serverComputeWorker.mjs": NodePath.join(
+                    cliAssetDir,
+                    "compute/serverComputeWorker.mjs",
+                  ),
+                },
               },
             },
           }
