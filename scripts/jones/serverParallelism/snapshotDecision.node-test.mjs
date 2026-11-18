@@ -8,6 +8,10 @@ const measurement = (...windows) => {
     decodeMs: 2,
     schemaProjectionMs: 3,
     encodeMs: 4,
+    loopWarmupSampleCount: 2,
+    loopWorkEndSampleCount: 7,
+    loopFinalSampleCount: 8,
+    loopExceededCount: 0,
     loopSampleCount: 6,
     loopMaxMs: 20,
     loopP99Ms: 15,
@@ -16,17 +20,19 @@ const measurement = (...windows) => {
   return {
     samples,
     contiguousEncodeTrigger: samples.some((sample) => sample.encodeMs >= 50),
-    decodeProjectionAttributionRequired: samples.some(
+    decodeProjectionElapsedTrigger: samples.some(
       (sample) => sample.decodeMs >= 50 || sample.schemaProjectionMs >= 50,
     ),
   };
 };
 
 NodeTest.test(
-  "elapsed decode or projection requests attribution without activating offload",
+  "elapsed phases remain unknown when the covered window cannot exclude a contiguous block",
   () => {
     NodeAssert.deepEqual(
-      snapshotDecision(measurement({}, { schemaProjectionMs: 80 }, { decodeMs: 50 })),
+      snapshotDecision(
+        measurement({}, { schemaProjectionMs: 80, loopMaxMs: 50 }, { decodeMs: 50 }),
+      ),
       {
         activationDecision: "unknown",
         activationReason: "decode-or-projection-attribution",
@@ -35,6 +41,27 @@ NodeTest.test(
           { window: 3, field: "decodeMs", limitMs: 50, observedMs: 50 },
         ],
       },
+    );
+  },
+);
+
+NodeTest.test(
+  "covered low loop maxima rule out long contiguous blocks despite elapsed phase crossings",
+  () => {
+    NodeAssert.deepEqual(
+      snapshotDecision(measurement({ schemaProjectionMs: 80 }, { decodeMs: 50, loopMaxMs: 49.99 })),
+      {
+        activationDecision: "not-activated",
+        activationReason: "elapsed-phases-bounded",
+        thresholdCrossings: [
+          { window: 1, field: "schemaProjectionMs", limitMs: 50, observedMs: 80 },
+          { window: 2, field: "decodeMs", limitMs: 50, observedMs: 50 },
+        ],
+      },
+    );
+    NodeAssert.equal(
+      snapshotDecision(measurement({ loopWorkEndSampleCount: 2 })).activationDecision,
+      "not-activated",
     );
   },
 );
@@ -82,6 +109,11 @@ NodeTest.test("empty loop histograms and invalid or incomplete timings remain un
   for (const patch of [
     { loopSampleCount: 0, loopMaxMs: 0, loopP99Ms: 0.000511 },
     { loopSampleCount: undefined },
+    { loopWarmupSampleCount: 0, loopSampleCount: 8 },
+    { loopWorkEndSampleCount: 1 },
+    { schemaProjectionMs: 80, loopWorkEndSampleCount: 8 },
+    { loopFinalSampleCount: undefined },
+    { loopExceededCount: 1 },
     { loopP99Ms: NaN },
     { loopP99Ms: -1 },
     { encodeMs: Infinity },
@@ -106,7 +138,7 @@ NodeTest.test("threshold flags must agree with their recorded timings", () => {
   NodeAssert.equal(
     snapshotDecision({
       ...measurement({ decodeMs: 80 }),
-      decodeProjectionAttributionRequired: false,
+      decodeProjectionElapsedTrigger: false,
     }).activationReason,
     "inconsistent-threshold-flags",
   );
