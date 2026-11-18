@@ -13,7 +13,7 @@ export function snapshotPhaseLoopBounds(measurement) {
         (tick, tickIndex) =>
           Number.isFinite(tick) && tick >= 0 && (tickIndex === 0 || tick > ticks[tickIndex - 1]),
       );
-    const bound = (phase, elapsedMs) => {
+    const coveredPhase = (phase, elapsedMs) => {
       const { startMs, endMs } = phase ?? {};
       if (
         !validTicks ||
@@ -25,6 +25,11 @@ export function snapshotPhaseLoopBounds(measurement) {
         ticks.at(-1) < endMs
       )
         return null;
+      return phase;
+    };
+    const bound = (phase) => {
+      if (!phase) return null;
+      const { startMs, endMs } = phase;
       let maxOverlapMs = 0;
       for (let tickIndex = 1; tickIndex < ticks.length; tickIndex++) {
         const overlap = Math.min(endMs, ticks[tickIndex]) - Math.max(startMs, ticks[tickIndex - 1]);
@@ -32,10 +37,21 @@ export function snapshotPhaseLoopBounds(measurement) {
       }
       return maxOverlapMs;
     };
+    const capture = coveredPhase(trace?.capture, sample.captureMs);
+    const decode = coveredPhase(trace?.decode, sample.decodeMs);
+    const schemaProjection = coveredPhase(trace?.schemaProjection, sample.schemaProjectionMs);
+    // A timer gap can straddle the transaction-to-decode handoff even when
+    // neither phase individually overlaps enough of the gap to explain it.
+    const captureThroughDecode =
+      capture && decode && capture.endMs <= decode.startMs
+        ? { startMs: capture.startMs, endMs: decode.endMs }
+        : null;
     return {
       window: index + 1,
-      decodeMaxGapMs: bound(trace?.decode, sample.decodeMs),
-      schemaProjectionMaxGapMs: bound(trace?.schemaProjection, sample.schemaProjectionMs),
+      captureMaxGapMs: bound(capture),
+      decodeMaxGapMs: bound(decode),
+      captureThroughDecodeMaxGapMs: bound(captureThroughDecode),
+      schemaProjectionMaxGapMs: bound(schemaProjection),
     };
   });
 }

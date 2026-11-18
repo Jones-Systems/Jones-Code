@@ -65,7 +65,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           const loopWarmupSampleCount = loop.count;
           const capturedAt = performance.now();
           const decode = yield* fixture.sql.withTransaction(fixture.projection.readShellSnapshot());
-          const captureMs = performance.now() - capturedAt;
+          const captureFinishedAt = performance.now();
           const decodedAt = performance.now(),
             shell = yield* decode;
           const decodeFinishedAt = performance.now();
@@ -88,11 +88,12 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           const loopFinalSampleCount = loop.count;
           const loopSampleCount = loopFinalSampleCount - loopWarmupSampleCount;
           samples.push({
-            captureMs,
+            captureMs: captureFinishedAt - capturedAt,
             decodeMs: decodeFinishedAt - decodedAt,
             schemaProjectionMs: projectionFinishedAt - projectedAt,
             phaseLoopTrace: {
               ...phaseLoop.trace,
+              capture: { startMs: capturedAt, endMs: captureFinishedAt },
               decode: { startMs: decodedAt, endMs: decodeFinishedAt },
               schemaProjection: { startMs: projectedAt, endMs: projectionFinishedAt },
             },

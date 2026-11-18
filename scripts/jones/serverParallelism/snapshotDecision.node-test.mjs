@@ -41,11 +41,47 @@ NodeTest.test("phase bounds use only the portion of each timer gap inside the ph
     phaseLoopTrace: phaseTrace,
   });
   NodeAssert.deepEqual(snapshotPhaseLoopBounds(report), [
-    { window: 1, decodeMaxGapMs: 12, schemaProjectionMaxGapMs: 12 },
-    { window: 2, decodeMaxGapMs: null, schemaProjectionMaxGapMs: null },
-    { window: 3, decodeMaxGapMs: null, schemaProjectionMaxGapMs: null },
+    {
+      window: 1,
+      captureMaxGapMs: null,
+      decodeMaxGapMs: 12,
+      captureThroughDecodeMaxGapMs: null,
+      schemaProjectionMaxGapMs: 12,
+    },
+    ...[2, 3].map((window) => ({
+      window,
+      captureMaxGapMs: null,
+      decodeMaxGapMs: null,
+      captureThroughDecodeMaxGapMs: null,
+      schemaProjectionMaxGapMs: null,
+    })),
   ]);
   NodeAssert.equal(snapshotDecision(report).activationDecision, "unknown");
+});
+
+NodeTest.test("a timer gap can straddle two individually bounded snapshot phases", () => {
+  const report = measurement({
+    captureMs: 36,
+    decodeMs: 24,
+    schemaProjectionMs: 30,
+    loopMaxMs: 57,
+    loopP99Ms: 57,
+    phaseLoopTrace: {
+      ticksMs: [0, 5, 62, 72, 82, 92, 102],
+      overflow: false,
+      capture: { startMs: 10, endMs: 46 },
+      decode: { startMs: 46, endMs: 70 },
+      schemaProjection: { startMs: 70, endMs: 100 },
+    },
+  });
+  NodeAssert.deepEqual(snapshotPhaseLoopBounds(report)[0], {
+    window: 1,
+    captureMaxGapMs: 36,
+    decodeMaxGapMs: 16,
+    captureThroughDecodeMaxGapMs: 52,
+    schemaProjectionMaxGapMs: 10,
+  });
+  NodeAssert.equal(snapshotDecision(report).activationReason, "loop-target-exceeded");
 });
 
 NodeTest.test("phase bounds require intact timer coverage and matching measurements", () => {
@@ -61,7 +97,9 @@ NodeTest.test("phase bounds require intact timer coverage and matching measureme
     );
     NodeAssert.deepEqual(evidence, {
       window: 1,
+      captureMaxGapMs: null,
       decodeMaxGapMs: null,
+      captureThroughDecodeMaxGapMs: null,
       schemaProjectionMaxGapMs: null,
     });
   }
