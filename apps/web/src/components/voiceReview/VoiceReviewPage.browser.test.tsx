@@ -53,7 +53,7 @@ describe("Pending inline composition", () => {
         edit_handle: null,
       });
     const onDirtyChange = vi.fn();
-    using _timers = fakeTimers({ toFake: ["setInterval", "clearInterval", "performance"] });
+    using _timers = fakeTimers();
     const show = (selection: string) => (
       <EnvironmentVoiceReview
         environmentId={EnvironmentId.make("fixture")}
