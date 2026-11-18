@@ -631,7 +631,7 @@ describe("submitted work page integration", () => {
       integration.useWorkQueueMetadata.mockImplementation(() => load);
       const draft = voiceReviewRecentFixture.entries[1]!.draft;
       const mutate = vi.fn(async () => ({
-        draft: { ...draft, state: "editing", revision: 2 },
+        draft: { ...draft, state: "editing", revision: draft.revision + 1 },
         edit_handle: "fixture-edit-handle",
       }));
       const voiceReview = {
@@ -704,19 +704,20 @@ describe("submitted work page integration", () => {
       expect(container.querySelector('[aria-label="Routing diagnostics"]')).not.toBeNull();
       expect(container.textContent).toContain("No routing jobs observed.");
       expect(voiceReview.review.diagnostics).toHaveBeenCalledWith(draft.id);
-      const edit = container.querySelector<HTMLButtonElement>(
-        '[aria-label="Edit prompt to fixture-thread"]',
-      )!;
-      await act(() => edit.click());
       const editor = container.querySelector<HTMLTextAreaElement>(
         '[aria-label="Prompt text to fixture-thread"]',
       )!;
+      const instructionsField = root.getByRole("textbox", {
+        name: "Additional instructions (optional)",
+      });
+      const instructions = instructionsField.element() as HTMLTextAreaElement;
       expect(editor.value).toBe(draft.text);
-      expect(mutate.mock.calls[0]).toEqual([
-        draft.id,
-        "edit-begin",
-        { expected_revision: draft.revision },
-      ]);
+      expect(instructions.value).toBe("");
+      expect(mutate).not.toHaveBeenCalled();
+      await act(() => instructionsField.fill("Keep the captured wording."));
+      expect(mutate).toHaveBeenCalledExactlyOnceWith(draft.id, "edit-begin", {
+        expected_revision: draft.revision,
+      });
       await act(() => {
         pending.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
       });
@@ -757,6 +758,9 @@ describe("submitted work page integration", () => {
       expect(sent.getAttribute("aria-selected")).toBe("true");
       await act(() => pending.click());
       expect(container.querySelector('[aria-label="Prompt text to fixture-thread"]')).toBe(editor);
+      expect(editor.value).toBe(draft.text);
+      expect(instructionsField.element()).toBe(instructions);
+      expect(instructions.value).toBe("Keep the captured wording.");
       expect(mutate).toHaveBeenCalledTimes(1);
       expect(load).toHaveBeenCalledTimes(supported ? 1 : 0);
       expect(container.querySelector('[aria-label="Queue metadata"]')).toBeNull();
@@ -783,6 +787,7 @@ describe("submitted work page integration", () => {
       expect(pending.getAttribute("aria-label")).toBe("Pending, 2 prompts");
       expect(container.querySelector('[aria-label="Prompts environment"]')).not.toBeNull();
       expect(container.querySelector('[aria-label="Prompt text to fixture-thread"]')).toBe(editor);
+      expect(instructions.value).toBe("Keep the captured wording.");
       expect(mutate).toHaveBeenCalledTimes(1);
     },
   );

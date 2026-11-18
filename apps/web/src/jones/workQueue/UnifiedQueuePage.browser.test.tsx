@@ -526,9 +526,12 @@ describe("Prompts environment composition", () => {
     );
     const action = (label: string) =>
       container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
-    await act(() => action("Edit prompt to Review fixture").click());
     const textarea = () =>
       container.querySelector<HTMLTextAreaElement>('[aria-label="Prompt text to Review fixture"]')!;
+    expect(textarea().value).toBe(draft.text);
+    await act(() => textarea().focus());
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    expect(fixture.voiceMutation).not.toHaveBeenCalled();
     await act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
         textarea(),
@@ -536,6 +539,10 @@ describe("Prompts environment composition", () => {
       );
       textarea().dispatchEvent(new Event("input", { bubbles: true }));
     });
+    expect(fixture.voiceMutation).toHaveBeenCalledExactlyOnceWith(draft.id, "edit-begin", {
+      expected_revision: draft.revision,
+    });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
     const others = Array.from({ length: 50 }, (_, i) => ({ ...draft, id: `new-${i}` }));
     fixture.voiceList.mockResolvedValue({ drafts: others });
     await act(() => vi.advanceTimersByTimeAsync(3_000));
@@ -547,11 +554,12 @@ describe("Prompts environment composition", () => {
     await act(() => vi.advanceTimersByTimeAsync(3_000));
     expect(textarea().value).toBe("Local copy");
     await act(() => action("Save prompt to Review fixture and stay paused").click());
-    expect(fixture.voiceMutation).toHaveBeenLastCalledWith(draft.id, "edit-save", {
+    expect(fixture.voiceMutation).toHaveBeenNthCalledWith(2, draft.id, "edit-save", {
       expected_revision: editing.revision,
       edit_handle: "synthetic-edit",
       text: "Local copy",
     });
+    expect(fixture.voiceMutation).toHaveBeenCalledTimes(2);
     expect(onDirtyChange).toHaveBeenLastCalledWith(false);
   });
 
