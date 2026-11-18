@@ -25,6 +25,7 @@ import * as Config from "../../../config.ts";
 import * as Environment from "../../../environment/ServerEnvironment.ts";
 import migration from "../../persistence/Migrations/153_JonesPersonalWorkstreams.ts";
 import lifecycleMigration from "../../persistence/Migrations/159_JonesWorkstreamLifecycleRevision.ts";
+import snoozeMigration from "../../persistence/Migrations/160_JonesWorkstreamSnooze.ts";
 import * as Personal from "./service.ts";
 
 const environmentId = EnvironmentId.make("synthetic-personal-server");
@@ -44,6 +45,7 @@ const database = Layer.effectDiscard(
     yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
     yield* migration;
     yield* lifecycleMigration;
+    yield* snoozeMigration;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
 const dependencies = Layer.mergeAll(
@@ -388,9 +390,17 @@ it.effect(
         yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id) VALUES(${threadId})`;
         yield* migration;
         yield* lifecycleMigration;
+        yield* snoozeMigration;
         yield* stage();
         const s = yield* fresh;
         yield* s.assign({ threadId, workstream: null, expectedRevision: 1 });
+        const snoozed = {
+          ...w("snoozed"),
+          snoozedAt: "2026-01-01T13:00:00.000Z",
+          snoozedUntil: "2026-01-01T14:00:00.000Z",
+        };
+        yield* s.put(snoozed);
+        yield* s.put({ ...w("snoozed"), name: "Renamed by older client", rev: 2 });
         return yield* s.snapshot();
       });
       const snapshot = yield* setup.pipe(Effect.provide(open()), Effect.scoped);
@@ -399,6 +409,9 @@ it.effect(
         return yield* s.snapshot();
       }).pipe(Effect.provide(open()), Effect.scoped);
       assert.deepEqual(after, snapshot);
+      const snoozed = after.workstreams.find((item) => item.id === "snoozed");
+      assert.equal(snoozed?.name, "Renamed by older client");
+      assert.equal(snoozed?.snoozedUntil, "2026-01-01T14:00:00.000Z");
       assert.equal(after.assignments[0]?.revision, 2);
       assert.equal(after.assignments[0]?.workstreamId, null);
     }).pipe(
