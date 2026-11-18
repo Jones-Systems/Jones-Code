@@ -1,5 +1,6 @@
 import { sidebarRowsAreHeld, useSteadySidebarThreads } from "../jones/navigation/steadySidebar";
 import { projectWorkstreamSnoozes } from "../jones/workstreams/personalSnooze";
+import { useStartWorkstreamThread } from "../jones/workstreams/useStartWorkstreamThread";
 import { SnoozedWorkstreamRow } from "../jones/workstreams/SnoozedWorkstreamRow";
 import { SidebarAppearanceLauncher } from "../jones/sidebarAppearance/SidebarAppearanceLauncher";
 import {
@@ -1433,6 +1434,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   );
 
   const workstreamController = usePersonalWorkstreams();
+  const newWorkstreamThreadAction = useStartWorkstreamThread(
+    nameIconProjects,
+    workstreamController.state,
+    routeThreadRef?.environmentId ?? null,
+    handleNewThread,
+  );
   const workstreamsEnabled = workstreamController.state.environments.some(
     (entry) => entry.status !== "update_required",
   );
@@ -3983,6 +3990,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               <WorkstreamNativeSidebar
                                 controller={workstreamController.controller}
                                 nameIconProjects={nameIconProjects}
+                                newThreadAction={newWorkstreamThreadAction}
                                 externalDropRef={workstreamExternalDropRef}
                                 canOperate={(thread) =>
                                   readEnvironmentScope(
