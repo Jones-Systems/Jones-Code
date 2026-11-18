@@ -238,6 +238,48 @@ describe.each(["current", "legacy"] as const)("%s active status-filter retention
 });
 
 describe.each(["current", "legacy"] as const)("%s activity window selection", (layout) => {
+  it.each([false, true])(
+    "removes settled threads from status counts and filters (activity window: %s)",
+    async (enabled) => {
+      await using _fixture = await setupTest();
+      using _timers = fakeTimers();
+      vi.setSystemTime(new Date(completed));
+      __setClientSettingsForTests({
+        ...DEFAULT_CLIENT_SETTINGS,
+        threadActivityWindowEnabled: enabled,
+      });
+
+      const done = {
+        ...thread,
+        source: { ...thread.source, latestRunCompletedAt: DateTime.makeUnsafe(completed) },
+      };
+      const settledInput = {
+        ...done,
+        id: ThreadId.make("settled-input"),
+        settledOverride: "settled" as const,
+        hasPendingUserInput: true,
+      };
+      const counts = () => JSON.parse(container.querySelector("output")!.textContent!);
+      await render({ layout, threads: [done, settledInput] });
+      expect(counts()).toEqual({ working: 0, input: 0, done: 1 });
+      expect(visible()).toEqual([key(done)]);
+
+      const settledDone = { ...done, settledOverride: "settled" as const };
+      await render({ threads: [settledDone, settledInput] });
+      expect(counts()).toEqual({ working: 0, input: 0, done: 0 });
+      expect(visible()).toEqual([]);
+      await render({ filter: "all" });
+      expect(visible()).toEqual([key(done), key(settledInput)]);
+
+      await render({
+        filter: "done",
+        threads: [{ ...settledDone, settledOverride: "active" }, settledInput],
+      });
+      expect(counts()).toEqual({ working: 0, input: 0, done: 1 });
+      expect(visible()).toEqual([key(done)]);
+    },
+  );
+
   it("updates settings, includes read Done, preserves All and Hide working, then expires the active row", async () => {
     await using _fixture = await setupTest();
     using _timers = fakeTimers();

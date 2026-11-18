@@ -124,6 +124,8 @@ open.
 
 On web and desktop, click the sidebar's Working / Input / Done pill to cycle
 through those views, then back to All. Double-click to hide working threads.
+The three counts cover unsettled threads. Find settled threads in the Settled
+section in All.
 
 In **Settings → Jones Code → Thread activity window**, turn on a recent-activity
 window and choose an amount in minutes, hours, days or weeks. For example, use
