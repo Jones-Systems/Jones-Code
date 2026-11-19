@@ -155,6 +155,22 @@ export function validateDirectiveEvidence(
   );
 }
 
+/** A fresh host status still shows the predecessor required by this exact request. */
+export function canReplayDirective(
+  input: FleetPlanDirectiveInput,
+  status: FleetHostStatus | null | undefined,
+): boolean {
+  return (
+    status?.environmentId === input.environmentId &&
+    status.planDirectiveProtocol === 1 &&
+    status.enrollment?.enabled === true &&
+    status.enrollment.environmentId === input.environmentId &&
+    status.enrollment.enrollmentId === input.enrollmentId &&
+    status.follower !== undefined &&
+    (status.follower.planDirective?.directiveId ?? null) === input.expectedDirectiveId
+  );
+}
+
 export type InstallPlanSelectability =
   | {
       readonly selectable: true;
@@ -541,7 +557,7 @@ export function nextRunnerStep(
   if (pending !== undefined) {
     if (pending.receipt !== undefined) return { kind: "read", operation: pending };
     if (pending.step === "directive") {
-      // A directive has no operation ledger fence; read its exact CAS result, never invent one.
+      // A directive has no operation ledger fence. Its reservation can only be replayed by ID.
       return { kind: "reservation", operation: pending };
     }
     return Date.parse(pending.lease.leaseUntil) > now

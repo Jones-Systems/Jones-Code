@@ -30,6 +30,7 @@ export const makeJonesDesktopUpdates = Effect.fn("DesktopUpdates.jones")(functio
   readonly bundleDirectory: string;
   readonly stateDirectory: string;
   readonly activeGeneration: string | undefined;
+  readonly trialDescriptorPath?: string | undefined;
   readonly architecture: "arm64" | "x64";
   readonly disabledByEnv: boolean;
   readonly cell: Effect.Success<ReturnType<typeof makeDesktopUpdateStateCell>>;
@@ -99,6 +100,7 @@ export const makeJonesDesktopUpdates = Effect.fn("DesktopUpdates.jones")(functio
       },
     },
     activeGeneration: input.activeGeneration,
+    trialDescriptorPath: input.trialDescriptorPath,
     architecture: input.architecture,
     platform: "darwin",
     initialState: yield* Ref.get(updateStateRef),
@@ -127,7 +129,10 @@ export const makeJonesDesktopUpdates = Effect.fn("DesktopUpdates.jones")(functio
       void input.broadcastPlan(state);
     },
   });
-  const check = Effect.promise(() => background.check());
+  const check = Effect.promise(async () => {
+    await controller.refreshTrialActivation();
+    return background.check();
+  });
   const install = (handle?: string, campaignId?: string) =>
     Effect.promise(() => background.track(() => controller.install(handle, campaignId))).pipe(
       Effect.map((result) => ({ ...result, state: controller.state })),
@@ -205,7 +210,10 @@ export const makeJonesDesktopUpdates = Effect.fn("DesktopUpdates.jones")(functio
       },
     ),
     installPlan: Effect.fn("DesktopUpdates.installPlan")(function (request) {
-      return Effect.promise(() => coordinator!.request(request));
+      return Effect.promise(async () => {
+        if (request.type === "read") await controller.refreshTrialActivation();
+        return coordinator!.request(request);
+      });
     }),
     fleetUpdates: Effect.fn("DesktopUpdates.fleetUpdates")(function (request) {
       return Effect.promise(() => fleet.request(request));

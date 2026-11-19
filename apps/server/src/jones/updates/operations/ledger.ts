@@ -133,6 +133,8 @@ export function createOperationLedger(baseDir: string) {
           (next.stop?.stopId !== old.stop.stopId || next.stop.requestedAt !== old.stop.requestedAt)
         )
           throw new Error("Stop identity changed.");
+        // A background readback of the same hold must keep a cleanup review bound to this receipt.
+        if (NodeUtil.isDeepStrictEqual(old, next)) return old;
         return save({ ...next, updatedAt: new Date().toISOString() });
       }),
     // Streaming validation keeps memory bounded. The history is never capped or silently pruned:

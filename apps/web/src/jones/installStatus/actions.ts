@@ -11,6 +11,7 @@ import {
   isNativeJonesInstallReview,
 } from "@t3tools/client-runtime/jones/updates/executor";
 import {
+  canReplayDirective,
   validateDirectiveEvidence,
   validateReceipt,
 } from "@t3tools/client-runtime/jones/install-plan";
@@ -102,7 +103,7 @@ async function readHeldCleanup(
   operationId: string,
 ) {
   const { state } = await requestInstallPlan({ type: "read" }, binding);
-  const plan = state.current;
+  const plan = state.current ?? (state.last?.cancelled === true ? state.last : null);
   const device = plan?.devices.find((d) => d.environmentId === environmentId);
   const receipt = device?.operations.at(-1)?.receipt;
   if (
@@ -231,9 +232,10 @@ export async function recoverPanelCleanup(
     },
     binding,
   ).catch(() => undefined);
+  const reportedPlan = report?.state.current ?? report?.state.last;
   const recorded =
-    report?.state.current?.planId === held.planId
-      ? report.state.current.devices
+    reportedPlan?.planId === held.planId
+      ? reportedPlan.devices
           .find((d) => d.environmentId === environmentId)
           ?.operations.find((o) => o.operationId === operationId)?.receipt
       : undefined;
@@ -259,16 +261,18 @@ export async function refreshDeviceEvidence(
   const operation = plan.devices.find((d) => d.environmentId === environmentId)?.operations.at(-1);
   if (operation?.request.kind === "plan-directive") {
     const { observation, fleetStatus } = observed;
+    if (operation.directive !== undefined) return;
     if (
-      operation.directive === undefined &&
-      observed.canOperate &&
-      observation.freshness === "fresh" &&
-      observation.state?.environmentId === environmentId &&
-      observation.state.capability.operations === 1 &&
-      fleetStatus != null &&
-      validateDirectiveEvidence(operation.request.input, fleetStatus)
-    )
-      await requestInstallPlan(
+      !observed.canOperate ||
+      observation.freshness !== "fresh" ||
+      observation.state?.environmentId !== environmentId ||
+      observation.state.capability.operations !== 1 ||
+      fleetStatus == null
+    ) {
+      if (options.refreshInstallOutcome)
+        return `Could not confirm update setup on ${observed.label}. Check its connection.`;
+    } else if (validateDirectiveEvidence(operation.request.input, fleetStatus)) {
+      const report = await requestInstallPlan(
         {
           type: "report",
           planId: plan.planId,
@@ -278,6 +282,14 @@ export async function refreshDeviceEvidence(
         },
         binding,
       );
+      if (options.refreshInstallOutcome && report.refused !== undefined)
+        return report.refused.message;
+    } else if (options.refreshInstallOutcome)
+      return plan.cancelled === true
+        ? `${observed.label} has yet to confirm setup from this cancelled plan.`
+        : canReplayDirective(operation.request.input, fleetStatus)
+          ? `${observed.label} still reports its previous setup. The plan can resend the same request.`
+          : `${observed.label} reported a different setup. The original request is still unconfirmed.`;
   } else if (operation?.request.kind === "operation-start") {
     const result = await services.operation(environmentId, {
       action: "operationRead",
@@ -326,16 +338,20 @@ export async function performPanelAction(
   const read = await requestInstallPlan({ type: "read" }, binding);
   const plan = read.state.current;
   if (action === "check") {
+    if (environmentId === "laptop" && read.refused !== undefined)
+      throw new Error(read.refused.message);
     store.update({ desktop: await services.bridge.getUpdateState() });
-    if (environmentId !== "laptop" && plan !== null) {
+    const checked = plan ?? (read.state.last?.cancelled === true ? read.state.last : null);
+    if (environmentId !== "laptop" && checked !== null) {
       services.kick?.(environmentId);
       const observed = await services.observe(environmentId);
       store.update({
         devices: store.get().devices.map((d) => (d.environmentId === environmentId ? observed : d)),
       });
-      await refreshDeviceEvidence(binding, environmentId, plan, observed, {
+      const message = await refreshDeviceEvidence(binding, environmentId, checked, observed, {
         refreshInstallOutcome: true,
       });
+      if (message !== undefined) store.update({ error: message });
     }
     return;
   }

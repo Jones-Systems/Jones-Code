@@ -206,12 +206,19 @@ export function reconcileProgressAtStartup(
   outcome: ProgressStartupOutcome | undefined,
   nowMs: number,
 ): JonesUpdateProgress | undefined {
-  if (record === undefined || terminal(record)) return record;
+  if (record === undefined) return record;
   const now = new Date(nowMs).toISOString();
   const matched =
     record.kind === "install" &&
     outcome !== undefined &&
     (record.operationId === undefined || record.operationId === outcome.id);
+  const provisional =
+    record.phase === "failed" &&
+    record.error?.code === "outcome-unavailable" &&
+    record.stepKey === "restart" &&
+    record.operationId === outcome?.id &&
+    matched;
+  if (terminal(record) && !provisional) return record;
   if (!matched) {
     const restarting = record.stepKey === "restart";
     return failProgress(
@@ -223,7 +230,9 @@ export function reconcileProgressAtStartup(
       restarting ? "outcome-unavailable" : "interrupted",
     );
   }
-  const confirming = advanceProgress(record, "confirm-restart", now) ?? record;
+  const { error: _error, ...previous } = record;
+  const pending = provisional ? { ...previous, phase: "install" as const } : record;
+  const confirming = advanceProgress(pending, "confirm-restart", now) ?? pending;
   if (outcome.status === "committed") return completeProgress(confirming, now);
   return failProgress(
     confirming,

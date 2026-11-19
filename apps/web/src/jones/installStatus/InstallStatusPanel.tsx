@@ -185,15 +185,24 @@ export function InstallStatusPanel({
       : null;
   const overview = focusedDevice === null;
   const gateClosed = plan.laptop.gateClosed !== undefined;
-  const manualHistory = snapshot.native.last?.manualClosure !== undefined;
+  const canCheckLaptop =
+    !view.readOnly ||
+    (plan.cancelled === true &&
+      view.laptop?.phase === "held" &&
+      snapshot.native.current === null &&
+      snapshot.native.readOnly === undefined);
+  const hasClosureHistory =
+    snapshot.native.last?.manualClosure !== undefined || snapshot.native.last?.cancelled === true;
   const updatePreview =
     view.readOnly &&
-    manualHistory &&
+    hasClosureHistory &&
     snapshot.native.current === null &&
     snapshot.native.laptop.environmentId !== undefined &&
     desktopCanPreviewInstallPlan(snapshot.desktop);
   const summary = view.readOnly
-    ? lastUpdateLabel(plan.dismissedAt ?? plan.createdAt)
+    ? plan.cancelled === true
+      ? "Update plan cancelled"
+      : lastUpdateLabel(plan.dismissedAt ?? plan.createdAt)
     : view.preview
       ? "Laptop first"
       : gateClosed
@@ -296,7 +305,7 @@ export function InstallStatusPanel({
               </Button>
             </div>
           ) : null}
-          {overview && !editing && manualHistory && (view.preview || updatePreview) ? (
+          {overview && !editing && hasClosureHistory && (view.preview || updatePreview) ? (
             <div className="flex min-h-7 items-center px-2 pb-1">
               <Button variant="ghost-muted" size="micro" onClick={() => store.open(view.preview)}>
                 {view.preview ? "Last update" : "Back to available update"}
@@ -392,11 +401,14 @@ export function InstallStatusPanel({
                   ) : null}
                   {view.laptop?.phase === "held" ? (
                     <p>
-                      Laptop update is on hold while the previous attempt is being verified. Check
-                      the outcome before starting another attempt.
+                      {plan.cancelled === true
+                        ? "Check the Laptop outcome to update this history entry."
+                        : plan.laptop.operations.at(-1)?.step === "install"
+                          ? "Check the running Laptop build. If it matches the plan and passes verification, the other devices can continue."
+                          : "Check whether the previous download has finished or stopped."}
                     </p>
                   ) : null}
-                  {!view.readOnly ? (
+                  {canCheckLaptop ? (
                     <Button
                       variant="ghost-muted"
                       size="micro"
@@ -421,11 +433,13 @@ export function InstallStatusPanel({
             >
               <Clock3Icon className="size-3 shrink-0" />
               <span className="min-w-0 flex-1 truncate">
-                {gateClosed
-                  ? "Other devices won’t start"
-                  : plan.laptop.gate !== undefined
-                    ? INSTALL_PLAN_GO
-                    : INSTALL_PLAN_WAIT}
+                {plan.cancelled === true
+                  ? "Queued updates cancelled"
+                  : gateClosed
+                    ? "Other devices won’t start"
+                    : plan.laptop.gate !== undefined
+                      ? INSTALL_PLAN_GO
+                      : INSTALL_PLAN_WAIT}
               </span>
               {!view.readOnly ? (
                 <span className="flex shrink-0 items-center">
@@ -506,12 +520,16 @@ export function InstallStatusPanel({
                 ? included
                   ? "Included"
                   : "Not in plan"
-                : row?.phase === "not-started" && gateClosed
-                  ? "Not started · queue closed"
-                  : (row?.text ??
-                    (choice.reason === undefined
-                      ? "Not in plan"
-                      : `Can't join · ${choice.reason}`));
+                : row &&
+                    plan.cancelled === true &&
+                    ["queued", "not-started", "staged", "fenced"].includes(row.phase)
+                  ? "Skipped for this plan"
+                  : row?.phase === "not-started" && gateClosed
+                    ? "Not started · queue closed"
+                    : (row?.text ??
+                      (choice.reason === undefined
+                        ? "Not in plan"
+                        : `Can't join · ${choice.reason}`));
               const lineText =
                 !editing &&
                 silent &&
@@ -526,9 +544,12 @@ export function InstallStatusPanel({
               const open = focusedDevice === environmentId;
               const updated = row?.phase === "done" || row?.phase === "updated-elsewhere";
               const held = row?.phase === "held" || row?.phase === "unknown";
-              const receipt = plan.devices
+              const operation = plan.devices
                 .find((d) => d.environmentId === environmentId)
-                ?.operations.at(-1)?.receipt;
+                ?.operations.at(-1);
+              const receipt = operation?.receipt;
+              const setupUnconfirmed =
+                operation?.step === "directive" && operation.directive === undefined;
               const inspectKey =
                 receipt?.phase === "held" &&
                 receipt.code === "cleanup-unconfirmed" &&
@@ -537,6 +558,10 @@ export function InstallStatusPanel({
                   ? `${plan.planId}:${environmentId}:${receipt.operationId}:${receipt.updatedAt}:cleanup`
                   : null;
               const cleanup = cleanupInspection?.key === inspectKey ? cleanupInspection : null;
+              const canCheckArchived =
+                snapshot.native?.readOnly === undefined &&
+                plan.cancelled === true &&
+                (inspectKey !== null || setupUnconfirmed);
               return (
                 <li key={environmentId}>
                   <div className="flex min-w-0 items-center gap-1">
@@ -689,11 +714,13 @@ export function InstallStatusPanel({
                       ) : null}
                       {held ? (
                         <p>
-                          {receipt?.code === "cleanup-unconfirmed"
-                            ? "The host has yet to confirm cleanup from this attempt."
-                            : "The host has yet to confirm the outcome of this attempt."}{" "}
-                          Check the operation receipt. If the hold remains, open Connections for
-                          this host.
+                          {setupUnconfirmed
+                            ? plan.cancelled === true
+                              ? "The host had yet to confirm setup when this plan was cancelled."
+                              : "The host has yet to confirm its update setup. The plan is still at setup for this device."
+                            : receipt?.code === "cleanup-unconfirmed"
+                              ? "Inspect cleanup to check whether the disk image from this attempt is still attached."
+                              : "The host has yet to confirm the outcome of this attempt. Check the operation receipt. If the hold remains, open Connections for this host."}
                         </p>
                       ) : null}
                       {cleanup !== null ? (
@@ -709,7 +736,7 @@ export function InstallStatusPanel({
                                   : "Inspection could not confirm cleanup. The update remains on hold."}
                         </p>
                       ) : null}
-                      {!view.readOnly ? (
+                      {!view.readOnly || canCheckArchived ? (
                         <div className="flex flex-wrap gap-1">
                           {inspectKey !== null && receipt !== undefined && device?.canOperate ? (
                             <Button
@@ -822,10 +849,12 @@ export function InstallStatusPanel({
                             onClick={() => action(environmentId, "check")}
                           >
                             {pending.has(`${environmentId}:check`)
-                              ? "Checking outcome…"
-                              : held
-                                ? "Check update outcome"
-                                : "Refresh now"}
+                              ? "Checking…"
+                              : setupUnconfirmed
+                                ? "Check setup status"
+                                : held
+                                  ? "Check update outcome"
+                                  : "Refresh now"}
                           </Button>
                         </div>
                       ) : null}
@@ -835,6 +864,52 @@ export function InstallStatusPanel({
               );
             })}
           </ul>
+          {!editing &&
+          !view.readOnly &&
+          !view.preview &&
+          snapshot.native.view.cancelPlan === 1 &&
+          (overview || focusedDevice === "laptop") ? (
+            <div className="border-t border-dashed border-sidebar-border px-2 py-1">
+              <Button
+                size="micro"
+                variant="ghost-muted"
+                disabled={pending.has("cancel-plan")}
+                onClick={() =>
+                  void perform("cancel-plan", async () => {
+                    const binding = installPlanServices();
+                    if (binding === undefined) throw new Error("Install status is not connected.");
+                    if (
+                      !(await binding.services.confirm(
+                        "Cancel this update plan? Queued updates will be dropped. Any setup already sent can still reach the host. Install history and cleanup holds will be kept.",
+                      ))
+                    )
+                      return;
+                    const result = await requestInstallPlan(
+                      {
+                        type: "cancel-plan",
+                        planId: plan.planId,
+                        expectedRevision: plan.revision,
+                      },
+                      binding,
+                    );
+                    if (result.refused !== undefined) throw new Error(result.refused.message);
+                    if (
+                      result.state.current !== null ||
+                      result.state.last?.planId !== plan.planId ||
+                      result.state.last.cancelled !== true
+                    )
+                      throw new Error(
+                        "Cancellation could not be confirmed. Refresh Install status.",
+                      );
+                    setDetail(null);
+                    store.open(true);
+                  })
+                }
+              >
+                Cancel update plan
+              </Button>
+            </div>
+          ) : null}
           {snapshot.error ? (
             <p role="status" className="px-2 py-1 text-2xs text-muted-foreground">
               {snapshot.error}

@@ -19,6 +19,7 @@ const laptop = EnvironmentId.make("laptop");
 const planId = "11111111-1111-4111-8111-111111111111";
 const opId = "22222222-2222-4222-8222-222222222222";
 const enrollmentId = "33333333-3333-4333-8333-333333333333";
+const previousDirectiveId = "44444444-4444-4444-8444-444444444444";
 const source = "a".repeat(40),
   tree = "b".repeat(40),
   installed = "c".repeat(40);
@@ -89,6 +90,7 @@ function fixture() {
     }),
   );
   const observe = vi.fn<InstallPlanDriver["observe"]>(async () => ({
+    canOperate: true,
     fleetStatus: null,
     observation: {
       freshness: "fresh",
@@ -265,7 +267,8 @@ describe("bounded install plan runner", () => {
     expect(f.operation).not.toHaveBeenCalled();
   });
 
-  it.each(["reply", "storage error"])("reconciles the directive after %s", async (result) => {
+  const directiveReplies = ["reply", "lost reply", "no recorded host effect"] as const;
+  it.each(directiveReplies)("reconciles the directive after %s", async (result) => {
     const f = fixture(),
       p = f.plan();
     f.setPlan({
@@ -289,6 +292,13 @@ describe("bounded install plan runner", () => {
         protocol: 1 as const,
         leaderSource: installed,
         state: "waiting-for-leader" as const,
+        planDirective: {
+          directiveId: previousDirectiveId,
+          targetSource: installed,
+          targetTree: tree,
+          mode: "manual-review" as const,
+          issuedAt: now,
+        },
       },
     };
     f.observe.mockResolvedValue({ ...observed, fleetStatus: fleet });
@@ -299,7 +309,7 @@ describe("bounded install plan runner", () => {
       repository: "Jones-Systems/Jones-Code" as const,
       targetSource: source,
       targetTree: tree,
-      expectedDirectiveId: null,
+      expectedDirectiveId: previousDirectiveId,
     };
     const state = (): JonesInstallPlanState => ({
       schema: 1,
@@ -327,7 +337,7 @@ describe("bounded install plan runner", () => {
         },
       },
     };
-    if (result === "storage error")
+    if (result !== "reply")
       f.host.mockRejectedValueOnce({
         _tag: "FleetHostError",
         reason: "storage",
@@ -337,7 +347,7 @@ describe("bounded install plan runner", () => {
 
     await advanceInstallPlan(f.driver);
     expect(f.host.mock.calls[0]?.[1]).toEqual({ action: "planDirective", input: directive });
-    if (result === "storage error") {
+    if (result !== "reply") {
       expect(f.desktop.mock.calls.map(([input]) => input.type)).toEqual(["read", "claim"]);
       const pending = f.plan();
       f.setPlan({
@@ -356,10 +366,51 @@ describe("bounded install plan runner", () => {
           },
         ],
       });
-      f.desktop.mockResolvedValue({ state: state() });
-      f.observe.mockResolvedValue({ ...observed, fleetStatus: applied });
-      await advanceInstallPlan({ ...f.driver, now: () => Date.parse(leaseUntil) });
-      expect(f.host).toHaveBeenCalledTimes(1);
+      const resumed = { ...f.driver, claimant: "window:b", now: () => Date.parse(leaseUntil) };
+      if (result === "lost reply") {
+        f.desktop.mockResolvedValue({ state: state() });
+        f.observe.mockResolvedValue({ ...observed, fleetStatus: applied });
+        await advanceInstallPlan(resumed);
+        expect(f.host).toHaveBeenCalledTimes(1);
+      } else {
+        const changed = {
+          ...applied,
+          follower: {
+            ...applied.follower,
+            planDirective: { ...applied.follower.planDirective, directiveId: enrollmentId },
+          },
+        };
+        f.observe.mockResolvedValue({ ...observed, fleetStatus: changed });
+        await advanceInstallPlan(resumed);
+        expect(f.host).toHaveBeenCalledTimes(1);
+        f.observe.mockResolvedValue({ ...observed, canOperate: false, fleetStatus: fleet });
+        await advanceInstallPlan(resumed);
+        expect(f.host).toHaveBeenCalledTimes(1);
+        f.observe.mockResolvedValue({ ...observed, fleetStatus: fleet });
+        f.desktop.mockResolvedValue({
+          state: state(),
+          grant: {
+            ...grant,
+            leaseUntil: new Date(Date.parse(leaseUntil) + 120_000).toISOString(),
+          },
+        });
+        f.host.mockRejectedValueOnce({
+          _tag: "FleetHostError",
+          reason: "conflict",
+          message: "Host busy.",
+        });
+        await advanceInstallPlan(resumed);
+        expect(f.desktop.mock.calls.at(-1)?.[0]).toMatchObject({
+          type: "claim",
+          operationId: opId,
+          claimant: "window:b",
+          expectedDirectiveId: previousDirectiveId,
+        });
+        expect(f.host.mock.calls[1]?.[1]).toEqual({ action: "planDirective", input: directive });
+        f.host.mockResolvedValueOnce(applied);
+        await advanceInstallPlan(resumed);
+        expect(f.host.mock.calls[2]?.[1]).toEqual({ action: "planDirective", input: directive });
+      }
     }
     expect(f.operation).not.toHaveBeenCalled();
     expect(f.desktop.mock.calls.at(-1)?.[0]).toMatchObject({

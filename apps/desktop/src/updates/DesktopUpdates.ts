@@ -427,6 +427,7 @@ export const make = Effect.gen(function* () {
       bundleDirectory: environment.dirname,
       stateDirectory: environment.stateDir,
       activeGeneration: processEnv.T3CODE_JONES_ACTIVE_GENERATION,
+      trialDescriptorPath: processEnv.T3CODE_JONES_TRIAL_DESCRIPTOR,
       architecture: environment.runtimeInfo.hostArch === "arm64" ? "arm64" : "x64",
       disabledByEnv: config.disableAutoUpdate || policy.mode === "off",
       cell: { updateStateRef, stateChanges, stateMutex, emitState, setState, updateState },

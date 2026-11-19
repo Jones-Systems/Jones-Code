@@ -163,6 +163,7 @@ export function installPlanPresentation(
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";
     if (phase === "directive") text = `Getting ${device.label} ready…`;
+    if (phase === "unknown" && latest?.step === "directive") text = "Update setup unconfirmed";
     if (ledgerPhase === "ended")
       text =
         lastDownload?.receipt?.staged !== undefined &&
@@ -170,7 +171,9 @@ export function installPlanPresentation(
         observed.observation.state?.stagedHandle === lastDownload?.receipt?.staged?.stagedHandle
           ? "Stopped · kept staged files"
           : "Stopped · nothing installed";
-    if (
+    if (ledgerPhase === "held" && receipt?.code === "cleanup-unconfirmed")
+      text = "Cleanup unconfirmed";
+    else if (
       ["held", "blocked", "not-updated"].includes(ledgerPhase) &&
       latest?.receipt?.code !== undefined
     )
@@ -183,7 +186,12 @@ export function installPlanPresentation(
     const attemptText = sourceHeadline
       ? `This plan's attempt: ${text}${latest?.receipt?.code !== undefined && !text.endsWith(latest.receipt.code) ? ` · ${latest.receipt.code}` : ""}`
       : undefined;
-    const progress = rowProgress(observed?.observation, latest?.operationId, planless);
+    const reportedProgress = rowProgress(observed?.observation, latest?.operationId, planless);
+    // Older hosts can retain a restart warning after the exact install receipt commits.
+    const progress =
+      phase === "done" && confirmedInstall && reportedProgress?.phase !== "done"
+        ? undefined
+        : reportedProgress;
     if (progress?.text !== undefined && !LEDGER_TEXT_WINS.has(phase)) text = progress.text;
     if (sourceHeadline) text = sourceText!;
     return {
@@ -248,7 +256,8 @@ export function installPlanPresentation(
   const laptopPhase =
     plan.laptop.gateClosed !== undefined
       ? "gateClosed"
-      : plan.laptop.gate !== undefined
+      : plan.laptop.gate !== undefined ||
+          (plan.cancelled === true && laptopOperation?.result?.status === "committed")
         ? "verified"
         : laptopOperation?.result?.status === "committed"
           ? "committedGatePending"
@@ -293,11 +302,13 @@ export function installPlanPresentation(
   const laptopText =
     laptopOperation?.step === "download" && laptopPhase === "refused"
       ? "Download request did not start"
-      : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
-        ? "Install didn't finish"
-        : laptopAlreadyRunning
-          ? ALREADY_RUNNING_TEXT
-          : (laptopCopy[laptopPhase] ?? "Not confirmed");
+      : laptopOperation?.step === "install" && laptopPhase === "held"
+        ? "Install outcome unconfirmed"
+        : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
+          ? "Install didn't finish"
+          : laptopAlreadyRunning
+            ? ALREADY_RUNNING_TEXT
+            : (laptopCopy[laptopPhase] ?? "Not confirmed");
   const laptopActions = {
     download:
       !readOnly &&
