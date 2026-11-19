@@ -2,6 +2,7 @@ import "~/index.css";
 import { act, render } from "../../../test/render";
 import { type ComponentProps } from "react";
 import { describe, expect, it } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -9,7 +10,8 @@ import {
 } from "@t3tools/contracts";
 import { ComposerQuickControls } from "./ComposerQuickControls";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
-import type { TraitsPersistence } from "../../components/chat/TraitsPicker";
+import { describeComposerEffort } from "../../components/chat/ComposerModelEffort";
+import type { TraitsPersistence, TraitsSelectionInput } from "../../components/chat/TraitsPicker";
 
 const instanceId = ProviderInstanceId.make("quick-controls-test");
 const draftId = DraftId.make("quick-controls-test");
@@ -43,35 +45,53 @@ const extendedEffort: ProviderOptionDescriptor = {
 };
 function Fixture({
   descriptors = [effort, fast],
+  badgeEffortDisplay,
+  hidden = false,
   ...overrides
 }: {
   descriptors?: ProviderOptionDescriptor[];
+  badgeEffortDisplay?: "label" | "bars";
 } & Partial<Omit<ComponentProps<typeof ComposerQuickControls>, keyof TraitsPersistence>>) {
   const selection = useComposerDraftStore(
     (store) => store.stickyModelSelectionByProvider[instanceId],
   );
+  const traits: TraitsSelectionInput = {
+    provider: ProviderDriverKind.make("codex"),
+    instanceId,
+    draftId,
+    model: "test-model",
+    models: [
+      {
+        slug: "test-model",
+        name: "Test",
+        isCustom: false,
+        capabilities: { optionDescriptors: descriptors },
+      },
+    ],
+    modelOptions: selection?.options,
+    ...overrides,
+  };
   return (
     <div
       data-chat-composer-controls
-      style={{ display: "flex", gap: 4, width: 500, position: "relative" }}
+      style={{
+        display: "flex",
+        gap: 4,
+        width: 500,
+        position: "relative",
+        justifyContent: badgeEffortDisplay ? "flex-end" : undefined,
+      }}
     >
-      <span style={{ width: 250, flexShrink: 0 }}>Model · High · Full access</span>
-      <ComposerQuickControls
-        provider={ProviderDriverKind.make("codex")}
-        instanceId={instanceId}
-        draftId={draftId}
-        model="test-model"
-        models={[
-          {
-            slug: "test-model",
-            name: "Test",
-            isCustom: false,
-            capabilities: { optionDescriptors: descriptors },
-          },
-        ]}
-        modelOptions={selection?.options}
-        {...overrides}
-      />
+      {badgeEffortDisplay ? null : (
+        <span style={{ width: 250, flexShrink: 0 }}>Model · High · Full access</span>
+      )}
+      <ComposerQuickControls {...traits} hidden={hidden} />
+      {badgeEffortDisplay ? (
+        <div className="flex items-center gap-1.5 text-sm" data-chat-provider-model-picker>
+          <span data-chat-provider-model-picker-label>Test model</span>
+          {describeComposerEffort(traits, badgeEffortDisplay, "sm").suffix}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -96,6 +116,36 @@ function savedOptions() {
 }
 
 describe("composer quick controls", () => {
+  it.each(["label", "bars"] as const)(
+    "keeps the click targets in place as the %s model badge changes",
+    async (badgeEffortDisplay) => {
+      reset();
+      await using screen = await render(
+        <Fixture
+          descriptors={[extendedEffort, extendedTier]}
+          badgeEffortDisplay={badgeEffortDisplay}
+        />,
+        { router: false },
+      );
+      const fast = screen.getByRole("button", { name: "Fast mode", exact: true });
+      const medium = screen.getByRole("button", { name: "Medium reasoning", exact: true });
+      const extra = screen.getByRole("button", { name: "Extra high reasoning", exact: true });
+      await expect.element(extra).toBeEnabled();
+      await userEvent.dblClick(fast);
+      await expect
+        .element(screen.getByRole("button", { name: "Ultrafast mode" }))
+        .toHaveAttribute("aria-pressed", "true");
+      await userEvent.dblClick(medium);
+      await expect
+        .element(screen.getByRole("button", { name: "Low reasoning" }))
+        .toHaveAttribute("aria-pressed", "true");
+      await userEvent.dblClick(extra);
+      await expect
+        .element(screen.getByRole("button", { name: "Max reasoning" }))
+        .toHaveAttribute("aria-pressed", "true");
+    },
+  );
+
   it.each([fast, tier])(
     "toggles $id both ways and preserves reasoning, other options and the draft selection",
     async (speed) => {

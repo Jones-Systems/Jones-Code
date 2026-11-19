@@ -13,22 +13,11 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/toolt
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import { DOUBLE_CLICK_WINDOW_MS, useTimedClick } from "../useTimedClick";
-
-const QUICK_EFFORTS = [
-  {
-    value: "medium",
-    label: "M",
-    name: "Medium",
-    alternate: { value: "low", label: "L", name: "Low" },
-  },
-  { value: "high", label: "H", name: "High", alternate: null },
-  {
-    value: "xhigh",
-    label: "E",
-    name: "Extra high",
-    alternate: { value: "max", label: "Max", name: "Max" },
-  },
-] as const;
+import {
+  getQuickServiceTier,
+  getQuickUltrafast,
+  QUICK_EFFORTS,
+} from "./composerQuickControlOptions";
 
 export function ComposerQuickControls(
   props: TraitsMenuContentProps & TraitsPersistence & { hidden?: boolean },
@@ -36,12 +25,7 @@ export function ComposerQuickControls(
   const traits = useTraitsSelection(props);
   const descriptor = traits.selectDescriptors.find(isReasoningSelect) ?? null;
   const fast = traits.fastModeDescriptor;
-  const tier = traits.selectDescriptors.find(
-    (option) =>
-      option.id === "serviceTier" &&
-      option.options.some(({ id }) => id === "priority") &&
-      option.options.some(({ id }) => id === "default"),
-  );
+  const tier = getQuickServiceTier(traits.selectDescriptors);
   const efforts = QUICK_EFFORTS.filter(({ value }) =>
     descriptor?.options.some((option) => option.id === value),
   );
@@ -124,7 +108,7 @@ export function ComposerQuickControls(
 
   if (traits.modelIsUnavailable || (!fast && !tier && efforts.length === 0)) return null;
   const selectedTier = getProviderOptionCurrentValue(tier);
-  const ultrafast = fast ? null : tier?.options.find(({ id }) => id === "ultrafast");
+  const ultrafast = fast ? undefined : getQuickUltrafast(tier);
   const ultrafastOn = !!ultrafast && selectedTier === ultrafast.id;
   const fastOn = fast ? fast.currentValue === true : selectedTier === "priority" || ultrafastOn;
   const selected = traits.ultrathinkPromptControlled

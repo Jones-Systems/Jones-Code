@@ -12,6 +12,12 @@ import { type KeyboardEvent, type ReactNode, use, useRef, useState } from "react
 
 import { cn } from "~/lib/utils";
 import {
+  getQuickServiceTier,
+  getQuickUltrafast,
+  hasQuickAlternateEffort,
+} from "../../jones/composer/composerQuickControlOptions";
+import { QuickEffortLabelSlot } from "../../jones/composer/QuickEffortLabelSlot";
+import {
   Menu,
   MenuPopup,
   MenuRadioGroup,
@@ -130,6 +136,18 @@ export function describeComposerEffort(
               traits.reportedModelSelection,
             ) ?? (reasoning.id === "thinking" ? reasoning.label : null));
   const fast = display.speedLabel === "Fast" || display.speedLabel === "Ultrafast";
+  const quickUltrafast =
+    !visibility.fastModeDescriptor &&
+    getQuickUltrafast(getQuickServiceTier(visibility.selectDescriptors));
+  const quickAlternateEffort = reasoning?.type === "select" && hasQuickAlternateEffort(reasoning);
+  const effortLabel = word ? (
+    <span data-composer-control-label className="max-w-24 truncate">
+      {word}
+    </span>
+  ) : glyph ? (
+    <EffortGlyph count={glyph.count} filled={glyph.filled} size={size} />
+  ) : null;
+  const speedBolt = fast ? <FastBolt ultra={display.speedLabel === "Ultrafast"} /> : null;
   // Agent options such as modes live in the picker; the trigger adds only the context window.
   const contextWindow =
     visibility.contextWindowDescriptor &&
@@ -138,7 +156,14 @@ export function describeComposerEffort(
       modelSelection,
       traits.reportedModelSelection,
     );
-  if (!word && !glyph && !fast && !display.ultracode && !contextWindow)
+  if (
+    !effortLabel &&
+    !quickAlternateEffort &&
+    !speedBolt &&
+    !quickUltrafast &&
+    !display.ultracode &&
+    !contextWindow
+  )
     return { suffix: null, detail: display.label };
   return {
     detail: display.label,
@@ -150,14 +175,18 @@ export function describeComposerEffort(
           size === "sm" && "-ms-0.5",
         )}
       >
-        {word ? (
-          <span data-composer-control-label className="max-w-24 truncate">
-            {word}
-          </span>
-        ) : glyph ? (
-          <EffortGlyph count={glyph.count} filled={glyph.filled} size={size} />
-        ) : null}
-        {fast ? <FastBolt ultra={display.speedLabel === "Ultrafast"} /> : null}
+        {quickAlternateEffort ? (
+          <QuickEffortLabelSlot descriptor={reasoning} effortDisplay={effortDisplay} size={size}>
+            {effortLabel}
+          </QuickEffortLabelSlot>
+        ) : (
+          effortLabel
+        )}
+        {quickUltrafast ? (
+          <span className="inline-flex w-3.75 shrink-0 items-center">{speedBolt}</span>
+        ) : (
+          speedBolt
+        )}
         {display.ultracode ? (
           <WorkflowIcon aria-hidden="true" data-composer-control-icon className="size-3" />
         ) : null}
