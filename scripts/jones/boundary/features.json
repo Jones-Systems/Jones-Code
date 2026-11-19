@@ -1846,6 +1846,10 @@
     {
       "id": "remote-admission",
       "tests": [
+        "apps/server/src/http.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/RequestManagement.test.ts",
+        "apps/web/src/jones/remoteAdmission/ReviewClientsCoordinator.browser.test.tsx",
+        "packages/client-runtime/src/jones/remoteAdmission/controller.test.ts",
         "apps/server/src/jones/peerTransport/LinkedRequestContext.http.test.ts",
         "apps/server/src/jones/peerTransport/LinkedRequestContext.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",

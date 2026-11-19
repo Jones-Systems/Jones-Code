@@ -836,6 +836,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
     remoteAdmissionPeerStatusVersion: Schema.optional(Schema.String),
     remoteAdmissionRetryObservationVersion: Schema.optional(Schema.String),
     remoteAdmissionRecoveryStatusVersion: Schema.optional(Schema.String),
+    requestManagement: Schema.optional(Schema.Boolean),
     remoteAdmissionRecoveredResultObservationVersion: Schema.optional(Schema.String),
     remoteAdmissionCapabilitiesRegisterVersion: Schema.optional(Schema.String),
     threadResultRequestVersion: Schema.optional(Schema.String),

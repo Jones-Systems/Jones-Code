@@ -7,14 +7,19 @@ import type {
   ReviewClient,
 } from "@t3tools/client-runtime/jones/remoteAdmission/controller";
 import { TooltipProvider } from "../../components/ui/tooltip";
-import { installReviewClient, reviewControllerFor } from "./reviewRuntime";
+import { fallBackToLegacyReview, installReviewClient, reviewControllerFor } from "./reviewRuntime";
 import { ReviewPage } from "./ReviewPage";
-import { admissionFixture } from "./testFixtures";
+import { renderRequestsRouter } from "./requestsRouterTestHarness";
+import { admissionFixture, deferred } from "./testFixtures";
 import "../../index.css";
 
+let routedReceiver: EnvironmentId | null = null;
 vi.mock("../../state/environments", async (original) => ({
   ...(await original<typeof import("../../state/environments")>()),
-  useEnvironments: () => ({ environments: [] }),
+  useEnvironments: () => ({
+    isReady: true,
+    environments: routedReceiver ? [{ environmentId: routedReceiver, displayLabel: "Laptop" }] : [],
+  }),
 }));
 vi.mock("../../state/entities", async (original) => ({
   ...(await original<typeof import("../../state/entities")>()),
@@ -86,6 +91,78 @@ function setup(receiver: string) {
   installReviewClient(environmentId, client);
   return { environmentId, client, item, page };
 }
+
+it("keeps the V2 controller while a decision is pending or unknown", async () => {
+  const f = setup("review-unknown-downgrade");
+  const controller = reviewControllerFor(f.environmentId)!;
+  const reply = deferred<never>();
+  vi.mocked(f.client.mutate).mockReturnValueOnce(reply.promise);
+  await controller.load();
+  const effect = controller.mutate({
+    action: "decide",
+    input: { id: f.item.record.id, bindingDigest: f.item.record.bindingDigest, decision: "deny" },
+  });
+  expect(controller.getSnapshot().pending.size).toBe(1);
+  expect(fallBackToLegacyReview(f.environmentId)).toBe(false);
+  reply.reject(new Error("reply lost"));
+  await effect;
+  expect(controller.getSnapshot().uncertain.size).toBe(1);
+  expect(fallBackToLegacyReview(f.environmentId)).toBe(false);
+  expect(reviewControllerFor(f.environmentId)).toBe(controller);
+  expect(f.client.mutate).toHaveBeenCalledTimes(1);
+});
+
+it("reports a verified empty V2 inbox separately from a receiver requiring owner access", async () => {
+  const f = setup("review-empty-vs-owner");
+  vi.mocked(f.client.page).mockResolvedValue({
+    ...f.page,
+    records: [],
+    access: [],
+    counts: { ...f.page.counts, currentHeldAdmissions: 0, heldAdmissions: 0 },
+  });
+  await using screen = await render(
+    <TooltipProvider>
+      <ReviewPage environmentId={f.environmentId} label="Laptop" />
+    </TooltipProvider>,
+  );
+  await expect.element(screen.getByText("No requests need review.")).toBeVisible();
+  f.client.capabilities = async () => ({ canDecide: false, features: new Set(["reviewV2"]) });
+  await act(() => reviewControllerFor(f.environmentId)!.load());
+  await expect
+    .element(screen.getByText("Owner access is required to review requests."))
+    .toBeVisible();
+  expect(screen.getByText("No requests need review.").query()).toBeNull();
+  expect(f.client.mutate).not.toHaveBeenCalled();
+});
+
+it("requires fresh exact request readback after the owner connection changes", async () => {
+  const f = setup("review-routed-reconnect");
+  const controller = reviewControllerFor(f.environmentId)!;
+  const replacement = deferred<Item>();
+  f.client.lookup = vi.fn(async () => f.item).mockReturnValueOnce(Promise.resolve(f.item));
+  vi.mocked(f.client.lookup).mockReturnValueOnce(replacement.promise);
+  await using screen = await render(
+    <TooltipProvider>
+      <ReviewPage
+        environmentId={f.environmentId}
+        label="Laptop"
+        search={{ request: f.item.record.id, binding: f.item.record.bindingDigest }}
+      />
+    </TooltipProvider>,
+  );
+  const approve = screen.getByRole("button", { name: "Approve", exact: true });
+  await expect.element(approve).toBeVisible();
+  await act(() => controller.invalidateConnection());
+  expect(approve.query()).toBeNull();
+  await act(() => controller.load());
+  await expect.element(screen.getByText("Loading exact request…")).toBeVisible();
+  expect(approve.query()).toBeNull();
+  await act(() => replacement.resolve(f.item));
+  await expect.element(approve).toBeVisible();
+  expect(f.client.lookup).toHaveBeenCalledTimes(2);
+  expect(f.client.mutate).not.toHaveBeenCalled();
+});
+
 it("selects cards into the real pane, keeps exact request and thread links separate, and submits duration only on approval", async () => {
   const f = setup("review-browser-exact");
   await using screen = await render(
@@ -224,31 +301,99 @@ it("opens Manage Access for an exact offpage grant without leaving Requests", as
   expect(f.client.mutate).not.toHaveBeenCalled();
 });
 
-it("refuses a wrong-digest link even when the matching ID is in the visible queue", async () => {
-  const f = setup("review-browser-wrong-digest");
-  const before = window.location.href;
-  const link = new URL(before);
-  link.search = new URLSearchParams({
-    receiver: f.environmentId,
-    request: f.item.record.id,
-    binding: "wrong-digest",
-  }).toString();
-  window.history.replaceState(null, "", link);
-  try {
-    await using screen = await render(
-      <TooltipProvider>
-        <ReviewPage environmentId={f.environmentId} label="Laptop" />
-      </TooltipProvider>,
+it.each(["browser", "hash"] as const)(
+  "opens exact rows and fences superseded request and access readbacks with %s history",
+  async (historyType) => {
+    const f = setup(`review-routed-${historyType}`);
+    const first = f.item;
+    const second = {
+      ...first,
+      record: admissionFixture({ id: "second", bindingDigest: "b".repeat(64) }),
+    };
+    const grant = f.page.access[0]!;
+    const pending = deferred<Item>();
+    f.client.page = vi.fn(async () => ({ ...f.page, records: [first, second] }));
+    const lookup = vi.fn(async (id: string, _digest?: string) =>
+      id === first.record.id ? pending.promise : second,
     );
-    expect(screen.container.textContent).toContain("Inspect synthetic project");
-    expect(screen.container.textContent).toContain("Exact request unavailable.");
-    expect(screen.container.querySelector("article button[aria-current]")).toBeNull();
-    expect(screen.getByRole("button", { name: "Approve", exact: true }).query()).toBeNull();
-    expect(f.client.mutate).not.toHaveBeenCalled();
-  } finally {
-    window.history.replaceState(null, "", before);
-  }
-});
+    f.client.lookup = lookup;
+    f.client.lookupAccess = vi.fn(async () => grant);
+    routedReceiver = f.environmentId;
+    try {
+      await using routed = await renderRequestsRouter(historyType);
+      const { screen, router } = routed;
+      const clickRequest = (index: number) =>
+        act(() => {
+          const links = screen.container.querySelectorAll<HTMLElement>(
+            '[aria-label="Open exact request"]',
+          );
+          links[index]!.click();
+        });
+      const details = screen.getByRole("region", { name: "Request details" });
+      const approve = () => screen.getByRole("button", { name: "Approve", exact: true }).query();
+      const deny = () => screen.getByRole("button", { name: "Deny", exact: true }).query();
+      await expect.element(screen.getByRole("button", { name: "Current 1" })).toBeVisible();
+      const mountedSection = screen.container.querySelector('[aria-label="Requests on Laptop"]');
+      await clickRequest(0);
+      await expect.element(details.getByText("Loading exact request…")).toBeVisible();
+      expect(approve()).toBeNull();
+      expect(deny()).toBeNull();
+      await clickRequest(1);
+      await expect
+        .element(screen.getByRole("button", { name: "Approve", exact: true }))
+        .toBeVisible();
+      expect(screen.container.querySelector('[aria-label="Requests on Laptop"]')).toBe(
+        mountedSection,
+      );
+      expect(router.state.location.search).toMatchObject({
+        receiver: f.environmentId,
+        request: second.record.id,
+        binding: second.record.bindingDigest,
+      });
+      await act(() => pending.resolve(first));
+      expect(lookup.mock.calls).toEqual([
+        [first.record.id, first.record.bindingDigest],
+        [second.record.id, second.record.bindingDigest],
+      ]);
+      expect(
+        screen.container.querySelector("article:has(button[aria-current]) a")?.getAttribute("href"),
+      ).toContain("request=second");
+      await act(() =>
+        router.navigate({
+          to: "/requests",
+          search: { receiver: f.environmentId, request: second.record.id, binding: "wrong-digest" },
+        }),
+      );
+      await expect.element(details.getByText("Exact request unavailable.")).toBeVisible();
+      expect(approve()).toBeNull();
+      expect(deny()).toBeNull();
+      const grantRead = deferred<typeof grant>();
+      vi.mocked(f.client.lookupAccess).mockReturnValueOnce(grantRead.promise);
+      await act(() =>
+        router.navigate({
+          to: "/requests",
+          search: { receiver: f.environmentId, access: grant.id },
+        }),
+      );
+      await expect.element(details.getByText("Loading exact access…")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Revoke access" }).query()).toBeNull();
+      await act(() => grantRead.resolve(grant));
+      await expect
+        .element(details.getByRole("heading", { name: "Exact destination" }))
+        .toBeVisible();
+      await expect.element(screen.getByRole("button", { name: "Revoke access" })).toBeVisible();
+      await act(() =>
+        screen.container.querySelector<HTMLElement>('[aria-label="Open exact thread"]')!.click(),
+      );
+      await expect
+        .element(screen.getByText(`Thread destination on ${f.environmentId}`))
+        .toBeVisible();
+      expect(f.client.mutate).not.toHaveBeenCalled();
+    } finally {
+      routedReceiver = null;
+    }
+  },
+);
 
 it("keeps long labels in compact rows and brings selected details into view on narrow screens", async () => {
   const f = setup("review-browser-layout");

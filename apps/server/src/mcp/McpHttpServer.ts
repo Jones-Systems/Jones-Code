@@ -15,6 +15,8 @@ import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserRespo
 import { handlers as userResponseRequestHandlers } from "../jones/mcp/userResponseRequest/handlers.ts";
 import { UserResponseRequestToolkit } from "../jones/mcp/userResponseRequest/tools.ts";
 import * as RemoteAdmissionProtocol from "../jones/remoteAdmissionIntegration/protocolTools.ts";
+import * as RequestManagement from "../jones/remoteAdmissionIntegration/RequestManagement.ts";
+import * as RequestManagementMcp from "../jones/remoteAdmissionIntegration/requestManagementMcp.ts";
 import {
   LINKED_MESSAGE_ORIGIN_HEADER,
   withLinkedMessageOrigin,
@@ -1497,6 +1499,17 @@ export const layerTools = Layer.mergeAll(
   layerStorageCleanupReportToolkit,
   SettlementRestoreRegistrationLive,
   toolkitRegistration(RemoteAdmissionCancel.toolkit, RemoteAdmissionCancel.handlers),
+  Layer.unwrap(
+    Effect.serviceOption(RequestManagement.RequestManagement).pipe(
+      Effect.map((service) =>
+        Option.isNone(service)
+          ? Layer.empty
+          : toolkitRegistration(RequestManagementMcp.toolkit, RequestManagementMcp.handlers).pipe(
+              Layer.provide(Layer.succeed(RequestManagement.RequestManagement, service.value)),
+            ),
+      ),
+    ),
+  ),
   Layer.unwrap(
     Effect.serviceOption(RemoteAdmissionProtocol.ReceiverPeerProtocol).pipe(
       Effect.map((service) =>

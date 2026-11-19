@@ -205,7 +205,7 @@
         },
         {
           "path": "apps/server/src/binCli.ts",
-          "sha256": "c4fc5fb438d931d85953edbaf566a8c13f6f5f8d0e4284f2fe6bfd6addf905df"
+          "sha256": "a0c99cc3af2052b769afa9d9061263beeb4df661ee49c61a96b84292bcd1f0ee"
         },
         {
           "path": "scripts/prepare-server-compile-cache.cjs",
@@ -242,7 +242,7 @@
         },
         {
           "path": "apps/server/src/server.ts",
-          "sha256": "af0104601f1409ba14b17c55c355eca4638a434a71a0d0bd71b448897e2230b0"
+          "sha256": "e8205a0bca04eabd334261039d57fab520f3800005591cdaffbcab211b36248e"
         },
         {
           "path": "scripts/prepare-server-compile-cache.cjs",

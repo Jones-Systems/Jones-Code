@@ -4,6 +4,7 @@ import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import { RemoteAdmissionIntake } from "../remoteAdmissionIntegration/RemoteAdmissionIntake.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
+import { requestManagementTable } from "../remoteAdmission/RequestManagementStorage.ts";
 
 /** Feature support is distinct from a caller's permission. Upstream-only
  * harnesses and servers without the Jones migration advertise no new protocol.
@@ -19,6 +20,7 @@ export const remoteAdmissionFeatures = Effect.gen(function* () {
   )
     return {};
   return {
+    ...((yield* tables(requestManagementTable)) ? { requestManagement: true } : {}),
     remoteAdmissionObservationVersion: Review.REMOTE_ADMISSION_OBSERVATION_VERSION,
     remoteAdmissionPeerStatusVersion: Review.REMOTE_ADMISSION_PEER_STATUS_VERSION,
     remoteAdmissionRetryObservationVersion: Review.REMOTE_ADMISSION_RETRY_OBSERVATION_VERSION,

@@ -148,6 +148,39 @@ describe("browser API CORS", () => {
       await dispose();
     }
   });
+
+  it("allows the packaged renderer's evaluator policy PUT preflight on that route", async () => {
+    const layerApp = ServerHttp.layerBrowserApiCors.pipe(
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "http-cors-policy-test-" })),
+      Layer.provide(NodeServices.layer),
+    );
+    const { handler, dispose } = HttpRouter.toWebHandler(layerApp, { disableLogger: true });
+    const preflight = (path: string) =>
+      handler(
+        new Request(`https://backend.example${path}`, {
+          method: "OPTIONS",
+          headers: {
+            origin: "t3code://app",
+            "access-control-request-method": "PUT",
+            "access-control-request-headers": "authorization, content-type",
+          },
+        }),
+      );
+    try {
+      const response = await preflight("/api/jones/remote-admission/policy");
+      expect(response.status).toBe(204);
+      expect(
+        response.headers
+          .get("access-control-allow-methods")
+          ?.split(",")
+          .map((method) => method.trim()),
+      ).toContain("PUT");
+      const unrelated = await preflight("/api/environment");
+      expect(unrelated.headers.get("access-control-allow-methods")).not.toContain("PUT");
+    } finally {
+      await dispose();
+    }
+  });
 });
 
 describe("untraced requests", () => {

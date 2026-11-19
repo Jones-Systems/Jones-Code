@@ -427,11 +427,24 @@ If evaluation fails or is interrupted, the request remains held as an evaluator
 service failure. New failures include a reason such as a timeout, account-access
 problem or invalid response. Older holds may contain only a generic reason;
 changing the evaluator does not retry or release them.
+This warning does not establish that the machine has no evaluator providers.
 
 Review requires an owner session on the receiving environment. A working linked
 connection does not grant that permission. If a linked environment says owner
 access is required, use that machine's own Jones Code app or signed-in browser.
-This warning does not establish that the machine has no evaluator providers.
+
+Agents can use `t3_requests_list` and `t3_requests_read` for request status on
+their own environment. On a linked receiver, the tools show records associated
+with that authenticated link. These reads omit prompts, paths, credentials,
+and owner labels.
+
+Use `t3 requests list --view all` in the receiving machine's local CLI. Use
+`t3 requests inspect <request-id>` to get the current revision and receiving
+environment ID, then supply both values to `label`, `dismiss`, or `restore`
+with `--revision` and `--environment`. Dismiss hides eligible completed entries
+from the inbox and preserves their history. Use `--view dismissed` to find them
+again. Decide held requests in the app and use Requests to investigate uncertain
+launches.
 
 Screening is a heuristic, and does not change normal
 execution after a pass or the link's underlying access grant. Revoke the link

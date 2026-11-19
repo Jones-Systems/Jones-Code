@@ -74,4 +74,5 @@ export {
   remoteAdmissionHttpApiLayer,
   remoteAdmissionReviewHttpApiLayer,
 } from "../remoteAdmissionIntegration/http.ts";
+export { requestManagementHttpApiLayer } from "../remoteAdmissionIntegration/requestManagementHttp.ts";
 export { resumeLayer as remoteAdmissionResumeLayer } from "../remoteAdmissionIntegration/registration.ts";

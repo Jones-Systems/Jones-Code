@@ -3,6 +3,7 @@ import { expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import { TooltipProvider } from "../../components/ui/tooltip";
 import { EnvironmentRequests, RequestsPage } from "./RequestsPage";
+import { renderRequestsRouter } from "./requestsRouterTestHarness";
 import { admissionFixture, admissionSnapshot, contextAdmissionFixture } from "./testFixtures";
 import { RemoteAdmissionCount } from "./RemoteAdmissionAttention";
 
@@ -123,6 +124,55 @@ it("includes authorized linked receivers and shows inaccessible ones without ass
   expect(primary.textContent).not.toContain("No pending requests");
   expect(request.mock.calls.map(([id]) => id)).toContain("requests-linked");
 });
+
+it.each(["browser", "hash"] as const)(
+  "recovers only an exact record in the V1 receiver snapshot with %s history",
+  async (historyType) => {
+    const receiver = "requests-linked";
+    const target = admissionFixture({ id: "exact-v1" });
+    request.mockReset().mockResolvedValue(admissionSnapshot([admissionFixture(), target]));
+    const initial = `/requests?receiver=${receiver}&request=${target.id}&binding=${target.bindingDigest}`;
+    await using routed = await renderRequestsRouter(historyType, { initial });
+    const { screen, router } = routed;
+    const linked = screen.getByRole("region", { name: "Requests on Linked receiver" });
+    await expect.element(linked.getByRole("button", { name: "Approve" })).toBeVisible();
+    const section = screen.container.querySelector('[aria-label="Requests on Linked receiver"]')!;
+    expect(section.querySelector("details[open]")?.getAttribute("data-request-id")).toBe(target.id);
+    expect(section.querySelectorAll("details[data-request-id]")).toHaveLength(1);
+
+    for (const binding of ["c".repeat(64), "x".repeat(1025)]) {
+      await act(() =>
+        router.navigate({
+          to: "/requests",
+          search: { receiver, request: target.id, binding },
+        }),
+      );
+      await expect
+        .element(linked.getByText("Exact request unavailable in this receiver’s request list."))
+        .toBeVisible();
+      expect(linked.getByRole("button", { name: "Approve" }).query()).toBeNull();
+      expect(linked.getByRole("button", { name: "Deny" }).query()).toBeNull();
+    }
+    await act(() =>
+      router.navigate({
+        to: "/requests",
+        search: { receiver, request: target.id },
+      }),
+    );
+    await expect.element(linked.getByRole("button", { name: "Deny" })).toBeVisible();
+    expect(section.querySelector("details[open]")?.getAttribute("data-request-id")).toBe(target.id);
+    await act(() =>
+      router.navigate({
+        to: "/requests",
+        search: { receiver, access: "v2-only" },
+      }),
+    );
+    await expect
+      .element(linked.getByText("Exact access review is unsupported on this receiver."))
+      .toBeVisible();
+    expect(request.mock.calls.every(([, input]) => input.action === "snapshot")).toBe(true);
+  },
+);
 
 it("bounds collapsed previews, discloses the cap and leaves full payload available", async () => {
   const long = "Synthetic long content ".repeat(100);
