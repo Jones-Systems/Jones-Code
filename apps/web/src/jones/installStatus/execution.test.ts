@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
+import type { JonesInstallPlanResult } from "@t3tools/contracts/jones/installPlan";
+import { startPlan } from "@t3tools/client-runtime/jones/install-plan";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type { JonesExecutorHost } from "@t3tools/client-runtime/jones/updates/executor";
 import { prepareReviewedInstall } from "@t3tools/client-runtime/jones/updates/executor";
@@ -8,7 +10,13 @@ import type {
   JonesOperationStartInput,
 } from "@t3tools/contracts/jones/jonesOperations";
 import { createWebJonesJournal } from "./executionJournal";
-import { createWebJonesExecutor, stopWebJonesDownload } from "./execution";
+import {
+  createWebJonesExecutor,
+  executeWebJonesReplacement,
+  stopWebJonesDownload,
+} from "./execution";
+import { readLegacyConnectionsAuthority } from "./entrypoints";
+import { createInstallStatusStore } from "./panelUi";
 import { bindInstallPlanServices, type InstallPlanServices } from "./services";
 
 const environmentId = EnvironmentId.make("web-duty-host"),
@@ -179,6 +187,92 @@ describe("web durable execution", () => {
       expect(result.kind).toBe("refused");
       expect(journal.getSnapshot().duties).toEqual([]);
       expect(installPlan.mock.calls).toHaveLength(1);
+    } finally {
+      unbind();
+    }
+  });
+
+  it("clears a replacement reservation when the verified plan changes before sending", async () => {
+    const now = "2026-10-27T04:00:00Z";
+    const laptop = EnvironmentId.make("laptop");
+    const activeTree = "b".repeat(40);
+    const plan = startPlan({
+      planId: id(1),
+      target: {
+        repository: "Jones-Systems/Jones-Code",
+        sourceSha: targetSource,
+        sourceTree: activeTree,
+        version: "new",
+      },
+      origin: "connections",
+      from: { version: "old" },
+      laptopEnvironmentId: laptop,
+      select: [],
+      now,
+    });
+    const installPlan = vi.fn(async (): Promise<JonesInstallPlanResult> => {
+      const changed = journal.getSnapshot().duties.some((d) => d.id === id(2));
+      return {
+        state: {
+          schema: 1,
+          documentRevision: changed ? 2 : 1,
+          current: {
+            ...plan,
+            revision: changed ? 2 : 1,
+            laptop: {
+              ...plan.laptop,
+              gate: {
+                openedAt: now,
+                basis: "plan-install",
+                transactionId: "transaction",
+                activeGeneration: "generation",
+                activeSource: targetSource,
+                activeTree,
+              },
+            },
+          },
+          last: null,
+          laptop: {
+            environmentId: laptop,
+            observedAt: now,
+            activationBlocked: false,
+            activeSource: targetSource,
+            activeTree,
+            activeGeneration: "generation",
+            committedTransactionId: "transaction",
+          },
+          view: { complete: false },
+        },
+      };
+    });
+    const journal = createWebJonesJournal(storage());
+    const unbind = bindInstallPlanServices(
+      { bridge: { installPlan } } as unknown as InstallPlanServices,
+      createInstallStatusStore(),
+    );
+    vi.stubGlobal("window", { desktopBridge: { installPlan } });
+    try {
+      const authority = await readLegacyConnectionsAuthority(targetSource, environmentId);
+      if (typeof authority === "string") throw new Error(authority);
+      const send = vi.fn(async () => true);
+      await expect(
+        executeWebJonesReplacement(
+          {
+            environmentId,
+            operationId: id(2),
+            targetSource,
+            stagedHandle: "reviewed",
+            authority,
+            host: host(),
+            canDispatch: () => true,
+            send,
+          },
+          journal,
+        ),
+      ).rejects.toThrow("The verified Laptop plan changed.");
+      expect(installPlan).toHaveBeenCalledTimes(3);
+      expect(send).not.toHaveBeenCalled();
+      expect(journal.getSnapshot().duties).toEqual([]);
     } finally {
       unbind();
     }

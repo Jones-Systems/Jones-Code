@@ -26,6 +26,7 @@ export interface InstallStatusSnapshot {
   readonly open: boolean;
   readonly collapsed: boolean;
   readonly showLast: boolean;
+  readonly historySelection: number;
   readonly historyPlanId: string | null;
   readonly historyPlan: JonesInstallPlan | null;
   readonly historyDocumentRevision: number | undefined;
@@ -115,6 +116,7 @@ export function createInstallStatusStore() {
     open: false,
     collapsed: false,
     showLast: false,
+    historySelection: 0,
     historyPlanId: null,
     historyPlan: null,
     historyDocumentRevision: undefined,
@@ -126,16 +128,15 @@ export function createInstallStatusStore() {
   const listeners = new Set<() => void>();
   const collapsedByPlan = new Map<string, boolean>();
   let desk: unknown;
-  let historySelection = 0;
   const visiblePlanId = () =>
     (snapshot.showLast
       ? (snapshot.historyPlanId ?? snapshot.native?.last?.planId)
       : snapshot.native?.current?.planId) ?? "preview";
   return {
     get: () => snapshot,
-    historySelection: () => historySelection,
+    historySelection: () => snapshot.historySelection,
     bindDesk(key: unknown) {
-      historySelection++;
+      const historySelection = snapshot.historySelection + 1;
       if (desk !== undefined && key !== desk) {
         collapsedByPlan.clear();
         this.update({
@@ -144,6 +145,7 @@ export function createInstallStatusStore() {
           devices: [],
           desktop: null,
           showLast: false,
+          historySelection,
           historyPlanId: null,
           historyPlan: null,
           historyDocumentRevision: undefined,
@@ -151,7 +153,7 @@ export function createInstallStatusStore() {
           previewTargetSource: null,
           error: null,
         });
-      } else if (snapshot.historyPlan !== null) this.update({ historyPlan: null });
+      } else this.update({ historySelection, historyPlan: null });
       desk = key;
     },
     subscribe(listener: () => void) {
@@ -175,17 +177,11 @@ export function createInstallStatusStore() {
       const stale =
         !withheldLedger && incoming != null && isOlderNativeState(previousState, incoming);
       const olderLaptop =
-        !withheldLedger &&
         incoming != null &&
         previousState != null &&
         incoming.documentRevision === previousState.documentRevision &&
         Date.parse(incoming.laptop.observedAt) < Date.parse(previousState.laptop.observedAt);
-      const native =
-        stale || incoming === undefined
-          ? previousState
-          : olderLaptop
-            ? { ...incoming, laptop: previousState.laptop }
-            : incoming;
+      const native = stale || olderLaptop || incoming === undefined ? previousState : incoming;
       const planId = rest.historyPlanId === undefined ? snapshot.historyPlanId : rest.historyPlanId;
       const previous = snapshot.historyPlan?.planId === planId ? snapshot.historyPlan : null;
       const acceptsDetail =
@@ -223,11 +219,11 @@ export function createInstallStatusStore() {
       return !stale;
     },
     open(showLast = false, planId = showLast ? snapshot.native?.last?.planId : undefined) {
-      historySelection++;
       const id = (showLast ? planId : snapshot.native?.current?.planId) ?? "preview";
       this.update({
         open: true,
         showLast,
+        historySelection: snapshot.historySelection + 1,
         historyPlanId: planId ?? null,
         collapsed: collapsedByPlan.get(id) ?? false,
       });

@@ -1210,6 +1210,7 @@ export function createScriptedInstallPlan(input: {
         environmentId: device.environmentId,
         action,
         expectedInstalledSource: "b".repeat(40),
+        correlation: { planId: plan.planId, deviceKey: device.environmentId },
         phase,
         acceptedAt: at(600_000),
         updatedAt: at(300_000),

@@ -9,6 +9,7 @@ import {
   reconcileJonesExecution,
 } from "../installStatus/execution";
 import { useJonesExecutionJournal, webJonesJournal } from "../installStatus/executionJournal";
+import { readLegacyConnectionsAuthority } from "../installStatus/entrypoints";
 import {
   jonesExactSourceResultError,
   jonesInstallRefusal,
@@ -160,6 +161,10 @@ export async function performExactSourceStep({
       message: "Nothing was sent: the laptop's verified installed build changed or is unavailable.",
     };
   if (step.kind === "replace-exact") {
+    const authority = await readLegacyConnectionsAuthority(targetSource, environmentId).catch(
+      () => "Native plan status is unavailable.",
+    );
+    if (typeof authority === "string") return { kind: "refused", message: authority };
     if (
       !(await host.confirm(
         `Replace downloaded source ${shortJonesSource(step.replace.sourceSha)} on ${label} with ${shortJonesSource(targetSource)}? The old download is retired; its files are retained. Nothing installs until you choose Install.`,
@@ -200,6 +205,7 @@ export async function performExactSourceStep({
         operationId,
         targetSource,
         stagedHandle: step.replace.stagedHandle,
+        authority,
         host,
         canDispatch: () => {
           const latest = resolve();

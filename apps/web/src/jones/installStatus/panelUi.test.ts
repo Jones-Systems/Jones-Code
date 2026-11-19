@@ -110,4 +110,31 @@ describe("renderer read ordering", () => {
     expect(store.get().native?.documentRevision).toBe(1);
     expect(store.get().historyPlanId).toBeNull();
   });
+
+  it("keeps a newer storage refusal until a fresh writable read of the same revision", () => {
+    const store = createInstallStatusStore();
+    const writable = { ...state(plan), documentRevision: 4 };
+    store.update({ native: writable });
+    store.update({
+      native: {
+        ...state(null),
+        laptop: { ...writable.laptop, observedAt: "2026-10-27T04:00:02Z" },
+        readOnly: { code: "invalid", message: "Storage unavailable" },
+      },
+      nativeRefusal: "Storage unavailable",
+    });
+    store.update({ native: writable, nativeRefusal: null });
+    expect(store.get().native?.current?.planId).toBe(plan.planId);
+    expect(store.get().native?.readOnly?.message).toBe("Storage unavailable");
+    expect(store.get().nativeRefusal).toBe("Storage unavailable");
+    store.update({
+      native: {
+        ...writable,
+        laptop: { ...writable.laptop, observedAt: "2026-10-27T04:00:03Z" },
+      },
+      nativeRefusal: null,
+    });
+    expect(store.get().native?.readOnly).toBeUndefined();
+    expect(store.get().nativeRefusal).toBeNull();
+  });
 });

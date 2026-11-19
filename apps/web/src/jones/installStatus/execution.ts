@@ -9,7 +9,13 @@ import type {
   JonesActionDuty,
   JonesActionJournal,
 } from "@t3tools/client-runtime/jones/updates/action-journal";
-import { legacyConnectionsGate, planGateFor, routeNativeLaptopAction } from "./entrypoints";
+import {
+  legacyConnectionsGate,
+  planGateFor,
+  readLegacyConnectionsAuthority,
+  routeNativeLaptopAction,
+  type LegacyConnectionsAuthority,
+} from "./entrypoints";
 import { nativeJonesDispatch, webJonesJournal } from "./executionJournal";
 import { installPlanServices, requestInstallPlan } from "./services";
 
@@ -329,12 +335,32 @@ export function stopWebJonesDownload(
   return run;
 }
 
+async function replacementAuthorityIssue(
+  targetSource: string,
+  environmentId: EnvironmentId,
+  reviewed: LegacyConnectionsAuthority,
+) {
+  const current = await readLegacyConnectionsAuthority(targetSource, environmentId);
+  if (typeof current === "string") return current;
+  if (
+    current.kind !== reviewed.kind ||
+    (current.kind === "verified-plan" &&
+      reviewed.kind === "verified-plan" &&
+      (current.binding !== reviewed.binding ||
+        current.planId !== reviewed.planId ||
+        current.revision !== reviewed.revision))
+  )
+    return "The verified Laptop plan changed. Review the replacement again.";
+  return null;
+}
+
 export async function executeWebJonesReplacement(
   input: {
     readonly environmentId: EnvironmentId;
     readonly operationId: string;
     readonly targetSource: string;
     readonly stagedHandle: string;
+    readonly authority: LegacyConnectionsAuthority;
     readonly host: Pick<JonesExecutorHost, "readLatest">;
     readonly canDispatch: () => boolean;
     readonly send: () => Promise<boolean>;
@@ -343,7 +369,11 @@ export async function executeWebJonesReplacement(
 ) {
   await journal.load();
   const before = input.host.readLatest();
-  const gate = await legacyConnectionsGate(input.targetSource, input.environmentId);
+  const gate = await replacementAuthorityIssue(
+    input.targetSource,
+    input.environmentId,
+    input.authority,
+  );
   if (gate !== null) throw new Error(gate);
   if (
     !before.canOperate ||
@@ -359,9 +389,11 @@ export async function executeWebJonesReplacement(
     targetSource: input.targetSource,
     stagedHandle: input.stagedHandle,
   });
-  const stillAllowed = await legacyConnectionsGate(input.targetSource, input.environmentId).catch(
-    () => "Native plan status is unavailable.",
-  );
+  const stillAllowed = await replacementAuthorityIssue(
+    input.targetSource,
+    input.environmentId,
+    input.authority,
+  ).catch(() => "Native plan status is unavailable.");
   if (
     stillAllowed !== null ||
     !input.canDispatch() ||

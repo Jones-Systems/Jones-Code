@@ -164,12 +164,22 @@ export interface InstallPlanBinding {
   readonly store: InstallStatusStore;
 }
 let active: InstallPlanBinding | undefined;
+const bindingListeners = new Set<() => void>();
+
+export function subscribeInstallPlanServices(listener: () => void) {
+  bindingListeners.add(listener);
+  return () => bindingListeners.delete(listener);
+}
+
 export function bindInstallPlanServices(services: InstallPlanServices, store = installStatusStore) {
   const binding = { services, store };
   active = binding;
   store.bindDesk(services.bridge.installPlan);
+  for (const listener of bindingListeners) listener();
   return () => {
-    if (active === binding) active = undefined;
+    if (active !== binding) return;
+    active = undefined;
+    for (const listener of bindingListeners) listener();
   };
 }
 export function installPlanServices() {

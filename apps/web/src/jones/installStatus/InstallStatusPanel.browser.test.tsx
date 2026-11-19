@@ -70,6 +70,7 @@ async function setup(
     declineManualClosure?: boolean;
     loseManualClosureReply?: boolean;
     recoveryHistory?: boolean;
+    bindAfterMount?: boolean;
   } = {},
 ) {
   let desktop = initialDesktop();
@@ -119,83 +120,86 @@ async function setup(
   let released: JonesOperationReceipt | undefined;
   let readObserved!: () => void;
   const receiptRead = new Promise<void>((resolve) => (readObserved = resolve));
-  const controller = startInstallPlanController(
-    {
-      ...services,
-      confirm: async (message) => {
-        const accepted = await services.confirm(message);
-        return !options.declineManualClosure || !message.includes("after your manual install")
-          ? accepted
-          : false;
-      },
-      operation: async (id, command) => {
-        if (
-          refused === undefined &&
-          command.action === "operationStart" &&
-          (command.input.action.kind === "install"
-            ? options.refuseFirstInstall
-            : options.refuseFirstDownload)
-        ) {
-          calls.push({
-            action: "fixture-host-operationStart",
-            input: { environmentId: id, input: command.input },
-          });
-          refused = {
-            protocol: 1,
-            ...command.input,
-            phase: "refused",
-            code: "busy",
-            message: "This request did not start.",
-            updatedAt: new Date(services.now()).toISOString(),
-          };
-          return refused;
-        }
-        const result = await services.operation(id, command);
-        if (command.action === "recoverCleanup" && options.loseCleanupReply) {
-          const held = fixture
-            .snapshot()
-            .current?.devices.find((d) => d.environmentId === id)
-            ?.operations.at(-1)?.receipt;
+  const startController = () =>
+    startInstallPlanController(
+      {
+        ...services,
+        confirm: async (message) => {
+          const accepted = await services.confirm(message);
+          return !options.declineManualClosure || !message.includes("after your manual install")
+            ? accepted
+            : false;
+        },
+        operation: async (id, command) => {
           if (
-            held?.operationId !== command.input.operationId ||
-            held.jobId !== command.input.jobId ||
-            command.input.recoveryToken !== fixtureRecoveryToken
-          )
-            throw new Error("Fixture recovery binding changed.");
-          released = {
-            ...held,
-            phase: "interrupted",
-            code: "cleanup-recovered",
-            message: "Cleanup was verified and the preparation hold was released.",
-          };
-          throw new Error("Fixture lost the recovery response.");
-        }
-        if (command.action === "operationRead" && "receipts" in result) {
-          readObserved();
-          return {
-            ...(command.input.inspectCleanup === undefined
-              ? {}
-              : {
-                  cleanupInspection: result.cleanupInspection ?? {
-                    operationId: command.input.inspectCleanup,
-                    status: "eligible" as const,
-                    ...(options.loseCleanupReply ? { recoveryToken: fixtureRecoveryToken } : {}),
-                  },
-                }),
-            receipts: result.receipts.map((entry) =>
-              refused !== undefined && entry.operationId === refused.operationId
-                ? { ...entry, receipt: refused }
-                : released !== undefined && entry.operationId === released.operationId
-                  ? { ...entry, receipt: released }
-                  : entry,
-            ),
-          };
-        }
-        return result;
+            refused === undefined &&
+            command.action === "operationStart" &&
+            (command.input.action.kind === "install"
+              ? options.refuseFirstInstall
+              : options.refuseFirstDownload)
+          ) {
+            calls.push({
+              action: "fixture-host-operationStart",
+              input: { environmentId: id, input: command.input },
+            });
+            refused = {
+              protocol: 1,
+              ...command.input,
+              phase: "refused",
+              code: "busy",
+              message: "This request did not start.",
+              updatedAt: new Date(services.now()).toISOString(),
+            };
+            return refused;
+          }
+          const result = await services.operation(id, command);
+          if (command.action === "recoverCleanup" && options.loseCleanupReply) {
+            const held = fixture
+              .snapshot()
+              .current?.devices.find((d) => d.environmentId === id)
+              ?.operations.at(-1)?.receipt;
+            if (
+              held?.operationId !== command.input.operationId ||
+              held.jobId !== command.input.jobId ||
+              command.input.recoveryToken !== fixtureRecoveryToken
+            )
+              throw new Error("Fixture recovery binding changed.");
+            released = {
+              ...held,
+              phase: "interrupted",
+              code: "cleanup-recovered",
+              message: "Cleanup was verified and the preparation hold was released.",
+            };
+            throw new Error("Fixture lost the recovery response.");
+          }
+          if (command.action === "operationRead" && "receipts" in result) {
+            readObserved();
+            return {
+              ...(command.input.inspectCleanup === undefined
+                ? {}
+                : {
+                    cleanupInspection: result.cleanupInspection ?? {
+                      operationId: command.input.inspectCleanup,
+                      status: "eligible" as const,
+                      ...(options.loseCleanupReply ? { recoveryToken: fixtureRecoveryToken } : {}),
+                    },
+                  }),
+              receipts: result.receipts.map((entry) =>
+                refused !== undefined && entry.operationId === refused.operationId
+                  ? { ...entry, receipt: refused }
+                  : released !== undefined && entry.operationId === released.operationId
+                    ? { ...entry, receipt: released }
+                    : entry,
+              ),
+            };
+          }
+          return result;
+        },
       },
-    },
-    fixture.store,
-  );
+      fixture.store,
+    );
+  let controller = options.bindAfterMount ? undefined : startController();
+  if (options.bindAfterMount) fixture.laptopChanged();
   fixture.store.open();
   const screen = await render(
     <div className="flex h-[640px] w-80 flex-col bg-sidebar text-sidebar-foreground" data-shell>
@@ -213,6 +217,7 @@ async function setup(
     </div>,
     { router: false },
   );
+  controller ??= startController();
   await expect.poll(() => fixture.store.get().native).not.toBeNull();
   const publish = async (state: DesktopUpdateState) => {
     await act(() => {
@@ -277,6 +282,18 @@ const click = async (screen: Screen, name: string) => {
 // These use real browser interactions and the real pure model/runner against scripted receipts.
 // They cannot qualify native installs, host worker exit, Electron IPC or publication.
 describe("Install status receipt fixture", () => {
+  it("applies device selection after Install Status renders before its controller binds", async () => {
+    await using world = await setup({ bindAfterMount: true });
+    await click(world.screen, "Edit");
+    await world.screen.getByRole("checkbox", { name: "Include VPS" }).click();
+    await click(world.screen, "Done");
+    await expect.element(button(world.screen, "Download on Laptop")).toBeEnabled();
+    expect(world.fixture.store.get().previewSelection.map((device) => device.label)).toEqual([
+      "VPS",
+    ]);
+    expect(world.fixture.snapshot().current).toBeNull();
+  });
+
   it("stops local scheduling and reconciles exact earlier recovery with a newer plan open", async () => {
     await using world = await setup({ recoveryHistory: true });
     const { screen, fixture, calls } = world;

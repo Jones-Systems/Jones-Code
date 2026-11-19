@@ -540,8 +540,8 @@ describe("exact-source action", () => {
     expect(world.requests).toEqual([]);
   });
 
-  it.each(["read-only", "refused"] as const)(
-    "refuses exact-source replacement when the native read is %s despite a matching Laptop gate",
+  it.each(["read-only", "refused", "replaced", "revised"] as const)(
+    "refuses exact-source replacement with a %s native plan despite a matching Laptop gate",
     async (mode) => {
       await using _fixture = await setupFixture1();
       const laptop = EnvironmentId.make("replacement-laptop");
@@ -570,7 +570,11 @@ describe("exact-source action", () => {
         activeTree: target,
       };
       const message =
-        mode === "read-only" ? "Saved plans are read-only." : "Reading saved plans was refused.";
+        mode === "read-only"
+          ? "Saved plans are read-only."
+          : mode === "refused"
+            ? "Reading saved plans was refused."
+            : "The verified Laptop plan changed.";
       const result: JonesInstallPlanResult = {
         state: {
           schema: 1,
@@ -599,7 +603,8 @@ describe("exact-source action", () => {
       const unreachable = vi.fn(async () => {
         throw new Error("Unexpected mutation.");
       });
-      const installPlan = vi.fn(async () => result);
+      let latest = result;
+      const installPlan = vi.fn(async () => latest);
       const bridge = { installPlan, getUpdateState: unreachable, onUpdateState: () => () => {} };
       vi.stubGlobal("desktopBridge", bridge);
       const unbind = bindInstallPlanServices(
@@ -637,10 +642,26 @@ describe("exact-source action", () => {
           allowInstall: false,
           buttonLabel: "Match laptop",
         });
-        world.handlers.dialog = async () => true;
+        world.handlers.dialog = async () => {
+          if (mode !== "replaced" && mode !== "revised") return true;
+          const reviewed = result.state.current!;
+          latest = {
+            state: {
+              ...result.state,
+              documentRevision: 2,
+              current:
+                mode === "replaced"
+                  ? { ...reviewed, planId: "22222222-2222-4222-8222-222222222222" }
+                  : { ...reviewed, revision: reviewed.revision + 1 },
+            },
+          };
+          return true;
+        };
         await click("Match laptop");
         await expect.poll(status).toContain(message);
-        expect(installPlan).toHaveBeenCalledExactlyOnceWith({ type: "read" });
+        const changesDuringReview = mode === "replaced" || mode === "revised";
+        expect(world.dialogs).toHaveLength(changesDuringReview ? 1 : 0);
+        expect(installPlan.mock.calls).toHaveLength(changesDuringReview ? 2 : 1);
         expect(world.requests).toEqual([]);
         expect(unreachable).not.toHaveBeenCalled();
       } finally {

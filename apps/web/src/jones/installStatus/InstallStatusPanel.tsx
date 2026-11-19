@@ -20,7 +20,7 @@ import {
   operationOutstanding,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { cn } from "../../lib/utils";
-import { useInstallPlan } from "./useInstallPlan";
+import { useInstallPlan, useInstallPlanBinding } from "./useInstallPlan";
 import { installStatusStore, type InstallStatusSnapshot, type InstallStatusStore } from "./panelUi";
 import {
   deviceAttention,
@@ -77,9 +77,9 @@ export function InstallStatusPanel({
 }) {
   const snapshot = useInstallPlan(store);
   const view = panelPresentation(snapshot, snapshot.updatedAt);
-  const active = installPlanServices();
+  const active = useInstallPlanBinding();
   const binding = active?.store === store ? active : undefined;
-  const selection = store.historySelection();
+  const selection = snapshot.historySelection;
   const historyId = snapshot.showLast ? snapshot.historyPlanId : null;
   const documentRevision = snapshot.native?.documentRevision;
   const historyRevision =

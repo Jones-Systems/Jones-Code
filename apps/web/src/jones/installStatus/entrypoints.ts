@@ -507,12 +507,22 @@ function retainedRecoveryIssue(
 }
 
 /** Legacy desktop hosts stay in Connections; the native gate read supplies their prerequisite. */
-export async function legacyConnectionsGate(
+export type LegacyConnectionsAuthority =
+  | { readonly kind: "without-native-plan" }
+  | {
+      readonly kind: "verified-plan";
+      readonly binding: InstallPlanBinding;
+      readonly planId: string;
+      readonly revision: number;
+    };
+
+export async function readLegacyConnectionsAuthority(
   targetSource: string,
   environmentId: EnvironmentId,
-): Promise<string | null> {
+): Promise<LegacyConnectionsAuthority | string> {
   const binding = installPlanServices();
-  if (typeof window === "undefined" || window.desktopBridge?.installPlan === undefined) return null;
+  if (typeof window === "undefined" || window.desktopBridge?.installPlan === undefined)
+    return { kind: "without-native-plan" };
   if (binding === undefined) return "Open Install status on Laptop first.";
   const result = await requestInstallPlan({ type: "read" }, binding);
   const problem = nativePlanIssue(result);
@@ -551,8 +561,16 @@ export async function legacyConnectionsGate(
       : result.state.laptop.ordinaryRecovery === undefined &&
         plan.laptop.gate.ordinaryRecovery === undefined &&
         result.state.laptop.committedTransactionId === plan.laptop.gate.transactionId)
-    ? null
+    ? { kind: "verified-plan", binding, planId: plan.planId, revision: plan.revision }
     : "Update from Connections after Laptop is updated and verified for this source.";
+}
+
+export async function legacyConnectionsGate(
+  targetSource: string,
+  environmentId: EnvironmentId,
+): Promise<string | null> {
+  const authority = await readLegacyConnectionsAuthority(targetSource, environmentId);
+  return typeof authority === "string" ? authority : null;
 }
 export function planGateFor(
   action: JonesOperationAction,
