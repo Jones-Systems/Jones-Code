@@ -59,6 +59,7 @@ import {
 } from "@t3tools/client-runtime/jones/workstreams/personal";
 import {
   showPersonalFailure,
+  showPersonalPositionRejected,
   showPinnedUnpinFailure,
 } from "../jones/workstreams/personalNotifications";
 import {
@@ -79,6 +80,7 @@ import {
   type DragOverEvent,
   type DragStartEvent,
   type Modifier,
+  type UniqueIdentifier,
 } from "@dnd-kit/core";
 import { SortableContext } from "@dnd-kit/sortable";
 import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
@@ -2092,6 +2094,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // useSensor memoizes options identity; fresh options rebuild DndContext and every sortable row.
   const pointerSensorOptions = {
     distance: SIDEBAR_DRAG_DISTANCE,
+    cancelOnViewportExit: (id: UniqueIdentifier) =>
+      workstreamExternalDropRef.current !== null &&
+      sectionByThreadKeyRef.current.get(String(id)) === "pinned",
     onAttach: attachDragSensor,
     onFinish: finishThreadDrag,
     onMove: moveThreadContextDrag,
@@ -2379,6 +2384,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         neighbor: liveNeighbor,
         after,
         state: visibleWorkstreamState,
+        savedOrder: {
+          state: workstreamController.state,
+          readRoster: () =>
+            personalSidebarSummaryThreads(readWorkstreamReferenceThreads(), snoozeNow),
+        },
         activeThreads,
         orderRoster: neighbor === null ? workstreamSummaryThreads : readWorkstreamOrderRoster(),
         activeKeysById,
@@ -2403,6 +2413,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           return result._tag === "Success";
         },
         onAssignmentFailure: showPersonalFailure,
+        onPositionRejected: showPersonalPositionRejected,
         onPositionFailure: (assignmentSaved) => {
           toastManager.add({
             type: "error",

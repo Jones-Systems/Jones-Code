@@ -368,10 +368,6 @@ export function WorkstreamNativeSidebar({
       return;
     let target: Target | null = null;
     const source = event.currentTarget as HTMLElement;
-    const { ownerDocument } = source;
-    const view = ownerDocument.defaultView!;
-    const { pointerId } = event;
-    const boundaryListeners = new AbortController();
     const key = personalThreadKey(thread);
     const startedGroup = groupId(thread);
     const currentThread = () =>
@@ -395,18 +391,8 @@ export function WorkstreamNativeSidebar({
       event: event.nativeEvent,
       options: {
         distance: SIDEBAR_DRAG_DISTANCE,
-        onAttach: (gesture) => {
-          // Once the pointer leaves the document or loses capture, a buttonless move
-          // can be a return after an unseen release.
-          const cancel = (event: PointerEvent) => {
-            if (event.pointerId === pointerId) gesture.cancel();
-          };
-          const { signal } = boundaryListeners;
-          ownerDocument.documentElement.addEventListener("pointerleave", cancel, { signal });
-          ownerDocument.addEventListener("lostpointercapture", cancel, { capture: true, signal });
-        },
+        cancelOnViewportExit: () => true,
         onFinish: () => {
-          boundaryListeners.abort();
           autoScroll?.dispose();
           sensor.current = null;
           lifted.current?.dispose();
@@ -440,15 +426,6 @@ export function WorkstreamNativeSidebar({
         }
       },
       onMove: (point) => {
-        if (
-          point.x < 0 ||
-          point.x >= view.innerWidth ||
-          point.y < 0 ||
-          point.y >= view.innerHeight
-        ) {
-          sensor.current?.cancel();
-          return;
-        }
         autoScroll?.move(point);
         const outside = outsideSidebar(point);
         lifted.current?.setVisible(!outside);

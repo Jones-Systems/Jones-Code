@@ -18,6 +18,10 @@ export interface PersonalThreadPlacementInput {
   readonly neighbor: EnvironmentThreadShell | null;
   readonly after: boolean;
   readonly state: PersonalWorkstreamsState;
+  readonly savedOrder: {
+    readonly state: PersonalWorkstreamsState;
+    readonly readRoster: () => readonly EnvironmentThreadShell[];
+  };
   readonly activeThreads: readonly EnvironmentThreadShell[];
   readonly orderRoster: readonly EnvironmentThreadShell[];
   readonly activeKeysById: ReadonlyMap<string, string | null | undefined>;
@@ -28,11 +32,60 @@ export interface PersonalThreadPlacementInput {
   readonly unpin?: (() => Promise<boolean>) | undefined;
   readonly reorder: (thread: EnvironmentThreadShell, orderKey: string) => Promise<boolean>;
   readonly onAssignmentFailure: (failure: PersonalWorkstreamsFailure) => void;
+  readonly onPositionRejected: () => void;
   readonly onPositionFailure: (assignmentSaved: boolean, cause: unknown) => void;
 }
 
 const shellKey = (thread: EnvironmentThreadShell): string =>
   scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+
+type OrderWrites = NonNullable<ReturnType<typeof planWorkstreamThreadReorder>>;
+
+function preservesSavedWorkstreamOrder(
+  source: PersonalThreadPlacementInput["savedOrder"],
+  membersByKey: ReadonlyMap<string, EnvironmentThreadShell>,
+  movedId: string,
+  plan: OrderWrites,
+): boolean {
+  const writesByWorkstream = new Map<string, OrderWrites[number][]>();
+  for (const write of plan) {
+    if (write.id === movedId) continue;
+    const member = membersByKey.get(write.id);
+    if (!member) return false;
+    const workstreamId = visiblePersonalWorkstreamId(source.state, member);
+    if (workstreamId === null) continue;
+    const writes = writesByWorkstream.get(workstreamId);
+    if (writes) writes.push(write);
+    else writesByWorkstream.set(workstreamId, [write]);
+  }
+  if (writesByWorkstream.size === 0) return true;
+
+  const stationary = source
+    .readRoster()
+    .filter((member) => member.pinnedAt == null && shellKey(member) !== movedId);
+  const { groups } = groupPersonalThreads(source.state, stationary);
+  for (const { workstream, threads } of groups) {
+    const writes = writesByWorkstream.get(workstream.id);
+    if (!writes) continue;
+    const order = sortActiveThreadsByOrderKey(threads);
+    const indexByKey = new Map(order.map((member, index) => [shellKey(member), index]));
+    for (const { id, orderKey } of writes) {
+      const index = indexByKey.get(id);
+      if (index === undefined) return false;
+      const updated = { ...order[index]!, activeOrderKey: orderKey };
+      const previous = order[index - 1];
+      const next = order[index + 1];
+      // In each prefix only this row changes, so the saved order still holds if it fits its neighbors.
+      if (
+        (previous && sortActiveThreadsByOrderKey([previous, updated])[0] !== previous) ||
+        (next && sortActiveThreadsByOrderKey([updated, next])[0] !== updated)
+      )
+        return false;
+      order[index] = updated;
+    }
+  }
+  return true;
+}
 
 // Assignment exceptions propagate to the caller: their membership outcome is unknown.
 // Order failures report only membership confirmed by a successful assignment response.
@@ -53,7 +106,7 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
   if (changesGroup && !controller.canAssign(thread)) return false;
   const confirmUnpin = thread.pinnedAt == null ? undefined : input.unpin;
 
-  let assignments: NonNullable<ReturnType<typeof planWorkstreamThreadReorder>> = [];
+  let assignments: OrderWrites = [];
   let membersByKey: ReadonlyMap<string, EnvironmentThreadShell> | undefined;
   if (neighbor !== null) {
     if (
@@ -91,6 +144,7 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
       ),
     );
     if (confirmUnpin) writable.add(movedId);
+    if (!writable.has(movedId) || !writable.has(neighborId)) return false;
     const plan = planWorkstreamThreadReorder({
       activeOrder: [...membersByKey.keys()],
       keysById: input.activeKeysById,
@@ -101,7 +155,15 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
       groupIdByKey,
       destinationGroupId: destinationId,
     });
-    if (plan === null) return false;
+    // Unassigned can borrow woken members of a snoozed Workstream. Check their saved lane too.
+    if (
+      plan === null ||
+      (destinationId === null &&
+        !preservesSavedWorkstreamOrder(input.savedOrder, membersByKey, movedId, plan))
+    ) {
+      input.onPositionRejected();
+      return false;
+    }
     assignments = plan;
   }
 

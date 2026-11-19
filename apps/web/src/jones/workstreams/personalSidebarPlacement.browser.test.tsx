@@ -12,6 +12,7 @@ import { Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 import { AppRoot } from "~/AppRoot";
+import { toastManager } from "~/components/ui/toast";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -93,7 +94,13 @@ function row(id: string, pinned = false) {
   return element;
 }
 
-function press(target: EventTarget, type: string, element: Element, fraction: number) {
+function press(
+  target: EventTarget,
+  type: string,
+  element: Element,
+  fraction: number,
+  buttons = type === "pointerup" ? 0 : 1,
+) {
   const bounds = element.getBoundingClientRect();
   const event = new PointerEvent(type, {
     bubbles: true,
@@ -102,7 +109,7 @@ function press(target: EventTarget, type: string, element: Element, fraction: nu
     pointerType: "mouse",
     isPrimary: true,
     button: 0,
-    buttons: type === "pointerup" ? 0 : 1,
+    buttons,
     clientX: bounds.left + bounds.width / 2,
     clientY: bounds.top + bounds.height * fraction,
   });
@@ -110,7 +117,10 @@ function press(target: EventTarget, type: string, element: Element, fraction: nu
   return event;
 }
 
-async function dropAt(from: HTMLElement, neighbor: HTMLElement, after = false) {
+const insertion = () => document.querySelector("[data-personal-thread-insertion]");
+const positionNotice = () => page.getByText("Thread can't be placed here", { exact: true });
+
+async function previewDropAt(from: HTMLElement, neighbor: HTMLElement, after = false) {
   const source = from.querySelector<HTMLElement>("[data-sidebar-row]") ?? from;
   const fraction = after ? 0.8 : 0.2;
   const fromShelf = from.dataset.threadItem !== undefined;
@@ -127,9 +137,14 @@ async function dropAt(from: HTMLElement, neighbor: HTMLElement, after = false) {
   await act(() => {
     press(document, "pointermove", neighbor, fraction);
   });
-  const gap = document.querySelector("[data-personal-thread-insertion]");
+  const gap = insertion();
   if (gap) expect(after ? gap.previousElementSibling : gap.nextElementSibling).toBe(neighbor);
-  await act(() => press(document, "pointerup", gap ?? neighbor, gap ? 0.5 : fraction));
+  return gap;
+}
+
+async function dropAt(from: HTMLElement, neighbor: HTMLElement, after = false) {
+  const gap = await previewDropAt(from, neighbor, after);
+  await act(() => press(document, "pointerup", gap ?? neighbor, gap ? 0.5 : after ? 0.8 : 0.2));
   return gap !== null;
 }
 
@@ -312,6 +327,7 @@ async function withSidebar(
       },
     });
   } finally {
+    toastManager.close();
     await screen[Symbol.asyncDispose]();
     vi.mocked(usePersonalWorkstreams).mockReset();
     useUiStateStore.getState().setSidebarProjectScopeKeys([]);
@@ -354,6 +370,47 @@ it("reorders a woken snoozed-group member in Unassigned and restores its saved m
   );
 });
 
+it("keeps the project-filtered Alpha members in saved order when an unrelated drop would invert them", async () => {
+  await withSidebar(
+    {
+      threads: [
+        makeThread("other"),
+        makeThread("sleep-anchor", { lastSnoozeWakeAt: DateTime.makeUnsafe("2026-03-18T00:00Z") }),
+        makeThread("sleep-tail", { projectId: outsideProject }),
+        makeThread("a4", { activeOrderKey: "t" }),
+      ],
+      assignments: { "sleep-anchor": "alpha", "sleep-tail": "alpha" },
+      snoozed: true,
+      folders: true,
+    },
+    async ({ assign, finishDrop, replaySavedOrder, wakeAlpha, remount }) => {
+      await selectProject("render");
+      await vi.waitFor(() => expect(rows(null)).toEqual(["other", "sleep-anchor", "a4"]));
+      expect(lane("alpha")).toBeUndefined();
+      expect(await dropAt(row("a4"), row("other"))).toBe(true);
+      const saved = await finishDrop();
+      const writes = activeWrites().map(({ threadId, orderKey }) => [threadId, orderKey]);
+      const notices = positionNotice().elements().length;
+      await replaySavedOrder();
+      await wakeAlpha();
+      await selectProject("All projects");
+      await vi.waitFor(() => expect(rows("alpha")).toHaveLength(2));
+      const woken = rows("alpha");
+      await remount();
+      await vi.waitFor(() => expect(rows("alpha")).toHaveLength(2));
+      expect({ saved, writes, notices, woken, remounted: rows("alpha") }).toEqual({
+        saved: false,
+        writes: [],
+        notices: 1,
+        woken: ["sleep-anchor", "sleep-tail"],
+        remounted: ["sleep-anchor", "sleep-tail"],
+      });
+      expect(assign).not.toHaveBeenCalled();
+      expect(unpins()).toEqual([]);
+    },
+  );
+});
+
 it.each([
   { folders: false, fixedKey: null, tailKey: null },
   { folders: true, fixedKey: "d", tailKey: "p" },
@@ -375,8 +432,12 @@ it.each([
         await vi.waitFor(() => expect(rows("alpha")).toEqual(["a1", "a2", "a3", "a4"]));
         await selectProject("render");
         await vi.waitFor(() => expect(rows("alpha")).toEqual(["a1", "a3", "a4"]));
-        await dropAt(row("a4"), row("a1"));
+        const gap = await previewDropAt(row("a4"), row("a1"));
+        expect(gap).not.toBeNull();
+        expect(positionNotice().elements()).toHaveLength(0);
+        await act(() => press(document, "pointerup", gap!, 0.5));
         const saved = await finishDrop();
+        expect(positionNotice().elements()).toHaveLength(fixedKey === null ? 1 : 0);
         expect(assign).not.toHaveBeenCalled();
         expect(unpins()).toEqual([]);
         const written = activeWrites().map(({ threadId }) => threadId);
@@ -414,8 +475,12 @@ it.each([null, "t"])(
         await vi.waitFor(() => expect(rows("alpha")).toEqual(["a1", "a3"]));
         await selectProject("render");
         await vi.waitFor(() => expect(rows("alpha")).toEqual(["a1"]));
-        await dropAt(row("a2", true), row("a1"), true);
+        const gap = await previewDropAt(row("a2", true), row("a1"), true);
+        expect(gap).not.toBeNull();
+        expect(positionNotice().elements()).toHaveLength(0);
+        await act(() => press(document, "pointerup", gap!, 0.5));
         const saved = await finishDrop();
+        expect(positionNotice().elements()).toHaveLength(key === null ? 0 : 1);
         await replaySavedOrder();
         await selectProject("All projects");
         await remount();
@@ -443,6 +508,74 @@ it.each([null, "t"])(
                 reloaded: ["a1", "a3"],
               },
         );
+      },
+    );
+  },
+);
+
+it.each(["pointerleave", "outside viewport", "lostpointercapture"])(
+  "cancels a pin-shelf drag after %s and keeps a fresh in-window release possible",
+  async (boundary) => {
+    await withSidebar(
+      {
+        threads: [
+          makeThread("a1"),
+          makeThread("a2", { pinnedAt: DateTime.makeUnsafe(at) }),
+          makeThread("a3"),
+        ],
+        assignments: { a1: "alpha", a3: "alpha" },
+      },
+      async ({ assign, finishDrop, replaySavedOrder }) => {
+        await vi.waitFor(() => expect(rows("alpha")).toEqual(["a1", "a3"]));
+        const pin = row("a2", true);
+        const anchor = row("a1");
+        expect(await previewDropAt(pin, anchor, true)).not.toBeNull();
+        await act(() => {
+          if (boundary === "lostpointercapture") {
+            press(pin, boundary, anchor, 0.5);
+          } else {
+            document.documentElement.dispatchEvent(
+              new PointerEvent(boundary === "pointerleave" ? "pointerleave" : "pointermove", {
+                bubbles: boundary !== "pointerleave",
+                cancelable: true,
+                pointerId: 1,
+                pointerType: "mouse",
+                isPrimary: true,
+                buttons: 1,
+                clientX: -1,
+                clientY: anchor.getBoundingClientRect().top,
+              }),
+            );
+          }
+        });
+        const gapCleared = insertion() === null;
+        await act(() => {
+          press(document, "pointermove", anchor, 0.8, 0);
+          press(document, "pointerup", anchor, 0.8);
+        });
+        if (placements.length > 0) await finishDrop();
+        expect({
+          gapCleared,
+          assignments: assign.mock.calls.length,
+          unpins: unpins().length,
+          writes: activeWrites().length,
+          notices: positionNotice().elements().length,
+        }).toEqual({ gapCleared: true, assignments: 0, unpins: 0, writes: 0, notices: 0 });
+
+        const gap = await previewDropAt(pin, anchor, true);
+        expect(gap).not.toBeNull();
+        const release = boundary === "outside viewport" ? "pointerup" : "pointermove";
+        await act(() => {
+          press(document, release, gap!, 0.5, 0);
+          if (release === "pointermove") press(document, "pointerup", anchor, 0.8);
+        });
+        expect(await finishDrop()).toBe(true);
+        expect(assign).toHaveBeenCalledOnce();
+        expect(unpins()).toHaveLength(1);
+        expect(activeWrites()).toEqual([]);
+        expect(insertion()).toBeNull();
+        await replaySavedOrder();
+        await vi.waitFor(() => expect(rows("alpha")).toEqual(["a1", "a2", "a3"]));
       },
     );
   },

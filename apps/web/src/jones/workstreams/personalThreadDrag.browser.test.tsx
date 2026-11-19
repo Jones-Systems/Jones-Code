@@ -337,6 +337,7 @@ describe("personal thread pointer placement", () => {
                   neighbor,
                   after,
                   state,
+                  savedOrder: { state, readRoster: () => rows },
                   activeThreads: visible,
                   orderRoster: rows,
                   activeKeysById: new Map(
@@ -361,6 +362,9 @@ describe("personal thread pointer placement", () => {
                   },
                   onAssignmentFailure: (failure) => {
                     throw new Error(failure.reason);
+                  },
+                  onPositionRejected: () => {
+                    throw new Error("Unexpected position rejection in the saved-order fixture");
                   },
                   onPositionFailure: (_saved, cause) => {
                     throw cause;

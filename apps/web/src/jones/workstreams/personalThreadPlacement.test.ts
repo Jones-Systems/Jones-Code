@@ -70,6 +70,7 @@ function fixture(
   const orderWrites: Array<{ id: string; orderKey: string }> = [];
   const assignmentFailures: PersonalWorkstreamsFailure[] = [];
   const positionFailures: Array<{ assignmentSaved: boolean; cause: unknown }> = [];
+  const positionRejections: undefined[] = [];
   const denied = new Set<string>();
   let assignAllowed = true;
   let rejectAssignment = false;
@@ -111,6 +112,7 @@ function fixture(
     neighbor: neighborId === null ? null : row(neighborId),
     after,
     state,
+    savedOrder: { state, readRoster: () => rows },
     activeThreads: activeRows(),
     orderRoster: rows,
     activeKeysById: new Map(rows.map((thread) => [shellKey(thread), thread.activeOrderKey])),
@@ -132,6 +134,7 @@ function fixture(
       return true;
     },
     onAssignmentFailure: (cause) => assignmentFailures.push(cause),
+    onPositionRejected: () => positionRejections.push(undefined),
     onPositionFailure: (assignmentSaved, cause) =>
       positionFailures.push({ assignmentSaved, cause }),
     ...overrides,
@@ -152,6 +155,7 @@ function fixture(
     orderWrites,
     assignmentFailures,
     positionFailures,
+    positionRejections,
     denied,
     setAssignAllowed: (allowed: boolean) => (assignAllowed = allowed),
     rejectAssignment: () => (rejectAssignment = true),
@@ -169,7 +173,128 @@ function fixture(
   };
 }
 
+function snoozedAlpha(input: PersonalThreadPlacementInput, sleepers: readonly string[]) {
+  return {
+    ...input,
+    state: { ...input.state, workstreams: input.state.workstreams.filter(({ id }) => id !== "a") },
+    activeThreads: input.activeThreads.filter(({ id }) => !sleepers.includes(id)),
+    orderRoster: input.orderRoster.filter(({ id }) => !sleepers.includes(id)),
+  };
+}
+
 describe("placePersonalThread", () => {
+  it.each(["same project", "filtered project", "pin shelf"])(
+    "rejects a drop that would reverse stationary sleeping members (%s)",
+    async (origin) => {
+      const pinned = origin === "pin shelf";
+      const f = fixture(
+        ["other", "anchor", "tail", "moved"],
+        [["anchor", "a"], ["tail", "a"], ...(pinned ? [] : ([["moved", "b"]] as const))],
+        pinned ? "moved" : undefined,
+      );
+      f.setOrderKey("moved", "t");
+      if (origin === "filtered project") f.denied.add("tail");
+      const input = snoozedAlpha(f.input(null, "other"), ["tail"]);
+      let unpins = 0;
+      const placed = await placePersonalThread({
+        ...input,
+        unpin: async () => {
+          unpins += 1;
+          f.unpin();
+          return true;
+        },
+      });
+      expect({
+        placed,
+        assignments: f.assignmentWrites,
+        unpins,
+        writes: f.orderWrites,
+        saved: f.groupOrder("a"),
+        notices: f.positionRejections.length,
+        receiptFailures: f.positionFailures.length,
+      }).toEqual({
+        placed: false,
+        assignments: [],
+        unpins: 0,
+        writes: [],
+        saved: ["anchor", "tail"],
+        notices: 1,
+        receiptFailures: 0,
+      });
+    },
+  );
+
+  it("rejects the whole plan when only its second stationary write would invert a sleeping lane", async () => {
+    const f = fixture(
+      ["a1", "a2", "a3", "moved"],
+      [
+        ["a1", "a"],
+        ["a2", "a"],
+        ["a3", "a"],
+      ],
+    );
+    f.setOrderKey("moved", "t");
+    f.failOrderAt(3);
+    expect(await placePersonalThread(snoozedAlpha(f.input(null, "a1"), ["a2"]))).toBe(false);
+    expect({
+      writes: f.orderWrites,
+      saved: f.groupOrder("a"),
+      failures: f.positionFailures,
+    }).toEqual({
+      writes: [],
+      saved: ["a1", "a2", "a3"],
+      failures: [],
+    });
+    expect(f.positionRejections).toHaveLength(1);
+  });
+
+  it.each([false, true])(
+    "allows a harmless sleeping-lane rekey, including an RPC failure after it (%s)",
+    async (failAfterFirst) => {
+      const f = fixture(
+        ["other", "tail", "anchor", "moved"],
+        [
+          ["tail", "a"],
+          ["anchor", "a"],
+        ],
+      );
+      f.setOrderKey("moved", "t");
+      if (failAfterFirst) f.failOrderAt(2);
+      expect(await placePersonalThread(snoozedAlpha(f.input(null, "other"), ["tail"]))).toBe(
+        !failAfterFirst,
+      );
+      expect(f.orderWrites[0]?.id).toBe("anchor");
+      expect(f.groupOrder("a")).toEqual(["tail", "anchor"]);
+      expect(f.positionRejections).toEqual([]);
+      expect(f.positionFailures).toHaveLength(failAfterFirst ? 1 : 0);
+    },
+  );
+
+  it("can rekey a single stationary sleeping member", async () => {
+    const f = fixture(["other", "anchor", "moved"], [["anchor", "a"]]);
+    f.setOrderKey("moved", "t");
+    expect(await placePersonalThread(snoozedAlpha(f.input(null, "other"), []))).toBe(true);
+    expect(f.orderWrites[0]?.id).toBe("anchor");
+    expect(f.groupOrder("a")).toEqual(["anchor"]);
+    expect(f.assignmentWrites).toEqual([]);
+  });
+
+  it("allows the woken mover to change its own saved position while retaining assignment", async () => {
+    const f = fixture(
+      ["moved", "tail", "other"],
+      [
+        ["moved", "a"],
+        ["tail", "a"],
+      ],
+    );
+    expect(await placePersonalThread(snoozedAlpha(f.input(null, "other", true), ["tail"]))).toBe(
+      true,
+    );
+    expect(f.orderWrites.map(({ id }) => id)).toEqual(["moved"]);
+    expect(f.groupOrder("a")).toEqual(["tail", "moved"]);
+    expect(f.assignmentWrites).toEqual([]);
+  });
+
   it("reorders an unsettled historical member in Unassigned without removing its saved Workstream", async () => {
     const f = fixture(["u1", "moved", "u2"], [["moved", "a"]]);
     const input = f.input(null, "u1");
@@ -493,6 +618,7 @@ describe("placePersonalThread", () => {
       expect(f.assignmentWrites).toEqual([]);
       expect(f.orderWrites).toEqual([]);
       expect(f.row("moved").pinnedAt).toBe(at);
+      expect(f.positionRejections).toEqual([]);
     },
   );
 
@@ -612,6 +738,7 @@ describe("placePersonalThread", () => {
     expect(f.groupOrder(null)).toEqual(["u1", "moved", "u2"]);
     expect(f.assignmentWrites).toEqual([]);
     expect(f.orderWrites).toEqual([]);
+    expect(f.positionRejections).toEqual([]);
   });
 
   it("rejects infeasible placement before a frozen keyless row without saving membership", async () => {
@@ -631,6 +758,7 @@ describe("placePersonalThread", () => {
     expect(f.groupOrder(null)).toEqual(["moved"]);
     expect(f.assignmentWrites).toEqual([]);
     expect(f.orderWrites).toEqual([]);
+    expect(f.positionRejections).toHaveLength(1);
   });
 
   it("does not write order keys after an assignment failure", async () => {

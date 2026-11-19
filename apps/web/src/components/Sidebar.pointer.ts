@@ -1,11 +1,12 @@
 export const SIDEBAR_DRAG_DISTANCE = 6;
 import { type PointerEvent as ReactPointerEvent } from "react";
-import { type SensorProps } from "@dnd-kit/core";
+import { type SensorProps, type UniqueIdentifier } from "@dnd-kit/core";
 import { getOwnerDocument, getWindow } from "@dnd-kit/utilities";
 
 type Options = {
   distance: number;
-  onAttach: (sensor: SidebarPointerSensor) => void;
+  cancelOnViewportExit?: (active: UniqueIdentifier) => boolean;
+  onAttach?: (sensor: SidebarPointerSensor) => void;
   onFinish: (started: boolean) => void;
   /** Return true to claim the move and hide this position from sorting. */
   onMove?: (point: { x: number; y: number }) => boolean;
@@ -26,14 +27,21 @@ export class SidebarPointerSensor {
   private readonly pointer: PointerEvent;
   private readonly document: Document;
   private readonly window: Window;
+  private readonly cancelOnViewportExit: boolean;
 
   constructor(private readonly props: Omit<SensorProps<Options>, "activeNode" | "context">) {
     this.pointer = props.event as PointerEvent;
     this.document = getOwnerDocument(this.pointer.target);
     this.window = getWindow(this.pointer.target);
+    this.cancelOnViewportExit = props.options.cancelOnViewportExit?.(props.active) === true;
     this.document.addEventListener("pointermove", this.move, { passive: false, capture: true });
     this.document.addEventListener("pointerup", this.end, { capture: true });
     this.document.addEventListener("pointercancel", this.pointerCancel, { capture: true });
+    if (this.cancelOnViewportExit) {
+      // A buttonless move after losing the document or capture can follow an unseen release.
+      this.document.documentElement.addEventListener("pointerleave", this.pointerCancel);
+      this.document.addEventListener("lostpointercapture", this.pointerCancel, { capture: true });
+    }
     this.document.addEventListener("keydown", this.keydown, { capture: true });
     this.document.addEventListener("visibilitychange", this.visibilityChange);
     this.window.addEventListener("blur", this.cancel);
@@ -41,7 +49,7 @@ export class SidebarPointerSensor {
     this.window.addEventListener("resize", this.cancel);
     this.document.addEventListener("dragstart", this.preventDefault);
     this.document.addEventListener("contextmenu", this.preventDefault);
-    props.options.onAttach(this);
+    props.options.onAttach?.(this);
     props.onPending(props.active, { distance: props.options.distance }, this.coordinates());
   }
 
@@ -56,9 +64,16 @@ export class SidebarPointerSensor {
     this.clearClickSuppression();
   };
   private clearSelection = () => this.document.getSelection()?.removeAllRanges();
+  private outsideViewport = (event: PointerEvent) =>
+    this.cancelOnViewportExit &&
+    (event.clientX < 0 ||
+      event.clientX >= this.window.innerWidth ||
+      event.clientY < 0 ||
+      event.clientY >= this.window.innerHeight);
 
   private move = (event: PointerEvent) => {
     if (this.phase === "finished" || event.pointerId !== this.pointer.pointerId) return;
+    if (this.outsideViewport(event)) return this.cancel();
     const coordinates = { x: event.clientX, y: event.clientY };
     // Desktop may report buttons=0 before pointerup: a pending press is released like pointerup so its
     // click lands; an active drag drops context before cancelling sort.
@@ -96,6 +111,7 @@ export class SidebarPointerSensor {
 
   private end = (event: PointerEvent) => {
     if (event.pointerId !== this.pointer.pointerId) return;
+    if (this.outsideViewport(event)) return this.cancel();
     const dropped =
       this.phase === "dragging" &&
       this.props.options.onDrop?.({ x: event.clientX, y: event.clientY }) === true;
@@ -119,6 +135,12 @@ export class SidebarPointerSensor {
     this.document.removeEventListener("pointermove", this.move, { capture: true });
     this.document.removeEventListener("pointerup", this.end, { capture: true });
     this.document.removeEventListener("pointercancel", this.pointerCancel, { capture: true });
+    if (this.cancelOnViewportExit) {
+      this.document.documentElement.removeEventListener("pointerleave", this.pointerCancel);
+      this.document.removeEventListener("lostpointercapture", this.pointerCancel, {
+        capture: true,
+      });
+    }
     this.document.removeEventListener("keydown", this.keydown, { capture: true });
     this.document.removeEventListener("visibilitychange", this.visibilityChange);
     this.window.removeEventListener("blur", this.cancel);
