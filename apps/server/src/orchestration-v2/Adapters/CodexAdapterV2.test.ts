@@ -8,11 +8,7 @@ import {
 } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 import { CurrentStartedTurnContinuation } from "../../jones/provider/StartAdmission.ts";
 import { buildAppIdentityInstructions } from "../../jones/runtimeIdentity/AppIdentity.ts";
-import {
-  historyResponseItems,
-  renderHistory,
-  selectHistory,
-} from "@t3tools/provider-core/server/handoffBudget";
+import { historyResponseItems, selectHistory } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
   makeProviderTextDeltaCoalescer,
@@ -30,7 +26,6 @@ import {
   type ContinuityPreparedTicket,
   type DeliveryGate,
   EnvironmentId,
-  EventId,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -88,12 +83,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Scope from "effect/Scope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import packageJson from "../../../package.json" with { type: "json" };
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as EffectWorker from "../EffectWorker.ts";
-import * as EventSink from "../EventSink.ts";
 import * as Orchestrator from "../Orchestrator.ts";
 import * as ProviderReplayHarness from "../testkit/ProviderReplayHarness.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -106,6 +99,13 @@ import {
   withCodexReplayChildMetadata,
   makeReplayServerConfig,
   makeCodexReplayClientFactory,
+  makeCodexReplayTurn,
+  codexReplayPreamble,
+  withConfigReadBeforeTurnStart,
+  withConfigReads,
+  makeCodexReplayTranscript,
+  withReplayRequestId,
+  producerCompletion,
 } from "./CodexAdapterV2.testkit.ts";
 import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
 // Retained Jones contracts (receiving cee2cdd0) use these owners directly.
@@ -124,7 +124,6 @@ import type {
   RecoveryBoundary,
 } from "@t3tools/provider-core/server/jones/GoalContinuityContext";
 import { deliverWithHandoffRecovery } from "../../jones/provider/codex/ContextHandoffRecovery.ts";
-import { materializeCodexReplayAppIdentity } from "../../jones/runtimeIdentity/CodexReplayIdentity.ts";
 import { CONTINUITY_RELOAD_CUE } from "../../jones/goals/continuity/capsule.ts";
 import { CODEX_STARTUP_BUDGET_MS } from "../../jones/provider/codex/CodexStartup.ts";
 import {
@@ -136,7 +135,6 @@ import codexCollabWire from "../../provider/testFixtures/codexMultiAgentWire.jso
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as ServerConfig from "../../config.ts";
 import { codexCapacityRetryPolicy } from "./CodexCapacityContinuation.ts";
-import { withInlineContext } from "../ContextHandoffDelivery.ts";
 
 const replayTranscriptJson = Schema.fromJsonString(CodexReplay.CodexAppServerReplayTranscript);
 const encodeReplayTranscriptJson = Schema.encodeEffect(replayTranscriptJson);
@@ -1448,263 +1446,6 @@ function makeCodexTestTurnInput(input: {
     modelSelection: CODEX_TEST_MODEL_SELECTION,
     runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
   };
-}
-
-function makeCodexReplayTurn(input: {
-  readonly id: string;
-  readonly status: "inProgress" | "completed" | "interrupted" | "failed";
-}): Record<string, unknown> {
-  const terminal =
-    input.status === "completed" || input.status === "interrupted" || input.status === "failed";
-  return {
-    id: input.id,
-    items: [],
-    itemsView: "notLoaded",
-    status: input.status,
-    error: null,
-    startedAt: 1782622440,
-    completedAt: terminal ? 1782622450 : null,
-    durationMs: null,
-  };
-}
-
-function codexReplayPreamble(input: {
-  readonly nativeThreadId: string;
-  readonly nativeTurnId: string;
-  readonly prompt: string;
-  readonly sentPrompt?: string;
-  readonly effort?: string;
-  readonly turnPolicy?: Pick<
-    typeof CodexClient.V2TurnStartParams.Type,
-    "approvalPolicy" | "sandboxPolicy"
-  >;
-}): Array<CodexReplay.CodexAppServerReplayEntry> {
-  return [
-    {
-      type: "expect_outbound",
-      label: "initialize",
-      frame: {
-        id: 1,
-        method: "initialize",
-        params: {
-          clientInfo: { name: "T3 Code", title: "T3 Code", version: packageJson.version },
-          capabilities: {
-            experimentalApi: true,
-            optOutNotificationMethods: ["turn/diff/updated"],
-            extensions: {
-              "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
-            },
-          },
-        },
-      },
-    },
-    {
-      type: "emit_inbound",
-      label: "initialize",
-      frame: {
-        id: 1,
-        result: {
-          userAgent: "T3 Code/0.156.1",
-          codexHome: "/tmp/codex-home",
-          platformFamily: "unix",
-          platformOs: "macos",
-        },
-      },
-    },
-    { type: "expect_outbound", label: "initialized", frame: { method: "initialized" } },
-    {
-      type: "expect_outbound",
-      label: "thread/start",
-      frame: {
-        id: 2,
-        method: "thread/start",
-        params: { config: CodexAdapterV2.CODEX_THREAD_CONFIG },
-      },
-    },
-    {
-      type: "emit_inbound",
-      label: "thread/start",
-      frame: {
-        id: 2,
-        result: {
-          thread: {
-            id: input.nativeThreadId,
-            sessionId: input.nativeThreadId,
-            projectId: null,
-            forkedFromId: null,
-            preview: "",
-            ephemeral: false,
-            modelProvider: "openai",
-            createdAt: 1782622440,
-            updatedAt: 1782622440,
-            status: { type: "idle" },
-            path: `/tmp/${input.nativeThreadId}.jsonl`,
-            cwd: "/workspace",
-            cliVersion: "0.144.0",
-            source: "vscode",
-            threadSource: null,
-            agentNickname: null,
-            agentRole: null,
-            gitInfo: null,
-            name: null,
-            turns: [],
-          },
-          model: "gpt-5.4",
-          modelProvider: "openai",
-          serviceTier: null,
-          cwd: "/workspace",
-          instructionSources: [],
-          approvalPolicy: "on-request",
-          approvalsReviewer: "user",
-          sandbox: { type: "workspaceWrite", writableRoots: [], networkAccess: false },
-          reasoningEffort: "medium",
-        },
-      },
-    },
-    {
-      type: "expect_outbound",
-      label: "turn/start",
-      frame: {
-        id: 3,
-        method: "turn/start",
-        params: {
-          threadId: input.nativeThreadId,
-          input: [{ type: "text", text: input.sentPrompt ?? input.prompt }],
-          cwd: "/workspace",
-          model: "gpt-5.4",
-          approvalPolicy: "never",
-          approvalsReviewer: "user",
-          sandboxPolicy: { type: "dangerFullAccess" },
-          ...input.turnPolicy,
-          summary: "auto",
-          ...(input.effort === undefined ? {} : { effort: input.effort }),
-          collaborationMode: {
-            mode: "default",
-            settings: {
-              model: "gpt-5.4",
-              ...(input.effort === undefined ? {} : { reasoning_effort: input.effort }),
-            },
-          },
-        },
-      },
-    },
-    {
-      type: "emit_inbound",
-      label: "turn/start",
-      frame: {
-        id: 3,
-        result: { turn: makeCodexReplayTurn({ id: input.nativeTurnId, status: "inProgress" }) },
-      },
-    },
-    {
-      type: "emit_inbound",
-      label: "turn/started",
-      frame: {
-        method: "turn/started",
-        params: {
-          threadId: input.nativeThreadId,
-          turn: makeCodexReplayTurn({ id: input.nativeTurnId, status: "inProgress" }),
-        },
-      },
-    },
-  ];
-}
-
-/**
- * Every logical turn/start follows a config/read; inserts that exchange and shifts later
- * client ids. A capacity retry resends its logical turn's built parameters promptlessly
- * (an empty input on a thread this process already started), so it reads no config.
- */
-function withConfigReadBeforeTurnStart(
-  entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>,
-): Array<CodexReplay.CodexAppServerReplayEntry> {
-  const result: Array<CodexReplay.CodexAppServerReplayEntry> = [];
-  let offset = 0;
-  let clientIds = new Map<number, number>();
-  let startedThreads = new Set<unknown>();
-  for (const entry of entries) {
-    const frame = entry.type === "runtime_exit" ? undefined : entry.frame;
-    if (!Predicate.isObject(frame) || typeof frame.id !== "number") {
-      result.push(entry);
-      continue;
-    }
-    if (entry.type === "expect_outbound" && typeof frame.method === "string") {
-      if (frame.method === "initialize") {
-        offset = 0;
-        clientIds = new Map();
-        startedThreads = new Set();
-      }
-      const params = Predicate.isObject(frame.params) ? frame.params : {};
-      const capacityRetry =
-        frame.method === "turn/start" &&
-        Array.isArray(params.input) &&
-        params.input.length === 0 &&
-        startedThreads.has(params.threadId);
-      if (frame.method === "turn/start") startedThreads.add(params.threadId);
-      if (frame.method === "turn/start" && !capacityRetry) {
-        const id = frame.id + offset;
-        result.push(
-          {
-            type: "expect_outbound",
-            label: "config/read",
-            frame: { id, method: "config/read", params: { cwd: params.cwd, includeLayers: false } },
-          },
-          {
-            type: "emit_inbound",
-            label: "config/read",
-            frame: { id, result: { config: {}, origins: {} } },
-          },
-        );
-        offset += 1;
-      }
-      clientIds.set(frame.id, frame.id + offset);
-      result.push(withReplayRequestId(entry, frame.id + offset));
-      continue;
-    }
-    const mapped = clientIds.get(frame.id);
-    result.push(
-      entry.type === "emit_inbound" && frame.method === undefined && mapped !== undefined
-        ? withReplayRequestId(entry, mapped)
-        : entry,
-    );
-  }
-  return result;
-}
-
-function withConfigReads(
-  transcript: CodexReplay.CodexAppServerReplayTranscript,
-): CodexReplay.CodexAppServerReplayTranscript {
-  return { ...transcript, entries: withConfigReadBeforeTurnStart(transcript.entries) };
-}
-
-const decodeMaterializedTranscript = Schema.decodeUnknownSync(
-  CodexReplay.CodexAppServerReplayTranscript,
-);
-
-// The adapter sends app identity on every turn/start without a T3 MCP session; the
-// replay still compares exact frames, so fixtures that omit it gain the current value.
-function makeCodexReplayTranscript(input: {
-  readonly scenario: string;
-  readonly entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>;
-}): CodexReplay.CodexAppServerReplayTranscript {
-  return decodeMaterializedTranscript(
-    materializeCodexReplayAppIdentity({
-      provider: "codex",
-      protocol: "codex.app-server",
-      version: "0.144.0",
-      scenario: input.scenario,
-      entries: input.entries,
-    }),
-  );
-}
-
-function withReplayRequestId(
-  entry: CodexReplay.CodexAppServerReplayEntry,
-  id: number,
-): CodexReplay.CodexAppServerReplayEntry {
-  return entry.type !== "runtime_exit" && Predicate.isObject(entry.frame)
-    ? { ...entry, frame: { ...entry.frame, id } }
-    : entry;
 }
 
 describe("CodexAdapterV2 process exit", () => {
@@ -3194,19 +2935,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
 
   const producerPreamble = (nativeThreadId: string, nativeTurnId: string) =>
     codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Work" });
-  const producerCompletion = (
-    threadId: string,
-    id: string,
-  ): CodexReplay.CodexAppServerReplayEntry => ({
-    type: "emit_inbound",
-    frame: {
-      method: "turn/completed",
-      params: {
-        threadId,
-        turn: makeCodexReplayTurn({ id, status: "completed" }),
-      },
-    },
-  });
 
   it.effect.each(["start", "resume"] as const)(
     "revalidates the captured admission before a potentially effective %s",
@@ -4443,307 +4171,6 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             NodeServices.layer,
             NodeCrypto.layer,
           ),
-        ),
-      ),
-  );
-
-  it.effect.each([
-    { code: -32602, late: true },
-    { code: -32600, late: false },
-  ])(
-    "restores durable inline history on an exact $code rejection (late: $late)",
-    ({ code, late }) =>
-      Effect.gen(function* () {
-        const scenario = `inline-handoff-refusal-${code}`;
-        const nativeThreadId = "inline-handoff-conversation";
-        const threadId = ThreadId.make(scenario);
-        const handoffId = ContextHandoffId.make("late-inline-handoff");
-        const coverage = "History from a prior conversation.";
-        const history = selectHistory({
-          messages: [],
-          coverage: `Context handoff (full_thread_summary):\n${coverage}`,
-          budget: 16_000,
-        });
-        const preambleFor = (text: string, nativeTurnId: string) =>
-          codexReplayPreamble({
-            nativeThreadId,
-            nativeTurnId,
-            prompt: text,
-            sentPrompt: withInlineContext(renderHistory(history.messages, history.context), text),
-          });
-        const first = preambleFor("Original request", "rejected-turn");
-        const followUp = codexReplayPreamble({
-          nativeThreadId,
-          nativeTurnId: "follow-up-turn",
-          prompt: "New authorized request",
-        });
-        const originalRunId = IdAllocator.derive.run({ threadId, ordinal: 1 });
-        const originalAttemptId = IdAllocator.derive.runAttempt({
-          runId: originalRunId,
-          attemptOrdinal: 1,
-        });
-        const codexDriver = ProviderDriverKind.make("codex");
-        const originalProviderThreadId = IdAllocator.derive.providerThread({
-          driver: codexDriver,
-          nativeThreadId: `pending:${originalRunId}`,
-        });
-        const userItemId = IdAllocator.derive.userTurnItem({
-          messageId: MessageId.make("original-inline-prompt"),
-        });
-        const refusedTurnId = IdAllocator.derive.providerTurn({
-          driver: codexDriver,
-          nativeTurnId: `failed:${originalAttemptId}`,
-        });
-        const failureItemId = IdAllocator.derive.turnItemFromProviderItem({
-          driver: codexDriver,
-          nativeItemId: `terminal-failure:${refusedTurnId}`,
-        });
-        const historicalFields = {
-          threadId,
-          runId: originalRunId,
-          providerThreadId: originalProviderThreadId,
-          runStatus: "failed",
-        } as const;
-        const recoveredHistory = selectHistory({
-          messages: [
-            {
-              ...historicalFields,
-              itemId: userItemId,
-              role: "user",
-              kind: "user_message",
-              status: "completed",
-              text: "Original request",
-            },
-            {
-              ...historicalFields,
-              itemId: failureItemId,
-              role: "assistant",
-              kind: "error",
-              status: "failed",
-              text: "The provider could not start this turn. Retry the turn; if it keeps failing, check the provider setup and server logs.",
-            },
-          ],
-          coverage: [
-            `Context handoff (full_thread_summary):\n${coverage}`,
-            "Context handoff (delta_since_target_last_seen):",
-            `Provider context handoff. Thread: ${threadId}. Covered app runs: 1-1.`,
-            `Source item range: ${userItemId} through ${failureItemId}.`,
-            `Recover an omitted item only when the request needs it, with t3_thread_read({threadId:"${threadId}",view:"activity",itemId:"<omitted item ID>",maxCharsPerItem:4000}); continue long text with textOffset=nextTextOffset until null. Items included below need no read. Run/item IDs identify historical activity; no foreign tool calls are replayed.`,
-          ].join("\n"),
-          budget: 16_000,
-        });
-        const inject = (id: number, accepted = false): CodexReplay.CodexAppServerReplayEntry[] => [
-          {
-            type: "expect_outbound",
-            frame: {
-              id,
-              method: "thread/inject_items",
-              params: {
-                threadId: nativeThreadId,
-                items: accepted
-                  ? historyResponseItems(recoveredHistory.messages, recoveredHistory.context)
-                  : historyResponseItems(history.messages, history.context),
-              },
-            },
-          },
-          {
-            type: "emit_inbound",
-            frame: accepted
-              ? { id, result: {} }
-              : { id, error: { code: -32601, message: "Native injection unavailable" } },
-          },
-        ];
-        const fileSystem = yield* FileSystem.FileSystem;
-        const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "jones-codex-history-" });
-        const transcript = yield* decodeReplayTranscriptJson(
-          (yield* encodeReplayTranscriptJson(
-            makeCodexReplayTranscript({
-              scenario,
-              entries: [
-                ...first.slice(0, 5),
-                ...inject(3),
-                withReplayRequestId(first[5]!, 4),
-                {
-                  type: "emit_inbound",
-                  label: "original rejection",
-                  frame: { id: 4, error: { code, message: "Rejected original prompt" } },
-                },
-                {
-                  type: "expect_outbound",
-                  frame: {
-                    id: 5,
-                    method: "thread/resume",
-                    params: {
-                      threadId: nativeThreadId,
-                      excludeTurns: true,
-                      ...CodexAdapterV2.codexThreadRuntimeParams({
-                        threadId,
-                        mcpSession: undefined,
-                        modelSelection: CODEX_TEST_MODEL_SELECTION,
-                        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
-                      }),
-                    },
-                  },
-                },
-                {
-                  type: "emit_inbound",
-                  frame: {
-                    id: 5,
-                    result: {
-                      thread: { id: nativeThreadId, updatedAt: 1782622440 },
-                      model: CODEX_TEST_MODEL_SELECTION.model,
-                      modelProvider: "openai",
-                      serviceTier: null,
-                    },
-                  },
-                },
-                ...inject(6, true),
-                withReplayRequestId(followUp[5]!, 7),
-                withReplayRequestId(followUp[6]!, 7),
-                followUp[7]!,
-                producerCompletion(nativeThreadId, "follow-up-turn"),
-              ],
-            }),
-          )).replaceAll(yield* encodeStringJson("/workspace"), yield* encodeStringJson(cwd)),
-        );
-        const sent = yield* Deferred.make<void>();
-        const allowRejection = yield* Deferred.make<void>();
-        const effectiveTranscript = withConfigReads(transcript);
-        const driver = yield* CodexReplay.makeReplayDriver(effectiveTranscript, {
-          beforeEmitInbound: (entry) =>
-            entry.label === "original rejection"
-              ? Deferred.succeed(sent, undefined).pipe(
-                  Effect.andThen(Deferred.await(allowRejection)),
-                )
-              : Effect.void,
-        });
-        yield* Effect.gen(function* () {
-          const orchestrator = yield* Orchestrator.OrchestratorV2;
-          const sink = yield* EventSink.EventSinkV2;
-          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-          const getProjection = () => orchestrator.getThreadProjection(threadId);
-          const send = (id: string, text: string) =>
-            orchestrator.dispatch({
-              type: "message.dispatch",
-              commandId: CommandId.make(id),
-              threadId,
-              messageId: MessageId.make(id),
-              text,
-              attachments: [],
-              createdBy: "user",
-              creationSource: "web",
-              dispatchMode: { type: "start_immediately" },
-            });
-          yield* orchestrator.dispatch({
-            type: "thread.create",
-            commandId: CommandId.make(`create-${scenario}`),
-            threadId,
-            projectId: ProjectId.make(scenario),
-            title: "Late context refusal",
-            modelSelection: CODEX_TEST_MODEL_SELECTION,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: cwd,
-            createdBy: "user",
-            creationSource: "web",
-          });
-          yield* send("original-inline-prompt", "Original request");
-          const run = (yield* getProjection()).runs[0];
-          if (run?.providerThreadId == null)
-            return yield* Effect.die("The start has no provider thread.");
-          const now = yield* DateTime.now;
-          yield* sink.write({
-            events: [
-              {
-                id: EventId.make("initial-inline-handoff"),
-                type: "context-handoff.updated",
-                threadId,
-                runId: run.id,
-                occurredAt: now,
-                payload: {
-                  id: handoffId,
-                  threadId,
-                  targetRunId: run.id,
-                  fromProviderThreadIds: [],
-                  toProviderThreadId: run.providerThreadId,
-                  coveredRunOrdinals: { from: 1, to: 1 },
-                  strategy: "full_thread_summary",
-                  status: "ready",
-                  summaryMessageId: null,
-                  summaryText: "",
-                  createdByProviderInstanceId: null,
-                  createdAt: now,
-                  updatedAt: now,
-                  history: { messages: [], coverage, omittedItems: 0 },
-                },
-              },
-            ],
-          });
-          const starting = yield* worker.drain().pipe(Effect.forkChild({ startImmediately: true }));
-          yield* Effect.raceFirst(
-            Deferred.await(sent),
-            Fiber.join(starting).pipe(
-              Effect.andThen(Effect.die("The first start stopped before it sent the prompt.")),
-            ),
-          );
-          assert.equal((yield* getProjection()).contextHandoffs[0]?.delivery?.status, "pending");
-          if (late) {
-            yield* TestClock.adjust(CODEX_START_ACK_TIMEOUT_MS);
-            yield* Fiber.join(starting);
-            const timedOut = yield* getProjection();
-            assert.equal(timedOut.runs[0]?.status, "failed");
-            assert.equal(timedOut.contextHandoffs[0]?.delivery?.status, "pending");
-          }
-          yield* Deferred.succeed(allowRejection, undefined);
-          yield* TestClock.adjust("1 second");
-          yield* Fiber.join(starting);
-          const restored = (yield* getProjection()).contextHandoffs[0];
-          assert.equal(restored?.id, handoffId);
-          assert.isUndefined(restored?.delivery);
-
-          const waiting = yield* orchestrator.streamDomainEvents.pipe(
-            Stream.filter(
-              (event) =>
-                event.type === "run.updated" &&
-                event.threadId === threadId &&
-                event.payload.id !== run.id &&
-                event.payload.status === "waiting",
-            ),
-            Stream.runHead,
-            Effect.forkChild({ startImmediately: true }),
-          );
-          yield* send("new-inline-prompt", "New authorized request");
-          yield* worker.drain();
-          const replay = yield* Ref.get(driver.state);
-          assert.isNull(replay.failure, String(replay.failure));
-          assert.notEqual((yield* getProjection()).runs.at(-1)?.status, "failed");
-          yield* Fiber.join(waiting);
-          yield* worker.drain();
-          const after = yield* getProjection();
-          assert.deepEqual(
-            after.runs.map((candidate) => candidate.status),
-            ["failed", "completed"],
-          );
-          assert.equal(after.providerThreads.length, 1);
-          assert.equal(after.providerThreads[0]?.nativeThreadRef?.nativeId, nativeThreadId);
-          assert.equal(after.contextHandoffs[0]?.delivery?.status, "injected");
-          assert.deepEqual(yield* Ref.get(driver.state), {
-            failure: null,
-            cursor: effectiveTranscript.entries.length,
-          });
-        }).pipe(
-          Effect.provide(
-            ProviderReplayHarness.layerWithRegistry(
-              { name: scenario, runtimePolicyOverride: { cwd } },
-              CodexAdapterV2Testkit.layer({ transcript, driver }),
-              { runEffectWorker: false },
-            ),
-          ),
-        );
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, layerNodeServicesWithCrypto),
         ),
       ),
   );
@@ -6498,14 +5925,19 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect(
-    "restores accepted T3 context after compaction without leaking rejected MCP context",
-    () =>
+  it.effect.each(["rejected", "accepted after timeout"] as const)(
+    "restores accepted T3 context after compaction when the next start is %s",
+    (outcome) =>
       Effect.gen(function* () {
         const nativeThreadId = "context-thread";
         const nativeTurnId = "context-turn";
         const compactTurnId = "compaction-turn";
-        const rejectedContext = { key: "mcp_app_rejected_fixture", text: "Rejected MCP output" };
+        const late = outcome === "accepted after timeout";
+        const nextTurn = "context-turn-b";
+        const nextPrompt = "Next work";
+        const nextContext = { key: "mcp_app_context_b", text: "New MCP output B" };
+        const replyReady = yield* Deferred.make<void>();
+        const releaseReply = yield* Deferred.make<void>();
         // An explicit Standard must reach Codex, or Codex falls back to Daybreak.
         const modelSelection = {
           ...CODEX_TEST_MODEL_SELECTION,
@@ -6523,6 +5955,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           params.additionalContext?.t3_code_orchestration_01?.value ?? "",
           "delegate_task",
         );
+        const contextB = {
+          ...params.additionalContext,
+          [nextContext.key]: { kind: "untrusted" as const, value: nextContext.text },
+        };
         const entries = codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "work" });
         const transcript = makeCodexReplayTranscript({
           scenario: "restore-context",
@@ -6537,24 +5973,28 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             producerCompletion(nativeThreadId, nativeTurnId),
             {
               type: "expect_outbound",
-              label: "new context to reject",
+              label: "send next context",
               frame: {
                 id: 4,
                 method: "turn/start",
                 params: {
                   ...params,
-                  input: [{ type: "text", text: "rejected work" }],
-                  additionalContext: {
-                    ...params.additionalContext,
-                    [rejectedContext.key]: { kind: "untrusted", value: rejectedContext.text },
-                  },
+                  input: [{ type: "text", text: nextPrompt }],
+                  additionalContext: contextB,
                 },
               },
             },
             {
               type: "emit_inbound",
-              frame: { id: 4, error: { code: -32602, message: "Rejected MCP context" } },
+              label: "next start reply",
+              frame: late
+                ? {
+                    id: 4,
+                    result: { turn: makeCodexReplayTurn({ id: nextTurn, status: "inProgress" }) },
+                  }
+                : { id: 4, error: { code: -32602, message: "Rejected MCP context" } },
             },
+            ...(late ? [producerCompletion(nativeThreadId, nextTurn)] : []),
             {
               type: "expect_outbound",
               frame: {
@@ -6605,11 +6045,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 method: "thread/inject_items",
                 params: {
                   threadId: nativeThreadId,
-                  items: Object.entries(params.additionalContext ?? {}).map(([key, entry]) => ({
-                    type: "message",
-                    role: "developer",
-                    content: [{ type: "input_text", text: `<${key}>${entry.value}</${key}>` }],
-                  })),
+                  items: Object.entries(late ? contextB : (params.additionalContext ?? {})).map(
+                    ([key, entry]) => {
+                      const tag = entry.kind === "untrusted" ? `external_${key}` : key;
+                      return {
+                        type: "message",
+                        role: entry.kind === "untrusted" ? "user" : "developer",
+                        content: [{ type: "input_text", text: `<${tag}>${entry.value}</${tag}>` }],
+                      };
+                    },
+                  ),
                 },
               },
             },
@@ -6620,6 +6065,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const wireOrder: Array<string> = [];
         const restoreRequested = yield* Deferred.make<void>();
         let restoredItems: unknown;
+        const prompts: unknown[] = [];
         const harness = yield* makeCodexReplayHarness(
           transcript,
           undefined,
@@ -6629,9 +6075,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   wireOrder.push(method);
                   restoredItems = Predicate.isObject(payload) ? payload.items : undefined;
                 }).pipe(Effect.andThen(Deferred.succeed(restoreRequested, undefined)))
+              : method === "turn/start" && Predicate.hasProperty(payload, "input")
+                ? Effect.sync(() => prompts.push(payload.input)).pipe(Effect.asVoid)
+                : Effect.void,
+          undefined,
+          (entry) =>
+            late && entry.label === "next start reply"
+              ? Deferred.succeed(replyReady, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseReply)),
+                )
               : Effect.void,
-          undefined,
-          undefined,
           undefined,
           undefined,
           (method) =>
@@ -6684,13 +6137,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         });
         yield* harness.runtime.startTurn(turnInput("context-attempt", "work", 1));
         yield* harness.firstTerminal;
-        const refusal = yield* harness.runtime
+        const startB = yield* harness.runtime
           .startTurn({
-            ...turnInput("context-rejected-attempt", "rejected work", 2),
-            appContext: [rejectedContext],
+            ...turnInput("context-b-attempt", nextPrompt, 2),
+            appContext: [nextContext],
           })
-          .pipe(Effect.flip);
-        assert.isTrue(promptWasNotApplied(refusal));
+          .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+        if (late) {
+          yield* Deferred.await(replyReady);
+          yield* TestClock.adjust(CODEX_START_ACK_TIMEOUT_MS);
+          assert.isFalse(promptWasNotApplied(yield* Fiber.join(startB)));
+          yield* Deferred.succeed(releaseReply, undefined);
+          yield* TestClock.adjust(0);
+        } else {
+          assert.isTrue(promptWasNotApplied(yield* Fiber.join(startB)));
+        }
         yield* harness.runtime.compactThread!(
           turnInput("context-compaction-attempt", "/compact", 3),
         );
@@ -6702,10 +6163,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         const restored = JSON.stringify(restoredItems);
         assert.include(restored, "t3_code_orchestration_01");
-        assert.notInclude(restored, rejectedContext.text);
+        if (late) assert.include(restored, nextContext.text);
+        else assert.notInclude(restored, nextContext.text);
+        assert.deepEqual(prompts, [
+          [{ type: "text", text: "work" }],
+          [{ type: "text", text: nextPrompt }],
+        ]);
         assert.deepEqual(
           wireOrder,
-          ["turn/completed", "item/completed", "turn/completed", "thread/inject_items"],
+          [
+            "turn/completed",
+            ...(late ? ["turn/completed"] : []),
+            "item/completed",
+            "turn/completed",
+            "thread/inject_items",
+          ],
           "restored T3 context while the compacting native turn was still running",
         );
       }).pipe(

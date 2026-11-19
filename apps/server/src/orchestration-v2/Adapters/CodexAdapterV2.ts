@@ -44,6 +44,7 @@ import {
   codexStartReplyObservationOptions,
   makeCodexLateStartRecovery,
   type CodexStartDispatch,
+  type CodexStartRejectionProof,
 } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 import { makeCodexPendingStartNotifications } from "../../jones/provider/codex/CodexPendingStartNotifications.ts";
 import {
@@ -2247,7 +2248,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }),
           );
         const startup = makeCodexStartup(adapterOptions.startupBudgetMs, controlAdmission);
-        const lateStarts = makeCodexLateStartRecovery();
+        const lateStarts =
+          makeCodexLateStartRecovery<NonNullable<CodexTurnStartParams["additionalContext"]>>();
         const admissionTarget = (
           threadId: string | null,
           nativeThreadId: string | null,
@@ -2600,15 +2602,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const codexZone = codexTimeZone(
           currentProducer.resolvedRuntime?.environment ?? adapterOptions.environment,
         );
-        const additionalContextByThread = yield* Ref.make(
-          new Map<string, NonNullable<CodexTurnStartParams["additionalContext"]>>(),
-        );
         const threadsAwaitingContextRestore = yield* Ref.make(new Set<string>());
         // Codex drops client developer messages during compaction but only
         // resends additionalContext when it changes.
         const injectAdditionalContext = Effect.fn("CodexAdapterV2.injectAdditionalContext")(
           function* (threadId: string, targetClient: CodexRuntimeProducer["client"] = client) {
-            const context = (yield* Ref.get(additionalContextByThread)).get(threadId);
+            const context = lateStarts.acceptedContext(threadId);
             if (!context) return;
             yield* requestAdmission("thread/inject_items", { threadId });
             yield* targetClient.request("thread/inject_items", {
@@ -9439,58 +9438,75 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           request.startDispatched = true;
           request.startSent = true;
           const producer = currentProducer;
+          const binding = request.state.binding;
+          const currentGeneration = () =>
+            !capacityScopeClosed &&
+            producer.active &&
+            producer === currentProducer &&
+            !Deferred.isDoneUnsafe(producer.termination) &&
+            !threadRetirements.owns(producer, binding.nativeThreadId)
+              ? producer.generation
+              : undefined;
           // Completion can retire the old context while the start is in flight.
           // Keep its ownership across the reply, as in upstream's start path.
           const previousTurns = new Map([
-            ...(yield* Ref.get(settledTurns)),
-            ...(yield* Ref.get(activeTurns)),
+            ...Ref.getUnsafe(settledTurns),
+            ...Ref.getUnsafe(activeTurns),
           ]);
-          const dispatch = lateStarts.begin(request.state.binding, [
+          const replyTurnOwner = (turnId: string) =>
+            previousTurns.get(turnId) ??
+            Ref.getUnsafe(activeTurns).get(turnId) ??
+            Ref.getUnsafe(settledTurns).get(turnId);
+          const dispatch = lateStarts.begin(binding, [
             ...request.state.retiredNativeTurnIds,
-            ...(yield* Ref.get(activeTurns)).keys(),
-            ...(yield* Ref.get(settledTurns)).keys(),
+            ...previousTurns.keys(),
           ]);
           request.lateStartDispatch = dispatch;
           pendingStartNotifications.begin(dispatch);
+          const unverifiedRejection = () =>
+            toProtocolError("Codex did not confirm that it rejected the turn start");
+          const reconcileRejection = Effect.fnUntraced(function* (
+            error: CodexErrors.CodexAppServerError,
+            proof: CodexStartRejectionProof,
+          ) {
+            if (
+              (restoreRefusedInline !== undefined &&
+                (yield* restoreRefusedInline(binding, proof.isCurrent)) !== "restored") ||
+              !proof.release()
+            )
+              return yield* unverifiedRejection();
+            request.startDispatched = false;
+            return yield* error;
+          });
           // Keep the original RPC waiter in its producer's scope so it can
           // reconcile an exact reply after the caller's deadline.
           const startCancelled = yield* Deferred.make<void>();
           request.pendingStartCancelled = startCancelled;
-          let inTimeRejection:
-            | { readonly error: CodexErrors.CodexAppServerError; readonly release: () => boolean }
-            | undefined;
           const pendingStart = yield* producer.client
             .request("turn/start", retryOrdinal === 0 ? params : { ...params, input: [] })
             .pipe(
               Effect.tap((started) =>
                 Effect.sync(() => {
-                  if (producer.active && producer === currentProducer)
-                    lateStarts.acknowledge(dispatch, producer.generation, started.turn.id);
+                  const generation = currentGeneration();
+                  if (generation !== undefined && replyTurnOwner(started.turn.id) === undefined)
+                    lateStarts.acknowledge(
+                      dispatch,
+                      generation,
+                      started.turn.id,
+                      params.additionalContext,
+                    );
                 }),
               ),
+              Effect.map((started) => ({ kind: "acknowledged" as const, started })),
               Effect.catch(
                 Effect.fnUntraced(function* (error) {
-                  const rejection = lateStarts.reject(
-                    dispatch,
-                    producer.active && producer === currentProducer
-                      ? producer.generation
-                      : undefined,
-                    error,
-                  );
+                  const rejection = lateStarts.reject(dispatch, currentGeneration, error);
                   // Never expose an ambiguous response as proof of prompt non-application.
-                  if (rejection.kind === "unverified")
-                    return yield* toProtocolError(
-                      "Codex did not confirm that it rejected the turn start",
-                    );
+                  if (rejection.kind === "unverified") return yield* unverifiedRejection();
                   if (rejection.kind === "not_applied") {
-                    if (rejection.canReconcileLate) {
-                      // Complete the exact attempt's ledger before lifting a late admission hold.
-                      yield* restoreRefusedInline?.(request.state.binding) ?? Effect.void;
-                      rejection.release();
-                      request.startDispatched = false;
-                    } else {
-                      inTimeRejection = { error, release: rejection.release };
-                    }
+                    if (rejection.canReconcileLate)
+                      return yield* reconcileRejection(error, rejection);
+                    return { kind: "rejected" as const, error, proof: rejection };
                   }
                   return yield* error;
                 }),
@@ -9498,7 +9514,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               Effect.forkIn(producer.scope, { startImmediately: true }),
             );
           // Stop ends the caller's wait and leaves reconciliation to the producer.
-          const started = yield* Fiber.join(pendingStart).pipe(
+          const reply = yield* Fiber.join(pendingStart).pipe(
             Effect.raceFirst(
               Deferred.await(startCancelled).pipe(
                 Effect.andThen(
@@ -9509,19 +9525,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
             ),
             Effect.timeout(CODEX_START_ACK_TIMEOUT_MS),
-            Effect.mapError((error) => {
-              if (inTimeRejection === undefined || inTimeRejection.error !== error) return error;
-              if (!inTimeRejection.release())
-                return toProtocolError("Codex did not confirm that it rejected the turn start");
-              request.startDispatched = false;
-              return error;
-            }),
           );
-          const previousTurn =
-            previousTurns.get(started.turn.id) ??
-            (yield* Ref.get(activeTurns)).get(started.turn.id) ??
-            (yield* Ref.get(settledTurns)).get(started.turn.id);
+          if (reply.kind === "rejected") return yield* reconcileRejection(reply.error, reply.proof);
+          const started = reply.started;
+          const previousTurn = replyTurnOwner(started.turn.id);
           if (
+            currentGeneration() !== undefined &&
             previousTurn !== undefined &&
             (previousTurn.input.attemptId !== request.input.attemptId ||
               previousTurn.input.runId !== request.input.runId)
@@ -9539,8 +9548,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           if (
             request.state.phase !== "awaiting_start" ||
             request.state.retryOrdinal !== retryOrdinal ||
+            currentGeneration() === undefined ||
             !currentCapacityBinding(request) ||
             hasUnknownNativeStart() ||
+            dispatch.nativeTurnId !== started.turn.id ||
             request.state.retiredNativeTurnIds.includes(started.turn.id) ||
             (retryOrdinal > 0 &&
               ((yield* Ref.get(activeTurns)).has(started.turn.id) ||
@@ -9560,13 +9571,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
           if (!currentCapacityBinding(request))
             return yield* toProtocolError("Native physical binding changed after acknowledgement.");
-          // A rejected dispatch leaves the previously accepted compaction context intact.
-          yield* Ref.update(additionalContextByThread, (current) => {
-            const next = new Map(current);
-            if (params.additionalContext === undefined) next.delete(params.threadId);
-            else next.set(params.threadId, params.additionalContext);
-            return next;
-          });
           const earlyStart = request.earlyStarts.get(started.turn.id);
           const earlyError = request.earlyErrors.get(started.turn.id);
           const earlyCompletion = request.earlyCompletions.get(started.turn.id);

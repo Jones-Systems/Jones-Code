@@ -33,6 +33,7 @@ interface NativeBinding {
 }
 
 export interface CodexStartDispatch extends NativeBinding {
+  readonly ordinal: number;
   readonly excludedTurnIds: ReadonlySet<string>;
   readonly completions: Set<string>;
   nativeTurnId: string | undefined;
@@ -45,21 +46,27 @@ const matchesNativeBinding = (left: NativeBinding, right: NativeBinding) =>
   left.runtimeGeneration === right.runtimeGeneration &&
   left.nativeThreadId === right.nativeThreadId;
 
-type StartRejection =
-  | { readonly kind: "other_error" | "unverified" }
-  | {
-      readonly kind: "not_applied";
-      readonly canReconcileLate: boolean;
-      readonly release: () => boolean;
-    };
+export interface CodexStartRejectionProof {
+  readonly kind: "not_applied";
+  readonly canReconcileLate: boolean;
+  readonly isCurrent: () => boolean;
+  readonly release: () => boolean;
+}
+
+type StartRejection = { readonly kind: "other_error" | "unverified" } | CodexStartRejectionProof;
 
 // The caller's deadline leaves the native effect unresolved. The original RPC
 // can reconcile it with an exact non-applying rejection, or with an ACK and the
 // acknowledged turn's terminal.
-export function makeCodexLateStartRecovery() {
+export function makeCodexLateStartRecovery<AdditionalContext = never>() {
   const dispatches = new Set<CodexStartDispatch>();
   const acknowledgedTurns = new Map<string, NativeBinding>();
   const rejectionReplies = new WeakMap<object, { runtimeGeneration: string; requestId: string }>();
+  const acceptedContexts = new Map<
+    string,
+    { readonly ordinal: number; readonly context: AdditionalContext | undefined }
+  >();
+  let nextOrdinal = 0;
   const settled = (dispatch: CodexStartDispatch) =>
     !dispatch.overflow &&
     dispatch.nativeTurnId !== undefined &&
@@ -93,6 +100,7 @@ export function makeCodexLateStartRecovery() {
       }
       const dispatch: CodexStartDispatch = {
         ...binding,
+        ordinal: ++nextOrdinal,
         excludedTurnIds: knownTurns,
         completions: new Set(),
         nativeTurnId: undefined,
@@ -112,12 +120,13 @@ export function makeCodexLateStartRecovery() {
       if (dispatches.size === 0 || !Predicate.isObject(frame)) return;
       if (
         typeof frame.method === "string" &&
-        (typeof frame.id === "string" || Number.isSafeInteger(frame.id)) &&
+        (frame.id === undefined ||
+          typeof frame.id === "string" ||
+          Number.isSafeInteger(frame.id)) &&
         !("result" in frame) &&
         !("error" in frame)
       ) {
-        // A request can precede every turn notification. The actual handler
-        // may run after the start response, so record its binding here.
+        // Record activity before handlers can yield or be forked off the reader.
         observeTurnActivity(runtimeGeneration, frame.params);
         return;
       }
@@ -143,7 +152,7 @@ export function makeCodexLateStartRecovery() {
     },
     reject(
       dispatch: CodexStartDispatch,
-      currentGeneration: string | undefined,
+      currentGeneration: () => string | undefined,
       error: CodexErrors.CodexAppServerError,
     ): StartRejection {
       if (
@@ -155,34 +164,43 @@ export function makeCodexLateStartRecovery() {
       // The original waiter binds the request method and ID to this dispatch.
       // Object identity ties that failure to the exact envelope on the wire.
       const reply = rejectionReplies.get(error.cause);
+      const qualifies = () =>
+        dispatches.has(dispatch) &&
+        dispatch.runtimeGeneration === currentGeneration() &&
+        dispatch.nativeTurnId === undefined &&
+        !dispatch.turnActivityObserved &&
+        dispatch.completions.size === 0 &&
+        !dispatch.overflow;
       if (
-        !dispatches.has(dispatch) ||
-        dispatch.runtimeGeneration !== currentGeneration ||
-        reply === undefined ||
-        reply.runtimeGeneration !== currentGeneration ||
+        reply?.runtimeGeneration !== dispatch.runtimeGeneration ||
         reply.requestId !== error.requestId ||
-        dispatch.nativeTurnId !== undefined ||
-        dispatch.turnActivityObserved ||
-        dispatch.completions.size > 0 ||
-        dispatch.overflow
+        !qualifies()
       )
         return { kind: "unverified" };
       rejectionReplies.delete(error.cause);
       const canReconcileLate = error.code === INVALID_PARAMS;
+      const isCurrent = () => (canReconcileLate || !dispatch.unknown) && qualifies();
       return {
         kind: "not_applied",
         canReconcileLate,
-        release: () => (canReconcileLate || !dispatch.unknown) && dispatches.delete(dispatch),
+        isCurrent,
+        release: () => isCurrent() && dispatches.delete(dispatch),
       };
     },
     observeTurnActivity,
-    acknowledge(dispatch: CodexStartDispatch, runtimeGeneration: string, nativeTurnId: string) {
+    acknowledge(
+      dispatch: CodexStartDispatch,
+      runtimeGeneration: string,
+      nativeTurnId: string,
+      context?: AdditionalContext,
+    ) {
       if (!dispatches.has(dispatch) || dispatch.runtimeGeneration !== runtimeGeneration) return;
       if (!nativeTurnId || dispatch.excludedTurnIds.has(nativeTurnId)) return;
-      if (dispatch.nativeTurnId !== undefined && dispatch.nativeTurnId !== nativeTurnId) {
-        dispatch.overflow = true;
+      if (dispatch.nativeTurnId !== undefined) {
+        if (dispatch.nativeTurnId !== nativeTurnId) dispatch.overflow = true;
         return;
       }
+      if (acknowledgedTurns.get(nativeTurnId)?.runtimeGeneration === runtimeGeneration) return;
       dispatch.nativeTurnId = nativeTurnId;
       acknowledgedTurns.set(nativeTurnId, {
         runtimeGeneration,
@@ -192,7 +210,15 @@ export function makeCodexLateStartRecovery() {
         const oldest = acknowledgedTurns.keys().next();
         if (!oldest.done) acknowledgedTurns.delete(oldest.value);
       }
+      // A prompt's accepted context survives caller failure. Keep the ordinal
+      // even when this ACK clears context, so an older ACK cannot restore it.
+      const accepted = acceptedContexts.get(dispatch.nativeThreadId);
+      if (accepted === undefined || accepted.ordinal < dispatch.ordinal)
+        acceptedContexts.set(dispatch.nativeThreadId, { ordinal: dispatch.ordinal, context });
       releaseSettled(dispatch);
+    },
+    acceptedContext(nativeThreadId: string) {
+      return acceptedContexts.get(nativeThreadId)?.context;
     },
     complete(binding: NativeBinding, nativeTurnId: string) {
       for (const dispatch of dispatches) {

@@ -1,5 +1,6 @@
 import type { OrchestrationV2ContextHandoff, OrchestrationV2StoredEvent } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -7,6 +8,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlError from "effect/sql/SqlError";
 import type { EventSinkV2Shape } from "../../../orchestration-v2/EventSink.ts";
 import { readEventLogPrunedThrough } from "../../persistence/EventLogPruneBoundary.ts";
 import type { CodexCapacityContinuationBinding } from "./CodexCapacityContinuation.ts";
@@ -75,8 +77,35 @@ export const promptWasNotApplied = (error: unknown): boolean => {
 
 /** A capability for the original prompt's inline ledger, captured by its producer waiter. */
 export const CodexInlineHandoffRejection = Context.Reference<
-  ((binding: CodexCapacityContinuationBinding) => Effect.Effect<void>) | undefined
+  | ((
+      binding: CodexCapacityContinuationBinding,
+      proofIsCurrent: () => boolean,
+    ) => Effect.Effect<"restored" | "withheld" | "failed">)
+  | undefined
 >("jones/CodexInlineHandoffRejection", { defaultValue: () => undefined });
+
+class InlineRestorationWithheld extends Schema.TaggedError<
+  InlineRestorationWithheld,
+  { readonly brand: unique symbol }
+>()("InlineRestorationWithheld", {}) {}
+
+class InlineRestorationSqlFailure extends Schema.TaggedError<
+  InlineRestorationSqlFailure,
+  { readonly brand: unique symbol }
+>()("InlineRestorationSqlFailure", { cause: Schema.Defect() }) {}
+
+const isInlineRestorationWithheld = Schema.is(InlineRestorationWithheld);
+const isInlineRestorationSqlFailure = Schema.is(InlineRestorationSqlFailure);
+
+const hasSqlCause = (error: unknown): boolean => {
+  // EventSink and EventStore wrap statement errors with their operation.
+  for (let depth = 0; depth < 8; depth++) {
+    if (SqlError.isSqlError(error)) return true;
+    if (!Predicate.hasProperty(error, "cause")) return false;
+    error = error.cause;
+  }
+  return false;
+};
 
 /** Run inside the same EventSink writer batch as the restoration. */
 const ownsPendingHistoryDelivery = Effect.fn("HistoryDeliveryOutcome.ownsPendingDelivery")(
@@ -117,7 +146,10 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
   ) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, WriteError>,
   withProviderBatch: EventSinkV2Shape["withProviderBatch"],
 ) {
-  const pending = new Map<OrchestrationV2ContextHandoff["id"], OrchestrationV2StoredEvent>();
+  const pending = new Map<
+    OrchestrationV2ContextHandoff["id"],
+    OrchestrationV2StoredEvent | undefined
+  >();
   const restore = (handoff: OrchestrationV2ContextHandoff) =>
     Effect.suspend(() => {
       const marker = pending.get(handoff.id);
@@ -128,15 +160,91 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
         }),
       );
     });
+  const restoreRejectedInline = Effect.fn("HistoryDeliveryOutcome.restoreRejectedInline")(
+    function* (
+      handoffs: ReadonlyArray<OrchestrationV2ContextHandoff>,
+      proofIsCurrent: () => boolean,
+    ) {
+      const originals = new Map(handoffs.map((handoff) => [handoff.id, handoff]));
+      const withheld = new InlineRestorationWithheld();
+      const requireProof = Effect.suspend(() => (proofIsCurrent() ? Effect.void : withheld));
+      let committed = false;
+      const attempt = withProviderBatch(
+        Effect.gen(function* () {
+          yield* requireProof;
+          if (pending.size === 0 || originals.size !== handoffs.length) return yield* withheld;
+          for (const [id, marker] of pending) {
+            const original = originals.get(id);
+            if (
+              marker === undefined ||
+              original === undefined ||
+              !(yield* ownsPendingHistoryDelivery(marker))
+            )
+              return yield* withheld;
+            yield* requireProof;
+            if ((yield* write(original)).length !== 1) return yield* withheld;
+          }
+          const database = yield* Effect.serviceOption(SqlClient.SqlClient);
+          if (Option.isNone(database)) return yield* withheld;
+          yield* database.value.afterCommit(
+            Effect.sync(() => {
+              committed = true;
+            }),
+          );
+          // This can still roll back the batch, including earlier savepoints.
+          // EventSink can await its publication lane and SQLite COMMIT after this
+          // check. Revocation then still holds live admission, yet the restored
+          // row can survive a restart that loses the in-memory hold.
+          yield* requireProof;
+        }).pipe(
+          Effect.mapError((cause) =>
+            hasSqlCause(cause) ? new InlineRestorationSqlFailure({ cause }) : cause,
+          ),
+        ),
+      );
+      const restoreAttempt = Effect.suspend(() => (proofIsCurrent() ? attempt : withheld));
+      const result = yield* Effect.exit(
+        restoreAttempt.pipe(
+          Effect.catchCause((cause) => {
+            const [failure] = cause.reasons;
+            // Retry one SQL-only batch failure after confirmed rollback. A
+            // COMMIT/rollback error or mixed cause is outside that evidence.
+            return cause.reasons.length === 1 &&
+              failure?._tag === "Fail" &&
+              isInlineRestorationSqlFailure(failure.error)
+              ? restoreAttempt
+              : Effect.failCause(cause);
+          }),
+        ),
+      );
+      if (Exit.isSuccess(result)) {
+        if (!committed || !proofIsCurrent()) return "withheld" as const;
+        pending.clear();
+        return "restored" as const;
+      }
+      const [failure] = result.cause.reasons;
+      if (
+        result.cause.reasons.length === 1 &&
+        failure?._tag === "Fail" &&
+        isInlineRestorationWithheld(failure.error)
+      )
+        return "withheld" as const;
+      if (Cause.hasInterruptsOnly(result.cause)) return yield* Effect.interrupt;
+      yield* Effect.logWarning(
+        "Failed to restore rejected Codex inline history; admission is held",
+      );
+      return "failed" as const;
+    },
+  );
   return {
     persist: (handoff: OrchestrationV2ContextHandoff): ReturnType<typeof restore> =>
       write(handoff).pipe(
         Effect.map(([stored]) => {
-          if (handoff.delivery?.status === "pending" && stored !== undefined)
-            pending.set(handoff.id, stored);
+          if (handoff.delivery?.status === "pending") pending.set(handoff.id, stored);
         }),
       ),
     restore,
+    restoreRejectedInline,
   };
 }
 

@@ -3371,9 +3371,14 @@ export const layer: Layer.Layer<
             ),
           );
           const { reclaimableBudget } = handoffContext;
+          const handoffs = [...effectiveHandoffs, ...retryHandoff];
+          const codexHistory =
+            session.driver === "codex"
+              ? makeCodexHistoryDeliveryPersistence(writeHandoff, eventSink.withProviderBatch)
+              : undefined;
           const delivery = yield* deliverWithHandoffRecovery(
             {
-              handoffs: [...effectiveHandoffs, ...retryHandoff],
+              handoffs,
               deferInline: compact || goalCommand,
               providerThread: runningProviderThread,
               budget,
@@ -3387,9 +3392,7 @@ export const layer: Layer.Layer<
                         ...history,
                       }),
                   }),
-              ...(session.driver === "codex"
-                ? makeCodexHistoryDeliveryPersistence(writeHandoff, eventSink.withProviderBatch)
-                : { persist: persistHandoff }),
+              ...(codexHistory ?? { persist: persistHandoff }),
             },
             {
               input: turnInput,
@@ -3453,14 +3456,14 @@ export const layer: Layer.Layer<
           yield* operation.pipe(
             Effect.provideService(
               CodexInlineHandoffRejection,
-              session.driver === "codex" && delivery.context !== "" && nativeThreadId != null
-                ? (binding) =>
+              codexHistory !== undefined && delivery.context !== "" && nativeThreadId != null
+                ? (binding, proofIsCurrent) =>
                     binding.nativeThreadId === nativeThreadId &&
                     binding.providerThreadId === runningProviderThread.id &&
                     binding.runId === run.id &&
                     binding.attemptId === attempt.id
-                      ? restoreUnsent
-                      : Effect.void
+                      ? codexHistory.restoreRejectedInline(handoffs, proofIsCurrent)
+                      : Effect.succeed("withheld" as const)
                 : undefined,
             ),
             Effect.tapError((error) =>

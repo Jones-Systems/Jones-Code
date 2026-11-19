@@ -6,6 +6,7 @@
     "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
     "apps/server/src/jones/provider/codex/CodexLateStartRecovery.ts",
     "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts",
+    "apps/server/src/jones/provider/codex/CodexInlineHandoffRejection.test.ts",
     "apps/server/src/jones/provider/codex/CodexLateSubagentStart.test.ts",
     "apps/server/src/jones/provider/codex/CodexPendingStartNotifications.ts",
     "apps/server/src/jones/provider/codex/CodexPendingStartNotifications.test.ts",

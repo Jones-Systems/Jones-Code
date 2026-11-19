@@ -795,6 +795,7 @@
     "apps/server/src/jones/provider/codex/CodexFailoverSelection.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexInlineHandoffRejection.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexLateSubagentStart.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexPendingStartNotifications.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexPendingStartNotifications.ts": "jones-owned",
