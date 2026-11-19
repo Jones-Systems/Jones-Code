@@ -20,7 +20,8 @@ export function codexStartReplyObservationOptions(
     logIncoming: true,
     logOutgoing: protocolLogger !== undefined,
     logger: (event) => {
-      if (event.direction === "incoming" && event.stage === "decoded") observeReply?.(event.payload);
+      if (event.direction === "incoming" && event.stage === "decoded")
+        observeReply?.(event.payload);
       return protocolLogger?.(event) ?? Effect.void;
     },
   };
@@ -90,7 +91,9 @@ export function makeCodexLateStartRecovery() {
         reply.error.code !== INVALID_PARAMS ||
         typeof reply.error.message !== "string" ||
         Object.keys(reply).some((key) => key !== "id" && key !== "error" && key !== "jsonrpc") ||
-        Object.keys(reply.error).some((key) => key !== "code" && key !== "message" && key !== "data")
+        Object.keys(reply.error).some(
+          (key) => key !== "code" && key !== "message" && key !== "data",
+        )
       )
         return;
       rejectionReplies.set(reply.error, { runtimeGeneration, requestId: String(reply.id) });

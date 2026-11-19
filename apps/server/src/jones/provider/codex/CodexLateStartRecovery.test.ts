@@ -1,4 +1,7 @@
-import { CodexAppServerRequestError, CodexAppServerTransportError } from "effect-codex-app-server/errors";
+import {
+  CodexAppServerRequestError,
+  CodexAppServerTransportError,
+} from "effect-codex-app-server/errors";
 import { describe, expect, it } from "vite-plus/test";
 import { makeCodexLateStartRecovery } from "./CodexLateStartRecovery.ts";
 
@@ -145,7 +148,9 @@ describe("Codex late start admission recovery", () => {
       operation: "read-input-stream",
       cause: refusal,
     });
-    expect(ledger.reject(dispatch, binding.runtimeGeneration, transportFailure)).toBe("other_error");
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, transportFailure)).toBe(
+      "other_error",
+    );
     expect(ledger.blocked).toBe(true);
   });
 
