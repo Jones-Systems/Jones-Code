@@ -5,24 +5,22 @@ import {
   type ResolvedKeybindingRule,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   type ResolvedKeybindingsConfig,
-  THREAD_JUMP_KEYBINDING_COMMANDS,
   type ModelPickerJumpKeybindingCommand,
+  THREAD_JUMP_KEYBINDING_COMMANDS,
   type ThreadJumpKeybindingCommand,
 } from "@t3tools/contracts";
 import {
+  compileResolvedKeybindingRule,
   isMacPlatform,
   matchesKeybindingShortcut,
-  matchesKeybindingShortcutModifiers,
   normalizeEventKey,
   resolveEventKeys,
   type ShortcutEventLike as SharedShortcutEventLike,
-  type ShortcutModifierStateLike,
 } from "@t3tools/shared/keybindings";
 import { isElectron } from "./env";
 import { isEditableFocused } from "./lib/editableFocus";
 import { projectScriptIdFromCommand } from "./projectScripts";
 
-export type { ShortcutModifierStateLike } from "@t3tools/shared/keybindings";
 export { shortcutKeyFromEvent } from "@t3tools/shared/keybindings";
 
 export interface ShortcutEventLike extends SharedShortcutEventLike {
@@ -266,11 +264,27 @@ export function shortcutLabelForCommand(
   return shortcut ? formatShortcutLabel(shortcut, platform) : null;
 }
 
-export function threadJumpCommandForIndex(index: number): ThreadJumpKeybindingCommand | null {
+// Project and SSH host pickers still use their local positional choices.
+const numberedPickerShortcuts = THREAD_JUMP_KEYBINDING_COMMANDS.flatMap((command, index) => {
+  const rule = compileResolvedKeybindingRule({
+    key: `mod+${index + 1}`,
+    command,
+    when: "isDesktop",
+  });
+  return rule ? [rule] : [];
+});
+
+export function addNumberedPickerShortcuts(
+  keybindings: ResolvedKeybindingsConfig,
+): ResolvedKeybindingsConfig {
+  return [...numberedPickerShortcuts, ...keybindings];
+}
+
+export function numberedPickerCommandForIndex(index: number): ThreadJumpKeybindingCommand | null {
   return THREAD_JUMP_KEYBINDING_COMMANDS[index] ?? null;
 }
 
-export function threadJumpIndexFromCommand(command: string): number | null {
+export function numberedPickerIndexFromCommand(command: string): number | null {
   const index = THREAD_JUMP_KEYBINDING_COMMANDS.indexOf(command as ThreadJumpKeybindingCommand);
   return index === -1 ? null : index;
 }
@@ -289,33 +303,7 @@ export function isThreadNavigationShortcut(
   options?: ShortcutMatchOptions,
 ): boolean {
   const command = resolveShortcutCommand(event, keybindings, options);
-  return (
-    threadTraversalDirectionFromCommand(command) !== null ||
-    threadJumpIndexFromCommand(command ?? "") !== null
-  );
-}
-
-export function shouldShowThreadJumpHintsForModifiers(
-  modifiers: ShortcutModifierStateLike,
-  keybindings: ResolvedKeybindingsConfig,
-  options?: ShortcutMatchOptions,
-): boolean {
-  // Holding a modifier is routine in a shell (Ctrl+C, Ctrl+R), so don't flash hints over it.
-  if (resolveContext(options).terminalFocus) {
-    return false;
-  }
-
-  const platform = resolvePlatform(options);
-
-  for (const command of THREAD_JUMP_KEYBINDING_COMMANDS) {
-    const shortcut = findEffectiveShortcutForCommand(keybindings, command, options);
-    if (!shortcut) continue;
-    if (matchesKeybindingShortcutModifiers(modifiers, shortcut, platform)) {
-      return true;
-    }
-  }
-
-  return false;
+  return threadTraversalDirectionFromCommand(command) !== null;
 }
 
 export function modelPickerJumpCommandForIndex(

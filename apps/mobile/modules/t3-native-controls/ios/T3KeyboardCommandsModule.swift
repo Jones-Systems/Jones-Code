@@ -35,7 +35,7 @@ public final class T3KeyboardCommandsView: ExpoView {
 
   public override var keyCommands: [UIKeyCommand]? {
     let isPad = UIDevice.current.userInterfaceIdiom == .pad
-    var commands = [
+    return [
       enabledCommand("newTask", input: "n", modifiers: .command, action: #selector(newTask), title: "New Task"),
       enabledCommand("focusSearch", input: "f", modifiers: .command, action: #selector(focusSearch), title: "Find"),
       isPad
@@ -58,18 +58,6 @@ public final class T3KeyboardCommandsView: ExpoView {
       enabledCommand("toggleSidebar", input: "\\", modifiers: .command, action: #selector(handleToggleSidebar), title: "Toggle Sidebar"),
       enabledCommand("cycleHost", input: "h", modifiers: [.command, .shift], action: #selector(cycleHost), title: "Next Machine"),
     ].compactMap { $0 }
-    if isPad {
-      commands += (1...9).compactMap { index in
-        enabledCommand(
-          "thread.jump.\(index)",
-          input: String(index),
-          modifiers: .command,
-          action: #selector(jumpToThread(_:)),
-          title: "Go to Thread \(index)"
-        )
-      }
-    }
-    return commands
   }
 
   func setEnabledCommands(_ commands: [String]) {
@@ -146,10 +134,6 @@ public final class T3KeyboardCommandsView: ExpoView {
   @objc private func paletteNext() { emit("paletteNext") }
   @objc private func palettePrevious() { emit("palettePrevious") }
   @objc private func paletteDismiss() { emit("paletteDismiss") }
-  @objc private func jumpToThread(_ sender: UIKeyCommand) {
-    guard let input = sender.input else { return }
-    emit("thread.jump.\(input)")
-  }
   @objc private func focusSearch() { emit("focusSearch") }
   @objc private func goBack() { emit("back") }
   @objc private func openFiles() { emit("files") }

@@ -36,7 +36,6 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { makeRawThreadShell, makeThreadShellFixture } from "../../test-fixtures";
-import { threadJumpTarget } from "../keyboard/threadKeyboardShortcuts";
 import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
@@ -943,9 +942,6 @@ describe("buildThreadListV2ListItems", () => {
       "v2-settled-shelf",
       "v2-thread",
     ]);
-    expect(threadJumpTarget(items, "thread.jump.1")?.id).toBe("active");
-    expect(threadJumpTarget(items, "thread.jump.2")?.id).toBe("settled");
-    expect(threadJumpTarget(items, "thread.jump.3")).toBeNull();
   });
 });
 
@@ -1747,7 +1743,6 @@ describe("mobile Workstream projection", () => {
     expect(
       result.filter((item) => item.type === "v2-thread").map((item) => key(item.item.thread)),
     ).toEqual([key(first), key(second), key(otherEnvironment)]);
-    expect(threadJumpTarget(result, "thread.jump.2")).toBe(second);
     expect(
       result.find((item) => item.type === "v2-thread" && item.item.thread === first),
     ).toMatchObject({ secondaryWorkstreamLabel: "Related" });

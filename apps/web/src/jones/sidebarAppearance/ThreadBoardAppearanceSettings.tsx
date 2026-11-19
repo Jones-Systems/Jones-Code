@@ -4,7 +4,10 @@ import { SettingsSection } from "../../components/settings/settingsLayout";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import { PersonalSidebarGroupHeader } from "../workstreams/PersonalSidebarGroupHeader";
+import {
+  PersonalSidebarGroupHeader,
+  WorkstreamRailToggle,
+} from "../workstreams/PersonalSidebarGroupHeader";
 import type { PersonalStatusFilter } from "../workstreams/personalStatusFilter";
 import { sidebarAppearanceScope, type SidebarAppearance } from "./model";
 import { SidebarAppearanceOverride } from "./SidebarAppearanceContext";
@@ -47,15 +50,21 @@ const measurementGroups = [
   {
     title: "Workstream headers and filters",
     fields: [
-      ["headerPadding", "Vertical header padding"],
+      ["headerPadding", "Default vertical header padding"],
+      ["headerPaddingTop", "Workstream top padding"],
+      ["headerPaddingBottom", "Workstream bottom padding"],
       ["headerPaddingInline", "Horizontal header padding"],
       ["headerTitleSize", "Workstream title size"],
       ["headerTitleWeight", "Workstream title weight", "slider"],
       ["headerGap", "Header title and filter spacing"],
       ["countSize", "Failed and total count size"],
       ["countGap", "Failed and total count spacing"],
+      ["countOffsetX", "Count offset left (−) / right (+)"],
+      ["countOffsetY", "Count offset up (−) / down (+)"],
       ["filterSize", "Status filter text size"],
       ["filterGap", "Status filter spacing"],
+      ["filterOffsetX", "Filter pill offset left (−) / right (+)"],
+      ["filterOffsetY", "Filter pill offset up (−) / down (+)"],
     ],
   },
 ] as const satisfies ReadonlyArray<{
@@ -63,12 +72,20 @@ const measurementGroups = [
   fields: ReadonlyArray<readonly [ThreadBoardMeasurement, string, "slider"?]>;
 }>;
 
-function measurementDefault(key: ThreadBoardMeasurement, sidebar: SidebarAppearance) {
+function measurementDefault(
+  key: ThreadBoardMeasurement,
+  sidebar: SidebarAppearance,
+  board: ThreadBoardAppearance,
+) {
   if (key === "cardScale") return Math.round(sidebar.cardScale * 100);
   if (key === "cardPadding") return Math.round(8 * sidebar.cardScale);
   if (key === "cardTitleSize") return Math.round(14 * sidebar.cardScale);
   if (key === "cardMetaSize") return Math.round(12 * sidebar.cardScale);
-  if (key === "headerPadding") return { tight: 3, default: 4, roomy: 6 }[sidebar.workstreamSpacing];
+  const legacyPadding = { tight: 3, default: 4, roomy: 6 }[sidebar.workstreamSpacing];
+  if (key === "headerPadding") return legacyPadding;
+  if (key === "headerPaddingTop" || key === "headerPaddingBottom") {
+    return board.headerPadding ?? legacyPadding;
+  }
   if (key === "headerTitleWeight") {
     return { regular: 400, medium: 500, default: 600 }[sidebar.workstreamTitleWeight];
   }
@@ -168,7 +185,7 @@ function MeasurementControl({
 
 const isColor = Schema.is(ThreadBoardColor);
 
-function BackgroundControl({
+function ColorControl({
   field,
   title,
   value,
@@ -198,7 +215,7 @@ function BackgroundControl({
             key={value ?? "theme"}
             id={id}
             size="sm"
-            placeholder={field === "background" ? "Theme" : "Board color"}
+            placeholder={field === "unassignedBackground" ? "Board color" : "Theme"}
             defaultValue={value ?? ""}
             spellCheck={false}
             onKeyDown={(event) => {
@@ -287,7 +304,7 @@ function ThreadBoardPreview({
       >
         <section
           data-jones-board-section="workstream"
-          className="rounded-lg"
+          className="relative rounded-lg"
           style={
             {
               "--jones-board-section-accent": "#38bda9",
@@ -303,6 +320,13 @@ function ThreadBoardPreview({
             statusFilter={filter}
             onStatusFilterChange={setFilter}
           />
+          {board.clickRailToCollapse ? (
+            <WorkstreamRailToggle
+              name="CI & Test Efficiency"
+              collapsed={collapsed}
+              onToggle={() => setCollapsed((value) => !value)}
+            />
+          ) : null}
           {showStatus("done") ? card("Assess CI performance", "Jones Code · Done") : null}
           {showStatus("failed") ? card("Run build verification", "Jones Code · Failed") : null}
         </section>
@@ -389,19 +413,43 @@ export function ThreadBoardAppearanceSettings() {
                       label={label}
                       slider={control === "slider"}
                       value={appearance[measurement]}
-                      initial={measurementDefault(measurement, sidebar)}
+                      initial={measurementDefault(measurement, sidebar, appearance)}
                       onChange={(value) => set(measurement, value)}
                     />
                   ))}
+                  {title === "Thread cards" ? (
+                    <ColorControl
+                      field="cardBorderColor"
+                      title="Card border color"
+                      value={appearance.cardBorderColor}
+                      onChange={(value) => set("cardBorderColor", value)}
+                    />
+                  ) : null}
                   {title === "Workstream sections" ? (
                     <>
-                      <BackgroundControl
+                      <div className="space-y-1.5">
+                        <p className="text-sm font-medium">Workstream color bar</p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          aria-pressed={appearance.clickRailToCollapse === true}
+                          onClick={() =>
+                            set(
+                              "clickRailToCollapse",
+                              appearance.clickRailToCollapse ? undefined : true,
+                            )
+                          }
+                        >
+                          Click color bar to collapse or expand
+                        </Button>
+                      </div>
+                      <ColorControl
                         field="background"
                         title="Board background"
                         value={appearance.background}
                         onChange={(value) => set("background", value)}
                       />
-                      <BackgroundControl
+                      <ColorControl
                         field="unassignedBackground"
                         title="Unassigned background"
                         value={appearance.unassignedBackground}

@@ -111,14 +111,16 @@ function BrainSymbol({
   );
 }
 
-function AppleSymbol(props: LucideProps) {
+function AppleSymbol({ outline, ...props }: LucideProps & { outline?: boolean }) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
       width="24"
       height="24"
       viewBox="0 0 24 24"
-      fill="currentColor"
+      fill={outline ? "none" : "currentColor"}
+      stroke={outline ? "currentColor" : undefined}
+      strokeWidth={outline ? 1.25 : undefined}
       aria-hidden="true"
       {...props}
     >
@@ -127,30 +129,54 @@ function AppleSymbol(props: LucideProps) {
   );
 }
 
+export type MachineSymbolFill = "filled" | "outline";
+
 export function PersonalMachineSymbol({
   label,
   kind,
   fallback: Fallback,
+  symbolFill,
   ...props
 }: LucideProps & {
   label?: string | null | undefined;
   kind: EnvironmentMachineKind;
   fallback: FunctionComponent<LucideProps>;
+  symbolFill?: MachineSymbolFill | undefined;
 }) {
   const appearance = useSidebarAppearancePresentation();
   const identity = resolveMachineIdentity(label, kind).identity;
-  if (identity === "laptop" && label != null && appearance?.laptopSymbol === "filled") {
+  const houseStyle = symbolFill ?? (label != null ? appearance?.laptopSymbol : undefined);
+  if (identity === "laptop" && houseStyle === "filled") {
     return <FilledHouseSymbol {...props} />;
   }
-  if (identity === "vps" && appearance && appearance.vpsSymbol !== "outline") {
-    return <BrainSymbol variant={appearance.vpsSymbol} {...props} />;
+  const brainStyle = symbolFill ?? appearance?.vpsSymbol;
+  if (identity === "vps" && brainStyle != null && brainStyle !== "outline") {
+    return <BrainSymbol variant={brainStyle} {...props} />;
   }
+  if (identity === "mini") return <AppleSymbol outline={symbolFill === "outline"} {...props} />;
   const Icon = {
     vps: BrainIcon,
     test: BotIcon,
     laptop: HouseIcon,
-    mini: AppleSymbol,
     unknown: Fallback,
   }[identity];
+  const linuxSymbol = identity === "unknown" && kind === "linux";
+  if (linuxSymbol && symbolFill === "outline") {
+    return (
+      <Icon
+        {...props}
+        style={{ ...props.style, fill: "none", stroke: "currentColor", strokeWidth: 1 }}
+      />
+    );
+  }
+  if (!linuxSymbol && symbolFill === "filled" && (identity === "test" || identity === "unknown")) {
+    // Keep the fallback's detail strokes visible against its filled body.
+    return (
+      <Icon
+        {...props}
+        style={{ ...props.style, fill: "color-mix(in srgb, currentColor 45%, transparent)" }}
+      />
+    );
+  }
   return <Icon {...props} />;
 }

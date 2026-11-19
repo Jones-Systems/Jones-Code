@@ -146,6 +146,7 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectDisplayNameByKey: ReadonlyMap<string, string>;
   scopedProjectKeys: ReadonlySet<string> | null;
   excludedEnvironmentIds?: ReadonlySet<string>;
+  inWorkstreams?: boolean;
   routeDraftId: string | null;
   onNavigateToDraft: (draftId: DraftId) => void;
   onDraftContextMenu: (draftId: DraftId, position: { x: number; y: number }) => void;
@@ -217,7 +218,7 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   if (drafts.length === 0) {
     return null;
   }
-  return (
+  const rows = (
     <>
       {drafts.map(({ composer, draftId, session }) => {
         const projectKey = `${session.environmentId}:${session.projectId}`;
@@ -242,4 +243,5 @@ export const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
       />
     </>
   );
+  return props.inWorkstreams ? <ul aria-label="Drafts">{rows}</ul> : rows;
 });

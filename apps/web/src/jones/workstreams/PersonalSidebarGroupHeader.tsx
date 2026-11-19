@@ -7,6 +7,27 @@ import type { PersonalStatusFilter } from "./personalStatusFilter";
 
 const nameIconClassName = "me-[0.4em] inline-block size-[1em] align-[-0.125em] [&>*]:size-full";
 
+export function WorkstreamRailToggle({
+  name,
+  collapsed,
+  onToggle,
+}: {
+  name: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-workstream-rail-toggle
+      aria-label={`${collapsed ? "Expand" : "Collapse"} ${name} from the color bar`}
+      aria-expanded={!collapsed}
+      onClick={onToggle}
+      className="absolute inset-y-0 -left-0.5 z-2 w-2 cursor-pointer rounded-l-lg hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+    />
+  );
+}
+
 export function PersonalSidebarGroupHeader({
   name,
   collapsed,

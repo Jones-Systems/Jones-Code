@@ -1,4 +1,5 @@
 import {
+  type KeybindingCommand,
   type KeybindingRule,
   type KeybindingShortcut,
   type KeybindingWhenNode,
@@ -14,12 +15,10 @@ export {
   EVENT_CODE_SHORTCUT_KEYS,
   isMacPlatform,
   matchesKeybindingShortcut,
-  matchesKeybindingShortcutModifiers,
   normalizeEventKey,
   resolveEventKeys,
   shortcutKeyFromEvent,
   type ShortcutEventLike,
-  type ShortcutModifierStateLike,
 } from "./keybindingMatching.ts";
 
 export const US_SHIFTED_TO_UNSHIFTED_KEYS: ReadonlyMap<string, string> = new Map([
@@ -131,11 +130,6 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+shift+s", command: "thread.settle", when: "!terminalFocus" },
   { key: "mod+shift+p", command: "thread.pin", when: "!terminalFocus" },
   { key: "mod+z", command: "thread.undo", when: "!terminalFocus && !editableFocus" },
-  ...THREAD_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
-    key: `mod+${index + 1}`,
-    command,
-    when: "!modelPickerOpen && isDesktop",
-  })),
   ...MODEL_PICKER_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
     key: `mod+${index + 1}`,
     command,
@@ -354,6 +348,10 @@ export function parseKeybindingWhenExpression(expression: string): KeybindingWhe
   return ast;
 }
 
+const retiredThreadJumpCommands: ReadonlySet<KeybindingCommand> = new Set(
+  THREAD_JUMP_KEYBINDING_COMMANDS,
+);
+
 export function compileResolvedKeybindingRule(rule: KeybindingRule): ResolvedKeybindingRule | null {
   const shortcut = parseKeybindingShortcut(rule.key);
   if (!shortcut) return null;
@@ -379,6 +377,7 @@ export function compileResolvedKeybindingsConfig(
 ): ResolvedKeybindingsConfig {
   const compiled: ResolvedKeybindingRule[] = [];
   for (const rule of config) {
+    if (retiredThreadJumpCommands.has(rule.command)) continue;
     const result = compileResolvedKeybindingRule(rule);
     if (result) {
       compiled.push(result);
@@ -392,15 +391,16 @@ export const DEFAULT_RESOLVED_KEYBINDINGS = compileResolvedKeybindingsConfig(DEF
 export function mergeWithDefaultKeybindings(
   custom: ResolvedKeybindingsConfig,
 ): ResolvedKeybindingsConfig {
-  if (custom.length === 0) {
+  const supported = custom.filter((binding) => !retiredThreadJumpCommands.has(binding.command));
+  if (supported.length === 0) {
     return [...DEFAULT_RESOLVED_KEYBINDINGS];
   }
 
-  const overriddenCommands = new Set(custom.map((binding) => binding.command));
+  const overriddenCommands = new Set(supported.map((binding) => binding.command));
   const retainedDefaults = DEFAULT_RESOLVED_KEYBINDINGS.filter(
     (binding) => !overriddenCommands.has(binding.command),
   );
-  const merged = [...retainedDefaults, ...custom];
+  const merged = [...retainedDefaults, ...supported];
 
   if (merged.length <= MAX_KEYBINDINGS_COUNT) {
     return merged;

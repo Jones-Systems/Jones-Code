@@ -15,7 +15,7 @@ export interface ShortcutEventLike {
   altKey: boolean;
 }
 
-export interface ShortcutModifierStateLike {
+interface ShortcutModifierStateLike {
   metaKey: boolean;
   ctrlKey: boolean;
   shiftKey: boolean;
@@ -79,7 +79,7 @@ export function resolveEventKeys(event: ShortcutEventLike): Set<string> {
   return keys;
 }
 
-export function matchesKeybindingShortcutModifiers(
+function matchesKeybindingShortcutModifiers(
   event: ShortcutModifierStateLike,
   shortcut: KeybindingShortcut,
   platform: string,

@@ -48,6 +48,34 @@ it("previews separately saved board controls, rejects out-of-range values, and r
       "14px",
     );
 
+    const setNumber = async (name: RegExp, value: string) => {
+      await initial.getByRole("spinbutton", { name }).fill(value);
+      await userEvent.keyboard("{Enter}");
+    };
+    await setNumber(/Filter pill offset left/, "-4");
+    await setNumber(/Filter pill offset up/, "3");
+    await setNumber(/Count offset left/, "2");
+    await setNumber(/Count offset up/, "-3");
+    await setNumber(/Workstream top padding/, "8");
+    await setNumber(/Workstream bottom padding/, "2");
+
+    expect(getComputedStyle(preview.querySelector("[data-personal-status-pill]")!).translate).toBe(
+      "-4px 3px",
+    );
+    expect(getComputedStyle(preview.querySelector("[data-personal-group-count]")!).translate).toBe(
+      "2px -3px",
+    );
+    const header = getComputedStyle(preview.querySelector("[data-personal-group-header]")!);
+    expect([header.paddingTop, header.paddingBottom]).toEqual(["8px", "2px"]);
+
+    const rail = initial.getByRole("button", { name: /Collapse CI .* from the color bar/ });
+    await expect.element(rail).not.toBeInTheDocument();
+    await initial.getByRole("button", { name: "Click color bar to collapse or expand" }).click();
+    await rail.click();
+    await expect.element(initial.getByText("Assess CI performance")).not.toBeInTheDocument();
+    await initial.getByRole("button", { name: /Expand CI .* from the color bar/ }).click();
+    await expect.element(initial.getByText("Assess CI performance")).toBeVisible();
+
     await initial.unmount();
     await using reopened = await render(<Fixture />);
     await expect
@@ -56,6 +84,9 @@ it("previews separately saved board controls, rejects out-of-range values, and r
     await expect
       .element(reopened.getByRole("button", { name: "Keep filter spacing fixed" }))
       .toHaveAttribute("aria-pressed", "true");
+    await expect
+      .element(reopened.getByRole("spinbutton", { name: /Filter pill offset left/ }))
+      .toHaveValue(-4);
     await reopened.getByRole("button", { name: "Reset board settings" }).click();
     expect(localStorage.getItem(THREAD_BOARD_APPEARANCE_KEY)).toBeNull();
     await expect

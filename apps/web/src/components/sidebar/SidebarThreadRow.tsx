@@ -121,7 +121,6 @@ import { getTriggerDisplayModelName } from "../chat/providerIconUtils";
 import { shouldShowInstanceBadge, type ProviderInstanceEntry } from "../../providerInstances";
 import { useThreadRunningTerminalIds } from "../../state/terminalSessions";
 import { InlineButton } from "../ui/button";
-import { Kbd } from "../ui/kbd";
 import { Menu, MenuItem, MenuItemDetail, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
@@ -156,17 +155,6 @@ function RelativeTimeLabel(props: { timestamp: string | null }) {
         formatRelativeTimeLabel(props.timestamp, Date.parse(`${nowMinute}:00.000Z`)),
       );
 }
-
-function JumpHintBadge(props: { label: string }) {
-  return (
-    <Kbd aria-hidden data-jump-hint>
-      {props.label}
-    </Kbd>
-  );
-}
-
-const JUMP_HINT_SLOT_CLASS_NAME =
-  "[&>:not([data-jump-hint])]:invisible [&>:not([data-jump-hint])]:absolute";
 
 function WorkingDuration(props: { environmentId: EnvironmentId; startedAt: string | null }) {
   const startedMs = props.startedAt !== null ? Date.parse(props.startedAt) : Number.NaN;
@@ -590,7 +578,6 @@ type SidebarThreadRowProps = {
   isRouteThread: boolean;
   // Read at click time; a prop would re-render every row on entering or leaving a thread route.
   readOpensPullRequestsInRightPanel: () => boolean;
-  jumpLabel: string | null;
   currentEnvironmentId: string | null;
   environmentLabel: string | null;
   environmentMachine: EnvironmentMachineKind;
@@ -855,8 +842,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     deviceDisplayLabel(props.environmentLabel ?? "Unknown environment", props.environmentMachine);
 
   const devicePresentation = useSidebarDevicePresentation({
+    environmentId: thread.environmentId,
     label: device?.label ?? props.environmentLabel,
-    kind: props.environmentMachine,
     visibleLabel: deviceLabel,
     iconOverridden: device?.serverConfig?.settings.environmentIcon != null,
   });
@@ -866,7 +853,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       thread={checkoutThread}
       project={props.project}
       projectDisplayName={props.projectDisplayName}
-      environmentLabel={devicePresentation.hidden ? deviceLabel : props.environmentLabel}
+      environmentLabel={devicePresentation.nameHidden ? deviceLabel : props.environmentLabel}
       environmentMachine={props.environmentMachine}
       providerEntry={providerEntry}
       providerEntryByInstanceId={props.providerEntryByInstanceId}
@@ -991,7 +978,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   // Closing here, not just masking, keeps the menu from reopening when the button returns.
   if (snoozeMenuOpenRaw && !showSnoozeButton) setSnoozeMenuOpen(false);
   const snoozeMenuOpen = snoozeMenuOpenRaw && showSnoozeButton;
-  const jumpHintLabel = snoozeMenuOpen ? null : props.jumpLabel;
   const handlePrClick = (event: ReactMouseEvent<HTMLElement>, targetUrl?: string) => {
     const url = targetUrl ?? pr?.url ?? currentLinkedPr?.url;
     if (!url) return;
@@ -1198,15 +1184,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const diff = latestRunDiff(thread);
   const metaLine = (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
-      <EnvironmentMachineIcon
-        aria-hidden
-        label={device?.label ?? props.environmentLabel}
-        override={device?.serverConfig?.settings.environmentIcon != null}
-        kind={props.environmentMachine}
-        className="size-3 shrink-0"
-      />
+      {devicePresentation.iconHidden ? null : (
+        <EnvironmentMachineIcon
+          data-jones-device-icon
+          aria-hidden
+          label={device?.label ?? props.environmentLabel}
+          override={device?.serverConfig?.settings.environmentIcon != null}
+          kind={props.environmentMachine}
+          symbolFill={devicePresentation.symbolFill}
+          className="size-3 shrink-0"
+        />
+      )}
       <span data-jones-device-label className="min-w-0 flex-1 truncate">
-        {devicePresentation.hidden ? null : deviceLabel}
+        {devicePresentation.nameHidden ? null : deviceLabel}
       </span>
       {terminalStatusIcon}
       <ThreadWorktreeIndicator thread={checkoutThread} />
@@ -1302,7 +1292,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   className={cn(
                     "relative ml-auto flex h-6 min-w-8 shrink-0 items-center justify-end",
                     props.sweepAction !== null && "hidden",
-                    jumpHintLabel && JUMP_HINT_SLOT_CLASS_NAME,
                   )}
                 >
                   <span
@@ -1413,7 +1402,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       <TooltipPopup side="top">Settle thread</TooltipPopup>
                     </Tooltip>
                   )}
-                  {jumpHintLabel ? <JumpHintBadge label={jumpHintLabel} /> : null}
                 </span>
               )}
               {props.sweepAction !== null ? dragDestination : null}
@@ -1491,7 +1479,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   className={cn(
                     "group/sidebar-status-slot relative ml-auto flex h-5 min-w-8 shrink-0 items-stretch justify-end text-xs",
                     props.sweepAction !== null && "hidden",
-                    jumpHintLabel && JUMP_HINT_SLOT_CLASS_NAME,
                   )}
                 >
                   <span
@@ -1613,7 +1600,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       ) : null}
                     </span>
                   ) : null}
-                  {jumpHintLabel ? <JumpHintBadge label={jumpHintLabel} /> : null}
                 </span>
               )}
               {props.sweepAction !== null ? dragDestination : null}

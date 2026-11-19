@@ -153,8 +153,6 @@ import { isElectron } from "../env";
 import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
-  threadJumpCommandForIndex,
-  threadJumpIndexFromCommand,
   threadTraversalDirectionFromCommand,
 } from "../keybindings";
 import { isModelPickerOpen } from "../modelPickerVisibility";
@@ -265,7 +263,6 @@ import {
   sortWorkingThreadsBySend,
   useSnoozeWakeClock,
   threadShortcutContext,
-  useThreadJumpHintsVisible,
   type SidebarListItem,
   type SidebarSection,
 } from "./Sidebar.logic";
@@ -1672,17 +1669,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const threadByKeyRef = useRef(threadByKey);
   const settledThreadKeysRef = useRef(settledThreadKeys);
   const snoozedThreadKeysRef = useRef(snoozedThreadKeys);
-
-  const jumpLabelByKey = (() => {
-    const mapping = new Map<string, string>();
-    for (const [index, threadKey] of orderedThreadKeys.entries()) {
-      const jumpCommand = threadJumpCommandForIndex(index);
-      if (!jumpCommand) break;
-      const label = shortcutLabelForCommand(keybindings, jumpCommand);
-      if (label) mapping.set(threadKey, label);
-    }
-    return mapping;
-  })();
 
   const navigateToThread = (threadRef: ScopedThreadRef) => {
     if (useThreadSelectionStore.getState().selectedThreadKeys.size > 0) {
@@ -3390,9 +3376,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         );
         return;
       }
-      const jumpIndex = threadJumpIndexFromCommand(command ?? "");
-      if (jumpIndex === null) return;
-      navigateToThreadKey(orderedThreadKeys[jumpIndex] ?? null);
     };
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
@@ -3400,14 +3383,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     hiddenThreadNeighbor,
     keybindings,
     navigateToThread,
-    orderedThreadKeys,
     traversalThreadKeys,
     routeRowThreadKey,
     routeThreadRef,
     threadByKey,
   ]);
-
-  const showJumpHints = useThreadJumpHintsVisible(keybindings, routeThreadRef);
 
   const handleNewThreadClick = (event?: ReactMouseEvent) => {
     if (
@@ -3951,9 +3931,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               }
                               isRouteThread={routeThreadKey === threadKey}
                               readOpensPullRequestsInRightPanel={readOpensPullRequestsInRightPanel}
-                              jumpLabel={
-                                showJumpHints ? (jumpLabelByKey.get(threadKey) ?? null) : null
-                              }
                               currentEnvironmentId={primaryEnvironmentId}
                               environmentLabel={
                                 environmentLabelById.get(thread.environmentId) ?? null
@@ -3997,11 +3974,26 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           );
                         };
                         const from = isContextDrag ? null : (dragState?.activeSection ?? null);
+                        const drafts =
+                          statusFilter === "all" ? (
+                            <SidebarDraftBlock
+                              key="draft-sessions"
+                              inWorkstreams={workstreamsEnabled}
+                              projectByKey={projectByKey}
+                              projectDisplayNameByKey={projectDisplayNameByKey}
+                              scopedProjectKeys={scopedProjectKeys}
+                              excludedEnvironmentIds={excludedEnvironmentIds}
+                              routeDraftId={routeDraftIdForRows}
+                              onNavigateToDraft={navigateToDraft}
+                              onDraftContextMenu={handleDraftContextMenu}
+                            />
+                          ) : null;
                         const items: ReactNode[] = [
                           workstreamsEnabled ? (
                             <li key="native-workstream-groups" className="list-none">
                               <WorkstreamNativeSidebar
                                 controller={workstreamController.controller}
+                                beforeUnassigned={drafts}
                                 nameIconProjects={nameIconProjects}
                                 newThreadAction={newWorkstreamThreadAction}
                                 externalDropRef={workstreamExternalDropRef}
@@ -4037,18 +4029,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               />
                             </li>
                           ) : null,
-                          statusFilter === "all" ? (
-                            <SidebarDraftBlock
-                              key="draft-sessions"
-                              projectByKey={projectByKey}
-                              projectDisplayNameByKey={projectDisplayNameByKey}
-                              scopedProjectKeys={scopedProjectKeys}
-                              excludedEnvironmentIds={excludedEnvironmentIds}
-                              routeDraftId={routeDraftIdForRows}
-                              onNavigateToDraft={navigateToDraft}
-                              onDraftContextMenu={handleDraftContextMenu}
-                            />
-                          ) : null,
+                          !workstreamsEnabled ? drafts : null,
                         ];
                         for (const item of sidebarListItems) {
                           if (item.kind === "thread") {

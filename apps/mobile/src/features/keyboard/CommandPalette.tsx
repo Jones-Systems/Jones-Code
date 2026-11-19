@@ -10,7 +10,6 @@ import {
   type ShownOrder,
 } from "@t3tools/client-runtime/state/thread-search";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
-import { THREAD_JUMP_KEYBINDING_COMMANDS } from "@t3tools/contracts";
 import {
   foldSearchQuery,
   PALETTE_MESSAGE_LIMIT,
@@ -24,7 +23,6 @@ import {
   KeyboardAvoidingView,
   Modal,
   Pressable,
-  Text as NativeText,
   TextInput,
   useWindowDimensions,
   View,
@@ -70,7 +68,6 @@ import {
   type CommandPaletteResult,
 } from "./commandPaletteItems";
 import { parseActiveThreadPath, type HardwareKeyboardCommand } from "./hardwareKeyboardCommands";
-import { threadJumpIndex } from "./threadKeyboardShortcuts";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { openSettings } from "../settings/settings-navigation";
 import { useSelectWorkspaceTab } from "../layout/workspace/useSelectWorkspaceTab";
@@ -81,7 +78,6 @@ const PALETTE_COMMANDS: ReadonlyArray<HardwareKeyboardCommand> = [
   "paletteDismiss",
   "paletteNext",
   "palettePrevious",
-  ...THREAD_JUMP_KEYBINDING_COMMANDS,
 ];
 const ROW_HEIGHT = 50;
 // The "In messages" label above the first message match; server results always come last.
@@ -109,7 +105,6 @@ function itemIcon(item: CommandPaletteItem): AppSymbolName {
 
 function PaletteRow(props: {
   readonly item: CommandPaletteResult;
-  readonly index: number;
   readonly selected: boolean;
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery: string;
@@ -205,13 +200,6 @@ function PaletteRow(props: {
           </Text>
         ) : null}
       </View>
-      {props.index < 9 ? (
-        <NativeText
-          className={cn("w-8 shrink-0 text-right text-sm tabular-nums", mutedForegroundClassName)}
-        >
-          ⌘{props.index + 1}
-        </NativeText>
-      ) : null}
     </RowPressable>
   );
 }
@@ -603,9 +591,6 @@ export function CommandPalette(props: {
         results[nextPaletteIndex(selectedIndex, command === "paletteNext" ? 1 : -1, results.length)]
           ?.key ?? null,
       );
-    } else {
-      const item = results[threadJumpIndex(command)];
-      if (item) close(() => runResult(item));
     }
   }
 
@@ -717,7 +702,6 @@ export function CommandPalette(props: {
                     ) : null}
                     <PaletteRow
                       item={item}
-                      index={index}
                       selected={item.key === selectedKey}
                       searchMatch={item.fromMessages ? contentMatchByKey.get(item.key) : undefined}
                       searchQuery={search.query}

@@ -16,6 +16,14 @@ export const THREAD_BOARD_MEASUREMENTS = {
   tintOpacity: { variable: "tint-opacity", min: 0, max: 60, unit: "%", initial: 10 },
   tintBrightness: { variable: "tint-brightness", min: 50, max: 150, unit: "%", initial: 100 },
   headerPadding: { variable: "header-padding", min: 0, max: 18, unit: "px", initial: 6 },
+  headerPaddingTop: { variable: "header-padding-top", min: 0, max: 18, unit: "px", initial: 4 },
+  headerPaddingBottom: {
+    variable: "header-padding-bottom",
+    min: 0,
+    max: 18,
+    unit: "px",
+    initial: 4,
+  },
   headerPaddingInline: {
     variable: "header-padding-inline",
     min: 2,
@@ -33,8 +41,12 @@ export const THREAD_BOARD_MEASUREMENTS = {
   },
   countSize: { variable: "count-size", min: 8, max: 18, unit: "px", initial: 10 },
   countGap: { variable: "count-gap", min: 0, max: 14, unit: "px", initial: 4 },
+  countOffsetX: { variable: "count-offset-x", min: -12, max: 8, unit: "px", initial: 0 },
+  countOffsetY: { variable: "count-offset-y", min: -12, max: 12, unit: "px", initial: 0 },
   filterSize: { variable: "filter-size", min: 9, max: 18, unit: "px", initial: 12 },
   filterGap: { variable: "filter-gap", min: 0, max: 14, unit: "px", initial: 2 },
+  filterOffsetX: { variable: "filter-offset-x", min: -12, max: 8, unit: "px", initial: 0 },
+  filterOffsetY: { variable: "filter-offset-y", min: -12, max: 12, unit: "px", initial: 0 },
   headerGap: { variable: "header-gap", min: 0, max: 16, unit: "px", initial: 3 },
 } as const;
 
@@ -62,25 +74,40 @@ export const ThreadBoardAppearanceSchema = Schema.Struct({
   tintOpacity: measurement("tintOpacity"),
   tintBrightness: measurement("tintBrightness"),
   headerPadding: measurement("headerPadding"),
+  headerPaddingTop: measurement("headerPaddingTop"),
+  headerPaddingBottom: measurement("headerPaddingBottom"),
   headerPaddingInline: measurement("headerPaddingInline"),
   headerTitleSize: measurement("headerTitleSize"),
   headerTitleWeight: measurement("headerTitleWeight"),
   countSize: measurement("countSize"),
   countGap: measurement("countGap"),
+  countOffsetX: measurement("countOffsetX"),
+  countOffsetY: measurement("countOffsetY"),
   filterSize: measurement("filterSize"),
   filterGap: measurement("filterGap"),
+  filterOffsetX: measurement("filterOffsetX"),
+  filterOffsetY: measurement("filterOffsetY"),
   headerGap: measurement("headerGap"),
   filterSpacing: Schema.optionalKey(Schema.Literals(["adaptive", "fixed"])),
+  clickRailToCollapse: Schema.optionalKey(Schema.Boolean),
+  cardBorderColor: Schema.optionalKey(ThreadBoardColor),
   background: Schema.optionalKey(ThreadBoardColor),
   unassignedBackground: Schema.optionalKey(ThreadBoardColor),
 });
 
 export type ThreadBoardAppearance = typeof ThreadBoardAppearanceSchema.Type;
-export type ThreadBoardColorKey = "background" | "unassignedBackground";
+export type ThreadBoardColorKey = "background" | "unassignedBackground" | "cardBorderColor";
 export const StoredThreadBoardAppearance = Schema.NullOr(ThreadBoardAppearanceSchema);
+const isBoardColor = Schema.is(ThreadBoardColor);
 const decode = Schema.decodeSync(ThreadBoardAppearanceSchema);
 
 export function copyThreadBoardCardVariables(source: HTMLElement | null, target: HTMLElement) {
+  const borderColor = source?.style.getPropertyValue("--jones-board-card-border-color").trim();
+  if (borderColor && isBoardColor(borderColor)) {
+    target.style.setProperty("--jones-board-card-border-color", borderColor);
+  } else {
+    target.style.removeProperty("--jones-board-card-border-color");
+  }
   for (const key of measurementKeys) {
     const { variable, unit, min, max } = THREAD_BOARD_MEASUREMENTS[key];
     if (!variable.startsWith("card-")) continue;
@@ -111,11 +138,14 @@ export function threadBoardAppearanceScope(value: ThreadBoardAppearance) {
       key === "cardScale" ? String(amount / 100) : `${amount}${unit}`;
   }
   if (value.background) variables["--jones-board-background"] = value.background;
+  if (value.cardBorderColor) variables["--jones-board-card-border-color"] = value.cardBorderColor;
   if (value.unassignedBackground) {
     variables["--jones-board-unassigned-background"] = value.unassignedBackground;
   }
   return {
-    attributes: { "data-jones-board-filter-spacing": value.filterSpacing ?? "adaptive" },
+    attributes: {
+      "data-jones-board-filter-spacing": value.filterSpacing ?? "adaptive",
+    },
     variables,
   };
 }

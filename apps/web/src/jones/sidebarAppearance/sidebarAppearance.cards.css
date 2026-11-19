@@ -126,7 +126,8 @@
   border: var(--jones-board-card-border-width, 1px) solid
     color-mix(
       in oklab,
-      var(--sidebar-foreground) var(--jones-board-card-border-opacity, 17%),
+      var(--jones-board-card-border-color, var(--sidebar-foreground))
+        var(--jones-board-card-border-opacity, 17%),
       transparent
     );
   border-radius: inherit;
