@@ -2,7 +2,7 @@ import { codexContinuityContext } from "../../jones/goals/continuity/codexTransp
 import { RequiredNativeSession } from "../../jones/taskContinuation/requiredNativeSession.ts";
 import { pipe } from "effect/Function";
 import {
-  CodexInlineHistoryPending,
+  CodexInlineHistoryStart,
   HistoryNotApplied,
   PromptNotApplied,
   historyInjectionRejection,
@@ -45,6 +45,7 @@ import {
   makeCodexLateStartRecovery,
   type CodexStartDispatch,
   type CodexStartRejectionProof,
+  type CodexStartTerminal,
 } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 import { makeCodexPendingStartNotifications } from "../../jones/provider/codex/CodexPendingStartNotifications.ts";
 import {
@@ -2807,6 +2808,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
            */
           startSent: boolean;
           lateStartDispatch?: CodexStartDispatch | undefined;
+          reconcileLateInline?: Effect.Effect<void> | undefined;
           pendingStartCancelled?: Deferred.Deferred<void> | undefined;
           terminalEmitted: boolean;
         };
@@ -2884,6 +2886,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           currentCapacityBinding(request);
 
         const releaseCapacityRequest = (request: CapacityRequest) => {
+          if (!request.startSent && request.lateStartDispatch !== undefined)
+            lateStarts.release(request.lateStartDispatch);
           // A terminal replay can release capacity while buffered background
           // output remains. Its start caller still owns that drain; failures
           // and retired producers must discard it immediately.
@@ -2952,7 +2956,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               !handoffCompaction.owns(binding) &&
               (status === "completed" || status === "failed" || status === "interrupted")
             )
-              lateStarts.complete(binding, completion.turn.id);
+              lateStarts.complete(binding, completion.turn.id, () => ({
+                nativeTurnId: completion.turn.id,
+                status,
+                startedAt: codexTimestamp(completion.turn.startedAt),
+                completedAt: codexTimestamp(completion.turn.completedAt),
+              }));
           }
           const captured = pendingStartNotifications.capture(
             producer.generation,
@@ -9262,6 +9271,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           function* (request: CapacityRequest, status: "failed" | "interrupted" = "failed") {
             if (request.lateStartDispatch === undefined) nativeStartUnknown = true;
             else lateStarts.markUnknown(request.lateStartDispatch);
+            const reconcileInline = request.reconcileLateInline;
+            request.reconcileLateInline = undefined;
+            yield* reconcileInline ?? Effect.void;
             reduceCapacity(request, {
               type: "startUnknown",
               retryOrdinal: request.state.retryOrdinal,
@@ -9416,7 +9428,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }
               : {}),
           };
-          const inlineHistoryPending = retryOrdinal === 0 && (yield* CodexInlineHistoryPending);
+          const inlineHistory = retryOrdinal === 0 ? yield* CodexInlineHistoryStart : undefined;
+          const promptedInline =
+            inlineHistory !== undefined &&
+            (request.input.inlineContextLength ?? 0) > 0 &&
+            params.input.some((item) => item.type === "text");
+          const terminalReceipt = promptedInline
+            ? yield* Deferred.make<CodexStartTerminal>()
+            : undefined;
+          const startCancelled = yield* Deferred.make<void>();
           if (continuity !== undefined && !(yield* continuity.checkContinuation))
             return yield* new GoalContinuityError({ reason: "recovery_required" });
           if (!currentCapacityBinding(request))
@@ -9436,8 +9456,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             request.state.retryOrdinal !== retryOrdinal
           )
             return;
-          request.startDispatched = true;
-          request.startSent = true;
           const producer = currentProducer;
           const binding = request.state.binding;
           const currentGeneration = () =>
@@ -9445,6 +9463,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             producer.active &&
             producer === currentProducer &&
             !Deferred.isDoneUnsafe(producer.termination) &&
+            producer.bindings.get(binding.nativeThreadId)?.id === binding.providerThreadId &&
             !threadRetirements.owns(producer, binding.nativeThreadId)
               ? producer.generation
               : undefined;
@@ -9458,12 +9477,39 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             previousTurns.get(turnId) ??
             Ref.getUnsafe(activeTurns).get(turnId) ??
             Ref.getUnsafe(settledTurns).get(turnId);
-          const dispatch = lateStarts.begin(binding, [
-            ...request.state.retiredNativeTurnIds,
-            ...previousTurns.keys(),
-          ]);
+          const dispatch = lateStarts.begin(
+            binding,
+            [...request.state.retiredNativeTurnIds, ...previousTurns.keys()],
+            terminalReceipt === undefined
+              ? undefined
+              : (terminal) => Deferred.doneUnsafe(terminalReceipt, Effect.succeed(terminal)),
+          );
           request.lateStartDispatch = dispatch;
           pendingStartNotifications.begin(dispatch);
+          const inlineBinding = promptedInline
+            ? runtimeBinding(request.input.providerThread, producer.generation)
+            : undefined;
+          if (
+            inlineHistory !== undefined &&
+            inlineBinding !== undefined &&
+            terminalReceipt !== undefined
+          ) {
+            request.reconcileLateInline = inlineHistory
+              .reconcileLate(
+                terminalReceipt,
+                inlineBinding,
+                request.input,
+                (terminal) =>
+                  currentGeneration() !== undefined &&
+                  lateStarts.ownsLateTerminal(dispatch, terminal),
+                (terminal) => lateStarts.releaseLateTerminal(dispatch, terminal),
+              )
+              .pipe(
+                Effect.interruptible,
+                Effect.forkIn(producer.scope, { startImmediately: true }),
+                Effect.asVoid,
+              );
+          }
           const unverifiedRejection = () =>
             toProtocolError("Codex did not confirm that it rejected the turn start");
           const reconcileRejection = Effect.fnUntraced(function* (
@@ -9472,7 +9518,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             // A wire rejection can be contradicted while SQLite commits. Keep the
             // existing pending event and live hold until there is independent proof.
-            if (inlineHistoryPending)
+            if (inlineHistory !== undefined)
               return yield* toProtocolError("Codex inline history delivery remains uncertain.");
             // Without inline history this only releases the live dispatch. Later
             // activity can constrain later dispatches without undoing a stored write.
@@ -9482,39 +9528,59 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
           // Keep the original RPC waiter in its producer's scope so it can
           // reconcile an exact reply after the caller's deadline.
-          const startCancelled = yield* Deferred.make<void>();
           request.pendingStartCancelled = startCancelled;
-          const pendingStart = yield* producer.client
-            .request("turn/start", retryOrdinal === 0 ? params : { ...params, input: [] })
-            .pipe(
-              Effect.tap((started) =>
-                Effect.sync(() => {
-                  const generation = currentGeneration();
-                  if (generation !== undefined && replyTurnOwner(started.turn.id) === undefined)
-                    lateStarts.acknowledge(
-                      dispatch,
-                      generation,
-                      started.turn.id,
-                      params.additionalContext,
-                    );
-                }),
-              ),
-              Effect.map((started) => ({ kind: "acknowledged" as const, started })),
-              Effect.catch(
-                Effect.fnUntraced(function* (error) {
-                  const rejection = lateStarts.reject(dispatch, currentGeneration, error);
-                  // Never expose an ambiguous response as proof of prompt non-application.
-                  if (rejection.kind === "unverified") return yield* unverifiedRejection();
-                  if (rejection.kind === "not_applied") {
-                    if (rejection.canReconcileLate)
-                      return yield* reconcileRejection(error, rejection);
-                    return { kind: "rejected" as const, error, proof: rejection };
-                  }
-                  return yield* error;
-                }),
-              ),
-              Effect.forkIn(producer.scope, { startImmediately: true }),
-            );
+          const pendingStart = yield* Effect.suspend(() => {
+            if (
+              request.state.phase !== "awaiting_start" ||
+              request.state.retryOrdinal !== retryOrdinal
+            )
+              return Effect.undefined;
+            if (
+              currentGeneration() === undefined ||
+              !currentCapacityBinding(request) ||
+              hasUnknownNativeStart() ||
+              !lateStarts.beginSend(binding, inlineHistory?.tryDispatch)
+            ) {
+              lateStarts.release(dispatch);
+              return toProtocolError(
+                "The original Codex start no longer has safe native admission.",
+              );
+            }
+            request.startDispatched = true;
+            request.startSent = true;
+            return producer.client
+              .request("turn/start", retryOrdinal === 0 ? params : { ...params, input: [] })
+              .pipe(
+                Effect.tap((started) =>
+                  Effect.sync(() => {
+                    const generation = currentGeneration();
+                    if (generation !== undefined && replyTurnOwner(started.turn.id) === undefined) {
+                      lateStarts.acknowledge(
+                        dispatch,
+                        generation,
+                        started.turn.id,
+                        params.additionalContext,
+                        promptedInline ? inlineHistory.markAcknowledged : undefined,
+                      );
+                    }
+                  }),
+                ),
+                Effect.map((started) => ({ kind: "acknowledged" as const, started })),
+                Effect.catch(
+                  Effect.fnUntraced(function* (error) {
+                    const rejection = lateStarts.reject(dispatch, currentGeneration, error);
+                    // Never expose an ambiguous response as proof of prompt non-application.
+                    if (rejection.kind === "unverified") return yield* unverifiedRejection();
+                    if (rejection.kind === "not_applied") {
+                      if (rejection.canReconcileLate)
+                        return yield* reconcileRejection(error, rejection);
+                      return { kind: "rejected" as const, error, proof: rejection };
+                    }
+                    return yield* error;
+                  }),
+                ),
+              );
+          }).pipe(Effect.forkIn(producer.scope, { startImmediately: true }));
           // Stop ends the caller's wait and leaves reconciliation to the producer.
           const reply = yield* Fiber.join(pendingStart).pipe(
             Effect.raceFirst(
@@ -9528,6 +9594,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
             Effect.timeout(CODEX_START_ACK_TIMEOUT_MS),
           );
+          if (reply === undefined) {
+            pendingStartNotifications.clear(dispatch);
+            lateStarts.release(dispatch);
+            request.lateStartDispatch = undefined;
+            return;
+          }
           if (reply.kind === "rejected") return yield* reconcileRejection(reply.error, reply.proof);
           const started = reply.started;
           const previousTurn = replyTurnOwner(started.turn.id);
@@ -10739,6 +10811,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 const threadId = yield* getNativeThreadId(input.providerThread);
                 const items = historyResponseItems(input.messages, input.context);
                 yield* requestAdmission("thread/inject_items", { threadId }, producer);
+                if (
+                  lateStarts.blocksStart({
+                    runtimeGeneration: producer.generation,
+                    nativeThreadId: threadId,
+                  })
+                )
+                  return yield* toProtocolError(
+                    "Codex reported work after rejecting a start on this native thread.",
+                  );
                 return { producer, threadId, items };
               }).pipe(Effect.mapError((cause) => new HistoryNotApplied({ cause })));
               return yield* prepared.producer.client
@@ -12129,6 +12210,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               "Codex has an unconfirmed native effect; another prompt is not safe.",
             );
           const nativeId = yield* getNativeThreadId(turnInput.providerThread);
+          if (
+            lateStarts.blocksStart({
+              runtimeGeneration: currentProducer.generation,
+              nativeThreadId: nativeId,
+            })
+          )
+            return yield* toProtocolError(
+              "Codex reported work after rejecting a start on this native thread.",
+            );
           yield* recoverPublication(turnInput.threadId, nativeId);
           const pending = pendingForkBindings.get(nativeId);
           if (pending !== undefined) {
@@ -12199,6 +12289,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   "The native fork's runtime revision changed before its first prompt.",
                 );
               if (
+                lateStarts.blocksStart({
+                  runtimeGeneration: currentProducer.generation,
+                  nativeThreadId: nativeId,
+                }) ||
                 (pendingRootPublications.get(currentProducer)?.size ?? 0) > 0 ||
                 (yield* Ref.get(activeTurns)).size > 0 ||
                 (yield* Ref.get(pendingRootTurns)).size > 0 ||

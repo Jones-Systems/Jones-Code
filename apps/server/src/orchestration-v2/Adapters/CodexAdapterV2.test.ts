@@ -3979,6 +3979,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     { timing: "after", reply: "new-turn-request", code: -32602 },
     { timing: "after", reply: "historical-request", code: -32602 },
     { timing: "after", reply: "sibling-request", code: -32602 },
+    { timing: "after", reply: "activity-after-release", code: -32602 },
+    { timing: "after", reply: "activity-during-next-start", code: -32602 },
   ] as const)(
     "reconciles exact turn/start rejections ($code, $reply, $timing the deadline)",
     ({ timing, reply, code }) =>
@@ -3989,10 +3991,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const siblingNativeId = "rejection-sibling";
         const replyReady = yield* Deferred.make<void>();
         const allowRejection = yield* Deferred.make<void>();
+        const duringNextStart = reply === "activity-during-next-start";
+        const afterRelease = reply === "activity-after-release" || duringNextStart;
+        const activityReady = yield* Deferred.make<void>();
+        const allowActivity = yield* Deferred.make<void>();
         const starts: unknown[] = [];
+        let historyInjections = 0;
         const knownOldTurn = reply === "historical-request";
         const requestId = knownOldTurn ? 4 : 3;
         const mayContinue =
+          !afterRelease &&
           reply !== "mixed" &&
           reply !== "new-turn-request" &&
           (timing === "before" || code === -32602);
@@ -4053,6 +4061,41 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     : {}),
                 },
               },
+              ...(afterRelease
+                ? [
+                    ...(duringNextStart
+                      ? [
+                          {
+                            type: "expect_outbound" as const,
+                            frame: {
+                              id: requestId + 1,
+                              method: "config/read",
+                              params: { cwd: CODEX_TEST_RUNTIME_POLICY.cwd, includeLayers: false },
+                            },
+                          },
+                        ]
+                      : []),
+                    {
+                      type: "emit_inbound" as const,
+                      label: "post-rejection activity",
+                      frame: {
+                        method: "turn/started",
+                        params: {
+                          threadId: nativeThreadId,
+                          turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }),
+                        },
+                      },
+                    },
+                    ...(duringNextStart
+                      ? [
+                          {
+                            type: "emit_inbound" as const,
+                            frame: { id: requestId + 1, result: { config: {}, origins: {} } },
+                          },
+                        ]
+                      : []),
+                  ]
+                : []),
               ...(mayContinue
                 ? [
                     ...producerPreamble(siblingNativeId, "unused")
@@ -4076,18 +4119,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           }),
           undefined,
           (method, params) =>
-            method === "turn/start"
-              ? Effect.sync(() => {
-                  if (Predicate.isObject(params)) starts.push(params.input);
-                })
-              : Effect.void,
+            Effect.sync(() => {
+              if (method === "turn/start" && Predicate.isObject(params)) starts.push(params.input);
+              if (method === "thread/inject_items") historyInjections += 1;
+            }),
           undefined,
           (entry) =>
             timing === "after" && entry.label === "turn/start rejection"
               ? Deferred.succeed(replyReady, undefined).pipe(
                   Effect.andThen(Deferred.await(allowRejection)),
                 )
-              : Effect.void,
+              : entry.label === "post-rejection activity"
+                ? Deferred.succeed(activityReady, undefined).pipe(
+                    Effect.andThen(Deferred.await(allowActivity)),
+                  )
+                : Effect.void,
         );
         const now = yield* DateTime.now;
         const startTurn = (attempt: string, text: string, ordinal: number) =>
@@ -4143,11 +4189,27 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.instanceOf(original.failure.cause, ProviderAdapter.ProviderAdapterProtocolError);
           assert.isFalse(promptWasNotApplied(original.failure));
         }
-        assert.equal((yield* admitSibling())._tag, mayContinue ? "Success" : "Failure");
-        const followUp = yield* startTurn("authorized-follow-up", "New authorized work", 3).pipe(
+        const followUpStart = startTurn("authorized-follow-up", "New authorized work", 3).pipe(
           Effect.result,
         );
-        assert.equal(followUp._tag, mayContinue ? "Success" : "Failure");
+        const followUpFiber = duringNextStart
+          ? yield* followUpStart.pipe(Effect.forkChild({ startImmediately: true }))
+          : undefined;
+        if (afterRelease) {
+          yield* Deferred.await(activityReady);
+          yield* Deferred.succeed(allowActivity, undefined);
+          yield* TestClock.adjust(0);
+        } else {
+          assert.equal((yield* admitSibling())._tag, mayContinue ? "Success" : "Failure");
+        }
+        const followUp = yield* followUpFiber === undefined
+          ? followUpStart
+          : Fiber.join(followUpFiber);
+        assert.equal(
+          followUp._tag,
+          mayContinue ? "Success" : "Failure",
+          `outbound start prompts: ${JSON.stringify(starts)}`,
+        );
         const expectedPrompts = [
           ...(knownOldTurn ? ["Work"] : []),
           "Rejected work",
@@ -4157,6 +4219,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           starts,
           expectedPrompts.map((text) => [{ type: "text", text }]),
         );
+        if (afterRelease) {
+          const refusal = yield* harness.runtime.injectHistory!({
+            providerThread: harness.providerThread,
+            messages: [],
+            context: "Original prompt still has conflicting native activity",
+          }).pipe(Effect.flip);
+          assert.isTrue(historyWasNotApplied(refusal));
+          assert.equal(historyInjections, 0);
+        }
         if (mayContinue) yield* harness.awaitTerminal(knownOldTurn ? 2 : 1);
         assert.deepEqual(
           harness.terminalEvents().map((event) => [event.runOrdinal, event.status]),

@@ -187,6 +187,7 @@ describe("Codex late start admission recovery", () => {
     const originalProof = rejectionFor(original, 7);
     if (originalProof.kind !== "not_applied") throw new Error("Expected exact rejection proof");
     expect(originalProof.release()).toBe(true);
+    expect(ledger.beginSend(binding)).toBe(true);
 
     const next = ledger.begin(binding, []);
     ledger.observeFrame(binding.runtimeGeneration, {
@@ -199,6 +200,38 @@ describe("Codex late start admission recovery", () => {
     ledger.markUnknown(next);
     expect(rejectionFor(next, 8).kind).toBe("unverified");
     expect(ledger.blocked).toBe(true);
+  });
+
+  it("keeps the released start observable until the next send on its own binding", () => {
+    const ledger = makeCodexLateStartRecovery();
+    const dispatch = ledger.begin(binding, ["owned-turn"]);
+    ledger.markUnknown(dispatch);
+    const error = { code: -32602, message: "Invalid params" };
+    ledger.observeFrame(binding.runtimeGeneration, { id: 7, error });
+    const proof = ledger.reject(
+      dispatch,
+      () => binding.runtimeGeneration,
+      CodexAppServerRequestError.fromProtocolError(error, "turn/start", "7"),
+    );
+    if (proof.kind !== "not_applied") throw new Error("Expected exact rejection proof");
+    expect(proof.release()).toBe(true);
+    const sibling = { ...binding, nativeThreadId: "sibling" };
+    const replacement = { ...binding, runtimeGeneration: "different-producer" };
+    for (const owner of [sibling, replacement, binding]) {
+      ledger.observeTurnActivity(owner.runtimeGeneration, {
+        threadId: owner.nativeThreadId,
+        turnId: owner === binding ? "owned-turn" : "unowned-turn",
+      });
+    }
+    expect(ledger.blocksStart(binding)).toBe(false);
+    expect(ledger.beginSend(binding, () => false)).toBe(false);
+    ledger.observeTurnActivity(binding.runtimeGeneration, {
+      threadId: binding.nativeThreadId,
+      turnId: "unowned-turn",
+    });
+    expect(ledger.beginSend(binding)).toBe(false);
+    expect(ledger.beginSend(sibling)).toBe(true);
+    expect(ledger.beginSend(replacement)).toBe(true);
   });
 
   it.each([-32600, -32601])("keeps code %s proof scoped to the original wait", (code) => {

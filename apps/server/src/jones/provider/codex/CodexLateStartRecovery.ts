@@ -1,6 +1,7 @@
 import type { CodexAppServerClientOptions } from "effect-codex-app-server/client";
 import type * as CodexErrors from "effect-codex-app-server/errors";
 import * as Effect from "effect/Effect";
+import type * as DateTime from "effect/DateTime";
 import * as Predicate from "effect/Predicate";
 import { isNonApplyingStartupRejection } from "./CodexStartup.ts";
 
@@ -9,6 +10,7 @@ import { isNonApplyingStartupRejection } from "./CodexStartup.ts";
 export const CODEX_START_ACK_TIMEOUT_MS = 10 * 60 * 1_000;
 const INVALID_PARAMS = -32602;
 const RECENT_ACKNOWLEDGED_TURN_LIMIT = 128;
+const RELEASED_START_LIMIT = 128;
 
 // Observe frames on the reader before it wakes a response waiter or forks a request handler.
 export function codexStartReplyObservationOptions(
@@ -32,12 +34,22 @@ interface NativeBinding {
   readonly nativeThreadId: string;
 }
 
+export interface CodexStartTerminal {
+  readonly nativeTurnId: string;
+  readonly status: "completed" | "failed" | "interrupted";
+  readonly startedAt: DateTime.Utc;
+  readonly completedAt: DateTime.Utc;
+}
+
 export interface CodexStartDispatch extends NativeBinding {
   readonly ordinal: number;
   readonly excludedTurnIds: ReadonlySet<string>;
-  readonly completions: Set<string>;
+  readonly completions: Map<string, CodexStartTerminal | undefined>;
+  readonly onLateTerminal?: (terminal: CodexStartTerminal) => void;
   nativeTurnId: string | undefined;
   turnActivityObserved: boolean;
+  observedTurnId?: string;
+  conflictingTurnActivity?: true;
   unknown: boolean;
   overflow: boolean;
 }
@@ -60,6 +72,10 @@ type StartRejection = { readonly kind: "other_error" | "unverified" } | CodexSta
 // acknowledged turn's terminal.
 export function makeCodexLateStartRecovery<AdditionalContext = never>() {
   const dispatches = new Set<CodexStartDispatch>();
+  const releasedStarts = new Map<
+    string,
+    NativeBinding & { readonly excludedTurnIds: ReadonlySet<string>; conflicted: boolean }
+  >();
   const acknowledgedTurns = new Map<string, NativeBinding>();
   const rejectionReplies = new WeakMap<object, { runtimeGeneration: string; requestId: string }>();
   const acceptedContexts = new Map<
@@ -71,11 +87,30 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
     !dispatch.overflow &&
     dispatch.nativeTurnId !== undefined &&
     dispatch.completions.has(dispatch.nativeTurnId);
+  const lateTerminal = (dispatch: CodexStartDispatch) =>
+    dispatches.has(dispatch) &&
+    dispatch.unknown &&
+    settled(dispatch) &&
+    !dispatch.conflictingTurnActivity &&
+    (dispatch.observedTurnId === undefined || dispatch.observedTurnId === dispatch.nativeTurnId)
+      ? dispatch.completions.get(dispatch.nativeTurnId!)
+      : undefined;
   const releaseSettled = (dispatch: CodexStartDispatch) => {
-    if (dispatch.unknown && settled(dispatch)) dispatches.delete(dispatch);
+    if (!dispatch.unknown || !settled(dispatch)) return;
+    if (dispatch.onLateTerminal === undefined) {
+      dispatches.delete(dispatch);
+      return;
+    }
+    const terminal = lateTerminal(dispatch);
+    if (terminal !== undefined) dispatch.onLateTerminal(terminal);
+  };
+  const releasedStart = (binding: NativeBinding) => {
+    const record = releasedStarts.get(binding.nativeThreadId);
+    return record !== undefined && matchesNativeBinding(record, binding) ? record : undefined;
   };
   const observeTurnActivity = (runtimeGeneration: string, payload: unknown) => {
-    if (dispatches.size === 0 || !Predicate.isObject(payload)) return;
+    if ((dispatches.size === 0 && releasedStarts.size === 0) || !Predicate.isObject(payload))
+      return;
     const nativeThreadId = payload.threadId;
     const nativeTurnId =
       typeof payload.turnId === "string"
@@ -86,13 +121,30 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
     if (typeof nativeThreadId !== "string" || typeof nativeTurnId !== "string" || !nativeTurnId)
       return;
     const binding = { nativeThreadId, runtimeGeneration };
+    const released = releasedStart(binding);
+    const knownOwner = acknowledgedTurns.get(nativeTurnId);
+    if (
+      released !== undefined &&
+      !released.excludedTurnIds.has(nativeTurnId) &&
+      (knownOwner === undefined || !matchesNativeBinding(knownOwner, binding))
+    )
+      released.conflicted = true;
     for (const dispatch of dispatches) {
-      if (matchesNativeBinding(dispatch, binding) && !dispatch.excludedTurnIds.has(nativeTurnId))
-        dispatch.turnActivityObserved = true;
+      if (!matchesNativeBinding(dispatch, binding) || dispatch.excludedTurnIds.has(nativeTurnId))
+        continue;
+      dispatch.turnActivityObserved = true;
+      if (dispatch.onLateTerminal !== undefined) {
+        dispatch.observedTurnId ??= nativeTurnId;
+        if (dispatch.observedTurnId !== nativeTurnId) dispatch.conflictingTurnActivity = true;
+      }
     }
   };
   return {
-    begin(binding: NativeBinding, excludedTurnIds: ReadonlyArray<string>): CodexStartDispatch {
+    begin(
+      binding: NativeBinding,
+      excludedTurnIds: ReadonlyArray<string>,
+      onLateTerminal?: CodexStartDispatch["onLateTerminal"],
+    ): CodexStartDispatch {
       // Terminal turns can already be gone from the adapter's active and settled maps.
       const knownTurns = new Set(excludedTurnIds);
       for (const [turnId, owner] of acknowledgedTurns) {
@@ -102,7 +154,8 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
         ...binding,
         ordinal: ++nextOrdinal,
         excludedTurnIds: knownTurns,
-        completions: new Set(),
+        completions: new Map(),
+        ...(onLateTerminal === undefined ? {} : { onLateTerminal }),
         nativeTurnId: undefined,
         turnActivityObserved: false,
         unknown: false,
@@ -111,13 +164,23 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
       dispatches.add(dispatch);
       return dispatch;
     },
+    blocksStart(binding: NativeBinding) {
+      return releasedStart(binding)?.conflicted === true;
+    },
+    beginSend(binding: NativeBinding, claim?: () => boolean) {
+      const released = releasedStart(binding);
+      if (released?.conflicted || claim?.() === false) return false;
+      if (released !== undefined) releasedStarts.delete(binding.nativeThreadId);
+      return true;
+    },
     markUnknown(dispatch: CodexStartDispatch) {
       if (!dispatches.has(dispatch)) return;
       dispatch.unknown = true;
       releaseSettled(dispatch);
     },
     observeFrame(runtimeGeneration: string, frame: unknown) {
-      if (dispatches.size === 0 || !Predicate.isObject(frame)) return;
+      if ((dispatches.size === 0 && releasedStarts.size === 0) || !Predicate.isObject(frame))
+        return;
       if (
         typeof frame.method === "string" &&
         (frame.id === undefined ||
@@ -184,7 +247,25 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
         kind: "not_applied",
         canReconcileLate,
         isCurrent,
-        release: () => isCurrent() && dispatches.delete(dispatch),
+        release: () => {
+          if (!isCurrent()) return false;
+          for (const [id, record] of releasedStarts) {
+            if (record.runtimeGeneration !== dispatch.runtimeGeneration) releasedStarts.delete(id);
+          }
+          // Keep observing this binding until the next prompt is actually issued.
+          // At capacity, retain the original fence instead of evicting negative evidence.
+          if (releasedStarts.size >= RELEASED_START_LIMIT || releasedStart(dispatch)?.conflicted)
+            return false;
+          releasedStarts.set(dispatch.nativeThreadId, {
+            runtimeGeneration: dispatch.runtimeGeneration,
+            nativeThreadId: dispatch.nativeThreadId,
+            excludedTurnIds: new Set(
+              [...dispatch.excludedTurnIds].slice(-RECENT_ACKNOWLEDGED_TURN_LIMIT),
+            ),
+            conflicted: false,
+          });
+          return dispatches.delete(dispatch);
+        },
       };
     },
     observeTurnActivity,
@@ -193,6 +274,7 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
       runtimeGeneration: string,
       nativeTurnId: string,
       context?: AdditionalContext,
+      onAcknowledged?: () => void,
     ) {
       if (!dispatches.has(dispatch) || dispatch.runtimeGeneration !== runtimeGeneration) return;
       if (!nativeTurnId || dispatch.excludedTurnIds.has(nativeTurnId)) return;
@@ -215,12 +297,17 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
       const accepted = acceptedContexts.get(dispatch.nativeThreadId);
       if (accepted === undefined || accepted.ordinal < dispatch.ordinal)
         acceptedContexts.set(dispatch.nativeThreadId, { ordinal: dispatch.ordinal, context });
+      onAcknowledged?.();
       releaseSettled(dispatch);
     },
     acceptedContext(nativeThreadId: string) {
       return acceptedContexts.get(nativeThreadId)?.context;
     },
-    complete(binding: NativeBinding, nativeTurnId: string) {
+    complete(
+      binding: NativeBinding,
+      nativeTurnId: string,
+      readTerminal?: () => CodexStartTerminal,
+    ) {
       for (const dispatch of dispatches) {
         if (
           !matchesNativeBinding(dispatch, binding) ||
@@ -230,9 +317,19 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
           continue;
         if (dispatch.completions.has(nativeTurnId)) continue;
         if (dispatch.completions.size >= 32) dispatch.overflow = true;
-        else dispatch.completions.add(nativeTurnId);
+        else
+          dispatch.completions.set(
+            nativeTurnId,
+            dispatch.onLateTerminal !== undefined ? readTerminal?.() : undefined,
+          );
         releaseSettled(dispatch);
       }
+    },
+    ownsLateTerminal(dispatch: CodexStartDispatch, terminal: CodexStartTerminal) {
+      return lateTerminal(dispatch) === terminal;
+    },
+    releaseLateTerminal(dispatch: CodexStartDispatch, terminal: CodexStartTerminal) {
+      if (lateTerminal(dispatch) === terminal) dispatches.delete(dispatch);
     },
     release(dispatch: CodexStartDispatch) {
       if (!dispatch.unknown) dispatches.delete(dispatch);

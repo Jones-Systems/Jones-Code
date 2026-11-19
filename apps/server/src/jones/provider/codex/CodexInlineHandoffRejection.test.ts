@@ -36,6 +36,7 @@ import * as CodexAdapterV2Testkit from "../../../orchestration-v2/Adapters/Codex
 import {
   codexReplayPreamble,
   makeCodexReplayTranscript,
+  makeCodexReplayTurn,
   producerCompletion,
   withConfigReads,
   withReplayRequestId,
@@ -46,6 +47,7 @@ import * as EventSink from "../../../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProviderReplayHarness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as Sqlite from "../../../persistence/Sqlite.ts";
+import { EVENT_LOG_PRUNED_THROUGH_PROJECTION } from "../../persistence/EventLogPruneBoundary.ts";
 import { CODEX_START_ACK_TIMEOUT_MS } from "./CodexLateStartRecovery.ts";
 
 const CODEX_TEST_MODEL_SELECTION = {
@@ -86,12 +88,39 @@ describe("Codex inline handoff rejection recovery", () => {
     { code: -32602, late: true, recovery: "contradiction before outer commit" },
     { code: -32600, late: false, recovery: "contradiction before outer commit" },
     { code: -32602, late: true, recovery: "newer identical marker" },
-  ] as const)("handles $recovery after exact $code (late: $late)", ({ code, late, recovery }) =>
+    { code: -32601, late: false, recovery: "known local stop before prompt" },
+    { code: -32600, late: false, recovery: "definitive direct injection rejection" },
+    { code: null, late: false, recovery: "on-time ACK and terminal" },
+    { code: null, late: true, recovery: "late ACK and terminal" },
+    { code: null, late: true, recovery: "late terminal before ACK" },
+    { code: null, late: true, recovery: "late ACK without a terminal" },
+    { code: null, late: true, recovery: "late ACK with a different terminal" },
+    { code: null, late: true, recovery: "late acceptance after newer identical marker" },
+    { code: null, late: true, recovery: "late acceptance after binding replacement" },
+    { code: null, late: true, recovery: "late acceptance after pruning" },
+    { code: null, late: true, recovery: "late acceptance with statement rollback" },
+    { code: null, late: true, recovery: "process loss before late acceptance commits" },
+  ] as const)("handles $recovery (reply code: $code, late: $late)", ({ code, late, recovery }) =>
     Effect.gen(function* () {
       const scenario = `inline-handoff-refusal-${code}-${recovery}`;
       const canContinue = recovery === "no inline pending marker";
+      const stopBeforePrompt = recovery === "known local stop before prompt";
+      const directInjectionRejection = recovery === "definitive direct injection rejection";
+      const noPromptRequest = directInjectionRejection || stopBeforePrompt;
+      const acceptsPrompt = code === null;
+      const terminalFirst = recovery === "late terminal before ACK";
+      const ackOnly = recovery === "late ACK without a terminal";
+      const wrongTerminal = recovery === "late ACK with a different terminal";
+      const commitsInline =
+        recovery === "on-time ACK and terminal" ||
+        recovery === "late ACK and terminal" ||
+        terminalFirst;
       const atCommit = recovery === "contradiction before outer commit";
-      const reopenDatabase = atCommit || recovery === "pending without observed contradiction";
+      const lostBeforeCommit = recovery === "process loss before late acceptance commits";
+      const reopenDatabase =
+        atCommit ||
+        (acceptsPrompt && late) ||
+        recovery === "pending without observed contradiction";
       const contradicts = recovery.startsWith("contradiction");
       const fileSystem = yield* FileSystem.FileSystem;
       const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "jones-codex-history-" });
@@ -120,7 +149,8 @@ describe("Codex inline handoff rejection recovery", () => {
             ? text
             : withInlineContext(renderHistory(history.messages, history.context), text),
         });
-      const first = preambleFor("Original request", "rejected-turn");
+      const originalNativeTurnId = "original-native-turn";
+      const first = preambleFor("Original request", originalNativeTurnId);
       const followUp = codexReplayPreamble({
         nativeThreadId,
         nativeTurnId: "follow-up-turn",
@@ -197,22 +227,90 @@ describe("Codex inline handoff rejection recovery", () => {
         },
         {
           type: "emit_inbound",
+          ...(noPromptRequest ? { label: "history request rejection" } : {}),
           frame: canContinue
             ? { id, result: {} }
-            : { id, error: { code: -32601, message: "Native injection unavailable" } },
+            : {
+                id,
+                error: {
+                  code: directInjectionRejection ? -32600 : -32601,
+                  message: directInjectionRejection
+                    ? "Rejected native history items"
+                    : "Native injection unavailable",
+                },
+              },
         },
       ];
+      const resumeNative = (id: number): CodexReplay.CodexAppServerReplayEntry[] => [
+        {
+          type: "expect_outbound",
+          frame: {
+            id,
+            method: "thread/resume",
+            params: {
+              threadId: nativeThreadId,
+              excludeTurns: true,
+              ...CodexAdapterV2.codexThreadRuntimeParams({
+                threadId,
+                mcpSession: undefined,
+                modelSelection: CODEX_TEST_MODEL_SELECTION,
+                runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+              }),
+            },
+          },
+        },
+        {
+          type: "emit_inbound",
+          frame: {
+            id,
+            result: {
+              thread: { id: nativeThreadId, updatedAt: 1782622440 },
+              model: CODEX_TEST_MODEL_SELECTION.model,
+              modelProvider: "openai",
+              serviceTier: null,
+            },
+          },
+        },
+      ];
+      const terminal = {
+        type: "emit_inbound" as const,
+        ...(terminalFirst ? { label: "first prompt response" } : {}),
+        frame: {
+          method: "turn/completed",
+          params: {
+            threadId: nativeThreadId,
+            turn: makeCodexReplayTurn({
+              id: wrongTerminal ? "different-native-turn" : originalNativeTurnId,
+              status: "completed",
+            }),
+          },
+        },
+      };
+      const reply = {
+        type: "emit_inbound" as const,
+        label: terminalFirst ? "original ACK" : "first prompt response",
+        frame: acceptsPrompt
+          ? {
+              id: 4,
+              result: {
+                turn: makeCodexReplayTurn({ id: originalNativeTurnId, status: "inProgress" }),
+              },
+            }
+          : { id: 4, error: { code, message: "Rejected original prompt" } },
+      };
       const transcript = makeCodexReplayTranscript({
         scenario,
         entries: [
           ...first.slice(0, 5),
           ...inject(3),
-          withReplayRequestId(first[5]!, 4),
-          {
-            type: "emit_inbound",
-            label: "original rejection",
-            frame: { id: 4, error: { code, message: "Rejected original prompt" } },
-          },
+          ...(noPromptRequest
+            ? []
+            : [
+                withReplayRequestId(first[5]!, 4),
+                ...(terminalFirst ? [terminal] : []),
+                reply,
+                ...(acceptsPrompt && !terminalFirst && !ackOnly ? [terminal] : []),
+              ]),
           ...(contradicts
             ? [
                 {
@@ -240,35 +338,7 @@ describe("Codex inline handoff rejection recovery", () => {
             : []),
           ...(canContinue
             ? [
-                {
-                  type: "expect_outbound" as const,
-                  frame: {
-                    id: 5,
-                    method: "thread/resume",
-                    params: {
-                      threadId: nativeThreadId,
-                      excludeTurns: true,
-                      ...CodexAdapterV2.codexThreadRuntimeParams({
-                        threadId,
-                        mcpSession: undefined,
-                        modelSelection: CODEX_TEST_MODEL_SELECTION,
-                        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
-                      }),
-                    },
-                  },
-                },
-                {
-                  type: "emit_inbound" as const,
-                  frame: {
-                    id: 5,
-                    result: {
-                      thread: { id: nativeThreadId, updatedAt: 1782622440 },
-                      model: CODEX_TEST_MODEL_SELECTION.model,
-                      modelProvider: "openai",
-                      serviceTier: null,
-                    },
-                  },
-                },
+                ...resumeNative(5),
                 ...inject(6, true),
                 withReplayRequestId(followUp[5]!, 7),
                 withReplayRequestId(followUp[6]!, 7),
@@ -301,7 +371,18 @@ describe("Codex inline handoff rejection recovery", () => {
               // If the rejection starts a writer, park after its whole body, including
               // the publication lane and any final proof check, but before outer COMMIT.
               return sql
-                .withTransaction(body.pipe(Effect.tap(() => Deferred.await(allowWriter))))
+                .withTransaction(
+                  body.pipe(
+                    Effect.tap(() =>
+                      lostBeforeCommit
+                        ? Deferred.succeed(writerParked, undefined).pipe(
+                            Effect.andThen(Deferred.await(allowWriter)),
+                            Effect.interruptible,
+                          )
+                        : Deferred.await(allowWriter),
+                    ),
+                  ),
+                )
                 .pipe(Effect.ensuring(Deferred.succeed(possibleRestoreFinished, undefined)));
             });
           return new Proxy(sql, {
@@ -316,7 +397,7 @@ describe("Codex inline handoff rejection recovery", () => {
       const effectiveTranscript = withConfigReads(transcript);
       const driver = yield* CodexReplay.makeReplayDriver(effectiveTranscript, {
         beforeEmitInbound: (entry) =>
-          entry.label === "original rejection"
+          entry.label === "first prompt response" || entry.label === "history request rejection"
             ? Deferred.succeed(sent, undefined).pipe(Effect.andThen(Deferred.await(allowRejection)))
             : entry.label === "contradictory turn activity"
               ? Deferred.await(allowActivity)
@@ -392,6 +473,49 @@ describe("Codex inline handoff rejection recovery", () => {
         );
         const deliveryStatus = canContinue ? "injected" : "pending";
         assert.equal((yield* getProjection()).contextHandoffs[0]?.delivery?.status, deliveryStatus);
+        if (directInjectionRejection) {
+          yield* Deferred.succeed(allowRejection, undefined);
+          yield* Fiber.join(starting);
+          const after = yield* getProjection();
+          assert.equal(after.runs[0]?.status, "failed");
+          assert.isUndefined(after.contextHandoffs[0]?.delivery);
+          assert.equal(after.providerThreads[0]?.nativeThreadRef?.nativeId, nativeThreadId);
+          assert.deepEqual(yield* Ref.get(driver.state), {
+            failure: null,
+            cursor: effectiveTranscript.entries.length,
+          });
+          return;
+        }
+        if (stopBeforePrompt) {
+          const current = (yield* getProjection()).runs[0]!;
+          assert.equal(current.status, "running");
+          const stoppedAt = yield* DateTime.now;
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("review-local-stop-before-prompt"),
+                type: "run.updated",
+                threadId,
+                runId: current.id,
+                occurredAt: stoppedAt,
+                payload: { ...current, status: "interrupted", completedAt: stoppedAt },
+              },
+            ],
+          });
+          yield* Deferred.succeed(allowRejection, undefined);
+          yield* Fiber.join(starting);
+          const after = yield* getProjection();
+          assert.equal(after.runs[0]?.status, "interrupted");
+          assert.deepEqual(yield* Ref.get(driver.state), {
+            failure: null,
+            cursor: effectiveTranscript.entries.length,
+          });
+          assert.isUndefined(
+            after.contextHandoffs[0]?.delivery,
+            "unsent inline history should be restorable",
+          );
+          return;
+        }
         if (late) {
           yield* TestClock.adjust(CODEX_START_ACK_TIMEOUT_MS);
           yield* Fiber.join(starting);
@@ -410,7 +534,7 @@ describe("Codex inline handoff rejection recovery", () => {
             FROM orchestration_events WHERE event_type = 'context-handoff.updated'
             ORDER BY sequence DESC LIMIT 1`.pipe(Effect.map(([marker]) => marker!));
         const marker = yield* currentMarker;
-        if (recovery === "newer identical marker") {
+        if (recovery.endsWith("newer identical marker")) {
           const [newer] = yield* sink.write({
             events: [
               {
@@ -428,6 +552,65 @@ describe("Codex inline handoff rejection recovery", () => {
               SELECT payload_json AS payload FROM orchestration_events WHERE sequence = ${newer!.sequence}`;
           assert.equal(rows[0]?.payload, marker.payload);
         }
+        if (recovery === "late acceptance after binding replacement") {
+          const provider = timedOut.providerThreads[0]!;
+          const identity = provider.runtimeIdentity!;
+          yield* sink.write({
+            runtimeIdentityBoundary: { expectedGeneration: identity.runtimeGeneration! },
+            events: [
+              {
+                id: EventId.make("replacement-binding"),
+                type: "provider-thread.updated",
+                threadId,
+                occurredAt: now,
+                payload: {
+                  ...provider,
+                  runtimeIdentity: { ...identity, runtimeGeneration: "replacement-producer" },
+                },
+              },
+            ],
+          });
+          assert.equal(
+            (yield* getProjection()).providerThreads[0]?.runtimeIdentity?.runtimeGeneration,
+            "replacement-producer",
+          );
+        }
+        if (recovery === "late acceptance after pruning") {
+          yield* sql`INSERT INTO orchestration_v2_projection_metadata
+            (projection_name, schema_version, last_sequence, updated_at)
+            VALUES (${EVENT_LOG_PRUNED_THROUGH_PROJECTION}, 1, ${marker.sequence}, ${DateTime.formatIso(now)})`;
+        }
+        if (recovery === "late acceptance with statement rollback") {
+          yield* sql`CREATE TEMP TRIGGER refuse_inline_delivery BEFORE INSERT ON orchestration_events
+            WHEN NEW.event_type = 'context-handoff.updated'
+              AND json_extract(NEW.payload_json, '$.delivery.status') = 'inline'
+            BEGIN SELECT RAISE(ABORT, 'synthetic late delivery rollback'); END`;
+        }
+        const acceptedDelivery = commitsInline
+          ? yield* orchestrator.streamDomainEvents.pipe(
+              Stream.filter(
+                (event) =>
+                  event.type === "context-handoff.updated" &&
+                  event.payload.id === handoffId &&
+                  event.payload.delivery?.status === "inline",
+              ),
+              Stream.runHead,
+              Effect.forkChild({ startImmediately: true }),
+            )
+          : undefined;
+        const initialCompletion =
+          acceptsPrompt && !late
+            ? yield* orchestrator.streamDomainEvents.pipe(
+                Stream.filter(
+                  (event) =>
+                    event.type === "run.updated" &&
+                    event.runId === run.id &&
+                    event.payload.status === "waiting",
+                ),
+                Stream.runHead,
+                Effect.forkChild({ startImmediately: true }),
+              )
+            : undefined;
         const expectedMarker = yield* currentMarker;
         const heldWriter =
           recovery === "contradiction while writer is held"
@@ -440,9 +623,20 @@ describe("Codex inline handoff rejection recovery", () => {
                 .pipe(Effect.forkChild({ startImmediately: true }))
             : undefined;
         if (heldWriter !== undefined) yield* Deferred.await(writerParked);
-        parkNextCommit = atCommit;
+        parkNextCommit = atCommit || lostBeforeCommit;
         yield* Deferred.succeed(allowRejection, undefined);
         yield* Deferred.await(rejectionObserved);
+        if (lostBeforeCommit) {
+          yield* Deferred.await(writerParked);
+          // The producer scope closes while its acceptance transaction is open.
+          // Reopen below to verify both writes rolled back.
+          return {
+            handoffs: timedOut.contextHandoffs,
+            runs: timedOut.runs,
+            attempts: timedOut.attempts,
+            providerTurns: timedOut.providerTurns,
+          };
+        }
         yield* TestClock.adjust(0);
         if (contradicts) {
           yield* Deferred.succeed(allowActivity, undefined);
@@ -454,6 +648,38 @@ describe("Codex inline handoff rejection recovery", () => {
         yield* TestClock.adjust(0);
         yield* Fiber.join(starting);
         parkNextCommit = false;
+        if (commitsInline) {
+          yield* Fiber.join(acceptedDelivery!);
+          if (initialCompletion !== undefined) {
+            yield* Fiber.join(initialCompletion);
+            yield* worker.drain();
+          }
+          const after = yield* getProjection();
+          if (late) {
+            assert.deepEqual(after.runs, timedOut.runs);
+            assert.deepEqual(after.attempts, timedOut.attempts);
+          } else assert.equal(after.runs[0]?.status, "completed");
+          assert.deepEqual(yield* Ref.get(driver.state), {
+            failure: null,
+            cursor: effectiveTranscript.entries.length,
+          });
+          assert.equal(
+            after.contextHandoffs[0]?.delivery?.status,
+            "inline",
+            "exact acceptance should settle the owned marker",
+          );
+          const [accepted] = after.providerTurns;
+          assert.equal(after.providerTurns.length, 1);
+          assert.equal(accepted?.nativeTurnRef?.nativeId, originalNativeTurnId);
+          assert.equal(accepted?.runAttemptId, originalAttemptId);
+          assert.equal(accepted?.status, "completed");
+          return {
+            handoffs: after.contextHandoffs,
+            runs: after.runs,
+            attempts: after.attempts,
+            providerTurns: after.providerTurns,
+          };
+        }
         if (!canContinue) {
           const after = yield* getProjection();
           assert.deepEqual(after.contextHandoffs[0], pending, "the pending marker must survive");
@@ -463,6 +689,7 @@ describe("Codex inline handoff rejection recovery", () => {
             assert.deepEqual(after.runs, timedOut.runs, "the failed run must remain failed");
             assert.deepEqual(after.attempts, timedOut.attempts);
           }
+          if (acceptsPrompt) assert.deepEqual(after.providerTurns, timedOut.providerTurns);
           const runtime = yield* Deferred.await(sessionOpened);
           const refusal = yield* runtime
             .ensureThread({
@@ -478,7 +705,12 @@ describe("Codex inline handoff rejection recovery", () => {
             failure: null,
             cursor: effectiveTranscript.entries.length,
           });
-          return { handoffs: after.contextHandoffs, runs: after.runs, attempts: after.attempts };
+          return {
+            handoffs: after.contextHandoffs,
+            runs: after.runs,
+            attempts: after.attempts,
+            providerTurns: after.providerTurns,
+          };
         }
         assert.equal((yield* getProjection()).contextHandoffs[0]?.delivery?.status, "injected");
 
@@ -534,6 +766,22 @@ describe("Codex inline handoff rejection recovery", () => {
                   frame.error.message === "Rejected original prompt"
                 )
                   Deferred.doneUnsafe(rejectionObserved, Effect.void);
+                if (
+                  acceptsPrompt &&
+                  !ackOnly &&
+                  !terminalFirst &&
+                  Predicate.hasProperty(frame, "method") &&
+                  frame.method === "turn/completed"
+                )
+                  Deferred.doneUnsafe(rejectionObserved, Effect.void);
+                if (
+                  (ackOnly || terminalFirst) &&
+                  Predicate.hasProperty(frame, "result") &&
+                  Predicate.isObject(frame.result) &&
+                  Predicate.isObject(frame.result.turn) &&
+                  frame.result.turn.id === originalNativeTurnId
+                )
+                  Deferred.doneUnsafe(rejectionObserved, Effect.void);
                 if (Predicate.hasProperty(frame, "id") && frame.id === "after-rejection")
                   Deferred.doneUnsafe(activityObserved, Effect.void);
               },
@@ -544,15 +792,30 @@ describe("Codex inline handoff rejection recovery", () => {
         Effect.scoped,
       );
       if (!reopenDatabase) return;
-      if (retained === undefined) return yield* Effect.die("Expected a retained pending marker");
+      if (retained === undefined)
+        return yield* Effect.die("Expected retained history delivery evidence");
 
-      // Discard the old adapter, session manager and SQLite connection. The new
-      // runtime must reject the authorized send before opening a native conversation.
+      // Discard the old adapter, session manager and SQLite connection. An accepted
+      // original prompt must not reappear in retry history on the fresh producer.
+      const restarted = codexReplayPreamble({
+        nativeThreadId,
+        nativeTurnId: "restart-turn",
+        cwd,
+        prompt: "Authorized after a restart",
+      });
       const restartTranscript = makeCodexReplayTranscript({
         scenario: `${scenario}-restart`,
-        entries: [],
+        entries: commitsInline
+          ? [
+              ...restarted.slice(0, 3),
+              ...resumeNative(2),
+              ...restarted.slice(5),
+              producerCompletion(nativeThreadId, "restart-turn"),
+            ]
+          : [],
       });
-      const restartDriver = yield* CodexReplay.makeReplayDriver(restartTranscript);
+      const effectiveRestart = withConfigReads(restartTranscript);
+      const restartDriver = yield* CodexReplay.makeReplayDriver(effectiveRestart);
       yield* Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
@@ -561,26 +824,49 @@ describe("Codex inline handoff rejection recovery", () => {
         assert.deepEqual(reopened.contextHandoffs, retained.handoffs);
         assert.deepEqual(reopened.runs, retained.runs);
         assert.deepEqual(reopened.attempts, retained.attempts);
+        assert.deepEqual(reopened.providerTurns, retained.providerTurns);
+        const waiting = commitsInline
+          ? yield* orchestrator.streamDomainEvents.pipe(
+              Stream.filter(
+                (event) =>
+                  event.type === "run.updated" &&
+                  event.threadId === threadId &&
+                  event.runId !== originalRunId &&
+                  event.payload.status === "waiting",
+              ),
+              Stream.runHead,
+              Effect.forkChild({ startImmediately: true }),
+            )
+          : undefined;
         yield* send(orchestrator, threadId, "after-restart", "Authorized after a restart");
         yield* worker.drain();
+        if (waiting !== undefined) {
+          assert.isNull((yield* Ref.get(restartDriver.state)).failure);
+          yield* Fiber.join(waiting);
+          yield* worker.drain();
+        }
         const after = yield* read();
         assert.deepEqual(after.contextHandoffs, retained.handoffs);
         assert.deepEqual(
           after.runs.map((run) => run.status),
-          ["failed", "failed"],
+          ["failed", commitsInline ? "completed" : "failed"],
         );
         assert.deepEqual(after.runs[0], retained.runs[0]);
         assert.deepEqual(
           after.attempts.filter((attempt) => attempt.runId === originalRunId),
           retained.attempts,
         );
-        assert.include(
-          after.turnItems
-            .filter((item) => item.type === "error")
-            .find((item) => item.runId === after.runs[1]?.id)?.failure.message ?? "",
-          "Conversation history delivery is uncertain",
-        );
-        assert.deepEqual(yield* Ref.get(restartDriver.state), { failure: null, cursor: 0 });
+        if (!commitsInline)
+          assert.include(
+            after.turnItems
+              .filter((item) => item.type === "error")
+              .find((item) => item.runId === after.runs[1]?.id)?.failure.message ?? "",
+            "Conversation history delivery is uncertain",
+          );
+        assert.deepEqual(yield* Ref.get(restartDriver.state), {
+          failure: null,
+          cursor: effectiveRestart.entries.length,
+        });
       }).pipe(
         Effect.provide(
           ProviderReplayHarness.layerWithRegistryAndServices(

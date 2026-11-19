@@ -156,9 +156,9 @@ const readers: ReadonlyArray<Reader> = [
     file: "provider/codex/HistoryDeliveryOutcome.ts",
     classification: "tolerate",
     after:
-      "Restoration for a proved pre-dispatch failure requires the exact retained pending event above the prune boundary. Missing evidence or an uncertain inline delivery leaves the pending handoff in place.",
+      "Restoring unsent inline history and reconciling late acceptance both require the exact pending event above the prune boundary. An unavailable receipt leaves the pending handoff in place.",
     proof:
-      "provider/codex/HistoryDeliveryOutcome.test.ts (pruned marker); provider/codex/CodexInlineHandoffRejection.test.ts (uncertain inline delivery)",
+      "provider/codex/HistoryDeliveryOutcome.test.ts (pruned marker); provider/codex/CodexInlineHandoffRejection.test.ts (late acceptance after pruning and SQLite reopen)",
   },
   {
     file: "nativeCreation/NativeCreationExecutionSqlite.ts",

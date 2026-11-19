@@ -46,7 +46,7 @@ import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
 import { startFailureCauseMessage } from "../jones/provider/startFailureMessage.ts";
 import {
-  CodexInlineHistoryPending,
+  CodexInlineHistoryStart,
   makeCodexHistoryDeliveryPersistence,
   promptWasNotApplied,
 } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
@@ -3388,7 +3388,8 @@ export const layer: Layer.Layer<
             session.driver === "codex"
               ? makeCodexHistoryDeliveryPersistence(writeHandoff, eventSink.withProviderBatch)
               : undefined;
-          const delivery = yield* deliverWithHandoffRecovery(
+          const inlineHistory = codexHistory?.trackInlineStart(eventSink.write, idAllocator);
+          const prepareDelivery = deliverWithHandoffRecovery(
             {
               handoffs,
               deferInline: compact || goalCommand,
@@ -3416,9 +3417,28 @@ export const layer: Layer.Layer<
               reclaimableBudget: reclaimableBudget ?? 0,
             },
           );
-          if (!(yield* isCurrentAttemptInStatus("running"))) return;
+          const restoreUnsent = (unsent: Effect.Effect<void, unknown>) =>
+            unsent.pipe(
+              Effect.catchCause(() =>
+                Effect.logWarning("Failed to restore unsent context handoffs", { runId: run.id }),
+              ),
+              Effect.uninterruptible,
+            );
+          const delivery = yield* Effect.uninterruptibleMask((restore) =>
+            restore(prepareDelivery).pipe(
+              Effect.tap((prepared) =>
+                Effect.addFinalizer(() =>
+                  prepared.context !== "" && inlineHistory?.closeUnsent() === true
+                    ? restoreUnsent(prepared.unsent)
+                    : Effect.void,
+                ),
+              ),
+            ),
+          );
+          if (!(yield* isCurrentAttemptInStatus("running")))
+            return yield* restoreUnsent(delivery.unsent);
           const start = (value: Parameters<typeof session.startTurn>[0]) =>
-            startWithConfiguredEffort(value, compact, delivery.unsent);
+            startWithConfiguredEffort(value, compact);
           // Like history, the side chat context waits for a turn that sends a prompt.
           const sideChatContext =
             sideChatHandoff === undefined || compact || goalCommand
@@ -3446,14 +3466,12 @@ export const layer: Layer.Layer<
           const { resume: _resume, ...contextInput } = startInput;
           const { message: resumeMessage, resume: _resumeIntent, ...resumeInput } = startInput;
           const nativeThreadId = runningProviderThread.nativeThreadRef?.nativeId;
-          const restoreUnsent = delivery.unsent.pipe(
-            Effect.catchCause(() =>
-              Effect.logWarning("Failed to restore unsent context handoffs", { runId: run.id }),
-            ),
-          );
+          const inlineStart = delivery.context === "" ? undefined : inlineHistory;
           const operation =
             turnInput.resume && context === "" && session.resumeTurn !== undefined
-              ? session.resumeTurn({ ...resumeInput, messageId: resumeMessage.messageId })
+              ? session
+                  .resumeTurn({ ...resumeInput, messageId: resumeMessage.messageId })
+                  .pipe(Effect.as(true))
               : start({
                   ...(context === "" ? startInput : contextInput),
                   message: {
@@ -3464,19 +3482,18 @@ export const layer: Layer.Layer<
                     ? {}
                     : { inlineContextLength: text.length - userText.length }),
                 });
-          yield* assertAdmission(runningProviderThread);
-          yield* operation.pipe(
-            Effect.provideService(
-              CodexInlineHistoryPending,
-              codexHistory !== undefined && delivery.context !== "",
-            ),
+          const started = yield* assertAdmission(runningProviderThread).pipe(
+            Effect.andThen(operation),
+            Effect.provideService(CodexInlineHistoryStart, inlineStart),
             Effect.tapError((error) =>
               refusedBeforePrompt(error) ||
               promptWasNotApplied(error, { beforeDispatchOnly: codexHistory !== undefined })
-                ? restoreUnsent
+                ? restoreUnsent(delivery.unsent)
                 : Effect.void,
             ),
           );
+          if (!started) return yield* restoreUnsent(delivery.unsent);
+          if (inlineStart !== undefined && !inlineStart.acknowledged) return;
           // After provider acceptance, failed delivery bookkeeping must not stop live ingestion.
           yield* Effect.forEach(
             [
@@ -3517,11 +3534,7 @@ export const layer: Layer.Layer<
       const startWithConfiguredEffort = Effect.fn(
         "ProviderTurnStartService.startWithConfiguredEffort",
       )(
-        (
-          turnInput: Parameters<typeof session.startTurn>[0],
-          compact: boolean = false,
-          unsent: Effect.Effect<void, unknown> = Effect.void,
-        ) =>
+        (turnInput: Parameters<typeof session.startTurn>[0], compact: boolean = false) =>
           Effect.gen(function* () {
             let dispatchInput = turnInput;
             if (
@@ -3577,12 +3590,13 @@ export const layer: Layer.Layer<
                   dispatchInput = { ...turnInput, configuredReasoningEffort: effort };
               }
             }
-            if (!(yield* isCurrentAttemptInStatus("running"))) return yield* unsent;
+            if (!(yield* isCurrentAttemptInStatus("running"))) return false;
             yield* assertAdmission(runningProviderThread);
             // The adapter confirms the captured continuation session at its native boundary.
             yield* (
               compact ? session.compactThread!(dispatchInput) : session.startTurn(dispatchInput)
             ).pipe(Effect.provideService(RequiredNativeSession, requiredNativeSession));
+            return true;
           }),
         Effect.mapError((cause) =>
           isProviderAdapterTurnStartError(cause)
@@ -3602,12 +3616,12 @@ export const layer: Layer.Layer<
           return session.providerSession;
         },
         startTurn: (value: Parameters<typeof session.startTurn>[0]) =>
-          startWithConfiguredEffort(value),
+          startWithConfiguredEffort(value).pipe(Effect.asVoid),
         ...(session.compactThread === undefined
           ? {}
           : {
               compactThread: (value: Parameters<typeof session.startTurn>[0]) =>
-                startWithConfiguredEffort(value, true),
+                startWithConfiguredEffort(value, true).pipe(Effect.asVoid),
             }),
       };
       const admittedSession = StartAdmission.withStartAdmission(
