@@ -1,0 +1,20 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "recovery-start-parent-stop",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/provider/RecoveryStartParentStop.ts",
+    "apps/server/src/jones/provider/RecoveryStartParentStop.integration.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/provider/RecoveryStartParentStop.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/provider/RecoveryStartParentStop.ts"
+    }
+  ]
+}

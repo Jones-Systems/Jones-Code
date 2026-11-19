@@ -1017,6 +1017,11 @@
       "scope": "Captured current-runtime stop identity, durable observation and queued-start fencing, adapter-bound stop execution, and saved client correlation. Optional immutable retirement observers retain one invocation across caller timeout, cancellation and inactive producers; exact exit and manager cleanup complete the original receipt. Completed stopped-binding proof selects a fresh logical session for a subsequent ordinary send. Existing completed-unknown receipts stay immutable, unsupported captures remain unavailable, and background coverage remains partial."
     },
     {
+      "id": "recovery-start-parent-stop",
+      "tests": ["apps/server/src/jones/provider/RecoveryStartParentStop.integration.test.ts"],
+      "scope": "The outbox checks durable delegated Stop authority before leasing a recovered start and native admission checks again before dispatch. Recovery replacements have one claim. The race tests park the delegated Stop effect and cover matching ownership, old ambiguous sends, and independent and newer admissions."
+    },
+    {
       "id": "deletion-worktree-removal",
       "tests": [
         "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",

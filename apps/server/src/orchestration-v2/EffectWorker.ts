@@ -1,6 +1,7 @@
 import { interactiveRead } from "../jones/serverParallelism/readClassification.ts";
 import { withRuntimeUseClaim } from "../jones/cleanup/RuntimeUseClaim.ts";
 import { isAccountTransferDetach } from "../jones/providerRetirement/accountTransferRetirement.ts";
+import { isRecoveryStartReplacement } from "../jones/provider/RecoveryStartParentStop.ts";
 import {
   GoalNotificationDeliveryUnknown,
   isGoalNotificationDeliveryUnknown,
@@ -1297,6 +1298,7 @@ export const layerWithOptions = (
             return false;
           }
           const effect = claimed.value;
+          const singleAttempt = isRecoveryStartReplacement(effect);
           const observeCustody =
             effect.nativeCreationExecutionReference !== undefined ||
             (managedClaims &&
@@ -1333,11 +1335,15 @@ export const layerWithOptions = (
                   return true;
                 }
                 return false;
-              }).pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
+              }).pipe(
+                Effect.onError((cause) =>
+                  singleAttempt ? terminalizeClaim(effect, cause) : requeueClaim(effect, cause),
+                ),
+              );
               if (cancelledBeforeExecution) return true;
 
               const execution = executor
-                .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+                .execute(effect, { willRetry: !singleAttempt && effect.attemptCount < maxAttempts })
                 .pipe(
                   (execution) =>
                     withOriginalTransition(
@@ -1408,6 +1414,7 @@ export const layerWithOptions = (
               const controlOutcomeUnknown =
                 findProviderControlOutcomeUnknown(exit.cause) !== undefined;
               const terminalFailure =
+                singleAttempt ||
                 custodyLost ||
                 controlOutcomeUnknown ||
                 effect.nativeCreationExecutionReference !== undefined ||

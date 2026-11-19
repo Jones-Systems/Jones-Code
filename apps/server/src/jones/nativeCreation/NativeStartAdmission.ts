@@ -110,6 +110,7 @@ export const layer = Layer.effect(
                     event.payload.threadId === input.threadId &&
                     event.payload.activeAttemptId === input.attemptId &&
                     event.payload.userMessageId === input.run.userMessageId &&
+                    event.payload.delegatedTaskId === input.run.delegatedTaskId &&
                     event.payload.startedAt === null &&
                     event.payload.providerThreadId === input.providerThread.id &&
                     event.payload.providerInstanceId === input.run.providerInstanceId &&
@@ -232,6 +233,7 @@ export const layer = Layer.effect(
             run?.activeAttemptId !== input.attemptId ||
             run.threadId !== input.threadId ||
             !["starting", "running"].includes(run.status) ||
+            (recoveryResend && run.delegatedTaskId !== input.run.delegatedTaskId) ||
             run.providerThreadId !== input.providerThread.id ||
             run.providerInstanceId !== input.run.providerInstanceId ||
             !sameOperationRequest(run.modelSelection, input.run.modelSelection) ||
@@ -318,6 +320,12 @@ export const layer = Layer.effect(
             publishing,
           );
           if (!settledClaim) yield* claim.value.check;
+          if (
+            recoveryResend &&
+            continuation === undefined &&
+            !(yield* outbox.allowsClaimedRecoveryStart(captured, input.run))
+          )
+            return yield* refused();
           producerGeneration = observedGeneration;
           nativeThreadId = observedNativeId;
         }).pipe(
