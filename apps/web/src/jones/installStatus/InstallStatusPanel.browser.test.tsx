@@ -1144,6 +1144,22 @@ describe("Install status step progress", () => {
       .querySelector(`[aria-label="${label} update details"] [data-row-text]`)
       ?.textContent?.trim();
 
+  it("keeps cleanup inspection available in the cancelled plan's history", async () => {
+    await using world = await setup();
+    const { screen, fixture, calls } = world;
+    await act(() => fixture.showcaseSourceProof());
+    await click(screen, "Cancel update plan");
+    expect(fixture.snapshot().current).toBeNull();
+    expect(fixture.snapshot().last?.cancelled).toBe(true);
+    await click(screen, "Studio update details");
+    expect(rowText(screen, "Studio")).toBe("Cleanup unconfirmed");
+    await click(screen, "Inspect cleanup");
+    await expect
+      .poll(() => screen.container.textContent)
+      .toContain("Inspection confirmed the prior disk image is absent.");
+    expect(calls.some(({ action }) => action === "fixture-host-operationStart")).toBe(false);
+  });
+
   it("keeps source proof above attempt progress and dates cached proof", async () => {
     await using world = await setup();
     const { screen, fixture } = world;
@@ -1151,7 +1167,7 @@ describe("Install status step progress", () => {
     expect(rowText(screen, "VPS")).toBe("Updated · running the selected source");
     expect(rowText(screen, "Mini")).toBe("Updated · running the selected source");
     expect(rowText(screen, "Test")).toBe("Last confirmed running the selected source · 5m ago");
-    expect(rowText(screen, "Studio")).toContain("Stop not confirmed");
+    expect(rowText(screen, "Studio")).toBe("Cleanup unconfirmed");
     expect(visibleDone(screen)).toHaveLength(0);
     await click(screen, "VPS update details");
     const detail = screen.container.querySelector('[aria-label="VPS update status"]')!;

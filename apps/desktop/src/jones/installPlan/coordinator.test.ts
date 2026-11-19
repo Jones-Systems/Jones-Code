@@ -554,6 +554,44 @@ describe("Laptop install recovery", () => {
     expect(cancelled.state.last).toBeNull();
   });
 
+  it("cancels pending rollout work and keeps the exact remote cleanup available in history", async () => {
+    const f = fixture();
+    const plan = await f.start();
+    const grant = (await f.claim(plan.planId)).grant!;
+    const held = {
+      ...f.receipt(grant),
+      phase: "held",
+      code: "cleanup-unconfirmed",
+      jobId: id(121),
+    } as const;
+    const report = (receipt: JonesOperationReceipt) =>
+      f.coordinator.request({
+        type: "report",
+        planId: plan.planId,
+        environmentId: remote,
+        operationId: grant.operationId,
+        evidence: { kind: "receipt", receipt },
+      });
+    const recorded = await report(held);
+    expect(recorded.refused).toBeUndefined();
+    const cancelled = await f.coordinator.request({
+      type: "cancel-plan",
+      planId: plan.planId,
+      expectedRevision: recorded.state.current!.revision,
+    });
+    expect(cancelled.state.current).toBeNull();
+    expect(cancelled.state.last?.devices[0]?.operations[0]?.receipt).toEqual(held);
+    expect((await f.claim(plan.planId)).refused?.code).toBe("plan-mismatch");
+    const start = { type: "start", origin: "update-button", target, select: [] } as const;
+    expect((await f.coordinator.request(start)).refused?.code).toBe("outstanding-operation");
+    const released = { ...held, phase: "interrupted", code: "cleanup-recovered" } as const;
+    expect((await report({ ...released, jobId: id(122) })).refused?.code).toBe("invalid-evidence");
+    const settled = await report(released);
+    expect(settled.state.current).toBeNull();
+    expect(settled.state.last?.devices[0]?.operations[0]?.receipt).toEqual(released);
+    expect((await f.coordinator.request(start)).state.current).not.toBeNull();
+  });
+
   it("records a failed result after binding and permits an explicit reviewed retry", async () => {
     const f = fixture();
     f.controller.install.mockImplementationOnce(async (_handle, _campaign, plan) => {
@@ -986,7 +1024,7 @@ describe("native install plan coordinator", () => {
     ).toBe("not-complete");
   });
 
-  it("requires a matching directive before downloads and preserves an expired directive as unknown", async () => {
+  it("requires a matching directive before downloads and regrants the exact expired request", async () => {
     const f = fixture();
     const enrollmentId = id(99);
     const result = await f.coordinator.request({
@@ -997,7 +1035,7 @@ describe("native install plan coordinator", () => {
     });
     const planId = result.state.current!.planId;
     expect((await f.claim(planId)).refused?.code).toBe("directive-required");
-    const directive = await f.coordinator.request({
+    const claim = {
       type: "claim",
       planId,
       environmentId: remote,
@@ -1006,7 +1044,8 @@ describe("native install plan coordinator", () => {
       explicit: false,
       enrollmentId,
       expectedDirectiveId: null,
-    });
+    } as const;
+    const directive = await f.coordinator.request(claim);
     expect(directive.grant?.request).toEqual({
       kind: "plan-directive",
       input: {
@@ -1020,6 +1059,23 @@ describe("native install plan coordinator", () => {
       },
     });
     f.advance();
+    const replay = { ...claim, claimant: "window-b", operationId: directive.grant!.operationId };
+    expect((await f.coordinator.request({ ...replay, operationId: id(123) })).refused?.code).toBe(
+      "claimed",
+    );
+    expect(
+      (await f.coordinator.request({ ...replay, expectedDirectiveId: id(123) })).refused?.code,
+    ).toBe("claimed");
+    const renewed = await f.coordinator.request(replay);
+    expect(renewed.grant).toMatchObject({
+      operationId: directive.grant!.operationId,
+      request: directive.grant!.request,
+    });
+    expect(renewed.grant!.leaseUntil).not.toBe(directive.grant!.leaseUntil);
+    expect(renewed.state.current?.devices[0]?.operations).toHaveLength(1);
+    expect((await f.coordinator.request({ ...replay, claimant: "window-c" })).refused?.code).toBe(
+      "claimed",
+    );
     expect(
       (
         await f.coordinator.request({
@@ -1034,6 +1090,53 @@ describe("native install plan coordinator", () => {
       ).refused?.code,
     ).toBe("invalid-evidence");
     expect((await f.claim(planId)).state.view.complete).toBe(false);
+    const cancel = {
+      type: "cancel-plan",
+      planId,
+      expectedRevision: renewed.state.current!.revision,
+    } as const;
+    expect((await f.coordinator.request(cancel)).refused?.code).toBe("outstanding-operation");
+    f.advance();
+    const cancelled = await f.coordinator.request(cancel);
+    expect(cancelled.state.current).toBeNull();
+    expect(cancelled.state.last?.devices[0]?.operations[0]?.directive).toBeUndefined();
+    expect((await f.coordinator.request(replay)).refused?.code).toBe("plan-mismatch");
+    const observed = await f.coordinator.request({
+      type: "report",
+      planId,
+      environmentId: remote,
+      operationId: replay.operationId,
+      evidence: {
+        kind: "directive",
+        status: {
+          environmentId: remote,
+          operationProtocol: 1,
+          planDirectiveProtocol: 1,
+          enrollment: {
+            enrollmentId,
+            environmentId: remote,
+            enabled: true,
+            continueRunningThreads: false,
+          },
+          operation: null,
+          update: null,
+          follower: {
+            protocol: 1,
+            state: "waiting-for-leader",
+            leaderSource: null,
+            planDirective: {
+              directiveId: replay.operationId,
+              targetSource: source,
+              targetTree: tree,
+              mode: "manual-review",
+              issuedAt: timestamp,
+            },
+          },
+        },
+      },
+    });
+    expect(observed.state.current).toBeNull();
+    expect(observed.state.last?.devices[0]?.operations[0]?.directive?.kind).toBe("applied");
   });
 
   it("keeps a completed download open until ended and retains publication suppression after Done", async () => {

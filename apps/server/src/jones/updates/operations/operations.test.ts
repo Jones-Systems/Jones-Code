@@ -871,6 +871,14 @@ it("holds a reaped preparation whose native cleanup is unconfirmed", async () =>
       }),
     );
     expect(f.updater.snapshot().phase).toBe("blocked");
+    const held = (await f.receipt())!;
+    vi.setSystemTime(Date.parse(held.updatedAt) + 60_000);
+    try {
+      await f.operations.reconcile();
+      expect(await f.receipt()).toEqual(held);
+    } finally {
+      vi.useRealTimers();
+    }
     f.scratchDeleted();
     await f.operations.sweep();
     expect(f.updater.admissionHeld()).toBe(true);

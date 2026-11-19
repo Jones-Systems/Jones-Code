@@ -66,6 +66,11 @@ const localPending = (operation: JonesInstallPlanLaptopOperation) =>
 const outstanding = operationOutstanding;
 const cancelledLaptopPending = (plan: JonesInstallPlan | null) =>
   plan?.cancelled === true && plan.laptop.operations.some(localPending);
+const awaitingCleanup = (operation: JonesInstallPlanHostOperation) =>
+  operation.step === "download" &&
+  operation.receipt?.phase === "held" &&
+  operation.receipt.code === "cleanup-unconfirmed" &&
+  operation.receipt.jobId !== undefined;
 const same = (left: unknown, right: unknown): boolean => {
   if (left === right) return true;
   if (typeof left !== "object" || left === null || typeof right !== "object" || right === null)
@@ -699,6 +704,27 @@ export function createInstallPlanCoordinator(options: {
           }
         }
         document = refreshCommands(document);
+        const archived = document.last;
+        const reportArchived =
+          plan === null &&
+          archived?.cancelled === true &&
+          req.type === "report" &&
+          req.planId === archived.planId &&
+          archived.devices.some(
+            (device) =>
+              device.environmentId === req.environmentId &&
+              device.operations.some(
+                (op) =>
+                  op.operationId === req.operationId &&
+                  ((awaitingCleanup(op) &&
+                    req.evidence.kind === "receipt" &&
+                    terminal.has(req.evidence.receipt.phase)) ||
+                    (op.step === "directive" &&
+                      op.directive === undefined &&
+                      req.evidence.kind === "directive")),
+              ),
+          );
+        if (reportArchived) plan = archived;
         const command = "command" in req ? req.command : undefined;
         if (compiledIs1(req) && command !== undefined) {
           const recorded = document.commands?.find(
@@ -751,7 +777,7 @@ export function createInstallPlanCoordinator(options: {
         };
         const save = (next: JonesInstallPlan) => {
           plan = next;
-          document = { ...document, current: next };
+          document = reportArchived ? { ...document, last: next } : { ...document, current: next };
         };
         const replaceOperation = (
           deviceIndex: number,
@@ -988,6 +1014,14 @@ export function createInstallPlanCoordinator(options: {
               "outstanding-operation",
               "The cancelled plan's Laptop attempt still needs native verification.",
             );
+          else if (
+            document.last?.cancelled === true &&
+            document.last.devices.some((device) => device.operations.some(awaitingCleanup))
+          )
+            refuse(
+              "outstanding-operation",
+              "Release the device cleanup hold in the cancelled plan's history before starting another plan.",
+            );
           else if (environmentId === undefined || evidence.activeVersion === undefined)
             refuse("unsupported", "The native Laptop identity is unavailable.");
           else if (req.laptop === undefined && !prior)
@@ -1057,7 +1091,11 @@ export function createInstallPlanCoordinator(options: {
               }
             }
           }
-        } else if (plan === null || req.planId !== plan.planId || plan.dismissedAt !== undefined)
+        } else if (
+          plan === null ||
+          req.planId !== plan.planId ||
+          (plan.dismissedAt !== undefined && !reportArchived)
+        )
           refuse("plan-mismatch", "This is not the current plan.");
         else if (req.type === "edit") {
           if (
@@ -1177,7 +1215,16 @@ export function createInstallPlanCoordinator(options: {
             active.size > 0 ||
             options.controller.busy !== null ||
             plan.devices.some(
-              (device) => device.abandoning === true || device.operations.some(outstanding),
+              (device) =>
+                device.abandoning === true ||
+                device.operations.some((operation) => {
+                  // An expired setup may still apply a manual-review directive. Archiving
+                  // the plan prevents subsequent downloads and installs.
+                  const expiredSetup =
+                    operation.step === "directive" &&
+                    Date.parse(operation.lease.leaseUntil) <= options.now();
+                  return outstanding(operation) && !awaitingCleanup(operation) && !expiredSetup;
+                }),
             )
           )
             refuse(
@@ -1503,21 +1550,35 @@ export function createInstallPlanCoordinator(options: {
             else if (pending !== undefined) {
               const identical =
                 pending.step === req.step &&
-                pending.lease.claimant === req.claimant &&
-                Date.parse(pending.lease.leaseUntil) > options.now() &&
                 (pending.request.kind === "operation-start"
                   ? same(pending.request.input.action, req.action) &&
                     pending.request.input.expectedInstalledSource === req.expectedInstalledSource &&
                     same(pending.review, req.review)
                   : pending.request.input.enrollmentId === req.enrollmentId &&
                     pending.request.input.expectedDirectiveId === req.expectedDirectiveId);
+              const expired = Date.parse(pending.lease.leaseUntil) <= options.now();
               if (!identical || pending.receipt !== undefined || pending.directive !== undefined)
                 refuse("claimed", "An operation is already reserved; observe or fence it.");
-              else extras = { grant: grant(pending) };
+              else if (
+                !expired &&
+                pending.lease.claimant === req.claimant &&
+                (req.operationId === undefined || req.operationId === pending.operationId)
+              )
+                extras = { grant: grant(pending) };
+              else if (
+                expired &&
+                pending.request.kind === "plan-directive" &&
+                req.operationId === pending.operationId
+              ) {
+                const renewed = { ...pending, lease };
+                replaceOperation(deviceIndex, device.operations.indexOf(pending), renewed);
+                extras = { grant: grant(renewed) };
+              } else refuse("claimed", "An operation is already reserved; observe or fence it.");
             } else if (device.operations.length >= MAX_OPERATIONS)
               refuse("bounds", "The device operation history is full.");
             else if (req.step === "directive") {
               if (
+                req.operationId !== undefined ||
                 device.route !== "follower-operations" ||
                 req.enrollmentId === undefined ||
                 req.enrollmentId !== device.enrollmentId ||

@@ -12,7 +12,12 @@ import type {
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import type { JonesOperationCommand, JonesUpdateObservation } from "../updates/jonesUpdates.ts";
 import type { FleetHostRequest } from "../fleetUpdates/hostBridge.ts";
-import { nextRunnerStep, validateDirectiveEvidence, validateReceipt } from "./model.ts";
+import {
+  canReplayDirective,
+  nextRunnerStep,
+  validateDirectiveEvidence,
+  validateReceipt,
+} from "./model.ts";
 
 export interface InstallPlanDriver {
   readonly claimant: string;
@@ -22,6 +27,7 @@ export interface InstallPlanDriver {
   /** A fresh read, including a fresh fleet status for enrolled hosts. It never mutates. */
   readonly observe: (environmentId: EnvironmentId) => Promise<{
     readonly observation: JonesUpdateObservation;
+    readonly canOperate: boolean;
     readonly fleetStatus?: FleetHostStatus | null;
   }>;
   readonly operation: (
@@ -42,7 +48,7 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
   for (const device of plan.devices.slice(0, 16)) {
     if (driver.cancelled()) return;
     try {
-      const { observation, fleetStatus } = await driver.observe(device.environmentId);
+      const { observation, canOperate, fleetStatus } = await driver.observe(device.environmentId);
       if (driver.cancelled()) return;
       const step = nextRunnerStep(plan, device, observation, fleetStatus, driver.now());
       const report = async (operationId: string, receipt: JonesOperationReceipt) => {
@@ -79,33 +85,31 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         // Null is absence, never proof of no effects or permission to send again.
         continue;
       }
-      if (
-        step.kind === "reservation" &&
-        step.operation.step === "directive" &&
-        Date.parse(step.operation.lease.leaseUntil) <= driver.now()
-      ) {
-        if (
-          step.operation.request.kind === "plan-directive" &&
-          fleetStatus !== undefined &&
-          fleetStatus !== null &&
-          validateDirectiveEvidence(step.operation.request.input, fleetStatus)
-        )
+      const reservation = step.kind === "reservation" ? step.operation : undefined;
+      const expired =
+        reservation !== undefined && Date.parse(reservation.lease.leaseUntil) <= driver.now();
+      const directive =
+        reservation?.request.kind === "plan-directive" ? reservation.request.input : undefined;
+      if (directive !== undefined) {
+        if (fleetStatus != null && validateDirectiveEvidence(directive, fleetStatus)) {
           await driver.desktop({
             type: "report",
             planId: plan.planId,
             environmentId: device.environmentId,
-            operationId: step.operation.operationId,
+            operationId: directive.directiveId,
             evidence: { kind: "directive", status: fleetStatus },
           });
-        continue;
+          continue;
+        }
+        if (!canOperate || !canReplayDirective(directive, fleetStatus)) continue;
       }
       // Reclaim through native main even for this window's own reservation: it rechecks the
       // gate and current membership, and returns the exact original request for idempotency.
       if (
-        step.kind === "reservation" &&
-        (step.operation.lease.claimant !== driver.claimant ||
-          Date.parse(step.operation.lease.leaseUntil) <= driver.now() ||
-          step.operation.step === "install")
+        reservation !== undefined &&
+        (expired
+          ? directive === undefined
+          : reservation.lease.claimant !== driver.claimant || reservation.step === "install")
       )
         continue;
       const claim: JonesInstallPlanRequest = {
@@ -131,6 +135,7 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
               : step.operation.request.kind === "plan-directive"
                 ? {
                     step: "directive",
+                    operationId: step.operation.operationId,
                     enrollmentId: step.operation.request.input.enrollmentId,
                     expectedDirectiveId: step.operation.request.input.expectedDirectiveId,
                   }
@@ -148,15 +153,16 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
         grant === undefined ||
         grant.planId !== plan.planId ||
         grant.environmentId !== device.environmentId ||
+        (reservation !== undefined && grant.operationId !== reservation.operationId) ||
         grant.step === "install" ||
         grant.step === "stop" ||
         !Number.isFinite(Date.parse(grant.leaseUntil)) ||
         Date.parse(grant.leaseUntil) <= driver.now()
       )
         continue;
-      await dispatchGrant(driver, grant, report);
+      await dispatchGrant(driver, grant, report, directive !== undefined);
     } catch {
-      // No mutation retry here. A later pass reads the reserved ID, or fences after expiry.
+      // A later pass reconciles only the exact pending operation, under a native lease.
       // A disconnected host does not prevent other selected hosts from making progress.
     }
   }
@@ -166,6 +172,7 @@ async function dispatchGrant(
   driver: InstallPlanDriver,
   grant: JonesInstallPlanGrant,
   report: (operationId: string, receipt: JonesOperationReceipt) => Promise<void>,
+  replayingDirective: boolean,
 ): Promise<void> {
   const request = grant.request;
   if (
@@ -189,9 +196,11 @@ async function dispatchGrant(
           evidence: { kind: "directive", status },
         });
     } catch (error) {
-      // A storage error can follow a durable write. Keep it unknown for exact readback.
+      // A storage error can follow a durable write. A replay refusal can also race the original
+      // dispatch, so only settle an initial request on a definitive refusal.
       if (
         !driver.cancelled() &&
+        !replayingDirective &&
         typeof error === "object" &&
         error !== null &&
         "_tag" in error &&
