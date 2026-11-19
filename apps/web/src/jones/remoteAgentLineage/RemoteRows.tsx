@@ -55,7 +55,10 @@ export function RemoteSubagentRow(props: {
             }
           >
             <ThreadRelationshipIcon
-              driver={props.agent.driver}
+              driver={
+                props.provider?.driver ??
+                (props.agent.driver === "remote" ? undefined : props.agent.driver)
+              }
               provider={props.provider}
               fallbackIcon={BotIcon}
               status={status}

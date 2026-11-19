@@ -1,11 +1,9 @@
 import type { ProviderDriverKind, ServerProvider } from "@t3tools/contracts";
 import { BotIcon, type LucideIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
-import {
-  hasInstanceBadge,
-  shouldShowInstanceBadge,
-  type ProviderInstanceEntry,
-} from "../../providerInstances";
+import { ProviderAccountGlyph } from "../../jones/composer/ProviderShortcutIcon";
+import { subagentAccountDisplayName } from "../../jones/subagents/accountDisplayName";
+import type { ProviderInstanceEntry } from "../../providerInstances";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 
 export function threadRelationshipStatusLabel(status: string | null): string {
@@ -51,33 +49,34 @@ export function ThreadRelationshipIcon({
   driver,
   provider,
   providerEntries = [],
-  anyInstanceBadge = hasInstanceBadge(providerEntries),
   status,
   fallbackIcon: FallbackIcon = BotIcon,
 }: {
   driver?: ProviderDriverKind | undefined;
   provider?: ServerProvider | undefined;
   providerEntries?: ReadonlyArray<ProviderInstanceEntry>;
-  /** For rows that can't take `providerEntries` but sit in the same list as rows that do. */
-  anyInstanceBadge?: boolean;
   status: string | null;
   fallbackIcon?: LucideIcon;
 }) {
   const iconClassName = "size-4 shrink-0 text-muted-foreground";
-  const entry = driver
-    ? providerEntries.find((candidate) => candidate.instanceId === provider?.instanceId)
-    : undefined;
-  const showInstanceBadge = entry !== undefined && shouldShowInstanceBadge(entry, providerEntries);
+  const accountDisplayName = subagentAccountDisplayName(provider, driver);
+  const entry =
+    accountDisplayName !== undefined
+      ? providerEntries.find((candidate) => candidate.instanceId === provider?.instanceId)
+      : undefined;
   return (
-    <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
-      {driver ? (
-        <ProviderInstanceIcon
+    <span className="relative isolate inline-flex size-4 shrink-0 items-center justify-center">
+      {driver && accountDisplayName !== undefined ? (
+        <ProviderAccountGlyph
           driverKind={driver}
-          displayName={entry?.displayName ?? provider?.displayName ?? driver}
-          accentColor={entry?.accentColor}
+          displayName={accountDisplayName}
           acpRegistryAgentId={entry?.acpRegistryAgentId}
           acpRegistryIconUrl={entry?.acpRegistryIconUrl ?? provider?.iconUrl}
-          showBadge={showInstanceBadge}
+        />
+      ) : driver ? (
+        <ProviderInstanceIcon
+          driverKind={driver}
+          displayName={driver}
           size="compact"
           iconClassName={iconClassName}
           className="z-auto"
@@ -87,8 +86,7 @@ export function ThreadRelationshipIcon({
       )}
       <span
         className={cn(
-          "absolute -right-1 size-2 rounded-full border-2 border-card",
-          anyInstanceBadge ? "-top-1" : "-bottom-1",
+          "absolute -right-1 -bottom-1 z-50 size-2 rounded-full border-2 border-card",
           status === "running" ||
             status === "in_progress" ||
             status === "pending" ||
