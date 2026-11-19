@@ -620,6 +620,7 @@
       "tests": [
         "apps/server/src/hostStatus/gateway.test.ts",
         "apps/web/src/hostStatus.test.ts",
+        "apps/web/src/components/ChatView.browser.test.tsx",
         "apps/web/src/components/chat/HostStatusIndicators.browser.test.tsx",
         "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx",
         "apps/web/src/jones/hostStatus/responsiveLayout.test.ts",

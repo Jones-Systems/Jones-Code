@@ -11,6 +11,7 @@ import { cn } from "~/lib/utils";
 import { MonitorToggle } from "../../jones/threadMonitor/MonitorToggle";
 
 import type { ThreadPanelPresentation } from "../../rightPanelLayout";
+import { useStableCallback } from "../../hooks/useStableCallback";
 import { PopoverCreateHandle, PopoverTrigger } from "../ui/popover";
 import { useMobileSidebarSheetMounted } from "../ui/sidebar";
 import { Toggle } from "../ui/toggle";
@@ -193,6 +194,7 @@ export function ThreadPanelHeaderControl(props: PanelLayoutControlsProps) {
 
 /** The window's top-right panel controls, with the maximize toggle while the panel is open. */
 export function WorkspaceTitlebarControls(props: {
+  readonly onElementChange: (element: HTMLDivElement | null) => void;
   readonly showMaximizeControl: boolean;
   readonly rightPanelOpen: boolean;
   readonly animationsActive: boolean;
@@ -200,8 +202,12 @@ export function WorkspaceTitlebarControls(props: {
   readonly onToggleMaximized: () => void;
   readonly children: ReactNode;
 }) {
-  const { rightPanelOpen, maximized } = props;
+  const { rightPanelOpen, maximized, onElementChange } = props;
   const controlsRef = useRef<HTMLDivElement | null>(null);
+  const setControlsElement = useStableCallback((element: HTMLDivElement | null) => {
+    controlsRef.current = element;
+    onElementChange(element);
+  });
   const previous = useRef({ rightPanelOpen, maximized });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the toggle's slide before the commit that swapped it in paints; the animation is cancelled on change or unmount.
   useLayoutEffect(() => {
@@ -225,7 +231,7 @@ export function WorkspaceTitlebarControls(props: {
   const mobileSidebarSheetMounted = useMobileSidebarSheetMounted();
   return (
     <div
-      ref={controlsRef}
+      ref={setControlsElement}
       className={cn(
         "pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]",
         mobileSidebarSheetMounted && "hidden",

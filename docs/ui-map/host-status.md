@@ -35,3 +35,17 @@ This source/dev-server correspondence is not packaged-build attestation.
 Visibility, expiry, source removal and cancellation have focused automated
 coverage; native shells, real cross-host transports, and other entry paths
 retain their separate verification needs.
+
+## Toolbar clearance while resizing
+
+Open a thread with all four host readings and the right panel closed. Narrow
+the window until the readings compress, then widen it again. The readings
+should fit before the toolbar with an 8px gap. All four should remain visible
+through the compression threshold, and widening should restore their full
+labels and units.
+
+The [chat browser test](../../apps/web/src/components/ChatView.browser.test.tsx)
+checks this journey in the shared renderer with four synthetic host samples
+and the actual chat toolbar. The [clearance test](../../apps/web/src/jones/hostStatus/useHeaderControlsClearance.browser.test.tsx)
+also checks that the reserved width follows changes in the toolbar and drops
+away when the toolbar moves clear of the chat column.
