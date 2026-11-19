@@ -785,6 +785,9 @@ export default function ChatView(props: ChatViewProps) {
   // Focusing the composer without a tap raises the on-screen keyboard on touch devices.
   const isCoarsePointer = useMediaQuery({ pointer: "coarse" });
   const [workspaceLayoutElement, setWorkspaceLayoutElement] = useState<HTMLDivElement | null>(null);
+  const [titlebarControlsElement, setTitlebarControlsElement] = useState<HTMLDivElement | null>(
+    null,
+  );
   const threadPanelPopoverAnchorRef = useRef<HTMLElement | null>(null);
   const [terminalUiLaunchContext, setTerminalUiLaunchContext] =
     useState<TerminalLaunchContext | null>(null);
@@ -3418,6 +3421,7 @@ export default function ChatView(props: ChatViewProps) {
   const threadPanelHeaderControl = <ThreadPanelHeaderControl {...panelToggleControlProps} />;
   const panelLayoutControls = (
     <WorkspaceTitlebarControls
+      onElementChange={setTitlebarControlsElement}
       showMaximizeControl={!shouldUsePlanSidebarSheet}
       rightPanelOpen={rightPanelOpen}
       animationsActive={panelAnimationsActive}
@@ -3510,6 +3514,7 @@ export default function ChatView(props: ChatViewProps) {
               parentThreadLink={headerParentThreadLink}
               onOpenThread={onOpenRelatedThreadStable}
               rightPanelOpen={inlineRightPanelOwnsTitleBar}
+              titlebarControlsElement={titlebarControlsElement}
               onNewThreadInProject={handleNewThreadInActiveProjectStable}
               {...(activeDraftLogicalProjectKey
                 ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
