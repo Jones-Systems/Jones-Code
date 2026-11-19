@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import {
   advanceInstallPlan,
+  supportsInstallPlanMutations,
   type InstallPlanDriver,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { useEnvironments } from "../../state/environments";
@@ -10,7 +11,7 @@ import { jonesUpdates } from "../updates/jonesUpdates";
 import { installStatusStore, type InstallStatusStore, type InstallStatusDevice } from "./panelUi";
 import {
   bindInstallPlanServices,
-  canOperateInstallDevice,
+  currentAuthorizedUpdateStatus,
   requestInstallPlan,
   type InstallPlanServices,
 } from "./services";
@@ -52,7 +53,10 @@ export function startInstallPlanController(
         });
       return observed;
     },
-    canOperate: (id) => canOperateInstallDevice(services, id),
+    canDispatch: (id) => {
+      const status = currentAuthorizedUpdateStatus(services, id);
+      return status !== undefined && supportsInstallPlanMutations(status.capability);
+    },
     operation: async (id, request) => {
       const result = await services.operation(id, request);
       if ("binding" in result || "recoveredCleanup" in result || "receipt" in result)

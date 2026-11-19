@@ -190,9 +190,10 @@ describe("bound Install status actions", () => {
       throw new Error("Unexpected host action.");
     };
     const stop = vi.fn<InstallPlanServices["stop"]>(async () => hostReceipt);
+    const devices = vi.fn(() => [device]);
     const services: InstallPlanServices = {
       bridge: { installPlan, getUpdateState: async () => desktop, onUpdateState: () => () => {} },
-      devices: () => [device],
+      devices,
       observe: async () => device,
       legacy: unused,
       operation: unused,
@@ -207,6 +208,7 @@ describe("bound Install status actions", () => {
       installPlan,
       stop,
       state,
+      devices,
       services,
       store,
       unbind: bindInstallPlanServices(services, store),
@@ -234,6 +236,51 @@ describe("bound Install status actions", () => {
       f.unbind();
     }
   });
+
+  it.each(["read", "claim"] as const)(
+    "blocks Stop when capability downgrades during the native %s",
+    async (downgradeOn) => {
+      const f = bindFixture();
+      try {
+        const device = await f.services.observe(hostId);
+        f.installPlan.mockImplementation(async (request) => {
+          if (request.type === downgradeOn)
+            f.devices.mockReturnValue([
+              {
+                ...device,
+                observation: {
+                  freshness: "fresh",
+                  state: {
+                    ...device.observation.state!,
+                    capability: {
+                      check: false,
+                      download: false,
+                      install: false,
+                      operationReceipts: 1,
+                    },
+                  },
+                },
+              },
+            ]);
+          return { state: f.state, ...(request.type === "claim" ? { grant } : {}) };
+        });
+        await expect(
+          stopPanelDownload({
+            kind: "device",
+            planId: plan.planId,
+            environmentId: hostId,
+            operationId: hostOperationId,
+          }),
+        ).rejects.toThrow("Fresh authorized operation capability is required.");
+        expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(
+          downgradeOn === "read" ? ["read"] : ["read", "claim"],
+        );
+        expect(f.stop).not.toHaveBeenCalled();
+      } finally {
+        f.unbind();
+      }
+    },
+  );
 
   it("keeps the exact Stop grant binding and reports the host's first Stop ID", async () => {
     const displayed = {

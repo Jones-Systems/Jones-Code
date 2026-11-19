@@ -56,11 +56,27 @@ export interface InstallPlanServices {
   readonly kick?: (environmentId: EnvironmentId) => void;
 }
 
-export function canOperateInstallDevice(
+export function authorizedUpdateStatus(
+  device: InstallStatusDevice | undefined,
+  environmentId: EnvironmentId,
+): JonesUpdateState | undefined {
+  if (
+    device?.environmentId === environmentId &&
+    device.canOperate &&
+    device.observation.freshness === "fresh" &&
+    device.observation.state?.environmentId === environmentId
+  )
+    return device.observation.state;
+}
+
+export function currentAuthorizedUpdateStatus(
   services: InstallPlanServices,
   environmentId: EnvironmentId,
-) {
-  return services.devices().some((d) => d.environmentId === environmentId && d.canOperate);
+): JonesUpdateState | undefined {
+  return authorizedUpdateStatus(
+    services.devices().find((device) => device.environmentId === environmentId),
+    environmentId,
+  );
 }
 
 let active: { services: InstallPlanServices; store: InstallStatusStore } | undefined;

@@ -22,7 +22,12 @@ import {
   validateReceipt,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { claimantId, routeLaptopDownload, routeLaptopInstall } from "./entrypoints";
-import { canOperateInstallDevice, installPlanServices, requestInstallPlan } from "./services";
+import {
+  authorizedUpdateStatus,
+  currentAuthorizedUpdateStatus,
+  installPlanServices,
+  requestInstallPlan,
+} from "./services";
 import type { InstallStatusDevice } from "./panelUi";
 import { LAPTOP_REOPEN_TO_CHECK_INSTALL } from "./copy";
 
@@ -85,16 +90,13 @@ export async function stopPanelDownload(target: {
   if (binding === undefined) throw new Error("Install status is not connected.");
   const { services } = binding;
   const { kind, planId, environmentId, operationId } = target;
-  const canOperate = () => canOperateInstallDevice(services, environmentId);
+  const missingCapability = "Fresh authorized operation capability is required.";
+  const canStop = () =>
+    currentAuthorizedUpdateStatus(services, environmentId)?.capability.operations === 1;
   if (kind === "device") {
     const observed = await services.observe(environmentId);
-    if (
-      !observed.canOperate ||
-      observed.observation.freshness !== "fresh" ||
-      observed.observation.state?.environmentId !== environmentId ||
-      observed.observation.state.capability.operations !== 1
-    )
-      throw new Error("Fresh authorized operation capability is required.");
+    if (authorizedUpdateStatus(observed, environmentId)?.capability.operations !== 1)
+      throw new Error(missingCapability);
   }
   const read = await requestInstallPlan({ type: "read" }, binding);
   const plan = read.state.current;
@@ -131,7 +133,7 @@ export async function stopPanelDownload(target: {
     !["accepted", "running", "stop-requested"].includes(operation.receipt.phase)
   )
     throw new Error(changedTarget);
-  if (!canOperate()) throw new Error("This session cannot change updates.");
+  if (!canStop()) throw new Error(missingCapability);
   const claimed = await requestInstallPlan(
     {
       type: "claim",
@@ -162,8 +164,7 @@ export async function stopPanelDownload(target: {
     Date.parse(grant.leaseUntil) <= services.now()
   )
     throw new Error("The native grant expired. Read status before continuing.");
-  if (installPlanServices() !== binding || !canOperate())
-    throw new Error("This session cannot change updates.");
+  if (installPlanServices() !== binding || !canStop()) throw new Error(missingCapability);
   const receipt = await services.stop(environmentId, {
     action: "operationStop",
     input: request.input,
@@ -398,6 +399,7 @@ export async function refreshDeviceEvidence(
       return options.refreshInstallOutcome
         ? `Could not read the exact update receipt on ${observed.label}. Refresh its status and try again.`
         : undefined;
+    const currentCapability = currentAuthorizedUpdateStatus(services, environmentId)?.capability;
     const result = await services.operation(environmentId, {
       action: "operationRead",
       input: {
@@ -406,7 +408,8 @@ export async function refreshDeviceEvidence(
         ...(options.refreshInstallOutcome &&
         input.action.kind === "install" &&
         observed.canOperate &&
-        canOperateInstallDevice(services, environmentId)
+        currentCapability !== undefined &&
+        supportsOperationReceiptReads(currentCapability)
           ? { refreshInstallOutcome: operation.operationId }
           : {}),
       },

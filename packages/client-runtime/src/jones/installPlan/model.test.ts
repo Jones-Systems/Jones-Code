@@ -370,6 +370,23 @@ describe("install plan model", () => {
     expect(validateReceipt(annotated, completed)).toBe(false);
   });
 
+  it("retains the first Stop refusal added to an already failed download", () => {
+    const failed = receipt("failed");
+    const stop = {
+      stopId: id,
+      requestedAt: "2026-10-27T05:01:00.000Z",
+      result: "not-stoppable-phase",
+    } as const;
+    const annotated = { ...failed, stop, updatedAt: "2026-10-27T05:01:01.000Z" };
+    expect(validateReceipt(failed, annotated)).toBe(true);
+    expect(
+      validateReceipt(annotated, { ...annotated, stop: { ...stop, stopId: operationId } }),
+    ).toBe(false);
+    expect(validateReceipt(failed, { ...annotated, stop: { ...stop, result: "too-late" } })).toBe(
+      false,
+    );
+  });
+
   it("composes late Stop and owned-stage retirement while preserving both once recorded", () => {
     const staged = {
       stagedHandle: "owned-stage",
@@ -405,7 +422,10 @@ describe("install plan model", () => {
       false,
     );
     expect(validateReceipt(retired, { ...retiredThenStopped, stageRetiredAt: now })).toBe(false);
-    expect(validateReceipt(completed, { ...combined, stageRetiredAt: "invalid" })).toBe(false);
+    for (const stageRetiredAt of ["invalid", "2026-10-27T05:02:02.000Z"]) {
+      expect(validateReceipt(completed, { ...combined, stageRetiredAt })).toBe(false);
+    }
+    expect(validateReceipt(stopped, { ...combined, stageRetiredAt: now })).toBe(false);
     expect(
       validateReceipt(completed, { ...combined, staged: { ...staged, stagedHandle: "other" } }),
     ).toBe(false);

@@ -30,8 +30,8 @@ export interface InstallPlanDriver {
     readonly canOperate: boolean;
     readonly fleetStatus?: FleetHostStatus | null;
   }>;
-  /** Current session authority to recheck across awaits, including while a claim is in flight. */
-  readonly canOperate: (environmentId: EnvironmentId) => boolean;
+  /** Rechecks fresh host capability and session authority before claims and dispatch. */
+  readonly canDispatch: (environmentId: EnvironmentId) => boolean;
   readonly operation: (
     environmentId: EnvironmentId,
     request: Exclude<JonesOperationCommand, { action: "recoveryPreflight" | "recoverCleanup" }>,
@@ -53,7 +53,7 @@ export async function advanceInstallPlan(driver: InstallPlanDriver): Promise<voi
       const { observation, canOperate, fleetStatus } = await driver.observe(device.environmentId);
       if (driver.cancelled()) return;
       const canMutate = () =>
-        !driver.cancelled() && canOperate && driver.canOperate(device.environmentId);
+        !driver.cancelled() && canOperate && driver.canDispatch(device.environmentId);
       const step = nextRunnerStep(plan, device, observation, fleetStatus, driver.now());
       const report = async (operationId: string, receipt: JonesOperationReceipt) => {
         if (!driver.cancelled())

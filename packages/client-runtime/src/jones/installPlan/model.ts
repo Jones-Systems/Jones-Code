@@ -124,20 +124,20 @@ export function validateReceipt(
   }
   if (terminal.has(prev.phase)) {
     const stopRequestedAt = Date.parse(next.stop?.requestedAt ?? "");
+    const expectedStopResult =
+      prev.phase === "completed" && prev.staged !== undefined ? "too-late" : "not-stoppable-phase";
     const lateStop =
-      prev.phase === "completed" &&
-      prev.action.kind !== "install" &&
-      prev.staged !== undefined &&
       prev.stop === undefined &&
-      next.stop?.result === "too-late" &&
+      next.stop?.result === expectedStopResult &&
       stopRequestedAt >= previousUpdate &&
       stopRequestedAt <= updatedAt;
+    const retiredAt = Date.parse(next.stageRetiredAt ?? "");
     const stageRetired =
       prev.phase === "completed" &&
       prev.staged?.createdByOperation === true &&
       prev.stageRetiredAt === undefined &&
-      next.stageRetiredAt !== undefined &&
-      Number.isFinite(Date.parse(next.stageRetiredAt));
+      retiredAt >= previousUpdate &&
+      retiredAt <= updatedAt;
     if (!lateStop && !stageRetired) return equal(prev, next);
     // A read may observe both annotations at once. Ignore only the first valid addition of each.
     const finalEvidence = { ...next, updatedAt: prev.updatedAt };
@@ -199,7 +199,7 @@ export type InstallPlanSelectability =
     }
   | { readonly selectable: false; readonly reason: string };
 
-function supportsInstallPlanMutations(capability: JonesUpdateState["capability"]): boolean {
+export function supportsInstallPlanMutations(capability: JonesUpdateState["capability"]): boolean {
   return capability.operations === 1 && capability.download && capability.install;
 }
 

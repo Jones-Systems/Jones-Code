@@ -117,7 +117,7 @@ function fixture() {
   const host = vi.fn<InstallPlanDriver["host"]>(async () => {
     throw new Error("unused");
   });
-  const canOperate = vi.fn<InstallPlanDriver["canOperate"]>(() => true);
+  const canDispatch = vi.fn<InstallPlanDriver["canDispatch"]>(() => true);
   return {
     driver: {
       claimant: "window:a",
@@ -125,7 +125,7 @@ function fixture() {
       cancelled: () => false,
       desktop,
       observe,
-      canOperate,
+      canDispatch,
       operation,
       host,
     },
@@ -138,7 +138,7 @@ function fixture() {
     desktop,
     operation,
     observe,
-    canOperate,
+    canDispatch,
     host,
   };
 }
@@ -208,7 +208,7 @@ describe("bounded install plan runner", () => {
       const observed = await f.observe(env);
       f.observe.mockResolvedValueOnce({ ...observed, canOperate: false });
       await advanceInstallPlan(f.driver);
-      f.canOperate.mockReturnValue(false);
+      f.canDispatch.mockReturnValue(false);
       await advanceInstallPlan(f.driver);
       expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "read"]);
       expect(f.operation).not.toHaveBeenCalled();
@@ -221,7 +221,7 @@ describe("bounded install plan runner", () => {
     const claim = f.desktop.getMockImplementation()!;
     f.desktop.mockImplementation(async (request) => {
       const result = await claim(request);
-      if (request.type === "claim") f.canOperate.mockReturnValue(false);
+      if (request.type === "claim") f.canDispatch.mockReturnValue(false);
       return result;
     });
     await advanceInstallPlan(f.driver);
@@ -300,7 +300,7 @@ describe("bounded install plan runner", () => {
     expect(f.desktop.mock.calls.filter(([r]) => r.type === "report")).toHaveLength(0);
     const observed = await f.observe(env);
     f.observe.mockResolvedValue({ ...observed, canOperate: false });
-    f.canOperate.mockReturnValue(false);
+    f.canDispatch.mockReturnValue(false);
     f.operation.mockResolvedValue({ receipts: [{ operationId: opId, receipt: f.receipt }] });
     await advanceInstallPlan(f.driver);
     expect(f.operation.mock.calls.at(-1)?.[1]).toMatchObject({
@@ -381,7 +381,7 @@ describe("bounded install plan runner", () => {
       expect(f.operation).not.toHaveBeenCalled();
 
       f.observe.mockResolvedValueOnce({ ...limited, canOperate: false });
-      f.canOperate.mockReturnValue(false);
+      f.canDispatch.mockReturnValue(false);
       await advanceInstallPlan(f.driver);
       expect(f.desktop.mock.calls.at(-1)?.[0]).toEqual({
         type: "report",
@@ -392,7 +392,7 @@ describe("bounded install plan runner", () => {
       });
 
       f.setPlan(plan);
-      f.canOperate.mockReturnValue(true);
+      f.canDispatch.mockReturnValue(true);
       await advanceInstallPlan(f.driver);
       expect(f.operation).toHaveBeenCalledTimes(1);
       expect(f.desktop.mock.calls.some(([r]) => r.type === "claim")).toBe(false);
@@ -547,7 +547,7 @@ describe("bounded install plan runner", () => {
       if (result === "lost reply") {
         f.desktop.mockResolvedValue({ state: state() });
         f.observe.mockResolvedValue({ ...limited, canOperate: false, fleetStatus: applied });
-        f.canOperate.mockReturnValue(false);
+        f.canDispatch.mockReturnValue(false);
         await advanceInstallPlan(resumed);
         expect(f.host).toHaveBeenCalledTimes(1);
       } else {
