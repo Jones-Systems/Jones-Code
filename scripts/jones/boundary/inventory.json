@@ -3246,6 +3246,7 @@
     "apps/server/src/jones/orchestration/RuntimeEvidenceGuard.ts": "jones-owned",
     "apps/server/src/jones/orchestration/IdleTurnSettlement.ts": "jones-owned",
     "scripts/jones/boundary/fragments/stalled-run-projection.json": "jones-owned",
+    "scripts/jones/boundary/fragments/recovery-start-parent-stop.json": "jones-owned",
     ".github/workflows/mobile-dev-client.yml": "upstream-deleted",
     "apps/mobile/src/features/settings/ThreadSettingsSections.tsx": "accepted-shared",
     "apps/web/src/proposedPlan.ts": "accepted-shared",

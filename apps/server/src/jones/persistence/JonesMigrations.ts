@@ -93,6 +93,7 @@ import JonesMigration0162 from "./Migrations/162_JonesOrdinaryPreparation.ts";
 import JonesMigration0163 from "./Migrations/163_JonesRemoteSendReceipts.ts";
 import JonesMigration0164 from "./Migrations/164_JonesLegacyBootstrap.ts";
 import JonesMigration0165 from "./Migrations/165_JonesRequestManagement.ts";
+import JonesMigration0166 from "./Migrations/166_JonesPreparedStartCheckouts.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -161,6 +162,7 @@ export const jonesMigrationEntries = [
   [163, "RemoteSendReceipts", JonesMigration0163],
   [164, "LegacyBootstrap", JonesMigration0164],
   [165, "RequestManagement", JonesMigration0165],
+  [166, "PreparedStartCheckouts", JonesMigration0166],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {

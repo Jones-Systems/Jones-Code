@@ -10,7 +10,9 @@ import * as NativeCreationRepositorySqlite from "../jones/nativeCreation/NativeC
 import * as NativeCreationAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
 import * as NativeCreationProviderExecutor from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
 import * as NativeStartAdmission from "../jones/nativeCreation/NativeStartAdmission.ts";
+import * as RecoveryStartDenial from "../jones/provider/RecoveryStartDenial.ts";
 import * as StartAdmission from "../jones/provider/StartAdmission.ts";
+import * as UnattendedStartAdmission from "../jones/provider/UnattendedStartAdmission.ts";
 import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import * as CapturedRuntimeStop from "../jones/provider/CapturedRuntimeStop.ts";
@@ -21,6 +23,7 @@ import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSel
 import * as TitleStore from "../jones/threadTitle/store.ts";
 import * as WorkspaceLifecycleRuntime from "../jones/workspaceLifecycle/RuntimeIntegration.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
+import * as PreparedStartCheckout from "../jones/workspaceLifecycle/PreparedStartCheckout.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorktreeMcpService from "../mcp/WorktreeMcpService.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
@@ -132,11 +135,16 @@ const layerStores = Layer.mergeAll(
   TurnItemPositionStore.layer,
 );
 
+const layerPreparedStartCheckout = PreparedStartCheckout.layer.pipe(
+  Layer.provide(Layer.merge(GitVcsDriver.layer, ServerEnvironment.layerIdentity)),
+);
+
 export const layerEventSink = EventSink.layerFromStores.pipe(
   Layer.provide(StartRefusal.layer),
   Layer.provide(DependencyChanges.layer),
   Layer.provide(nativeCreationOwnersProvided),
   Layer.provide(layerStores),
+  Layer.provide(layerPreparedStartCheckout),
 );
 const layerRestartPreparationProvided = RestartPreparation.layer.pipe(
   Layer.provide(Layer.merge(layerStores, layerEventSink)),
@@ -147,6 +155,7 @@ export const layerNativeStartAdmission = NativeStartAdmission.layer.pipe(
   Layer.provide(
     Layer.mergeAll(layerStores, layerEventSink, ControlAdmission.layer, StartRefusal.layer),
   ),
+  Layer.provide(layerPreparedStartCheckout),
 );
 const layerProjectionMaintenanceProvided = ProjectionMaintenance.layer.pipe(
   Layer.provide(layerStores),
@@ -525,6 +534,11 @@ const layerEffectExecutorProvided = CapturedRuntimeStop.layer.pipe(
 );
 const layerEffectWorkerProvided = EffectWorker.layer.pipe(
   Layer.provide(
+    RecoveryStartDenial.layer.pipe(
+      Layer.provide(Layer.mergeAll(layerStores, layerEventSink, IdAllocator.layer)),
+    ),
+  ),
+  Layer.provide(
     Layer.mergeAll(
       layerStores,
       layerEffectExecutorProvided,
@@ -534,11 +548,23 @@ const layerEffectWorkerProvided = EffectWorker.layer.pipe(
   ),
 );
 const layerProviderRuntimeRecoveryProvided = ProviderRuntimeRecoveryService.layer.pipe(
+  Layer.provide(layerPreparedStartCheckout),
   Layer.provide(
     Layer.mergeAll(
       layerEffectWorkerProvided,
       layerStores,
       layerEventSink,
+      UnattendedStartAdmission.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ControlAdmission.layer,
+            layerRestartPreparationProvided,
+            layerGoalContinuity,
+            ServerEnvironment.layerIdentity,
+            StartRefusal.layer,
+          ),
+        ),
+      ),
       IdAllocator.layer,
       ProjectionStore.layer,
       OrphanedRunRecords.layer.pipe(Layer.provide(Layer.merge(layerEventSink, IdAllocator.layer))),

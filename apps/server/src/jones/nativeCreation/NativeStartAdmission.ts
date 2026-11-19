@@ -13,6 +13,7 @@ import * as StartAdmission from "../provider/StartAdmission.ts";
 import * as Guard from "./NativeCreationProviderGuard.ts";
 import { CurrentEffectClaim } from "../workspaceLifecycle/ActiveEffectClaim.ts";
 import { sameOperationRequest } from "../workspaceLifecycle/NativeOperation.ts";
+import { PreparedStartCheckout } from "../workspaceLifecycle/PreparedStartCheckout.ts";
 import * as CommandReceipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
@@ -30,6 +31,7 @@ export const layer = Layer.effect(
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const control = yield* ControlAdmission.ControlAdmission;
     const refusals = yield* StartRefusals.StartRefusals;
+    const preparedCheckout = yield* Effect.serviceOption(PreparedStartCheckout);
     return StartAdmission.StartAdmission.of({
       capture: Effect.fn("NativeStartAdmission.capture")(function* (input) {
         const refused = () =>
@@ -110,6 +112,11 @@ export const layer = Layer.effect(
                     event.payload.threadId === input.threadId &&
                     event.payload.activeAttemptId === input.attemptId &&
                     event.payload.userMessageId === input.run.userMessageId &&
+                    event.payload.delegatedTaskId === input.run.delegatedTaskId &&
+                    sameOperationRequest(
+                      event.payload.workspacePreparation ?? null,
+                      input.run.workspacePreparation ?? null,
+                    ) &&
                     event.payload.startedAt === null &&
                     event.payload.providerThreadId === input.providerThread.id &&
                     event.payload.providerInstanceId === input.run.providerInstanceId &&
@@ -184,6 +191,20 @@ export const layer = Layer.effect(
           },
         );
         yield* validateReceiptTarget();
+        let revalidateCheckout: StartAdmission.CapturedStartAdmission["revalidateCheckout"];
+        if (recoveryResend && input.run.workspacePreparation !== undefined) {
+          const checkout = Option.isSome(preparedCheckout)
+            ? yield* preparedCheckout.value.forClaim(input.run)
+            : undefined;
+          const checkoutUnavailable = () =>
+            new ProviderAdapterProtocolError({
+              driver: input.providerThread.driver,
+              detail: "The prepared checkout no longer matches the accepted release.",
+            });
+          if (checkout === undefined) return yield* checkoutUnavailable();
+          revalidateCheckout = (cwd) =>
+            checkout.revalidate(cwd).pipe(Effect.mapError(checkoutUnavailable));
+        }
         let producerGeneration = input.providerThread.runtimeIdentity?.runtimeGeneration;
         let nativeThreadId = input.providerThread.nativeThreadRef?.nativeId ?? undefined;
         const validateLiveClaim = claim.value.use((current) =>
@@ -232,6 +253,12 @@ export const layer = Layer.effect(
             run?.activeAttemptId !== input.attemptId ||
             run.threadId !== input.threadId ||
             !["starting", "running"].includes(run.status) ||
+            (recoveryResend &&
+              (run.delegatedTaskId !== input.run.delegatedTaskId ||
+                !sameOperationRequest(
+                  run.workspacePreparation ?? null,
+                  input.run.workspacePreparation ?? null,
+                ))) ||
             run.providerThreadId !== input.providerThread.id ||
             run.providerInstanceId !== input.run.providerInstanceId ||
             !sameOperationRequest(run.modelSelection, input.run.modelSelection) ||
@@ -318,6 +345,12 @@ export const layer = Layer.effect(
             publishing,
           );
           if (!settledClaim) yield* claim.value.check;
+          if (
+            recoveryResend &&
+            continuation === undefined &&
+            !(yield* outbox.allowsClaimedRecoveryStart(captured, input.run))
+          )
+            return yield* refused();
           producerGeneration = observedGeneration;
           nativeThreadId = observedNativeId;
         }).pipe(
@@ -455,6 +488,7 @@ export const layer = Layer.effect(
         return {
           revalidate,
           classifyResume,
+          ...(revalidateCheckout === undefined ? {} : { revalidateCheckout }),
           ...(nativeCreationGuard === undefined ? {} : { nativeCreationGuard }),
         };
       }),

@@ -1388,7 +1388,10 @@ export const layer: Layer.Layer<
               }),
             ),
         });
-      const checkoutAnswer = message.context?.checkoutRecovery;
+      const preparedCheckoutRequired = capturedAdmission.revalidateCheckout !== undefined;
+      const checkoutAnswer = preparedCheckoutRequired
+        ? undefined
+        : message.context?.checkoutRecovery;
       const recoveryRequest =
         checkoutAnswer === undefined
           ? undefined
@@ -1412,7 +1415,7 @@ export const layer: Layer.Layer<
         offer.applied.branch === savedBranch;
       let recoverySourcePath = appliedRecovery ? offer.worktreePath : undefined;
       let recreatedWorkspace = appliedRecovery;
-      if (worktreePath !== null) {
+      if (worktreePath !== null && !preparedCheckoutRequired) {
         if (input.nativeCreationGuard !== undefined && !(yield* fileSystem.exists(worktreePath)))
           return yield* new ProviderTurnStartError({
             runId,
@@ -1711,7 +1714,7 @@ export const layer: Layer.Layer<
       // No project folders and leftover-only folders. A native-verified
       // workspace is never restored by ordinary means.
       const recreateResult = yield* Effect.result(
-        input.nativeCreationGuard === undefined
+        input.nativeCreationGuard === undefined && !preparedCheckoutRequired
           ? restoreMissingWorktree(projection.thread)
           : Effect.void,
       );
@@ -1876,7 +1879,11 @@ export const layer: Layer.Layer<
           projection.thread.lineage.parentThreadId,
         );
       }
-      if (Option.isSome(conversations) && projection.thread.worktreePath === null) {
+      if (
+        !preparedCheckoutRequired &&
+        Option.isSome(conversations) &&
+        projection.thread.worktreePath === null
+      ) {
         const shared = yield* conversations.value.lookup(projection.thread.id);
         if (shared?.state === "attached" && shared.ownerThreadId !== projection.thread.id) {
           yield* assertAdmission(providerThread);
@@ -1890,7 +1897,9 @@ export const layer: Layer.Layer<
         }
       }
       const conversationTurn =
-        Option.isSome(conversations) && projection.thread.worktreePath === null
+        !preparedCheckoutRequired &&
+        Option.isSome(conversations) &&
+        projection.thread.worktreePath === null
           ? yield* conversations.value.startTurn(projection.thread.id, run.id)
           : null;
       if (conversationTurn !== null) {
@@ -1937,6 +1946,9 @@ export const layer: Layer.Layer<
         conversationTurn === null
           ? resolvedPolicy.success
           : { ...resolvedPolicy.success, cwd: conversationTurn.binding.path };
+      const revalidatePreparedCheckout = () =>
+        capturedAdmission.revalidateCheckout?.(resolvedRuntimePolicy.cwd) ?? Effect.void;
+      yield* revalidatePreparedCheckout();
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
@@ -2045,7 +2057,10 @@ export const layer: Layer.Layer<
         });
         return;
       }
-      yield* assertAdmission(providerThread);
+      const admitOpen = revalidatePreparedCheckout().pipe(
+        Effect.andThen(assertAdmission(providerThread)),
+      );
+      yield* admitOpen;
       const sessionResult = yield* Effect.result(
         keepWarm && !plannedWorkResume
           ? providerSessions.get(providerSessionId).pipe(
@@ -2064,7 +2079,7 @@ export const layer: Layer.Layer<
           : providerSessions.open({
               threadId: projection.thread.id,
               providerSessionId,
-              revalidateStartAdmission: assertAdmission(providerThread),
+              revalidateStartAdmission: admitOpen,
               ...(capturedAdmission.nativeCreationGuard === undefined
                 ? {}
                 : {
@@ -2473,6 +2488,7 @@ export const layer: Layer.Layer<
       let portableForkEvents: ReadonlyArray<OrchestrationV2DomainEvent> = [];
       let recoveryTurnItem: OrchestrationV2TurnItem | undefined;
       const loadedProviderThread = yield* Effect.gen(function* () {
+        yield* revalidatePreparedCheckout();
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
             nativeForkTransfer.sourceThreadId,
@@ -3558,7 +3574,16 @@ export const layer: Layer.Layer<
               }
             }
             if (!(yield* isCurrentAttemptInStatus("running"))) return yield* unsent;
-            yield* assertAdmission(runningProviderThread);
+            const revalidateStart = assertAdmission(runningProviderThread);
+            if (capturedAdmission.revalidateCheckout !== undefined) {
+              const revalidateStartAdmission = capturedAdmission
+                .revalidateCheckout(dispatchInput.runtimePolicy.cwd)
+                .pipe(Effect.andThen(dispatchInput.revalidateStartAdmission ?? revalidateStart));
+              yield* revalidateStartAdmission;
+              dispatchInput = { ...dispatchInput, revalidateStartAdmission };
+            } else {
+              yield* revalidateStart;
+            }
             // The adapter confirms the captured continuation session at its native boundary.
             yield* (
               compact ? session.compactThread!(dispatchInput) : session.startTurn(dispatchInput)

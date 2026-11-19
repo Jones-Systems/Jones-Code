@@ -54,6 +54,9 @@ export const CurrentStartedTurnContinuation = Context.Reference<
 
 export interface CapturedStartAdmission {
   readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly revalidateCheckout?: (
+    cwd: string | null | undefined,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly nativeCreationGuard?: NativeProviderExecutionGuard;
   // Only durable original-prefix/no-effect evidence may authorize resending input.
   readonly classifyResume: Effect.Effect<
