@@ -198,6 +198,7 @@
     "apps/desktop/src/jones/installPlan/coordinator.ts": "jones-owned",
     "apps/desktop/src/jones/installPlan/ipc.test.ts": "jones-owned",
     "apps/desktop/src/jones/installPlan/ipc.ts": "jones-owned",
+    "apps/desktop/src/jones/installPlan/journal.ts": "jones-owned",
     "apps/desktop/src/jones/installPlan/store.test.ts": "jones-owned",
     "apps/desktop/src/jones/installPlan/store.ts": "jones-owned",
     "apps/desktop/src/jones/storage/privateJsonStore.ts": "jones-owned",

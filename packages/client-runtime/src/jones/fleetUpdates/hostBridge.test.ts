@@ -16,7 +16,7 @@ import {
 import { layerRemoteHttpClient } from "../../rpc/http.ts";
 import { requestFleetHost } from "./hostBridge.ts";
 
-it.effect("authenticates relay status reads and target-bound plan directive PUTs", () =>
+it.effect("authenticates relay status reads, plan directives, and the separate exact fence", () =>
   Effect.gen(function* () {
     const target = new RelayConnectionTarget({
       environmentId: EnvironmentId.make("fleet-status-relay"),
@@ -102,7 +102,8 @@ it.effect("authenticates relay status reads and target-bound plan directive PUTs
       const proof = JSON.parse(headers.get("dpop")!);
       const method = init?.method ?? "GET";
       calls.push({ url, method, authorization: headers.get("authorization") });
-      if (method === "PUT") expect(JSON.parse(String(init?.body))).toEqual(directive);
+      if (method === "PUT" || method === "POST")
+        expect(JSON.parse(String(init?.body))).toEqual(directive);
       if (proof.htu !== normalizeDpopHtu(url) || proof.method !== method)
         return Response.json(
           {
@@ -113,7 +114,15 @@ it.effect("authenticates relay status reads and target-bound plan directive PUTs
           },
           { status: 401 },
         );
-      return Response.json(status);
+      return Response.json(
+        method === "POST"
+          ? {
+              ...status,
+              fencePlanDirective: 1,
+              directiveFence: { protocol: 1, outcome: "fenced", input: directive },
+            }
+          : status,
+      );
     };
     const resolver = ConnectionResolver.of({
       prepare: () => Effect.die("Status reads must not prepare ordinary orchestration"),
@@ -135,7 +144,20 @@ it.effect("authenticates relay status reads and target-bound plan directive PUTs
         ),
       ),
     );
-    yield* requestFleetHost(entry, { action: "planDirective", input: directive }).pipe(
+    yield* Effect.forEach(["planDirective", "fenceDirective"] as const, (action) =>
+      requestFleetHost(entry, { action, input: directive }).pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            if (action === "fenceDirective")
+              expect(result.directiveFence).toEqual({
+                protocol: 1,
+                outcome: "fenced",
+                input: directive,
+              });
+          }),
+        ),
+      ),
+    ).pipe(
       Effect.provide(
         Layer.mergeAll(
           Layer.succeed(ConnectionResolver, resolver),
@@ -161,6 +183,11 @@ it.effect("authenticates relay status reads and target-bound plan directive PUTs
         method: "PUT",
         authorization: "DPoP synthetic-relay-token",
       },
+      {
+        url: "https://fleet.example.test/api/jones-fleet-updates/plan-directive/fence",
+        method: "POST",
+        authorization: "DPoP synthetic-relay-token",
+      },
     ]);
     // The signer receives each exact request URL; its proof claim omits the operation query.
     expect(proofs).toEqual(
@@ -170,9 +197,10 @@ it.effect("authenticates relay status reads and target-bound plan directive PUTs
       "https://fleet.example.test/api/jones-fleet-updates",
       "https://fleet.example.test/api/jones-fleet-updates",
       "https://fleet.example.test/api/jones-fleet-updates/plan-directive",
+      "https://fleet.example.test/api/jones-fleet-updates/plan-directive/fence",
     ]);
     expect(authorizations).toEqual(
-      Array.from({ length: 3 }, () => ({ expectedEnvironmentId: target.environmentId })),
+      calls.map(() => ({ expectedEnvironmentId: target.environmentId })),
     );
   }),
 );

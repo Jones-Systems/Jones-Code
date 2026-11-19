@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, type DesktopUpdateState } from "@t3tools/contracts";
 import type {
+  JonesInstallPlan,
   JonesInstallPlanGrant,
   JonesInstallPlanRequest,
   JonesInstallPlanResult,
@@ -10,7 +11,7 @@ import type {
   JonesOperationReceipt,
   JonesRecoveryPreflight,
 } from "@t3tools/contracts/jones/jonesOperations";
-import { startPlan } from "@t3tools/client-runtime/jones/install-plan";
+import { advanceInstallPlan, startPlan } from "@t3tools/client-runtime/jones/install-plan";
 import type { JonesUpdateObservation } from "@t3tools/client-runtime/jones/updates";
 import {
   describeUpdateEverything,
@@ -25,9 +26,29 @@ import {
   partitionUpdateEverything,
   legacyConnectionsGate,
 } from "./entrypoints";
-import { performPanelAction, refreshDeviceEvidence, stopPanelDownload } from "./actions";
+import {
+  fencePanelOperation,
+  performPanelAction,
+  refreshDeviceEvidence,
+  stopPanelDownload,
+} from "./actions";
 import { createInstallStatusStore, installStatusStore, type InstallStatusDevice } from "./panelUi";
-import { bindInstallPlanServices, type InstallPlanServices } from "./services";
+import {
+  bindInstallPlanServices,
+  confirmClosedPlan,
+  currentPlanHostAuthority,
+  installPlanServices,
+  type InstallPlanServices,
+} from "./services";
+import { abandonDevice, deviceAbandonTarget } from "./abandonDevice";
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 const environmentId = EnvironmentId.make("laptop-test");
 const source = "a".repeat(40);
@@ -175,6 +196,7 @@ describe("bound Install status actions", () => {
       environmentId: hostId,
       label: "Stop host",
       canOperate: true,
+      fleetStatus: null,
       observation: {
         freshness: "fresh",
         state: {
@@ -214,6 +236,145 @@ describe("bound Install status actions", () => {
       unbind: bindInstallPlanServices(services, store),
     };
   }
+
+  it.each([
+    "same route",
+    "new failed read",
+    "changed route",
+    "lost read scope",
+    "fence with unknown fleet status",
+    "fence with a retained contradiction",
+  ] as const)(
+    "uses live enrollment and read authority in the background runner for %s",
+    async (scenario) => {
+      const f = bindFixture();
+      const observed = await f.services.observe(hostId);
+      const { fleetStatus: _previous, ...withoutFleet } = observed;
+      const current = f.state.current!;
+      const member = current.devices[0]!;
+      const { receipt: _receipt, ...pending } = member.operations[0]!;
+      const fencing = scenario.startsWith("fence");
+      const reservation = fencing
+        ? { ...pending, lease: { ...pending.lease, leaseUntil: at } }
+        : pending;
+      const state: JonesInstallPlanState = {
+        ...f.state,
+        view: { ...f.state.view, recoveryHistory: 1 },
+        current: { ...current, devices: [{ ...member, operations: [reservation] }] },
+      };
+      let latest = fencing ? withoutFleet : observed;
+      let projection: InstallStatusDevice = withoutFleet;
+      let canRead = true;
+      const enrolled = {
+        ...withoutFleet,
+        fleetStatus: {
+          environmentId: hostId,
+          operationProtocol: 1 as const,
+          planDirectiveProtocol: 1 as const,
+          enrollment: {
+            environmentId: hostId,
+            enrollmentId: earlierOperationId,
+            enabled: true,
+            continueRunningThreads: false,
+          },
+          operation: null,
+          update: null,
+        },
+      };
+      const arrived = deferred();
+      const reply = deferred();
+      f.installPlan.mockImplementation(async (request) => {
+        if (request.type !== "claim") return { state };
+        arrived.resolve();
+        await reply.promise;
+        return {
+          state,
+          grant: {
+            ...grant,
+            step: fencing ? "fence" : "download",
+            request: { kind: fencing ? "operation-fence" : "operation-start", input },
+          },
+        };
+      });
+      const unbind = bindInstallPlanServices(
+        {
+          ...f.services,
+          devices: () => [projection],
+          observe: async () => latest,
+          canReadReceipts: () => canRead,
+        },
+        f.store,
+      );
+      const binding = installPlanServices()!;
+      const operation = vi.fn<Parameters<typeof advanceInstallPlan>[0]["operation"]>(
+        async (_, request) =>
+          request.action !== "operationRead"
+            ? running
+            : { receipts: [{ operationId: hostOperationId, receipt: running }] },
+      );
+      try {
+        const pass = advanceInstallPlan({
+          claimant: "window:a",
+          now: binding.services.now,
+          cancelled: () => false,
+          desktop: f.installPlan,
+          observe: binding.services.observe,
+          authority: (device) => currentPlanHostAuthority(binding, device),
+          operation,
+          host: binding.services.host,
+        });
+        await Promise.race([arrived.promise, pass]);
+        if (scenario === "new failed read" || scenario === "lost read scope") {
+          // A successful cache projection cannot restore authority after a later direct failure.
+          projection = { ...observed, canOperate: false };
+          latest = withoutFleet;
+          canRead = scenario !== "lost read scope";
+          await binding.services.observe(hostId);
+        } else if (scenario === "changed route") {
+          projection = enrolled;
+        } else if (scenario === "fence with a retained contradiction") {
+          latest = enrolled;
+          await binding.services.observe(hostId);
+          latest = withoutFleet;
+          await binding.services.observe(hostId);
+        }
+        reply.resolve();
+        await pass;
+        expect(f.installPlan.mock.calls[1]?.[0]).toMatchObject({
+          type: "claim",
+          step: fencing ? "fence" : "download",
+          operationId: hostOperationId,
+        });
+        if (scenario === "lost read scope") {
+          expect(operation).not.toHaveBeenCalled();
+          expect(f.installPlan.mock.calls.map(([r]) => r.type)).toEqual(["read", "claim"]);
+        } else {
+          expect(operation.mock.calls).toEqual([
+            [
+              hostId,
+              scenario === "same route"
+                ? { action: "operationStart", input }
+                : scenario === "fence with unknown fleet status"
+                  ? { action: "operationFence", input }
+                  : {
+                      action: "operationRead",
+                      input: { environmentId: hostId, operationIds: [hostOperationId] },
+                    },
+            ],
+          ]);
+          expect(f.installPlan.mock.calls.map(([r]) => r.type)).toEqual([
+            "read",
+            "claim",
+            "report",
+          ]);
+        }
+      } finally {
+        reply.resolve();
+        unbind();
+        f.unbind();
+      }
+    },
+  );
 
   it.each(["laptop", "device"] as const)("refuses to retarget a stale %s Stop", async (kind) => {
     const f = bindFixture();
@@ -331,6 +492,624 @@ describe("bound Install status actions", () => {
     }
   });
 
+  it.each(["remove", "end", "download", "install"] as const)(
+    "refuses a displayed plan A %s when native now reads plan B",
+    async (action) => {
+      const f = bindFixture();
+      try {
+        f.installPlan.mockResolvedValue({
+          state: { ...f.state, current: { ...f.state.current!, planId: earlierOperationId } },
+        });
+        await expect(
+          performPanelAction(hostId, action, {
+            planId: plan.planId,
+            expectedRevision: f.state.current!.revision,
+            operationId: hostOperationId,
+          }),
+        ).rejects.toThrow("changed");
+        expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(["read"]);
+      } finally {
+        f.unbind();
+      }
+    },
+  );
+
+  it("keeps the original creator and handle across abandonment confirmation in the same plan", async () => {
+    const f = bindFixture();
+    const current = f.state.current!;
+    const device = current.devices[0]!;
+    const operation = device.operations[0]!;
+    const staged = {
+      ...running,
+      phase: "completed" as const,
+      staged: {
+        stagedHandle: "owned-first",
+        sourceSha: source,
+        sourceTree: target.sourceTree,
+        artifactId: 8,
+        createdByOperation: true as const,
+      },
+    };
+    const withStage = {
+      ...current,
+      devices: [
+        {
+          ...device,
+          operations: [{ ...operation, receipt: staged }],
+        },
+      ],
+    };
+    let state: JonesInstallPlanState = {
+      ...f.state,
+      current: withStage,
+      view: { complete: false, deviceRecovery: 1 },
+    };
+    f.installPlan.mockImplementation(async () => ({ state }));
+    const remote = vi.fn(f.services.operation);
+    const unbind = bindInstallPlanServices(
+      {
+        ...f.services,
+        operation: remote,
+        confirm: async () => {
+          state = {
+            ...state,
+            current: {
+              ...withStage,
+              revision: withStage.revision + 1,
+              devices: [
+                {
+                  ...device,
+                  addedAt: "2026-10-27T04:02:00Z",
+                  operations: [
+                    {
+                      ...operation,
+                      operationId: earlierOperationId,
+                      receipt: {
+                        ...staged,
+                        operationId: earlierOperationId,
+                        staged: { ...staged.staged, stagedHandle: "replacement" },
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          };
+          return true;
+        },
+      },
+      f.store,
+    );
+    try {
+      await expect(abandonDevice(deviceAbandonTarget(withStage, hostId, false)!)).rejects.toThrow(
+        "changed",
+      );
+      expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(["read", "read"]);
+      expect(remote).not.toHaveBeenCalled();
+    } finally {
+      unbind();
+      f.unbind();
+    }
+  });
+
+  it.each([
+    "lost release reply",
+    "unconfirmed fresh abandonment",
+    "unsupported release on resume",
+    "refused release on resume",
+  ] as const)("binds follower abandonment to exact release evidence after %s", async (scenario) => {
+    const f = bindFixture();
+    const current = f.state.current!;
+    const enrollmentId = earlierOperationId;
+    const directive = {
+      directiveId: hostOperationId,
+      environmentId: hostId,
+      enrollmentId,
+      repository: target.repository,
+      targetSource: source,
+      targetTree: target.sourceTree,
+      expectedDirectiveId: null,
+    } as const;
+    const resume = scenario !== "unconfirmed fresh abandonment";
+    const device = {
+      ...current.devices[0]!,
+      route: "follower-operations" as const,
+      enrollmentId,
+      ...(resume ? { abandoning: true as const } : {}),
+      operations: [
+        {
+          operationId: directive.directiveId,
+          step: "directive" as const,
+          request: { kind: "plan-directive" as const, input: directive },
+          lease: { claimant: "window:a", reservedAt: at, leaseUntil: grant.leaseUntil },
+          directive: {
+            kind: "applied" as const,
+            observedAt: at,
+            directive: {
+              directiveId: directive.directiveId,
+              targetSource: directive.targetSource,
+              targetTree: directive.targetTree,
+              mode: "manual-review" as const,
+              issuedAt: at,
+            },
+          },
+        },
+      ],
+    };
+    let retained: JonesInstallPlan = {
+      ...current,
+      revision: 7,
+      ...(resume ? { dismissedAt: at } : {}),
+      devices: [device],
+    };
+    const state = () => ({
+      ...native(resume ? null : retained, resume ? retained : null),
+      documentRevision: retained.revision,
+      view: { complete: false, recoveryHistory: 1 as const, deviceRecovery: 1 as const },
+    });
+    const observed = await f.services.observe(hostId);
+    let released = false;
+    const fleetStatus = () => ({
+      environmentId: hostId,
+      operationProtocol: 1 as const,
+      ...(scenario === "unsupported release on resume" ? {} : { releasePlanDirective: 1 as const }),
+      enrollment: {
+        environmentId: hostId,
+        enrollmentId,
+        enabled: true,
+        continueRunningThreads: false,
+      },
+      operation: null,
+      update: observed.observation.state,
+      ...(!released && scenario === "lost release reply"
+        ? { releasableDirectiveId: directive.directiveId }
+        : {}),
+    });
+    const observe = () => ({ ...observed, fleetStatus: fleetStatus() });
+    const host = vi.fn<InstallPlanServices["host"]>(async () => {
+      if (scenario === "refused release on resume") throw new Error("Release was refused.");
+      if (!released) {
+        released = true;
+        throw new Error("The release response was lost.");
+      }
+      return { ...fleetStatus(), releasedDirectiveId: directive.directiveId };
+    });
+    f.installPlan.mockImplementation(async (request) => {
+      if (request.type === "abandon-device" && request.phase === "finish") {
+        expect(request.directiveRelease?.releasedDirectiveId).toBe(directive.directiveId);
+        const { abandoning: _abandoning, ...member } = device;
+        retained = {
+          ...retained,
+          revision: 8,
+          devices: [{ ...member, membership: "removed" }],
+        };
+      }
+      return {
+        state: state(),
+        ...(request.type === "read-history" ? { historyPlan: retained } : {}),
+      };
+    });
+    const unbind = bindInstallPlanServices(
+      {
+        ...f.services,
+        devices: () => [observe()],
+        observe: async () => observe(),
+        confirm: async () => true,
+        host,
+      },
+      f.store,
+    );
+    f.store.update({ native: state() });
+    try {
+      const attempt = deviceAbandonTarget(retained, hostId, resume)!;
+      if (scenario !== "lost release reply") {
+        await expect(abandonDevice(attempt)).rejects.toThrow(
+          scenario === "refused release on resume"
+            ? "Release was refused."
+            : "cannot restore the original follower directive",
+        );
+        expect(retained.devices[0]?.abandoning).toBe(resume ? true : undefined);
+        expect(host).toHaveBeenCalledTimes(scenario === "refused release on resume" ? 1 : 0);
+        expect(
+          f.installPlan.mock.calls.every(([request]) => request.type !== "abandon-device"),
+        ).toBe(true);
+        return;
+      }
+      await expect(abandonDevice(attempt)).rejects.toThrow("release response was lost");
+      expect(retained.devices[0]?.abandoning).toBe(true);
+      await abandonDevice(attempt);
+      expect(host.mock.calls).toEqual([
+        [hostId, { action: "releaseDirective", input: directive }],
+        [hostId, { action: "releaseDirective", input: directive }],
+      ]);
+      expect(retained.devices[0]?.membership).toBe("removed");
+    } finally {
+      unbind();
+      f.unbind();
+    }
+  });
+
+  it("confirms closure of the exact plan even after another plan becomes Last update", async () => {
+    const f = bindFixture();
+    const first = {
+      ...f.state.current!,
+      revision: 2,
+      dismissedAt: at,
+      cancelled: true as const,
+      cancelledFromRevision: 1,
+    };
+    const second = { ...first, planId: earlierOperationId, revision: 1 };
+    const state = {
+      ...f.state,
+      current: null,
+      last: second,
+      documentRevision: 4,
+      view: { complete: false, recoveryHistory: 1 as const },
+    };
+    f.store.update({ native: state });
+    f.installPlan.mockImplementation(async (request) => ({
+      state,
+      ...(request.type === "read-history" && request.planId === first.planId
+        ? { historyPlan: first }
+        : {}),
+    }));
+    try {
+      await expect(
+        confirmClosedPlan(
+          installPlanServices()!,
+          first.planId,
+          (closed) => closed.cancelledFromRevision === 1,
+          { state },
+        ),
+      ).resolves.toEqual(first);
+      expect(f.installPlan).toHaveBeenCalledExactlyOnceWith({
+        type: "read-history",
+        planId: first.planId,
+      });
+      expect(f.store.get().native?.last?.planId).toBe(second.planId);
+    } finally {
+      f.unbind();
+    }
+  });
+
+  it.each([true, false])(
+    "validates the original archived Fence grant body (matching %s)",
+    async (matching) => {
+      const f = bindFixture();
+      const current = f.state.current!;
+      const device = current.devices[0]!;
+      const { receipt: _receipt, ...pending } = device.operations[0]!;
+      let closed: JonesInstallPlan = {
+        ...current,
+        revision: 7,
+        dismissedAt: at,
+        cancelled: true as const,
+        devices: [
+          { ...device, operations: [{ ...pending, lease: { ...pending.lease, leaseUntil: at } }] },
+        ],
+      };
+      const state = {
+        ...f.state,
+        current: { ...plan, planId: earlierOperationId },
+        last: closed,
+        documentRevision: 2,
+        view: { complete: false, recoveryHistory: 1 as const },
+      };
+      const accepted = { ...running, phase: "accepted" as const };
+      f.installPlan.mockImplementation(async (request) => {
+        if (request.type === "report") {
+          const recorded = closed.devices[0]!;
+          closed = {
+            ...closed,
+            revision: closed.revision + 1,
+            devices: [
+              { ...recorded, operations: [{ ...recorded.operations[0]!, receipt: accepted }] },
+            ],
+          };
+        }
+        return {
+          state: { ...state, last: closed },
+          ...(request.type === "read-history" ? { historyPlan: closed } : {}),
+          ...(request.type === "claim"
+            ? {
+                grant: {
+                  ...grant,
+                  step: "fence",
+                  request: {
+                    kind: "operation-fence",
+                    input: matching ? input : { ...input, expectedInstalledSource: "e".repeat(40) },
+                  },
+                },
+              }
+            : {}),
+        };
+      });
+      const operation = vi.fn(async () => accepted);
+      const unbind = bindInstallPlanServices({ ...f.services, operation }, f.store);
+      f.store.update({ native: state });
+      try {
+        const action = fencePanelOperation({
+          planId: closed.planId,
+          environmentId: hostId,
+          operationId: hostOperationId,
+          expectedRevision: closed.revision,
+          archived: true,
+        });
+        if (matching) {
+          await action;
+          expect(operation).toHaveBeenCalledExactlyOnceWith(hostId, {
+            action: "operationFence",
+            input,
+          });
+          expect(f.installPlan).toHaveBeenCalledWith({
+            type: "report",
+            planId: closed.planId,
+            environmentId: hostId,
+            operationId: hostOperationId,
+            evidence: { kind: "receipt", receipt: accepted },
+          });
+        } else {
+          await expect(action).rejects.toThrow("does not match the original operation");
+          expect(operation).not.toHaveBeenCalled();
+        }
+        expect(f.installPlan).toHaveBeenCalledWith({
+          type: "claim",
+          step: "fence",
+          explicit: true,
+          planId: closed.planId,
+          environmentId: hostId,
+          operationId: hostOperationId,
+          expectedRevision: 7,
+          claimant: expect.any(String),
+        });
+        expect(f.store.get().native?.current?.planId).toBe(earlierOperationId);
+      } finally {
+        unbind();
+        f.unbind();
+      }
+    },
+  );
+
+  it.each([
+    "supported",
+    "old host",
+    "failed fleet read",
+    "failed read after claim",
+    "mismatched proof",
+  ] as const)("qualifies an explicit archived setup fence with a %s", async (scenario) => {
+    const f = bindFixture();
+    const current = f.state.current!;
+    const enrollmentId = earlierOperationId;
+    const directive = {
+      directiveId: hostOperationId,
+      environmentId: hostId,
+      enrollmentId,
+      repository: target.repository,
+      targetSource: source,
+      targetTree: target.sourceTree,
+      expectedDirectiveId: null,
+    } as const;
+    const device = {
+      ...current.devices[0]!,
+      route: "follower-operations" as const,
+      enrollmentId,
+      operations: [
+        {
+          operationId: hostOperationId,
+          step: "directive" as const,
+          request: { kind: "plan-directive" as const, input: directive },
+          lease: { claimant: "forward-window", reservedAt: at, leaseUntil: grant.leaseUntil },
+        },
+      ],
+    };
+    let closed: JonesInstallPlan = { ...current, revision: 7, dismissedAt: at, devices: [device] };
+    const state = () => ({
+      ...native(null, closed),
+      documentRevision: closed.revision,
+      recoveryHistory: [
+        {
+          planId: closed.planId,
+          revision: closed.revision,
+          targetVersion: target.version,
+          closedAt: at,
+          pendingLaptop: false,
+          pendingDevices: [{ environmentId: hostId, label: device.label }],
+        },
+      ],
+      view: { complete: false, recoveryHistory: 1 as const, directiveFence: 1 as const },
+    });
+    const observed = await f.services.observe(hostId);
+    const fleetStatus = {
+      environmentId: hostId,
+      operationProtocol: 1 as const,
+      planDirectiveProtocol: 1 as const,
+      releasePlanDirective: 1 as const,
+      ...(scenario === "old host" ? {} : { fencePlanDirective: 1 as const }),
+      operation: null,
+      update: observed.observation.state,
+      enrollment: {
+        environmentId: hostId,
+        enrollmentId,
+        enabled: true,
+        continueRunningThreads: false,
+      },
+    };
+    const { fleetStatus: _previous, ...unknownFleet } = observed;
+    const observation: InstallStatusDevice =
+      scenario === "failed fleet read" ? unknownFleet : { ...unknownFleet, fleetStatus };
+    let latest = observation;
+    const host = vi.fn<InstallPlanServices["host"]>(async () => ({
+      ...fleetStatus,
+      directiveFence: {
+        protocol: 1,
+        outcome: "fenced",
+        input:
+          scenario === "mismatched proof"
+            ? { ...directive, expectedDirectiveId: localStopId }
+            : directive,
+      },
+    }));
+    f.installPlan.mockImplementation(async (request) => {
+      if (request.type === "claim") {
+        closed = { ...closed, revision: 8 };
+        if (scenario === "failed read after claim") latest = unknownFleet;
+        return {
+          state: state(),
+          grant: {
+            ...grant,
+            step: "fence",
+            request: { kind: "plan-directive-fence", input: directive, expectedRevision: 8 },
+          },
+        };
+      }
+      if (request.type === "report")
+        closed = {
+          ...closed,
+          revision: 9,
+          devices: [
+            {
+              ...device,
+              operations: [
+                { ...device.operations[0]!, directiveFence: { outcome: "fenced", observedAt: at } },
+              ],
+            },
+          ],
+        };
+      return {
+        state: state(),
+        ...(request.type === "read-history" ? { historyPlan: closed } : {}),
+      };
+    });
+    const unbind = bindInstallPlanServices(
+      {
+        ...f.services,
+        observe: async () => observation,
+        devices: () => [latest],
+        host,
+      },
+      f.store,
+    );
+    f.store.update({ native: state() });
+    try {
+      const perform = () =>
+        fencePanelOperation({
+          archived: true,
+          planId: closed.planId,
+          environmentId: hostId,
+          operationId: hostOperationId,
+          expectedRevision: 7,
+        });
+      if (scenario === "supported") {
+        await perform();
+        expect(host).toHaveBeenCalledExactlyOnceWith(hostId, {
+          action: "fenceDirective",
+          input: directive,
+        });
+        expect(f.installPlan).toHaveBeenCalledWith({
+          type: "report",
+          planId: closed.planId,
+          environmentId: hostId,
+          operationId: hostOperationId,
+          evidence: {
+            kind: "directive-fence",
+            expectedRevision: 8,
+            proof: { protocol: 1, input: directive, outcome: "fenced" },
+          },
+        });
+      } else if (scenario === "mismatched proof") {
+        await expect(perform()).rejects.toThrow("did not return an exact setup fence proof");
+        expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual([
+          "read-history",
+          "claim",
+        ]);
+      } else if (scenario === "failed read after claim") {
+        await expect(perform()).rejects.toThrow(
+          "Fresh authorized operation capability is required",
+        );
+        expect(host).not.toHaveBeenCalled();
+        expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual([
+          "read-history",
+          "claim",
+        ]);
+      } else {
+        await expect(perform()).rejects.toThrow("no longer eligible");
+        expect(host).not.toHaveBeenCalled();
+        expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(["read-history"]);
+      }
+    } finally {
+      unbind();
+      f.unbind();
+    }
+  });
+
+  it("reads and records an exact archived operation receipt after re-enrollment", async () => {
+    const f = bindFixture();
+    const current = f.state.current!;
+    const device = current.devices[0]!;
+    const receipt = { ...running, phase: "failed" as const };
+    const closed = {
+      ...current,
+      dismissedAt: at,
+      devices: [
+        {
+          ...device,
+          route: "follower-operations" as const,
+          enrollmentId: earlierOperationId,
+        },
+      ],
+    };
+    const observed = await f.services.observe(hostId);
+    const changed = {
+      ...observed,
+      fleetStatus: {
+        environmentId: hostId,
+        operationProtocol: 1 as const,
+        operation: null,
+        update: observed.observation.state,
+        enrollment: {
+          environmentId: hostId,
+          enrollmentId: localStopId,
+          enabled: true,
+          continueRunningThreads: false,
+        },
+      },
+    };
+    const operation = vi.fn<InstallPlanServices["operation"]>(async () => ({
+      receipts: [{ operationId: hostOperationId, receipt }],
+    }));
+    f.installPlan.mockResolvedValue({
+      state: native(null, closed),
+      historyPlan: {
+        ...closed,
+        devices: [{ ...closed.devices[0]!, operations: [{ ...device.operations[0]!, receipt }] }],
+      },
+    });
+    const unbind = bindInstallPlanServices(
+      { ...f.services, devices: () => [changed], operation },
+      f.store,
+    );
+    try {
+      await refreshDeviceEvidence(installPlanServices()!, hostId, closed, changed, {
+        archived: true,
+        refreshInstallOutcome: true,
+      });
+      expect(operation).toHaveBeenCalledExactlyOnceWith(hostId, {
+        action: "operationRead",
+        input: { environmentId: hostId, operationIds: [hostOperationId] },
+      });
+      expect(f.installPlan).toHaveBeenCalledWith({
+        type: "report",
+        planId: closed.planId,
+        environmentId: hostId,
+        operationId: hostOperationId,
+        evidence: { kind: "receipt", receipt },
+      });
+    } finally {
+      unbind();
+      f.unbind();
+    }
+  });
+
   it.each(["operationReceipts", "operations"] as const)(
     "%s supports exact readback with disabled updates and requires current scope for explicit refresh",
     async (receiptCapability) => {
@@ -378,14 +1157,13 @@ describe("bound Install status actions", () => {
       }));
       let canOperate = false;
       let liveObservation: InstallStatusDevice["observation"] = authorized.observation;
-      const binding = {
-        services: {
-          ...f.services,
-          devices: () => [{ ...authorized, observation: liveObservation, canOperate }],
-          operation,
-        },
-        store: f.store,
+      const evidenceServices = {
+        ...f.services,
+        devices: () => [{ ...authorized, observation: liveObservation, canOperate }],
+        operation,
       };
+      const unbindEvidence = bindInstallPlanServices(evidenceServices, f.store);
+      const binding = installPlanServices()!;
       const check = (observed: InstallStatusDevice, refreshInstallOutcome: boolean) =>
         refreshDeviceEvidence(binding, hostId, planWithInstall, observed, {
           refreshInstallOutcome,
@@ -417,6 +1195,7 @@ describe("bound Install status actions", () => {
         });
         const directlyRead = {
           ...authorized,
+          directStatus: true as const,
           observation: { ...authorized.observation, heardAt: 20 },
         };
         liveObservation = { freshness: "stale", state: status, heardAt: 10 };
@@ -438,6 +1217,17 @@ describe("bound Install status actions", () => {
         });
         expect(limited).toContain("Checking its launcher requires fresh status and permission.");
 
+        liveObservation = {
+          freshness: "fresh",
+          heardAt: 20,
+          state: { ...status, capability: { check: true, download: false, install: false } },
+        };
+        await check(directlyRead, true);
+        expect(operation).toHaveBeenLastCalledWith(hostId, {
+          action: "operationRead",
+          input: exactRead,
+        });
+
         liveObservation = { freshness: "unsupported", state: null, heardAt: 10, unsupportedAt: 21 };
         await check(directlyRead, true);
         expect(operation).toHaveBeenLastCalledWith(hostId, {
@@ -453,7 +1243,7 @@ describe("bound Install status actions", () => {
           },
           true,
         );
-        expect(operation).toHaveBeenCalledTimes(6);
+        expect(operation).toHaveBeenCalledTimes(7);
 
         liveObservation = { freshness: "stale", state: status, heardAt: 10 };
         const unbind = bindInstallPlanServices(
@@ -469,7 +1259,7 @@ describe("bound Install status actions", () => {
           f.installPlan.mockResolvedValueOnce({
             state: { ...state, readOnly: { code: "invalid", message: "The plan is read-only." } },
           });
-          await performPanelAction(hostId, "check", plan.planId);
+          await performPanelAction(hostId, "check", { planId: plan.planId });
           expect(operation).toHaveBeenLastCalledWith(hostId, {
             action: "operationRead",
             input: exactRead,
@@ -480,7 +1270,7 @@ describe("bound Install status actions", () => {
             state,
             refused: { code: "storage", message: "The plan read was refused." },
           });
-          await performPanelAction(hostId, "check", plan.planId);
+          await performPanelAction(hostId, "check", { planId: plan.planId });
           expect(operation).toHaveBeenLastCalledWith(hostId, {
             action: "operationRead",
             input: exactRead,
@@ -491,6 +1281,7 @@ describe("bound Install status actions", () => {
         }
         expect(f.stop).not.toHaveBeenCalled();
       } finally {
+        unbindEvidence();
         f.unbind();
       }
     },
@@ -678,7 +1469,7 @@ describe("install entrypoint routing", () => {
     vi.stubGlobal("window", { desktopBridge: services.bridge });
     const unbind = bindInstallPlanServices(services, createInstallStatusStore());
     try {
-      expect(await legacyConnectionsGate(source)).toBeNull();
+      expect(await legacyConnectionsGate(source, environmentId)).toBeNull();
       const valid = state;
       const { ordinaryRecovery: _gateProof, ...unprovedGate } = gate;
       for (const ordinary of [
@@ -696,11 +1487,37 @@ describe("install entrypoint routing", () => {
             },
           },
         };
-        expect(await legacyConnectionsGate(source)).not.toBeNull();
+        expect(await legacyConnectionsGate(source, environmentId)).not.toBeNull();
       }
       const { ordinaryRecovery: _liveProof, ...unproved } = valid.laptop;
       state = { ...valid, laptop: unproved };
-      expect(await legacyConnectionsGate(source)).not.toBeNull();
+      expect(await legacyConnectionsGate(source, environmentId)).not.toBeNull();
+      const peer = EnvironmentId.make("retained-peer");
+      state = {
+        ...valid,
+        documentRevision: 4,
+        view: { complete: false, recoveryHistory: 1 },
+        recoveryHistory: [
+          {
+            planId: "22222222-2222-4222-8222-222222222222",
+            revision: 3,
+            targetVersion: "earlier build",
+            closedAt: plan.createdAt,
+            pendingLaptop: false,
+            pendingDevices: [{ environmentId: peer, label: "Peer" }],
+          },
+        ],
+      };
+      expect(await legacyConnectionsGate(source, peer)).toContain("outstanding work");
+      expect(await legacyConnectionsGate(source, environmentId)).toBeNull();
+      state = { ...state, readOnly: { code: "invalid", message: "Native plan is read-only." } };
+      expect(await legacyConnectionsGate(source, environmentId)).toBe("Native plan is read-only.");
+      state = { ...valid, documentRevision: 5 };
+      installPlan.mockResolvedValueOnce({
+        state,
+        refused: { code: "storage", message: "Native plan read refused." },
+      });
+      expect(await legacyConnectionsGate(source, environmentId)).toBe("Native plan read refused.");
     } finally {
       unbind();
       vi.unstubAllGlobals();
@@ -854,12 +1671,12 @@ describe("install entrypoint routing", () => {
         expect(services.chooseRecovery).toHaveBeenCalledExactlyOnceWith(measured);
         expect(requests.map((request) => request.type)).toEqual(
           policy === null
-            ? ["read", "recovery-preflight"]
-            : ["read", "recovery-preflight", "read", "start"],
+            ? ["read", "read", "recovery-preflight"]
+            : ["read", "read", "recovery-preflight", "read", "start"],
         );
-        expect(requests[1]).toEqual({ type: "recovery-preflight", input: measured.binding });
+        expect(requests[2]).toEqual({ type: "recovery-preflight", input: measured.binding });
         if (policy !== null)
-          expect(requests[3]).toMatchObject({
+          expect(requests[4]).toMatchObject({
             type: "start",
             laptop: {
               action: "install",

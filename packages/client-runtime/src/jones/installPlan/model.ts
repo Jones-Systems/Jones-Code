@@ -3,6 +3,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesInstallPlan,
   JonesInstallPlanDevice,
+  JonesInstallPlanCommandReceipt,
   JonesInstallPlanHostOperation,
   JonesInstallPlanOrigin,
   JonesInstallPlanSelection,
@@ -17,6 +18,7 @@ import type {
 } from "@t3tools/contracts/jones/jonesOperations";
 import type {
   FleetHostStatus,
+  FleetPlanDirectiveFenceEvidence,
   FleetPlanDirectiveInput,
 } from "@t3tools/contracts/jones/fleet-updates";
 import * as Schema from "effect/Schema";
@@ -167,12 +169,74 @@ export function validateDirectiveEvidence(
     status.environmentId === input.environmentId &&
     status.planDirectiveProtocol === 1 &&
     status.enrollment?.enabled === true &&
+    status.enrollment.environmentId === input.environmentId &&
     status.enrollment.enrollmentId === input.enrollmentId &&
     directive?.directiveId === input.directiveId &&
     directive.targetSource === input.targetSource &&
     directive.targetTree === input.targetTree &&
     directive.mode === "manual-review"
   );
+}
+
+export function validateDirectiveFenceEvidence(
+  input: FleetPlanDirectiveInput,
+  proof: FleetPlanDirectiveFenceEvidence,
+): boolean {
+  return (
+    proof.protocol === 1 &&
+    sameDirectiveBinding(input, proof.input) &&
+    (proof.outcome !== "applied" ||
+      (proof.directive.directiveId === input.directiveId &&
+        proof.directive.targetSource === input.targetSource &&
+        proof.directive.targetTree === input.targetTree &&
+        proof.directive.mode === "manual-review" &&
+        Number.isFinite(Date.parse(proof.directive.issuedAt))))
+  );
+}
+
+export function sameDirectiveBinding(
+  left: FleetPlanDirectiveInput,
+  right: FleetPlanDirectiveInput,
+) {
+  return equal(left, right);
+}
+
+export function exactOperationRequest(
+  planId: string,
+  environmentId: EnvironmentId,
+  operation: Pick<JonesInstallPlanHostOperation, "operationId" | "request">,
+) {
+  const input = operation.request.kind === "operation-start" ? operation.request.input : undefined;
+  return input?.environmentId === environmentId &&
+    input.operationId === operation.operationId &&
+    input.correlation?.planId === planId &&
+    input.correlation.deviceKey === environmentId
+    ? input
+    : undefined;
+}
+
+export function sameOperationBinding(
+  left: JonesOperationStartInput,
+  right: JonesOperationStartInput,
+) {
+  return equal(left, right);
+}
+
+/** The V1 replay record can identify a remote receipt, but cannot recreate a dispatch body. */
+export function orphanReceiptCheck(receipt: JonesInstallPlanCommandReceipt) {
+  const { command, planId, operationId, bodyHash } = receipt;
+  if (
+    receipt.outcome !== "reserved" ||
+    receipt.requestType !== "claim" ||
+    planId === undefined ||
+    command.planId !== planId ||
+    !Number.isSafeInteger(command.expectedRevision) ||
+    operationId === undefined ||
+    bodyHash === undefined ||
+    (command.action === "install") !== (command.stagedHandle !== undefined)
+  )
+    return undefined;
+  return { command, planId, operationId, bodyHash };
 }
 
 /** A fresh host status still shows the predecessor required by this exact request. */
@@ -201,6 +265,38 @@ export type InstallPlanSelectability =
 
 export function supportsInstallPlanMutations(capability: JonesUpdateState["capability"]): boolean {
   return capability.operations === 1 && capability.download && capability.install;
+}
+
+export type PlanEnrollmentMatch = "match" | "unknown" | "changed";
+
+/** A missing fleet read is unknown. A null fleet status is evidence for the ordinary route. */
+export function matchPlanEnrollment(
+  device: Pick<JonesInstallPlanDevice, "environmentId" | "route" | "enrollmentId">,
+  state: JonesUpdateState | null,
+  fleetStatus: FleetHostStatus | null | undefined,
+): PlanEnrollmentMatch {
+  const { environmentId, route, enrollmentId } = device;
+  const enrollment = fleetStatus?.enrollment;
+  const fleetUpdateId = fleetStatus?.update?.environmentId;
+  if (
+    (state?.environmentId !== undefined && state.environmentId !== environmentId) ||
+    (fleetStatus != null && fleetStatus.environmentId !== environmentId) ||
+    (fleetUpdateId !== undefined && fleetUpdateId !== environmentId) ||
+    (enrollment != null && enrollment.environmentId !== environmentId) ||
+    (route === "operations" &&
+      (enrollmentId !== undefined ||
+        state?.policy !== undefined ||
+        fleetStatus?.update?.policy !== undefined))
+  )
+    return "changed";
+  if (fleetStatus === undefined) return "unknown";
+  if (
+    route === "operations"
+      ? enrollment?.enabled === true
+      : enrollment?.enabled !== true || enrollment.enrollmentId !== enrollmentId
+  )
+    return "changed";
+  return state?.environmentId === environmentId ? "match" : "unknown";
 }
 
 export function selectability(
@@ -394,24 +490,39 @@ export function hasUnconfirmedLauncherOutcome(receipt: JonesOperationReceipt | u
   return receipt?.code === "launcher-unconfirmed" || receipt?.code === "launcher-unreadable";
 }
 
-function outstanding(operation: JonesInstallPlanHostOperation): boolean {
-  if (hasUnconfirmedLauncherOutcome(operation.receipt)) return true;
-  return operation.step === "directive"
-    ? operation.directive === undefined
-    : operation.receipt === undefined || !terminal.has(operation.receipt.phase);
+export function isSettledOperationReceipt(receipt: JonesOperationReceipt): boolean {
+  return terminal.has(receipt.phase) && !hasUnconfirmedLauncherOutcome(receipt);
 }
 
-export function laptopSettled(plan: JonesInstallPlan): boolean {
-  if (
-    plan.laptop.gatePause === true ||
+function outstanding(operation: JonesInstallPlanHostOperation): boolean {
+  return operation.step === "directive"
+    ? operation.directive === undefined && operation.directiveFence === undefined
+    : operation.receipt === undefined || !isSettledOperationReceipt(operation.receipt);
+}
+
+/** Recovery follows all retained work, even after visual completion or a membership change. */
+export function deviceHasRecoveryDuty(device: JonesInstallPlanDevice): boolean {
+  // Stop and fence can affect only their original operation. Its exact terminal receipt
+  // releases that hold once there is no unconfirmed launcher outcome.
+  return device.abandoning === true || device.operations.some(outstanding);
+}
+
+/** A paused rollout gate alone does not indicate outstanding native work. */
+export function planHasLaptopRecoveryDuty(plan: JonesInstallPlan): boolean {
+  return (
     (plan.laptop.stageAbandonment !== undefined &&
       plan.laptop.stageAbandonment.status !== "retired") ||
     plan.laptop.operations.some(
       (o) =>
-        o.result === undefined || ["running", "stop-requested", "held"].includes(o.result.status),
+        o.result === undefined ||
+        o.result.code === "native-unconfirmed" ||
+        ["running", "stop-requested", "held"].includes(o.result.status),
     )
-  )
-    return false;
+  );
+}
+
+export function laptopSettled(plan: JonesInstallPlan): boolean {
+  if (plan.laptop.gatePause === true || planHasLaptopRecoveryDuty(plan)) return false;
   if (plan.laptop.gate !== undefined && plan.laptop.gateClosed === undefined) return true;
   const latest = plan.laptop.operations.at(-1);
   return (
@@ -444,7 +555,8 @@ export type InstallPlanDeviceState =
   | "unknown"
   | "fenced";
 
-export function deviceState(
+/** The attempt's ledger state, independently of recorded proof of a running build. */
+export function deviceLedgerState(
   plan: JonesInstallPlan,
   device: JonesInstallPlanDevice,
   now: number = Number.POSITIVE_INFINITY,
@@ -452,12 +564,11 @@ export function deviceState(
   if (device.membership === "removed") return "removed";
   const operations = deviceActiveOperations(device);
   const pending = operations.find(outstanding);
-  if (device.verifiedElsewhere !== undefined && canRecordRunningTarget(device))
-    return "updated-elsewhere";
   const latest = pending ?? operations.at(-1);
   if (latest !== undefined) {
     if (latest.step === "directive") {
-      if (latest.directive?.kind === "refused") return "not-updated";
+      if (latest.directive?.kind === "refused" || latest.directiveFence !== undefined)
+        return "not-updated";
       if (latest.directive === undefined)
         return Date.parse(latest.lease.leaseUntil) > now ? "directive" : "unknown";
     } else {
@@ -490,6 +601,20 @@ export function deviceState(
     (plan.laptop.gate === undefined || plan.laptop.gateClosed !== undefined)
     ? "not-started"
     : "queued";
+}
+
+export function deviceState(
+  plan: JonesInstallPlan,
+  device: JonesInstallPlanDevice,
+  now: number = Number.POSITIVE_INFINITY,
+): InstallPlanDeviceState {
+  const ledger = deviceLedgerState(plan, device, now);
+  return ledger !== "rolled-back" &&
+    device.membership === "selected" &&
+    device.verifiedElsewhere !== undefined &&
+    canRecordRunningTarget(device)
+    ? "updated-elsewhere"
+    : ledger;
 }
 
 /**
@@ -655,14 +780,25 @@ export function nextRunnerStep(
     return wait("Fresh matching update status is required.");
   const capability = state.capability;
   const mutationsSupported = supportsInstallPlanMutations(capability);
+  const enrollment = matchPlanEnrollment(device, state, fleetStatus);
   const operations = deviceActiveOperations(device);
   const pending = operations.find(outstanding);
-  if (
-    pending?.request.kind === "operation-start" &&
-    supportsOperationReceiptReads(capability) &&
-    (pending.receipt !== undefined || !mutationsSupported)
-  )
-    return { kind: "read", operation: pending };
+  if (pending?.request.kind === "operation-start") {
+    const leaseUntil = Date.parse(pending.lease.leaseUntil);
+    if (
+      pending.receipt !== undefined ||
+      !mutationsSupported ||
+      !Number.isFinite(leaseUntil) ||
+      enrollment === "changed" ||
+      (enrollment === "unknown" && leaseUntil > now)
+    )
+      return supportsOperationReceiptReads(capability)
+        ? { kind: "read", operation: pending }
+        : wait("Fresh receipt capability is required.");
+    return leaseUntil > now
+      ? { kind: "reservation", operation: pending }
+      : { kind: "claim-fence", operationId: pending.operationId };
+  }
   if (
     pending?.step === "directive" &&
     pending.request.kind === "plan-directive" &&
@@ -676,12 +812,12 @@ export function nextRunnerStep(
   if (!mutationsSupported) return wait("Fresh download and install capability is required.");
   if (pending !== undefined) {
     if (pending.step === "directive") {
-      // A directive has no operation ledger fence. Its reservation can only be replayed by ID.
-      return { kind: "reservation", operation: pending };
+      // Only an explicit recovery action on a closed plan can fence follower setup.
+      return enrollment === "match"
+        ? { kind: "reservation", operation: pending }
+        : wait("The selected host route could not be confirmed.");
     }
-    return Date.parse(pending.lease.leaseUntil) > now
-      ? { kind: "reservation", operation: pending }
-      : { kind: "claim-fence", operationId: pending.operationId };
+    return wait("The exact pending request could not be identified.");
   }
   if (plan.laptop.gate === undefined || plan.laptop.gateClosed !== undefined)
     return wait("Waits for Laptop.");
@@ -690,11 +826,7 @@ export function nextRunnerStep(
   if (matchesPlanTarget(plan, device, state))
     return wait("The selected source is already running.");
   const selectable = selectability(observation, fleetStatus);
-  if (
-    !selectable.selectable ||
-    selectable.route !== device.route ||
-    selectable.enrollmentId !== device.enrollmentId
-  )
+  if (!selectable.selectable || enrollment !== "match" || selectable.route !== device.route)
     return wait(selectable.selectable ? "The selected host route changed." : selectable.reason);
   const lastDownload = operations.findLast((o) => o.step === "download");
   if (lastDownload !== undefined && lastDownload.receipt?.phase !== "fenced")

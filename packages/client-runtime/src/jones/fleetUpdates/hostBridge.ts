@@ -24,6 +24,7 @@ export type FleetHostRequest =
   | { readonly action: "activate"; readonly input: FleetActivateInput }
   | { readonly action: "leader"; readonly input: FleetLeaderInput }
   | { readonly action: "releaseDirective"; readonly input: FleetReleasePlanDirectiveInput }
+  | { readonly action: "fenceDirective"; readonly input: FleetPlanDirectiveInput }
   | { readonly action: "planDirective"; readonly input: FleetPlanDirectiveInput };
 
 /** Uses the narrow authenticated update transport even when orchestration is incompatible. */
@@ -85,6 +86,8 @@ export const requestFleetHost = Effect.fn("clientRuntime.fleetUpdates.requestFle
           return client.leader({ headers, payload: input.input });
         case "releaseDirective":
           return client.releaseDirective({ headers, payload: input.input });
+        case "fenceDirective":
+          return client.fenceDirective({ headers, payload: input.input });
         case "planDirective":
           return client.planDirective({ headers, payload: input.input });
       }

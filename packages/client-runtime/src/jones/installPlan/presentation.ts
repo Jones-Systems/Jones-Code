@@ -1,6 +1,7 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesInstallPlan,
+  JonesInstallPlanDevice,
   JonesInstallPlanLaptop,
   JonesInstallPlanLaptopEvidence,
   JonesInstallPlanState,
@@ -10,10 +11,13 @@ import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import type { JonesUpdateObservation } from "../updates/jonesUpdates.ts";
 import { jonesTargetStatus } from "../updates/targetStatus.ts";
 import {
+  deviceHasRecoveryDuty,
+  deviceLedgerState,
   deviceSettled,
-  deviceState,
   matchesPlanTarget,
+  nextRunnerStep,
   planCompletion,
+  planHasLaptopRecoveryDuty,
   deviceStateWithRunningTarget,
   deviceActiveOperations,
   deviceStagedReceipt,
@@ -126,6 +130,21 @@ function activeWork(phase: string, progress: InstallProgressView | undefined): A
   return undefined;
 }
 
+function queuedDeviceReason(
+  plan: JonesInstallPlan,
+  device: JonesInstallPlanDevice,
+  observed: InstallPlanDeviceObservation | undefined,
+  now: number,
+): string | undefined {
+  if (observed === undefined) return "Waiting for fresh device status.";
+  const step = nextRunnerStep(plan, device, observed.observation, observed.fleetStatus, now);
+  if (step.kind === "wait") return step.reason;
+  if (!observed.canOperate) return "Update permission is unavailable for this device.";
+  if (step.kind === "claim-directive") return "Queued for update setup";
+  if (step.kind === "claim-download") return "Queued for download";
+  return undefined;
+}
+
 export function installPlanPresentation(
   state: JonesInstallPlanState,
   options: {
@@ -149,6 +168,8 @@ export function installPlanPresentation(
       gateText: "Others wait until Laptop is updated and verified.",
       summary: "No update plan",
     };
+  const closed = plan.dismissedAt !== undefined || plan.supersededAt !== undefined;
+  const nativeGate = plan.laptop.gate !== undefined && plan.laptop.gateClosed === undefined;
   const rows = plan.devices.map((device) => {
     const observed = options.devices?.get(device.environmentId);
     const status =
@@ -159,7 +180,6 @@ export function installPlanPresentation(
             targetSource: plan.target.sourceSha,
             planId: plan.planId,
           });
-    const nativeGate = plan.laptop.gate !== undefined && plan.laptop.gateClosed === undefined;
     const canRecover =
       !readOnly &&
       device.membership === "selected" &&
@@ -170,6 +190,7 @@ export function installPlanPresentation(
     const mutable = canRecover && nativeGate;
     const operations = deviceActiveOperations(device);
     const latest = operations.find(operationOutstanding) ?? operations.at(-1);
+    const setupUnconfirmed = latest?.step === "directive" && operationOutstanding(latest);
     const lastDownload = operations.findLast((o) => o.step === "download");
     const receipt = latest?.receipt;
     const ownedStage = deviceStagedReceipt(operations)?.staged;
@@ -194,7 +215,9 @@ export function installPlanPresentation(
         receipt.outcome?.status === "committed",
     );
     const reportedProgress = rowProgress(observed?.observation, latest?.operationId, planless);
-    const installSettled = latest?.step === "install" && !operationOutstanding(latest);
+    const pendingAttempt = latest !== undefined && operationOutstanding(latest);
+    const installSettled = latest?.step === "install" && !pendingAttempt;
+    const launcherRejected = receipt?.code === "launcher-rejected";
     const launcherOutcomeUnconfirmed =
       latest?.step === "install" &&
       !installSettled &&
@@ -203,35 +226,45 @@ export function installPlanPresentation(
         reportedProgress?.phase === "done");
     const explicitInstallOutcome =
       installSettled &&
-      (receipt?.outcome !== undefined ||
-        receipt?.phase === "blocked" ||
-        receipt?.code === "launcher-rejected");
+      (receipt?.outcome !== undefined || receipt?.phase === "blocked" || launcherRejected);
     const progress = installSettled
       ? settledInstallProgress(reportedProgress, receipt?.phase === "completed")
-      : launcherOutcomeUnconfirmed && !reportedProgress?.outcomeUnconfirmed
+      : (launcherOutcomeUnconfirmed && !reportedProgress?.outcomeUnconfirmed) ||
+          (receipt !== undefined && !pendingAttempt && reportedProgress?.active)
         ? undefined
         : reportedProgress;
     const matchesTarget = matchesPlanTarget(plan, device, hostState);
     const runningTarget = observed?.observation.freshness === "fresh" && matchesTarget;
     const targetBuildRunning = !confirmedInstall && runningTarget;
-    const ledgerPhase = deviceState(plan, device, options.now);
+    const ledgerPhase = deviceLedgerState(plan, device, options.now);
     const phase = deviceStateWithRunningTarget(plan, device, runningTarget, options.now);
-    const supersedable =
-      deviceStateWithRunningTarget(plan, device, true, options.now) !== ledgerPhase;
+    const independentRunningTarget = phase === "updated-elsewhere" && phase !== ledgerPhase;
+    const queueReason =
+      !closed && nativeGate && (phase === "queued" || phase === "fenced")
+        ? readOnly
+          ? "Scheduling unavailable"
+          : queuedDeviceReason(plan, device, observed, options.now)
+        : undefined;
     const heardAt = observed?.observation.heardAt;
     const cachedTarget =
       observed?.observation.freshness !== "fresh" &&
       matchesTarget &&
       heardAt !== undefined &&
       Number.isFinite(heardAt);
+    const cachedAt = cachedTarget
+      ? heardAt
+      : ledgerPhase === "rolled-back"
+        ? device.verifiedElsewhere?.observedAt
+        : undefined;
     const sourceText = runningTarget
       ? launcherOutcomeUnconfirmed
         ? "Running the selected source"
         : "Updated · running the selected source"
-      : cachedTarget
-        ? `Last confirmed running the selected source · ${relativeAge(heardAt!, options.now)}`
+      : cachedAt !== undefined
+        ? `Last confirmed running the selected source · ${relativeAge(cachedAt, options.now)}`
         : undefined;
-    const sourceHeadline = supersedable && sourceText !== undefined;
+    const sourceHeadline =
+      runningTarget && independentRunningTarget && ledgerPhase !== "rolled-back";
     const matchingRetryStage =
       lastDownload?.receipt?.phase === "completed" &&
       stage !== undefined &&
@@ -241,6 +274,16 @@ export function installPlanPresentation(
       hostState.provenance?.sourceSha === stage.sourceSha &&
       hostState.provenance.sourceTree === stage.sourceTree;
     let text = copy[ledgerPhase];
+    if (ledgerPhase === "queued") {
+      if (closed)
+        text =
+          appliedDirective === undefined
+            ? "Not started · scheduling closed"
+            : "Setup confirmed · download not started";
+      else if (queueReason !== undefined) text = queueReason;
+    }
+    if (closed && ledgerPhase === "fenced") text = "Original request fenced";
+    if (closed && ledgerPhase === "staged") text = "Downloaded · staged files kept";
     if (ledgerPhase === "removed" && device.operations.length > 0)
       text =
         device.stageReplacement === undefined
@@ -248,8 +291,11 @@ export function installPlanPresentation(
           : "Removed · replacement kept";
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";
-    if (phase === "directive") text = `Getting ${device.label} ready…`;
-    if (phase === "unknown" && latest?.step === "directive") text = "Update setup unconfirmed";
+    if (setupUnconfirmed)
+      text =
+        closed || ledgerPhase === "unknown"
+          ? "Update setup unconfirmed"
+          : `Getting ${device.label} ready…`;
     if (ledgerPhase === "ended")
       text =
         lastDownload?.receipt?.staged !== undefined &&
@@ -269,18 +315,28 @@ export function installPlanPresentation(
       observed?.observation.freshness === "fresh" &&
       hostState?.stagedAlreadyRunning === true;
     if (alreadyRunning) text = ALREADY_RUNNING_TEXT;
+    if (launcherRejected) text = "Install request did not start";
+    else if (latest?.step === "install" && ["failed", "interrupted"].includes(receipt?.phase ?? ""))
+      text = "Install didn't finish";
     const attemptText =
-      device.verifiedElsewhere !== undefined && launcherOutcomeUnconfirmed
+      independentRunningTarget && launcherOutcomeUnconfirmed
         ? "This plan’s launcher outcome remains unconfirmed."
-        : sourceHeadline
-          ? `This plan's attempt: ${text}${latest?.receipt?.code !== undefined && !text.endsWith(latest.receipt.code) ? ` · ${latest.receipt.code}` : ""}`
+        : independentRunningTarget && ledgerPhase !== "rolled-back" && latest !== undefined
+          ? `This plan's attempt: ${text}${receipt?.code !== undefined && !text.endsWith(receipt.code) ? ` · ${receipt.code}` : ""}`
           : undefined;
-    if (progress?.text !== undefined && !explicitInstallOutcome && !LEDGER_TEXT_WINS.has(phase))
+    if (
+      progress?.text !== undefined &&
+      !explicitInstallOutcome &&
+      !launcherRejected &&
+      !LEDGER_TEXT_WINS.has(phase) &&
+      (receipt === undefined || pendingAttempt || observed?.observation.freshness === "fresh")
+    )
       text = progress.text;
     if (launcherOutcomeUnconfirmed && phase !== "updated-elsewhere")
       text = progress?.text ?? "Install outcome unconfirmed";
-    if (receipt?.code === "launcher-rejected") text = "Install request did not start";
-    if (sourceHeadline) text = sourceText!;
+    if (sourceHeadline && sourceText !== undefined) text = sourceText;
+    else if (independentRunningTarget && ledgerPhase !== "rolled-back")
+      text = "Verified running the selected source";
     return {
       attemptText,
       sourceText: sourceHeadline ? undefined : sourceText,
@@ -289,6 +345,9 @@ export function installPlanPresentation(
       phase,
       copyKey: `device.${phase}`,
       text,
+      queueReason,
+      setupUnconfirmed,
+      hasRecoveryDuty: deviceHasRecoveryDuty(device),
       targetBuildRunning,
       launcherOutcomeUnconfirmed,
       downloadLabel: retryDownload ? "Retry download" : `Download on ${device.label}`,
@@ -509,6 +568,7 @@ export function installPlanPresentation(
           : laptopText,
       gateIssue,
       reopenToCheckInstall,
+      hasRecoveryDuty: planHasLaptopRecoveryDuty(plan),
       downloadLabel: retryLaptopDownload ? "Retry download" : "Download on Laptop",
       actions: laptopActions,
       ...(laptopProgress === undefined ? {} : { progress: laptopProgress }),

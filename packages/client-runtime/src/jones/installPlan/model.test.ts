@@ -8,16 +8,20 @@ import type {
 } from "@t3tools/contracts/jones/installPlan";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
+import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import {
   applyEdit,
   canSupersede,
+  deviceHasRecoveryDuty,
   deviceSettled,
   deviceStagedReceipt,
   deviceState,
   isPlanComplete,
   laptopSettled,
+  matchPlanEnrollment,
   nextRunnerStep,
   planCompletion,
+  planHasLaptopRecoveryDuty,
   selectability,
   startPlan,
   validateDirectiveEvidence,
@@ -96,6 +100,54 @@ const state: JonesUpdateState = {
 };
 
 describe("install plan model", () => {
+  it("requires matching ordinary and fleet identities and distinguishes null from a failed read", () => {
+    const enrollment = {
+      environmentId: env,
+      enrollmentId: id,
+      enabled: true,
+      continueRunningThreads: false,
+    };
+    const fleet = {
+      environmentId: env,
+      operationProtocol: 1,
+      enrollment,
+      operation: null,
+      update: state,
+    } satisfies FleetHostStatus;
+    const follower = { ...selection, route: "follower-operations" as const, enrollmentId: id };
+    expect(matchPlanEnrollment(selection, state, null)).toBe("match");
+    expect(matchPlanEnrollment(selection, state, undefined)).toBe("unknown");
+    expect(matchPlanEnrollment(selection, state, fleet)).toBe("changed");
+    expect(
+      matchPlanEnrollment(selection, state, {
+        ...fleet,
+        enrollment: { ...enrollment, enabled: false },
+      }),
+    ).toBe("match");
+    expect(
+      matchPlanEnrollment(
+        selection,
+        { ...state, policy: { role: "follower", leaderSource: null } },
+        null,
+      ),
+    ).toBe("changed");
+    expect(matchPlanEnrollment(follower, state, fleet)).toBe("match");
+    expect(matchPlanEnrollment(follower, state, undefined)).toBe("unknown");
+    expect(matchPlanEnrollment(follower, state, null)).toBe("changed");
+    for (const contradictory of [
+      { ...fleet, environmentId: laptop },
+      { ...fleet, update: { ...state, environmentId: laptop } },
+      { ...fleet, enrollment: { ...enrollment, environmentId: laptop } },
+      { ...fleet, enrollment: { ...enrollment, enrollmentId: operationId } },
+    ]) {
+      expect(matchPlanEnrollment(follower, state, contradictory)).toBe("changed");
+    }
+    expect(matchPlanEnrollment(follower, { ...state, environmentId: laptop }, fleet)).toBe(
+      "changed",
+    );
+    expect(matchPlanEnrollment(follower, null, fleet)).toBe("unknown");
+  });
+
   it("does not recover an earlier stage after retiring the replacement", () => {
     const first = { ...operation(), receipt: receipt("completed") };
     const replacement = {
@@ -140,6 +192,178 @@ describe("install plan model", () => {
         true,
       ).completable,
     ).toBe(true);
+  });
+
+  it("retains recovery for every potentially effective operation, independent of visible completion", () => {
+    const plan = opened();
+    const device = plan.devices[0]!;
+    const download = operation();
+    const staged = {
+      ...download,
+      receipt: {
+        ...receipt("completed"),
+        staged: {
+          stagedHandle: "stage",
+          sourceSha: source,
+          sourceTree: tree,
+          artifactId: 1,
+          createdByOperation: true as const,
+        },
+      },
+    };
+    const installId = "33333333-3333-4333-8333-333333333333";
+    if (download.request.kind !== "operation-start") throw new Error("fixture");
+    const installInput = {
+      ...download.request.input,
+      operationId: installId,
+      action: {
+        kind: "install" as const,
+        stagedHandle: "stage",
+        currentVersion: "old",
+        targetSource: source,
+      },
+    };
+    const install: JonesInstallPlanHostOperation = {
+      ...download,
+      operationId: installId,
+      step: "install",
+      request: { kind: "operation-start", input: installInput },
+      receipt: {
+        ...installInput,
+        protocol: 1,
+        phase: "running",
+        acceptedAt: now,
+        updatedAt: now,
+        code: "launcher-unconfirmed",
+      },
+    };
+    const verified = {
+      ...device,
+      verifiedElsewhere: { version: plan.target.version, observedAt: Date.parse(now) },
+      operations: [staged, install],
+    };
+    expect(deviceState(plan, verified)).toBe("updated-elsewhere");
+    expect(isPlanComplete({ ...plan, devices: [verified] })).toBe(true);
+    expect(deviceHasRecoveryDuty(verified)).toBe(true);
+    expect(deviceHasRecoveryDuty({ ...verified, archivedOperationCount: 2 })).toBe(true);
+    expect(deviceHasRecoveryDuty({ ...verified, operations: [staged] })).toBe(false);
+
+    const fence = { lease: download.lease };
+    const stop = { stopId: installId, lease: download.lease };
+    const stopped = {
+      ...receipt("stopped"),
+      stop: { stopId: installId, requestedAt: now, result: "stopped" as const },
+    };
+    const { acceptedAt: _unaccepted, ...fenced } = receipt("fenced");
+    for (const [operation, pending] of [
+      [download, true],
+      [{ ...download, fence }, true],
+      [{ ...download, fence, receipt: fenced }, false],
+      [{ ...download, stop, receipt: receipt("stop-requested") }, true],
+      [{ ...download, stop, receipt: stopped }, false],
+      [
+        {
+          ...download,
+          receipt: { ...receipt("held"), jobId: installId, code: "cleanup-unconfirmed" },
+        },
+        true,
+      ],
+      [
+        {
+          ...install,
+          receipt: { ...receipt("blocked"), ...installInput, code: "launcher-unreadable" },
+        },
+        true,
+      ],
+    ] as const)
+      expect(deviceHasRecoveryDuty({ ...device, operations: [operation] })).toBe(pending);
+    expect(deviceHasRecoveryDuty({ ...device, abandoning: true, operations: [staged] })).toBe(true);
+    expect(
+      deviceHasRecoveryDuty({ ...device, membership: "removed", operations: [download] }),
+    ).toBe(true);
+  });
+
+  it("holds unresolved follower setup and releases a proved directive without demanding cleanup", () => {
+    const plan = opened();
+    const setup: JonesInstallPlanHostOperation = {
+      ...operation(),
+      step: "directive",
+      request: {
+        kind: "plan-directive",
+        input: {
+          directiveId: operationId,
+          environmentId: env,
+          enrollmentId: id,
+          repository: plan.target.repository,
+          expectedDirectiveId: null,
+          targetSource: source,
+          targetTree: tree,
+        },
+      },
+    };
+    const device: JonesInstallPlanDevice = {
+      ...plan.devices[0]!,
+      route: "follower-operations",
+      enrollmentId: id,
+      operations: [setup],
+    };
+    expect(deviceHasRecoveryDuty(device)).toBe(true);
+    const applied = {
+      ...setup,
+      directive: {
+        kind: "applied" as const,
+        observedAt: now,
+        directive: {
+          directiveId: operationId,
+          targetSource: source,
+          targetTree: tree,
+          mode: "manual-review" as const,
+          issuedAt: now,
+        },
+      },
+    };
+    expect(deviceHasRecoveryDuty({ ...device, operations: [applied] })).toBe(false);
+  });
+
+  it("holds unsettled native Laptop work and stage retirement, and lets a paused gate stand alone", () => {
+    const plan = opened();
+    const paused: JonesInstallPlan = {
+      ...plan,
+      laptop: {
+        ...plan.laptop,
+        gateClosed: { at: now, reason: "blocked" },
+        gatePause: true,
+      },
+    };
+    expect(laptopSettled(paused)).toBe(false);
+    expect(planHasLaptopRecoveryDuty(paused)).toBe(false);
+    const download = { operationId, step: "download" as const, requestedAt: now };
+    expect(
+      planHasLaptopRecoveryDuty({ ...plan, laptop: { ...plan.laptop, operations: [download] } }),
+    ).toBe(true);
+    for (const [status, code, duty] of [
+      ["completed", "staged", false],
+      ["running", "copy-admitted", true],
+      ["stop-requested", "copy-admitted", true],
+      ["held", "copy-unconfirmed", true],
+      ["failed", "native-unconfirmed", true],
+    ] as const)
+      expect(
+        planHasLaptopRecoveryDuty({
+          ...plan,
+          laptop: {
+            ...plan.laptop,
+            operations: [{ ...download, result: { status, code, at: now } }],
+          },
+        }),
+      ).toBe(duty);
+    for (const status of ["pending", "unconfirmed", "retired"] as const)
+      expect(
+        planHasLaptopRecoveryDuty({
+          ...plan,
+          laptop: { ...plan.laptop, stageAbandonment: { operationId, handle: "stage", status } },
+        }),
+      ).toBe(status !== "retired");
   });
 
   it("uses the current membership for completion and locks a device reserved while Edit was open", () => {

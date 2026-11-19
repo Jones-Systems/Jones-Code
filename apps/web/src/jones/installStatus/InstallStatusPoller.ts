@@ -1,13 +1,20 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   createStatusPoller,
+  deviceHasRecoveryDuty,
   deviceStatusActive,
   type StatusPollerOptions,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { getDocumentActivity, subscribeDocumentActivity } from "../../lib/documentActivity";
 import { refreshDeviceEvidence } from "./actions";
-import { installStatusStore, type InstallStatusStore } from "./panelUi";
-import { requestInstallPlan, type InstallPlanServices } from "./services";
+import { installStatusStore, selectedHistoryPlan, type InstallStatusStore } from "./panelUi";
+import {
+  installPlanServices,
+  nativePlanIssue,
+  readTargetPlan,
+  requestInstallPlan,
+  type InstallPlanServices,
+} from "./services";
 
 export interface InstallStatusPollerOptions {
   readonly store?: InstallStatusStore;
@@ -34,15 +41,25 @@ export function startInstallStatusPoller(
   options: InstallStatusPollerOptions = {},
 ) {
   const store = options.store ?? installStatusStore;
-  const binding = { services, store };
+  const active = installPlanServices();
+  const bound = active?.services === services && active.store === store ? active : undefined;
+  const binding = bound ?? { services, store };
+  let closed = false;
+  const current = () => !closed && (bound === undefined || installPlanServices() === bound);
   const attention =
     options.attention ??
     (() => {
       const activity = getDocumentActivity();
       return activity.visible && activity.focused;
     });
+  const archiveDevice = (id: string) => {
+    const snapshot = store.get();
+    if (!snapshot.open || !snapshot.showLast || snapshot.native?.view.recoveryHistory !== 1)
+      return undefined;
+    return selectedHistoryPlan(snapshot)?.devices.find((device) => device.environmentId === id);
+  };
   const planDevice = (id: string) =>
-    store.get().native?.current?.devices.find((d) => d.environmentId === id);
+    store.get().native?.current?.devices.find((d) => d.environmentId === id) ?? archiveDevice(id);
   const isActive = (id: string) =>
     deviceStatusActive(
       store.get().devices.find((d) => d.environmentId === id)?.observation,
@@ -54,16 +71,28 @@ export function startInstallStatusPoller(
     if (before !== undefined && before.observation.freshness !== "fresh")
       services.kick?.(environmentId);
     const observed = await services.observe(environmentId);
+    if (!current()) return;
     store.update({
       devices: store.get().devices.map((d) => (d.environmentId === environmentId ? observed : d)),
     });
     if (observed.observation.freshness === "unsupported") return;
     if (observed.observation.freshness !== "fresh")
       throw new Error("Status for this device is not fresh.");
-    const { state } = await requestInstallPlan({ type: "read" }, binding);
+    const read = await requestInstallPlan({ type: "read" }, binding);
+    if (!current() || nativePlanIssue(read) !== undefined) return;
+    const { state } = read;
     if (state.current !== null)
       await refreshDeviceEvidence(binding, environmentId, state.current, observed, {
         refreshInstallOutcome: false,
+      });
+    const device = archiveDevice(id);
+    const planId = store.get().historyPlanId;
+    if (device === undefined || !deviceHasRecoveryDuty(device) || planId === null) return;
+    const history = await readTargetPlan(binding, { planId, archived: true });
+    if (current() && history.plan !== null && nativePlanIssue(history.result) === undefined)
+      await refreshDeviceEvidence(binding, environmentId, history.plan, observed, {
+        refreshInstallOutcome: false,
+        archived: true,
       });
   };
   const poller = createStatusPoller({
@@ -89,7 +118,7 @@ export function startInstallStatusPoller(
   let tiers = "";
   const stopStore = store.subscribe(() => {
     const ids = services.devices().map((d) => d.environmentId);
-    const next = `${ids.join(",")}|${ids.filter(isActive).join(",")}`;
+    const next = `${ids.join(",")}|${ids.filter(isActive).join(",")}|${store.get().historyPlanId ?? ""}`;
     if (next === tiers) return;
     tiers = next;
     poller.reschedule();
@@ -97,6 +126,7 @@ export function startInstallStatusPoller(
   return {
     poller,
     close() {
+      closed = true;
       stopStore();
       stopOnline();
       stopAttention();
