@@ -133,13 +133,18 @@ describe("pinned Workstream viewport pointer drops", () => {
         target?.setAttribute("data-preview", "true");
         return target !== null;
       },
-      dropExternal: (point: { x: number; y: number }) => {
+      dropExternal: (
+        point: { x: number; y: number },
+        _thread: EnvironmentThreadShell,
+        options?: { unpin?: () => Promise<boolean> },
+      ) => {
         const target = hit(point);
         if (!target) return null;
         assigned.push(target.dataset.workstreamTarget!);
-        return new Promise<boolean>((resolve) => {
+        const assignment = new Promise<boolean>((resolve) => {
           commit = resolve;
         });
+        return assignment.then(async (saved) => saved && (await options?.unpin?.()) === true);
       },
       clear: () =>
         container
@@ -277,9 +282,13 @@ describe("pinned Workstream viewport pointer drops", () => {
         preview = point;
         return true;
       },
-      dropExternal: (point: { x: number; y: number }) => {
+      dropExternal: async (
+        point: { x: number; y: number },
+        _thread: EnvironmentThreadShell,
+        options?: { unpin?: () => Promise<boolean> },
+      ) => {
         assigned.push(point);
-        return Promise.resolve(true);
+        return (await options?.unpin?.()) === true;
       },
       clear: () => {
         preview = null;

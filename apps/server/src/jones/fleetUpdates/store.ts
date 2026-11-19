@@ -25,6 +25,8 @@ const StoredDirective = Schema.Struct({
   ),
 });
 
+export const DIRECTIVE_HISTORY_LIMIT = 128;
+
 /**
  * What this host knows about following its laptop. The leader is bound to the enrollment that
  * published it, so re-enrolling discards it. The automatic-activation time is host-wide and
@@ -54,10 +56,20 @@ export const FleetFollowerRecord = Schema.Struct({
   directiveHistory: Schema.optionalKey(
     Schema.Array(
       Schema.Struct({ directiveId: FleetOperationId, prior: Schema.NullOr(StoredDirective) }),
-    ).check(Schema.isMaxLength(128)),
+    ).check(Schema.isMaxLength(DIRECTIVE_HISTORY_LIMIT)),
   ),
   releasedDirectives: Schema.optionalKey(
-    Schema.Array(FleetOperationId).check(Schema.isMaxLength(128)),
+    Schema.Array(FleetOperationId).check(Schema.isMaxLength(DIRECTIVE_HISTORY_LIMIT)),
+  ),
+  fencedDirectives: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        directiveId: FleetOperationId,
+        bindingHash: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+        /** Written with the denial in releasedDirectives. Older fences lack this proof. */
+        rollbackDenied: Schema.optionalKey(Schema.Literal(true)),
+      }),
+    ).check(Schema.isMaxLength(DIRECTIVE_HISTORY_LIMIT)),
   ),
 });
 export type FleetFollowerRecord = typeof FleetFollowerRecord.Type;
@@ -73,15 +85,32 @@ export interface FleetHostStore {
     change: (old: FleetHostOperation | null) => FleetHostOperation,
   ) => Promise<FleetHostOperation>;
   readonly readFollower: () => Promise<FleetFollowerRecord | null>;
+  readonly readConfirmedFollower: () => Promise<FleetFollowerRecord | null>;
   readonly editFollower: (
     change: (old: FleetFollowerRecord | null) => FleetFollowerRecord,
   ) => Promise<FleetFollowerRecord>;
+  readonly transactDirective: <A>(
+    change: (
+      old: FleetFollowerRecord | null,
+      enrollment: FleetEnrollment | null,
+    ) => { readonly record: FleetFollowerRecord | null; readonly result: A },
+  ) => Promise<A>;
 }
 
+const FOLLOWER_BYTES = 64 * 1024;
 const isEnrollment = Schema.is(FleetEnrollment);
 const isFollower = Schema.is(FleetFollowerRecord);
 const isOperation = Schema.is(FleetHostOperation);
 const isOperationId = Schema.is(FleetOperationId);
+
+async function syncDirectory(path: string) {
+  const directory = await NodeFSP.open(path, "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}
 
 export async function ownedDirectory(path: string, privateMode: boolean) {
   await NodeFSP.mkdir(path, { recursive: true, mode: 0o700 });
@@ -94,12 +123,7 @@ export async function ownedDirectory(path: string, privateMode: boolean) {
   ) {
     throw new Error("Fleet receipt directory ownership is unknown.");
   }
-  const parent = await NodeFSP.open(NodePath.dirname(path), "r");
-  try {
-    await parent.sync();
-  } finally {
-    await parent.close();
-  }
+  await syncDirectory(NodePath.dirname(path));
 }
 
 export async function read<T>(
@@ -150,12 +174,7 @@ export async function replace(path: string, value: unknown) {
       await file.close();
     }
     await NodeFSP.rename(temporary, path);
-    const directory = await NodeFSP.open(NodePath.dirname(path), "r");
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
+    await syncDirectory(NodePath.dirname(path));
   } finally {
     await NodeFSP.unlink(temporary).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "ENOENT") throw error;
@@ -196,6 +215,12 @@ export function createFleetHostStore(baseDir: string): FleetHostStore {
       await ownedDirectory(directory, true);
       return withQualifiedRuntimeLock(baseDir, "jones-fleet", operation);
     });
+  const readFollower = () => read(follower, isFollower, FOLLOWER_BYTES);
+  const writeFollower = async (record: FleetFollowerRecord) => {
+    if (!isFollower(record) || Buffer.byteLength(JSON.stringify(record)) + 1 > FOLLOWER_BYTES)
+      throw new Error("Invalid or oversized fleet follower record.");
+    await replace(follower, record);
+  };
   return {
     readEnrollment: () => locked(() => read(enrollment, isEnrollment)),
     editEnrollment: (change) =>
@@ -215,13 +240,28 @@ export function createFleetHostStore(baseDir: string): FleetHostStore {
         await replace(path, next);
         return next;
       }),
-    readFollower: () => locked(() => read(follower, isFollower)),
+    readFollower: () => locked(readFollower),
+    readConfirmedFollower: () =>
+      locked(async () => {
+        const record = await readFollower();
+        // Status can confirm a directive after a rename whose directory sync failed.
+        if (record?.directive !== undefined) await syncDirectory(directory);
+        return record;
+      }),
     editFollower: (change) =>
       locked(async () => {
-        const next = change(await read(follower, isFollower));
-        if (!isFollower(next)) throw new Error("Invalid fleet follower record.");
-        await replace(follower, next);
+        const next = change(await readFollower());
+        await writeFollower(next);
         return next;
+      }),
+    transactDirective: (change) =>
+      locked(async () => {
+        const current = await readFollower();
+        const { record, result } = change(current, await read(enrollment, isEnrollment));
+        if (record !== null && record !== current) await writeFollower(record);
+        // A previous rename may be visible even if its directory sync failed.
+        else await syncDirectory(directory);
+        return result;
       }),
   };
 }

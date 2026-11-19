@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link, useLinkProps } from "@tanstack/react-router";
 import { randomUUID } from "../../lib/utils";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
@@ -20,7 +21,8 @@ import {
 import { RequestMarkdown } from "./RequestMarkdown";
 import { DurationSelect, ReviewControls } from "./ReviewControls";
 import { useFrozenRows, useReview } from "./reviewHooks";
-import { requestHref, threadHref } from "./navigation";
+import { reviewSupportKnownMissing, useReviewSupportKnownMissing } from "./reviewRuntime";
+import { requestLink, threadLink, type RequestsSearch } from "./navigation";
 import {
   AccessExpiry,
   RequestEnvironmentLabel,
@@ -39,7 +41,7 @@ const requestViews = [
 
 interface RequestSelection {
   id: string;
-  digest?: string;
+  digest?: string | null;
   fromLink?: true;
 }
 type ExactLookup = "loading" | "unavailable" | { digest: string };
@@ -48,33 +50,61 @@ const lookupExactRequest = (
   controller: ReturnType<typeof useReview>["controller"],
   selection: RequestSelection,
 ): Promise<ExactLookup> =>
-  controller.lookup(selection.id, selection.digest).then(
-    (item) => (item ? { digest: item.record.bindingDigest } : "unavailable"),
-    () => "unavailable",
-  );
+  selection.digest === null
+    ? Promise.resolve("unavailable")
+    : controller.lookup(selection.id, selection.digest).then(
+        (item) => (item ? { digest: item.record.bindingDigest } : "unavailable"),
+        () => "unavailable",
+      );
 
 export function ReviewPage({
   environmentId,
   label,
+  search,
 }: {
   environmentId: EnvironmentId;
   label: string;
+  search?: RequestsSearch | undefined;
 }) {
   const state = useReview(environmentId);
   const { page, capabilities, controller } = state;
-  const initial = new URLSearchParams(window.location.search);
-  const matchesReceiver = initial.get("receiver") === environmentId;
-  const requested = matchesReceiver ? initial.get("request") : null;
-  const [selection, setSelection] = useState<RequestSelection | null>(() => {
-    if (!requested) return null;
-    const digest = initial.get("binding");
-    return { id: requested, ...(digest ? { digest } : {}), fromLink: true };
-  });
-  const [exactLookup, setExactLookup] = useState<ExactLookup>("loading");
+  const supportMissing = useReviewSupportKnownMissing(environmentId);
+  const requestedAccess = search?.access;
+  const requested = requestedAccess ? undefined : search?.request;
+  const digest = requested ? search?.binding : undefined;
+  const routeKey = JSON.stringify({ request: requested, binding: digest, access: requestedAccess });
+  const [previousRouteKey, setPreviousRouteKey] = useState(routeKey);
+  const linkedSelection: RequestSelection | null = requested
+    ? { id: requested, ...(digest === undefined ? {} : { digest }), fromLink: true }
+    : null;
+  const [selection, setSelection] = useState(linkedSelection);
+  const [lookupRevision, setLookupRevision] = useState(0);
+  const [requestRead, setRequestRead] = useState<{ revision: string; result: ExactLookup }>();
+  const [linkedAccess, setLinkedAccess] = useState(requestedAccess);
+  const [accessRead, setAccessRead] = useState<{ revision: string; loaded: boolean }>();
   const [accessSelection, setAccessSelection] = useState({
-    id: matchesReceiver ? initial.get("access") : null,
+    id: requestedAccess ?? null,
     revision: state.accessSelectionRevision,
   });
+  const [reviewBlocked, setReviewBlocked] = useState(false);
+  if (routeKey !== previousRouteKey) {
+    // Fence the old selection before this render can expose any decision controls.
+    setPreviousRouteKey(routeKey);
+    setSelection(linkedSelection);
+    setLookupRevision(lookupRevision + 1);
+    setLinkedAccess(requestedAccess);
+    setAccessSelection({ id: requestedAccess ?? null, revision: state.accessSelectionRevision });
+    setReviewBlocked(false);
+  }
+  const exactReadRevision = `${state.authorityRevision}:${lookupRevision}`;
+  const canDecide = capabilities?.canDecide === true;
+  const exactLookup =
+    capabilities?.canDecide === false
+      ? "unavailable"
+      : requestRead?.revision === exactReadRevision
+        ? requestRead.result
+        : "loading";
+  const exactAccess = accessRead?.revision === exactReadRevision ? accessRead.loaded : undefined;
   const accessId =
     state.selectedAccess &&
     accessSelection.revision !== state.accessSelectionRevision &&
@@ -87,29 +117,40 @@ export function ReviewPage({
     setAccessSelection({ id: accessId, revision: state.accessSelectionRevision });
   }
   const setAccessId = (id: string | null) => {
+    setLinkedAccess(undefined);
     setAccessSelection({ id, revision: state.accessSelectionRevision });
   };
-  const [reviewBlocked, setReviewBlocked] = useState(false);
-  const requestedAccess = matchesReceiver ? initial.get("access") : null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- An exact route must finish its own lookup before it can show a cached request or expose decisions.
   useEffect(() => {
-    if (!selection?.fromLink) return;
+    if (!selection?.fromLink || !canDecide) return;
     let current = true;
     void lookupExactRequest(controller, selection).then((readback) => {
-      if (current) setExactLookup(readback);
+      if (current) setRequestRead({ revision: exactReadRevision, result: readback });
     });
     return () => {
       current = false;
     };
-  }, [controller, selection]);
+  }, [controller, selection, exactReadRevision, canDecide]);
   const openAccess = (id: string) => {
     setAccessId(id);
     void controller.lookupAccess(id).catch(() => undefined);
   };
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile the mounted exact access route with the subscribed controller, including retained restore-command readback.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Exact access must complete readback before a route can expose editing controls.
   useEffect(() => {
-    if (requestedAccess) void controller.lookupAccess(requestedAccess).catch(() => undefined);
-  }, [controller, requestedAccess]);
+    if (!linkedAccess || !canDecide) return;
+    let current = true;
+    void controller.lookupAccess(linkedAccess).then(
+      () => {
+        if (current) setAccessRead({ revision: exactReadRevision, loaded: true });
+      },
+      () => {
+        if (current) setAccessRead({ revision: exactReadRevision, loaded: false });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [controller, linkedAccess, exactReadRevision, canDecide]);
   const selectedDigest = selection?.fromLink
     ? typeof exactLookup === "object"
       ? exactLookup.digest
@@ -123,10 +164,14 @@ export function ReviewPage({
     ? (page?.records.find(matchesSelection) ?? lookedUpItem)
     : null;
   const itemView = item ? admissionPresentation(item.record) : null;
-  const access =
-    state.selectedAccess?.id === accessId
-      ? state.selectedAccess
-      : (page?.access.find((entry) => entry.id === accessId) ?? null);
+  const selectedAccess = state.selectedAccess?.id === accessId ? state.selectedAccess : null;
+  const access = capabilities?.canDecide
+    ? linkedAccess
+      ? exactAccess && state.selectedAccessFromId === linkedAccess
+        ? selectedAccess
+        : null
+      : (selectedAccess ?? page?.access.find((entry) => entry.id === accessId) ?? null)
+    : null;
   const disabled = item
     ? state.policyBarrier
       ? "Evaluator settings are changing."
@@ -134,14 +179,16 @@ export function ReviewPage({
         ? "Recording this decision…"
         : state.uncertain.has(bindingKey(item.record))
           ? "Outcome unknown. Do not resend."
-          : state.loading || state.loadFailed
-            ? "Refresh server state before deciding."
-            : item.record.envelope.receiverPolicy.revision !== page?.policyRevision
-              ? "Evaluator settings changed. Refresh this request before approving."
-              : null
+          : supportMissing
+            ? "Request review V2 is unsupported on this receiver."
+            : state.loading || state.loadFailed
+              ? "Refresh server state before deciding."
+              : item.record.envelope.receiverPolicy.revision !== page?.policyRevision
+                ? "Evaluator settings changed. Refresh this request before approving."
+                : null
     : null;
   const mutate = (input: Mutation) => {
-    void controller.mutate(input);
+    if (!reviewSupportKnownMissing(environmentId)) void controller.mutate(input);
   };
   const choose = (entry: Item) => {
     const { id, bindingDigest } = entry.record;
@@ -204,9 +251,9 @@ export function ReviewPage({
           </Button>
         ))}
       </nav>
-      {state.error ? (
+      {supportMissing || state.error ? (
         <p role="alert" className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
-          {state.error}
+          {supportMissing ? "Request review V2 is unsupported on this receiver." : state.error}
         </p>
       ) : null}
       {state.loading ? (
@@ -221,18 +268,21 @@ export function ReviewPage({
       ) : null}
       <div className="grid min-w-0 items-start gap-4 @min-[46rem]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <div className={hasSelection ? "hidden min-w-0 @min-[46rem]:block" : "min-w-0"}>
-          <ReviewRows
-            key={state.view}
-            environmentId={environmentId}
-            state={state}
-            selectedItem={item}
-            accessId={accessId}
-            choose={choose}
-            chooseAccess={(id) => {
-              openAccess(id);
-              setSelection(null);
-            }}
-          />
+          {capabilities?.canDecide ? (
+            <ReviewRows
+              key={state.view}
+              environmentId={environmentId}
+              state={state}
+              supportMissing={supportMissing}
+              selectedItem={item}
+              accessId={accessId}
+              choose={choose}
+              chooseAccess={(id) => {
+                openAccess(id);
+                setSelection(null);
+              }}
+            />
+          ) : null}
         </div>
         <section
           ref={detailRef}
@@ -264,6 +314,7 @@ export function ReviewPage({
               uncertain={state.uncertain.has(`access:${access.id}`)}
               reviewAccessReadback={() => controller.lookupAccess(access.id).catch(() => undefined)}
               disabled={
+                supportMissing ||
                 state.policyBarrier ||
                 state.loading ||
                 state.loadFailed ||
@@ -276,12 +327,30 @@ export function ReviewPage({
             />
           ) : accessId ? (
             <div>
-              <p className="text-sm text-muted-foreground">
-                Exact access record unavailable. Refresh its current state before editing.
-              </p>
-              <Button size="compact" variant="outline" onClick={() => openAccess(accessId)}>
-                Refresh access
-              </Button>
+              {linkedAccess && exactAccess === undefined ? (
+                <p role="status" className="text-sm text-muted-foreground">
+                  Loading exact access…
+                </p>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Exact access record unavailable. Refresh its current state before editing.
+                  </p>
+                  <Button
+                    size="compact"
+                    variant="outline"
+                    onClick={() => {
+                      if (linkedAccess) {
+                        setLookupRevision((revision) => revision + 1);
+                      } else {
+                        openAccess(accessId);
+                      }
+                    }}
+                  >
+                    Refresh access
+                  </Button>
+                </>
+              )}
             </div>
           ) : item && itemView ? (
             <>
@@ -416,10 +485,7 @@ export function ReviewPage({
                     <Button
                       size="compact"
                       variant="outline"
-                      onClick={() => {
-                        setExactLookup("loading");
-                        void lookupExactRequest(controller, selection).then(setExactLookup);
-                      }}
+                      onClick={() => setLookupRevision((revision) => revision + 1)}
                     >
                       Refresh request
                     </Button>
@@ -443,6 +509,7 @@ export function ReviewPage({
 function ReviewRows({
   environmentId,
   state,
+  supportMissing,
   selectedItem,
   accessId,
   choose,
@@ -450,6 +517,7 @@ function ReviewRows({
 }: {
   environmentId: EnvironmentId;
   state: ReturnType<typeof useReview>;
+  supportMissing: boolean;
   selectedItem: Item | null;
   accessId: string | null;
   choose: (item: Item) => void;
@@ -487,7 +555,12 @@ function ReviewRows({
           />
         ))}
       </div>
-      {page && records.rows.length === 0 && access.rows.length === 0 && !showDiagnostics ? (
+      {page &&
+      !supportMissing &&
+      !state.loadFailed &&
+      records.rows.length === 0 &&
+      access.rows.length === 0 &&
+      !showDiagnostics ? (
         <p className="rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">
           {view === "current"
             ? "No requests need review."
@@ -511,16 +584,16 @@ function ReviewRows({
                 {event.reason} · {event.repeats} repeats
               </p>
               {event.requestId ? (
-                <a
+                <Link
                   className="underline"
                   aria-disabled={diagnostics.isGone(event)}
                   onClick={(action) => {
                     if (diagnostics.isGone(event)) action.preventDefault();
                   }}
-                  href={requestHref(environmentId, event.requestId)}
+                  {...requestLink(environmentId, event.requestId)}
                 >
                   Review exact held message ↗
-                </a>
+                </Link>
               ) : (
                 <p className="text-muted-foreground">Retained message unavailable</p>
               )}
@@ -588,13 +661,13 @@ function CompactRequest({
         </span>
         <span className="mt-1 block truncate text-xs text-muted-foreground">{view.operation}</span>
       </button>
-      <a
-        href={requestHref(environmentId, item.record.id, item.record.bindingDigest)}
+      <Link
+        {...requestLink(environmentId, item.record.id, item.record.bindingDigest)}
         aria-label="Open exact request"
         className="m-1 grid size-8 shrink-0 place-items-center rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
       >
         ↗
-      </a>
+      </Link>
     </article>
   );
 }
@@ -652,13 +725,13 @@ function CompactAccess({
         </span>
       </button>
       {access.destinationThreadId ? (
-        <a
+        <Link
           aria-label="Open exact thread"
           className="m-1 grid size-8 shrink-0 place-items-center rounded-md text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-          href={threadHref(environmentId, access.destinationThreadId)}
+          {...threadLink(environmentId, access.destinationThreadId)}
         >
           ↗
-        </a>
+        </Link>
       ) : null}
     </article>
   );
@@ -838,6 +911,7 @@ function LaunchEvidence({ item }: { item: Item }) {
 }
 function RecoveryDetails({ receiver, item }: { receiver: EnvironmentId; item: Item }) {
   const [error, setError] = useState<string | null>(null);
+  const { href } = useLinkProps(requestLink(receiver, item.record.id, item.record.bindingDigest));
   const { copyToClipboard, isCopied } = useCopyToClipboard({
     target: "recovery details",
     onCopy: () => setError(null),
@@ -848,9 +922,13 @@ function RecoveryDetails({ receiver, item }: { receiver: EnvironmentId; item: It
       <Button
         size="compact"
         variant="outline"
-        onClick={() =>
-          copyToClipboard(recoveryDetailsText(receiver, item, window.location.href), undefined)
-        }
+        onClick={() => {
+          if (href)
+            copyToClipboard(
+              recoveryDetailsText(receiver, item, new URL(href, window.location.href).href),
+              undefined,
+            );
+        }}
       >
         {isCopied ? "Recovery details copied" : "Copy recovery details"}
       </Button>

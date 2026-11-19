@@ -46,7 +46,7 @@ same check after manually installing the plan's selected build.
 **Refresh now** reads the device's running build. If the device is already
 running the exact selected build, **Done** can record that result. An original
 attempt without confirmed launcher acceptance remains unconfirmed in the
-history. Check it again from **Last update** when the host can report more.
+history. Check it again from **Recovery history** when the host can report more.
 
 After a confirmed refusal or rollback, retry from the device details. Review
 the staged build again before retrying an installation. Use **Abandon update**
@@ -56,31 +56,44 @@ queue and keeps its history. You can select it again for a fresh attempt.
 On Laptop, **Abandon staged update** releases the plan's staged app before
 installation. These actions preserve installed builds and user data. If a
 device still has active work, use its Stop or Check action first. If cleanup
-is interrupted, open the device again to resume it before closing the plan.
+is interrupted, reopen the original attempt from Install status to resume it.
 If another update replaced the staged selection, resuming abandonment keeps
 that replacement in place.
 
-To end the rollout, choose **Cancel update plan** in **All** or **Laptop** and
-confirm. This closes the queue and keeps the attempt in **Last update**.
-Check or stop any still-running device work before cancelling. Cancellation
-keeps installed builds in place and retains unresolved native work for later
-verification. Use **Check update outcome** from the Laptop row in **Last
-update** if the outcome is still unconfirmed.
+To end the rollout, choose **Stop scheduling this plan** in **All** or
+**Laptop** and confirm. You can close the queue while a machine is offline.
+An update request the plan already issued may still finish. Closing the queue
+keeps installed builds and staged downloads in place.
+
+Open **Last update** for the most recently closed plan, or **Recovery history**
+to find an older attempt that still needs attention, even
+while another plan is open. You can start a new plan with other devices.
+A device with unresolved work must settle its original attempt before it can
+join a later plan. Unresolved Laptop work pauses new Laptop plans until native
+verification can confirm the outcome.
 
 **Update setup unconfirmed** means an enrolled host has yet to confirm its
-setup request. **Check setup status** shows what the host reports. When the
-host still reports the expected prior setup, the plan can resend the same
-request after reconnecting. Installation still needs your review.
-Once the setup reservation expires, you can cancel the plan and check for a
-late setup confirmation from **Last update**. A setup request already sent
-may still reach the host. The cancelled plan starts no further downloads or
-installs.
+setup request. **Check setup status** shows what the host reports. The plan can
+resend the same request after reconnecting when it confirms the original
+enrollment and the expected prior setup. If enrollment changed, you can still
+check the original download or install outcome in **Recovery history**.
+Installation still needs your review.
+After closing the queue, use **Check setup status** on the original row for a
+late confirmation. If offered, **Fence original setup** lets the host confirm
+what happened or prevent that exact pending setup from applying. For a download
+or install request with an expired reservation and no receipt, **Fence original
+request** asks the reachable host to prevent it from starting or return its
+existing receipt.
+
+An older Laptop journal may retain a command after its plan is gone. Open
+**Recovery for commands from missing plans** and use **Check retained receipt**
+if offered. The device stays on hold until its exact outcome can be verified.
 
 For **Cleanup unconfirmed**, use **Inspect cleanup** on that device. If
 inspection proves the previous disk image is absent, **Recover cleanup** can
 release the hold. The device then needs a separate download retry. You can
-cancel queued work while the cleanup hold is present and return to it in
-**Last update**. Release that hold before starting another plan.
+close the queue while the cleanup hold is present and return to the original
+attempt later. The cleanup hold applies to that machine.
 
 The panel also refreshes each machine's status by itself: about every minute
 while a machine is downloading, installing or restarting, and about every ten
@@ -133,9 +146,9 @@ even when that machine is already running a newer build.
 
 1. Choose **I installed manually** below the device tabs. Jones Code checks
    the running Laptop build and the machines selected in the old plan.
-2. Review the detected versions and confirm closing the plan. If Jones Code
-   reports outstanding work, open the affected device and choose **Refresh
-   now**. Try again after the operation has settled.
+2. Review the detected versions and confirm closing the plan. The review
+   identifies machines it could not verify. Any unresolved attempt stays
+   available for recovery.
 3. Reopen **Last update** and look for **Closed after manual install**. The
    record shows the observed versions and which machines could not be verified.
    If the update button opens an available build, choose **Last update** there.
@@ -153,6 +166,12 @@ plans, including refreshed native evidence.
 
 ```sh
 t3 jones updates plan status --json
+```
+
+Use a plan ID from that response to inspect a specific earlier attempt.
+
+```sh
+t3 jones updates plan status --plan-id "$plan_id" --json
 ```
 
 On the affected server, read its update status and then the exact attempt. Use
@@ -182,8 +201,8 @@ and reuse it if the reply is lost. Re-read the receipt to see whether the
 worker has stopped.
 
 To end the rollout from the Laptop, use the plan ID, Laptop environment ID and
-revision from plan status. The desktop applies the same cancellation checks
-used by **Cancel update plan** and keeps the attempt in history.
+revision from plan status. The desktop applies the same checks as **Stop
+scheduling this plan** and keeps unresolved attempts in history.
 
 ```sh
 t3 jones updates plan cancel "$plan_id" --environment-id "$laptop_id" --revision "$revision" --confirm --json

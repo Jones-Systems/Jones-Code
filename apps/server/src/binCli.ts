@@ -22,6 +22,7 @@ import { extendConnectionAttemptTimeout, keepOutboundFetchOnHttp1 } from "./outb
 import { sharedServerCommandFlags } from "./cli/config.ts";
 import { projectCommand } from "./cli/project.ts";
 import { threadCommand } from "./cli/thread.ts";
+import { requestsCommand } from "./jones/remoteAdmissionIntegration/requestManagementCli.ts";
 import { runDefaultServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 import { updateCommand } from "./cli/update.ts";
 import {
@@ -93,6 +94,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       browserCommand,
       projectCommand,
       threadCommand,
+      requestsCommand,
       upCommand,
       statusCommand,
       serviceCommand,

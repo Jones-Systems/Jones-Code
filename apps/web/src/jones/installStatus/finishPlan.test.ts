@@ -335,6 +335,6 @@ it.each(["identity", "read-only", "connection"])(
 it("does not close on an unconfirmed dismissal", async () => {
   const world = setup();
   world.intercept((r) => (r.type === "dismiss" ? { state: world.native } : undefined));
-  await expect(finishPlan(world.planId)).rejects.toThrow("dismissal was not confirmed");
+  await expect(finishPlan(world.planId)).rejects.toThrow("Closing this plan was not confirmed");
   expect(world.store.get().open).toBe(true);
 });

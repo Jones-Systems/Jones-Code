@@ -9,7 +9,13 @@ import type {
   JonesActionDuty,
   JonesActionJournal,
 } from "@t3tools/client-runtime/jones/updates/action-journal";
-import { legacyConnectionsGate, planGateFor, routeNativeLaptopAction } from "./entrypoints";
+import {
+  connectionsPlanDispatch,
+  legacyConnectionsGate,
+  readLegacyConnectionsAuthority,
+  routeNativeLaptopAction,
+  type LegacyConnectionsAuthority,
+} from "./entrypoints";
 import { nativeJonesDispatch, webJonesJournal } from "./executionJournal";
 import { installPlanServices, requestInstallPlan } from "./services";
 
@@ -86,19 +92,22 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
     if (!input.host.readLatest().canOperate)
       return { kind: "refused", message: "This control no longer authorizes the action." };
     let host: JonesExecutorHost = input.host;
+    let nativeLegacy = false;
     const binding = installPlanServices();
     const canHandOff = () =>
       sameAuthority(input.host, { observation, canOperate: true }, input.environmentId);
-    const native = nativeJonesDispatch({
-      environmentId: input.environmentId,
-      targetSource: input.targetSource,
-      action: input.action.kind,
-      commandId: input.operationId,
-      journal,
-      ...(input.action.kind === "install" ? { stagedHandle: input.action.stagedHandle } : {}),
-      canOperate: canHandOff,
-      send: (request) => requestInstallPlan(request, binding),
-    });
+    const native = (canClaim = canHandOff) =>
+      nativeJonesDispatch({
+        environmentId: input.environmentId,
+        targetSource: input.targetSource,
+        action: input.action.kind,
+        commandId: input.operationId,
+        journal,
+        ...(input.action.kind === "install" ? { stagedHandle: input.action.stagedHandle } : {}),
+        canOperate: canClaim,
+        send: (request) => requestInstallPlan(request, binding),
+      });
+    let connections: ReturnType<typeof connectionsPlanDispatch> | undefined;
     try {
       if (typeof window !== "undefined" && window.desktopBridge?.installPlan !== undefined) {
         const local = await routeNativeLaptopAction(
@@ -106,7 +115,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
           input.targetSource,
           input.action,
           input.review,
-          native,
+          native(),
           canHandOff,
         );
         if (local !== undefined)
@@ -114,11 +123,19 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
             kind: local.kind === "handled" ? "accepted" : "refused",
             message: local.kind === "grant" ? "Open Install status." : local.message,
           };
-        if (observation.state?.capability.operations === 1)
-          host = { ...host, planGate: planGateFor(input.action, input.review, native, canHandOff) };
-        else {
-          const refusal = await legacyConnectionsGate(input.targetSource);
+        if (observation.state?.capability.operations === 1) {
+          connections = connectionsPlanDispatch(
+            binding,
+            input.action,
+            input.review,
+            native,
+            () => !input.cancelled?.() && canHandOff(),
+          );
+          host = { ...host, planGate: connections.planGate };
+        } else {
+          const refusal = await legacyConnectionsGate(input.targetSource, input.environmentId);
           if (refusal !== null) return { kind: "refused", message: refusal };
+          nativeLegacy = true;
         }
       }
     } catch (cause) {
@@ -134,6 +151,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
     }
     let dispatched = false;
     let localReservation = false;
+    let refusedBeforeDispatch: string | undefined;
     const reserve = async (duty: JonesActionDuty) => {
       const before = host.readLatest();
       if (!before.canOperate) throw new Error("This control no longer authorizes the action.");
@@ -151,6 +169,7 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
       host: {
         ...host,
         legacy: async (request) => {
+          const before = host.readLatest();
           await reserve({
             id: input.operationId,
             environmentId: input.environmentId,
@@ -164,6 +183,19 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
                 }
               : {}),
           });
+          if (nativeLegacy) {
+            refusedBeforeDispatch =
+              (await legacyConnectionsGate(input.targetSource, input.environmentId).catch(
+                () => "Native plan status is unavailable.",
+              )) ?? undefined;
+            if (!sameAuthority(host, before, input.environmentId))
+              refusedBeforeDispatch ??= "This host changed before dispatch.";
+            if (refusedBeforeDispatch !== undefined) {
+              await journal.notSent(input.operationId);
+              localReservation = false;
+              throw new Error(refusedBeforeDispatch);
+            }
+          }
           dispatched = true;
           const reply = await host.legacy(request);
           if (reply !== null) await journal.acknowledge(input.operationId);
@@ -185,6 +217,17 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
             });
           else if (!host.readLatest().canOperate)
             throw new Error("This control no longer authorizes the action.");
+          if (
+            connections !== undefined &&
+            request.action.kind === "install" &&
+            !connections.canStart(request)
+          ) {
+            if (localReservation) {
+              await journal.notSent(input.operationId);
+              localReservation = false;
+            }
+            throw new Error("The selected device changed before install dispatch.");
+          }
           dispatched = true;
           const receipt = await host.start(request);
           await journal.reconcileReceipt(receipt);
@@ -192,6 +235,18 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
         },
       },
     });
+    if (
+      !dispatched &&
+      connections !== undefined &&
+      input.action.kind === "install" &&
+      journal.getSnapshot().duties.some((d) => d.id === input.operationId && d.kind === "native")
+    )
+      return {
+        kind: "unknown",
+        code: "native-handoff-unknown",
+        message:
+          "The native install handoff needs reconciliation. Read the exact attempt in Install status.",
+      };
     const stopped = [...journal.getSnapshot().duties, ...journal.getSnapshot().history].find(
       (d) =>
         d.kind === "stop" &&
@@ -217,7 +272,8 @@ export function createWebJonesExecutor(journal: JonesActionJournal) {
     )
       return {
         kind: "refused",
-        message: "The action was refused before dispatch. Nothing was sent.",
+        message:
+          refusedBeforeDispatch ?? "The action was refused before dispatch. Nothing was sent.",
       };
     return result;
   };
@@ -311,20 +367,52 @@ export function stopWebJonesDownload(
   return run;
 }
 
+async function replacementAuthorityIssue(
+  targetSource: string,
+  environmentId: EnvironmentId,
+  reviewed: LegacyConnectionsAuthority,
+) {
+  const current = await readLegacyConnectionsAuthority(targetSource, environmentId);
+  if (typeof current === "string") return current;
+  if (
+    current.kind !== reviewed.kind ||
+    (current.kind === "verified-plan" &&
+      reviewed.kind === "verified-plan" &&
+      (current.binding !== reviewed.binding ||
+        current.planId !== reviewed.planId ||
+        current.revision !== reviewed.revision))
+  )
+    return "The verified Laptop plan changed. Review the replacement again.";
+  return null;
+}
+
 export async function executeWebJonesReplacement(
   input: {
     readonly environmentId: EnvironmentId;
     readonly operationId: string;
     readonly targetSource: string;
     readonly stagedHandle: string;
+    readonly authority: LegacyConnectionsAuthority;
     readonly host: Pick<JonesExecutorHost, "readLatest">;
+    readonly canDispatch: () => boolean;
     readonly send: () => Promise<boolean>;
   },
   journal = webJonesJournal,
 ) {
   await journal.load();
   const before = input.host.readLatest();
-  if (!before.canOperate) throw new Error("This control no longer authorizes the action.");
+  const gate = await replacementAuthorityIssue(
+    input.targetSource,
+    input.environmentId,
+    input.authority,
+  );
+  if (gate !== null) throw new Error(gate);
+  if (
+    !before.canOperate ||
+    !input.canDispatch() ||
+    !sameAuthority(input.host, before, input.environmentId)
+  )
+    throw new Error("The displayed replacement changed before dispatch.");
   await journal.reserve({
     id: input.operationId,
     environmentId: input.environmentId,
@@ -333,9 +421,18 @@ export async function executeWebJonesReplacement(
     targetSource: input.targetSource,
     stagedHandle: input.stagedHandle,
   });
-  if (!sameAuthority(input.host, before, input.environmentId)) {
+  const stillAllowed = await replacementAuthorityIssue(
+    input.targetSource,
+    input.environmentId,
+    input.authority,
+  ).catch(() => "Native plan status is unavailable.");
+  if (
+    stillAllowed !== null ||
+    !input.canDispatch() ||
+    !sameAuthority(input.host, before, input.environmentId)
+  ) {
     await journal.notSent(input.operationId);
-    throw new Error("This control changed before dispatch. Nothing was sent.");
+    throw new Error(stillAllowed ?? "This control changed before dispatch. Nothing was sent.");
   }
   try {
     if (!(await input.send())) return false;

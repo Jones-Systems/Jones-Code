@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
+import { Link } from "@tanstack/react-router";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   attentionKey,
   bindingKey,
   type Item,
+  type ReviewState,
 } from "@t3tools/client-runtime/jones/remoteAdmission/controller";
 import { toastManager } from "../../components/ui/toast";
 import { Button } from "../../components/ui/button";
@@ -12,9 +14,9 @@ import { useEnvironments } from "../../state/environments";
 import { admissionBindingKey, actionableAdmissions } from "./store";
 import { RequestReviewRow } from "./RequestReviewRow";
 import { useAdmission } from "./useAdmission";
-import { useReviewController } from "./reviewRuntime";
+import { reviewSupportKnownMissing, useReviewController } from "./reviewRuntime";
 import { useFrozenRows, useReview } from "./reviewHooks";
-import { requestHref, threadHref } from "./navigation";
+import { requestLink, threadLink } from "./navigation";
 import { admissionPresentation } from "./presentation";
 import { ReviewControls } from "./ReviewControls";
 import { RequestThreadTitle, RequestThreadStatus } from "./RequestThreadStatus";
@@ -26,6 +28,10 @@ import {
   dismissedResults,
   receiverAttention,
 } from "./attentionPersistence";
+
+const canShowOwnerAttention = (state: ReviewState) =>
+  state.capabilities?.canDecide === true && !state.loadFailed;
+
 // The explicit external revision invalidates compiler-cached persistence reads even
 // when the receiver's controller arrays have not changed (for example, dismissal).
 function receiverAttentionItems(
@@ -61,11 +67,11 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
   const state = useReview(receiver);
   const attention = useSyncExternalStore(subscribeAttention, attentionRevision);
   const inApp = useClientSettings((settings) => settings.inAppNotificationsEnabled);
-  const incoming = state.capabilities?.canDecide && !state.loadFailed ? state.incoming : [];
+  const visible = inApp && canShowOwnerAttention(state);
   const { hasIncoming, results } = receiverAttentionItems(
     receiver,
-    incoming,
-    state.capabilities?.canDecide && !state.loadFailed ? state.results : [],
+    visible ? state.incoming : [],
+    visible ? state.results : [],
     attention,
   );
   const incomingId = useRef<string | null>(null);
@@ -87,7 +93,7 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
   }, [state.controller, receiver]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile persistent attention with owned imperative incoming/result toasts; React renders their subscribed content while the toast manager owns their lifetime.
   useEffect(() => {
-    if (inApp && hasIncoming && !incomingId.current) {
+    if (hasIncoming && !incomingId.current) {
       incomingId.current = toastManager.add({
         timeout: 0,
         data: {
@@ -114,7 +120,7 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
         },
       });
     }
-    if (inApp && results.length && !resultId.current) {
+    if (results.length && !resultId.current) {
       resultId.current = toastManager.add({
         timeout: 0,
         data: {
@@ -140,13 +146,13 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
         },
       });
     }
-    if (!inApp) {
+    if (!visible) {
       if (incomingId.current) toastManager.close(incomingId.current);
       if (resultId.current) toastManager.close(resultId.current);
       incomingId.current = null;
       resultId.current = null;
     }
-  }, [inApp, hasIncoming, results, state.controller, receiver, label]);
+  }, [visible, hasIncoming, results, state.controller, receiver, label]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Close this notification owner's imperative incoming/result toast handles on unmount.
   useEffect(() => {
     const a = incomingId;
@@ -182,9 +188,9 @@ function StackHeader({
       >
         {collapsed ? "▸" : "▾"} {title}
       </Button>
-      <a className="mr-3 p-2 text-3xs" href={requestHref(receiver)} aria-label="Open Requests">
+      <Link className="mr-3 p-2 text-3xs" {...requestLink(receiver)} aria-label="Open Requests">
         ↗
-      </a>
+      </Link>
       <Button size="sm" variant="ghost" aria-label="Dismiss stack" onClick={dismiss}>
         ×
       </Button>
@@ -203,6 +209,7 @@ function IncomingStack({
   const state = useReview(receiver);
   useSyncExternalStore(subscribeAttention, attentionRevision);
   const [collapsed, setCollapsed] = useState(false);
+  const visible = canShowOwnerAttention(state);
   const records = state.incoming.filter(
     (item) => item.record.status === "held" && !dismissedIncoming.has(attentionKey(receiver, item)),
   );
@@ -219,8 +226,9 @@ function IncomingStack({
   );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Close the owned imperative incoming toast only after its frozen rows are empty and both pointer and focus have left; never remove an active target.
   useEffect(() => {
-    if (!frozen.frozen && frozen.rows.length === 0) dismiss();
-  }, [frozen.frozen, frozen.rows.length, dismiss]);
+    if (visible && !frozen.frozen && frozen.rows.length === 0) dismiss();
+  }, [visible, frozen.frozen, frozen.rows.length, dismiss]);
+  if (!visible) return null;
   return (
     <section aria-label={`Incoming approval requests on ${label}`} className="min-w-0 space-y-2">
       <StackHeader
@@ -259,15 +267,15 @@ function IncomingStack({
                 disabled={blocked}
                 grants={state.capabilities?.features.has("grants") ?? false}
                 decide={(input) => {
-                  void state.controller.mutate(input);
+                  if (!reviewSupportKnownMissing(receiver)) void state.controller.mutate(input);
                 }}
               />
             );
           })}
           {count > 3 ? (
-            <a href={requestHref(receiver)} className="text-xs underline">
+            <Link {...requestLink(receiver)} className="text-xs underline">
               {count - 3} more in Requests
-            </a>
+            </Link>
           ) : null}
         </div>
       ) : null}
@@ -311,13 +319,13 @@ function IncomingRow({
             {view.operation}
           </span>
         </button>
-        <a
+        <Link
           className="shrink-0 p-2 text-3xs"
           aria-label="Open exact request"
-          href={requestHref(receiver, item.record.id, item.record.bindingDigest)}
+          {...requestLink(receiver, item.record.id, item.record.bindingDigest)}
         >
           ↗
-        </a>
+        </Link>
       </div>
       {!collapsed ? (
         <>
@@ -376,6 +384,7 @@ function CreatedStack({
   const [collapsed, setCollapsed] = useState(false);
   const rows = state.results.filter((item) => !dismissedResults.has(attentionKey(receiver, item)));
   const frozen = useFrozenRows(rows, (item) => attentionKey(receiver, item));
+  if (!canShowOwnerAttention(state)) return null;
   return (
     <section aria-label={`Thread creation results on ${label}`}>
       <StackHeader
@@ -442,17 +451,23 @@ function CreatedRow({
           />
         </button>
         <span className="ml-auto text-right text-xs">{status}</span>
-        <a
-          className="p-2 text-3xs"
-          aria-label={available ? "Open exact thread" : "Open exact request"}
-          href={
-            available
-              ? threadHref(receiver, item.threadId!)
-              : requestHref(receiver, item.record.id, item.record.bindingDigest)
-          }
-        >
-          ↗
-        </a>
+        {available ? (
+          <Link
+            className="p-2 text-3xs"
+            aria-label="Open exact thread"
+            {...threadLink(receiver, available)}
+          >
+            ↗
+          </Link>
+        ) : (
+          <Link
+            className="p-2 text-3xs"
+            aria-label="Open exact request"
+            {...requestLink(receiver, item.record.id, item.record.bindingDigest)}
+          >
+            ↗
+          </Link>
+        )}
       </div>
       {!collapsed ? (
         <>
@@ -531,9 +546,9 @@ function LegacyStack({ receiver }: { receiver: EnvironmentId }) {
   const frozen = useFrozenRows(rows.slice(0, 3), admissionBindingKey);
   return (
     <div className="space-y-2" {...frozen.handlers}>
-      <a href={requestHref(receiver)} aria-label="Open Requests" className="text-3xs">
+      <Link {...requestLink(receiver)} aria-label="Open Requests" className="text-3xs">
         ↗
-      </a>
+      </Link>
       {frozen.rows.map((record) => (
         <RequestReviewRow
           key={admissionBindingKey(record)}

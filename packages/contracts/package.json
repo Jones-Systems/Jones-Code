@@ -23,6 +23,10 @@
       "types": "./src/jones/remoteAdmissionReview.ts",
       "import": "./src/jones/remoteAdmissionReview.ts"
     },
+    "./jones/requestManagement": {
+      "types": "./src/jones/requestManagement.ts",
+      "import": "./src/jones/requestManagement.ts"
+    },
     "./jones/repoFreshness": {
       "types": "./src/jones/repoFreshness.ts",
       "import": "./src/jones/repoFreshness.ts"

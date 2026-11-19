@@ -2,7 +2,10 @@ import * as NodeOS from "node:os";
 
 import { EnvironmentId } from "@t3tools/contracts";
 import {
+  JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES,
   JonesInstallPlanCliResponse,
+  confirmsInstallPlanCancellation,
+  findInstallPlanResultPlan,
   type JonesInstallPlanCliRequest,
 } from "@t3tools/contracts/jones/installPlan";
 import { JonesOperationId } from "@t3tools/contracts/jones/jonesOperations";
@@ -168,7 +171,7 @@ const runPlan = Effect.fn("InstallRecovery.runPlan")(function* (
         userId,
         request,
         isResponse: isPlanResponse,
-        maxResponseBytes: 2 * 1024 * 1024,
+        maxResponseBytes: JONES_INSTALL_PLAN_CLI_RESPONSE_BYTES,
       }),
     catch: () =>
       new InstallRecoveryError({
@@ -179,26 +182,43 @@ const runPlan = Effect.fn("InstallRecovery.runPlan")(function* (
   if (!response.ok) {
     return yield* new InstallRecoveryError({ detail: response.message });
   }
-  yield* print(flags.json, response.result);
+  const output =
+    response.projection === undefined
+      ? response.result
+      : { ...response.result, projection: response.projection };
   if (response.result.refused !== undefined) {
+    yield* print(flags.json, output);
     return yield* new InstallRecoveryError({ detail: response.result.refused.message });
   }
   if (
-    action.type === "cancel-plan" &&
-    (response.result.state.last?.planId !== action.planId ||
-      response.result.state.last.cancelled !== true)
-  ) {
+    action.type === "read" &&
+    action.planId !== undefined &&
+    findInstallPlanResultPlan(response.result, action.planId) === undefined
+  )
+    return yield* new InstallRecoveryError({
+      detail: "The desktop did not return the requested plan ID.",
+    });
+  if (action.type === "cancel-plan" && !confirmsInstallPlanCancellation(response.result, action)) {
     return yield* new InstallRecoveryError({
       detail: "Cancellation is unconfirmed. Read plan status again.",
     });
   }
+  yield* print(flags.json, output);
 });
 
-const planStatus = Command.make("status", common).pipe(
+const planStatus = Command.make("status", {
+  ...common,
+  planId: Flag.String("plan-id").pipe(Flag.withSchema(JonesOperationId), Flag.optional),
+}).pipe(
   Command.withDescription(
-    "Read the Laptop's current and last plans, refreshing native outcome evidence.",
+    "Read the Laptop's current and last plans, or inspect a retained plan by ID.",
   ),
-  Command.withHandler((flags) => runPlan(flags, { type: "read" })),
+  Command.withHandler((flags) =>
+    runPlan(flags, {
+      type: "read",
+      ...Option.match(flags.planId, { onNone: () => ({}), onSome: (planId) => ({ planId }) }),
+    }),
+  ),
 );
 
 const planCancel = Command.make("cancel", {

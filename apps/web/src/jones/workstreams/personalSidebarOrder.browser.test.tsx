@@ -18,13 +18,14 @@ import { writeLocalStorageValue } from "~/hooks/useLocalStorage";
 import { personalNamedGroupsHiddenKey } from "./personalSidebarOrder";
 import { personalSharedStatusFilterKey, personalStatusFilterKey } from "./personalStatusFilter";
 import {
+  dispatchedCommands,
   ENVIRONMENT_ID,
   installFakeEnvironment,
   refreshFakeShell,
   threadWithHistory,
   type FakeDriver,
 } from "../../../test/fakeEnvironment";
-import { render } from "../../../test/render";
+import { act, render } from "../../../test/render";
 import { ChatHeader } from "../../components/chat/ChatHeader";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
 
@@ -95,10 +96,16 @@ async function withSidebar(
     visit: (id: string) => Promise<void>;
     step: (direction: "next" | "previous", expected: string) => Promise<void>;
     setWorking: (id: string, working: boolean) => Promise<void>;
+    replaySavedActiveOrder: () => Promise<ReadonlyMap<string, string>>;
     threadIds: readonly string[];
     assign: ReturnType<typeof vi.fn>;
   }) => Promise<void>,
-  { pinnedFixture = false, writableFixture = false, idleAlphaFixture = false } = {},
+  {
+    pinnedFixture = false,
+    writableFixture = false,
+    idleAlphaFixture = false,
+    activeOrderFixture = false,
+  } = {},
 ) {
   const threadIds = [
     "a1",
@@ -106,7 +113,7 @@ async function withSidebar(
     "b1",
     "a2",
     "u2",
-    ...Array.from({ length: 5 }, (_, index) => `a${index + 3}`),
+    ...Array.from({ length: activeOrderFixture ? 2 : 5 }, (_, index) => `a${index + 3}`),
   ];
   const threads = threadIds.map((id) => ({
     ...threadWithHistory(id, 1),
@@ -134,7 +141,18 @@ async function withSidebar(
       : []),
     { ...threadWithHistory("child", 1), sideChatOf: threads[2]!.id },
   ];
-  using _environment = installFakeEnvironment(roster);
+  using _environment = installFakeEnvironment(roster, { activeThreadReorder: true });
+  const replaySavedActiveOrder = async () => {
+    const keys = new Map(initialActiveOrderKeys);
+    for (const command of dispatchedCommands()) {
+      if (command.type === "thread.active.reorder") keys.set(command.threadId, command.orderKey);
+    }
+    for (const [index, thread] of roster.entries()) {
+      roster[index] = { ...thread, activeOrderKey: keys.get(thread.id) ?? null };
+    }
+    await refreshFakeShell();
+    return keys;
+  };
   const setWorking = async (id: string, working: boolean) => {
     const index = threads.findIndex((thread) => thread.id === id);
     const thread = threads[index]!;
@@ -215,7 +233,7 @@ async function withSidebar(
   };
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
-    boringSidebarEnabled: initialActiveOrderKeys.size > 0,
+    boringSidebarEnabled: !activeOrderFixture && initialActiveOrderKeys.size > 0,
     sidebarWorkingShelfEnabled: false,
     onboardingCompletedAt: at,
   });
@@ -231,7 +249,7 @@ async function withSidebar(
     [...screen.container.querySelectorAll<HTMLElement>("[data-personal-thread]")].map(
       (row) => JSON.parse(row.dataset.personalThread!)[1] as string,
     );
-  await vi.waitFor(() => expect(rows()).toHaveLength(8), {
+  await vi.waitFor(() => expect(rows()).toHaveLength(activeOrderFixture ? threadIds.length : 8), {
     timeout: 8000,
   });
   const visit = async (id: string) =>
@@ -250,7 +268,16 @@ async function withSidebar(
       expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${expected}`),
     );
   };
-  await inspect({ router, rows, visit, step, setWorking, threadIds, assign });
+  await inspect({
+    router,
+    rows,
+    visit,
+    step,
+    setWorking,
+    replaySavedActiveOrder,
+    threadIds,
+    assign,
+  });
 }
 
 it("traverses Unassigned before named Workstreams and skips collapsed groups", async () => {
@@ -567,4 +594,62 @@ it("offers single-thread actions from the header even when Workstream filters hi
     },
     { writableFixture: true },
   );
+});
+
+it("keeps a hidden keyless sibling in order when moving a saved Workstream row to the top", async () => {
+  initialActiveOrderKeys.set("a3", "m");
+  initialActiveOrderKeys.set("a4", "t");
+  using _clearOrder = { [Symbol.dispose]: () => initialActiveOrderKeys.clear() };
+  const options = { activeOrderFixture: true, idleAlphaFixture: true, writableFixture: true };
+  await withSidebar(async ({ rows, setWorking, replaySavedActiveOrder }) => {
+    const alphaOrder = () => rows().filter((id) => id.startsWith("a"));
+    expect(alphaOrder()).toEqual(["a1", "a2", "a3", "a4"]);
+    await setWorking("a2", true);
+    writeLocalStorageValue(
+      personalStatusFilterKey("alpha"),
+      "hide-working",
+      "hide-working",
+      Schema.Literals(["hide-working"]),
+    );
+    await vi.waitFor(() => expect(alphaOrder()).toEqual(["a1", "a3", "a4"]));
+    const row = (id: string) =>
+      [...document.querySelectorAll<HTMLElement>("[data-personal-thread]")].find(
+        (entry) => entry.dataset.personalThread === JSON.stringify([ENVIRONMENT_ID, id]),
+      )!;
+    const press = (target: EventTarget, type: string, element: Element, fraction: number) => {
+      const bounds = element.getBoundingClientRect();
+      target.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          isPrimary: true,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+          clientX: bounds.left + bounds.width / 2,
+          clientY: bounds.top + bounds.height * fraction,
+        }),
+      );
+    };
+    const moved = row("a4");
+    const neighbor = row("a1");
+    await act(() => {
+      press(moved, "pointerdown", moved, 0.5);
+      press(document, "pointermove", neighbor, 0.2);
+    });
+    const gap = document.querySelector("[data-personal-thread-insertion]")!;
+    expect(gap?.nextElementSibling).toBe(neighbor);
+    await act(() => press(document, "pointerup", gap, 0.5));
+    await vi.waitFor(() =>
+      expect(dispatchedCommands().at(-1)).toMatchObject({
+        type: "thread.active.reorder",
+        threadId: "a4",
+      }),
+    );
+    for (const [id, key] of await replaySavedActiveOrder()) initialActiveOrderKeys.set(id, key);
+    await vi.waitFor(() => expect(alphaOrder()).toEqual(["a4", "a1", "a3"]));
+  }, options);
+  await withSidebar(async ({ rows }) => {
+    expect(rows().filter((id) => id.startsWith("a"))).toEqual(["a4", "a1", "a2", "a3"]);
+  }, options);
 });

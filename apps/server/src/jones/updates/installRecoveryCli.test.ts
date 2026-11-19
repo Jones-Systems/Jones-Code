@@ -13,7 +13,10 @@ import {
   EnvironmentId,
   type AuthEnvironmentScope,
 } from "@t3tools/contracts";
-import type { JonesInstallPlanCliRequest } from "@t3tools/contracts/jones/installPlan";
+import type {
+  JonesInstallPlan,
+  JonesInstallPlanCliRequest,
+} from "@t3tools/contracts/jones/installPlan";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
@@ -370,6 +373,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer, 
         });
         yield* fs.makeDirectory(target.directory!, { recursive: true, mode: 0o700 });
         const requests: JonesInstallPlanCliRequest[] = [];
+        let receiptMode: "empty" | "archived" | "wrong-environment" = "empty";
+        const archived: JonesInstallPlan = {
+          schema: 1,
+          planId: operationId,
+          revision: 8,
+          createdAt: observedAt,
+          origin: "settings",
+          target: {
+            repository: "Jones-Systems/Jones-Code",
+            sourceSha: "a".repeat(40),
+            sourceTree: "b".repeat(40),
+            version: "next",
+          },
+          from: { version: "previous" },
+          laptop: { environmentId, operations: [] },
+          devices: [],
+          cancelled: true,
+          cancelledFromRevision: 4,
+          dismissedAt: observedAt,
+        };
         yield* serve(
           NodeNet.createServer((socket) => {
             socket.setEncoding("utf8");
@@ -388,10 +411,24 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer, 
                     state: {
                       schema: 1,
                       current: null,
-                      last: null,
+                      last: receiptMode === "empty" ? null : { ...archived, planId: jobId },
                       laptop: { observedAt, environmentId, activationBlocked: false },
                       view: { complete: false },
                     },
+                    ...(receiptMode === "empty"
+                      ? {}
+                      : {
+                          historyPlan:
+                            receiptMode === "wrong-environment"
+                              ? {
+                                  ...archived,
+                                  laptop: {
+                                    ...archived.laptop,
+                                    environmentId: EnvironmentId.make("another-laptop"),
+                                  },
+                                }
+                              : archived,
+                        }),
                   },
                 }) + "\n",
               );
@@ -423,6 +460,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, NetService.layer, 
           planId: operationId,
           expectedRevision: 4,
           environmentId,
+        });
+        receiptMode = "archived";
+        yield* onLaptop(run(baseDir, "plan", "status", "--plan-id", operationId));
+        expect(requests[2]?.action).toEqual({ type: "read", planId: operationId });
+        expect(
+          yield* Effect.flip(onLaptop(run(baseDir, "plan", "status", "--plan-id", stopId))),
+        ).toMatchObject({
+          message: "The desktop did not return the requested plan ID.",
+        });
+        yield* onLaptop(run(baseDir, ...cancel, "--confirm"));
+        receiptMode = "wrong-environment";
+        expect(yield* Effect.flip(onLaptop(run(baseDir, ...cancel, "--confirm")))).toMatchObject({
+          message: "Cancellation is unconfirmed. Read plan status again.",
         });
       }),
     );

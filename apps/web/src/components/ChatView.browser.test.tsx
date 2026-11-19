@@ -7,6 +7,7 @@ import {
   ThreadId,
   T3_PROJECT_FILE_NAME,
   WS_METHODS,
+  type HostStatusSnapshot,
   type ProjectReadFileInput,
 } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
@@ -651,6 +652,68 @@ it("a shortcut conditioned on rightPanelOpen sees the thread's open right panel"
   await userEvent.keyboard("{Control>}t{/Control}");
   await expect.element(page.getByRole("menuitem", { name: /Files/ })).toBeVisible();
   await expect.element(toggle).toHaveAttribute("aria-pressed", "true");
+});
+
+it("compresses host readings before they reach the chat toolbar", async () => {
+  await using _viewport = await chatViewport(1440, 900);
+  const thread = {
+    ...threadWithHistory("host-status-clearance", 1),
+    title: "Review host status while resizing the conversation header",
+  };
+  using _environment = installFakeEnvironment([thread], { keybindings: rightPanelKeybindings });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  const environmentFetch = globalThis.fetch;
+  using _hostStatus = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
+    if (url.origin !== window.location.origin || url.pathname !== "/api/host-status") {
+      return environmentFetch(input, init);
+    }
+    return Response.json({
+      hosts: (["vps", "test", "mini", "home"] as const).map((id) => ({
+        id,
+        status: "available",
+        cpuUsagePercent: 38,
+        logicalCpuCount: 8,
+        occupiedMemoryBytes: 18 * 1024 ** 3,
+        availableMemoryBytes: 46 * 1024 ** 3,
+        totalMemoryBytes: 64 * 1024 ** 3,
+        swapIoBytesPerSecond: Math.round(2.4 * 1024 ** 2),
+        sampledAt: new Date().toISOString(),
+      })),
+    } satisfies HostStatusSnapshot);
+  });
+
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, { router: false });
+
+  const readings = page.getByRole("group", { name: "Host status" });
+  const laptop = readings.getByRole("img", { name: /^Laptop: CPU 38%/ });
+  const rightPanel = page.getByRole("button", { name: "Toggle right panel", exact: true });
+  await expect.element(laptop).toHaveTextContent("Laptop · 38% · 2.4 mb/s");
+  const toolbar = rightPanel.element().closest("[data-workspace-titlebar-controls]")!;
+  const readingsRight = () => readings.element().getBoundingClientRect().right;
+  const clearance = () => toolbar.getBoundingClientRect().left - readingsRight();
+  await expect.poll(clearance).toBeGreaterThanOrEqual(7.5);
+
+  const pillRow = () => laptop.element().parentElement!.getBoundingClientRect();
+  const wideRow = pillRow();
+  const toolbarInset = window.innerWidth - toolbar.getBoundingClientRect().left;
+  await page.viewport(Math.floor(wideRow.right + toolbarInset - 24), 900);
+  await expect.poll(() => pillRow().width).toBeLessThan(wideRow.width);
+  await expect.poll(clearance).toBeGreaterThanOrEqual(7.5);
+  expect(pillRow().right).toBeLessThanOrEqual(readingsRight() + 0.5);
+  expect(readings.element().querySelectorAll('[role="img"]')).toHaveLength(4);
+
+  await page.viewport(1440, 900);
+  await expect.poll(() => pillRow().width).toBe(wideRow.width);
+  await expect.element(laptop).toHaveTextContent("Laptop · 38% · 2.4 mb/s");
 });
 
 it("selecting a side-chat tab focuses that side chat's composer", async () => {

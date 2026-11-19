@@ -122,6 +122,7 @@ export interface AttentionPersistence {
 }
 export interface ReviewState {
   capabilities: Capabilities | null;
+  authorityRevision: number;
   view: View;
   page: Page | null;
   loading: boolean;
@@ -141,6 +142,7 @@ export interface ReviewState {
 export function createReviewController(client: ReviewClient) {
   let state: ReviewState = {
     capabilities: null,
+    authorityRevision: 0,
     view: "current",
     page: null,
     loading: false,
@@ -175,6 +177,34 @@ export function createReviewController(client: ReviewClient) {
   const publish = (patch: Partial<ReviewState>) => {
     state = { ...state, ...patch };
     for (const notify of listeners) notify();
+  };
+  const stopResults = () => {
+    const owner = feed;
+    feed = null;
+    owner?.abort();
+  };
+  const clearAuthorizedReadback = (capabilities: Capabilities | null) => {
+    stopResults();
+    ++readOrdinal;
+    ++requestReadOrdinal;
+    ++accessReadOrdinal;
+    publish({
+      capabilities,
+      authorityRevision: state.authorityRevision + 1,
+      page: null,
+      selectedItem: null,
+      selectedAccess: null,
+      selectedAccessFromId: null,
+      incoming: [],
+      currentHeldCount: 0,
+      loading: false,
+      loadFailed: capabilities !== null,
+      error: capabilities ? "Owner access is required to review requests." : null,
+    });
+  };
+  const observeCapabilities = (capabilities: Capabilities) => {
+    if (capabilities.canDecide) publish({ capabilities });
+    else clearAuthorizedReadback(capabilities);
   };
   const persistAttention = () =>
     persistence?.write({
@@ -264,19 +294,8 @@ export function createReviewController(client: ReviewClient) {
     try {
       const capabilities = await client.capabilities();
       if (ordinal !== readOrdinal || epoch !== mutationEpoch) return;
-      publish({ capabilities });
-      if (!capabilities.canDecide) {
-        publish({
-          page: null,
-          selectedItem: null,
-          selectedAccess: null,
-          incoming: [],
-          currentHeldCount: 0,
-          loadFailed: true,
-          error: "Owner access is required to review requests.",
-        });
-        return;
-      }
+      observeCapabilities(capabilities);
+      if (!capabilities.canDecide) return;
       const page = await client.page(
         view,
         older && previous?.nextCursor ? previous.nextCursor : undefined,
@@ -345,6 +364,26 @@ export function createReviewController(client: ReviewClient) {
     } finally {
       if (ordinal === readOrdinal) publish({ loading: false });
     }
+  };
+  const reconcileFeed = async (signal: AbortSignal) => {
+    if (signal.aborted) return;
+    await load();
+    if (
+      signal.aborted ||
+      state.view === "current" ||
+      state.loadFailed ||
+      state.pending.size > 0 ||
+      policyWriting
+    )
+      return;
+    const ordinal = readOrdinal;
+    const epoch = mutationEpoch;
+    const attention = await client.page("current");
+    if (signal.aborted || ordinal !== readOrdinal || epoch !== mutationEpoch) return;
+    publish({
+      incoming: attention.records.filter((item) => !item.blocked && item.record.status === "held"),
+      currentHeldCount: attention.counts.currentHeldAdmissions,
+    });
   };
   const mutate = async (input: Mutation) => {
     const key =
@@ -533,7 +572,7 @@ export function createReviewController(client: ReviewClient) {
       try {
         const capabilities = await client.capabilities();
         if (owner.signal.aborted) return;
-        publish({ capabilities });
+        observeCapabilities(capabilities);
         if (!capabilities.canDecide || !capabilities.features.has("changeFeed")) return;
         // First admission starts at head. Retained history never creates a toast.
         if (cursor === null) {
@@ -542,6 +581,9 @@ export function createReviewController(client: ReviewClient) {
           cursor = head;
         }
         persistAttention();
+        // Current holds are actionable on reconnect even when no later change arrives.
+        // The head cursor still prevents first-load replay of old creation results.
+        await reconcileFeed(owner.signal);
         let historyReset = false;
         while (!owner.signal.aborted) {
           let batch: ChangeBatch;
@@ -562,7 +604,7 @@ export function createReviewController(client: ReviewClient) {
             if (owner.signal.aborted) break;
             cursor = head;
             persistAttention();
-            await load();
+            await reconcileFeed(owner.signal);
             continue;
           }
           if (owner.signal.aborted) break;
@@ -578,17 +620,7 @@ export function createReviewController(client: ReviewClient) {
               results.set(JSON.stringify([bindingKey(item.record), item.attempt]), item);
           publish({ results: [...results.values()] });
           persistAttention();
-          await load();
-          if (state.view !== "current" && state.pending.size === 0) {
-            const attention = await client.page("current");
-            if (!owner.signal.aborted)
-              publish({
-                incoming: attention.records.filter(
-                  (item) => !item.blocked && item.record.status === "held",
-                ),
-                currentHeldCount: attention.counts.currentHeldAdmissions,
-              });
-          }
+          await reconcileFeed(owner.signal);
         }
       } catch {
         if (!owner.signal.aborted)
@@ -600,10 +632,9 @@ export function createReviewController(client: ReviewClient) {
         if (feed === owner) feed = null;
       }
     },
-    stopResults() {
-      const owner = feed;
-      feed = null;
-      owner?.abort();
+    stopResults,
+    invalidateConnection() {
+      clearAuthorizedReadback(null);
     },
   };
 }

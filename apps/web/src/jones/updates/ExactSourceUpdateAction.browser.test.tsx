@@ -49,6 +49,10 @@ vi.mock("@t3tools/client-runtime/jones/updates/action-journal", async (original)
   };
 });
 import { webJonesJournal } from "../installStatus/executionJournal";
+import { bindInstallPlanServices } from "../installStatus/services";
+import { createInstallStatusStore } from "../installStatus/panelUi";
+import { startPlan } from "@t3tools/client-runtime/jones/install-plan";
+import type { JonesInstallPlanResult } from "@t3tools/contracts/jones/installPlan";
 
 let environmentId = EnvironmentId.make("exact-source-host");
 let sequence = 0;
@@ -535,6 +539,137 @@ describe("exact-source action", () => {
     expect(status()).toContain("changed while this was pending");
     expect(world.requests).toEqual([]);
   });
+
+  it.each(["read-only", "refused", "replaced", "revised"] as const)(
+    "refuses exact-source replacement with a %s native plan despite a matching Laptop gate",
+    async (mode) => {
+      await using _fixture = await setupFixture1();
+      const laptop = EnvironmentId.make("replacement-laptop");
+      const now = "2026-11-19T14:00:00.000Z";
+      const current = startPlan({
+        planId: "11111111-1111-4111-8111-111111111111",
+        target: {
+          repository: "Jones-Systems/Jones-Code",
+          sourceSha: target,
+          sourceTree: target,
+          version: currentVersion,
+        },
+        origin: "connections",
+        from: { version: currentVersion },
+        laptopEnvironmentId: laptop,
+        select: [],
+        now,
+      });
+      const evidence = {
+        environmentId: laptop,
+        observedAt: now,
+        activationBlocked: false,
+        committedTransactionId: "committed",
+        activeGeneration: "generation",
+        activeSource: target,
+        activeTree: target,
+      };
+      const message =
+        mode === "read-only"
+          ? "Saved plans are read-only."
+          : mode === "refused"
+            ? "Reading saved plans was refused."
+            : "The verified Laptop plan changed.";
+      const result: JonesInstallPlanResult = {
+        state: {
+          schema: 1,
+          documentRevision: 1,
+          last: null,
+          view: { complete: false },
+          current: {
+            ...current,
+            laptop: {
+              ...current.laptop,
+              gate: {
+                openedAt: now,
+                basis: "plan-install",
+                transactionId: "committed",
+                activeGeneration: "generation",
+                activeSource: target,
+                activeTree: target,
+              },
+            },
+          },
+          laptop: evidence,
+          ...(mode === "read-only" ? { readOnly: { code: "invalid", message } } : {}),
+        },
+        ...(mode === "refused" ? { refused: { code: "storage", message } } : {}),
+      };
+      const unreachable = vi.fn(async () => {
+        throw new Error("Unexpected mutation.");
+      });
+      let latest = result;
+      const installPlan = vi.fn(async () => latest);
+      const bridge = { installPlan, getUpdateState: unreachable, onUpdateState: () => () => {} };
+      vi.stubGlobal("desktopBridge", bridge);
+      const unbind = bindInstallPlanServices(
+        {
+          bridge,
+          devices: () => [],
+          observe: unreachable,
+          legacy: unreachable,
+          operation: unreachable,
+          stop: unreachable,
+          host: unreachable,
+          confirm: unreachable,
+          chooseRecovery: unreachable,
+          now: Date.now,
+        },
+        createInstallStatusStore(),
+      );
+      try {
+        const world = createHost(
+          hostState({
+            environmentId,
+            phase: "staged",
+            stagedHandle: "old-handle",
+            capability: {
+              check: true,
+              download: true,
+              install: true,
+              exactSource: true,
+              replaceStaged: true,
+            },
+          }),
+        );
+        await mount(world, {
+          allowReplace: true,
+          allowInstall: false,
+          buttonLabel: "Match laptop",
+        });
+        world.handlers.dialog = async () => {
+          if (mode !== "replaced" && mode !== "revised") return true;
+          const reviewed = result.state.current!;
+          latest = {
+            state: {
+              ...result.state,
+              documentRevision: 2,
+              current:
+                mode === "replaced"
+                  ? { ...reviewed, planId: "22222222-2222-4222-8222-222222222222" }
+                  : { ...reviewed, revision: reviewed.revision + 1 },
+            },
+          };
+          return true;
+        };
+        await click("Match laptop");
+        await expect.poll(status).toContain(message);
+        const changesDuringReview = mode === "replaced" || mode === "revised";
+        expect(world.dialogs).toHaveLength(changesDuringReview ? 1 : 0);
+        expect(installPlan.mock.calls).toHaveLength(changesDuringReview ? 2 : 1);
+        expect(world.requests).toEqual([]);
+        expect(unreachable).not.toHaveBeenCalled();
+      } finally {
+        unbind();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("keeps Match laptop visible and guards activation when state or replacement capability is unavailable", async () => {
     await using _fixture = await setupFixture1();

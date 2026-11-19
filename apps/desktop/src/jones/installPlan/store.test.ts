@@ -6,6 +6,8 @@ import * as NodeCrypto from "node:crypto";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import { startPlan } from "@t3tools/client-runtime/jones/install-plan/model";
+import { readPrivateJson } from "../storage/privateJsonStore.ts";
+import { archiveCurrent, commitRevision } from "./journal.ts";
 import { createInstallPlanStore, type PlanSnapshot } from "./store.ts";
 
 const roots = new Set<string>();
@@ -171,7 +173,7 @@ describe("native install plan storage", () => {
       const file = NodePath.join(f.directory, "plan.json");
       const bytes =
         kind === "newer"
-          ? '{"schema":2,"future":"preserve"}'
+          ? '{"schema":3,"future":"preserve"}'
           : kind === "oversized"
             ? "x".repeat(1024 * 1024 + 1)
             : "{invalid";
@@ -219,6 +221,49 @@ describe("native install plan storage", () => {
       })),
     ).rejects.toMatchObject({ code: "bounds" });
     expect(await NodeFSP.readFile(NodePath.join(f.directory, "plan.json"), "utf8")).toBe(before);
+  });
+
+  it("migrates a nearly full legacy journal without losing either original plan", async () => {
+    const f = await fixture();
+    const latest = { ...plan(), dismissedAt: "2026-10-27T01:00:00Z" };
+    const active = { ...plan(), planId: "22222222-2222-4222-8222-222222222222" };
+    const original = { schema: 1, current: active, last: latest } as const;
+    const limit = 1024 * 1024;
+    const padding = limit - Buffer.byteLength(JSON.stringify(original)) - 2;
+    const legacy = { ...original, current: { ...active, from: { version: "a".repeat(padding) } } };
+    await f.store.transact(async (s) => ({ ...s, document: legacy, result: undefined }));
+    const file = NodePath.join(f.directory, "plan.json");
+    const before = await NodeFSP.readFile(file, "utf8");
+    expect(Buffer.byteLength(before)).toBeLessThanOrEqual(limit);
+    expect(Buffer.byteLength(before)).toBeGreaterThan(limit - 32);
+    expect((await f.read()).document.schema).toBe(1);
+    expect(await NodeFSP.readFile(file, "utf8")).toBe(before);
+    await f.store.transact(async (s) => ({
+      ...s,
+      document: commitRevision(
+        s.document,
+        archiveCurrent(s.document, {
+          ...s.document.current!,
+          dismissedAt: latest.dismissedAt,
+          cancelled: true,
+          cancelledFromRevision: active.revision,
+          revision: active.revision + 1,
+        }),
+      ),
+      result: undefined,
+    }));
+    const migrated = await NodeFSP.readFile(file, "utf8");
+    expect(Buffer.byteLength(migrated)).toBeGreaterThan(limit);
+    await expect(readPrivateJson(file, limit)).rejects.toThrow();
+    expect(await NodeFSP.readFile(file, "utf8")).toBe(migrated);
+    const restarted = createInstallPlanStore({ home: f.home, profile: undefined });
+    const saved = await restarted.transact(async (s) => ({ ...s, result: s.document }));
+    expect(saved.schema).toBe(2);
+    if (saved.schema !== 2) throw new Error("Missing migrated document.");
+    expect(saved.documentRevision).toBe(1);
+    expect(saved.last?.planId).toBe(active.planId);
+    expect(saved.last?.from.version.length).toBe(padding);
+    expect(saved.older).toEqual([latest]);
   });
 
   it("fails closed under a second process lock and resumes after its owner releases it", async () => {

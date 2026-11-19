@@ -2,7 +2,7 @@ set -euo pipefail
 # Bootstrap is copied into checkout steps because repository source is not available yet.
 # anonymous-checkout.node-test.mjs binds every copy to this exact script.
 test "$GITHUB_REPOSITORY" = Jones-Systems/Jones-Code
-[[ "$JONES_CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]]
+[[ "$JONES_CHECKOUT_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 2
 case "$JONES_CHECKOUT_DEPTH" in 0|1|2) ;; *) exit 2 ;; esac
 case "$JONES_CHECKOUT_CONE" in true|false) ;; *) exit 2 ;; esac
 test ! -L "$GITHUB_WORKSPACE"

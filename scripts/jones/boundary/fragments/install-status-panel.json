@@ -7,6 +7,7 @@
     "apps/desktop/src/jones/installPlan/coordinator.ts",
     "apps/desktop/src/jones/installPlan/ipc.test.ts",
     "apps/desktop/src/jones/installPlan/ipc.ts",
+    "apps/desktop/src/jones/installPlan/journal.ts",
     "apps/desktop/src/jones/installPlan/store.test.ts",
     "apps/desktop/src/jones/installPlan/store.ts",
     "apps/desktop/src/jones/storage/privateJsonStore.ts",

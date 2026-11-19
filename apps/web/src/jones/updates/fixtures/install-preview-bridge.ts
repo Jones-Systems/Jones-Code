@@ -19,6 +19,7 @@ const SCENARIOS = [
   // A verified Laptop with hosts mid-install, failed, stalled and unreachable.
   "progress",
   "source-proof",
+  "recovery-history",
 ] as const;
 const OUTCOMES = ["accept", "reject", "refuse"] as const;
 export type FixtureOutcome = (typeof OUTCOMES)[number];
@@ -203,6 +204,7 @@ export function installPreviewBridge(
     record,
     storageKey: `${key}:plan`,
     store: installStatusStore,
+    recoveryHistory: selectedScenario === "recovery-history",
     confirmManualClosure: async (message) => (await requestConfirmDialog(message)) ?? false,
     nextLaptopOutcome: (action) => {
       const outcome = action === "download" ? stored.nextDownload : stored.nextInstall;
@@ -234,6 +236,11 @@ export function installPreviewBridge(
   if (selectedScenario === "source-proof") {
     plan.showcaseSourceProof();
     installStatusStore.open();
+  }
+  if (selectedScenario === "recovery-history" && installPlansSupported) {
+    if (plan.snapshot().current === null && plan.snapshot().last === null)
+      plan.showcaseRecoveryHistory();
+    installStatusStore.open(plan.snapshot().current === null);
   }
   const bridge = {
     ...(installPlansSupported

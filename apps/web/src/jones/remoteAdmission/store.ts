@@ -64,7 +64,10 @@ export function admissionAttention(state: AdmissionState) {
   };
 }
 
-export function createAdmissionStore(request: (input: Request) => Promise<Response>) {
+export function createAdmissionStore(
+  request: (input: Request) => Promise<Response>,
+  options?: { canDecide: () => boolean },
+) {
   let state: AdmissionState = {
     snapshot: null,
     loadFailed: false,
@@ -139,6 +142,7 @@ export function createAdmissionStore(request: (input: Request) => Promise<Respon
     if (input.action === "decide" && state.deciding.has(admissionBindingKey(input.input))) return;
     if (input.action === "policy" && state.loading) return;
     if (input.action === "decide") {
+      if (options && !options.canDecide()) return;
       const record = state.snapshot.pending.find(
         (record) =>
           record.id === input.input.id && record.bindingDigest === input.input.bindingDigest,

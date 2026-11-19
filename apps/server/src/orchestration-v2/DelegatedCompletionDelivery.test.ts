@@ -48,6 +48,7 @@ import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 import * as RuntimeLayer from "./runtimeLayer.ts";
@@ -2986,6 +2987,36 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
         );
 
         const followupMessageId = MessageId.make("message:followup-grandchild-send");
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const read = projections.getThreadRecords;
+        const startingSnapshot = yield* Deferred.make<void>();
+        const releaseSnapshot = yield* Deferred.make<void>();
+        // Let the start reaction finish its read only after the nested-task write commits.
+        const readWithGate: typeof read = (threadId, fields, filter) =>
+          Effect.tap(read(threadId, fields, filter), (records) =>
+            threadId === child.childThreadId &&
+            fields.some((field) => field === "attempts") &&
+            "runs" in records &&
+            "subagents" in records &&
+            Array.isArray(records.runs) &&
+            records.runs.some(
+              (run: OrchestrationV2Run) =>
+                run.userMessageId === followupMessageId && run.status === "starting",
+            )
+              ? Deferred.succeed(startingSnapshot, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseSnapshot)),
+                )
+              : Effect.void,
+          );
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi.spyOn(projections, "getThreadRecords").mockImplementation(readWithGate),
+          ),
+          (spy) =>
+            Deferred.succeed(releaseSnapshot, undefined).pipe(
+              Effect.andThen(Effect.sync(() => spy.mockRestore())),
+            ),
+        );
         yield* orchestrator.dispatch({
           type: "message.dispatch",
           createdBy: "agent",
@@ -3003,6 +3034,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
         )).runs.find((run) => run.userMessageId === followupMessageId)!;
         assert.isDefined(followupRun.delegatedTaskId);
         const followupTaskId = followupRun.delegatedTaskId!;
+        yield* Deferred.await(startingSnapshot);
 
         const grandchildId = NodeId.make("node:followup-grandchild-grandchild");
         const grandchild = {
@@ -3051,6 +3083,7 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer), { buildPerT
             },
           ],
         });
+        yield* Deferred.succeed(releaseSnapshot, undefined);
         yield* orchestrator.recoverDelegatedTasks;
 
         const waiting = yield* orchestrator.getThreadProjection(parentThreadId);

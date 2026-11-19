@@ -271,6 +271,11 @@
       "scope": "Private three-pin frozen source preparation, finite storage/output/deadline admission, Linux subreaper family closure, identity-bound link-aware cleanup/retention, ESM/createRequire source and frozen-package ownership, and strict full two-case qualification receipts. Source imports provide no packaged-build or installed-runtime attestation. Real historical installation and both opt-in cases remain separately assigned qualification."
     },
     {
+      "id": "browser-test-discovery",
+      "tests": ["apps/web/src/jones/testing/syntheticDiscoveryLog.test.ts"],
+      "scope": "Browser test setup retains the first failed discovery of the loopback fixture descriptor per page and folds its identical repeats. Other discovery failures and application logging remain visible. Production discovery and retry behavior stay intact."
+    },
+    {
       "id": "word-ci-trace",
       "tests": [
         "apps/web/src/jones/wordCiTrace.test.ts",
@@ -298,7 +303,7 @@
     {
       "id": "anonymous-checkout",
       "tests": ["scripts/jones/ci/anonymous-checkout.node-test.mjs"],
-      "scope": "Twenty-two public-source checkout bootstraps are byte-bound to the canonical anonymous Git helper. Exact event merge commits and explicit Preview heads retain depth, full branch/tag history, sparse selection and classifier inputs. Empty-workspace/ref/repository guards precede Git; global/system/injected config, prompts and helpers are disabled. Synthetic unmapped gitlinks remain in the tested index on success and injected fetch/checkout failures; metadata-only assertions prove no checkout credential state, no retries or fallback, preserved native failure status and unchanged source. Separate API credentials and existing workflow triggers are unchanged."
+      "scope": "Twenty-three public-source checkout bootstraps are byte-bound to the canonical anonymous Git helper. Exact event merge commits and explicit Preview heads retain depth, full branch/tag history, sparse selection and classifier inputs. Empty-workspace, ref and repository guards precede Git. The ref guard explicitly exits on invalid input in Apple Bash 3.2 and Linux Bash. Global, system and injected config, prompts and helpers are disabled. Synthetic unmapped gitlinks remain in the tested index on success and injected fetch/checkout failures. Metadata-only assertions verify checkout credential state is absent, native failure status is preserved, and the source stays intact. Separate API credentials and workflow triggers retain their existing behavior."
     },
     {
       "id": "server-result-cache",
@@ -620,6 +625,7 @@
       "tests": [
         "apps/server/src/hostStatus/gateway.test.ts",
         "apps/web/src/hostStatus.test.ts",
+        "apps/web/src/components/ChatView.browser.test.tsx",
         "apps/web/src/components/chat/HostStatusIndicators.browser.test.tsx",
         "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx",
         "apps/web/src/jones/hostStatus/responsiveLayout.test.ts",
@@ -1007,6 +1013,8 @@
       "id": "runtime-stop",
       "tests": [
         "apps/server/src/jones/runtime/RuntimeStop.test.ts",
+        "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
         "apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts",
         "packages/contracts/src/jones/runtimeStop.test.ts",
         "packages/client-runtime/src/operations/currentRuntimeStop.test.ts",
@@ -1014,7 +1022,7 @@
         "packages/client-runtime/src/jones/runtimeDetachCompatibility.test.ts",
         "apps/server/src/jones/provider/CapturedRuntimeStop.test.ts"
       ],
-      "scope": "Captured current-runtime stop identity, durable observation and queued-start fencing, adapter-bound stop execution, and saved client correlation. Optional immutable retirement observers retain one invocation across caller timeout, cancellation and inactive producers; exact exit and manager cleanup complete the original receipt. Completed stopped-binding proof selects a fresh logical session for a subsequent ordinary send. Existing completed-unknown receipts stay immutable, unsupported captures remain unavailable, and background coverage remains partial."
+      "scope": "Captured current-runtime Stop owns durable observation, adapter execution, queued-start fences and saved client correlation. Its acceptance settles exact first starts with zero claims or a writer-ordered predispatch witness. Warm prepared releases require the accepted release, original producer generation and persisted root scope. Exact fenced queued runs settle or retain a queue hold. Queue actions revalidate their affected inputs and Stop fences before committing events and effects. Delegated follow-up finalization reads the run and nested work together. The worker keeps the existing retirement and cancellation barriers after executor entry. Completed stopped-binding proof selects a fresh logical session for a subsequent send. Background coverage remains partial."
     },
     {
       "id": "recovery-start-parent-stop",
@@ -1849,6 +1857,10 @@
     {
       "id": "remote-admission",
       "tests": [
+        "apps/server/src/http.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/RequestManagement.test.ts",
+        "apps/web/src/jones/remoteAdmission/ReviewClientsCoordinator.browser.test.tsx",
+        "packages/client-runtime/src/jones/remoteAdmission/controller.test.ts",
         "apps/server/src/jones/peerTransport/LinkedRequestContext.http.test.ts",
         "apps/server/src/jones/peerTransport/LinkedRequestContext.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
@@ -2380,7 +2392,7 @@
         "scripts/jones/ci/selection.node-test.cjs",
         "scripts/jones/ci/check-results.node-test.cjs"
       ],
-      "scope": "Consumes the unchanged upstream dependency classifier with conservative full runs for non-PR, stack, unreadable or unknown changes. Required Check accepts a skipped job only after successful explicit selection. Linux package suites are disjoint; standalone checks remain unconditional and native enrollment keeps its independent gate."
+      "scope": "Consumes the unchanged upstream dependency classifier with conservative full runs for non-PR, stack, unreadable or unknown changes. Required Check accepts a skipped job only after successful explicit selection. Linux package suites are disjoint, standalone checks remain unconditional, and native enrollment keeps its independent gate. The six web shards share the complete web test command and bound work per Chromium process."
     },
     {
       "id": "native-electron-workflows",

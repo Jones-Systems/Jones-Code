@@ -1122,7 +1122,10 @@ const retryWhileLocked = <A, E, R>(settlement: Effect.Effect<A, E, R>) =>
     }),
   );
 
-type ClaimFilter = Omit<Parameters<EffectOutbox.EffectOutboxV2Shape["claimNext"]>[0], "workerId">;
+type ClaimFilter = Omit<
+  Parameters<EffectOutbox.EffectOutboxV2Shape["claimNext"]>[0],
+  "workerId" | "trackStartDispatch" | "recoveryStartDenial"
+>;
 
 export interface OrchestrationEffectWorkerV2Shape {
   readonly awaitWork: Effect.Effect<void>;
@@ -1173,6 +1176,7 @@ export const layerWithOptions = (
       const recoveryStartDenial = Option.getOrUndefined(
         yield* Effect.serviceOption(RecoveryStartDenial),
       );
+      const beginStartDispatch = outbox.startDispatch?.begin;
       const managedClaims = Option.isSome(yield* Effect.serviceOption(LifecycleConfiguration));
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
@@ -1286,8 +1290,9 @@ export const layerWithOptions = (
           const claimExit = yield* Effect.exit(
             outbox.claimNext({
               workerId,
-              ...(recoveryStartDenial === undefined ? {} : { recoveryStartDenial }),
               ...filter,
+              ...(recoveryStartDenial === undefined ? {} : { recoveryStartDenial }),
+              ...(beginStartDispatch === undefined ? {} : { trackStartDispatch: true }),
             }),
           );
           yield* increment(orchestrationEffectClaimsTotal, {
@@ -1334,8 +1339,18 @@ export const layerWithOptions = (
                   ),
                   Duration.millis(Math.max(0, claimedAt - eligibleAt)),
                 );
-                // Recheck durable cancellation after registering the Deferred; cancellation may have committed after claim.
-                if (yield* wasCancelled(effect.id)) {
+                // Serialize the first ordinary start's entry with captured Stop. Keep the
+                // cancellation race armed for work that has already crossed that boundary.
+                const firstOrdinaryStart =
+                  effect.request.type === "provider-turn.start" &&
+                  effect.nativeCreationExecutionReference === undefined &&
+                  effect.attemptCount === 1 &&
+                  effect.payloadIdentity !== undefined;
+                const canExecute =
+                  firstOrdinaryStart && beginStartDispatch !== undefined
+                    ? yield* beginStartDispatch(effect)
+                    : !(yield* wasCancelled(effect.id));
+                if (!canExecute) {
                   yield* outbox.clearCancellation(effect.id);
                   return true;
                 }
