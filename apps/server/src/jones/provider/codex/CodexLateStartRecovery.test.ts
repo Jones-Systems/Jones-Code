@@ -87,12 +87,30 @@ describe("Codex late start admission recovery", () => {
     expect(ledger.blocked).toBe(false);
   });
 
-  it("releases normal successful starts without retaining their evidence", () => {
+  it("does not retain a fence for a released dispatch", () => {
     const ledger = makeCodexLateStartRecovery();
     const dispatch = ledger.begin(binding, []);
     ledger.release(dispatch);
     ledger.markUnknown(dispatch);
     expect(ledger.blocked).toBe(false);
+  });
+
+  it("recognizes a previously acknowledged turn on the same producer and conversation", () => {
+    const ledger = makeCodexLateStartRecovery();
+    const earlier = ledger.begin(binding, []);
+    ledger.acknowledge(earlier, binding.runtimeGeneration, "earlier-turn");
+    ledger.release(earlier);
+    const current = ledger.begin(binding, []);
+    const replacement = ledger.begin({ ...binding, runtimeGeneration: "replacement" }, []);
+    const request = {
+      id: "ask",
+      method: "mcpServer/elicitation/request",
+      params: { threadId: binding.nativeThreadId, turnId: "earlier-turn" },
+    };
+    ledger.observeFrame(binding.runtimeGeneration, request);
+    ledger.observeFrame(replacement.runtimeGeneration, request);
+    expect(current.turnActivityObserved).toBe(false);
+    expect(replacement.turnActivityObserved).toBe(true);
   });
 
   it("clears only the dispatch resolved by its original rejection", () => {
@@ -107,28 +125,63 @@ describe("Codex late start admission recovery", () => {
       threadId: binding.nativeThreadId,
       turnId: "previous-turn",
     });
-    ledger.observeReply(binding.runtimeGeneration, { jsonrpc: "2.0", id: 7, error });
-    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal)).toBe("not_applied");
-    expect(ledger.reject(other, binding.runtimeGeneration, refusal)).toBe("unverified");
+    ledger.observeFrame(binding.runtimeGeneration, { jsonrpc: "2.0", id: 7, error });
+    const rejection = ledger.reject(dispatch, binding.runtimeGeneration, refusal);
+    expect(rejection.kind).toBe("not_applied");
+    if (rejection.kind !== "not_applied") return;
+    expect(rejection.canReconcileLate).toBe(true);
+    expect(ledger.blocked).toBe(true);
+    expect(rejection.release()).toBe(true);
+    expect(ledger.reject(other, binding.runtimeGeneration, refusal).kind).toBe("unverified");
+    expect(ledger.blocked).toBe(true);
+  });
+
+  it.each([-32600, -32601])("keeps code %s proof scoped to the original wait", (code) => {
+    const ledger = makeCodexLateStartRecovery();
+    const reject = () => {
+      const dispatch = ledger.begin(binding, []);
+      const error = { code, message: "Request rejected" };
+      ledger.observeFrame(binding.runtimeGeneration, { id: 7, error });
+      return {
+        dispatch,
+        rejection: ledger.reject(
+          dispatch,
+          binding.runtimeGeneration,
+          CodexAppServerRequestError.fromProtocolError(error, "turn/start", "7"),
+        ),
+      };
+    };
+    const inTime = reject();
+    expect(inTime.rejection.kind).toBe("not_applied");
+    if (inTime.rejection.kind !== "not_applied") return;
+    expect(inTime.rejection.canReconcileLate).toBe(false);
+    expect(inTime.rejection.release()).toBe(true);
+    ledger.markUnknown(inTime.dispatch);
+    expect(ledger.blocked).toBe(false);
+
+    const late = reject();
+    ledger.markUnknown(late.dispatch);
+    expect(late.rejection.kind).toBe("not_applied");
+    if (late.rejection.kind !== "not_applied") return;
+    expect(late.rejection.release()).toBe(false);
     expect(ledger.blocked).toBe(true);
   });
 
   it.each([
     { name: "both a result and an error", fields: { result: null } },
+    { name: "both a result and an invalid request", fields: { result: null }, code: -32600 },
     { name: "a string ID matching only after coercion", fields: { id: "7" } },
     { name: "a different numeric ID", fields: { id: 8 } },
     { name: "a malformed version", fields: { jsonrpc: "1.0" } },
     { name: "unexpected envelope fields", fields: { params: {} } },
-    { name: "an unexpected error code", fields: {} },
-  ])("keeps the fence for $name", ({ name, fields }) => {
+  ])("keeps the fence for $name", ({ code = -32602, fields }) => {
     const ledger = makeCodexLateStartRecovery();
     const dispatch = ledger.begin(binding, []);
-    const code = name === "an unexpected error code" ? -32601 : -32602;
     const error = { code, message: "Request rejected" };
     const refusal = CodexAppServerRequestError.fromProtocolError(error, "turn/start", "7");
     ledger.markUnknown(dispatch);
-    ledger.observeReply(binding.runtimeGeneration, { id: 7, error, ...fields });
-    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal)).toBe("unverified");
+    ledger.observeFrame(binding.runtimeGeneration, { id: 7, error, ...fields });
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal).kind).toBe("unverified");
     expect(ledger.blocked).toBe(true);
   });
 
@@ -138,17 +191,17 @@ describe("Codex late start admission recovery", () => {
     const error = { code: -32602, message: "Invalid params" };
     const refusal = CodexAppServerRequestError.fromProtocolError(error, "turn/start", "7");
     ledger.markUnknown(dispatch);
-    ledger.observeReply("different-generation", { id: 7, error });
-    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal)).toBe("unverified");
-    ledger.observeReply(binding.runtimeGeneration, { id: 7, error: { ...error } });
-    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal)).toBe("unverified");
-    ledger.observeReply(binding.runtimeGeneration, { id: 7, error });
-    expect(ledger.reject(dispatch, undefined, refusal)).toBe("unverified");
+    ledger.observeFrame("different-generation", { id: 7, error });
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal).kind).toBe("unverified");
+    ledger.observeFrame(binding.runtimeGeneration, { id: 7, error: { ...error } });
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal).kind).toBe("unverified");
+    ledger.observeFrame(binding.runtimeGeneration, { id: 7, error });
+    expect(ledger.reject(dispatch, undefined, refusal).kind).toBe("unverified");
     const transportFailure = new CodexAppServerTransportError({
       operation: "read-input-stream",
       cause: refusal,
     });
-    expect(ledger.reject(dispatch, binding.runtimeGeneration, transportFailure)).toBe(
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, transportFailure).kind).toBe(
       "other_error",
     );
     expect(ledger.blocked).toBe(true);
@@ -164,8 +217,8 @@ describe("Codex late start admission recovery", () => {
       threadId: binding.nativeThreadId,
       turn: { id: "possible-native-turn" },
     });
-    ledger.observeReply(binding.runtimeGeneration, { id: 7, error });
-    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal)).toBe("unverified");
+    ledger.observeFrame(binding.runtimeGeneration, { id: 7, error });
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal).kind).toBe("unverified");
     expect(ledger.blocked).toBe(true);
   });
 });

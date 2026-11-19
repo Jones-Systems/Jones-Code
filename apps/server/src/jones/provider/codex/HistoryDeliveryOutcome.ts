@@ -1,8 +1,15 @@
+import type { OrchestrationV2ContextHandoff, OrchestrationV2StoredEvent } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+import type { EventSinkV2Shape } from "../../../orchestration-v2/EventSink.ts";
+import { readEventLogPrunedThrough } from "../../persistence/EventLogPruneBoundary.ts";
+import type { CodexCapacityContinuationBinding } from "./CodexCapacityContinuation.ts";
 
 /** Evidence from the current call only; never evidence about a persisted pending marker. */
 export class HistoryNotApplied extends Schema.TaggedError<HistoryNotApplied>()(
@@ -65,6 +72,70 @@ export const promptWasNotApplied = (error: unknown): boolean => {
   }
   return false;
 };
+
+/** A capability for the original prompt's inline ledger, captured by its producer waiter. */
+export const CodexInlineHandoffRejection = Context.Reference<
+  ((binding: CodexCapacityContinuationBinding) => Effect.Effect<void>) | undefined
+>("jones/CodexInlineHandoffRejection", { defaultValue: () => undefined });
+
+/** Run inside the same EventSink writer batch as the restoration. */
+const ownsPendingHistoryDelivery = Effect.fn("HistoryDeliveryOutcome.ownsPendingDelivery")(
+  function* (marker: OrchestrationV2StoredEvent) {
+    const { event, sequence } = marker;
+    if (event.type !== "context-handoff.updated" || event.payload.delivery?.status !== "pending")
+      return false;
+    // EventSink supplies the writer client and transaction to the batch.
+    const database = yield* Effect.serviceOption(SqlClient.SqlClient);
+    if (Option.isNone(database)) return false;
+    const sql = database.value;
+    if (Option.isNone(yield* Effect.serviceOption(sql.transactionService))) return false;
+    if (sequence <= (yield* readEventLogPrunedThrough(sql))) return false;
+    // The event sequence distinguishes otherwise identical writes at the same time.
+    const rows = yield* sql<{ readonly sequence: number }>`
+      SELECT marker.sequence
+      FROM orchestration_events AS marker
+      JOIN orchestration_v2_projection_context_handoffs AS handoff
+        ON handoff.context_handoff_id = ${event.payload.id} AND handoff.thread_id = ${event.threadId}
+      WHERE marker.sequence = ${sequence} AND marker.event_id = ${event.id}
+        AND handoff.payload_json = marker.payload_json
+        AND NOT EXISTS (
+          SELECT 1 FROM orchestration_events AS newer
+          WHERE newer.aggregate_kind = 'thread' AND newer.stream_id = ${event.threadId}
+            AND newer.application_event_version = 2 AND newer.sequence > ${sequence}
+            AND newer.event_type = 'context-handoff.updated'
+            AND json_extract(newer.payload_json, '$.id') = ${event.payload.id}
+        )
+    `;
+    return rows.length === 1;
+  },
+);
+
+/** Compare and restore only pending writes committed by this delivery invocation. */
+export function makeCodexHistoryDeliveryPersistence(
+  write: (handoff: OrchestrationV2ContextHandoff) => ReturnType<EventSinkV2Shape["write"]>,
+  withProviderBatch: EventSinkV2Shape["withProviderBatch"],
+) {
+  const pending = new Map<OrchestrationV2ContextHandoff["id"], OrchestrationV2StoredEvent>();
+  return {
+    persist: (handoff: OrchestrationV2ContextHandoff) =>
+      write(handoff).pipe(
+        Effect.map(([stored]) => {
+          if (handoff.delivery?.status === "pending" && stored !== undefined)
+            pending.set(handoff.id, stored);
+        }),
+      ),
+    restore: (handoff: OrchestrationV2ContextHandoff) =>
+      Effect.suspend(() => {
+        const marker = pending.get(handoff.id);
+        if (marker === undefined) return Effect.void;
+        return withProviderBatch(
+          Effect.gen(function* () {
+            if (yield* ownsPendingHistoryDelivery(marker)) yield* write(handoff);
+          }),
+        );
+      }),
+  };
+}
 
 /** One delivery invocation owns only the records it attempted to mark pending. */
 export const makeHistoryDeliveryOutcome = <T, E>(

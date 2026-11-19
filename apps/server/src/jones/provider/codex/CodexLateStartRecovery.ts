@@ -8,20 +8,20 @@ import { isNonApplyingStartupRejection } from "./CodexStartup.ts";
 // Bound a wedged wait without treating the deadline as proof of native cancellation.
 export const CODEX_START_ACK_TIMEOUT_MS = 10 * 60 * 1_000;
 const INVALID_PARAMS = -32602;
+const RECENT_ACKNOWLEDGED_TURN_LIMIT = 128;
 
-// Observe the decoded envelope before the protocol reduces it to a request error.
-// Evidence collection also runs with native event logging disabled.
+// Observe frames on the reader before it wakes a response waiter or forks a request handler.
 export function codexStartReplyObservationOptions(
-  observeReply: ((reply: unknown) => void) | undefined,
+  observeFrame: ((frame: unknown) => void) | undefined,
   protocolLogger?: CodexAppServerClientOptions["logger"],
 ): CodexAppServerClientOptions {
-  if (observeReply === undefined && protocolLogger === undefined) return {};
+  if (observeFrame === undefined && protocolLogger === undefined) return {};
   return {
     logIncoming: true,
     logOutgoing: protocolLogger !== undefined,
     logger: (event) => {
       if (event.direction === "incoming" && event.stage === "decoded")
-        observeReply?.(event.payload);
+        observeFrame?.(event.payload);
       return protocolLogger?.(event) ?? Effect.void;
     },
   };
@@ -45,11 +45,20 @@ const matchesNativeBinding = (dispatch: CodexStartDispatch, binding: NativeBindi
   dispatch.runtimeGeneration === binding.runtimeGeneration &&
   dispatch.nativeThreadId === binding.nativeThreadId;
 
+type StartRejection =
+  | { readonly kind: "other_error" | "unverified" }
+  | {
+      readonly kind: "not_applied";
+      readonly canReconcileLate: boolean;
+      readonly release: () => boolean;
+    };
+
 // The caller's deadline leaves the native effect unresolved. The original RPC
 // can reconcile it with an exact non-applying rejection, or with an ACK and the
-// acknowledged turn's terminal. Reconciliation only lifts this admission hold.
+// acknowledged turn's terminal.
 export function makeCodexLateStartRecovery() {
   const dispatches = new Set<CodexStartDispatch>();
+  const acknowledgedTurns = new Map<string, NativeBinding>();
   const rejectionReplies = new WeakMap<object, { runtimeGeneration: string; requestId: string }>();
   const settled = (dispatch: CodexStartDispatch) =>
     !dispatch.overflow &&
@@ -58,11 +67,33 @@ export function makeCodexLateStartRecovery() {
   const releaseSettled = (dispatch: CodexStartDispatch) => {
     if (dispatch.unknown && settled(dispatch)) dispatches.delete(dispatch);
   };
+  const observeTurnActivity = (runtimeGeneration: string, payload: unknown) => {
+    if (dispatches.size === 0 || !Predicate.isObject(payload)) return;
+    const nativeThreadId = payload.threadId;
+    const nativeTurnId =
+      typeof payload.turnId === "string"
+        ? payload.turnId
+        : Predicate.isObject(payload.turn)
+          ? payload.turn.id
+          : undefined;
+    if (typeof nativeThreadId !== "string" || typeof nativeTurnId !== "string" || !nativeTurnId)
+      return;
+    const binding = { nativeThreadId, runtimeGeneration };
+    for (const dispatch of dispatches) {
+      if (matchesNativeBinding(dispatch, binding) && !dispatch.excludedTurnIds.has(nativeTurnId))
+        dispatch.turnActivityObserved = true;
+    }
+  };
   return {
     begin(binding: NativeBinding, excludedTurnIds: ReadonlyArray<string>): CodexStartDispatch {
+      // Terminal turns can already be gone from the adapter's active and settled maps.
+      const knownTurns = new Set(excludedTurnIds);
+      for (const [turnId, owner] of acknowledgedTurns) {
+        if (matchesNativeBinding(owner, binding)) knownTurns.add(turnId);
+      }
       const dispatch: CodexStartDispatch = {
         ...binding,
-        excludedTurnIds: new Set(excludedTurnIds),
+        excludedTurnIds: knownTurns,
         completions: new Set(),
         nativeTurnId: undefined,
         turnActivityObserved: false,
@@ -77,38 +108,50 @@ export function makeCodexLateStartRecovery() {
       dispatch.unknown = true;
       releaseSettled(dispatch);
     },
-    observeReply(runtimeGeneration: string, reply: unknown) {
+    observeFrame(runtimeGeneration: string, frame: unknown) {
+      if (dispatches.size === 0 || !Predicate.isObject(frame)) return;
+      if (
+        typeof frame.method === "string" &&
+        (typeof frame.id === "string" || Number.isSafeInteger(frame.id)) &&
+        !("result" in frame) &&
+        !("error" in frame)
+      ) {
+        // A request can precede every turn notification. The actual handler
+        // may run after the start response, so record its binding here.
+        observeTurnActivity(runtimeGeneration, frame.params);
+        return;
+      }
       // The envelope schema permits both result and error. The client sends
       // integer IDs and Codex stdio may omit the JSON-RPC version.
       if (
-        dispatches.size === 0 ||
-        !Predicate.isObject(reply) ||
-        typeof reply.id !== "number" ||
-        !Number.isSafeInteger(reply.id) ||
-        reply.id < 1 ||
-        ("jsonrpc" in reply && reply.jsonrpc !== "2.0") ||
-        !Predicate.isObject(reply.error) ||
-        reply.error.code !== INVALID_PARAMS ||
-        typeof reply.error.message !== "string" ||
-        Object.keys(reply).some((key) => key !== "id" && key !== "error" && key !== "jsonrpc") ||
-        Object.keys(reply.error).some(
+        typeof frame.id !== "number" ||
+        !Number.isSafeInteger(frame.id) ||
+        frame.id < 1 ||
+        ("jsonrpc" in frame && frame.jsonrpc !== "2.0") ||
+        !Predicate.isObject(frame.error) ||
+        (frame.error.code !== -32600 &&
+          frame.error.code !== -32601 &&
+          frame.error.code !== INVALID_PARAMS) ||
+        typeof frame.error.message !== "string" ||
+        Object.keys(frame).some((key) => key !== "id" && key !== "error" && key !== "jsonrpc") ||
+        Object.keys(frame.error).some(
           (key) => key !== "code" && key !== "message" && key !== "data",
         )
       )
         return;
-      rejectionReplies.set(reply.error, { runtimeGeneration, requestId: String(reply.id) });
+      rejectionReplies.set(frame.error, { runtimeGeneration, requestId: String(frame.id) });
     },
     reject(
       dispatch: CodexStartDispatch,
       currentGeneration: string | undefined,
       error: CodexErrors.CodexAppServerError,
-    ) {
+    ): StartRejection {
       if (
         error._tag !== "CodexAppServerRequestError" ||
         !isNonApplyingStartupRejection(error, "turn/start")
       )
-        return "other_error";
-      if (error.code !== INVALID_PARAMS || !Predicate.isObject(error.cause)) return "unverified";
+        return { kind: "other_error" };
+      if (!Predicate.isObject(error.cause)) return { kind: "unverified" };
       // The original waiter binds the request method and ID to this dispatch.
       // Object identity ties that failure to the exact envelope on the wire.
       const reply = rejectionReplies.get(error.cause);
@@ -123,27 +166,16 @@ export function makeCodexLateStartRecovery() {
         dispatch.completions.size > 0 ||
         dispatch.overflow
       )
-        return "unverified";
+        return { kind: "unverified" };
       rejectionReplies.delete(error.cause);
-      dispatches.delete(dispatch);
-      return "not_applied";
+      const canReconcileLate = error.code === INVALID_PARAMS;
+      return {
+        kind: "not_applied",
+        canReconcileLate,
+        release: () => (canReconcileLate || !dispatch.unknown) && dispatches.delete(dispatch),
+      };
     },
-    observeTurnActivity(runtimeGeneration: string, payload: unknown) {
-      if (dispatches.size === 0 || !Predicate.isObject(payload)) return;
-      const nativeThreadId = payload.threadId;
-      const nativeTurnId =
-        typeof payload.turnId === "string"
-          ? payload.turnId
-          : Predicate.isObject(payload.turn)
-            ? payload.turn.id
-            : undefined;
-      if (typeof nativeThreadId !== "string" || typeof nativeTurnId !== "string") return;
-      const binding = { nativeThreadId, runtimeGeneration };
-      for (const dispatch of dispatches) {
-        if (matchesNativeBinding(dispatch, binding) && !dispatch.excludedTurnIds.has(nativeTurnId))
-          dispatch.turnActivityObserved = true;
-      }
-    },
+    observeTurnActivity,
     acknowledge(dispatch: CodexStartDispatch, runtimeGeneration: string, nativeTurnId: string) {
       if (!dispatches.has(dispatch) || dispatch.runtimeGeneration !== runtimeGeneration) return;
       if (!nativeTurnId || dispatch.excludedTurnIds.has(nativeTurnId)) return;
@@ -152,6 +184,14 @@ export function makeCodexLateStartRecovery() {
         return;
       }
       dispatch.nativeTurnId = nativeTurnId;
+      acknowledgedTurns.set(nativeTurnId, {
+        runtimeGeneration,
+        nativeThreadId: dispatch.nativeThreadId,
+      });
+      if (acknowledgedTurns.size > RECENT_ACKNOWLEDGED_TURN_LIMIT) {
+        const oldest = acknowledgedTurns.keys().next();
+        if (!oldest.done) acknowledgedTurns.delete(oldest.value);
+      }
       releaseSettled(dispatch);
     },
     complete(binding: NativeBinding, nativeTurnId: string) {

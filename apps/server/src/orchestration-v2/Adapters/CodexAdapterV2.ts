@@ -2,6 +2,7 @@ import { codexContinuityContext } from "../../jones/goals/continuity/codexTransp
 import { RequiredNativeSession } from "../../jones/taskContinuation/requiredNativeSession.ts";
 import { pipe } from "effect/Function";
 import {
+  CodexInlineHandoffRejection,
   HistoryNotApplied,
   PromptNotApplied,
   historyInjectionRejection,
@@ -2360,7 +2361,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     environment: resolvedRuntime?.environment ?? adapterOptions.environment,
                     onTermination: (error) =>
                       Deferred.succeed(termination, error).pipe(Effect.asVoid),
-                    observeDecodedReply: (reply) => lateStarts.observeReply(generation, reply),
+                    observeDecodedReply: (frame) => lateStarts.observeFrame(generation, frame),
                     captureProcessExit: retirement.captureProcessExit,
                     runtimeGeneration: generation,
                     ...(useProducer === undefined
@@ -2872,6 +2873,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           request.input.runId === request.state.binding.runId &&
           request.input.attemptId === request.state.binding.attemptId &&
           request.state.binding.runtimeGeneration === currentProducer.generation;
+
+        // Even a definitive rejection cannot make an issued retry eligible for adoption.
+        const canAdoptUnsentCapacityStart = (request: CapacityRequest) =>
+          !request.startSent &&
+          request.state.phase === "awaiting_start" &&
+          currentCapacityBinding(request);
 
         const releaseCapacityRequest = (request: CapacityRequest) => {
           // A terminal replay can release capacity while buffered background
@@ -6561,8 +6568,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const sleepingRetry = sleepingCapacityRetries.get(payload.threadId);
             const admittedRetry =
               request?.continuationOf !== undefined &&
-              request.state.phase === "awaiting_start" &&
-              !request.startDispatched &&
+              canAdoptUnsentCapacityStart(request) &&
               capacityContinuations.get(payload.threadId)?.context === request.continuationOf
                 ? request
                 : undefined;
@@ -6575,7 +6581,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ) {
               const continuity = yield* bindContinuity(request.input, producer);
               let successor = admittedRetry;
-              if (sleepingRetry !== undefined) {
+              if (
+                sleepingRetry !== undefined &&
+                sleepingCapacityRetries.get(payload.threadId) === sleepingRetry &&
+                currentCapacityBinding(request)
+              ) {
                 const failed = sleepingRetry.terminal.context;
                 sleepingCapacityRetries.delete(payload.threadId);
                 if (
@@ -6590,7 +6600,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   successor = makeCapacityContinuationRequest(request, failed);
                 }
               }
-              if (successor !== undefined) {
+              if (successor !== undefined && canAdoptUnsentCapacityStart(successor)) {
                 reduceCapacity(successor, {
                   type: "startAcknowledged",
                   retryOrdinal: successor.state.retryOrdinal,
@@ -9403,12 +9413,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 }
               : {}),
           };
-          if (continuityContext !== undefined)
-            yield* Ref.update(additionalContextByThread, (current) => {
-              const next = new Map(current);
-              next.set(request.params.threadId, params.additionalContext!);
-              return next;
-            });
+          const restoreRefusedInline =
+            retryOrdinal === 0 ? yield* CodexInlineHandoffRejection : undefined;
           if (continuity !== undefined && !(yield* continuity.checkContinuation))
             return yield* new GoalContinuityError({ reason: "recovery_required" });
           if (!currentCapacityBinding(request))
@@ -9448,6 +9454,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           // reconcile an exact reply after the caller's deadline.
           const startCancelled = yield* Deferred.make<void>();
           request.pendingStartCancelled = startCancelled;
+          let inTimeRejection:
+            | { readonly error: CodexErrors.CodexAppServerError; readonly release: () => boolean }
+            | undefined;
           const pendingStart = yield* producer.client
             .request("turn/start", retryOrdinal === 0 ? params : { ...params, input: [] })
             .pipe(
@@ -9457,18 +9466,33 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     lateStarts.acknowledge(dispatch, producer.generation, started.turn.id);
                 }),
               ),
-              Effect.mapError((error) => {
-                const rejection = lateStarts.reject(
-                  dispatch,
-                  producer.active && producer === currentProducer ? producer.generation : undefined,
-                  error,
-                );
-                // Only a proved rejection can restore unsent context handoffs.
-                if (rejection === "unverified")
-                  return toProtocolError("Codex did not confirm that it rejected the turn start");
-                if (rejection === "not_applied") request.startDispatched = false;
-                return error;
-              }),
+              Effect.catch(
+                Effect.fnUntraced(function* (error) {
+                  const rejection = lateStarts.reject(
+                    dispatch,
+                    producer.active && producer === currentProducer
+                      ? producer.generation
+                      : undefined,
+                    error,
+                  );
+                  // Never expose an ambiguous response as proof of prompt non-application.
+                  if (rejection.kind === "unverified")
+                    return yield* toProtocolError(
+                      "Codex did not confirm that it rejected the turn start",
+                    );
+                  if (rejection.kind === "not_applied") {
+                    if (rejection.canReconcileLate) {
+                      // Complete the exact attempt's ledger before lifting a late admission hold.
+                      yield* restoreRefusedInline?.(request.state.binding) ?? Effect.void;
+                      rejection.release();
+                      request.startDispatched = false;
+                    } else {
+                      inTimeRejection = { error, release: rejection.release };
+                    }
+                  }
+                  return yield* error;
+                }),
+              ),
               Effect.forkIn(producer.scope, { startImmediately: true }),
             );
           // Stop ends the caller's wait and leaves reconciliation to the producer.
@@ -9483,6 +9507,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
             ),
             Effect.timeout(CODEX_START_ACK_TIMEOUT_MS),
+            Effect.mapError((error) => {
+              if (inTimeRejection === undefined || inTimeRejection.error !== error) return error;
+              if (!inTimeRejection.release())
+                return toProtocolError("Codex did not confirm that it rejected the turn start");
+              request.startDispatched = false;
+              return error;
+            }),
           );
           const previousTurn =
             previousTurns.get(started.turn.id) ??
@@ -9527,6 +9558,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
           if (!currentCapacityBinding(request))
             return yield* toProtocolError("Native physical binding changed after acknowledgement.");
+          // A rejected dispatch leaves the previously accepted compaction context intact.
+          yield* Ref.update(additionalContextByThread, (current) => {
+            const next = new Map(current);
+            if (params.additionalContext === undefined) next.delete(params.threadId);
+            else next.set(params.threadId, params.additionalContext);
+            return next;
+          });
           const earlyStart = request.earlyStarts.get(started.turn.id);
           const earlyError = request.earlyErrors.get(started.turn.id);
           const earlyCompletion = request.earlyCompletions.get(started.turn.id);
@@ -9784,13 +9822,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 const updated = new Map(current);
                 updated.set(threadId, turnInput);
                 return updated;
-              });
-              yield* Ref.update(additionalContextByThread, (current) => {
-                const next = new Map(current);
-                if (turnStartParams.additionalContext)
-                  next.set(threadId, turnStartParams.additionalContext);
-                else next.delete(threadId);
-                return next;
               });
               request = makeCapacityRequest(
                 turnInput,

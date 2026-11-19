@@ -12,6 +12,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { materializeCodexReplayAppIdentity } from "../../jones/runtimeIdentity/CodexReplayIdentity.ts";
+import { codexStartReplyObservationOptions } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 
 import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -132,9 +133,12 @@ export function makeCodexReplayClientFactory(input: {
         openInput.captureProcessExit?.(Deferred.await(processExited));
         yield* Effect.addFinalizer(() => Deferred.succeed(processExited, undefined));
         const context = yield* Layer.build(
-          replayLayer(
-            openInput.onTermination === undefined ? {} : { onTermination: openInput.onTermination },
-          ),
+          replayLayer({
+            ...codexStartReplyObservationOptions(openInput.observeDecodedReply),
+            ...(openInput.onTermination === undefined
+              ? {}
+              : { onTermination: openInput.onTermination }),
+          }),
         ).pipe(
           Effect.mapError(
             (cause) =>

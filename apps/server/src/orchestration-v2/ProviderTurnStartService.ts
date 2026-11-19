@@ -45,7 +45,11 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
 import { startFailureCauseMessage } from "../jones/provider/startFailureMessage.ts";
-import { promptWasNotApplied } from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
+import {
+  CodexInlineHandoffRejection,
+  makeCodexHistoryDeliveryPersistence,
+  promptWasNotApplied,
+} from "../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import {
   modelSelectionsEqual,
   codexModelFamily,
@@ -3321,11 +3325,11 @@ export const layer: Layer.Layer<
           subagent.origin === "provider_native" &&
           RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
-      const persistHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (
+      const writeHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (
         handoff: OrchestrationV2ContextHandoff,
       ) {
         const updatedAt = yield* DateTime.now;
-        yield* eventSink.write({
+        return yield* eventSink.write({
           events: [
             {
               id: yield* idAllocator.allocate.event({
@@ -3341,6 +3345,8 @@ export const layer: Layer.Layer<
           ],
         });
       });
+      const persistHandoff = (handoff: OrchestrationV2ContextHandoff) =>
+        writeHandoff(handoff).pipe(Effect.asVoid);
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           if (turnInput.resume === true) {
@@ -3381,7 +3387,9 @@ export const layer: Layer.Layer<
                         ...history,
                       }),
                   }),
-              persist: persistHandoff,
+              ...(session.driver === "codex"
+                ? makeCodexHistoryDeliveryPersistence(writeHandoff, eventSink.withProviderBatch)
+                : { persist: persistHandoff }),
             },
             {
               input: turnInput,
@@ -3422,6 +3430,12 @@ export const layer: Layer.Layer<
                 : turnInput;
           const { resume: _resume, ...contextInput } = startInput;
           const { message: resumeMessage, resume: _resumeIntent, ...resumeInput } = startInput;
+          const nativeThreadId = runningProviderThread.nativeThreadRef?.nativeId;
+          const restoreUnsent = delivery.unsent.pipe(
+            Effect.catchCause(() =>
+              Effect.logWarning("Failed to restore unsent context handoffs", { runId: run.id }),
+            ),
+          );
           const operation =
             turnInput.resume && context === "" && session.resumeTurn !== undefined
               ? session.resumeTurn({ ...resumeInput, messageId: resumeMessage.messageId })
@@ -3437,22 +3451,25 @@ export const layer: Layer.Layer<
                 });
           yield* assertAdmission(runningProviderThread);
           yield* operation.pipe(
-            // Clear pending handoff markers for refused prompts so the next turn retains the native session.
-            // Jones: a current-attempt proof that Codex did not apply the prompt also restores them.
+            Effect.provideService(
+              CodexInlineHandoffRejection,
+              session.driver === "codex" && delivery.context !== "" && nativeThreadId != null
+                ? (binding) =>
+                    binding.nativeThreadId === nativeThreadId &&
+                    binding.providerThreadId === runningProviderThread.id &&
+                    binding.runId === run.id &&
+                    binding.attemptId === attempt.id
+                      ? restoreUnsent
+                      : Effect.void
+                : undefined,
+            ),
             Effect.tapError((error) =>
               refusedBeforePrompt(error) || promptWasNotApplied(error)
-                ? delivery.unsent.pipe(
-                    Effect.catchCause(() =>
-                      Effect.logWarning("Failed to restore unsent context handoffs", {
-                        runId: run.id,
-                      }),
-                    ),
-                  )
+                ? restoreUnsent
                 : Effect.void,
             ),
           );
           // After provider acceptance, failed delivery bookkeeping must not stop live ingestion.
-          const nativeThreadId = runningProviderThread.nativeThreadRef?.nativeId;
           yield* Effect.forEach(
             [
               delivery.delivered,
@@ -3497,10 +3514,7 @@ export const layer: Layer.Layer<
         (
           turnInput: Parameters<typeof session.startTurn>[0],
           compact: boolean = false,
-          unsent: Effect.Effect<
-            void,
-            Effect.Error<ReturnType<typeof persistHandoff>> | ProviderAdapter.ProviderAdapterV2Error
-          > = Effect.void,
+          unsent: Effect.Effect<void, unknown> = Effect.void,
         ) =>
           Effect.gen(function* () {
             let dispatchInput = turnInput;
