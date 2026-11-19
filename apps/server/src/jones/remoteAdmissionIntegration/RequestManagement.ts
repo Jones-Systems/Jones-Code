@@ -66,8 +66,9 @@ const summary = (row: Row): DTO.RequestSummary => ({
 });
 
 const canDismiss = (row: Row) => {
+  if (row.has_live_grant !== 0) return false;
   if (row.status === "denied" || row.status === "cancelled") return true;
-  if (row.status !== "dispatched" || row.has_live_grant !== 0) return false;
+  if (row.status !== "dispatched") return false;
   const outcome = recoveryOutcome(row);
   return row.operation === "t3_thread_launch"
     ? outcome === "created" || outcome === "refused" || outcome === "not_created"

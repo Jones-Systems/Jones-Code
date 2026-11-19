@@ -59,7 +59,7 @@ export function fallBackToLegacyReview(receiver: EnvironmentId): boolean {
     }
     return false;
   }
-  controller.stopResults();
+  controller.invalidateConnection();
   unsupportedReceivers.set(receiver, "legacy");
   publish();
   return true;

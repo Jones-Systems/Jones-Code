@@ -135,6 +135,34 @@ it("reports a verified empty V2 inbox separately from a receiver requiring owner
   expect(f.client.mutate).not.toHaveBeenCalled();
 });
 
+it("requires fresh exact request readback after the owner connection changes", async () => {
+  const f = setup("review-routed-reconnect");
+  const controller = reviewControllerFor(f.environmentId)!;
+  const replacement = deferred<Item>();
+  f.client.lookup = vi.fn(async () => f.item).mockReturnValueOnce(Promise.resolve(f.item));
+  vi.mocked(f.client.lookup).mockReturnValueOnce(replacement.promise);
+  await using screen = await render(
+    <TooltipProvider>
+      <ReviewPage
+        environmentId={f.environmentId}
+        label="Laptop"
+        search={{ request: f.item.record.id, binding: f.item.record.bindingDigest }}
+      />
+    </TooltipProvider>,
+  );
+  const approve = screen.getByRole("button", { name: "Approve", exact: true });
+  await expect.element(approve).toBeVisible();
+  await act(() => controller.invalidateConnection());
+  expect(approve.query()).toBeNull();
+  await act(() => controller.load());
+  await expect.element(screen.getByText("Loading exact request…")).toBeVisible();
+  expect(approve.query()).toBeNull();
+  await act(() => replacement.resolve(f.item));
+  await expect.element(approve).toBeVisible();
+  expect(f.client.lookup).toHaveBeenCalledTimes(2);
+  expect(f.client.mutate).not.toHaveBeenCalled();
+});
+
 it("selects cards into the real pane, keeps exact request and thread links separate, and submits duration only on approval", async () => {
   const f = setup("review-browser-exact");
   await using screen = await render(

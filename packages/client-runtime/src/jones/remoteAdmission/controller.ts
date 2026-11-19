@@ -122,6 +122,7 @@ export interface AttentionPersistence {
 }
 export interface ReviewState {
   capabilities: Capabilities | null;
+  authorityRevision: number;
   view: View;
   page: Page | null;
   loading: boolean;
@@ -141,6 +142,7 @@ export interface ReviewState {
 export function createReviewController(client: ReviewClient) {
   let state: ReviewState = {
     capabilities: null,
+    authorityRevision: 0,
     view: "current",
     page: null,
     loading: false,
@@ -175,6 +177,34 @@ export function createReviewController(client: ReviewClient) {
   const publish = (patch: Partial<ReviewState>) => {
     state = { ...state, ...patch };
     for (const notify of listeners) notify();
+  };
+  const stopResults = () => {
+    const owner = feed;
+    feed = null;
+    owner?.abort();
+  };
+  const clearAuthorizedReadback = (capabilities: Capabilities | null) => {
+    stopResults();
+    ++readOrdinal;
+    ++requestReadOrdinal;
+    ++accessReadOrdinal;
+    publish({
+      capabilities,
+      authorityRevision: state.authorityRevision + 1,
+      page: null,
+      selectedItem: null,
+      selectedAccess: null,
+      selectedAccessFromId: null,
+      incoming: [],
+      currentHeldCount: 0,
+      loading: false,
+      loadFailed: capabilities !== null,
+      error: capabilities ? "Owner access is required to review requests." : null,
+    });
+  };
+  const observeCapabilities = (capabilities: Capabilities) => {
+    if (capabilities.canDecide) publish({ capabilities });
+    else clearAuthorizedReadback(capabilities);
   };
   const persistAttention = () =>
     persistence?.write({
@@ -264,19 +294,8 @@ export function createReviewController(client: ReviewClient) {
     try {
       const capabilities = await client.capabilities();
       if (ordinal !== readOrdinal || epoch !== mutationEpoch) return;
-      publish({ capabilities });
-      if (!capabilities.canDecide) {
-        publish({
-          page: null,
-          selectedItem: null,
-          selectedAccess: null,
-          incoming: [],
-          currentHeldCount: 0,
-          loadFailed: true,
-          error: "Owner access is required to review requests.",
-        });
-        return;
-      }
+      observeCapabilities(capabilities);
+      if (!capabilities.canDecide) return;
       const page = await client.page(
         view,
         older && previous?.nextCursor ? previous.nextCursor : undefined,
@@ -553,7 +572,7 @@ export function createReviewController(client: ReviewClient) {
       try {
         const capabilities = await client.capabilities();
         if (owner.signal.aborted) return;
-        publish({ capabilities });
+        observeCapabilities(capabilities);
         if (!capabilities.canDecide || !capabilities.features.has("changeFeed")) return;
         // First admission starts at head. Retained history never creates a toast.
         if (cursor === null) {
@@ -613,10 +632,9 @@ export function createReviewController(client: ReviewClient) {
         if (feed === owner) feed = null;
       }
     },
-    stopResults() {
-      const owner = feed;
-      feed = null;
-      owner?.abort();
+    stopResults,
+    invalidateConnection() {
+      clearAuthorizedReadback(null);
     },
   };
 }

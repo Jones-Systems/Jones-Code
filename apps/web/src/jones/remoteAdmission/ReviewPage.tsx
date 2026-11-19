@@ -79,9 +79,9 @@ export function ReviewPage({
     : null;
   const [selection, setSelection] = useState(linkedSelection);
   const [lookupRevision, setLookupRevision] = useState(0);
-  const [requestRead, setRequestRead] = useState<{ revision: number; result: ExactLookup }>();
+  const [requestRead, setRequestRead] = useState<{ revision: string; result: ExactLookup }>();
   const [linkedAccess, setLinkedAccess] = useState(requestedAccess);
-  const [accessRead, setAccessRead] = useState<{ revision: number; loaded: boolean }>();
+  const [accessRead, setAccessRead] = useState<{ revision: string; loaded: boolean }>();
   const [accessSelection, setAccessSelection] = useState({
     id: requestedAccess ?? null,
     revision: state.accessSelectionRevision,
@@ -96,8 +96,15 @@ export function ReviewPage({
     setAccessSelection({ id: requestedAccess ?? null, revision: state.accessSelectionRevision });
     setReviewBlocked(false);
   }
-  const exactLookup = requestRead?.revision === lookupRevision ? requestRead.result : "loading";
-  const exactAccess = accessRead?.revision === lookupRevision ? accessRead.loaded : undefined;
+  const exactReadRevision = `${state.authorityRevision}:${lookupRevision}`;
+  const canDecide = capabilities?.canDecide === true;
+  const exactLookup =
+    capabilities?.canDecide === false
+      ? "unavailable"
+      : requestRead?.revision === exactReadRevision
+        ? requestRead.result
+        : "loading";
+  const exactAccess = accessRead?.revision === exactReadRevision ? accessRead.loaded : undefined;
   const accessId =
     state.selectedAccess &&
     accessSelection.revision !== state.accessSelectionRevision &&
@@ -115,35 +122,35 @@ export function ReviewPage({
   };
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- An exact route must finish its own lookup before it can show a cached request or expose decisions.
   useEffect(() => {
-    if (!selection?.fromLink) return;
+    if (!selection?.fromLink || !canDecide) return;
     let current = true;
     void lookupExactRequest(controller, selection).then((readback) => {
-      if (current) setRequestRead({ revision: lookupRevision, result: readback });
+      if (current) setRequestRead({ revision: exactReadRevision, result: readback });
     });
     return () => {
       current = false;
     };
-  }, [controller, selection, lookupRevision]);
+  }, [controller, selection, exactReadRevision, canDecide]);
   const openAccess = (id: string) => {
     setAccessId(id);
     void controller.lookupAccess(id).catch(() => undefined);
   };
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Exact access must complete readback before a route can expose editing controls.
   useEffect(() => {
-    if (!linkedAccess) return;
+    if (!linkedAccess || !canDecide) return;
     let current = true;
     void controller.lookupAccess(linkedAccess).then(
       () => {
-        if (current) setAccessRead({ revision: lookupRevision, loaded: true });
+        if (current) setAccessRead({ revision: exactReadRevision, loaded: true });
       },
       () => {
-        if (current) setAccessRead({ revision: lookupRevision, loaded: false });
+        if (current) setAccessRead({ revision: exactReadRevision, loaded: false });
       },
     );
     return () => {
       current = false;
     };
-  }, [controller, linkedAccess, lookupRevision]);
+  }, [controller, linkedAccess, exactReadRevision, canDecide]);
   const selectedDigest = selection?.fromLink
     ? typeof exactLookup === "object"
       ? exactLookup.digest
@@ -158,11 +165,13 @@ export function ReviewPage({
     : null;
   const itemView = item ? admissionPresentation(item.record) : null;
   const selectedAccess = state.selectedAccess?.id === accessId ? state.selectedAccess : null;
-  const access = linkedAccess
-    ? exactAccess && state.selectedAccessFromId === linkedAccess
-      ? selectedAccess
-      : null
-    : (selectedAccess ?? page?.access.find((entry) => entry.id === accessId) ?? null);
+  const access = capabilities?.canDecide
+    ? linkedAccess
+      ? exactAccess && state.selectedAccessFromId === linkedAccess
+        ? selectedAccess
+        : null
+      : (selectedAccess ?? page?.access.find((entry) => entry.id === accessId) ?? null)
+    : null;
   const disabled = item
     ? state.policyBarrier
       ? "Evaluator settings are changing."
@@ -259,19 +268,21 @@ export function ReviewPage({
       ) : null}
       <div className="grid min-w-0 items-start gap-4 @min-[46rem]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <div className={hasSelection ? "hidden min-w-0 @min-[46rem]:block" : "min-w-0"}>
-          <ReviewRows
-            key={state.view}
-            environmentId={environmentId}
-            state={state}
-            supportMissing={supportMissing}
-            selectedItem={item}
-            accessId={accessId}
-            choose={choose}
-            chooseAccess={(id) => {
-              openAccess(id);
-              setSelection(null);
-            }}
-          />
+          {capabilities?.canDecide ? (
+            <ReviewRows
+              key={state.view}
+              environmentId={environmentId}
+              state={state}
+              supportMissing={supportMissing}
+              selectedItem={item}
+              accessId={accessId}
+              choose={choose}
+              chooseAccess={(id) => {
+                openAccess(id);
+                setSelection(null);
+              }}
+            />
+          ) : null}
         </div>
         <section
           ref={detailRef}

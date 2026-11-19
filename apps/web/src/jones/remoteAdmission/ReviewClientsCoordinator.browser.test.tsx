@@ -1,4 +1,9 @@
 import { AVAILABLE_CONNECTION_STATE } from "@t3tools/client-runtime/connection";
+import type {
+  ChangeBatch,
+  Item,
+  ReviewClient,
+} from "@t3tools/client-runtime/jones/remoteAdmission/controller";
 import { EnvironmentId } from "@t3tools/contracts";
 import {
   REMOTE_ADMISSION_REVIEW_VERSION,
@@ -9,8 +14,8 @@ import { expect, it, vi } from "vite-plus/test";
 import { act, render } from "../../../test/render";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../../rpc/atomRegistry";
 import { ReviewClientsCoordinator } from "./ReviewClientsCoordinator";
-import { reviewControllerFor } from "./reviewRuntime";
-import { deferred } from "./testFixtures";
+import { installReviewClient, reviewControllerFor } from "./reviewRuntime";
+import { admissionFixture, deferred } from "./testFixtures";
 
 const { capabilities, refresh } = vi.hoisted(() => ({ capabilities: vi.fn(), refresh: vi.fn() }));
 const receiver = EnvironmentId.make("review-reconnect");
@@ -74,4 +79,85 @@ it("downgrades only for the current connection and restores the same V2 controll
   capabilities.mockResolvedValue(supported);
   await act(() => appAtomRegistry.set(connection, connected(5)));
   await vi.waitFor(() => expect(reviewControllerFor(receiver)).toBe(original));
+});
+
+it("restarts the feed on the new connection even if the old poll has not settled", async () => {
+  const id = EnvironmentId.make("review-reconnect-stale-feed");
+  environment.environmentId = id;
+  capabilities.mockResolvedValue({
+    ...supported,
+    features: { ...supported.features, changeFeed: true },
+    principal: { canDecide: true },
+  });
+  const held: Item = {
+    record: admissionFixture({ id: "held-during-route-change" }),
+    attempt: "original",
+    blocked: false,
+    accessId: null,
+    grantEligible: false,
+    outcome: null,
+    availability: "unknown",
+    threadId: null,
+    messageStage: null,
+    reason: null,
+    canRetry: false,
+    canRecheck: false,
+  };
+  let incoming: readonly Item[] = [];
+  const old = deferred<ChangeBatch>();
+  const changes = vi.fn<ReviewClient["changes"]>(
+    (_cursor, signal) =>
+      new Promise<never>((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }),
+      ),
+  );
+  changes.mockReturnValueOnce(old.promise);
+  const client: ReviewClient = {
+    capabilities: async () => ({ canDecide: true, features: new Set(["reviewV2", "changeFeed"]) }),
+    page: async (view) => ({
+      revision: "snapshot",
+      policyRevision: "synthetic-policy",
+      records: view === "current" ? incoming : [],
+      access: [],
+      recordCount: view === "current" ? incoming.length : 0,
+      nextCursor: null,
+      counts: {
+        currentHeldAdmissions: incoming.length,
+        blockedHeldAdmissions: 0,
+        heldAdmissions: incoming.length,
+        inFlightAdmissions: 0,
+        failedAdmissions: 0,
+        unresolvedAdmissions: 0,
+        activeAccessScopes: 0,
+        activeThreads: 0,
+      },
+    }),
+    head: async () => "retained-head",
+    changes,
+    lookup: vi.fn(),
+    lookupAccess: vi.fn(),
+    mutate: vi.fn(),
+  };
+  installReviewClient(id, client);
+  const controller = reviewControllerFor(id)!;
+  await using _screen = await render(
+    <AppAtomRegistryProvider>
+      <ReviewClientsCoordinator />
+    </AppAtomRegistryProvider>,
+  );
+  try {
+    await vi.waitFor(() => expect(changes).toHaveBeenCalledTimes(1));
+    await controller.load("done");
+    incoming = [held];
+    await act(() => appAtomRegistry.set(connection, connected(6)));
+    await vi.waitFor(() => expect(changes).toHaveBeenCalledTimes(2));
+    expect(changes.mock.calls[0]?.[1].aborted).toBe(true);
+    await act(() => old.reject(new Error("old transport closed")));
+    expect(controller.getSnapshot()).toMatchObject({ view: "done", incoming: [held], error: null });
+    expect(client.mutate).not.toHaveBeenCalled();
+  } finally {
+    old.reject(new Error("fixture closed"));
+    controller.stopResults();
+    environment.environmentId = receiver;
+  }
 });

@@ -5,6 +5,7 @@ import {
   attentionKey,
   bindingKey,
   type Item,
+  type ReviewState,
 } from "@t3tools/client-runtime/jones/remoteAdmission/controller";
 import { toastManager } from "../../components/ui/toast";
 import { Button } from "../../components/ui/button";
@@ -27,6 +28,10 @@ import {
   dismissedResults,
   receiverAttention,
 } from "./attentionPersistence";
+
+const canShowOwnerAttention = (state: ReviewState) =>
+  state.capabilities?.canDecide === true && !state.loadFailed;
+
 // The explicit external revision invalidates compiler-cached persistence reads even
 // when the receiver's controller arrays have not changed (for example, dismissal).
 function receiverAttentionItems(
@@ -62,11 +67,11 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
   const state = useReview(receiver);
   const attention = useSyncExternalStore(subscribeAttention, attentionRevision);
   const inApp = useClientSettings((settings) => settings.inAppNotificationsEnabled);
-  const incoming = state.capabilities?.canDecide && !state.loadFailed ? state.incoming : [];
+  const visible = inApp && canShowOwnerAttention(state);
   const { hasIncoming, results } = receiverAttentionItems(
     receiver,
-    incoming,
-    state.capabilities?.canDecide && !state.loadFailed ? state.results : [],
+    visible ? state.incoming : [],
+    visible ? state.results : [],
     attention,
   );
   const incomingId = useRef<string | null>(null);
@@ -88,7 +93,7 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
   }, [state.controller, receiver]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile persistent attention with owned imperative incoming/result toasts; React renders their subscribed content while the toast manager owns their lifetime.
   useEffect(() => {
-    if (inApp && hasIncoming && !incomingId.current) {
+    if (hasIncoming && !incomingId.current) {
       incomingId.current = toastManager.add({
         timeout: 0,
         data: {
@@ -115,7 +120,7 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
         },
       });
     }
-    if (inApp && results.length && !resultId.current) {
+    if (results.length && !resultId.current) {
       resultId.current = toastManager.add({
         timeout: 0,
         data: {
@@ -141,13 +146,13 @@ function ReceiverNotifications({ receiver, label }: { receiver: EnvironmentId; l
         },
       });
     }
-    if (!inApp) {
+    if (!visible) {
       if (incomingId.current) toastManager.close(incomingId.current);
       if (resultId.current) toastManager.close(resultId.current);
       incomingId.current = null;
       resultId.current = null;
     }
-  }, [inApp, hasIncoming, results, state.controller, receiver, label]);
+  }, [visible, hasIncoming, results, state.controller, receiver, label]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Close this notification owner's imperative incoming/result toast handles on unmount.
   useEffect(() => {
     const a = incomingId;
@@ -204,6 +209,7 @@ function IncomingStack({
   const state = useReview(receiver);
   useSyncExternalStore(subscribeAttention, attentionRevision);
   const [collapsed, setCollapsed] = useState(false);
+  const visible = canShowOwnerAttention(state);
   const records = state.incoming.filter(
     (item) => item.record.status === "held" && !dismissedIncoming.has(attentionKey(receiver, item)),
   );
@@ -220,8 +226,9 @@ function IncomingStack({
   );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Close the owned imperative incoming toast only after its frozen rows are empty and both pointer and focus have left; never remove an active target.
   useEffect(() => {
-    if (!frozen.frozen && frozen.rows.length === 0) dismiss();
-  }, [frozen.frozen, frozen.rows.length, dismiss]);
+    if (visible && !frozen.frozen && frozen.rows.length === 0) dismiss();
+  }, [visible, frozen.frozen, frozen.rows.length, dismiss]);
+  if (!visible) return null;
   return (
     <section aria-label={`Incoming approval requests on ${label}`} className="min-w-0 space-y-2">
       <StackHeader
@@ -377,6 +384,7 @@ function CreatedStack({
   const [collapsed, setCollapsed] = useState(false);
   const rows = state.results.filter((item) => !dismissedResults.has(attentionKey(receiver, item)));
   const frozen = useFrozenRows(rows, (item) => attentionKey(receiver, item));
+  if (!canShowOwnerAttention(state)) return null;
   return (
     <section aria-label={`Thread creation results on ${label}`}>
       <StackHeader

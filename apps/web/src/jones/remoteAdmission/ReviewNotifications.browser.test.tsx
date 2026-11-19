@@ -253,3 +253,32 @@ it("retains incoming dismissal across remounts and removals, and re-raises for a
   await act(() => f.controller.load());
   expect(mocks.add).toHaveBeenCalledTimes(2);
 });
+
+it("redacts an already open creation toast when owner review access is lost", async () => {
+  const f = setup("review-notifications-owner-lost");
+  f.setRecords([]);
+  await f.controller.load();
+  await using _root = await render(<RemoteAdmissionNotifications />);
+  await vi.waitFor(() => expect(f.client.changes).toHaveBeenCalled());
+  const result: Item = {
+    ...f.item,
+    record: { ...f.item.record, status: "dispatched" },
+    outcome: "unknown",
+    reason: "Private retained creation details",
+  };
+  await act(() => f.deliver({ cursor: "after-result", revision: "updated", results: [result] }));
+  await vi.waitFor(() => expect(mocks.add).toHaveBeenCalledTimes(1));
+  await using screen = await render(<TooltipProvider>{body(0)}</TooltipProvider>);
+  expect(screen.container.textContent).toContain(result.reason);
+
+  const ownerCapabilities = f.client.capabilities;
+  f.client.capabilities = async () => ({ canDecide: false, features: new Set(["reviewV2"]) });
+  await act(() => f.controller.load());
+  expect(mocks.close).toHaveBeenCalledWith("toast-1");
+  expect(screen.container.textContent).not.toContain(result.reason);
+  expect(screen.container.querySelector('[aria-label="Open exact request"]')).toBeNull();
+
+  f.client.capabilities = ownerCapabilities;
+  await act(() => f.controller.load());
+  await vi.waitFor(() => expect(mocks.add).toHaveBeenCalledTimes(2));
+});

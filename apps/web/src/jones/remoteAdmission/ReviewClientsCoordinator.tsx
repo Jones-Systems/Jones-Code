@@ -78,6 +78,7 @@ function ReceiverClient({ environment }: { environment: EnvironmentPresentation 
       });
     return () => {
       current = false;
+      retainedReviewControllerFor(environmentId)?.invalidateConnection();
     };
   }, [environmentId, entry, phase, version, stateAtom, generation]);
   return null;

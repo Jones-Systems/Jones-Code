@@ -279,6 +279,57 @@ it.effect("does not dismiss holds, unconfirmed launches, or other nonterminal st
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("keeps a withdrawn approved request visible while its access grant survives", () =>
+  Effect.gen(function* () {
+    const requests = yield* Requests.RequestManagement;
+    const admissions = yield* Admission.RemoteAdmission;
+    const sql = yield* SqlClient.SqlClient;
+    const id = yield* seed("peer-a", "withdrawn-approval", "approved");
+    const record = yield* admissions.get(id);
+    if (!record) return yield* Effect.die("Expected a retained admission");
+    const grant = yield* sql.withTransaction(
+      admissions.access.createGrantInTransaction({
+        admissionId: id,
+        binding: {
+          receiverEnvironmentId,
+          originEnvironmentId: "synthetic-origin",
+          originThreadId: "synthetic-origin-thread",
+          destinationThreadId: null,
+          sessionId: "peer-a",
+          operation: "t3_thread_launch",
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+        },
+        durationSeconds: 86400,
+        now: "2099-01-01T00:00:00.000Z",
+      }),
+    );
+    yield* admissions.withdraw({ id, bindingDigest: record.bindingDigest, clientId: "peer-a" });
+    const current = yield* requests.ownerQuery(
+      { action: "inspect", receiverEnvironmentId, id },
+      cli,
+    );
+    if (current.action !== "inspect") return yield* Effect.die("Expected an exact request");
+    expect(current.request).toMatchObject({ status: "cancelled", canDismiss: false });
+    expect(
+      yield* requests
+        .edit(
+          {
+            receiverEnvironmentId,
+            id,
+            action: "dismiss",
+            expectedRevision: current.request.revision,
+          },
+          cli,
+        )
+        .pipe(Effect.flip),
+    ).toMatchObject({ code: "request_not_dismissible" });
+    expect(yield* admissions.access.listGrants()).toEqual([grant]);
+    expect((yield* requests.list({ view: "all" }, null)).requests[0]?.id).toBe(id);
+    expect(yield* sql`SELECT * FROM jones_request_management_edits`).toEqual([]);
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("authorizes the owner CLI and denies remote writes on the actual HTTP routes", () =>
   Effect.gen(function* () {
     const requests = yield* Requests.RequestManagement;
