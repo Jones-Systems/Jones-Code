@@ -5268,29 +5268,32 @@ it.effect.each([
           "native-thread:second",
         ]);
 
-        const reloadCases = [
+        const loadCases = [
           {
-            name: "other model options",
+            name: "service tier",
             providerThread: secondProviderThread,
             selection: {
               ...modelSelection,
               options: [{ id: "serviceTier", value: "priority" }],
             },
             policy: runtimePolicy,
+            reload: normalizeThreadLoadModelSelection === undefined,
           },
           {
             name: "runtime policy",
             providerThread: secondProviderThread,
             selection: modelSelection,
             policy: { ...runtimePolicy, interactionMode: "plan" },
+            reload: true,
           },
         ] satisfies ReadonlyArray<{
           name: string;
           providerThread: OrchestrationV2ProviderThread;
           selection: ModelSelection;
           policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+          reload: boolean;
         }>;
-        for (const { name, providerThread, selection, policy } of reloadCases) {
+        for (const { name, providerThread, selection, policy, reload } of loadCases) {
           const before = (yield* Ref.get(state)).resumeCount;
           yield* secondRuntime.resumeThread({
             providerThread,
@@ -5298,7 +5301,7 @@ it.effect.each([
             modelSelection: selection,
             runtimePolicy: policy,
           });
-          assert.equal((yield* Ref.get(state)).resumeCount, before + 1, `${name} did not reload`);
+          assert.equal((yield* Ref.get(state)).resumeCount, before + Number(reload), name);
         }
 
         yield* manager.detach({ providerSessionId, threadId: firstThreadId });
