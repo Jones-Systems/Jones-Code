@@ -52,8 +52,11 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
 
   let assignments: NonNullable<ReturnType<typeof planWorkstreamThreadReorder>> = [];
   if (neighbor !== null) {
-    if (!input.allowReorder) return false;
-    const grouping = groupPersonalThreads(input.state, input.activeThreads);
+    if (!input.allowReorder || neighbor.pinnedAt != null) return false;
+    // Pinned members appear after active members and use a different order.
+    const activeMembers = input.activeThreads.filter((member) => member.pinnedAt == null);
+    const activeMemberKeys = new Set(activeMembers.map(shellKey));
+    const grouping = groupPersonalThreads(input.state, activeMembers);
     const groupIdByKey = new Map(
       grouping.groups.flatMap((group) =>
         group.threads.map((member) => [shellKey(member), group.workstream.id] as const),
@@ -62,7 +65,7 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
     const neighborId = shellKey(neighbor);
     if (
       neighborId === movedId ||
-      !input.activeThreads.some((member) => shellKey(member) === neighborId) ||
+      !activeMemberKeys.has(neighborId) ||
       (groupIdByKey.get(neighborId) ?? null) !== destinationId
     )
       return false;
@@ -75,7 +78,7 @@ export async function placePersonalThread(input: PersonalThreadPlacementInput): 
     );
     if (thread.pinnedAt != null) writable.add(movedId);
     const plan = planWorkstreamThreadReorder({
-      activeOrder: input.activeKeys,
+      activeOrder: input.activeKeys.filter((key) => activeMemberKeys.has(key)),
       keysById: input.activeKeysById,
       movedId,
       neighborId,

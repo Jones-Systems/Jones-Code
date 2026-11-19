@@ -596,7 +596,7 @@ function useSidebarThreads(input: {
     connectedEnvironmentIds,
     optimisticDrop,
     workingShelfEnabled,
-    sortActiveBySend: folderGroups !== null,
+    sortActiveBySend: folderGroups !== null && !input.workstreamsEnabled,
     clockKey: `${nowMinute}:${snoozeWakeClock}:${statusWakeAt}:${inboxReturnsVersion}`,
   });
 
@@ -4012,6 +4012,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 }
                                 canReorder={(thread) =>
                                   !workingShelfEnabled &&
+                                  thread.pinnedAt == null &&
                                   activeReorderableThreadKeys.has(
                                     scopedThreadKey(
                                       scopeThreadRef(thread.environmentId, thread.id),
