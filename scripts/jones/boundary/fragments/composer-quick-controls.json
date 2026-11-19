@@ -3,7 +3,8 @@
   "feature": "composer-quick-controls",
   "jonesOwnedPaths": [
     "apps/web/src/jones/composer/ComposerQuickControls.tsx",
-    "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx"
+    "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx",
+    "apps/web/src/jones/useTimedClick.ts"
   ],
   "hookPaths": [
     "apps/web/src/components/chat/ComposerControlsBar.tsx",

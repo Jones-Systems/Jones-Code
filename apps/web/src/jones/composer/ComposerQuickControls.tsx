@@ -2,6 +2,7 @@ import { isReasoningSelect } from "@t3tools/client-runtime/model-traits";
 import { useLayoutEffect, useState } from "react";
 import { ZapIcon } from "lucide-react";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
+import { UltrafastIcon } from "../../components/Icons";
 import { ComposerControl } from "../../components/chat/ComposerControl";
 import {
   useTraitsSelection,
@@ -11,11 +12,22 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
+import { DOUBLE_CLICK_WINDOW_MS, useTimedClick } from "../useTimedClick";
 
 const QUICK_EFFORTS = [
-  { value: "medium", label: "M", name: "Medium" },
-  { value: "high", label: "H", name: "High" },
-  { value: "xhigh", label: "E", name: "Extra high" },
+  {
+    value: "medium",
+    label: "M",
+    name: "Medium",
+    alternate: { value: "low", label: "L", name: "Low" },
+  },
+  { value: "high", label: "H", name: "High", alternate: null },
+  {
+    value: "xhigh",
+    label: "E",
+    name: "Extra high",
+    alternate: { value: "max", label: "Max", name: "Max" },
+  },
 ] as const;
 
 export function ComposerQuickControls(
@@ -35,6 +47,17 @@ export function ComposerQuickControls(
   );
   const [effortElement, setEffortElement] = useState<HTMLDivElement | null>(null);
   const [showEfforts, setShowEfforts] = useState(false);
+  const timedClick = useTimedClick(
+    JSON.stringify([
+      props.threadRef?.environmentId,
+      props.threadRef?.threadId,
+      "draftId" in props ? props.draftId : undefined,
+      props.instanceId,
+      props.provider,
+      props.model,
+      descriptor?.id,
+    ]),
+  );
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the measured shortcut fit and font/resize subscriptions; no fixed composer breakpoint.
   useLayoutEffect(() => {
@@ -100,9 +123,10 @@ export function ComposerQuickControls(
   }, [effortElement]);
 
   if (traits.modelIsUnavailable || (!fast && !tier && efforts.length === 0)) return null;
-  const fastOn = fast
-    ? fast.currentValue === true
-    : getProviderOptionCurrentValue(tier) === "priority";
+  const selectedTier = getProviderOptionCurrentValue(tier);
+  const ultrafast = fast ? null : tier?.options.find(({ id }) => id === "ultrafast");
+  const ultrafastOn = !!ultrafast && selectedTier === ultrafast.id;
+  const fastOn = fast ? fast.currentValue === true : selectedTier === "priority" || ultrafastOn;
   const selected = traits.ultrathinkPromptControlled
     ? "ultrathink"
     : getProviderOptionCurrentValue(descriptor);
@@ -115,21 +139,35 @@ export function ComposerQuickControls(
             render={
               <ComposerControl
                 data-composer-quick-fast
-                aria-label="Fast mode"
+                aria-label={ultrafastOn ? "Ultrafast mode" : "Fast mode"}
                 aria-pressed={fastOn}
                 disabled={props.hidden}
                 className="w-6 px-0 aria-pressed:bg-transparent aria-pressed:hover:bg-accent"
-                onClick={() => {
+                onClick={(event) => {
                   if (props.hidden) return;
-                  if (fast) traits.changeBoolean(fast.id, !fastOn);
-                  else if (tier) traits.changeSelect(tier, fastOn ? "default" : "priority");
+                  const toggleFast = () => {
+                    if (fast) traits.changeBoolean(fast.id, !fastOn);
+                    else if (tier) traits.changeSelect(tier, fastOn ? "default" : "priority");
+                  };
+                  timedClick(
+                    event,
+                    toggleFast,
+                    tier && ultrafast ? () => traits.changeSelect(tier, ultrafast.id) : undefined,
+                  );
                 }}
               />
             }
           >
-            <ZapIcon className={cn("size-4", fastOn && "fill-current")} />
+            {ultrafastOn ? (
+              <UltrafastIcon aria-hidden="true" className="size-4" />
+            ) : (
+              <ZapIcon aria-hidden="true" className={cn("size-4", fastOn && "fill-current")} />
+            )}
           </TooltipTrigger>
-          <TooltipPopup>Fast mode: {fastOn ? "on" : "off"}</TooltipPopup>
+          <TooltipPopup>
+            {ultrafastOn ? "Ultrafast mode: on" : `Fast mode: ${fastOn ? "on" : "off"}`}
+            {ultrafast ? `. Double-click within ${DOUBLE_CLICK_WINDOW_MS} ms for Ultrafast.` : null}
+          </TooltipPopup>
         </Tooltip>
       ) : null}
       {efforts.length > 0 ? (
@@ -145,30 +183,48 @@ export function ComposerQuickControls(
             !visible && "invisible absolute left-0 pointer-events-none",
           )}
         >
-          {efforts.map(({ value, label, name }) => {
+          {efforts.map(({ value, label, name, alternate }) => {
+            const supportedAlternate =
+              alternate && descriptor?.options.some(({ id }) => id === alternate.value)
+                ? alternate
+                : null;
+            const activeAlternate =
+              supportedAlternate?.value === selected ? supportedAlternate : null;
             const disabled =
               !descriptor ||
               (traits.ultrathinkInBodyText && descriptor.id === traits.primarySelectDescriptor?.id);
-            const description = traits.ultrathinkInBodyText
+            const description = disabled
               ? 'Remove "ultrathink" from the prompt text to change reasoning.'
-              : `${name} reasoning`;
+              : supportedAlternate
+                ? `Click for ${name} reasoning. Double-click within ${DOUBLE_CLICK_WINDOW_MS} ms for ${supportedAlternate.name}.`
+                : `${name} reasoning`;
             return (
               <Tooltip key={value}>
                 <TooltipTrigger
                   render={
                     <ComposerControl
-                      aria-label={`${name} reasoning`}
-                      aria-pressed={selected === value}
+                      aria-label={`${activeAlternate?.name ?? name} reasoning`}
+                      aria-pressed={selected === value || !!activeAlternate}
                       disabled={disabled || !visible}
                       className="w-6 px-0 font-normal text-foreground/55 aria-pressed:bg-black/15 aria-pressed:text-foreground/90 aria-pressed:hover:bg-black/20"
-                      onClick={() => {
-                        if (visible && !disabled && descriptor)
-                          traits.changeSelect(descriptor, value);
+                      onClick={(event) => {
+                        if (!visible || disabled) return;
+                        timedClick(
+                          event,
+                          () => traits.changeSelect(descriptor, value),
+                          supportedAlternate
+                            ? () => traits.changeSelect(descriptor, supportedAlternate.value)
+                            : undefined,
+                        );
                       }}
                     />
                   }
                 >
-                  {label}
+                  {activeAlternate ? (
+                    <span className="text-xs">{activeAlternate.label}</span>
+                  ) : (
+                    label
+                  )}
                 </TooltipTrigger>
                 <TooltipPopup>{description}</TooltipPopup>
               </Tooltip>

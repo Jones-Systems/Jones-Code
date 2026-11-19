@@ -126,9 +126,12 @@ distinguishes accounts that offer the same model.
 Account, model, and reasoning shortcuts remain available below the composer,
 including in narrow windows. Choices that cannot be used are disabled. For
 supported models, **M**, **H**, and **E** beside the model control select reasoning
-effort; the lightning control changes Fast mode. Permissions are always available
-at the bottom of the model menu. A nondefault permission selection also appears
-beside the composer controls.
+effort, and the lightning control toggles Fast mode. Double-click the lightning
+control within 250 ms to select Ultrafast, then click once to return to Standard.
+Double-click **M** for Low or **E** for Max. These gestures are available when the
+model offers the corresponding option. Permissions are always available at the
+bottom of the model menu. A nondefault permission selection also appears beside
+the composer controls.
 
 T3 Code remembers your provider, model, and model options for new threads. A
 project's configured model takes precedence; resetting that project setting

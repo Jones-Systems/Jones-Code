@@ -422,7 +422,7 @@
     {
       "id": "composer-quick-controls",
       "tests": ["apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx"],
-      "scope": "Inline current-model M/H/E shortcuts and Fast toggle share the traits persistence path. Measured fit retains reasoning until 4px clearance, while Fast stays in the fixed footer width. Browser tests cover boolean Fast, Codex service tier, draft persistence and resize restoration. Native mobile and other model efforts retain existing menus."
+      "scope": "Inline current-model M/H/E shortcuts and Fast toggle share the traits persistence path and use the status pill's 250 ms double-click window for supported Low, Max and Ultrafast choices. Measured fit retains reasoning until 4px clearance, while Fast stays in the fixed footer width. Browser tests cover boolean Fast, Codex service tier, click timing and reversal, draft persistence and resize restoration. Native mobile and other model efforts retain existing menus."
     },
     {
       "id": "project-group-title",

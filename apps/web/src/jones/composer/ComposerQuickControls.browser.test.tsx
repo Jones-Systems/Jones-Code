@@ -33,6 +33,14 @@ const tier: ProviderOptionDescriptor = {
     { id: "priority", label: "Fast" },
   ],
 };
+const extendedTier: ProviderOptionDescriptor = {
+  ...tier,
+  options: [...tier.options, { id: "ultrafast", label: "Ultrafast" }],
+};
+const extendedEffort: ProviderOptionDescriptor = {
+  ...effort,
+  options: [{ id: "low", label: "Low" }, ...effort.options, { id: "max", label: "Max" }],
+};
 function Fixture({
   descriptors = [effort, fast],
   ...overrides
@@ -73,6 +81,18 @@ function reset() {
     stickyModelSelectionByProvider: {},
     stickyActiveProvider: null,
   });
+}
+
+async function clickAt(button: HTMLButtonElement, timeStamp: number) {
+  await act(() => {
+    const event = new MouseEvent("click", { bubbles: true, detail: 1 });
+    Object.defineProperty(event, "timeStamp", { value: timeStamp });
+    button.dispatchEvent(event);
+  });
+}
+
+function savedOptions() {
+  return useComposerDraftStore.getState().stickyModelSelectionByProvider[instanceId]?.options;
 }
 
 describe("composer quick controls", () => {
@@ -117,6 +137,80 @@ describe("composer quick controls", () => {
       ).toEqual(selection);
     },
   );
+
+  it("enters Ultrafast on the second click at 250 ms and exits with one click", async () => {
+    reset();
+    await using screen = await render(<Fixture descriptors={[effort, extendedTier]} />, {
+      router: false,
+    });
+    const bolt = screen.container.querySelector<HTMLButtonElement>("[data-composer-quick-fast]")!;
+    await clickAt(bolt, 1000);
+    expect(savedOptions()).toContainEqual({ id: "serviceTier", value: "priority" });
+    await clickAt(bolt, 1250);
+    expect(savedOptions()).toContainEqual({ id: "serviceTier", value: "ultrafast" });
+    expect(bolt.getAttribute("aria-label")).toBe("Ultrafast mode");
+    expect(bolt.getAttribute("aria-pressed")).toBe("true");
+    await clickAt(bolt, 1300);
+    expect(savedOptions()).toContainEqual({ id: "serviceTier", value: "ultrafast" });
+    await clickAt(bolt, 1551);
+    expect(savedOptions()).toContainEqual({ id: "serviceTier", value: "default" });
+    expect(bolt.getAttribute("aria-pressed")).toBe("false");
+    await clickAt(bolt, 1802);
+    await clickAt(bolt, 2053);
+    expect(savedOptions()).toContainEqual({ id: "serviceTier", value: "default" });
+  });
+
+  it.each([
+    { name: "Medium", value: "medium", alternate: "Low", alternateValue: "low" },
+    { name: "Extra high", value: "xhigh", alternate: "Max", alternateValue: "max" },
+  ])(
+    "doubles $name into $alternate and returns with a single activation",
+    async ({ name, value, alternate, alternateValue }) => {
+      reset();
+      await using screen = await render(<Fixture descriptors={[extendedEffort]} />, {
+        router: false,
+      });
+      const button = screen.container.querySelector<HTMLButtonElement>(
+        `[aria-label="${name} reasoning"]`,
+      )!;
+      await expect.poll(() => button.disabled).toBe(false);
+      await clickAt(button, 1000);
+      expect(savedOptions()).toContainEqual({ id: "reasoningEffort", value });
+      await clickAt(button, 1250);
+      expect(savedOptions()).toContainEqual({ id: "reasoningEffort", value: alternateValue });
+      expect(button.getAttribute("aria-label")).toBe(`${alternate} reasoning`);
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+      await act(() => button.click());
+      expect(savedOptions()).toContainEqual({ id: "reasoningEffort", value });
+    },
+  );
+
+  it("keeps rapid clicks on different controls and unsupported alternate choices as single clicks", async () => {
+    reset();
+    await using screen = await render(<Fixture descriptors={[extendedEffort, tier]} />, {
+      router: false,
+    });
+    const bolt = screen.container.querySelector<HTMLButtonElement>("[data-composer-quick-fast]")!;
+    const medium = screen.container.querySelector<HTMLButtonElement>(
+      '[aria-label="Medium reasoning"]',
+    )!;
+    const extra = screen.container.querySelector<HTMLButtonElement>(
+      '[aria-label="Extra high reasoning"]',
+    )!;
+    await expect.poll(() => extra.disabled).toBe(false);
+    await clickAt(medium, 1000);
+    await clickAt(extra, 1050);
+    expect(savedOptions()).toContainEqual({ id: "reasoningEffort", value: "xhigh" });
+    await clickAt(medium, 1100);
+    expect(savedOptions()).toContainEqual({ id: "reasoningEffort", value: "medium" });
+    await clickAt(bolt, 1150);
+    await clickAt(bolt, 1200);
+    expect(savedOptions()).toContainEqual({ id: "serviceTier", value: "default" });
+    await screen.rerender(<Fixture descriptors={[effort, tier]} />);
+    await clickAt(extra, 1250);
+    await clickAt(extra, 1300);
+    expect(savedOptions()).toContainEqual({ id: "reasoningEffort", value: "xhigh" });
+  });
 
   it("keeps reasoning until 4px clearance remains, hides the whole group and restores it without changing selection", async () => {
     reset();

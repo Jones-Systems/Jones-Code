@@ -1956,6 +1956,7 @@
     "apps/web/src/jones/updates/versionSkew.test.ts": "jones-owned",
     "apps/web/src/jones/updates/versionSkew.ts": "jones-owned",
     "apps/web/src/jones/usage/UsageProviderChart.interaction.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/useTimedClick.ts": "jones-owned",
     "apps/web/src/jones/wordCiTrace.test.ts": "jones-owned",
     "apps/web/src/jones/wordCiTrace.ts": "jones-owned",
     "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx": "jones-tests-in-upstream",

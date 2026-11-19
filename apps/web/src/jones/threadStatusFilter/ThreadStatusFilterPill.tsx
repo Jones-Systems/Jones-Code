@@ -1,7 +1,7 @@
 import { useClientSettings } from "../../hooks/useSettings";
-import { useRef } from "react";
 import { cn } from "../../lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
+import { DOUBLE_CLICK_WINDOW_MS, useTimedClick } from "../useTimedClick";
 import { nextThreadStatusFilter, type ThreadStatusCounts, type ThreadStatusFilter } from "./model";
 
 const labels = {
@@ -48,8 +48,8 @@ export function ThreadStatusFilterPill({
   const windowLabel = enabled
     ? ` Activity in the past ${amount} ${unit}; Done includes read completions. All shows every thread.`
     : "";
-  const pointerSequence = useRef<{ at: number; consumed: boolean } | null>(null);
-  const label = `${counts.working} working, ${counts.input} needs input, ${counts.done} done. Showing ${labels[filter]}. Next: ${labels[nextThreadStatusFilter(filter)]}. Double-click within 250 ms to hide working threads.${windowLabel}`;
+  const timedClick = useTimedClick();
+  const label = `${counts.working} working, ${counts.input} needs input, ${counts.done} done. Showing ${labels[filter]}. Next: ${labels[nextThreadStatusFilter(filter)]}. Double-click within ${DOUBLE_CLICK_WINDOW_MS} ms to hide working threads.${windowLabel}`;
   return (
     <Tooltip>
       <TooltipTrigger
@@ -57,21 +57,7 @@ export function ThreadStatusFilterPill({
           <button
             type="button"
             aria-label={label}
-            onClick={(event) => {
-              if (event.detail === 0 || !onHideWorking) {
-                pointerSequence.current = null;
-                onCycle();
-                return;
-              }
-              const previous = pointerSequence.current;
-              const rapid = previous !== null && event.timeStamp - previous.at <= 250;
-              pointerSequence.current = {
-                at: event.timeStamp,
-                consumed: rapid,
-              };
-              if (!rapid) onCycle();
-              else if (!previous.consumed) onHideWorking();
-            }}
+            onClick={(event) => timedClick(event, onCycle, onHideWorking)}
             style={{ gap: "var(--sidebar-status-gap, 2px)" }}
             className={cn(
               "relative z-10 inline-flex h-6 shrink-0 cursor-pointer items-center rounded-full px-1 text-xs font-medium outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]",
