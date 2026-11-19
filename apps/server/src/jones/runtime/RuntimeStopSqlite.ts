@@ -18,6 +18,7 @@ import {
   makeJonesTablePresence,
   type JonesTablePresence,
 } from "../persistence/JonesTablePresence.ts";
+import { readEventLogPrunedThrough } from "../persistence/EventLogPruneBoundary.ts";
 export class RuntimeStopError extends Schema.TaggedError<RuntimeStopError>()("RuntimeStopError", {
   reason: Schema.String,
   cause: Schema.optional(Schema.Defect()),
@@ -45,6 +46,51 @@ const compiledLatestSchema5 = Schema.is(RuntimeStopError);
 const compiledLatestSchema4 = Schema.decodeEffect(Schema.fromJsonString(ProviderRuntimeBinding));
 
 const compiledLatestSchema3 = Schema.decodeUnknownEffect(ProviderRuntimeEvidenceCapture);
+
+/** Count all competing main start rows for this run, including settled and wrapped effects. */
+export const readStopStartEffectIds = (
+  sql: SqlClient.SqlClient,
+  threadId: ThreadId,
+  runId: RunId,
+) =>
+  sql<{ readonly effect_id: string }>`
+    SELECT effect_id FROM orchestration_v2_effect_outbox
+    WHERE thread_id = ${threadId}
+      AND status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')
+      AND effect_type IN ('provider-turn.start', 'provider-turn.restart')
+      AND (
+        effect_id = 'effect:' || command_id || ':' || effect_type || ':' || ${runId}
+        OR CASE WHEN json_valid(payload_json) THEN
+          json_extract(payload_json, '$.runId') = ${runId}
+          OR json_extract(payload_json, '$.request.runId') = ${runId}
+        ELSE 0 END
+      )
+    LIMIT 2
+  `;
+
+/** The release does not carry the preparing run's birth command or its provider generation. */
+export const readPreparedStopBirth = Effect.fnUntraced(function* (
+  sql: SqlClient.SqlClient,
+  threadId: ThreadId,
+  runId: RunId,
+  releaseSequence: number,
+) {
+  const prunedThrough = yield* readEventLogPrunedThrough(sql);
+  const rows = yield* sql<{ readonly command_id: string; readonly sequence: number }>`
+    SELECT command_id, sequence FROM orchestration_events
+    WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+      AND application_event_version = 2 AND event_type = 'run.created'
+      AND sequence > ${prunedThrough} AND sequence < ${releaseSequence}
+      AND json_extract(payload_json, '$.id') = ${runId}
+    LIMIT 2
+  `;
+  if (rows.length !== 1 || rows[0]?.command_id == null) return;
+  return {
+    commandId: CommandId.make(rows[0].command_id),
+    sequence: rows[0].sequence,
+    prunedThrough,
+  };
+});
 
 export const makeRuntimeStopMethods = (
   sql: SqlClient.SqlClient,
@@ -96,18 +142,21 @@ export const makeRuntimeStopMethods = (
     for (const runId of identity.affectedRunIds)
       yield* sql`INSERT INTO jones_runtime_stop_fences(command_id,thread_id,run_id,provider_thread_id,runtime_generation) VALUES (${identity.request.commandId},${identity.request.threadId},${runId},${identity.request.target.binding.providerThreadId},${identity.request.target.binding.runtimeGeneration})`;
   });
+  const hasRunFence = Effect.fnUntraced(function* (threadId: ThreadId, runId: RunId) {
+    if (!(yield* available)) return false;
+    const rows =
+      yield* sql`SELECT 1 FROM jones_runtime_stop_fences WHERE thread_id=${threadId} AND run_id=${runId} LIMIT 1`;
+    return rows.length !== 0;
+  });
   const assertStartAllowed = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
     readonly providerThreadId?: string;
     readonly runtimeGeneration?: string;
   }) {
-    if (!(yield* available)) return;
-    const rows =
-      yield* sql`SELECT command_id FROM jones_runtime_stop_fences WHERE thread_id=${input.threadId} AND run_id=${input.runId} LIMIT 1`;
-    if (rows.length !== 0)
+    if (yield* hasRunFence(input.threadId, input.runId))
       return yield* new RuntimeStopError({ reason: "queued_start_crosses_captured_runtime_stop" });
-    if (input.providerThreadId !== undefined) {
+    if (input.providerThreadId !== undefined && (yield* available)) {
       const lineage =
         yield* sql`SELECT command_id FROM jones_runtime_stop_intents WHERE thread_id=${input.threadId} AND json_extract(identity_json,'$.request.target.binding.providerThreadId')=${input.providerThreadId} AND (${input.runtimeGeneration ?? null} IS NULL OR json_extract(identity_json,'$.request.target.binding.runtimeGeneration')=${input.runtimeGeneration ?? null}) LIMIT 1`;
       if (lineage.length !== 0)
@@ -282,6 +331,7 @@ export const makeRuntimeStopMethods = (
     start,
     complete,
     assertStartAllowed,
+    hasRunFence,
     hasStoppedRuntime,
     readStoppedRuntime,
   };

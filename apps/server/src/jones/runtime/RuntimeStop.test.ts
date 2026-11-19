@@ -46,6 +46,8 @@ import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapters from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as ProviderReplay from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import { makeQueueHoldStore } from "../orchestration/QueueHoldStore.ts";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import * as RuntimeStop from "./RuntimeStop.ts";
 import * as StopStore from "./RuntimeStopSqlite.ts";
 const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, AuthSessions.layer).pipe(
@@ -322,8 +324,25 @@ const fixture = Effect.fnUntraced(function* (retained = false) {
   return { sink, sessions, principal, state, input, runId, service, started, completion, provider };
 });
 
-it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
-  "captured Stop settles only its own unclaimed first start (%s)",
+const startCases = [
+  "unclaimed",
+  "claimed",
+  "before executor",
+  "after executor entry",
+  "other generation",
+  "prepared release",
+  "prepared birth missing",
+  "prepared scope missing",
+  "queued",
+  "held queue",
+  "unsupported row",
+  "competing start",
+  "newer terminal",
+  "settlement rollback",
+] as const;
+
+it.effect.each(startCases)(
+  "captured Stop fences its own first start and preserves fresh sends (%s)",
   (start) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:idle-runtime-stop");
@@ -337,6 +356,9 @@ it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
         cwd: null,
       } as const;
       const calls = { prompts: [] as string[], stops: 0 };
+      const promptSessions: Array<ProviderSessionId | null> = [];
+      const executedStarts: string[] = [];
+      const enteredExecutor = yield* Deferred.make<void>();
       const capabilities = {
         ...CodexProviderCapabilitiesV2,
         sessions: {
@@ -372,10 +394,16 @@ it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
               providerSession,
               events: Stream.fromQueue(events).pipe(Stream.take(1)),
               ensureThread: () => Effect.die("The synthetic idle runtime is already loaded"),
-              resumeThread: () => Effect.die("Unexpected resume of the stopped runtime"),
+              resumeThread: ({ providerThread }) =>
+                Effect.succeed({
+                  ...providerThread,
+                  providerSessionId: input.providerSessionId,
+                  status: "idle" as const,
+                }),
               startTurn: (turn) =>
                 Effect.sync(() => {
                   calls.prompts.push(turn.message.text);
+                  promptSessions.push(turn.providerThread.providerSessionId);
                 }),
               steerTurn: () => Effect.die("Unexpected steer"),
               interruptTurn: () => Effect.die("Unexpected interrupt"),
@@ -426,6 +454,7 @@ it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
         const sink = yield* EventSink.EventSinkV2;
         const outbox = yield* Outbox.EffectOutboxV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const sql = yield* SqlClient.SqlClient;
         const principal = yield* createStopPrincipal();
         yield* orchestrator.dispatch({
           type: "thread.create",
@@ -493,7 +522,7 @@ it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
             },
           ],
         });
-        const send = (text: string) => {
+        const send = (text: string, prepare = false) => {
           const commandId = CommandId.make(`command:idle-runtime-stop:${text}`);
           return orchestrator
             .dispatch({
@@ -503,20 +532,121 @@ it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
               messageId: MessageId.make(`message:idle-runtime-stop:${text}`),
               text,
               attachments: [],
-              dispatchMode: { type: "start_immediately" },
+              dispatchMode: prepare
+                ? { type: "defer_start", workspaceStrategy: { type: "root" } }
+                : { type: "start_immediately" },
               createdBy: "user",
               creationSource: "web",
             })
             .pipe(Effect.as(commandId));
         };
-        const first = yield* send("old-prompt");
+        const prepared =
+          start === "prepared release" ||
+          start === "prepared birth missing" ||
+          start === "prepared scope missing";
+        const birthCommand = yield* send("old-prompt", prepared);
+        let first = birthCommand;
+        if (prepared) {
+          const preparing = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+          assert.equal(preparing.status, "preparing");
+          first = CommandId.make("command:idle-runtime-stop:release");
+          yield* orchestrator.dispatch({
+            type: "prepared-run.release",
+            commandId: first,
+            threadId,
+            runId: preparing.id,
+          });
+          if (start === "prepared birth missing") {
+            yield* sql`DELETE FROM orchestration_events WHERE command_id = ${birthCommand}
+              AND event_type = 'provider-thread.updated'`;
+          } else if (start === "prepared scope missing") {
+            yield* sql`DELETE FROM orchestration_v2_projection_checkpoint_scopes
+              WHERE thread_id = ${threadId} AND run_id = ${preparing.id}`;
+          }
+        }
+        if (start === "queued" || start === "held queue" || start === "settlement rollback") {
+          yield* send("queued-prompt");
+        }
+        if (start === "held queue") {
+          const queued = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!;
+          yield* sink.writeWithEffects({
+            events: [
+              {
+                id: EventId.make("event:idle-runtime-stop:held-queue"),
+                type: "run.updated",
+                threadId,
+                runId: queued.id,
+                occurredAt: now,
+                payload: { ...queued, queueHeld: true },
+              },
+            ],
+            effects: [],
+            queueHold: { reason: "restart", runIds: [queued.id] },
+          });
+        }
         const before = yield* orchestrator.getThreadProjection(threadId);
         const original = before.runs[0]!;
+        const queued = before.runs[1];
         assert.equal(original.status, "starting");
         const firstStart = (yield* outbox.listByCommandId(first)).find(
           (effect) => effect.request.type === "provider-turn.start",
         )!;
         assert.include(firstStart, { status: "pending", attemptCount: 0, leaseOwner: null });
+        const unsupported = JSON.stringify({ type: "removed.effect", runId: original.id });
+        if (start === "unsupported row" || start === "competing start") {
+          const retained = start === "unsupported row";
+          yield* sql`INSERT INTO orchestration_v2_effect_outbox
+            (effect_id, command_id, thread_id, effect_type, payload_json, status, attempt_count,
+             available_at, created_at, updated_at, completed_at)
+            SELECT 'effect:retained-row', command_id, thread_id,
+              ${retained ? sql`'removed.effect'` : sql`effect_type`},
+              ${retained ? sql`${unsupported}` : sql`payload_json`},
+              'failed', 1, available_at, created_at, updated_at, updated_at
+            FROM orchestration_v2_effect_outbox WHERE effect_id = ${firstStart.id}`;
+        }
+        const releaseClaim = yield* Deferred.make<void>();
+        const claimCommitted = yield* Deferred.make<void>();
+        const runningWorker =
+          start === "before executor" || start === "settlement rollback"
+            ? yield* Effect.gen(function* () {
+                const gated = yield* Layer.build(
+                  EffectWorker.layerWithOptions({ workerId: "gated-worker" }).pipe(
+                    Layer.provide(
+                      Layer.succeed(Outbox.EffectOutboxV2, {
+                        ...outbox,
+                        claimNext: (input) =>
+                          outbox
+                            .claimNext(input)
+                            .pipe(
+                              Effect.tap((claim) =>
+                                Option.getOrUndefined(claim)?.id !== firstStart.id
+                                  ? Effect.die("Expected the first provider start claim")
+                                  : Deferred.succeed(claimCommitted, undefined).pipe(
+                                      Effect.andThen(Deferred.await(releaseClaim)),
+                                    ),
+                              ),
+                            ),
+                      }),
+                    ),
+                  ),
+                );
+                const fiber = yield* EffectWorker.OrchestrationEffectWorkerV2.use((worker) =>
+                  worker.runOnce(),
+                ).pipe(Effect.provide(gated), Effect.forkChild);
+                yield* Deferred.await(claimCommitted);
+                assert.include(Option.getOrThrow(yield* outbox.get(firstStart.id)), {
+                  status: "running",
+                  attemptCount: 1,
+                  leaseOwner: "gated-worker",
+                });
+                return fiber;
+              })
+            : start === "after executor entry"
+              ? yield* worker.runOnce().pipe(
+                  Effect.forkChild,
+                  Effect.tap(() => Deferred.await(enteredExecutor)),
+                )
+              : undefined;
         if (start === "claimed") {
           const claim = yield* outbox.claimNext({ workerId: "synthetic-claimant" });
           assert.equal(Option.getOrUndefined(claim)?.id, firstStart.id);
@@ -554,8 +684,88 @@ it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
           stop
             .stop(input)
             .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        if (start === "newer terminal") {
+          const terminal = { status: "completed", startedAt: now, completedAt: now } as const;
+          const attempt = before.attempts.find(({ id }) => id === original.activeAttemptId)!;
+          const root = before.nodes.find(({ id }) => id === original.rootNodeId)!;
+          const eventScope = { threadId, runId: original.id, nodeId: root.id, occurredAt: now };
+          yield* sink.write({
+            events: [
+              {
+                ...eventScope,
+                id: EventId.make("event:idle-runtime-stop:newer-terminal-run"),
+                type: "run.updated",
+                payload: { ...original, ...terminal },
+              },
+              {
+                ...eventScope,
+                id: EventId.make("event:idle-runtime-stop:newer-terminal-attempt"),
+                type: "run-attempt.updated",
+                payload: { ...attempt, ...terminal },
+              },
+              {
+                ...eventScope,
+                id: EventId.make("event:idle-runtime-stop:newer-terminal-root"),
+                type: "node.updated",
+                payload: { ...root, ...terminal },
+              },
+            ],
+          });
+          const terminalState = yield* orchestrator.getThreadProjection(threadId);
+          const stopped = yield* submitStop(request);
+          assert.deepEqual(stopped.affectedRunIds, []);
+          yield* worker.drain();
+          const current = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(current.runs, terminalState.runs);
+          assert.deepEqual(current.attempts, terminalState.attempts);
+          assert.deepEqual(current.nodes, terminalState.nodes);
+          assert.deepEqual(calls, { prompts: [], stops: 1 });
+          return;
+        }
+        if (start === "settlement rollback") {
+          const leased = Option.getOrThrow(yield* outbox.get(firstStart.id));
+          yield* sql`CREATE TRIGGER reject_fixture_stop_settlement
+            BEFORE UPDATE OF status ON orchestration_v2_projection_runs
+            WHEN OLD.status = 'starting' AND NEW.status = 'cancelled'
+            BEGIN SELECT RAISE(ABORT, 'fixture cannot settle the first start'); END`;
+          const rejected = yield* submitStop(request).pipe(Effect.result);
+          assert.equal(rejected._tag, "Failure");
+          assert.isNull(yield* sink.readRuntimeStop!(request.commandId));
+          assert.isTrue(
+            Option.isNone(yield* outbox.get(`effect:${request.commandId}:captured-runtime-stop`)),
+          );
+          assert.deepEqual(Option.getOrThrow(yield* outbox.get(firstStart.id)), leased);
+          const live = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(live.runs, before.runs);
+          assert.deepEqual(live.attempts, before.attempts);
+          assert.deepEqual(live.nodes, before.nodes);
+          assert.deepEqual(calls, { prompts: [], stops: 0 });
+          yield* sql`DROP TRIGGER reject_fixture_stop_settlement`;
+        }
         const accepted = yield* submitStop(request);
-        assert.deepEqual(accepted.affectedRunIds, [original.id]);
+        assert.sameMembers(
+          [...accepted.affectedRunIds],
+          before.runs.map((run) => run.id),
+        );
+        if (
+          start === "before executor" ||
+          start === "prepared release" ||
+          start === "settlement rollback"
+        ) {
+          const committed = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(committed.runs.find(({ id }) => id === original.id)?.status, "cancelled");
+          assert.equal(
+            committed.attempts.find(({ id }) => id === original.activeAttemptId)?.status,
+            "cancelled",
+          );
+          assert.equal(
+            committed.nodes.find(({ id }) => id === original.rootNodeId)?.status,
+            "cancelled",
+          );
+          assert.equal(calls.stops, 0);
+        }
+        yield* Deferred.succeed(releaseClaim, undefined);
+        if (runningWorker !== undefined) assert.isTrue(yield* Fiber.join(runningWorker));
         yield* worker.drain();
         yield* outbox.awaitCompletion([`effect:${request.commandId}:captured-runtime-stop`]);
         assert.equal((yield* submitStop(request)).status, "stopped");
@@ -564,15 +774,28 @@ it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
         const cancelled = Option.getOrUndefined(yield* outbox.get(firstStart.id));
         assert.include(cancelled, {
           status: "cancelled",
-          attemptCount: start === "claimed" ? 1 : 0,
+          attemptCount: start === "claimed" || runningWorker !== undefined ? 1 : 0,
         });
+        if (start === "unsupported row") {
+          const retained = yield* sql`SELECT status, payload_json
+            FROM orchestration_v2_effect_outbox WHERE effect_id = 'effect:retained-row'`;
+          assert.deepEqual(retained, [{ status: "failed", payload_json: unsupported }]);
+        }
+        assert.deepEqual(executedStarts, start === "after executor entry" ? [firstStart.id] : []);
         const after = yield* orchestrator.getThreadProjection(threadId);
         const oldRun = after.runs.find((run) => run.id === original.id)!;
         const oldAttempt = after.attempts.find(
           (attempt) => attempt.id === original.activeAttemptId,
         )!;
         const oldRoot = after.nodes.find((node) => node.id === original.rootNodeId)!;
-        if (start !== "unclaimed") {
+        if (
+          start === "claimed" ||
+          start === "after executor entry" ||
+          start === "other generation" ||
+          start === "prepared birth missing" ||
+          start === "prepared scope missing" ||
+          start === "competing start"
+        ) {
           assert.include(oldRun, { status: "starting", completedAt: null });
           assert.include(oldAttempt, {
             status: "pending",
@@ -580,12 +803,52 @@ it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
             completedAt: null,
           });
           assert.include(oldRoot, { status: "pending", completedAt: null });
+          const newRequest = yield* send("fresh-prompt");
+          assert.equal(
+            (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)?.status,
+            "queued",
+          );
+          assert.isFalse(
+            (yield* outbox.listByCommandId(newRequest)).some(
+              ({ request }) => request.type === "provider-turn.start",
+            ),
+          );
+          assert.equal(yield* worker.drain(), 0);
+          assert.deepEqual(calls, { prompts: [], stops: 1 });
           return;
+        }
+        if (start === "held queue") {
+          assert.ok(queued);
+          const holds = makeQueueHoldStore(sql, makeJonesTablePresence(sql));
+          assert.equal((yield* holds.get([queued.id])).get(queued.id)?.reason, "restart");
+          yield* orchestrator.dispatch({
+            type: "queue.resume",
+            commandId: CommandId.make("command:idle-runtime-stop:resume"),
+            threadId,
+          });
+          assert.equal((yield* holds.get([queued.id])).get(queued.id)?.reason, "stop");
         }
         const next = yield* send("fresh-prompt");
         const nextRun = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
         assert.notEqual(nextRun.id, original.id);
         assert.equal(nextRun.status, "starting");
+        if (queued !== undefined) {
+          const current = yield* orchestrator.getThreadProjection(threadId);
+          const fenced = current.runs.find((run) => run.id === queued.id);
+          assert.include(
+            fenced,
+            start === "held queue"
+              ? { status: "queued", queueHeld: true }
+              : { status: "cancelled" },
+          );
+          assert.isFalse(
+            current.turnItems.some((item) => item.runId === queued.id && item.type === "error"),
+          );
+          assert.equal(
+            current.messages.find((message) => message.id === queued.userMessageId)?.text,
+            "queued-prompt",
+          );
+        }
 
         assert.include(oldRun, { status: "cancelled", startedAt: null });
         assert.include(oldAttempt, { status: "cancelled", startedAt: null, providerTurnId: null });
@@ -594,6 +857,10 @@ it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
         assert.deepEqual(oldAttempt.completedAt, oldRun.completedAt);
         assert.deepEqual(oldRoot.completedAt, oldRun.completedAt);
         assert.deepEqual(after.providerTurns, []);
+        assert.equal(
+          after.messages.find((message) => message.id === original.userMessageId)?.text,
+          "old-prompt",
+        );
 
         const nextStart = (yield* outbox.listByCommandId(next)).find(
           (effect) =>
@@ -610,15 +877,32 @@ it.effect.each(["unclaimed", "claimed", "other generation"] as const)(
           "Failure",
         );
         assert.deepEqual((yield* orchestrator.getThreadProjection(threadId)).runs.at(-1), nextRun);
-        const nextClaim = yield* outbox.claimNext({ workerId: "synthetic-fresh-start" });
-        assert.equal(Option.getOrUndefined(nextClaim)?.id, nextStart.id);
-        assert.deepEqual(calls, { prompts: [], stops: 1 });
+        yield* worker.drain();
+        yield* outbox.awaitCompletion([nextStart.id]);
+        assert.deepEqual(executedStarts, [nextStart.id]);
+        assert.deepEqual(calls, { prompts: ["fresh-prompt"], stops: 1 });
+        assert.lengthOf(promptSessions, 1);
+        assert.notEqual(promptSessions[0], request.target.binding.providerSessionId);
       }).pipe(
         Effect.provide(
           ProviderReplay.layerWithRegistryAndServices(
             { name: "idle-runtime-stop" },
             ProviderAdapters.layerFromAdapters([adapter]),
-            { runEffectWorker: false },
+            {
+              runEffectWorker: false,
+              beforeEffectExecution: (effect) => {
+                if (effect.request.type !== "provider-turn.start") return Effect.void;
+                return Effect.sync(() => executedStarts.push(effect.id)).pipe(
+                  Effect.andThen(
+                    start === "after executor entry"
+                      ? Deferred.succeed(enteredExecutor, undefined).pipe(
+                          Effect.andThen(Effect.never),
+                        )
+                      : Effect.void,
+                  ),
+                );
+              },
+            },
           ),
         ),
       );

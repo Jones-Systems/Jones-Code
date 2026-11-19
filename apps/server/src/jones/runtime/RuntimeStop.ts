@@ -6,8 +6,10 @@ import {
   type ReadCurrentRuntimeStopTargetResult,
   EventId,
   ProviderRuntimeBinding,
+  type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
+  type OrchestrationV2RunAttempt,
   type CommandId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -22,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as CommandReceipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
@@ -39,7 +42,22 @@ import {
   nativeCreationSha256,
 } from "../nativeCreation/NativeCreationPreparation.ts";
 
+type PendingRun = {
+  readonly run: OrchestrationV2Run;
+  readonly attempt: OrchestrationV2RunAttempt;
+  readonly root: OrchestrationV2ExecutionNode;
+};
+
 export const RUNTIME_STOP_WAIT_TIMEOUT_MS = 3_000;
+
+export const capturedStopQueueHoldEvent = (run: OrchestrationV2Run, occurredAt: DateTime.Utc) => ({
+  type: "run.updated" as const,
+  threadId: run.threadId,
+  runId: run.id,
+  providerInstanceId: run.providerInstanceId,
+  occurredAt,
+  payload: { ...run, queueHeld: true },
+});
 
 export class CurrentRuntimeStop extends Context.Service<
   CurrentRuntimeStop,
@@ -82,7 +100,66 @@ function matchesCapture(provider: OrchestrationV2ProviderThread, captured: Provi
   );
 }
 
+function sameUnstartedRun(candidate: OrchestrationV2Run, run: OrchestrationV2Run) {
+  return (
+    candidate.id === run.id &&
+    candidate.threadId === run.threadId &&
+    candidate.activeAttemptId === run.activeAttemptId &&
+    candidate.rootNodeId === run.rootNodeId &&
+    candidate.userMessageId === run.userMessageId &&
+    candidate.providerThreadId === run.providerThreadId &&
+    candidate.providerInstanceId === run.providerInstanceId &&
+    candidate.startedAt === null &&
+    candidate.completedAt === null
+  );
+}
+
+function isInitialPendingAttempt(attempt: OrchestrationV2RunAttempt) {
+  return (
+    attempt.reason === "initial" &&
+    attempt.attemptOrdinal === 1 &&
+    attempt.status === "pending" &&
+    attempt.startedAt === null &&
+    attempt.completedAt === null &&
+    attempt.providerTurnId === null &&
+    attempt.providerSettlement == null
+  );
+}
+
+function samePendingAttempt(
+  candidate: OrchestrationV2RunAttempt,
+  attempt: OrchestrationV2RunAttempt,
+) {
+  return (
+    candidate.id === attempt.id &&
+    candidate.runId === attempt.runId &&
+    candidate.rootNodeId === attempt.rootNodeId &&
+    candidate.providerThreadId === attempt.providerThreadId &&
+    candidate.providerInstanceId === attempt.providerInstanceId &&
+    isInitialPendingAttempt(candidate)
+  );
+}
+
+function isPendingRoot(root: OrchestrationV2ExecutionNode, run: OrchestrationV2Run) {
+  return (
+    root.id === run.rootNodeId &&
+    root.rootNodeId === root.id &&
+    root.parentNodeId === null &&
+    root.runId === run.id &&
+    root.kind === "root_turn" &&
+    root.status === "pending" &&
+    root.threadId === run.threadId &&
+    root.providerThreadId === run.providerThreadId &&
+    root.providerTurnId === null &&
+    root.nativeItemRef === null &&
+    root.runtimeRequestId === null &&
+    root.startedAt === null &&
+    root.completedAt === null
+  );
+}
+
 const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
   const eventSink = yield* EventSink.EventSinkV2;
   const restartPreparation = yield* RestartPreparation.RestartPreparation;
   const manager = yield* ProviderSessions.ProviderSessionManagerV2;
@@ -102,117 +179,206 @@ const make = Effect.gen(function* () {
     if (capture.retirement !== undefined && (yield* capture.retirement.started)) return true;
     return yield* capture.isCurrent;
   });
-  const readUnclaimedStart = Effect.fn("CurrentRuntimeStop.readUnclaimedStart")(
-    function* (
-      expected: OrchestrationV2Run,
-      rows: ReadonlyArray<Outbox.OrchestrationEffectV2>,
-      binding: ProviderRuntimeBinding,
-    ) {
-      if (
-        expected.rootNodeId === null ||
-        expected.providerThreadId !== binding.providerThreadId ||
-        expected.providerInstanceId !== binding.providerInstanceId
+  const readPendingRun = Effect.fn("CurrentRuntimeStop.readPendingRun")(function* (
+    expected: OrchestrationV2Run,
+    binding?: ProviderRuntimeBinding,
+  ) {
+    if (expected.rootNodeId === null) return;
+    const records = yield* projections.getRunProviderRecords(
+      expected.threadId,
+      expected.id,
+      expected.rootNodeId,
+    );
+    const run = records.runs[0];
+    const attempt = records.attempts[0];
+    const root = records.nodes[0];
+    if (
+      run === undefined ||
+      run.status !== expected.status ||
+      !sameUnstartedRun(run, expected) ||
+      run.manualContinuationOfRunId !== undefined ||
+      run.restartContinuationOfRunId !== undefined ||
+      run.usageLimitContinuationOfRunId !== undefined ||
+      (binding !== undefined &&
+        (run.providerThreadId !== binding.providerThreadId ||
+          run.providerInstanceId !== binding.providerInstanceId ||
+          records.thread.activeProviderThreadId !== binding.providerThreadId ||
+          !records.providerThreads.some((provider) => matchesCapture(provider, binding)))) ||
+      attempt === undefined ||
+      root === undefined ||
+      attempt.id !== run.activeAttemptId ||
+      attempt.runId !== run.id ||
+      attempt.rootNodeId !== root.id ||
+      attempt.providerThreadId !== run.providerThreadId ||
+      attempt.providerInstanceId !== run.providerInstanceId ||
+      !isInitialPendingAttempt(attempt) ||
+      records.providerTurns.length !== 0 ||
+      !isPendingRoot(root, run)
+    )
+      return;
+    const prefix = yield* refusals.readPrefix({
+      threadId: run.threadId,
+      runId: run.id,
+      attemptId: attempt.id,
+    });
+    if (prefix.state !== "unknown") return;
+    return { run, attempt, root } satisfies PendingRun;
+  });
+
+  const readAcceptedEvents = Effect.fn("CurrentRuntimeStop.readAcceptedEvents")(function* (
+    commandId: CommandId,
+    threadId: ThreadId,
+  ) {
+    const receipt = yield* receipts.getByCommandId(commandId);
+    if (
+      Option.isNone(receipt) ||
+      receipt.value.status !== "accepted" ||
+      receipt.value.threadId !== threadId
+    )
+      return;
+    const events = yield* eventSink.readByCommandId({ commandId }).pipe(Stream.runCollect);
+    if (
+      receipt.value.resultSequence !== events.at(-1)?.sequence ||
+      events.some((stored) => stored.commandId !== commandId || stored.event.threadId !== threadId)
+    )
+      return;
+    return { commandType: receipt.value.commandType, events };
+  });
+
+  const provesPreparedRelease = Effect.fn("CurrentRuntimeStop.provesPreparedRelease")(function* (
+    pending: PendingRun,
+    release: NonNullable<Effect.Success<ReturnType<typeof readAcceptedEvents>>>["events"],
+    binding: ProviderRuntimeBinding,
+  ) {
+    const { run, attempt, root } = pending;
+    const [scope, rootUpdate, ready, start] = release;
+    if (
+      release.length !== 4 ||
+      scope?.event.type !== "checkpoint-scope.created" ||
+      rootUpdate?.event.type !== "node.updated" ||
+      ready?.event.type !== "turn-item.updated" ||
+      start?.event.type !== "run.updated" ||
+      !release.every(({ event }) => event.runId === run.id && event.nodeId === root.id) ||
+      !sameUnstartedRun(start.event.payload, run) ||
+      start.event.payload.status !== "starting" ||
+      !isPendingRoot(rootUpdate.event.payload, run) ||
+      rootUpdate.event.payload.checkpointScopeId !== root.checkpointScopeId ||
+      scope.event.payload.id !== root.checkpointScopeId ||
+      scope.event.payload.threadId !== run.threadId ||
+      scope.event.payload.runId !== run.id ||
+      scope.event.payload.nodeId !== root.id ||
+      scope.event.payload.providerThreadId !== binding.providerThreadId ||
+      scope.event.payload.kind !== "root_run" ||
+      scope.event.payload.parentScopeId !== null ||
+      scope.event.payload.ordinalWithinParent !== 0 ||
+      !scope.event.payload.advancesAppRunCount ||
+      ready.event.payload.type !== "command_execution" ||
+      ready.event.payload.runId !== run.id ||
+      ready.event.payload.nodeId !== root.id ||
+      ready.event.payload.status !== "completed" ||
+      ready.event.payload.exitCode !== 0 ||
+      ready.event.payload.completedAt === null ||
+      ready.event.payload.providerThreadId !== binding.providerThreadId
+    )
+      return false;
+    const birth = yield* StopStore.readPreparedStopBirth(sql, run.threadId, run.id, scope.sequence);
+    if (birth === undefined) return false;
+    const original = yield* readAcceptedEvents(birth.commandId, run.threadId);
+    if (
+      original?.commandType !== "message.dispatch" ||
+      original.events.some(
+        ({ sequence }) => sequence <= birth.prunedThrough || sequence >= scope.sequence,
       )
-        return;
-      const starts = rows.filter(
-        ({ request }) =>
-          (request.type === "provider-turn.start" || request.type === "provider-turn.restart") &&
-          request.runId === expected.id,
-      );
-      const effect = starts[0];
+    )
+      return false;
+    const born = original.events.find(({ sequence }) => sequence === birth.sequence)?.event;
+    const producer = original.events.findLast(
+      ({ event }) =>
+        event.type === "provider-thread.updated" && event.payload.id === binding.providerThreadId,
+    )?.event;
+    const preparationItemId = ready.event.payload.id;
+    const preparation = original.events.find(
+      ({ event }) => event.type === "turn-item.updated" && event.payload.id === preparationItemId,
+    )?.event;
+    if (
+      born?.type !== "run.created" ||
+      born.runId !== run.id ||
+      born.payload.status !== "preparing" ||
+      !sameUnstartedRun(born.payload, run) ||
+      producer?.type !== "provider-thread.updated" ||
+      !matchesCapture(producer.payload, binding) ||
+      preparation?.type !== "turn-item.updated" ||
+      preparation.payload.type !== "command_execution" ||
+      preparation.payload.status !== "running" ||
+      preparation.payload.runId !== run.id ||
+      preparation.payload.nodeId !== root.id ||
+      preparation.payload.providerThreadId !== binding.providerThreadId ||
+      preparation.payload.input !== ready.event.payload.input ||
+      !original.events.some(
+        ({ event }) =>
+          event.type === "run-attempt.created" && samePendingAttempt(event.payload, attempt),
+      ) ||
+      !original.events.some(
+        ({ event }) =>
+          event.type === "node.updated" &&
+          isPendingRoot(event.payload, run) &&
+          event.payload.checkpointScopeId === null,
+      )
+    )
+      return false;
+    const current = yield* projections.getCheckpointCaptureContext(run.threadId, {
+      runId: run.id,
+      scopeId: scope.event.payload.id,
+    });
+    return (
+      current.scope !== undefined &&
+      nativeCreationCanonicalJson(current.scope) ===
+        nativeCreationCanonicalJson(scope.event.payload)
+    );
+  });
+
+  const readCancellableStart = Effect.fn("CurrentRuntimeStop.readCancellableStart")(
+    function* (expected: OrchestrationV2Run, binding: ProviderRuntimeBinding) {
+      const starts = yield* StopStore.readStopStartEffectIds(sql, expected.threadId, expected.id);
+      if (starts.length !== 1) return;
+      const effect = Option.getOrUndefined(yield* outbox.get(starts[0]!.effect_id));
       if (
-        starts.length !== 1 ||
         effect === undefined ||
+        effect.threadId !== expected.threadId ||
         effect.request.type !== "provider-turn.start" ||
+        effect.request.runId !== expected.id ||
         effect.id !== `effect:${effect.commandId}:provider-turn.start:${expected.id}` ||
-        effect.status !== "pending" ||
-        effect.attemptCount !== 0 ||
-        effect.leaseOwner !== null ||
         effect.completedAt !== null ||
         effect.nativeCreationExecutionReference !== undefined ||
-        effect.payloadIdentity === undefined
+        effect.payloadIdentity === undefined ||
+        (!(
+          effect.status === "pending" &&
+          effect.attemptCount === 0 &&
+          effect.leaseOwner === null
+        ) &&
+          !(
+            effect.status === "running" &&
+            effect.attemptCount === 1 &&
+            effect.leaseOwner !== null &&
+            outbox.startDispatch?.hasWitness(effect) === true
+          ))
       )
         return;
 
-      const records = yield* projections.getRunProviderRecords(
-        expected.threadId,
-        expected.id,
-        expected.rootNodeId,
-      );
-      const run = records.runs[0];
-      const attempt = records.attempts[0];
-      const root = records.nodes[0];
-      if (
-        run === undefined ||
-        run.status !== "starting" ||
-        run.activeAttemptId !== expected.activeAttemptId ||
-        run.rootNodeId !== expected.rootNodeId ||
-        run.providerThreadId !== binding.providerThreadId ||
-        run.providerInstanceId !== binding.providerInstanceId ||
-        run.startedAt !== null ||
-        run.completedAt !== null ||
-        run.manualContinuationOfRunId !== undefined ||
-        run.restartContinuationOfRunId !== undefined ||
-        run.usageLimitContinuationOfRunId !== undefined ||
-        records.thread.activeProviderThreadId !== binding.providerThreadId ||
-        !records.providerThreads.some((provider) => matchesCapture(provider, binding)) ||
-        attempt === undefined ||
-        root === undefined ||
-        attempt.id !== run.activeAttemptId ||
-        attempt.runId !== run.id ||
-        attempt.rootNodeId !== root.id ||
-        attempt.providerThreadId !== binding.providerThreadId ||
-        attempt.providerInstanceId !== binding.providerInstanceId ||
-        attempt.reason !== "initial" ||
-        attempt.attemptOrdinal !== 1 ||
-        attempt.status !== "pending" ||
-        attempt.startedAt !== null ||
-        attempt.completedAt !== null ||
-        attempt.providerTurnId !== null ||
-        attempt.providerSettlement != null ||
-        records.providerTurns.length !== 0 ||
-        root.id !== run.rootNodeId ||
-        root.rootNodeId !== root.id ||
-        root.runId !== run.id ||
-        root.kind !== "root_turn" ||
-        root.status !== "pending" ||
-        root.providerThreadId !== binding.providerThreadId ||
-        root.providerTurnId !== null ||
-        root.startedAt !== null ||
-        root.completedAt !== null
-      )
-        return;
-      const prefix = yield* refusals.readPrefix({
-        threadId: run.threadId,
-        runId: run.id,
-        attemptId: attempt.id,
-      });
-      if (prefix.state !== "unknown") return;
-
-      const receipt = yield* receipts.getByCommandId(effect.commandId);
-      if (
-        Option.isNone(receipt) ||
-        receipt.value.status !== "accepted" ||
-        receipt.value.threadId !== run.threadId ||
-        (receipt.value.commandType !== "message.dispatch" &&
-          receipt.value.commandType !== "queue.start")
-      )
-        return;
-      const events = yield* eventSink
-        .readByCommandId({ commandId: effect.commandId })
-        .pipe(Stream.runCollect);
-      if (
-        receipt.value.resultSequence !== events.at(-1)?.sequence ||
-        events.some(
-          ({ commandId, event }) =>
-            commandId !== effect.commandId || event.threadId !== run.threadId,
-        )
-      )
-        return;
+      const pending = yield* readPendingRun(expected, binding);
+      if (pending === undefined) return;
+      const accepted = yield* readAcceptedEvents(effect.commandId, pending.run.threadId);
+      if (accepted === undefined) return;
+      const { commandType, events } = accepted;
+      if (commandType === "prepared-run.release")
+        return (yield* provesPreparedRelease(pending, events, binding))
+          ? { pending, effect }
+          : undefined;
+      if (commandType !== "message.dispatch" && commandType !== "queue.start") return;
+      const { run, attempt } = pending;
       const runEvent = events.findLast(
         ({ event }) =>
-          event.type ===
-            (receipt.value.commandType === "queue.start" ? "run.updated" : "run.created") &&
+          event.type === (commandType === "queue.start" ? "run.updated" : "run.created") &&
           event.runId === run.id,
       )?.event;
       const providerEvent = events.findLast(
@@ -222,53 +388,28 @@ const make = Effect.gen(function* () {
       // A provider thread id can be reused. The original admission must name this generation.
       if (
         (runEvent?.type !== "run.created" && runEvent?.type !== "run.updated") ||
-        runEvent.payload.id !== run.id ||
-        runEvent.payload.threadId !== run.threadId ||
-        runEvent.payload.activeAttemptId !== attempt.id ||
-        runEvent.payload.rootNodeId !== root.id ||
-        runEvent.payload.userMessageId !== run.userMessageId ||
-        runEvent.payload.providerThreadId !== binding.providerThreadId ||
-        runEvent.payload.providerInstanceId !== binding.providerInstanceId ||
+        !sameUnstartedRun(runEvent.payload, run) ||
         runEvent.payload.status !== "starting" ||
-        runEvent.payload.startedAt !== null ||
-        runEvent.payload.completedAt !== null ||
         providerEvent?.type !== "provider-thread.updated" ||
         !matchesCapture(providerEvent.payload, binding) ||
-        (receipt.value.commandType === "message.dispatch" &&
+        (commandType === "message.dispatch" &&
           !events.some(
             ({ event }) =>
-              event.type === "run-attempt.created" &&
-              event.payload.id === attempt.id &&
-              event.payload.runId === run.id &&
-              event.payload.rootNodeId === root.id &&
-              event.payload.reason === "initial" &&
-              event.payload.status === "pending" &&
-              event.payload.startedAt === null,
+              event.type === "run-attempt.created" && samePendingAttempt(event.payload, attempt),
           ))
       )
         return;
-      return { run, attempt, root, effect };
+      return { pending, effect };
     },
     // Unreadable start evidence still permits the existing physical Stop and fences.
     Effect.orElseSucceed(() => undefined),
   );
-  const settleUnclaimedStart = Effect.fn("CurrentRuntimeStop.settleUnclaimedStart")(function* (
-    start: NonNullable<Effect.Success<ReturnType<typeof readUnclaimedStart>>>,
+  const settlePendingRun = Effect.fn("CurrentRuntimeStop.settlePendingRun")(function* (
+    { run, attempt, root }: PendingRun,
     commandId: CommandId,
     now: DateTime.Utc,
+    expectedStatus: "starting" | "queued",
   ) {
-    const { run, attempt, root, effect } = start;
-    const cancelled = yield* outbox.get(effect.id).pipe(Effect.catch(() => Effect.succeedNone));
-    if (
-      Option.isNone(cancelled) ||
-      cancelled.value.threadId !== run.threadId ||
-      cancelled.value.commandId !== effect.commandId ||
-      cancelled.value.payloadIdentity !== effect.payloadIdentity ||
-      cancelled.value.status !== "cancelled" ||
-      cancelled.value.attemptCount !== 0 ||
-      cancelled.value.leaseOwner !== null
-    )
-      return;
     const eventScope = {
       threadId: run.threadId,
       runId: run.id,
@@ -278,12 +419,14 @@ const make = Effect.gen(function* () {
     };
     const terminal = { status: "cancelled", completedAt: now } as const;
     const eventId = (record: string) =>
-      EventId.make(`event:${commandId}:cancel-start:${run.id}:${record}`);
+      EventId.make(
+        `event:${commandId}:cancel-${expectedStatus === "starting" ? "start" : "queued"}:${run.id}:${record}`,
+      );
     const written = yield* eventSink.writeIfRunCurrent({
       threadId: run.threadId,
       runId: run.id,
       activeAttemptId: attempt.id,
-      expectedStatus: "starting",
+      expectedStatus,
       events: [
         {
           ...eventScope,
@@ -305,7 +448,65 @@ const make = Effect.gen(function* () {
         },
       ],
     });
-    if (!written.committed) return yield* error("runtime_stop_start_basis_changed");
+    if (!written.committed)
+      return yield* error(
+        expectedStatus === "starting"
+          ? "runtime_stop_start_basis_changed"
+          : "runtime_stop_queue_basis_changed",
+      );
+  });
+
+  const settleCancelledStart = Effect.fn("CurrentRuntimeStop.settleCancelledStart")(function* (
+    { effect, pending }: NonNullable<Effect.Success<ReturnType<typeof readCancellableStart>>>,
+    commandId: CommandId,
+    now: DateTime.Utc,
+  ) {
+    const cancelled = yield* outbox.get(effect.id);
+    if (
+      Option.isNone(cancelled) ||
+      cancelled.value.threadId !== pending.run.threadId ||
+      cancelled.value.commandId !== effect.commandId ||
+      cancelled.value.payloadIdentity !== effect.payloadIdentity ||
+      cancelled.value.status !== "cancelled" ||
+      cancelled.value.attemptCount !== effect.attemptCount ||
+      cancelled.value.leaseOwner !== null
+    )
+      return yield* error("runtime_stop_start_basis_changed");
+    yield* settlePendingRun(pending, commandId, now, "starting");
+  });
+  const disposeFencedQueue = Effect.fn("CurrentRuntimeStop.disposeFencedQueue")(function* (
+    threadId: ThreadId,
+    queue: ReadonlyArray<OrchestrationV2Run>,
+    commandId: CommandId,
+    now: DateTime.Utc,
+  ) {
+    if (queue.length === 0) return;
+    const { runs } = yield* projections.getThreadRecords(threadId, ["runs"], {
+      runIds: queue.map((run) => run.id),
+      runStatuses: ["queued"],
+    });
+    const held: OrchestrationV2Run[] = [];
+    for (const run of runs) {
+      if (run.queueHeld === true) continue;
+      const pending = yield* Effect.gen(function* () {
+        if ((yield* StopStore.readStopStartEffectIds(sql, threadId, run.id)).length !== 0) return;
+        return yield* readPendingRun(run);
+      }).pipe(Effect.orElseSucceed(() => undefined));
+      if (pending !== undefined) {
+        yield* settlePendingRun(pending, commandId, now, "queued");
+      } else {
+        held.push(run);
+      }
+    }
+    if (held.length > 0)
+      yield* eventSink.writeWithEffects({
+        events: held.map((run) => ({
+          ...capturedStopQueueHoldEvent(run, now),
+          id: EventId.make(`event:${commandId}:hold-queued:${run.id}`),
+        })),
+        effects: [],
+        queueHold: { reason: "stop", runIds: held.map((run) => run.id) },
+      });
   });
   const awaitWorker = Effect.fn("CurrentRuntimeStop.awaitWorker")(
     (worker: Deferred.Deferred<void, StopStore.RuntimeStopError>) => Deferred.await(worker),
@@ -478,76 +679,80 @@ const make = Effect.gen(function* () {
           return yield* error("captured_runtime_replaced");
       });
       yield* revalidate;
-      const { runs } = yield* projections.getThreadRecords(input.threadId, ["runs"], {
-        runStatuses: ["queued", "starting"],
-      });
-      const affectedRunIds = runs.map((run) => run.id);
-      const identity = {
-        request: input,
-        actor: {
-          sessionId: principal.sessionId,
-          subject: principal.subject,
-          method: principal.method,
-        },
-        actorDigest,
-        affectedRunIds,
-      };
-      const now = yield* DateTime.now;
-      const { binding } = captured;
-      const candidates = runs.filter((run) => run.providerThreadId === binding.providerThreadId);
-      const commit = eventSink.commitCommand({
-        commandId: input.commandId,
-        threadId: input.threadId,
-        commandType: "provider-session.detach",
-        acceptedAt: now,
-        runtimeStop: { identity, revalidate },
-        events: [
-          {
-            id: EventId.make(`event:${input.commandId}:captured-runtime-stop`),
-            type: "provider-session.detach-requested",
-            threadId: input.threadId,
-            driver: binding.driver,
-            providerInstanceId: binding.providerInstanceId,
-            occurredAt: now,
-            payload: { providerSessionId: binding.providerSessionId },
-          },
-        ],
-        effects: [
-          {
-            id: `effect:${input.commandId}:captured-runtime-stop`,
-            commandId: input.commandId,
-            threadId: input.threadId,
-            request: {
-              type: "provider-session.detach",
-              providerSessionId: binding.providerSessionId,
-              runtimeStopCommandId: input.commandId,
-            },
-          },
-        ],
-        cancelUnsettledEffects: {
-          effectTypes: ["provider-turn.start"],
-          reason: "Captured runtime stop fences previous queued execution lineage.",
-        },
-      });
       let registeredCapture = false;
       return yield* eventSink
         .withProviderBatch(
           Effect.gen(function* () {
             const previous = yield* replay;
             if (previous !== null) return previous;
-            const rows =
-              candidates.length > 0
-                ? yield* outbox.listByThreadId(input.threadId).pipe(Effect.orElseSucceed(() => []))
-                : [];
-            const unclaimed = yield* Effect.forEach(candidates, (run) =>
-              readUnclaimedStart(run, rows, binding),
+            const { runs } = yield* projections.getThreadRecords(input.threadId, ["runs"], {
+              runStatuses: ["queued", "starting"],
+            });
+            const affectedRunIds = runs.map((run) => run.id);
+            const identity = {
+              request: input,
+              actor: {
+                sessionId: principal.sessionId,
+                subject: principal.subject,
+                method: principal.method,
+              },
+              actorDigest,
+              affectedRunIds,
+            };
+            const now = yield* DateTime.now;
+            const { binding } = captured;
+            const candidates = runs.filter(
+              (run) =>
+                run.status === "starting" && run.providerThreadId === binding.providerThreadId,
             );
-            const accepted = yield* commit;
+            const cancellable = yield* Effect.forEach(candidates, (run) =>
+              readCancellableStart(run, binding),
+            );
+            const accepted = yield* eventSink.commitCommand({
+              commandId: input.commandId,
+              threadId: input.threadId,
+              commandType: "provider-session.detach",
+              acceptedAt: now,
+              runtimeStop: { identity, revalidate },
+              events: [
+                {
+                  id: EventId.make(`event:${input.commandId}:captured-runtime-stop`),
+                  type: "provider-session.detach-requested",
+                  threadId: input.threadId,
+                  driver: binding.driver,
+                  providerInstanceId: binding.providerInstanceId,
+                  occurredAt: now,
+                  payload: { providerSessionId: binding.providerSessionId },
+                },
+              ],
+              effects: [
+                {
+                  id: `effect:${input.commandId}:captured-runtime-stop`,
+                  commandId: input.commandId,
+                  threadId: input.threadId,
+                  request: {
+                    type: "provider-session.detach",
+                    providerSessionId: binding.providerSessionId,
+                    runtimeStopCommandId: input.commandId,
+                  },
+                },
+              ],
+              cancelUnsettledEffects: {
+                effectTypes: ["provider-turn.start"],
+                reason: "Captured runtime stop fences previous queued execution lineage.",
+              },
+            });
             // The Stop cohort CAS needs to see the live runs. Settle only after its
-            // cancellation, in the same writer transaction so no claim can intervene.
+            // cancellation, in the same writer transaction so no worker can cross the dispatch gate.
             if (!accepted.committed) return yield* error("stop_command_identity_conflict");
-            for (const start of unclaimed)
-              if (start !== undefined) yield* settleUnclaimedStart(start, input.commandId, now);
+            yield* disposeFencedQueue(
+              input.threadId,
+              runs.filter((run) => run.status === "queued"),
+              input.commandId,
+              now,
+            );
+            for (const start of cancellable)
+              if (start !== undefined) yield* settleCancelledStart(start, input.commandId, now);
             captures.set(input.commandId, captured);
             registeredCapture = true;
             return {
