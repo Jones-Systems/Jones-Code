@@ -330,6 +330,95 @@ it.effect("keeps a withdrawn approved request visible while its access grant sur
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("fences dismissal and revisions across repeated timed grant restores", () =>
+  Effect.gen(function* () {
+    const requests = yield* Requests.RequestManagement;
+    const admissions = yield* Admission.RemoteAdmission;
+    const sql = yield* SqlClient.SqlClient;
+    const id = yield* seed("peer-a", "completed-launch-with-access", "dispatched");
+    const now = "2099-01-01T00:00:00.000Z";
+    const binding = {
+      receiverEnvironmentId,
+      originEnvironmentId: "synthetic-origin",
+      originThreadId: "synthetic-origin-thread",
+      destinationThreadId: "synthetic-created-thread",
+      sessionId: "peer-a",
+      operation: "t3_thread_send",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+    } as const;
+    yield* sql`INSERT INTO jones_remote_admission_results (admission_id,result_json)
+      VALUES(${id},${JSON.stringify({ launchResult: { outcome: "created" } })})`;
+    const grant = yield* sql.withTransaction(
+      admissions.access.createGrantInTransaction({
+        admissionId: id,
+        binding,
+        durationSeconds: 86400,
+        now,
+      }),
+    );
+    const revoke = (grantId: string, generation: number) =>
+      admissions.access.mutateGrant({
+        grantId,
+        expectedGeneration: generation,
+        action: "revoke",
+        now,
+      });
+    const restore = (predecessorId: string, generation: number, commandKey: string) =>
+      sql.withTransaction(
+        admissions.access.restore({
+          predecessorId,
+          expectedGeneration: generation,
+          commandKey,
+          durationSeconds: 86400,
+          binding,
+          now,
+          authorize: () => Effect.succeed(true),
+        }),
+      );
+    const inspect = Effect.gen(function* () {
+      const result = yield* requests.ownerQuery(
+        { action: "inspect", receiverEnvironmentId, id },
+        cli,
+      );
+      if (result.action !== "inspect") return yield* Effect.die("Expected an exact request");
+      return result.request;
+    });
+    const dismiss = (expectedRevision: string) =>
+      requests.edit({ receiverEnvironmentId, id, action: "dismiss", expectedRevision }, cli);
+
+    const revoked = yield* revoke(grant.grant_id, grant.generation);
+    const before = yield* inspect;
+    expect(before).toMatchObject({ recoveryOutcome: "created", canDismiss: true });
+    const first = yield* restore(revoked.grant_id, revoked.generation, "first-restore");
+    const afterFirst = yield* inspect;
+    expect(afterFirst.canDismiss).toBe(false);
+    expect(yield* dismiss(before.revision).pipe(Effect.flip)).toMatchObject({
+      code: "revision_changed",
+    });
+
+    const revokedFirst = yield* revoke(first.grant_id, first.generation);
+    const between = yield* inspect;
+    expect(between.canDismiss).toBe(true);
+    expect(between.revision).not.toBe(before.revision);
+    const second = yield* restore(revokedFirst.grant_id, revokedFirst.generation, "second-restore");
+    const afterSecond = yield* inspect;
+    expect(afterSecond.canDismiss).toBe(false);
+    expect(afterSecond.revision).not.toBe(afterFirst.revision);
+    expect(yield* dismiss(afterSecond.revision).pipe(Effect.flip)).toMatchObject({
+      code: "request_not_dismissible",
+    });
+    expect((yield* requests.list({ view: "all" }, null)).requests[0]?.id).toBe(id);
+    expect(yield* sql`SELECT action FROM jones_request_management_edits`).toEqual([]);
+
+    yield* revoke(second.grant_id, second.generation);
+    const terminal = yield* inspect;
+    expect(terminal.canDismiss).toBe(true);
+    expect((yield* dismiss(terminal.revision)).request.dismissed).toBe(true);
+    expect((yield* requests.inspect(id, null)).request?.recoveryOutcome).toBe("created");
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("authorizes the owner CLI and denies remote writes on the actual HTTP routes", () =>
   Effect.gen(function* () {
     const requests = yield* Requests.RequestManagement;

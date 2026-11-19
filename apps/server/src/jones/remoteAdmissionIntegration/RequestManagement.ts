@@ -42,7 +42,7 @@ interface Row {
   readonly recovery_revision: number | null;
   readonly recovered_outcome: string | null;
   readonly recorded_outcome: string | null;
-  readonly has_live_grant: number;
+  readonly grant_evidence: string;
   readonly label: string | null;
   readonly dismissed_at: string | null;
   readonly revision: number | null;
@@ -65,8 +65,8 @@ const summary = (row: Row): DTO.RequestSummary => ({
   recoveryOutcome: recoveryOutcome(row),
 });
 
-const canDismiss = (row: Row) => {
-  if (row.has_live_grant !== 0) return false;
+const canDismiss = (row: Row, hasLiveGrant: number) => {
+  if (hasLiveGrant !== 0) return false;
   if (row.status === "denied" || row.status === "cancelled") return true;
   if (row.status !== "dispatched") return false;
   const outcome = recoveryOutcome(row);
@@ -75,25 +75,28 @@ const canDismiss = (row: Row) => {
     : row.dispatch_outcome === "success" || row.dispatch_outcome === "failure";
 };
 
-const managed = (environmentId: EnvironmentId, row: Row): DTO.ManagedRequest => ({
-  ...summary(row),
-  label: row.label,
-  dismissed: row.dismissed_at !== null,
-  canDismiss: canDismiss(row),
-  revision: evidenceDigest([
-    environmentId,
-    row.id,
-    row.binding_digest,
-    row.updated_at,
-    row.status,
-    row.command_id,
-    row.dispatch_outcome,
-    row.recovery_revision,
-    recoveryOutcome(row),
-    row.has_live_grant,
-    row.revision ?? 0,
-  ]),
-});
+const managed = (environmentId: EnvironmentId, row: Row): DTO.ManagedRequest => {
+  const { hasLiveGrant } = JSON.parse(row.grant_evidence) as { hasLiveGrant: number };
+  return {
+    ...summary(row),
+    label: row.label,
+    dismissed: row.dismissed_at !== null,
+    canDismiss: canDismiss(row, hasLiveGrant),
+    revision: evidenceDigest([
+      environmentId,
+      row.id,
+      row.binding_digest,
+      row.updated_at,
+      row.status,
+      row.command_id,
+      row.dispatch_outcome,
+      row.recovery_revision,
+      recoveryOutcome(row),
+      row.grant_evidence,
+      row.revision ?? 0,
+    ]),
+  };
+};
 
 // A null session is selected only for a trusted local thread or the owner CLI.
 type RequestReader = { readonly sessionId: string } | null;
@@ -105,13 +108,29 @@ const make = Effect.gen(function* () {
   const receiverEnvironmentId = EnvironmentId.make(readers.receiverEnvironmentId);
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
+  // Successors have synthetic admission IDs. Follow their exact restore links,
+  // keeping the retained grant history in the revision even after a revoke.
+  const grantEvidence = sql`(
+    WITH RECURSIVE lineage(grant_id) AS (
+      SELECT grant_id FROM jones_remote_admission_grants WHERE admission_id=a.id
+      UNION
+      SELECT r.successor_grant_id FROM jones_remote_admission_grant_restores r
+      JOIN lineage ON lineage.grant_id=r.predecessor_grant_id
+    )
+    SELECT json_object(
+      'hasLiveGrant', coalesce(max(g.state='pending' OR
+        (g.state='active' AND g.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now'))),0),
+      'grants', json_group_array(json_array(g.grant_id,g.generation,g.state,g.expires_at)
+        ORDER BY g.grant_id)
+    ) FROM lineage JOIN jones_remote_admission_grants g USING (grant_id)
+  )`;
+
   const rows = sql`SELECT a.id,a.binding_digest,json_extract(a.envelope_json,'$.operation') operation,
     a.status,a.created_at,a.updated_at,a.command_id,
     e.outcome dispatch_outcome,r.revision recovery_revision,
     json_extract(r.result_json,'$.outcome') recovered_outcome,
     json_extract(original.result_json,'$.launchResult.outcome') recorded_outcome,
-    EXISTS(SELECT 1 FROM jones_remote_admission_grants g WHERE g.admission_id=a.id
-      AND (g.state='pending' OR (g.state='active' AND g.expires_at>strftime('%Y-%m-%dT%H:%M:%fZ','now')))) has_live_grant,
+    ${grantEvidence} grant_evidence,
     m.label,m.dismissed_at,m.revision
     FROM jones_remote_admissions a
     LEFT JOIN jones_remote_admission_extensions e ON e.admission_id=a.id
