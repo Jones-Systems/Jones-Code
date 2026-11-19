@@ -739,9 +739,24 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         "--shared=0660",
       ]);
       const checkpointRef = CheckpointRef.make("refs/t3/checkpoints/shared");
-      yield* fs.writeFileString(path.join(cwd, "shared.txt"), "new shared object\n");
-      const blob = (yield* git(["hash-object", "-w", "shared.txt"])).stdout.trim();
-      const directory = path.join(gitCommonDir, "objects", blob.slice(0, 2));
+      // Choose an unused fanout so removing it cannot delete the fixture's initial commit.
+      let directory: string | undefined;
+      for (const contents of [
+        "new shared object\n",
+        "another shared object\n",
+        "shared checkpoint fixture\n",
+        "shared publication probe\n",
+      ]) {
+        yield* fs.writeFileString(path.join(cwd, "shared.txt"), contents);
+        const blob = (yield* git(["hash-object", "shared.txt"])).stdout.trim();
+        const candidate = path.join(gitCommonDir, "objects", blob.slice(0, 2));
+        if (!(yield* fs.exists(candidate))) {
+          directory = candidate;
+          break;
+        }
+      }
+      if (directory === undefined) return assert.fail("Expected an unused object fanout");
+      yield* git(["hash-object", "-w", "shared.txt"]);
       const expectedMode = (yield* fs.stat(directory)).mode & 0o7777;
       yield* fs.remove(directory, { recursive: true });
       assert.isFalse(yield* fs.exists(directory));
