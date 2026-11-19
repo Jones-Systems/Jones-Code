@@ -1,6 +1,11 @@
 import { cloneElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { act, render as renderTest, type Screen } from "../../../test/render";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { expect, it, vi } from "vite-plus/test";
 
@@ -223,6 +228,9 @@ async function setup() {
 
 it("shows the matching child agent details and refreshes them when the agent settles", async () => {
   await using _screen = await setup();
+  state.configs.set("test", {
+    providers: [{ instanceId: "codex", driver: "codex", displayName: "Malcolm Codex" }],
+  });
   const agent = {
     id: "agent-1",
     threadId: "parent",
@@ -279,6 +287,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   });
   await update();
   const checkerRow = () => buttons().find((button) => button.textContent?.includes("Checker"))!;
+  expect(checkerRow().querySelector("[data-provider-shortcut-label] defs")?.textContent).toBe("MC");
   expect(checkerRow().textContent).toContain("Running");
   expect(checkerRow().textContent).not.toContain("on Laptop");
   state.environments.set("test", {
@@ -328,6 +337,9 @@ it("shows the matching child agent details and refreshes them when the agent set
   const previousGroup = container.querySelector('[data-linked-group="previous"]')!;
   const previousRow = previousGroup.querySelector("li")!;
   expect(previousRow.textContent).toContain("Checker");
+  const accountLabel = previousRow.querySelector("[data-provider-shortcut-label]");
+  expect(accountLabel?.querySelector("defs")?.textContent).toBe("MC");
+  expect(accountLabel?.querySelector("use[fill]")?.getAttribute("fill")).toBe("white");
   expect(
     [...previousRow.querySelectorAll("span")].some((span) => span.textContent === "Delegated task"),
   ).toBe(true);
@@ -669,11 +681,34 @@ it("hides the client-local location for tasks delegated back from another server
     id: "back-to-laptop",
     title: "Local destination",
     status: "running",
-    driver: "codex",
+    driver: "remote",
     providerInstanceId: "codex",
     remoteChild: { environmentId: "laptop", threadId: "child", label: "Laptop" },
   } as ComponentProps<typeof RemoteSubagentRow>["agent"];
   await render(<RemoteSubagentRow agent={agent} provider={undefined} />);
+  expect(byLabel("Local destination").querySelector("[data-provider-shortcut-label]")).toBeNull();
+  await render(
+    <RemoteSubagentRow
+      agent={agent}
+      provider={{
+        driver: ProviderDriverKind.make("claudeAgent"),
+        instanceId: ProviderInstanceId.make("codex"),
+        displayName: "Jace Claude",
+        enabled: true,
+        installed: true,
+        status: "ready",
+        version: null,
+        auth: { status: "authenticated" },
+        checkedAt: "2026-09-21T12:00:00Z",
+        models: [],
+        slashCommands: [],
+        skills: [],
+      }}
+    />,
+  );
+  expect(
+    byLabel("Local destination").querySelector("[data-provider-shortcut-label] defs")?.textContent,
+  ).toBe("JC");
   expect(byLabel("Local destination").textContent).toContain("Running");
   expect(container.textContent).not.toContain("on Laptop");
   await click(byLabel("Local destination"));

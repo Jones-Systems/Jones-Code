@@ -92,6 +92,10 @@ it("renders the owning environment account and retains the fallback when a remot
       screen.container.querySelector('[data-case="local"] [data-provider-shortcut-label] defs')
         ?.textContent,
     ).toBe("CM");
+    const inlineLabel = screen.container.querySelector(
+      '[data-case="local"] [data-provider-shortcut-label]',
+    );
+    expect(inlineLabel && getComputedStyle(inlineLabel).fontSize).toBe("8px");
     expect(
       screen.container.querySelector('[data-case="remote"] [data-provider-shortcut-label] defs')
         ?.textContent,

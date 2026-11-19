@@ -36,6 +36,7 @@
     "apps/web/src/components/chat/ChatComposer.tsx",
     "apps/web/src/components/chat/ModelPickerContent.tsx",
     "apps/web/src/components/chat/V2LifecycleRow.tsx",
+    "apps/web/src/components/chat/ThreadRelationshipIcon.tsx",
     "apps/web/src/components/chat/TraitsPicker.tsx",
     "apps/web/src/components/chat/ProviderModelPicker.tsx",
     "apps/web/src/components/chat/useComposerSelection.ts",
@@ -96,6 +97,14 @@
     },
     {
       "from": "apps/web/src/components/chat/V2LifecycleRow.tsx",
+      "to": "apps/web/src/jones/subagents/accountDisplayName.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipIcon.tsx",
+      "to": "apps/web/src/jones/composer/ProviderShortcutIcon.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipIcon.tsx",
       "to": "apps/web/src/jones/subagents/accountDisplayName.ts"
     },
     {

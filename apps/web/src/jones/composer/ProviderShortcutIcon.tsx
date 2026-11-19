@@ -23,12 +23,13 @@ export function ProviderAccountGlyph({
   driverKind,
   displayName,
   accentColor,
+  acpRegistryAgentId,
   acpRegistryIconUrl,
   labelColor = "white",
   labelSize = "default",
 }: Pick<
   ProviderInstanceEntry,
-  "driverKind" | "displayName" | "accentColor" | "acpRegistryIconUrl"
+  "driverKind" | "displayName" | "accentColor" | "acpRegistryAgentId" | "acpRegistryIconUrl"
 > & {
   labelColor?: string;
   labelSize?: "default" | "compact";
@@ -57,6 +58,7 @@ export function ProviderAccountGlyph({
         driverKind={driverKind}
         displayName={displayName}
         accentColor={accentColor}
+        acpRegistryAgentId={acpRegistryAgentId}
         acpRegistryIconUrl={acpRegistryIconUrl}
         className="size-4"
         iconClassName={driverKind === "codex" || driverKind === "claudeAgent" ? "size-5" : "size-4"}
@@ -71,7 +73,7 @@ export function ProviderAccountGlyph({
           width: 36,
           height: 26,
           fontFamily: "system-ui, sans-serif",
-          fontSize: labelSize === "compact" ? 6 : 9,
+          fontSize: labelSize === "compact" ? 8 : 9,
           fontWeight: 600,
         }}
         dominantBaseline="central"
