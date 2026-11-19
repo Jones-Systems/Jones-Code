@@ -48,6 +48,7 @@ import * as Control from "../orchestration/ControlAdmission.ts";
 import * as Restart from "../orchestration/RestartPreparation.ts";
 import * as Refusals from "../startRefusal/Store.ts";
 import { StartAdmission } from "./StartAdmission.ts";
+import * as UnattendedStartAdmission from "./UnattendedStartAdmission.ts";
 
 const providerInstanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
@@ -66,6 +67,7 @@ const replay = Replay.layerWithRegistryAndServices(
   { databaseLayer: database, runEffectWorker: false, continueThreadsAfterServerUpdate: true },
 );
 const runtime = Layer.merge(Recovery.layer, NativeStartAdmission.layer).pipe(
+  Layer.provide(UnattendedStartAdmission.layer),
   Layer.provideMerge(
     Layer.mergeAll(
       replay,
