@@ -126,7 +126,11 @@ const catalogs: ReadonlyArray<ServerProvider> = accounts.map((account): ServerPr
             id: "serviceTier",
             label: "Tier",
             type: "select",
-            options: [{ id: "priority", label: "Priority" }],
+            options: [
+              { id: "default", label: "Standard" },
+              { id: "priority", label: "Priority" },
+              { id: "ultrafast", label: "Ultrafast" },
+            ],
           },
         ],
       },
@@ -200,7 +204,8 @@ const scenario = (
     | "cancel-return"
     | "exclusive"
     | "foreign"
-    | "pending",
+    | "pending"
+    | "speed",
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -444,6 +449,53 @@ const scenario = (
       const sourceProcess = (yield* readTraces()).find(
         (trace) => trace.method === "thread/start",
       )!.processId;
+      if (mode === "speed") {
+        assert.equal(source.runs[0]!.status, "completed");
+        for (const [index, tier] of ["ultrafast", "default", "priority"].entries()) {
+          const marker = `SYNTHETIC_SPEED_${tier.toUpperCase()}`;
+          yield* dispatch(marker, {
+            ...initialSelection,
+            options: [
+              { id: "reasoningEffort", value: "high" },
+              { id: "serviceTier", value: tier },
+            ],
+          });
+          const result = yield* awaitProjection(
+            threadId,
+            after,
+            (projection) => projection.runs.length === index + 2 && isIdle(projection),
+          );
+          assert.equal(
+            result.runs.at(-1)?.status,
+            "completed",
+            JSON.stringify(yield* failureState(threadId)),
+          );
+          const provider = result.providerThreads.find((row) => row.id === sourceThread.id);
+          assert.equal(result.thread.activeProviderThreadId, sourceThread.id);
+          assert.equal(provider?.nativeThreadRef?.nativeId, nativeId);
+          assert.equal(
+            provider?.runtimeIdentity?.runtimeGeneration,
+            sourceThread.runtimeIdentity?.runtimeGeneration,
+          );
+          assert.equal(provider?.runtimeIdentity?.requested.serviceTier, tier);
+          const sent = (yield* readTraces()).filter((trace) => trace.inputMarker === marker);
+          assert.lengthOf(sent, 1);
+          assert.include(sent[0], {
+            method: "turn/start",
+            processId: sourceProcess,
+            nativeThreadId: nativeId,
+            serviceTier: tier,
+          });
+        }
+        const loads = (yield* readTraces()).filter(
+          ({ method }) => method === "thread/start" || method === "thread/resume",
+        );
+        assert.deepEqual(
+          loads.map(({ method }) => method),
+          ["thread/start"],
+        );
+        return;
+      }
       const target = { ...initialSelection, instanceId: instanceId("B") };
       if (mode === "foreign") {
         const lockPath = path.join(stateDir, `lock-${nativeId}`);
@@ -771,6 +823,7 @@ const scenario = (
   );
 
 describe("Codex account transfer with synthetic producers and a shared writer registry", () => {
+  it.live("changes Codex speed on the original conversation and producer", () => scenario("speed"));
   it.live.each([
     "selection",
     "direct",
