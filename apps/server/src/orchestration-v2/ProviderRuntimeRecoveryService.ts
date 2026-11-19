@@ -6,11 +6,10 @@ import {
   makeUnsentStartProof,
   recoveryResendEffect,
 } from "../jones/provider/UnsentStartProof.ts";
-import * as StartRefusals from "../jones/startRefusal/Store.ts";
-import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
-import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
-import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
-import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import {
+  readStartAdmission,
+  UnattendedStartAdmission,
+} from "../jones/provider/UnattendedStartAdmission.ts";
 import { continuityAdmissionRefusal } from "../jones/goals/continuity/admission.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -215,25 +214,26 @@ export const make = Effect.gen(function* () {
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const orphanedRunRecords = yield* Effect.serviceOption(OrphanedRunRecords.OrphanedRunRecords);
   const receipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
-  const prefixEvidence = yield* Effect.serviceOption(StartRefusals.StartRefusals);
-  const restartAdmission = yield* Effect.serviceOption(RestartPreparation.RestartPreparation);
-  const controlAdmission = yield* Effect.serviceOption(ControlAdmission.ControlAdmission);
-  const goalContinuity = yield* Effect.serviceOption(GoalContinuity.GoalContinuity);
-  const environment = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironmentIdentity);
+  const existingAdmission = readStartAdmission(yield* Effect.context());
+  const unattendedAdmission = yield* Effect.serviceOption(UnattendedStartAdmission);
   const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
-  const unsentStartPorts =
-    Option.isSome(receipts) && Option.isSome(prefixEvidence)
-      ? {
+  const proveOriginalUnsent =
+    Option.isSome(receipts) && Option.isSome(existingAdmission)
+      ? makeUnsentStartProof({
           outbox,
           receipts: receipts.value,
           sink: eventSink,
-          refusals: prefixEvidence.value,
-        }
+          refusals: existingAdmission.value.refusals,
+        })
       : undefined;
-  const proveOriginalUnsent = unsentStartPorts && makeUnsentStartProof(unsentStartPorts);
   const proveRecoveryUnsent =
-    Option.isSome(sql) && unsentStartPorts !== undefined
-      ? makeRecoveryUnsentStartProof(sql.value, unsentStartPorts)
+    Option.isSome(sql) && Option.isSome(receipts) && Option.isSome(unattendedAdmission)
+      ? makeRecoveryUnsentStartProof(sql.value, {
+          outbox,
+          receipts: receipts.value,
+          sink: eventSink,
+          refusals: unattendedAdmission.value.refusals,
+        })
       : undefined;
   const certifiedUnsent = Effect.fn("ProviderRuntimeRecoveryService.certifiedUnsent")(
     function* (
@@ -241,14 +241,9 @@ export const make = Effect.gen(function* () {
       run: OrchestrationV2ThreadProjection["runs"][number],
       resendMessage?: OrchestrationV2ConversationMessage,
     ) {
-      if (
-        run.activeAttemptId === null ||
-        Option.isNone(restartAdmission) ||
-        Option.isNone(controlAdmission) ||
-        Option.isNone(goalContinuity) ||
-        Option.isNone(environment)
-      )
-        return false;
+      const admission = resendMessage === undefined ? existingAdmission : unattendedAdmission;
+      if (run.activeAttemptId === null || Option.isNone(admission)) return false;
+      const { restart, control, goals, environment } = admission.value;
       const attempt = projection.attempts.find(
         (row) => row.id === run.activeAttemptId && row.runId === run.id,
       );
@@ -268,14 +263,14 @@ export const make = Effect.gen(function* () {
         !(yield* proveRecoveryUnsent(run, projection.attempts, resendMessage))
       )
         return false;
-      yield* restartAdmission.value.assertThreadOpen(projection.thread.id);
+      yield* restart.assertThreadOpen(projection.thread.id);
       yield* eventSink.assertRuntimeStopStartAllowed({
         threadId: projection.thread.id,
         runId: run.id,
       });
       // Absent runtime or native evidence stays unavailable: no producer key, no native ID.
       const runtimeGeneration = provider.runtimeIdentity?.runtimeGeneration;
-      yield* controlAdmission.value.assertOpen({
+      yield* control.assertOpen({
         instanceId: provider.providerInstanceId,
         threadId: projection.thread.id,
         nativeThreadId: provider.nativeThreadRef?.nativeId ?? null,
@@ -318,11 +313,8 @@ export const make = Effect.gen(function* () {
         threadId: projection.thread.id,
         runId: run.id,
       });
-      const environmentId = yield* environment.value.getEnvironmentId;
-      const requirement = yield* goalContinuity.value.requirementFor(
-        environmentId,
-        projection.thread.id,
-      );
+      const environmentId = yield* environment.getEnvironmentId;
+      const requirement = yield* goals.requirementFor(environmentId, projection.thread.id);
       // A native binding without its native ID is no continuity owner; a required owner refuses.
       const nativeThreadId = provider.nativeThreadRef?.nativeId ?? null;
       return (

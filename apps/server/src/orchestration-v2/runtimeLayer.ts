@@ -11,6 +11,7 @@ import * as NativeCreationAuthority from "../jones/nativeCreation/NativeCreation
 import * as NativeCreationProviderExecutor from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
 import * as NativeStartAdmission from "../jones/nativeCreation/NativeStartAdmission.ts";
 import * as StartAdmission from "../jones/provider/StartAdmission.ts";
+import * as UnattendedStartAdmission from "../jones/provider/UnattendedStartAdmission.ts";
 import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import * as CapturedRuntimeStop from "../jones/provider/CapturedRuntimeStop.ts";
@@ -539,10 +540,17 @@ const layerProviderRuntimeRecoveryProvided = ProviderRuntimeRecoveryService.laye
       layerEffectWorkerProvided,
       layerStores,
       layerEventSink,
-      layerStartAdmission,
-      layerRestartPreparationProvided,
-      layerGoalContinuity,
-      ServerEnvironment.layerIdentity,
+      UnattendedStartAdmission.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ControlAdmission.layer,
+            layerRestartPreparationProvided,
+            layerGoalContinuity,
+            ServerEnvironment.layerIdentity,
+            StartRefusal.layer,
+          ),
+        ),
+      ),
       IdAllocator.layer,
       ProjectionStore.layer,
       OrphanedRunRecords.layer.pipe(Layer.provide(Layer.merge(layerEventSink, IdAllocator.layer))),

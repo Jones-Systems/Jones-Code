@@ -2,6 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "start-refusal-retention",
   "jonesOwnedPaths": [
+    "apps/server/src/jones/provider/UnattendedStartAdmission.ts",
     "apps/server/src/jones/provider/UnsentStartProof.ts",
     "apps/server/src/jones/provider/UnsentStartProof.test.ts",
     "apps/server/src/jones/provider/UnsentStartRecovery.integration.test.ts",
@@ -20,6 +21,14 @@
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+      "to": "apps/server/src/jones/provider/UnattendedStartAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/provider/UnattendedStartAdmission.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/ProjectionRecovery.test.ts",
       "to": "apps/server/src/jones/startRefusal/Store.ts"

@@ -46,6 +46,7 @@ import * as Restart from "../orchestration/RestartPreparation.ts";
 import { EVENT_LOG_PRUNED_THROUGH_PROJECTION } from "../persistence/EventLogPruneBoundary.ts";
 import * as Refusals from "../startRefusal/Store.ts";
 import { StartAdmission } from "./StartAdmission.ts";
+import * as UnattendedStartAdmission from "./UnattendedStartAdmission.ts";
 
 const recoveryStores = Layer.mergeAll(
   IdAllocator.layer,
@@ -61,6 +62,7 @@ const unattendedRecoveryLayer = Layer.mergeAll(
   ProviderRuntimeRecovery.layer,
   NativeStartAdmission.layer,
 ).pipe(
+  Layer.provide(UnattendedStartAdmission.layer),
   Layer.provideMerge(
     Layer.mergeAll(
       recoverySink,
