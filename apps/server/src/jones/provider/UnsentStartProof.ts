@@ -21,6 +21,8 @@ import type * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import type * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import type * as Sink from "../../orchestration-v2/EventSink.ts";
 import type * as Refusals from "../startRefusal/Store.ts";
+import type { CheckedPreparedCheckout } from "../workspaceLifecycle/PreparedStartCheckout.ts";
+import { preparedStartBirth } from "./PreparedStartBirth.ts";
 
 interface UnsentStartPorts {
   readonly outbox: Pick<Outbox.EffectOutboxV2Shape, "listByThreadId" | "get">;
@@ -204,6 +206,7 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
       run: OrchestrationV2Run,
       attempts: ReadonlyArray<OrchestrationV2RunAttempt>,
       message: OrchestrationV2ConversationMessage,
+      checkout?: CheckedPreparedCheckout,
     ) {
       const [attempt, anotherAttempt] = attempts.filter((row) => row.runId === run.id);
       if (
@@ -278,7 +281,10 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
 
       const prunedThrough = yield* readEventLogPrunedThrough(sql);
       // Both the original admission and each replacement need a retained receipt and event batch.
-      const readRetainedAcceptance = Effect.fnUntraced(function* (commandId: CommandId) {
+      const readRetainedAcceptance = Effect.fnUntraced(function* (
+        commandId: CommandId,
+        parentId?: string,
+      ) {
         const result = yield* ports.receipts.getByCommandId(commandId);
         if (Option.isNone(result)) return;
         const receipt = result.value;
@@ -286,7 +292,8 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
           receipt.status !== "accepted" ||
           receipt.error !== null ||
           receipt.commandId !== commandId ||
-          receipt.threadId !== run.threadId
+          receipt.threadId !== (parentId ?? run.threadId) ||
+          (parentId !== undefined && receipt.commandType !== "delegated_task.request")
         )
           return;
         const events = yield* ports.sink.readByCommandId({ commandId }).pipe(Stream.runCollect);
@@ -299,11 +306,18 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
             (row, index) =>
               row.sequence !== first.sequence + index ||
               row.commandId !== commandId ||
-              row.event.threadId !== run.threadId,
+              (row.event.threadId !== run.threadId && row.event.threadId !== parentId),
           )
         )
           return;
-        return { receipt, events, firstSequence: first.sequence };
+        return {
+          receipt,
+          events:
+            parentId === undefined
+              ? events
+              : events.filter(({ event }) => event.threadId === run.threadId),
+          firstSequence: first.sequence,
+        };
       });
       const sameRun = (event: OrchestrationV2DomainEvent, expected = run) =>
         event.runId === run.id &&
@@ -378,23 +392,25 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
       } else {
         const birth = prepared
           ? yield* Effect.gen(function* () {
-              const candidates = yield* sql<{ readonly command_id: string | null }>`
-                SELECT command_id FROM orchestration_events
-                WHERE application_event_version = 2 AND aggregate_kind = 'thread'
-                  AND stream_id = ${run.threadId} AND event_type = 'run.created'
-                  AND json_extract(payload_json, '$.id') = ${run.id}
-                  AND sequence < ${accepted.firstSequence}
-                LIMIT 2
-              `;
-              const id = candidates[0]?.command_id;
-              if (candidates.length === 1 && id != null)
-                return yield* readRetainedAcceptance(CommandId.make(id));
+              if (checkout === undefined || !(yield* checkout.matches(original.commandId))) return;
+              const candidates = yield* preparedStartBirth(sql, {
+                threadId: sql`${run.threadId}`,
+                runId: sql`${run.id}`,
+                releaseCommandId: sql`${original.commandId}`,
+              });
+              const candidate = candidates[0];
+              if (candidates.length === 1 && candidate?.release_sequence === receipt.resultSequence)
+                return yield* readRetainedAcceptance(
+                  CommandId.make(candidate.command_id),
+                  candidate.parent_id ?? undefined,
+                );
             })
           : accepted;
         if (
           birth === undefined ||
           (birth.receipt.commandType !== "message.dispatch" &&
-            birth.receipt.commandType !== "thread.create") ||
+            birth.receipt.commandType !== "thread.create" &&
+            !(prepared && birth.receipt.commandType === "delegated_task.request")) ||
           (prepared && birth.receipt.resultSequence >= accepted.firstSequence)
         )
           return false;
@@ -553,39 +569,6 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
             )
           )
             return false;
-
-          // The launch can bind/rename the checkout on the thread while the run
-          // remains preparing. Match the scope to that resolved binding and
-          // the current checkout. The run's captured selection must match birth.
-          const workspace = yield* sql`
-            WITH released_thread AS (
-              SELECT payload_json FROM orchestration_events
-              WHERE application_event_version = 2 AND aggregate_kind = 'thread'
-                AND stream_id = ${run.threadId}
-                AND sequence > ${prunedThrough} AND sequence < ${accepted.firstSequence}
-                AND event_type IN ('thread.created', 'thread.metadata-updated', 'thread.provider-switched',
-                  'thread.model-selection-updated', 'thread.runtime-mode-updated', 'thread.interaction-mode-updated')
-              ORDER BY sequence DESC LIMIT 1
-            )
-            SELECT 1 FROM released_thread AS released
-            JOIN orchestration_v2_projection_threads AS current ON current.thread_id = ${run.threadId}
-            JOIN projection_projects AS project ON project.project_id = current.project_id
-            WHERE json_extract(released.payload_json, '$.projectId') = current.project_id
-              AND json_extract(released.payload_json, '$.worktreePath')
-                IS json_extract(current.payload_json, '$.worktreePath')
-              AND json_extract(released.payload_json, '$.branch') IS json_extract(current.payload_json, '$.branch')
-              AND json_extract(released.payload_json, '$.runtimeMode') = current.runtime_mode
-              AND json_extract(released.payload_json, '$.interactionMode') = current.interaction_mode
-              AND COALESCE(json_extract(current.payload_json, '$.worktreePath'), project.workspace_root) = ${scope.cwd}
-              AND ${
-                strategy.type === "root"
-                  ? sql`json_type(current.payload_json, '$.worktreePath') = 'null'`
-                  : strategy.type === "existing_worktree"
-                    ? sql`json_extract(current.payload_json, '$.worktreePath') = ${strategy.worktreePath}`
-                    : sql`json_type(current.payload_json, '$.worktreePath') = 'text'`
-              }
-          `;
-          if (workspace.length !== 1) return false;
 
           // The ordinary launch may record worktree and setup progress, both
           // updates to the same local preparation item. Any other run activity

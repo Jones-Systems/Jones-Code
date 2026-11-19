@@ -445,6 +445,7 @@ it.effect(
         [162, "OrdinaryPreparation"],
         [163, "RemoteSendReceipts"],
         [164, "LegacyBootstrap"],
+        [165, "PreparedStartCheckouts"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,
@@ -457,6 +458,11 @@ it.effect(
       assert.deepStrictEqual(yield* sql`SELECT * FROM jones_physical_process_evidence`, []);
       assert.deepStrictEqual(
         yield* sql`PRAGMA foreign_key_list('jones_physical_process_evidence')`,
+        [],
+      );
+      assert.deepStrictEqual(yield* sql`SELECT * FROM jones_prepared_start_checkouts`, []);
+      assert.deepStrictEqual(
+        yield* sql`PRAGMA foreign_key_list('jones_prepared_start_checkouts')`,
         [],
       );
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);

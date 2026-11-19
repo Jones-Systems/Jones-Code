@@ -1018,8 +1018,11 @@
     },
     {
       "id": "recovery-start-parent-stop",
-      "tests": ["apps/server/src/jones/provider/RecoveryStartParentStop.integration.test.ts"],
-      "scope": "The outbox checks durable delegated Stop authority before leasing a recovered start and native admission checks again before dispatch. Recovery replacements have one claim. The race tests park the delegated Stop effect and cover matching ownership, old ambiguous sends, and independent and newer admissions."
+      "tests": [
+        "apps/server/src/jones/provider/RecoveryStartParentStop.integration.test.ts",
+        "apps/server/src/jones/provider/UnsentStartRecovery.integration.test.ts"
+      ],
+      "scope": "The outbox checks durable delegated Stop authority before leasing a recovered start and native admission checks again before dispatch. Recovery of released preparation requires the exact accepted input and a checkout identity captured at release. Tests exercise parent-scoped delegation receipts, Stop ordering, multiple reconciliations, original attachments, and physical checkout replacement."
     },
     {
       "id": "deletion-worktree-removal",

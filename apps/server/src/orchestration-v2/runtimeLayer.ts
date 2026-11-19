@@ -22,6 +22,7 @@ import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSel
 import * as TitleStore from "../jones/threadTitle/store.ts";
 import * as WorkspaceLifecycleRuntime from "../jones/workspaceLifecycle/RuntimeIntegration.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
+import * as PreparedStartCheckout from "../jones/workspaceLifecycle/PreparedStartCheckout.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorktreeMcpService from "../mcp/WorktreeMcpService.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
@@ -133,11 +134,16 @@ const layerStores = Layer.mergeAll(
   TurnItemPositionStore.layer,
 );
 
+const layerPreparedStartCheckout = PreparedStartCheckout.layer.pipe(
+  Layer.provide(Layer.merge(GitVcsDriver.layer, ServerEnvironment.layerIdentity)),
+);
+
 export const layerEventSink = EventSink.layerFromStores.pipe(
   Layer.provide(StartRefusal.layer),
   Layer.provide(DependencyChanges.layer),
   Layer.provide(nativeCreationOwnersProvided),
   Layer.provide(layerStores),
+  Layer.provide(layerPreparedStartCheckout),
 );
 const layerRestartPreparationProvided = RestartPreparation.layer.pipe(
   Layer.provide(Layer.merge(layerStores, layerEventSink)),
@@ -148,6 +154,7 @@ export const layerNativeStartAdmission = NativeStartAdmission.layer.pipe(
   Layer.provide(
     Layer.mergeAll(layerStores, layerEventSink, ControlAdmission.layer, StartRefusal.layer),
   ),
+  Layer.provide(layerPreparedStartCheckout),
 );
 const layerProjectionMaintenanceProvided = ProjectionMaintenance.layer.pipe(
   Layer.provide(layerStores),
@@ -535,6 +542,7 @@ const layerEffectWorkerProvided = EffectWorker.layer.pipe(
   ),
 );
 const layerProviderRuntimeRecoveryProvided = ProviderRuntimeRecoveryService.layer.pipe(
+  Layer.provide(layerPreparedStartCheckout),
   Layer.provide(
     Layer.mergeAll(
       layerEffectWorkerProvided,

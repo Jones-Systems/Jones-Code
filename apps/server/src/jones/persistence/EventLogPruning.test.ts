@@ -153,12 +153,27 @@ const readers: ReadonlyArray<Reader> = [
       "provider/UnsentStartProof.test.ts (receipt mismatch, promotion and unavailable unreleased birth)",
   },
   {
+    file: "provider/PreparedStartBirth.ts",
+    classification: "tolerate",
+    after:
+      "A partial or pruned birth command cannot prove prepared release or establish that its specific input was accepted after a Stop.",
+    proof: "provider/UnsentStartRecovery.integration.test.ts (pruned delegated birth evidence)",
+  },
+  {
+    file: "workspaceLifecycle/PreparedStartCheckout.ts",
+    classification: "tolerate",
+    after:
+      "The checkout witness requires the retained launch and release evidence. A missing anchor leaves the recovered start ineligible.",
+    proof:
+      "provider/UnsentStartRecovery.integration.test.ts (missing release receipt, pruned delegated birth evidence and missing checkout witness)",
+  },
+  {
     file: "provider/RecoveryStartParentStop.ts",
     classification: "tolerate",
     after:
-      "With a retained parent Stop effect, a queued send needs retained Stop and run-birth events to prove the input was sent after Stop. Missing evidence leaves the replacement ineligible.",
+      "With a retained parent Stop effect, queued and prepared sends need retained Stop and run-birth events to prove the input was sent after Stop. Missing evidence leaves the replacement ineligible.",
     proof:
-      "provider/RecoveryStartParentStop.integration.test.ts (queued send ordering); pruning behavior follows the retained sequence checks",
+      "provider/RecoveryStartParentStop.integration.test.ts (queued send ordering) and provider/UnsentStartRecovery.integration.test.ts (prepared send ordering)",
   },
   {
     file: "nativeCreation/NativeCreationExecutionSqlite.ts",

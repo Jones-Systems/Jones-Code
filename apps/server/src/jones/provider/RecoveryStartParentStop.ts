@@ -3,6 +3,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 import type { OrchestrationEffectV2 } from "../../orchestration-v2/EffectOutbox.ts";
 import { EVENT_LOG_PRUNED_THROUGH_PROJECTION } from "../persistence/EventLogPruneBoundary.ts";
+import { preparedStartBirth } from "./PreparedStartBirth.ts";
 
 const recoveryStartCommandPrefix = "command:restart-resend:";
 
@@ -28,9 +29,18 @@ export function admitsRecoveryStartClaim(sql: SqlClient.SqlClient) {
 }
 
 // The outbox's row order is also its insertion order for retained rows. A Stop
-// with no events records the parent's previous sequence. A queued send needs an
-// actual Stop event ordered before its birth because its outbox row dates from promotion.
+// with no events records the parent's previous sequence. Queued and prepared sends
+// need an actual Stop event ordered before birth because their effect is written later.
 function originalStartAfterStop(sql: SqlClient.SqlClient) {
+  const retainedStopEvent = sql`
+    stop_event.sequence = stop_receipt.result_sequence
+    AND stop_event.command_id = stop.command_id AND stop_event.stream_id = target.parent_id
+    AND stop_event.aggregate_kind = 'thread' AND stop_event.application_event_version = 2
+    AND stop_event.sequence > COALESCE((
+      SELECT last_sequence FROM orchestration_v2_projection_metadata
+      WHERE projection_name = ${EVENT_LOG_PRUNED_THROUGH_PROJECTION}
+    ), 0)
+  `;
   return sql`EXISTS (
     SELECT 1 FROM orchestration_v2_effect_outbox AS original
     JOIN orchestration_command_receipts AS accepted ON accepted.command_id = original.command_id
@@ -56,18 +66,28 @@ function originalStartAfterStop(sql: SqlClient.SqlClient) {
               AND json_extract(birth.payload_json, '$.userMessageId') = target.message_id
               AND json_extract(birth.payload_json, '$.status') = 'queued'
           JOIN orchestration_command_receipts AS sent ON sent.command_id = birth.command_id
-          WHERE stop_event.sequence = stop_receipt.result_sequence
-            AND stop_event.command_id = stop.command_id AND stop_event.stream_id = target.parent_id
-            AND stop_event.aggregate_kind = 'thread' AND stop_event.application_event_version = 2
-            AND stop_event.sequence > COALESCE((
-              SELECT last_sequence FROM orchestration_v2_projection_metadata
-              WHERE projection_name = ${EVENT_LOG_PRUNED_THROUGH_PROJECTION}
-            ), 0)
+          WHERE ${retainedStopEvent}
             AND sent.aggregate_kind = 'thread' AND sent.aggregate_id = target.child_id
             AND sent.status = 'accepted' AND sent.error IS NULL
             AND sent.command_type IN ('message.dispatch', 'thread.create')
             AND sent.result_sequence >= birth.sequence
         ))
+        OR (accepted.command_type = 'prepared-run.release'
+          AND original.payload_json = json_object('type', 'provider-turn.start', 'runId', target.run_id)
+          AND EXISTS (
+            SELECT 1 FROM orchestration_events AS stop_event
+            WHERE ${retainedStopEvent}
+              AND 1 = (
+                SELECT count(*) FROM (${preparedStartBirth(sql, {
+                  threadId: sql`target.child_id`,
+                  runId: sql`target.run_id`,
+                  releaseCommandId: sql`original.command_id`,
+                })}) AS birth
+                HAVING min(birth.sequence) > stop_event.sequence
+                  AND min(birth.parent_id IS NULL OR birth.parent_id = target.parent_id)
+              )
+          )
+        )
       )
   )`;
 }

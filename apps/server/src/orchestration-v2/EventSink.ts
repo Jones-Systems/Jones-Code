@@ -90,6 +90,7 @@ import * as RetirementEvents from "../jones/workspaceRetirement/EventIntegration
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as WorkspaceProvenanceStore from "../jones/workspaceLifecycle/TransitionStore.ts";
+import { PreparedStartCheckout } from "../jones/workspaceLifecycle/PreparedStartCheckout.ts";
 import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import * as NativeCreationRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
 import { identityForRequest } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -578,6 +579,7 @@ const layerBase: Layer.Layer<
     const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
     const captureCommittedProvenance = yield* WorkspaceProvenance.optionalCommittedCapture;
     const provenance = yield* Effect.serviceOption(WorkspaceProvenanceStore.ProvenanceStore);
+    const preparedCheckout = yield* Effect.serviceOption(PreparedStartCheckout);
     const admission = yield* Effect.serviceOption(UpdateAdmissionFence.UpdateAdmissionFence);
     if (Option.isSome(admission)) yield* admission.value.attach;
     const nativeCreation = yield* Effect.serviceOption(
@@ -1614,6 +1616,12 @@ const layerBase: Layer.Layer<
         }
       }
 
+      // Capture filesystem identity before the writer; only the accepted release
+      // can record it in the same transaction as the original start effect.
+      const recordPreparedCheckout =
+        input.commandType === "prepared-run.release" && Option.isSome(preparedCheckout)
+          ? yield* preparedCheckout.value.captureRelease(input)
+          : undefined;
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
           const legacy = input.legacyBootstrap;
@@ -2019,6 +2027,8 @@ const layerBase: Layer.Layer<
           if (!privateDelete) {
             yield* commandReceipts.upsert(receipt);
             yield* captureSettlementProof(receipt, storedEvents);
+            if (recordPreparedCheckout !== undefined)
+              yield* recordPreparedCheckout({ receipt, storedEvents });
           }
           if (legacy !== undefined)
             yield* LegacyTransaction.record(legacyStorage, legacy, receipt, storedEvents);

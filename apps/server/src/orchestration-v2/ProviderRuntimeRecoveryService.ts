@@ -7,6 +7,10 @@ import {
   recoveryResendEffect,
 } from "../jones/provider/UnsentStartProof.ts";
 import {
+  type CheckedPreparedCheckout,
+  PreparedStartCheckout,
+} from "../jones/workspaceLifecycle/PreparedStartCheckout.ts";
+import {
   readStartAdmission,
   UnattendedStartAdmission,
 } from "../jones/provider/UnattendedStartAdmission.ts";
@@ -216,6 +220,7 @@ export const make = Effect.gen(function* () {
   const receipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
   const existingAdmission = readStartAdmission(yield* Effect.context());
   const unattendedAdmission = yield* Effect.serviceOption(UnattendedStartAdmission);
+  const preparedCheckout = yield* Effect.serviceOption(PreparedStartCheckout);
   const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
   const proveOriginalUnsent =
     Option.isSome(receipts) && Option.isSome(existingAdmission)
@@ -240,6 +245,7 @@ export const make = Effect.gen(function* () {
       projection: ProjectionStore.ProjectionRuntimeRecoveryState,
       run: OrchestrationV2ThreadProjection["runs"][number],
       resendMessage?: OrchestrationV2ConversationMessage,
+      checkout?: CheckedPreparedCheckout,
     ) {
       const admission = resendMessage === undefined ? existingAdmission : unattendedAdmission;
       if (run.activeAttemptId === null || Option.isNone(admission)) return false;
@@ -260,7 +266,7 @@ export const make = Effect.gen(function* () {
         proveRecoveryUnsent === undefined ||
         provider.appThreadId !== run.threadId ||
         provider.providerInstanceId !== run.providerInstanceId ||
-        !(yield* proveRecoveryUnsent(run, projection.attempts, resendMessage))
+        !(yield* proveRecoveryUnsent(run, projection.attempts, resendMessage, checkout))
       )
         return false;
       yield* restart.assertThreadOpen(projection.thread.id);
@@ -362,7 +368,8 @@ export const make = Effect.gen(function* () {
       stored: ProjectionStore.ProjectionRuntimeRecoveryState,
       trigger: "startup" | "shutdown",
       continueAfterRestart: boolean,
-      stoppedThisPass: ReadonlyMap<string, RecoverySession> = new Map(),
+      stoppedThisPass: ReadonlyMap<string, RecoverySession>,
+      checkedCheckouts: ReadonlyMap<string, CheckedPreparedCheckout> | undefined,
     ) {
       const now = yield* DateTime.now;
       const projection = stored;
@@ -544,7 +551,7 @@ export const make = Effect.gen(function* () {
           message.delegatedCompletion !== undefined ||
           (message.scheduledTaskId === undefined && message.creationSource !== "mcp") ||
           restartContinuationBlocked(projection, run, now, false) ||
-          !(yield* certifiedUnsent(projection, run, message)) ||
+          !(yield* certifiedUnsent(projection, run, message, checkedCheckouts?.get(run.id))) ||
           (yield* restartStopRequested(projections.getThreadRecords, projection.thread, run).pipe(
             Effect.mapError(
               (cause) =>
@@ -1185,9 +1192,19 @@ export const make = Effect.gen(function* () {
     const groupSize = grouped ? 32 : 1;
     for (let offset = 0; offset < threadIds.length; offset += groupSize) {
       const cancelledEffectIds: string[] = [];
+      const group = threadIds.slice(offset, offset + groupSize);
+      const checkedCheckouts = new Map<ThreadId, ReadonlyMap<string, CheckedPreparedCheckout>>();
+      // Checkout observation can await Git. The writer only compares its durable evidence.
+      if (
+        continueAfterRestart !== null &&
+        proveRecoveryUnsent !== undefined &&
+        Option.isSome(preparedCheckout)
+      )
+        for (const threadId of group)
+          checkedCheckouts.set(threadId, yield* preparedCheckout.value.preflight(threadId));
       // Read and decide on the writer so shared sessions see earlier updates in this group.
       const reconcileGroup = Effect.gen(function* () {
-        for (const threadId of threadIds.slice(offset, offset + groupSize)) {
+        for (const threadId of group) {
           const readProjection = projections.getRuntimeRecoveryProjection(threadId).pipe(
             Effect.mapError(
               (cause) =>
@@ -1204,7 +1221,13 @@ export const make = Effect.gen(function* () {
             resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
               .continueThreadsAfterServerUpdate;
           const reconcileCurrent = () =>
-            reconcileProjection(projection, trigger, enabled, stoppedThisPass);
+            reconcileProjection(
+              projection,
+              trigger,
+              enabled,
+              stoppedThisPass,
+              checkedCheckouts.get(threadId),
+            );
           const needsProofSnapshot =
             !grouped &&
             enabled &&

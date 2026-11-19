@@ -2,8 +2,10 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "recovery-start-parent-stop",
   "jonesOwnedPaths": [
+    "apps/server/src/jones/provider/PreparedStartBirth.ts",
     "apps/server/src/jones/provider/RecoveryStartParentStop.ts",
-    "apps/server/src/jones/provider/RecoveryStartParentStop.integration.test.ts"
+    "apps/server/src/jones/provider/RecoveryStartParentStop.integration.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/PreparedStartCheckout.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -15,6 +17,18 @@
     {
       "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
       "to": "apps/server/src/jones/provider/RecoveryStartParentStop.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/PreparedStartCheckout.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/PreparedStartCheckout.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/PreparedStartCheckout.ts"
     }
   ]
 }

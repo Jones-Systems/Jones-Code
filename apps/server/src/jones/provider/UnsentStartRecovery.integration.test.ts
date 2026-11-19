@@ -15,6 +15,7 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
+  type Project,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -23,24 +24,37 @@ import {
   RunAttemptId,
   RunId,
   ScheduledTaskId,
+  type ServerProvider,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import { createDeterministicAttachmentId, resolveAttachmentPath } from "../../attachmentStore.ts";
+import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as Environment from "../../environment/ServerEnvironment.ts";
+import * as GitWorkflow from "../../git/GitWorkflowService.ts";
+import * as McpScope from "../../mcp/McpInvocationContext.ts";
+import { HandlersLayer } from "../../mcp/McpToolAccess.ts";
+import * as OrchestratorMcp from "../../mcp/OrchestratorMcpService.ts";
+import * as OrchestratorHandlers from "../../mcp/toolkits/orchestrator/handlers.ts";
+import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
 import { ClaudeProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
@@ -52,9 +66,24 @@ import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as AdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderRuntimeRecovery from "../../orchestration-v2/ProviderRuntimeRecoveryService.ts";
+import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Replay from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as RemoteDelegation from "../../peer/RemoteDelegation.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as ManagedFolders from "../../project/ManagedProjectFolders.ts";
+import * as CloneTracker from "../../project/ProjectCloneTracker.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
+import * as SetupScripts from "../../project/ProjectSetupScriptRunner.ts";
+import * as SetupTracker from "../../project/WorktreeSetupTracker.ts";
+import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
+import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
+import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as ServerSettings from "../../serverSettings.ts";
+import * as Terminal from "../../terminal/Manager.ts";
+import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
+import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
+import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as Goals from "../goals/continuity/GoalContinuity.ts";
 import * as ContinuityAdmissionTestkit from "../goals/continuity/admission.testkit.ts";
 import * as NativeStartAdmission from "../nativeCreation/NativeStartAdmission.ts";
@@ -62,8 +91,10 @@ import * as Control from "../orchestration/ControlAdmission.ts";
 import * as Restart from "../orchestration/RestartPreparation.ts";
 import { EVENT_LOG_PRUNED_THROUGH_PROJECTION } from "../persistence/EventLogPruneBoundary.ts";
 import * as Refusals from "../startRefusal/Store.ts";
+import * as PreparedCheckout from "../workspaceLifecycle/PreparedStartCheckout.ts";
 import { StartAdmission } from "./StartAdmission.ts";
 import * as UnattendedStartAdmission from "./UnattendedStartAdmission.ts";
+import { recoveryResendEffect } from "./UnsentStartProof.ts";
 
 const recoveryStores = Layer.mergeAll(
   IdAllocator.layer,
@@ -100,6 +131,27 @@ const unattendedRecoveryLayer = Layer.mergeAll(
 );
 
 const initialTime = Date.parse("2026-11-18T15:00:00.000Z");
+const parentId = ThreadId.make("prepared-release-parent");
+const delegatedText = "Deliver the original prepared input";
+const parentStopId = CommandId.make("prepared-release-parent-stop");
+type StopTiming = "before birth" | "between birth and release";
+
+const fixtureGit = Effect.fnUntraced(function* (cwd: string, ...args: string[]) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const code = yield* spawner.exitCode(ChildProcess.make("git", args, { cwd }));
+  assert.equal(Number(code), 0, `git ${args.join(" ")}`);
+});
+
+const replacePreparedDirectory = Effect.fnUntraced(function* (cwd: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  // Keep the Git registration, admin directory and branch; replace only the physical checkout.
+  const displaced = `${cwd}-displaced`;
+  yield* fs.rename(cwd, displaced);
+  yield* fs.makeDirectory(cwd);
+  yield* fs.copyFile(path.join(displaced, ".git"), path.join(cwd, ".git"));
+  yield* fixtureGit(cwd, "rev-parse", "--verify", "HEAD");
+});
 
 const preparedRecovery = ProviderRuntimeRecovery.layer.pipe(
   Layer.provide(UnattendedStartAdmission.layer),
@@ -115,90 +167,363 @@ const preparedRecovery = ProviderRuntimeRecovery.layer.pipe(
   ),
 );
 
-const launchPreparedInput = Effect.fnUntraced(function* (source: "mcp" | "scheduled") {
+const delegatePrepared = Effect.fnUntraced(function* (fixture: {
+  readonly project: Project;
+  readonly cwd: string;
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly model: string;
+  readonly stop?: StopTiming;
+  readonly newWorktree?: boolean;
+}) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const sql = yield* SqlClient.SqlClient;
+  const git = yield* GitVcsDriver.GitVcsDriver;
+  const setupReached = yield* Deferred.make<void>();
+  const releaseSetup = yield* Deferred.make<void>();
+  const registry: ServerProvider = {
+    instanceId: fixture.instanceId,
+    driver: fixture.driver,
+    enabled: true,
+    installed: true,
+    version: "test",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: fixture.project.createdAt,
+    models: [{ slug: fixture.model, name: fixture.model, isCustom: false, capabilities: null }],
+    slashCommands: [],
+    skills: [],
+  };
+  const local = Layer.mergeAll(
+    Layer.succeed(GitVcsDriver.GitVcsDriver, git),
+    NodeCrypto.layer,
+    IdAllocator.layer,
+    Receipts.layer,
+    Layer.succeed(ThreadManagement.ThreadManagementService, {
+      ...threads,
+      getThreadEventSequence: orchestrator.getThreadEventSequence,
+    }),
+    Layer.mock(ProjectService.ProjectService)({
+      getById: (id) => Effect.succeed(Option.liftPredicate(fixture.project, (p) => p.id === id)),
+    }),
+    Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([registry]) }),
+    Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+    Layer.mock(SecretRequests.SecretRequests)({}),
+    Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+    Layer.mock(ManagedFolders.ManagedProjectFolders)({
+      namedProjectsRoot: fixture.project.workspaceRoot,
+      isScratchProject: () => Effect.succeed(false),
+    }),
+    Layer.mock(CloneTracker.ProjectCloneTracker)({}),
+    Layer.mock(Terminal.TerminalManager)({}),
+    Layer.mock(CheckpointStore.CheckpointStore)({}),
+    Layer.mock(TextGeneration.TextGeneration)({}),
+    SetupTracker.layer,
+    Layer.mock(SetupScripts.ProjectSetupScriptRunner)({
+      runForThread: ({ worktreePath }) =>
+        Effect.gen(function* () {
+          assert.equal(worktreePath, fixture.cwd);
+          yield* Deferred.succeed(setupReached, undefined);
+          yield* Deferred.await(releaseSetup);
+          return { status: "no-script" } as const;
+        }),
+    }),
+    Layer.mock(GitWorkflow.GitWorkflowService)({
+      repositoryRoot: (cwd) => Effect.succeed(cwd),
+      hasCommit: ({ cwd, refName }) =>
+        fixtureGit(cwd, "rev-parse", "--verify", refName).pipe(
+          Effect.provide(NodeServices.layer),
+          Effect.as(true),
+          Effect.orDie,
+        ),
+      listLocalBranchNames: () => Effect.succeed(["main"]),
+      createWorktree: ({ cwd, newRefName, refName }, options) =>
+        Effect.gen(function* () {
+          if (newRefName !== "prepared-branch")
+            return yield* Effect.die("Unexpected fixture branch");
+          yield* fixtureGit(cwd, "worktree", "add", "-b", newRefName, fixture.cwd, refName);
+          const onClaimed = options?.progress?.onWorktreeClaimed;
+          if (onClaimed !== undefined) yield* onClaimed(fixture.cwd);
+          return { worktree: { path: fixture.cwd, refName: newRefName } };
+        }).pipe(Effect.provide(NodeServices.layer), Effect.orDie),
+    }),
+  );
+  const dependencies = OrchestratorMcp.layer.pipe(
+    Layer.provide(ThreadLaunch.layerProduction),
+    Layer.provide(local),
+  );
+  const context = yield* Layer.build(
+    HandlersLayer.layer(OrchestratorHandlers.layer).pipe(Layer.provideMerge(dependencies)),
+  );
+  const toolkit = yield* OrchestratorToolkit.pipe(Effect.provide(context));
+  const startParent = (key: string) =>
+    orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(key),
+      threadId: parentId,
+      messageId: MessageId.make(key),
+      text: "Delegate work",
+      attachments: [],
+      modelSelection: { instanceId: fixture.instanceId, model: fixture.model },
+      createdBy: "user",
+      creationSource: "web",
+      dispatchMode: { type: "start_immediately" },
+    });
+  const stopParent = Effect.gen(function* () {
+    const stop = yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: parentStopId,
+      threadId: parentId,
+    });
+    assert.isNotEmpty(stop.storedEvents);
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    assert.isTrue(Option.isSome(yield* outbox.get(`effect:${parentStopId}:delegated-tasks.stop`)));
+  });
+  const invoke = Effect.fnUntraced(function* (
+    args: Parameters<typeof toolkit.handle<"delegate_task">>[1],
+  ) {
+    const { thread, providerThreads } = yield* orchestrator.getThreadRecords(parentId, [
+      "providerThreads",
+    ]);
+    const providerSessionId = providerThreads.find(
+      ({ id }) => id === thread.activeProviderThreadId,
+    )?.providerSessionId;
+    assert.isString(providerSessionId);
+    return yield* toolkit.handle("delegate_task", args).pipe(
+      Stream.unwrap,
+      Stream.runLast,
+      Effect.map((value) => {
+        const response = Option.getOrThrow(value);
+        const result = response.result;
+        if (response.isFailure || !("childThreadId" in result))
+          throw new Error(JSON.stringify(result));
+        const { childThreadId } = result;
+        if (childThreadId === null) throw new Error("Expected an admitted local child");
+        return childThreadId;
+      }),
+      Effect.provideService(McpScope.McpInvocationContext, {
+        environmentId: EnvironmentId.make("prepared-release-recovery"),
+        capabilities: new Set<McpScope.McpCapability>(["orchestration"]),
+        issuedAt: initialTime,
+        requestNamespace: "prepared-start-recovery",
+        thread: {
+          threadId: parentId,
+          providerSessionId: providerSessionId!,
+          providerInstanceId: fixture.instanceId,
+        },
+        client: undefined,
+      }),
+      Effect.provide(context),
+    );
+  });
+  yield* startParent("parent-input");
+  if (fixture.stop === "before birth") {
+    const prior = yield* invoke({
+      task: "Previous delegated work",
+      clientRequestId: "before-stop",
+      mode: "async",
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("stop-previous-child"),
+      threadId: prior,
+    });
+    yield* stopParent;
+    yield* startParent("parent-input-after-stop");
+  }
+  const threadId = yield* invoke({
+    task: delegatedText,
+    workspaceStrategy: fixture.newWorktree
+      ? { type: "worktree", baseRef: "main", branch: "prepared-branch", startFromOrigin: false }
+      : { type: "existing_worktree", worktreePath: fixture.cwd, branch: "prepared-branch" },
+    clientRequestId: "prepared-child",
+    mode: "async",
+  });
+  yield* Effect.raceFirst(
+    Deferred.await(setupReached),
+    orchestrator
+      .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
+      .pipe(
+        Stream.filter(
+          ({ event }) => event.type === "run.updated" && event.payload.status !== "preparing",
+        ),
+        Stream.runHead,
+        Effect.flatMap(() =>
+          orchestrator
+            .getThreadRecords(threadId, ["turnItems"])
+            .pipe(
+              Effect.flatMap(({ turnItems }) => Effect.die(new Error(JSON.stringify(turnItems)))),
+            ),
+        ),
+      ),
+  );
+  const { runs, messages } = yield* orchestrator.getThreadRecords(threadId, ["runs", "messages"]);
+  const run = runs[0]!;
+  assert.equal(run.status, "preparing");
+  assert.equal(messages[0]?.text, delegatedText);
+  const events = yield* sql<{ command_id: string }>`
+    SELECT command_id FROM orchestration_events WHERE stream_id = ${threadId} AND event_type = 'run.created'
+  `;
+  assert.lengthOf(events, 1);
+  const birthCommandId = CommandId.make(events[0]!.command_id);
+  assert.deepInclude(Option.getOrThrow(yield* threads.getCommandReceipt(birthCommandId)), {
+    commandType: "delegated_task.request",
+    threadId: parentId,
+    status: "accepted",
+  });
+  if (fixture.stop === "between birth and release") yield* stopParent;
+  yield* Deferred.succeed(releaseSetup, undefined);
+  const releaseId = CommandId.make(`${birthCommandId}:release`);
+  yield* orchestrator
+    .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
+    .pipe(
+      Stream.filter((event) => event.commandId === releaseId),
+      Stream.runHead,
+    );
+  return { threadId, run, birthCommandId, releaseId, messageId: messages[0]!.id };
+});
+
+const launchPreparedInput = Effect.fnUntraced(function* (
+  source: "mcp" | "scheduled" | "delegated",
+  options: {
+    readonly stop?: StopTiming;
+    readonly newWorktree?: true;
+    readonly auto?: true;
+    readonly swapAtNativeBoundary?: true;
+  } = {},
+) {
   yield* TestClock.setTime(initialTime);
   const config = yield* Replay.makeReplayServerConfig("prepared-release-recovery");
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const projectRoot = yield* fs.realPath(config.baseDir);
   const projectId = ProjectId.make("prepared-release-project");
+  const launchId = CommandId.make("prepared-release-launch");
   const threadId = ThreadId.make("prepared-release-thread");
   const driver = ProviderDriverKind.make(source === "scheduled" ? "codex" : "claudeAgent");
   const instanceId = ProviderInstanceId.make(driver);
   const modelSelection = { instanceId, model: "synthetic" };
   const capabilities =
     source === "scheduled" ? CodexProviderCapabilitiesV2 : ClaudeProviderCapabilitiesV2;
-  const cwd = source === "scheduled" ? config.baseDir : config.worktreesDir;
+  const cwd = source === "scheduled" ? projectRoot : path.join(projectRoot, "prepared");
+  yield* fixtureGit(projectRoot, "init", "-b", "main");
+  yield* fixtureGit(
+    projectRoot,
+    "-c",
+    "user.name=Recovery test",
+    "-c",
+    "user.email=recovery-test@example.invalid",
+    "-c",
+    "maintenance.auto=false",
+    "commit",
+    "--allow-empty",
+    "-m",
+    "Initial checkout",
+  );
+  if (source !== "scheduled" && !options.newWorktree)
+    yield* fixtureGit(projectRoot, "worktree", "add", "-b", "prepared-branch", cwd, "main");
   const sends: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
+  const opens: string[] = [];
+  const beforeNative: string[] = [];
   const unsupported = () => Effect.die("Unexpected provider operation");
+  const database = SqlitePersistence.layerMemory;
+  const configLayer = Layer.succeed(ServerConfig.ServerConfig, config);
+  const git = GitVcsDriver.layer.pipe(
+    Layer.provide(VcsProcess.layer),
+    Layer.provide(configLayer),
+    Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+  );
+  const checkout = PreparedCheckout.layer.pipe(
+    Layer.provide(git),
+    Layer.provide(Environment.layerIdentity),
+    Layer.provide(configLayer),
+    Layer.provide(database),
+    Layer.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer)),
+  );
+  const adapters = AdapterRegistry.layerFromAdapters([
+    {
+      instanceId,
+      driver,
+      getCapabilities: () => Effect.succeed(capabilities),
+      planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+      openSession: (input) =>
+        Effect.gen(function* () {
+          opens.push(input.providerSessionId);
+          const now = yield* DateTime.now;
+          return yield* Replay.withReplayThreadPublication(input, {
+            instanceId,
+            driver,
+            providerSessionId: input.providerSessionId,
+            providerSession: {
+              id: input.providerSessionId,
+              driver,
+              providerInstanceId: instanceId,
+              status: "ready",
+              cwd,
+              model: modelSelection.model,
+              capabilities,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            },
+            events: Stream.never,
+            ensureThread: ({ existingProviderThread }) =>
+              existingProviderThread === undefined
+                ? Effect.die("Expected the original provider thread")
+                : Effect.succeed({
+                    ...existingProviderThread,
+                    nativeThreadRef: { driver, nativeId: "native:prepared", strength: "strong" },
+                    status: "idle",
+                  }),
+            resumeThread: unsupported,
+            startTurn: (turn) =>
+              Effect.gen(function* () {
+                beforeNative.push(turn.attemptId);
+                if (options.swapAtNativeBoundary)
+                  yield* replacePreparedDirectory(cwd).pipe(
+                    Effect.provide(NodeServices.layer),
+                    Effect.orDie,
+                  );
+                if (turn.revalidateStartAdmission !== undefined)
+                  yield* turn.revalidateStartAdmission;
+                sends.push(turn);
+              }),
+            steerTurn: unsupported,
+            interruptTurn: unsupported,
+            respondToRuntimeRequest: unsupported,
+            readThreadSnapshot: unsupported,
+            rollbackThread: unsupported,
+            forkThread: unsupported,
+          });
+        }),
+    },
+  ]);
   const replay = Replay.layerWithRegistryAndServices(
     {
       name: "prepared-release-recovery",
       ...(source === "scheduled" ? { runtimePolicyOverride: { cwd } } : {}),
     },
-    AdapterRegistry.layerFromAdapters([
-      {
-        instanceId,
-        driver,
-        getCapabilities: () => Effect.succeed(capabilities),
-        planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
-        openSession: (input) =>
-          Effect.gen(function* () {
-            const now = yield* DateTime.now;
-            return yield* Replay.withReplayThreadPublication(input, {
-              instanceId,
-              driver,
-              providerSessionId: input.providerSessionId,
-              providerSession: {
-                id: input.providerSessionId,
-                driver,
-                providerInstanceId: instanceId,
-                status: "ready",
-                cwd,
-                model: modelSelection.model,
-                capabilities,
-                createdAt: now,
-                updatedAt: now,
-                lastError: null,
-              },
-              events: Stream.never,
-              ensureThread: ({ existingProviderThread }) =>
-                existingProviderThread === undefined
-                  ? Effect.die("Expected the original provider thread")
-                  : Effect.succeed({
-                      ...existingProviderThread,
-                      nativeThreadRef: { driver, nativeId: "native:prepared", strength: "strong" },
-                      status: "idle",
-                    }),
-              resumeThread: unsupported,
-              startTurn: (turn) =>
-                Effect.sync(() => {
-                  sends.push(turn);
-                }),
-              steerTurn: unsupported,
-              interruptTurn: unsupported,
-              respondToRuntimeRequest: unsupported,
-              readThreadSnapshot: unsupported,
-              rollbackThread: unsupported,
-              forkThread: unsupported,
-            });
-          }),
-      },
-    ]),
+    adapters,
     {
       continueThreadsAfterServerUpdate: true,
       runEffectWorker: false,
-      serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, config),
+      serverConfigLayer: configLayer,
+      databaseLayer: database,
     },
   );
-  const context = yield* Layer.build(preparedRecovery.pipe(Layer.provideMerge(replay)));
+  const context = yield* Layer.build(
+    Layer.merge(replay, adapters).pipe(Layer.provideMerge(checkout), Layer.provideMerge(git)),
+  );
   return yield* Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const now = DateTime.formatIso(yield* DateTime.now);
     yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at)
-      VALUES(${projectId},'Synthetic',${config.baseDir},'[]',${now},${now})`;
-    const launchId = CommandId.make("prepared-release-launch");
+      VALUES(${projectId},'Synthetic',${projectRoot},'[]',${now},${now})`;
     const workspaceStrategy =
       source === "scheduled"
-        ? ({ type: "root" } as const)
+        ? ({ type: options.auto ? "auto" : "root" } as const)
         : ({ type: "worktree", baseRef: "main" } as const);
     const imageBytes = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGaQAAAAASUVORK5CYII=",
@@ -212,40 +537,41 @@ const launchPreparedInput = Effect.fnUntraced(function* (source: "mcp" | "schedu
       sizeBytes: imageBytes.length,
     } satisfies ChatAttachment;
     if (source === "mcp") {
-      const fs = yield* FileSystem.FileSystem;
-      const path = resolveAttachmentPath({
+      const attachmentPath = resolveAttachmentPath({
         attachmentsDir: config.attachmentsDir,
         attachment: image,
       });
-      assert.isNotNull(path);
-      yield* fs.writeFile(path!, imageBytes);
+      assert.isNotNull(attachmentPath);
+      yield* fs.writeFile(attachmentPath!, imageBytes);
     }
     const input: Pick<
       ProviderAdapter.ProviderAdapterV2TurnMessage,
       "messageId" | "text" | "attachments" | "scheduledTaskId"
     > & { readonly context?: OrchestrationMessageContext } = {
       messageId: MessageId.make("prepared-release-input"),
-      text: "Deliver the original prepared input",
-      ...(source === "scheduled"
-        ? { attachments: [], scheduledTaskId: ScheduledTaskId.make("schedule:prepared") }
-        : {
-            attachments: [image],
-            context: {
-              version: 1 as const,
-              records: [
-                {
-                  version: 1 as const,
-                  contextId: ComposerContextId.make("prepared-image"),
-                  kind: "image" as const,
-                  label: image.name,
-                  attachmentId: image.id,
-                  name: image.name,
-                  mimeType: image.mimeType,
-                  sizeBytes: image.sizeBytes,
-                },
-              ],
-            },
-          }),
+      text: delegatedText,
+      ...(source === "delegated"
+        ? { attachments: [] }
+        : source === "scheduled"
+          ? { attachments: [], scheduledTaskId: ScheduledTaskId.make("schedule:prepared") }
+          : {
+              attachments: [image],
+              context: {
+                version: 1 as const,
+                records: [
+                  {
+                    version: 1 as const,
+                    contextId: ComposerContextId.make("prepared-image"),
+                    kind: "image" as const,
+                    label: image.name,
+                    attachmentId: image.id,
+                    name: image.name,
+                    mimeType: image.mimeType,
+                    sizeBytes: image.sizeBytes,
+                  },
+                ],
+              },
+            }),
     };
     const actor =
       source === "scheduled"
@@ -255,8 +581,8 @@ const launchPreparedInput = Effect.fnUntraced(function* (source: "mcp" | "schedu
     // records an MCP agent's initial prompt through a distinct dispatch.
     const created = yield* orchestrator.dispatch({
       type: "thread.create",
-      commandId: launchId,
-      threadId,
+      commandId: source === "delegated" ? CommandId.make("create-parent") : launchId,
+      threadId: source === "delegated" ? parentId : threadId,
       projectId,
       title: "Prepared input",
       modelSelection,
@@ -267,8 +593,46 @@ const launchPreparedInput = Effect.fnUntraced(function* (source: "mcp" | "schedu
       ...actor,
       ...(source === "scheduled" ? { initialMessage: { ...input, workspaceStrategy } } : {}),
     });
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    if (source === "delegated") {
+      const delegated = yield* delegatePrepared({
+        project: {
+          id: projectId,
+          title: "Synthetic",
+          workspaceRoot: projectRoot,
+          scripts: [],
+          defaultModelSelection: null,
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null,
+        },
+        cwd,
+        instanceId,
+        driver,
+        model: modelSelection.model,
+        ...options,
+      });
+      const originalId = `effect:${delegated.releaseId}:provider-turn.start:${delegated.run.id}`;
+      assert.deepInclude(Option.getOrThrow(yield* outbox.get(originalId)), {
+        status: "pending",
+        attemptCount: 0,
+      });
+      return {
+        ...delegated,
+        context,
+        actor,
+        modelSelection,
+        cwd,
+        sends,
+        opens,
+        beforeNative,
+        originalId,
+        input: { ...input, messageId: delegated.messageId },
+        release: undefined,
+      };
+    }
     const birthCommandId =
-      source === "scheduled" ? launchId : CommandId.make(`${launchId}:initial-message`);
+      source !== "mcp" ? launchId : CommandId.make(`${launchId}:initial-message`);
     const born =
       source === "scheduled"
         ? created
@@ -286,7 +650,6 @@ const launchPreparedInput = Effect.fnUntraced(function* (source: "mcp" | "schedu
     )[0]!;
     assert.equal(run.status, "preparing");
     assert.isNotNull(run.activeAttemptId);
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
     assert.isEmpty(yield* outbox.listByThreadId(threadId));
     if (source === "mcp") {
       yield* orchestrator.dispatch({
@@ -301,8 +664,8 @@ const launchPreparedInput = Effect.fnUntraced(function* (source: "mcp" | "schedu
       type: "thread.metadata.update",
       commandId: CommandId.make(`${launchId}:workspace`),
       threadId,
-      worktreePath: source === "mcp" ? config.worktreesDir : null,
-      branch: source === "mcp" ? "prepared-branch" : "main",
+      worktreePath: source !== "scheduled" ? cwd : null,
+      branch: source !== "scheduled" ? "prepared-branch" : "main",
     });
     if (source === "mcp") {
       yield* orchestrator.dispatch({
@@ -337,6 +700,8 @@ const launchPreparedInput = Effect.fnUntraced(function* (source: "mcp" | "schedu
       modelSelection,
       cwd,
       sends,
+      opens,
+      beforeNative,
       originalId,
       releaseId,
       release,
@@ -345,18 +710,31 @@ const launchPreparedInput = Effect.fnUntraced(function* (source: "mcp" | "schedu
   }).pipe(Effect.provide(context));
 });
 
-it.effect.each(["scheduled", "mcp"] as const)(
-  "dispatches the originally accepted %s prepared input once after two reconciliations",
-  (source) =>
+const reconcilePrepared = (elapsed: number) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(initialTime + elapsed);
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    yield* recovery.reconcile("startup");
+  }).pipe(Effect.provide(preparedRecovery, { local: true }));
+
+it.effect.each([
+  { name: "scheduled root", source: "scheduled", options: {} },
+  { name: "MCP with attachment", source: "mcp", options: {} },
+  { name: "MCP delegation to an existing worktree", source: "delegated", options: {} },
+  {
+    name: "MCP delegation to a new worktree after a retained parent Stop",
+    source: "delegated",
+    options: { stop: "before birth", newWorktree: true },
+  },
+] as const)(
+  "dispatches the original $name input once after two reconciliations",
+  ({ source, options }) =>
     Effect.gen(function* () {
-      const prepared = yield* launchPreparedInput(source);
+      const prepared = yield* launchPreparedInput(source, options);
       const { run, originalId, input, actor, sends } = prepared;
       yield* Effect.gen(function* () {
-        const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
-        for (const elapsed of [1, 2]) {
-          yield* TestClock.setTime(initialTime + elapsed);
-          assert.equal((yield* recovery.reconcile("startup")).terminalizedRuns, 0);
-        }
+        yield* reconcilePrepared(1);
+        yield* reconcilePrepared(2);
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const rows = yield* outbox.listByThreadId(run.threadId);
         assert.lengthOf(rows, 3);
@@ -374,6 +752,13 @@ it.effect.each(["scheduled", "mcp"] as const)(
         const pending = rows.find((row) => row.status === "pending");
         assert.isDefined(pending);
         assert.isEmpty(sends);
+        if ("stop" in options) {
+          const parked = yield* outbox.claimNext({
+            workerId: "parked-parent-stop",
+            urgentOnly: true,
+          });
+          assert.equal(Option.getOrThrow(parked).id, `effect:${parentStopId}:delegated-tasks.stop`);
+        }
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         assert.isTrue(yield* worker.runOnce());
         assert.isFalse(yield* worker.runOnce());
@@ -391,7 +776,13 @@ it.effect.each(["scheduled", "mcp"] as const)(
         });
         assert.equal(sent?.runtimePolicy.cwd, prepared.cwd);
         const { context, ...nativeMessage } = input;
-        assert.deepEqual(sent?.message, { ...nativeMessage, ...actor });
+        assert.deepEqual(sent?.message, {
+          ...nativeMessage,
+          ...actor,
+          ...(source === "delegated"
+            ? { senderThreadId: ThreadId.make("prepared-release-parent") }
+            : {}),
+        });
         const projection = yield* ProjectionStore.ProjectionStoreV2;
         const records = yield* projection.getThreadRecords(run.threadId, [
           "runs",
@@ -422,13 +813,28 @@ it.effect.each([
   "unresolved preparation",
   "changed captured selection",
   "changed workspace",
+  "replacement checkout at the same path",
+  "missing checkout witness",
+  "mismatched checkout witness",
+  "auto workspace without durable checkout identity",
+  "wrong delegated parent receipt",
+  "different delegated task child",
+  "pruned delegated birth evidence",
   "later checkpoint scope",
   "claimed original",
   "native creation guard",
   "Stop",
 ] as const)("does not resend a prepared input with %s", (scenario) =>
   Effect.gen(function* () {
-    const prepared = yield* launchPreparedInput("mcp");
+    const prepared = yield* scenario === "auto workspace without durable checkout identity"
+      ? launchPreparedInput("scheduled", { auto: true })
+      : launchPreparedInput(
+          scenario === "wrong delegated parent receipt" ||
+            scenario === "different delegated task child" ||
+            scenario === "pruned delegated birth evidence"
+            ? "delegated"
+            : "mcp",
+        );
     const { run, sends, originalId, release, releaseId, birthCommandId } = prepared;
     yield* Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -459,9 +865,36 @@ it.effect.each([
           });
           break;
         }
+        case "replacement checkout at the same path":
+          yield* replacePreparedDirectory(prepared.cwd);
+          break;
+        case "missing checkout witness":
+          yield* sql`DELETE FROM jones_prepared_start_checkouts WHERE run_id = ${run.id}`;
+          break;
+        case "mismatched checkout witness":
+          yield* sql`UPDATE jones_prepared_start_checkouts
+            SET release_event_id = 'event:another-release' WHERE run_id = ${run.id}`;
+          break;
+        case "auto workspace without durable checkout identity":
+          assert.isEmpty(
+            yield* sql`SELECT 1 FROM jones_prepared_start_checkouts WHERE run_id = ${run.id}`,
+          );
+          break;
+        case "wrong delegated parent receipt":
+          yield* sql`UPDATE orchestration_command_receipts SET aggregate_id = ${run.threadId}
+            WHERE command_id = ${birthCommandId}`;
+          break;
+        case "different delegated task child":
+          yield* sql`UPDATE orchestration_v2_projection_subagents SET child_thread_id = 'some-other-child'
+            WHERE thread_id = ${parentId} AND child_thread_id = ${run.threadId}`;
+          break;
+        case "pruned delegated birth evidence":
+          yield* sql`DELETE FROM orchestration_events
+            WHERE command_id = ${birthCommandId} AND event_type = 'run-attempt.created'`;
+          break;
         case "later checkpoint scope": {
           const sink = yield* EventSink.EventSinkV2;
-          const scope = release.storedEvents.find(
+          const scope = release?.storedEvents.find(
             ({ event }) => event.type === "checkpoint-scope.created",
           )?.event;
           if (scope?.type !== "checkpoint-scope.created")
@@ -504,9 +937,7 @@ it.effect.each([
           break;
         }
       }
-      yield* TestClock.setTime(initialTime + 2);
-      const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
-      yield* recovery.reconcile("startup");
+      yield* reconcilePrepared(2);
       const rows = (yield* outbox.listByThreadId(run.threadId)).filter(
         ({ request }) => request.type === "provider-turn.start",
       );
@@ -518,6 +949,108 @@ it.effect.each([
         scenario === "Stop" ? "interrupted" : "cancelled",
       );
       assert.isEmpty(sends);
+    }).pipe(Effect.provide(prepared.context));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  { name: "at startup when Stop fell between birth and release", at: "startup" },
+  { name: "at claim when Stop fell between birth and release", at: "claim" },
+  { name: "at claim when the earlier Stop event was pruned", at: "pruned" },
+] as const)("blocks a prepared delegated input $name", ({ at }) =>
+  Effect.gen(function* () {
+    const prepared = yield* launchPreparedInput("delegated", {
+      stop: at === "pruned" ? "before birth" : "between birth and release",
+    });
+    yield* Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const rows = outbox
+        .listByThreadId(prepared.run.threadId)
+        .pipe(
+          Effect.map((rows) =>
+            rows.filter(({ request }) => request.type === "provider-turn.start"),
+          ),
+        );
+      if (at === "startup") {
+        yield* reconcilePrepared(1);
+        assert.lengthOf(yield* rows, 1);
+      } else {
+        // Exercise claim admission independently of the startup Stop check.
+        if (at === "pruned") {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM orchestration_events WHERE sequence = (
+              SELECT result_sequence FROM orchestration_command_receipts WHERE command_id = ${parentStopId}
+            )`;
+        }
+        yield* outbox.reconcileAfterProcessLoss;
+        const candidate = recoveryResendEffect(
+          prepared.run,
+          CommandId.make("stale-reconciliation"),
+        );
+        const sink = yield* EventSink.EventSinkV2;
+        yield* sink.writeWithEffects({ events: [], effects: [candidate] });
+        const parked = yield* outbox.claimNext({
+          workerId: "parked-parent-stop",
+          urgentOnly: true,
+        });
+        assert.equal(Option.getOrThrow(parked).id, `effect:${parentStopId}:delegated-tasks.stop`);
+        yield* worker.runOnce();
+        assert.deepInclude(Option.getOrThrow(yield* outbox.get(candidate.id)), {
+          status: "failed",
+          attemptCount: 0,
+        });
+      }
+      assert.deepInclude(
+        (yield* rows).find((row) => row.id === prepared.originalId),
+        {
+          status: "cancelled",
+          attemptCount: 0,
+        },
+      );
+      assert.isEmpty(prepared.opens);
+      assert.isEmpty(prepared.sends);
+    }).pipe(Effect.provide(prepared.context));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  "after enqueue",
+  "at the adapter boundary",
+  "when the witness disappears",
+] as const)("holds a prepared replacement %s", (scenario) =>
+  Effect.gen(function* () {
+    const prepared = yield* launchPreparedInput(
+      "mcp",
+      scenario === "at the adapter boundary" ? { swapAtNativeBoundary: true } : {},
+    );
+    yield* Effect.gen(function* () {
+      yield* reconcilePrepared(1);
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const pending = (yield* outbox.listByThreadId(prepared.run.threadId)).find(
+        (row) => row.status === "pending",
+      );
+      assert.isDefined(pending);
+      assert.equal(pending?.attemptCount, 0);
+      if (scenario === "after enqueue") yield* replacePreparedDirectory(prepared.cwd);
+      if (scenario === "when the witness disappears") {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM jones_prepared_start_checkouts WHERE run_id = ${prepared.run.id}`;
+      }
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      assert.isTrue(yield* worker.runOnce());
+      assert.isFalse(yield* worker.runOnce());
+      const settled = Option.getOrThrow(yield* outbox.get(pending!.id));
+      assert.equal(settled.attemptCount, 1);
+      assert.isEmpty(prepared.sends);
+      const projection = yield* ProjectionStore.ProjectionStoreV2;
+      assert.equal(
+        (yield* projection.getRun(prepared.run.threadId, prepared.run.id))?.status,
+        "failed",
+      );
+      const adapterWasReached = scenario === "at the adapter boundary";
+      assert.lengthOf(prepared.opens, adapterWasReached ? 1 : 0);
+      assert.lengthOf(prepared.beforeNative, adapterWasReached ? 1 : 0);
     }).pipe(Effect.provide(prepared.context));
   }).pipe(Effect.provide(NodeServices.layer)),
 );
