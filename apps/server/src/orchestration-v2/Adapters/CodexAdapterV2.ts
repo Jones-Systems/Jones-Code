@@ -40,6 +40,7 @@ import type { PhysicalProcessLease } from "@t3tools/provider-core/server/jones/r
 import * as PhysicalProcess from "../../jones/runtime/PhysicalProcessEvidence.ts";
 import {
   CODEX_START_ACK_TIMEOUT_MS,
+  codexStartReplyObservationOptions,
   makeCodexLateStartRecovery,
   type CodexStartDispatch,
 } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
@@ -1576,6 +1577,7 @@ export interface CodexAppServerClientFactoryShape {
     readonly settings: CodexSettings;
     readonly environment: NodeJS.ProcessEnv;
     readonly onTermination?: CodexClient.CodexAppServerClientOptions["onTermination"];
+    readonly observeDecodedReply?: (reply: unknown) => void;
     readonly captureProcessExit?: (
       readback: Effect.Effect<void, CodexErrors.CodexAppServerError>,
     ) => void;
@@ -1987,17 +1989,9 @@ export const layerAppServerClientFactory: Layer.Layer<
           nativeEventLogger,
           providerSessionId: input.providerSessionId,
         });
-        const clientOptions: CodexClient.CodexAppServerClientOptions =
-          protocolLogger === undefined
-            ? {}
-            : {
-                logIncoming: true,
-                logOutgoing: true,
-                logger: protocolLogger,
-              };
         const context = yield* Layer.build(
           CodexClient.layerChildProcess(handle, {
-            ...clientOptions,
+            ...codexStartReplyObservationOptions(input.observeDecodedReply, protocolLogger),
             ...(input.onTermination === undefined ? {} : { onTermination: input.onTermination }),
           }),
         );
@@ -2250,6 +2244,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }),
           );
         const startup = makeCodexStartup(adapterOptions.startupBudgetMs, controlAdmission);
+        const lateStarts = makeCodexLateStartRecovery();
         const admissionTarget = (
           threadId: string | null,
           nativeThreadId: string | null,
@@ -2365,6 +2360,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     environment: resolvedRuntime?.environment ?? adapterOptions.environment,
                     onTermination: (error) =>
                       Deferred.succeed(termination, error).pipe(Effect.asVoid),
+                    observeDecodedReply: (reply) => lateStarts.observeReply(generation, reply),
                     captureProcessExit: retirement.captureProcessExit,
                     runtimeGeneration: generation,
                     ...(useProducer === undefined
@@ -2802,8 +2798,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           acknowledgedContext?: ActiveCodexTurnContext;
           startDispatched: boolean;
           /**
-           * Jones: turn/start reached Codex. Capacity bookkeeping may clear
-           * startDispatched after a definitive foreign reply; this never clears.
+           * Jones: turn/start was handed to the original producer. Clearing
+           * startDispatched after a definitive reply preserves this fact.
            */
           startSent: boolean;
           lateStartDispatch?: CodexStartDispatch | undefined;
@@ -2846,7 +2842,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const capacityRetryFacts = makeCodexCapacityRetryFacts<ActiveCodexTurnContext>();
         let capacityScopeClosed = false;
         let nativeStartUnknown = false;
-        const lateStarts = makeCodexLateStartRecovery();
         const handoffCompaction = makeCodexHandoffCompaction();
         const hasUnknownNativeStart = () =>
           nativeStartUnknown || lateStarts.blocked || handoffCompaction.blocked;
@@ -2931,6 +2926,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           payload: unknown,
           replay: Effect.Effect<void, CodexErrors.CodexAppServerError>,
         ): Effect.fn.Return<void, CodexErrors.CodexAppServerError> {
+          lateStarts.observeTurnActivity(producer.generation, payload);
           if (method === "turn/completed") {
             // The client has decoded this method's payload. Reconciliation facts
             // must survive overflow or cancellation of the replayable effects.
@@ -9448,8 +9444,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ]);
           request.lateStartDispatch = dispatch;
           pendingStartNotifications.begin(dispatch);
-          // Keep the original RPC waiter in its producer's scope after the caller
-          // times out. A replacement producer cannot acknowledge this dispatch.
+          // Keep the original RPC waiter in its producer's scope so it can
+          // reconcile an exact reply after the caller's deadline.
           const startCancelled = yield* Deferred.make<void>();
           request.pendingStartCancelled = startCancelled;
           const pendingStart = yield* producer.client
@@ -9461,10 +9457,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     lateStarts.acknowledge(dispatch, producer.generation, started.turn.id);
                 }),
               ),
+              Effect.mapError((error) => {
+                const rejection = lateStarts.reject(
+                  dispatch,
+                  producer.active && producer === currentProducer ? producer.generation : undefined,
+                  error,
+                );
+                // Only a proved rejection can restore unsent context handoffs.
+                if (rejection === "unverified")
+                  return toProtocolError("Codex did not confirm that it rejected the turn start");
+                if (rejection === "not_applied") request.startDispatched = false;
+                return error;
+              }),
               Effect.forkIn(producer.scope, { startImmediately: true }),
             );
-          // Stop ends only this caller's wait; the producer retains the original RPC
-          // so its exact acknowledgement and completion can reconcile the unknown effect.
+          // Stop ends the caller's wait and leaves reconciliation to the producer.
           const started = yield* Fiber.join(pendingStart).pipe(
             Effect.raceFirst(
               Deferred.await(startCancelled).pipe(

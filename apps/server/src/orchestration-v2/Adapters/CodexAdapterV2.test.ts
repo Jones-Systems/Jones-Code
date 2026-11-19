@@ -2,7 +2,10 @@ import { continuationPrompt } from "../../jones/updates/continuationPrompt.ts";
 import { RequiredNativeSession } from "../../jones/taskContinuation/requiredNativeSession.ts";
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as ProcessAttribution from "../../jones/resourceTelemetry/ProcessAttribution.ts";
-import { CODEX_START_ACK_TIMEOUT_MS } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
+import {
+  CODEX_START_ACK_TIMEOUT_MS,
+  codexStartReplyObservationOptions,
+} from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 import { CurrentStartedTurnContinuation } from "../../jones/provider/StartAdmission.ts";
 import { buildAppIdentityInstructions } from "../../jones/runtimeIdentity/AppIdentity.ts";
 import { historyResponseItems, selectHistory } from "@t3tools/provider-core/server/handoffBudget";
@@ -2924,7 +2927,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const clientFactory: CodexAdapterV2.CodexAppServerClientFactoryShape = {
         open: (openInput) =>
           (producerHooks.onOpen?.(openInput) ?? Effect.void).pipe(
-            Effect.andThen(Layer.build(CodexReplay.layerReplayWithDriver(driver))),
+            Effect.andThen(
+              Layer.build(
+                CodexReplay.layerReplayWithDriver(
+                  driver,
+                  codexStartReplyObservationOptions(openInput.observeDecodedReply),
+                ),
+              ),
+            ),
             Effect.mapError(
               (cause) =>
                 new ProviderAdapter.ProviderAdapterOpenSessionError({
@@ -4210,6 +4220,109 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           0,
           "the failed start is not resurrected as a provider result",
         );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
+  it.effect.each([
+    { timing: "before", reply: "exact" },
+    { timing: "after", reply: "exact" },
+    { timing: "before", reply: "mixed" },
+    { timing: "after", reply: "mixed" },
+  ] as const)(
+    "reconciles only an exact turn/start rejection ($reply response $timing the deadline)",
+    ({ timing, reply }) =>
+      Effect.gen(function* () {
+        const nativeThreadId = `start-rejection-${timing}-${reply}`;
+        const nativeTurnId = "unconfirmed-turn";
+        const siblingNativeId = "rejection-sibling";
+        const sent = yield* Deferred.make<void>();
+        let sends = 0;
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: nativeThreadId,
+            entries: [
+              ...producerPreamble(nativeThreadId, nativeTurnId).slice(0, 6),
+              {
+                type: "emit_inbound",
+                label: "turn/start rejection",
+                frame: {
+                  id: 3,
+                  error: { code: -32602, message: "Invalid turn params" },
+                  ...(reply === "mixed"
+                    ? {
+                        result: {
+                          turn: makeCodexReplayTurn({ id: nativeTurnId, status: "inProgress" }),
+                        },
+                      }
+                    : {}),
+                },
+                ...(timing === "after" ? { afterMs: CODEX_START_ACK_TIMEOUT_MS + 1_000 } : {}),
+              },
+              ...producerPreamble(siblingNativeId, "unused")
+                .slice(3, 5)
+                .map((entry) => withReplayRequestId(entry, 4)),
+            ],
+          }),
+          undefined,
+          (method) =>
+            method === "turn/start"
+              ? Effect.sync(() => {
+                  sends++;
+                }).pipe(Effect.andThen(Deferred.succeed(sent, undefined)))
+              : Effect.void,
+        );
+        const admitSibling = () =>
+          harness.runtime
+            .ensureThread({
+              threadId: ThreadId.make(siblingNativeId),
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+            })
+            .pipe(Effect.result);
+        const start = yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("rejected-start-attempt"),
+              text: "Work",
+            }),
+          )
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* Deferred.await(sent);
+        if (timing === "after") yield* TestClock.adjust(CODEX_START_ACK_TIMEOUT_MS);
+        const original = yield* Fiber.join(start);
+        if (
+          original._tag !== "Failure" ||
+          original.failure._tag !== "ProviderAdapterTurnStartError"
+        )
+          return yield* Effect.die("The original start must fail.");
+        if (timing === "after") {
+          assert.isTrue(Cause.isTimeoutError(original.failure.cause));
+          assert.equal((yield* admitSibling())._tag, "Failure", "retain the fence until the reply");
+          yield* TestClock.adjust("1 second");
+        } else if (reply === "exact") {
+          assert.isTrue(isCodexAppServerRequestError(original.failure.cause));
+          assert.propertyVal(original.failure.cause, "code", -32602);
+          assert.isTrue(promptWasNotApplied(original.failure));
+        } else {
+          assert.instanceOf(original.failure.cause, ProviderAdapter.ProviderAdapterProtocolError);
+          assert.isFalse(promptWasNotApplied(original.failure));
+        }
+        assert.equal((yield* admitSibling())._tag, reply === "exact" ? "Success" : "Failure");
+        assert.equal(sends, 1, "the original prompt must not be replayed");
+        assert.lengthOf(harness.terminalEvents(), 0, "the failed attempt must not be revived");
       }).pipe(
         Effect.scoped,
         Effect.provide(

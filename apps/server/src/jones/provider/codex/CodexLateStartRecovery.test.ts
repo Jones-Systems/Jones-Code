@@ -1,3 +1,4 @@
+import { CodexAppServerRequestError, CodexAppServerTransportError } from "effect-codex-app-server/errors";
 import { describe, expect, it } from "vite-plus/test";
 import { makeCodexLateStartRecovery } from "./CodexLateStartRecovery.ts";
 
@@ -89,5 +90,77 @@ describe("Codex late start admission recovery", () => {
     ledger.release(dispatch);
     ledger.markUnknown(dispatch);
     expect(ledger.blocked).toBe(false);
+  });
+
+  it("clears only the dispatch resolved by its original rejection", () => {
+    const ledger = makeCodexLateStartRecovery();
+    const dispatch = ledger.begin(binding, ["previous-turn"]);
+    const other = ledger.begin({ ...binding, nativeThreadId: "conversation-2" }, []);
+    const error = { code: -32602, message: "Invalid params", data: { field: "input" } };
+    const refusal = CodexAppServerRequestError.fromProtocolError(error, "turn/start", "7");
+    ledger.markUnknown(dispatch);
+    ledger.markUnknown(other);
+    ledger.observeTurnActivity(binding.runtimeGeneration, {
+      threadId: binding.nativeThreadId,
+      turnId: "previous-turn",
+    });
+    ledger.observeReply(binding.runtimeGeneration, { jsonrpc: "2.0", id: 7, error });
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal)).toBe("not_applied");
+    expect(ledger.reject(other, binding.runtimeGeneration, refusal)).toBe("unverified");
+    expect(ledger.blocked).toBe(true);
+  });
+
+  it.each([
+    { name: "both a result and an error", fields: { result: null } },
+    { name: "a string ID matching only after coercion", fields: { id: "7" } },
+    { name: "a different numeric ID", fields: { id: 8 } },
+    { name: "a malformed version", fields: { jsonrpc: "1.0" } },
+    { name: "unexpected envelope fields", fields: { params: {} } },
+    { name: "an unexpected error code", fields: {} },
+  ])("keeps the fence for $name", ({ name, fields }) => {
+    const ledger = makeCodexLateStartRecovery();
+    const dispatch = ledger.begin(binding, []);
+    const code = name === "an unexpected error code" ? -32601 : -32602;
+    const error = { code, message: "Request rejected" };
+    const refusal = CodexAppServerRequestError.fromProtocolError(error, "turn/start", "7");
+    ledger.markUnknown(dispatch);
+    ledger.observeReply(binding.runtimeGeneration, { id: 7, error, ...fields });
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal)).toBe("unverified");
+    expect(ledger.blocked).toBe(true);
+  });
+
+  it("requires evidence from the original producer and rejects transport failures", () => {
+    const ledger = makeCodexLateStartRecovery();
+    const dispatch = ledger.begin(binding, []);
+    const error = { code: -32602, message: "Invalid params" };
+    const refusal = CodexAppServerRequestError.fromProtocolError(error, "turn/start", "7");
+    ledger.markUnknown(dispatch);
+    ledger.observeReply("different-generation", { id: 7, error });
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal)).toBe("unverified");
+    ledger.observeReply(binding.runtimeGeneration, { id: 7, error: { ...error } });
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal)).toBe("unverified");
+    ledger.observeReply(binding.runtimeGeneration, { id: 7, error });
+    expect(ledger.reject(dispatch, undefined, refusal)).toBe("unverified");
+    const transportFailure = new CodexAppServerTransportError({
+      operation: "read-input-stream",
+      cause: refusal,
+    });
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, transportFailure)).toBe("other_error");
+    expect(ledger.blocked).toBe(true);
+  });
+
+  it("keeps the fence when the rejection conflicts with observed native turn activity", () => {
+    const ledger = makeCodexLateStartRecovery();
+    const dispatch = ledger.begin(binding, []);
+    const error = { code: -32602, message: "Invalid params" };
+    const refusal = CodexAppServerRequestError.fromProtocolError(error, "turn/start", "7");
+    ledger.markUnknown(dispatch);
+    ledger.observeTurnActivity(binding.runtimeGeneration, {
+      threadId: binding.nativeThreadId,
+      turn: { id: "possible-native-turn" },
+    });
+    ledger.observeReply(binding.runtimeGeneration, { id: 7, error });
+    expect(ledger.reject(dispatch, binding.runtimeGeneration, refusal)).toBe("unverified");
+    expect(ledger.blocked).toBe(true);
   });
 });
