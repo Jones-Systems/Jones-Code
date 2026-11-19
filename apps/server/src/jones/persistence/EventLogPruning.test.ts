@@ -153,6 +153,14 @@ const readers: ReadonlyArray<Reader> = [
       "provider/UnsentStartProof.test.ts (receipt mismatch, promotion and unavailable unreleased birth)",
   },
   {
+    file: "provider/RecoveryStartParentStop.ts",
+    classification: "tolerate",
+    after:
+      "With a retained parent Stop effect, a queued send needs retained Stop and run-birth events to prove the input was sent after Stop. Missing evidence leaves the replacement ineligible.",
+    proof:
+      "provider/RecoveryStartParentStop.integration.test.ts (queued send ordering); pruning behavior follows the retained sequence checks",
+  },
+  {
     file: "nativeCreation/NativeCreationExecutionSqlite.ts",
     classification: "tolerate",
     after:
