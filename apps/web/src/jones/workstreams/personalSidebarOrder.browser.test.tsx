@@ -291,6 +291,7 @@ it("uses the enabled color bar to collapse and reopen its Workstream", async () 
         else localStorage.setItem(THREAD_BOARD_APPEARANCE_KEY, previous);
       },
     };
+    expect(document.querySelector("[data-workstream-rail-toggle]")).toBeNull();
     await act(() =>
       writeLocalStorageValue(
         THREAD_BOARD_APPEARANCE_KEY,
@@ -300,6 +301,8 @@ it("uses the enabled color bar to collapse and reopen its Workstream", async () 
       ),
     );
     const initial = rows();
+    const header = page.getByRole("button", { name: "Collapse alpha", exact: true }).element();
+    expect(header.closest("[data-native-workstream]")?.querySelector("button")).toBe(header);
     await page.getByRole("button", { name: "Collapse alpha from the color bar" }).click();
     expect(rows()).toEqual(initial.filter((id) => !id.startsWith("a")));
     await page.getByRole("button", { name: "Expand alpha from the color bar" }).click();

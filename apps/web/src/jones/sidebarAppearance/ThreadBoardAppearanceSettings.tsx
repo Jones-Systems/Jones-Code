@@ -304,7 +304,7 @@ function ThreadBoardPreview({
       >
         <section
           data-jones-board-section="workstream"
-          className="rounded-lg"
+          className="relative rounded-lg"
           style={
             {
               "--jones-board-section-accent": "#38bda9",
@@ -312,11 +312,6 @@ function ThreadBoardPreview({
             } as CSSProperties
           }
         >
-          <WorkstreamRailToggle
-            name="CI & Test Efficiency"
-            collapsed={collapsed}
-            onToggle={() => setCollapsed((value) => !value)}
-          />
           <PersonalSidebarGroupHeader
             name="CI & Test Efficiency"
             collapsed={collapsed}
@@ -325,6 +320,13 @@ function ThreadBoardPreview({
             statusFilter={filter}
             onStatusFilterChange={setFilter}
           />
+          {board.clickRailToCollapse ? (
+            <WorkstreamRailToggle
+              name="CI & Test Efficiency"
+              collapsed={collapsed}
+              onToggle={() => setCollapsed((value) => !value)}
+            />
+          ) : null}
           {showStatus("done") ? card("Assess CI performance", "Jones Code · Done") : null}
           {showStatus("failed") ? card("Run build verification", "Jones Code · Failed") : null}
         </section>

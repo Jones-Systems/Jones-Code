@@ -145,7 +145,6 @@ export function threadBoardAppearanceScope(value: ThreadBoardAppearance) {
   return {
     attributes: {
       "data-jones-board-filter-spacing": value.filterSpacing ?? "adaptive",
-      "data-jones-board-click-rail": value.clickRailToCollapse ? "enabled" : "disabled",
     },
     variables,
   };

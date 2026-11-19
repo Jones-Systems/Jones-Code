@@ -59,14 +59,6 @@
   border-left: 2px solid var(--jones-board-section-rail);
 }
 
-[data-workstream-rail-toggle] {
-  display: none;
-}
-
-[data-jones-board-click-rail="enabled"] [data-workstream-rail-toggle] {
-  display: block;
-}
-
 [data-jones-board-section="workstream"]::before {
   position: absolute;
   z-index: -1;

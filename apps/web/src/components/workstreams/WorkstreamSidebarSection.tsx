@@ -58,6 +58,7 @@ import { ClosedWorkstreams } from "../../jones/workstreams/ClosedWorkstreams";
 import { showPersonalFailure } from "../../jones/workstreams/personalNotifications";
 import * as Schema from "effect/Schema";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { useStoredThreadBoardAppearance } from "../../jones/sidebarAppearance/useThreadBoardAppearance";
 import { PersonalWorkstreamVisibleThreads } from "../../jones/workstreams/PersonalWorkstreamDisplayControls";
 import {
   PersonalSidebarGroupHeader,
@@ -227,6 +228,7 @@ function Group({
   confirmingDelete,
   onDeleteRequested,
   memberCount,
+  railToggleEnabled,
   snoozedIds,
 }: {
   item: PersonalWorkstreamView;
@@ -236,6 +238,7 @@ function Group({
   controller: PersonalWorkstreamsController;
   children: (window: { limit: PersonalThreadLimit; expanded: boolean }) => ReactNode;
   memberCount: number;
+  railToggleEnabled: boolean;
   snoozedIds: ReadonlySet<string>;
   summary: PersonalThreadSummary;
   rosterTotal: number;
@@ -357,7 +360,7 @@ function Group({
       data-native-workstream={JSON.stringify(item.id)}
       data-jones-board-section="workstream"
       data-thread-drop-target={dropTarget ? "" : undefined}
-      className={`min-w-0 rounded-lg ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
+      className={`relative min-w-0 rounded-lg ${dragging ? "opacity-50" : ""} ${dropTarget ? "ring-2 ring-inset ring-primary/70 forced-colors:outline forced-colors:outline-2 forced-colors:-outline-offset-2 forced-colors:outline-current" : ""}`}
       style={
         {
           "--jones-board-section-rail": colors.rail,
@@ -369,7 +372,6 @@ function Group({
         } as CSSProperties
       }
     >
-      <WorkstreamRailToggle name={item.name} collapsed={collapsed} onToggle={toggleCollapsed} />
       <div
         data-workstream-header
         className="flex min-w-0 cursor-pointer"
@@ -423,6 +425,9 @@ function Group({
           }
         />
       </div>
+      {railToggleEnabled ? (
+        <WorkstreamRailToggle name={item.name} collapsed={collapsed} onToggle={toggleCollapsed} />
+      ) : null}
       <Menu open={menuOpen} onOpenChange={openMenu}>
         <MenuPopup
           aria-label={`Workstream actions for ${item.name}`}
@@ -641,6 +646,7 @@ export function WorkstreamSidebarSection({
   unassignedSummary?: PersonalThreadSummary;
 }) {
   const state = useAtomValue(controller.state);
+  const { clickRailToCollapse } = useStoredThreadBoardAppearance();
   const [unassignedCollapsed, setUnassignedCollapsed] = useLocalStorage(
     personalGroupCollapsedKey(null),
     false,
@@ -912,6 +918,7 @@ export function WorkstreamSidebarSection({
                   summary={summaries?.get(item.id) ?? emptySummary}
                   rosterTotal={rosterTotals?.get(item.id) ?? summaries?.get(item.id)?.total ?? 0}
                   memberCount={memberCounts?.get(item.id) ?? 0}
+                  railToggleEnabled={clickRailToCollapse === true}
                   snoozedIds={snoozedIds}
                   dragging={draggedId === item.id}
                   dropTarget={dropTargetId === item.id}
