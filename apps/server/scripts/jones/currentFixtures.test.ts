@@ -262,6 +262,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 162, name: "OrdinaryPreparation" },
           { id: 163, name: "RemoteSendReceipts" },
           { id: 164, name: "LegacyBootstrap" },
+          { id: 165, name: "PreparedStartCheckouts" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);
