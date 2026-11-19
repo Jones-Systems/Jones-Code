@@ -288,6 +288,7 @@ try {
     "scripts/jones/serverParallelism/snapshotDecision.node-test.mjs",
     "scripts/jones/serverParallelism/native-block-proof.node-test.mjs",
     "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs",
+    "scripts/jones/serverParallelism/macos-resource-sampler.node-test.mjs",
   ]);
   const sourceManifest = NodePath.join(output, "source-command.json");
   const sourceAvailable = await node("manifest-source", [

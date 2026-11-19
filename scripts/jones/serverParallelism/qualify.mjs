@@ -8,6 +8,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { runNativeQualification } from "../../../apps/server/src/jones/serverParallelism/nativeQualification.ts";
 import { minimalWorkerEnvironment } from "../../../apps/server/src/jones/serverCompute/workerCommand.ts";
 import { qualificationDecision, requiredNativePredicates } from "./qualificationResult.mjs";
+import { startMacResourceSampler } from "./macos-resource-sampler.mjs";
 const [manifestPath, output, profile, baselinePath] = process.argv.slice(2);
 if (
   !manifestPath ||
@@ -44,24 +45,34 @@ const command = {
     manifest.runtimeForm === "electron",
   ),
 };
-let macNativePoolCensus;
-if (process.env.JONES_SP_MAC_NATIVE_POOL_CENSUS === "1") {
+async function runnerMacHelper(name) {
   if (Effect.runSync(HostProcess.Platform) !== "darwin")
-    throw new Error("The native pool census requires macOS");
-  const census = NodePath.join(NodeOS.tmpdir(), "jones-macos-native-pool-census");
-  const stat = await NodeFSP.lstat(census);
+    throw new Error("The resource helper requires macOS");
+  const executable = NodePath.join(NodeOS.tmpdir(), name);
+  const stat = await NodeFSP.lstat(executable);
   if (
     !stat.isFile() ||
     stat.uid !== Effect.runSync(HostProcess.UserId) ||
     (stat.mode & 0o022) !== 0
   )
-    throw new Error("The native pool census must be a runner-owned regular file");
-  macNativePoolCensus = census;
+    throw new Error("The resource helper must be a runner-owned regular file");
+  return executable;
 }
+const macNativePoolCensus =
+  process.env.JONES_SP_MAC_NATIVE_POOL_CENSUS === "1"
+    ? await runnerMacHelper("jones-macos-native-pool-census")
+    : undefined;
 const scratch = await NodeFSP.realpath(
   await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-qualification-")),
 );
 let cleanupProved = false;
+let resourceSampler;
+async function retireSampler() {
+  if (!resourceSampler) return undefined;
+  const exit = await resourceSampler.close();
+  cleanupProved &&= exit.capturedExit;
+  return { ...resourceSampler.observer(), exit };
+}
 const controller = new AbortController();
 const stop = () => controller.abort();
 process.once("SIGTERM", stop);
@@ -85,10 +96,15 @@ try {
     [baseline.writer?.p95, baseline.writer?.p99, baseline.loop?.p99].every(
       (value) => Number.isFinite(value) && value > 0,
     );
+  if (process.env.JONES_SP_MAC_RESOURCE_SAMPLER === "1")
+    resourceSampler = await startMacResourceSampler(
+      await runnerMacHelper("jones-macos-resource-sampler"),
+    );
   const report = await runNativeQualification({
     count,
     command,
     ...(macNativePoolCensus ? { macNativePoolCensus } : {}),
+    ...(resourceSampler ? { sample: resourceSampler.sample } : {}),
     directory: NodePath.join(scratch, "fixture"),
     signal: controller.signal,
     onShutdown: () => {
@@ -103,13 +119,23 @@ try {
         }
       : {}),
   });
-  const decision = qualificationDecision(report.predicates, requiredNativePredicates);
+  const resourceObserver = await retireSampler();
+  const predicates = resourceObserver
+    ? {
+        ...report.predicates,
+        resourceSamplerClosed:
+          resourceObserver.exit.capturedExit && resourceObserver.exit.code === 0,
+      }
+    : report.predicates;
+  const decision = qualificationDecision(predicates, requiredNativePredicates);
   await NodeFSP.writeFile(
     output,
     JSON.stringify(
       {
         ...report,
         ...decision,
+        predicates,
+        ...(resourceObserver ? { resourceObserver } : {}),
         source: process.env.JONES_SP_SOURCE_SHA ?? null,
         sourceTree: process.env.JONES_SP_SOURCE_TREE ?? null,
         runtimeForm: manifest.runtimeForm,
@@ -129,6 +155,7 @@ try {
   );
   if (!decision.passed) process.exitCode = 1;
 } catch (cause) {
+  const resourceObserver = await retireSampler();
   await NodeFSP.writeFile(
     output,
     JSON.stringify(
@@ -141,6 +168,7 @@ try {
         profile,
         scratch,
         cleanupProved,
+        ...(resourceObserver ? { resourceObserver } : {}),
         error: String(cause),
       },
       null,

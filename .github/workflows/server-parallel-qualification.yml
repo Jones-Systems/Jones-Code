@@ -266,7 +266,7 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
-      - name: Build the macOS native pool census
+      - name: Build the macOS resource helpers
         if: matrix.os == 'macos' && (env.JONES_SP_SCOPE == 'source-evidence' || env.JONES_SP_SCOPE == 'full')
         run: |
           set -euo pipefail
@@ -277,7 +277,14 @@ jobs:
             scripts/jones/serverParallelism/macos-native-pool-census.c -o "$census"
           shasum -a 256 scripts/jones/serverParallelism/macos-native-pool-census.c "$census" \
             > "$JONES_SP_REPORTS/macos-native-pool-census.sha256"
-          printf '%s\n' JONES_SP_MAC_NATIVE_POOL_CENSUS=1 >> "$GITHUB_ENV"
+          sampler="$TMPDIR/jones-macos-resource-sampler"
+          test ! -e "$sampler"
+          test ! -L "$sampler"
+          /usr/bin/xcrun --sdk macosx clang -std=c17 -O2 -Wall -Wextra -Werror \
+            scripts/jones/serverParallelism/macos-resource-sampler.c -o "$sampler"
+          shasum -a 256 scripts/jones/serverParallelism/macos-resource-sampler.c "$sampler" \
+            > "$JONES_SP_REPORTS/macos-resource-sampler.sha256"
+          printf '%s\n' JONES_SP_MAC_NATIVE_POOL_CENSUS=1 JONES_SP_MAC_RESOURCE_SAMPLER=1 >> "$GITHUB_ENV"
 
       - name: Focused qualification regressions and control/checkpoint invariants
         if: env.JONES_SP_SCOPE != 'observer-control'
