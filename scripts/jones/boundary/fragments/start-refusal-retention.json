@@ -4,6 +4,7 @@
   "jonesOwnedPaths": [
     "apps/server/src/jones/provider/UnsentStartProof.ts",
     "apps/server/src/jones/provider/UnsentStartProof.test.ts",
+    "apps/server/src/jones/provider/UnsentStartRecovery.integration.test.ts",
     "apps/server/src/jones/startRefusal/Store.prefix.test.ts",
     "apps/server/src/jones/startRefusal/Orchestrator.integration.test.ts",
     "apps/server/src/jones/startRefusal/Probe.test.ts",

@@ -1,34 +1,49 @@
 import { sameOperationRequest } from "../workspaceLifecycle/NativeOperation.ts";
-import type { OrchestrationV2Run, OrchestrationV2RunAttempt } from "@t3tools/contracts";
+import {
+  CommandId,
+  type OrchestrationV2ConversationMessage,
+  type OrchestrationV2DomainEvent,
+  type OrchestrationV2Run,
+  type OrchestrationV2RunAttempt,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as SqlClient from "effect/sql/SqlClient";
-import { EVENT_LOG_PRUNED_THROUGH_PROJECTION } from "../persistence/EventLogPruneBoundary.ts";
+import {
+  EVENT_LOG_PRUNED_THROUGH_PROJECTION,
+  readEventLogPrunedThrough,
+} from "../persistence/EventLogPruneBoundary.ts";
 import type * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
 import type * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import type * as Sink from "../../orchestration-v2/EventSink.ts";
 import type * as Refusals from "../startRefusal/Store.ts";
 
-// A cancelled original row with a monotonic zero claim count is positive custody
-// evidence. A missing turn, null startedAt, retry row or held control is not.
-export function makeUnsentStartProof(ports: {
+interface UnsentStartPorts {
   readonly outbox: Pick<Outbox.EffectOutboxV2Shape, "listByThreadId" | "get">;
   readonly receipts: Pick<Receipts.CommandReceiptStoreV2Shape, "getByCommandId">;
   readonly sink: Pick<Sink.EventSinkV2Shape, "readByCommandId">;
   readonly refusals: Refusals.StartRefusals["Service"];
-}) {
+}
+
+const targetsRunStart = (row: Outbox.OrchestrationEffectV2, run: OrchestrationV2Run) =>
+  (row.request.type === "provider-turn.start" || row.request.type === "provider-turn.restart") &&
+  row.request.runId === run.id;
+
+// A cancelled original row with a monotonic zero claim count is positive custody
+// evidence. A missing turn, null startedAt, retry row or held control is not.
+export function makeUnsentStartProof(ports: UnsentStartPorts) {
   return (run: OrchestrationV2Run, attempts: ReadonlyArray<OrchestrationV2RunAttempt>) =>
     Effect.gen(function* () {
       const attempt = attempts.find(
         (row) => row.id === run.activeAttemptId && row.runId === run.id,
       );
       if (attempt === undefined || run.manualContinuationOfRunId !== undefined) return false;
-      const rows = (yield* ports.outbox.listByThreadId(run.threadId)).filter(
-        (row) =>
-          (row.request.type === "provider-turn.start" ||
-            row.request.type === "provider-turn.restart") &&
-          row.request.runId === run.id,
+      const rows = (yield* ports.outbox.listByThreadId(run.threadId)).filter((row) =>
+        targetsRunStart(row, run),
       );
       if (
         rows.length === 0 ||
@@ -110,12 +125,322 @@ export function makeUnsentStartProof(ports: {
     }).pipe(Effect.catchCause(() => Effect.succeed(false)));
 }
 
+const resendCommandId = (run: OrchestrationV2Run) =>
+  CommandId.make(`command:restart-resend:${run.id}`);
+const resendEffectPrefix = (run: OrchestrationV2Run) => `effect:restart-resend:${run.id}:`;
+const decodePayloadIdentity = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+
+function hasExactPlainRequest(
+  row: Outbox.OrchestrationEffectV2,
+  request: Outbox.PendingOrchestrationEffectV2["request"],
+) {
+  // Typed outbox decoding can omit unknown keys. Check the stored JSON as well.
+  const payload = decodePayloadIdentity(row.payloadIdentity);
+  return (
+    row.nativeCreationExecutionReference === undefined &&
+    Option.isSome(payload) &&
+    sameOperationRequest(payload.value, request) &&
+    sameOperationRequest(row.request, request)
+  );
+}
+
+export function recoveryResendEffect(
+  run: OrchestrationV2Run,
+  commandId: CommandId,
+): Outbox.PendingOrchestrationEffectV2 {
+  return {
+    id: `${resendEffectPrefix(run)}${commandId}`,
+    commandId: resendCommandId(run),
+    threadId: run.threadId,
+    request: { type: "provider-turn.start", runId: run.id },
+  };
+}
+
+class RecoveryResendCommitError extends Schema.TaggedError<RecoveryResendCommitError>()(
+  "RecoveryResendCommitError",
+  {
+    reason: Schema.Literals(["acceptance_missing", "outbox_row_mismatch"]),
+  },
+) {}
+
+export const commitRecoveryResends = Effect.fn("UnsentStartProof.commitRecoveryResends")(
+  (
+    sink: Pick<Sink.EventSinkV2Shape, "commitCommand" | "writeWithEffects" | "withProviderBatch">,
+    outbox: Pick<Outbox.EffectOutboxV2Shape, "get">,
+    input: Parameters<Sink.EventSinkV2Shape["commitCommand"]>[0],
+    effects: ReadonlyArray<Outbox.PendingOrchestrationEffectV2>,
+  ) =>
+    sink.withProviderBatch(
+      Effect.gen(function* () {
+        const result = yield* sink.commitCommand(input);
+        if (!result.committed || result.receipt.status !== "accepted")
+          return yield* new RecoveryResendCommitError({ reason: "acceptance_missing" });
+        // The command cancels old starts. Enqueue only after cancellation, before the same commit.
+        yield* sink.writeWithEffects({ events: [], effects });
+        for (const effect of effects) {
+          const row = yield* outbox.get(effect.id);
+          if (
+            Option.isNone(row) ||
+            row.value.commandId !== effect.commandId ||
+            row.value.threadId !== effect.threadId ||
+            row.value.status !== "pending" ||
+            row.value.attemptCount !== 0 ||
+            row.value.leaseOwner !== null ||
+            row.value.completedAt !== null ||
+            !hasExactPlainRequest(row.value, effect.request)
+          )
+            return yield* new RecoveryResendCommitError({ reason: "outbox_row_mismatch" });
+        }
+        return result;
+      }),
+    ),
+);
+
+// Recovery commits the replacement under its own receipt. Require a one-to-one
+// match even for cancelled predecessors so a missing outbox row cannot hide a claim.
+export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: UnsentStartPorts) {
+  return Effect.fn("UnsentStartProof.recovery")(
+    function* (
+      run: OrchestrationV2Run,
+      attempts: ReadonlyArray<OrchestrationV2RunAttempt>,
+      message: OrchestrationV2ConversationMessage,
+    ) {
+      const [attempt, anotherAttempt] = attempts.filter((row) => row.runId === run.id);
+      if (
+        run.status !== "starting" ||
+        run.startedAt !== null ||
+        run.completedAt !== null ||
+        run.manualContinuationOfRunId !== undefined ||
+        run.restartContinuationOfRunId !== undefined ||
+        run.usageLimitContinuationOfRunId !== undefined ||
+        attempt === undefined ||
+        anotherAttempt !== undefined ||
+        attempt.id !== run.activeAttemptId ||
+        attempt.reason !== "initial" ||
+        attempt.attemptOrdinal !== 1 ||
+        attempt.status !== "pending" ||
+        attempt.startedAt !== null ||
+        attempt.completedAt !== null ||
+        attempt.providerTurnId !== null ||
+        attempt.providerSettlement != null ||
+        attempt.nativeThreadId !== undefined ||
+        attempt.providerThreadId !== run.providerThreadId ||
+        attempt.providerInstanceId !== run.providerInstanceId ||
+        attempt.rootNodeId !== run.rootNodeId ||
+        message.id !== run.userMessageId ||
+        message.threadId !== run.threadId ||
+        message.runId !== run.id ||
+        message.role !== "user"
+      )
+        return false;
+      const prefix = yield* ports.refusals.readPrefix({
+        threadId: run.threadId,
+        runId: run.id,
+        attemptId: attempt.id,
+      });
+      if (prefix.state !== "unknown") return false;
+
+      const threadRows = yield* ports.outbox.listByThreadId(run.threadId);
+      if (
+        threadRows.some(
+          ({ request }) =>
+            (request.type === "provider-turn.steer" && request.messageId === message.id) ||
+            (request.type === "provider-turn.steer-batch" &&
+              (request.messageId === message.id || request.messageIds.includes(message.id))),
+        )
+      )
+        return false;
+      const commandId = resendCommandId(run);
+      const effectPrefix = resendEffectPrefix(run);
+      const rows = threadRows.filter(
+        (row) =>
+          targetsRunStart(row, run) ||
+          row.commandId === commandId ||
+          row.id.startsWith(effectPrefix),
+      );
+      const [original, anotherOriginal] = rows.filter((row) => row.commandId !== commandId);
+      const request = { type: "provider-turn.start", runId: run.id } as const;
+      if (
+        original === undefined ||
+        anotherOriginal !== undefined ||
+        original.id !== `effect:${original.commandId}:provider-turn.start:${run.id}` ||
+        rows.some(
+          (row) =>
+            row.threadId !== run.threadId ||
+            row.status !== "cancelled" ||
+            row.attemptCount !== 0 ||
+            row.leaseOwner !== null ||
+            row.completedAt === null ||
+            !hasExactPlainRequest(row, request),
+        )
+      )
+        return false;
+
+      const prunedThrough = yield* readEventLogPrunedThrough(sql);
+      // Both the original admission and each replacement need a retained receipt and event batch.
+      const readRetainedAcceptance = Effect.fnUntraced(function* (commandId: CommandId) {
+        const result = yield* ports.receipts.getByCommandId(commandId);
+        if (Option.isNone(result)) return;
+        const receipt = result.value;
+        if (
+          receipt.status !== "accepted" ||
+          receipt.error !== null ||
+          receipt.commandId !== commandId ||
+          receipt.threadId !== run.threadId
+        )
+          return;
+        const events = yield* ports.sink.readByCommandId({ commandId }).pipe(Stream.runCollect);
+        const first = events[0];
+        if (
+          first === undefined ||
+          first.sequence <= prunedThrough ||
+          events.at(-1)?.sequence !== receipt.resultSequence ||
+          events.some(
+            (row, index) =>
+              row.sequence !== first.sequence + index ||
+              row.commandId !== commandId ||
+              row.event.threadId !== run.threadId,
+          )
+        )
+          return;
+        return { receipt, events, firstSequence: first.sequence };
+      });
+      const sameRun = (event: OrchestrationV2DomainEvent) =>
+        event.runId === run.id &&
+        event.providerInstanceId === run.providerInstanceId &&
+        sameOperationRequest(event.payload, run);
+
+      const accepted = yield* readRetainedAcceptance(original.commandId);
+      if (accepted === undefined) return false;
+      const [witness, anotherRunEvent] = accepted.events.filter(
+        ({ event }) =>
+          (event.type === "run.created" || event.type === "run.updated") &&
+          (event.runId === run.id || event.payload.id === run.id),
+      );
+      if (
+        witness === undefined ||
+        anotherRunEvent !== undefined ||
+        !sameRun(witness.event) ||
+        accepted.events.some(
+          ({ event }) =>
+            event.type === "provider-turn.updated" &&
+            (event.runId === run.id || event.payload.runAttemptId === attempt.id),
+        )
+      )
+        return false;
+      const { receipt } = accepted;
+      if (receipt.commandType === "queue.start") {
+        const inputs = accepted.events.flatMap(({ event }) =>
+          event.type === "turn-item.updated" &&
+          event.payload.type === "user_message" &&
+          event.payload.messageId === message.id
+            ? [event.payload]
+            : [],
+        );
+        const input = inputs[0];
+        if (
+          witness.event.type !== "run.updated" ||
+          witness.sequence !== receipt.resultSequence ||
+          inputs.length !== 1 ||
+          input === undefined ||
+          input.threadId !== run.threadId ||
+          input.runId !== run.id ||
+          input.createdBy !== message.createdBy ||
+          input.creationSource !== message.creationSource ||
+          input.scheduledTaskId !== message.scheduledTaskId ||
+          input.text !== message.text ||
+          !sameOperationRequest(input.attachments, message.attachments) ||
+          !sameOperationRequest(input.context, message.context) ||
+          !(yield* readUnreleasedStartBirth(
+            sql,
+            { ...run, status: "queued" },
+            attempt,
+            accepted.firstSequence,
+          ))
+        )
+          return false;
+      } else {
+        const births = accepted.events.filter(
+          ({ event }) =>
+            (event.type === "run-attempt.created" || event.type === "run-attempt.updated") &&
+            (event.runId === run.id ||
+              event.payload.runId === run.id ||
+              event.payload.id === attempt.id),
+        );
+        const messages = accepted.events.flatMap(({ event }) =>
+          event.type === "message.updated" && event.payload.id === message.id
+            ? [event.payload]
+            : [],
+        );
+        if (
+          (receipt.commandType !== "message.dispatch" && receipt.commandType !== "thread.create") ||
+          witness.event.type !== "run.created" ||
+          births.length !== 1 ||
+          births[0]?.event.type !== "run-attempt.created" ||
+          births[0].event.runId !== run.id ||
+          !sameOperationRequest(births[0].event.payload, attempt) ||
+          messages.length !== 1 ||
+          !sameOperationRequest(messages[0], message)
+        )
+          return false;
+      }
+
+      const history = yield* sql<{
+        readonly sequence: number;
+        readonly command_id: string | null;
+        readonly event_type: string;
+      }>`
+        SELECT sequence, command_id, event_type FROM orchestration_events
+        WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${run.threadId}
+          AND sequence > ${receipt.resultSequence}
+          AND (
+            (event_type IN ('run.created', 'run.updated', 'run-attempt.created', 'run-attempt.updated', 'provider-turn.updated')
+              AND (json_extract(metadata_json, '$.runId') = ${run.id}
+                OR json_extract(payload_json, '$.runId') = ${run.id}
+                OR json_extract(payload_json, '$.id') IN (${run.id}, ${attempt.id})
+                OR json_extract(payload_json, '$.runAttemptId') = ${attempt.id}))
+            OR (event_type = 'message.updated' AND json_extract(payload_json, '$.id') = ${message.id})
+          )
+        ORDER BY sequence ASC LIMIT ${rows.length}
+      `;
+      if (history.length !== rows.length - 1) return false;
+      const replacements = new Set(rows.filter((row) => row !== original).map((row) => row.id));
+      for (const { sequence, command_id, event_type } of history) {
+        if (event_type !== "run.updated" || command_id === null) return false;
+        const id = CommandId.make(command_id);
+        if (!replacements.delete(`${effectPrefix}${id}`)) return false;
+        const recorded = yield* readRetainedAcceptance(id);
+        if (recorded?.receipt.commandType !== "provider-runtime.reconcile") return false;
+        const suffix = `:${run.threadId}:${DateTime.formatIso(recorded.receipt.acceptedAt)}`;
+        if (
+          id !== `command:runtime-reconcile:startup${suffix}` &&
+          id !== `command:runtime-reconcile:shutdown${suffix}`
+        )
+          return false;
+        const update = recorded.events.find((event) => event.sequence === sequence)?.event;
+        if (
+          update?.type !== "run.updated" ||
+          !sameRun(update) ||
+          !DateTime.Equivalence(update.occurredAt, recorded.receipt.acceptedAt)
+        )
+          return false;
+      }
+      return true;
+    },
+    Effect.catchCauseIf(
+      (cause) => !Cause.hasInterruptsOnly(cause),
+      () => Effect.succeed(false),
+    ),
+  );
+}
+
 // Deferred preparation and queued messages have no start effect until release or
-// promotion. Require a complete retained record of their original admission.
+// promotion. When proving a promotion, bound the birth evidence to its prior history.
 export function readUnreleasedStartBirth(
   sql: SqlClient.SqlClient,
   run: OrchestrationV2Run,
   attempt: OrchestrationV2RunAttempt,
+  beforeSequence?: number,
 ) {
   return sql<{ readonly sequence: number }>`
     SELECT birth.sequence
@@ -137,6 +462,16 @@ export function readUnreleasedStartBirth(
       AND receipt.aggregate_kind = 'thread' AND receipt.aggregate_id = ${run.threadId}
       AND receipt.status = 'accepted' AND receipt.command_type = 'message.dispatch'
       AND receipt.result_sequence >= birth.sequence
+      AND ${
+        beforeSequence === undefined
+          ? sql`1 = 1`
+          : sql`receipt.result_sequence < ${beforeSequence} AND receipt.error IS NULL AND EXISTS (
+              SELECT 1 FROM orchestration_events AS tail
+              WHERE tail.sequence = receipt.result_sequence AND tail.command_id = birth.command_id
+                AND tail.aggregate_kind = 'thread' AND tail.stream_id = birth.stream_id
+                AND tail.application_event_version = 2
+            )`
+      }
       AND EXISTS (
         SELECT 1 FROM orchestration_events AS first_attempt
         WHERE first_attempt.command_id = birth.command_id
@@ -156,6 +491,7 @@ export function readUnreleasedStartBirth(
         SELECT 1 FROM orchestration_events AS change
         WHERE change.aggregate_kind = 'thread' AND change.stream_id = birth.stream_id
           AND change.application_event_version = 2 AND change.sequence > birth.sequence
+          AND ${beforeSequence === undefined ? sql`1 = 1` : sql`change.sequence < ${beforeSequence}`}
           AND change.event_type IN ('run.created', 'run.updated')
           AND json_extract(change.payload_json, '$.id') = ${run.id}
           AND (change.event_type = 'run.created'

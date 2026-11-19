@@ -1,6 +1,11 @@
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as CommandReceipts from "./CommandReceiptStore.ts";
-import { makeUnsentStartProof } from "../jones/provider/UnsentStartProof.ts";
+import {
+  commitRecoveryResends,
+  makeRecoveryUnsentStartProof,
+  makeUnsentStartProof,
+  recoveryResendEffect,
+} from "../jones/provider/UnsentStartProof.ts";
 import * as StartRefusals from "../jones/startRefusal/Store.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
@@ -12,6 +17,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
   isProviderNativeSubagentThread,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2DomainEvent,
   type ProviderThreadId,
   type OrchestrationV2RestartCancelledBackgroundWork,
@@ -27,6 +33,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -67,8 +74,6 @@ export class ProviderRuntimeRecoveryError extends Schema.TaggedError<ProviderRun
 }
 
 const isProviderRuntimeRecoveryError = Schema.is(ProviderRuntimeRecoveryError);
-
-const MAX_RESENDS = 3;
 
 export interface ProviderRuntimeRecoverySummary {
   readonly terminalizedRuns: number;
@@ -215,15 +220,29 @@ export const make = Effect.gen(function* () {
   const controlAdmission = yield* Effect.serviceOption(ControlAdmission.ControlAdmission);
   const goalContinuity = yield* Effect.serviceOption(GoalContinuity.GoalContinuity);
   const environment = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironmentIdentity);
+  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const unsentStartPorts =
+    Option.isSome(receipts) && Option.isSome(prefixEvidence)
+      ? {
+          outbox,
+          receipts: receipts.value,
+          sink: eventSink,
+          refusals: prefixEvidence.value,
+        }
+      : undefined;
+  const proveOriginalUnsent = unsentStartPorts && makeUnsentStartProof(unsentStartPorts);
+  const proveRecoveryUnsent =
+    Option.isSome(sql) && unsentStartPorts !== undefined
+      ? makeRecoveryUnsentStartProof(sql.value, unsentStartPorts)
+      : undefined;
   const certifiedUnsent = Effect.fn("ProviderRuntimeRecoveryService.certifiedUnsent")(
     function* (
       projection: ProjectionStore.ProjectionRuntimeRecoveryState,
       run: OrchestrationV2ThreadProjection["runs"][number],
+      resendMessage?: OrchestrationV2ConversationMessage,
     ) {
       if (
         run.activeAttemptId === null ||
-        Option.isNone(receipts) ||
-        Option.isNone(prefixEvidence) ||
         Option.isNone(restartAdmission) ||
         Option.isNone(controlAdmission) ||
         Option.isNone(goalContinuity) ||
@@ -236,13 +255,17 @@ export const make = Effect.gen(function* () {
       const provider = projection.providerThreads.find((row) => row.id === run.providerThreadId);
       if (attempt === undefined || provider === undefined || provider.providerSessionId === null)
         return false;
-      if (
-        !(yield* makeUnsentStartProof({
-          outbox,
-          receipts: receipts.value,
-          sink: eventSink,
-          refusals: prefixEvidence.value,
-        })(run, projection.attempts))
+      if (resendMessage === undefined) {
+        if (
+          proveOriginalUnsent === undefined ||
+          !(yield* proveOriginalUnsent(run, projection.attempts))
+        )
+          return false;
+      } else if (
+        proveRecoveryUnsent === undefined ||
+        provider.appThreadId !== run.threadId ||
+        provider.providerInstanceId !== run.providerInstanceId ||
+        !(yield* proveRecoveryUnsent(run, projection.attempts, resendMessage))
       )
         return false;
       yield* restartAdmission.value.assertThreadOpen(projection.thread.id);
@@ -318,7 +341,10 @@ export const make = Effect.gen(function* () {
         ) === undefined
       );
     },
-    Effect.catchCause(() => Effect.succeed(false)),
+    Effect.catchCauseIf(
+      (cause) => !Cause.hasInterruptsOnly(cause),
+      () => Effect.succeed(false),
+    ),
   );
   type RecoverySession = ProjectionStore.ProjectionRuntimeRecoveryState["providerSessions"][number];
   /** Shared sessions stop on their first recovered thread; later threads still decide wakes from pre-recovery liveness. */
@@ -463,21 +489,16 @@ export const make = Effect.gen(function* () {
           cancelledBackgroundNativeIds.add(item.nativeItemRef.nativeId);
         }
       };
-      const unstartedRuns = yield* Effect.filter(
-        runs.filter(
-          (run) =>
-            run.status === "starting" &&
-            neverStarted(run) &&
-            !projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId) &&
-            !projection.runtimeRequests.some(
-              (request) =>
-                request.status === "pending" &&
-                projection.nodes.some(
-                  (node) => node.id === request.nodeId && node.runId === run.id,
-                ),
-            ),
-        ),
-        (run) => certifiedUnsent(projection, run),
+      const unstartedRuns = runs.filter(
+        (run) =>
+          run.status === "starting" &&
+          neverStarted(run) &&
+          !projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId) &&
+          !projection.runtimeRequests.some(
+            (request) =>
+              request.status === "pending" &&
+              projection.nodes.some((node) => node.id === request.nodeId && node.runId === run.id),
+          ),
       );
       const queuedRuns = projection.runs.filter((run) => run.status === "queued");
       const pendingRuns = [...unstartedRuns, ...queuedRuns];
@@ -516,27 +537,22 @@ export const make = Effect.gen(function* () {
           .map((message) => message.id),
       );
       // Only an original durable no-effect certificate can keep input eligible for replay.
-      const retryableRuns = unstartedRuns.filter((run) =>
-        retryableMessageIds.has(run.userMessageId),
+      const retryableRuns = yield* Effect.filter(
+        unstartedRuns.filter((run) => retryableMessageIds.has(run.userMessageId)),
+        (run) => certifiedUnsent(projection, run),
       );
-      // Unattended work shares the same certified no-effect admission as user input.
-      const unattendedRuns = continueAfterRestart
-        ? unstartedRuns.filter((run) =>
-            queuedMessages.some(
-              (message) =>
-                message.id === run.userMessageId &&
-                !retryableMessageIds.has(message.id) &&
-                message.notification === undefined &&
-                message.delegatedCompletion === undefined &&
-                (message.scheduledTaskId !== undefined || message.creationSource === "mcp"),
-            ),
-          )
-        : [];
       const resentRuns: Array<OrchestrationV2ThreadProjection["runs"][number]> = [];
       const resends: Array<EffectOutbox.PendingOrchestrationEffectV2> = [];
-      for (const run of unattendedRuns) {
+      for (const run of continueAfterRestart ? unstartedRuns : []) {
+        const message = queuedMessages.find((candidate) => candidate.id === run.userMessageId);
         if (
+          message === undefined ||
+          retryableMessageIds.has(message.id) ||
+          message.notification !== undefined ||
+          message.delegatedCompletion !== undefined ||
+          (message.scheduledTaskId === undefined && message.creationSource !== "mcp") ||
           restartContinuationBlocked(projection, run, now, false) ||
+          !(yield* certifiedUnsent(projection, run, message)) ||
           (yield* restartStopRequested(projections.getThreadRecords, projection.thread, run).pipe(
             Effect.mapError(
               (cause) =>
@@ -549,34 +565,8 @@ export const make = Effect.gen(function* () {
           ))
         )
           continue;
-        const resendCommandId = CommandId.make(`command:restart-resend:${run.id}`);
-        const earlierResends = yield* outbox.listByCommandId(resendCommandId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProviderRuntimeRecoveryError({
-                operation: "reconcile",
-                threadId: projection.thread.id,
-                cause,
-              }),
-          ),
-        );
-        // A prompt whose start keeps crashing the server would otherwise be sent forever.
-        if (earlierResends.filter((effect) => effect.attemptCount > 0).length >= MAX_RESENDS) {
-          yield* Effect.logWarning("Not resending a prompt that restarts cut too many times", {
-            threadId: projection.thread.id,
-            runId: run.id,
-          });
-          continue;
-        }
         resentRuns.push(run);
-        resends.push({
-          id: `effect:restart-resend:${run.id}:${commandId}`,
-          commandId: resendCommandId,
-          threadId: projection.thread.id,
-          request: { type: "provider-turn.start", runId: run.id },
-        });
-      }
-      for (const run of resentRuns) {
+        resends.push(recoveryResendEffect(run, commandId));
         events.push({
           id: yield* allocateEventId(),
           type: "run.updated",
@@ -1139,29 +1129,32 @@ export const make = Effect.gen(function* () {
         cancelledEffectIds = retiredEffectIds;
         retiredEffects = retiredEffectIds.length;
       } else {
-        const result = yield* eventSink
-          .commitCommand({
-            commandId,
-            threadId: projection.thread.id,
-            commandType: "provider-runtime.reconcile",
-            acceptedAt: now,
-            events,
-            effects,
-            cancelUnsettledEffects: {
-              effectTypes: EffectOutbox.PROCESS_BOUND_EFFECT_TYPES,
-              reason: detail,
-            },
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProviderRuntimeRecoveryError({
-                  operation: "reconcile",
-                  threadId: projection.thread.id,
-                  cause,
-                }),
-            ),
-          );
+        const input = {
+          commandId,
+          threadId: projection.thread.id,
+          commandType: "provider-runtime.reconcile",
+          acceptedAt: now,
+          events,
+          effects,
+          cancelUnsettledEffects: {
+            effectTypes: EffectOutbox.PROCESS_BOUND_EFFECT_TYPES,
+            reason: detail,
+          },
+        };
+        const result = yield* (
+          resends.length === 0
+            ? eventSink.commitCommand(input)
+            : commitRecoveryResends(eventSink, outbox, input, resends)
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderRuntimeRecoveryError({
+                operation: "reconcile",
+                threadId: projection.thread.id,
+                cause,
+              }),
+          ),
+        );
         retiredEffects = result.cancelledEffectCount;
       }
       return {
@@ -1170,7 +1163,6 @@ export const make = Effect.gen(function* () {
         closedRequests: requests.length,
         retiredEffects,
         cancelledEffectIds,
-        resends,
       };
     },
   );
@@ -1186,9 +1178,7 @@ export const make = Effect.gen(function* () {
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
         ),
       );
-    // Close the original claim fence before inspecting no-effect custody. An
-    // outstanding row is not proof; only its cancelled, never-claimed original
-    // plus accepted birth receipt can survive as genuinely unsent input.
+    // Close claim fences before looking for retained proof that no worker took the start.
     const outboxReconciliation = yield* outbox.reconcileAfterProcessLoss.pipe(
       Effect.mapError(
         (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
@@ -1198,7 +1188,6 @@ export const make = Effect.gen(function* () {
     let stoppedSessions = 0;
     let closedRequests = 0;
     let retiredEffects = 0;
-    const resends: Array<EffectOutbox.PendingOrchestrationEffectV2> = [];
     const stoppedThisPass = new Map<string, RecoverySession>();
     const grouped = trigger === "shutdown" && threadIds.length > 1;
     const groupSize = grouped ? 32 : 1;
@@ -1207,7 +1196,7 @@ export const make = Effect.gen(function* () {
       // Read and decide on the writer so shared sessions see earlier updates in this group.
       const reconcileGroup = Effect.gen(function* () {
         for (const threadId of threadIds.slice(offset, offset + groupSize)) {
-          const projection = yield* projections.getRuntimeRecoveryProjection(threadId).pipe(
+          const readProjection = projections.getRuntimeRecoveryProjection(threadId).pipe(
             Effect.mapError(
               (cause) =>
                 new ProviderRuntimeRecoveryError({
@@ -1217,18 +1206,33 @@ export const make = Effect.gen(function* () {
                 }),
             ),
           );
+          let projection = yield* readProjection;
           const enabled =
             continueAfterRestart !== null &&
             resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
               .continueThreadsAfterServerUpdate;
-          const result = yield* reconcileProjection(projection, trigger, enabled, stoppedThisPass);
+          const reconcileCurrent = () =>
+            reconcileProjection(projection, trigger, enabled, stoppedThisPass);
+          const needsProofSnapshot =
+            !grouped &&
+            enabled &&
+            proveRecoveryUnsent !== undefined &&
+            projection.runs.some((run) => run.status === "starting" && neverStarted(run));
+          // Read retained evidence and publish its replacement on the same SQL snapshot.
+          const result = yield* needsProofSnapshot
+            ? eventSink.withProviderBatch(
+                Effect.gen(function* () {
+                  projection = yield* readProjection;
+                  return yield* reconcileCurrent();
+                }),
+              )
+            : reconcileCurrent();
           for (const session of projection.providerSessions) {
             if (session.status !== "stopped" && session.status !== "error") {
               stoppedThisPass.set(session.id, session);
             }
           }
           cancelledEffectIds.push(...result.cancelledEffectIds);
-          resends.push(...result.resends);
           terminalizedRuns += result.terminalizedRuns;
           stoppedSessions += result.stoppedSessions;
           closedRequests += result.closedRequests;
@@ -1254,17 +1258,6 @@ export const make = Effect.gen(function* () {
             : Effect.logWarning("Failed to close orphaned run records", { cause }),
         ),
       );
-    }
-    // The original rows were fenced before recovery decisions. Recorded resend
-    // effects still pass their own captured start admission before native work.
-    if (resends.length > 0) {
-      yield* eventSink
-        .writeWithEffects({ events: [], effects: resends })
-        .pipe(
-          Effect.mapError(
-            (cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", cause }),
-          ),
-        );
     }
     return {
       terminalizedRuns,
