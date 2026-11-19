@@ -296,12 +296,11 @@ describe("personal thread pointer placement", () => {
                   after,
                   state,
                   activeThreads: active,
-                  activeKeys: active.map(shellKey),
+                  orderRoster: rows,
                   activeKeysById: new Map(
                     rows.map((entry) => [shellKey(entry), entry.activeOrderKey]),
                   ),
                   reorderableKeys: new Set(active.map(shellKey)),
-                  threadByKey: new Map(rows.map((entry) => [shellKey(entry), entry])),
                   allowReorder: true,
                   controller,
                   canOperate: () => true,

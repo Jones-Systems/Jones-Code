@@ -2366,10 +2366,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         after,
         state: workstreamController.state,
         activeThreads,
-        activeKeys,
+        orderRoster: workstreamSummaryThreads,
         activeKeysById,
-        reorderableKeys: activeReorderableThreadKeys,
-        threadByKey,
+        reorderableKeys:
+          neighbor === null || workingShelfEnabled
+            ? activeReorderableThreadKeys
+            : resolveSidebarReorderableThreadKeys({
+                threads: workstreamSummaryThreads,
+                serverConfigs,
+                connectedEnvironmentIds,
+              }).activeReorderableThreadKeys,
         allowReorder: !workingShelfEnabled,
         controller: workstreamController.controller,
         canOperate: canOperateThreads,

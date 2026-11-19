@@ -111,10 +111,9 @@ function fixture(
     after,
     state,
     activeThreads: activeRows(),
-    activeKeys: activeRows().map(shellKey),
+    orderRoster: rows,
     activeKeysById: new Map(rows.map((thread) => [shellKey(thread), thread.activeOrderKey])),
     reorderableKeys: new Set(activeRows().map(shellKey)),
-    threadByKey: new Map(rows.map((thread) => [shellKey(thread), thread])),
     allowReorder: true,
     controller,
     canOperate,
@@ -213,7 +212,6 @@ describe("placePersonalThread", () => {
       await placePersonalThread({
         ...input,
         activeThreads: members,
-        activeKeys: members.map(shellKey),
         reorderableKeys: new Set(members.map(shellKey)),
       }),
     ).toBe(true);
