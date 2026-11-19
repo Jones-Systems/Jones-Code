@@ -305,10 +305,10 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
           return;
         return { receipt, events, firstSequence: first.sequence };
       });
-      const sameRun = (event: OrchestrationV2DomainEvent) =>
+      const sameRun = (event: OrchestrationV2DomainEvent, expected = run) =>
         event.runId === run.id &&
         event.providerInstanceId === run.providerInstanceId &&
-        sameOperationRequest(event.payload, run);
+        sameOperationRequest(event.payload, expected);
 
       const accepted = yield* readRetainedAcceptance(original.commandId);
       if (accepted === undefined) return false;
@@ -329,6 +329,22 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
       )
         return false;
       const { receipt } = accepted;
+      const prepared = receipt.commandType === "prepared-run.release";
+      const scopeEvent = prepared ? accepted.events[0]?.event : undefined;
+      const scopeId =
+        scopeEvent?.type === "checkpoint-scope.created" ? scopeEvent.payload.id : null;
+      const preparedActivity = sql`
+        json_extract(metadata_json, '$.runId') = ${run.id}
+        OR json_extract(metadata_json, '$.nodeId') = ${run.rootNodeId}
+        OR json_extract(payload_json, '$.runId') = ${run.id}
+        OR json_extract(payload_json, '$.targetRunId') = ${run.id}
+        OR json_extract(payload_json, '$.runAttemptId') = ${attempt.id}
+        OR json_extract(payload_json, '$.messageId') = ${message.id}
+        OR json_extract(payload_json, '$.id') IN
+          (${run.id}, ${attempt.id}, ${run.rootNodeId}, ${message.id}, ${run.providerThreadId})
+        OR json_extract(payload_json, '$.nodeId') = ${run.rootNodeId}
+        OR json_extract(payload_json, '$.scopeId') = ${scopeId}
+      `;
       if (receipt.commandType === "queue.start") {
         const inputs = accepted.events.flatMap(({ event }) =>
           event.type === "turn-item.updated" &&
@@ -360,21 +376,49 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
         )
           return false;
       } else {
-        const births = accepted.events.filter(
+        const birth = prepared
+          ? yield* Effect.gen(function* () {
+              const candidates = yield* sql<{ readonly command_id: string | null }>`
+                SELECT command_id FROM orchestration_events
+                WHERE application_event_version = 2 AND aggregate_kind = 'thread'
+                  AND stream_id = ${run.threadId} AND event_type = 'run.created'
+                  AND json_extract(payload_json, '$.id') = ${run.id}
+                  AND sequence < ${accepted.firstSequence}
+                LIMIT 2
+              `;
+              const id = candidates[0]?.command_id;
+              if (candidates.length === 1 && id != null)
+                return yield* readRetainedAcceptance(CommandId.make(id));
+            })
+          : accepted;
+        if (
+          birth === undefined ||
+          (birth.receipt.commandType !== "message.dispatch" &&
+            birth.receipt.commandType !== "thread.create") ||
+          (prepared && birth.receipt.resultSequence >= accepted.firstSequence)
+        )
+          return false;
+        const [born, anotherBirth] = birth.events.filter(
+          ({ event }) =>
+            (event.type === "run.created" || event.type === "run.updated") &&
+            (event.runId === run.id || event.payload.id === run.id),
+        );
+        const births = birth.events.filter(
           ({ event }) =>
             (event.type === "run-attempt.created" || event.type === "run-attempt.updated") &&
             (event.runId === run.id ||
               event.payload.runId === run.id ||
               event.payload.id === attempt.id),
         );
-        const messages = accepted.events.flatMap(({ event }) =>
+        const messages = birth.events.flatMap(({ event }) =>
           event.type === "message.updated" && event.payload.id === message.id
             ? [event.payload]
             : [],
         );
         if (
-          (receipt.commandType !== "message.dispatch" && receipt.commandType !== "thread.create") ||
-          witness.event.type !== "run.created" ||
+          anotherBirth !== undefined ||
+          born?.event.type !== "run.created" ||
+          !sameRun(born.event, prepared ? { ...run, status: "preparing" } : run) ||
           births.length !== 1 ||
           births[0]?.event.type !== "run-attempt.created" ||
           births[0].event.runId !== run.id ||
@@ -383,6 +427,205 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
           !sameOperationRequest(messages[0], message)
         )
           return false;
+
+        if (prepared) {
+          // The release resolves workspace preparation. It does not accept new
+          // input and must never act as a later birth for a parent Stop fence.
+          const strategy = run.workspacePreparation;
+          const [, root, ready, start] = accepted.events.map(({ event }) => event);
+          if (
+            // An auto conversation can resolve its cwd outside the thread's checkout binding.
+            strategy === undefined ||
+            strategy.type === "auto" ||
+            run.checkpointId !== null ||
+            message.nodeId !== run.rootNodeId ||
+            scopeEvent?.type !== "checkpoint-scope.created" ||
+            accepted.events.length !== 4 ||
+            start?.type !== "run.updated" ||
+            root?.type !== "node.updated" ||
+            ready?.type !== "turn-item.updated" ||
+            ready.payload.type !== "command_execution" ||
+            !accepted.events.every(
+              ({ event }) =>
+                event.runId === run.id &&
+                event.nodeId === run.rootNodeId &&
+                event.providerInstanceId === run.providerInstanceId,
+            )
+          )
+            return false;
+          const scope = scopeEvent.payload;
+          const [preparation, anotherPreparation] = birth.events.flatMap(({ event }) =>
+            event.type === "turn-item.updated" &&
+            event.payload.type === "command_execution" &&
+            event.payload.input === "Preparing workspace"
+              ? [event.payload]
+              : [],
+          );
+          const [rootBirth, anotherRoot] = birth.events.flatMap(({ event }) =>
+            event.type === "node.updated" && event.payload.runId === run.id ? [event.payload] : [],
+          );
+          const [provider, anotherProvider] = birth.events.flatMap(({ event }) =>
+            event.type === "provider-thread.updated" && event.payload.id === run.providerThreadId
+              ? [event.payload]
+              : [],
+          );
+          const [input, anotherInput] = birth.events.flatMap(({ event }) =>
+            event.type === "turn-item.updated" &&
+            event.payload.type === "user_message" &&
+            event.payload.messageId === message.id
+              ? [event.payload]
+              : [],
+          );
+          if (
+            provider === undefined ||
+            anotherProvider !== undefined ||
+            provider.appThreadId !== run.threadId ||
+            provider.providerInstanceId !== run.providerInstanceId ||
+            provider.nativeThreadRef !== null ||
+            provider.nativeConversationHeadRef !== null ||
+            provider.runtimeIdentity != null ||
+            provider.status !== "not_loaded" ||
+            birth.events.some(
+              ({ event }) =>
+                event.type === "provider-turn.updated" ||
+                event.type === "checkpoint-scope.created" ||
+                event.type === "checkpoint.captured",
+            ) ||
+            rootBirth?.id !== run.rootNodeId ||
+            anotherRoot !== undefined ||
+            rootBirth?.status !== "pending" ||
+            rootBirth.kind !== "root_turn" ||
+            rootBirth.providerThreadId !== run.providerThreadId ||
+            rootBirth.checkpointScopeId !== null ||
+            rootBirth.providerTurnId !== null ||
+            rootBirth.nativeItemRef !== null ||
+            rootBirth.runtimeRequestId !== null ||
+            rootBirth.startedAt !== null ||
+            rootBirth.completedAt !== null ||
+            !sameOperationRequest(root.payload, { ...rootBirth, checkpointScopeId: scope.id }) ||
+            scope.threadId !== run.threadId ||
+            scope.runId !== run.id ||
+            scope.nodeId !== run.rootNodeId ||
+            scope.providerThreadId !== run.providerThreadId ||
+            scope.kind !== "root_run" ||
+            scope.parentScopeId !== null ||
+            scope.ordinalWithinParent !== 0 ||
+            !scope.advancesAppRunCount ||
+            input === undefined ||
+            anotherInput !== undefined ||
+            input.threadId !== run.threadId ||
+            input.runId !== run.id ||
+            input.nodeId !== run.rootNodeId ||
+            input.providerThreadId !== run.providerThreadId ||
+            input.providerTurnId !== null ||
+            input.nativeItemRef !== null ||
+            input.inputIntent !== "turn_start" ||
+            input.createdBy !== message.createdBy ||
+            input.creationSource !== message.creationSource ||
+            input.scheduledTaskId !== message.scheduledTaskId ||
+            input.text !== message.text ||
+            !sameOperationRequest(input.attachments, message.attachments) ||
+            !sameOperationRequest(input.context, message.context) ||
+            preparation === undefined ||
+            anotherPreparation !== undefined ||
+            preparation.threadId !== run.threadId ||
+            preparation.runId !== run.id ||
+            preparation.nodeId !== run.rootNodeId ||
+            preparation.providerThreadId !== run.providerThreadId ||
+            preparation.providerTurnId !== null ||
+            preparation.nativeItemRef !== null ||
+            preparation.status !== "running" ||
+            preparation.completedAt !== null ||
+            !sameOperationRequest(ready.payload, {
+              ...preparation,
+              status: "completed",
+              title: "Workspace ready",
+              output: "Workspace preparation completed.",
+              exitCode: 0,
+              completedAt: ready.occurredAt,
+              updatedAt: ready.occurredAt,
+            }) ||
+            threadRows.some(
+              ({ request }) =>
+                request.type !== "provider-turn.start" &&
+                "runId" in request &&
+                request.runId === run.id,
+            )
+          )
+            return false;
+
+          // The launch can bind/rename the checkout on the thread while the run
+          // remains preparing. Match the scope to that resolved binding and
+          // the current checkout. The run's captured selection must match birth.
+          const workspace = yield* sql`
+            WITH released_thread AS (
+              SELECT payload_json FROM orchestration_events
+              WHERE application_event_version = 2 AND aggregate_kind = 'thread'
+                AND stream_id = ${run.threadId}
+                AND sequence > ${prunedThrough} AND sequence < ${accepted.firstSequence}
+                AND event_type IN ('thread.created', 'thread.metadata-updated', 'thread.provider-switched',
+                  'thread.model-selection-updated', 'thread.runtime-mode-updated', 'thread.interaction-mode-updated')
+              ORDER BY sequence DESC LIMIT 1
+            )
+            SELECT 1 FROM released_thread AS released
+            JOIN orchestration_v2_projection_threads AS current ON current.thread_id = ${run.threadId}
+            JOIN projection_projects AS project ON project.project_id = current.project_id
+            WHERE json_extract(released.payload_json, '$.projectId') = current.project_id
+              AND json_extract(released.payload_json, '$.worktreePath')
+                IS json_extract(current.payload_json, '$.worktreePath')
+              AND json_extract(released.payload_json, '$.branch') IS json_extract(current.payload_json, '$.branch')
+              AND json_extract(released.payload_json, '$.runtimeMode') = current.runtime_mode
+              AND json_extract(released.payload_json, '$.interactionMode') = current.interaction_mode
+              AND COALESCE(json_extract(current.payload_json, '$.worktreePath'), project.workspace_root) = ${scope.cwd}
+              AND ${
+                strategy.type === "root"
+                  ? sql`json_type(current.payload_json, '$.worktreePath') = 'null'`
+                  : strategy.type === "existing_worktree"
+                    ? sql`json_extract(current.payload_json, '$.worktreePath') = ${strategy.worktreePath}`
+                    : sql`json_type(current.payload_json, '$.worktreePath') = 'text'`
+              }
+          `;
+          if (workspace.length !== 1) return false;
+
+          // The ordinary launch may record worktree and setup progress, both
+          // updates to the same local preparation item. Any other run activity
+          // (including a retry of a failed preparation) breaks the proof.
+          const progress = yield* sql<{
+            readonly sequence: number;
+            readonly command_id: string | null;
+          }>`
+            SELECT sequence, command_id FROM orchestration_events
+            WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${run.threadId}
+              AND sequence > ${birth.receipt.resultSequence} AND sequence < ${accepted.firstSequence}
+              AND (${preparedActivity})
+            ORDER BY sequence ASC LIMIT 3
+          `;
+          if (progress.length > 2) return false;
+          const phases = new Set(["Preparing worktree", "Starting setup script"]);
+          for (const { command_id, sequence } of progress) {
+            if (command_id === null) return false;
+            const recorded = yield* readRetainedAcceptance(CommandId.make(command_id));
+            const update = recorded?.events[0]?.event;
+            if (
+              recorded?.receipt.commandType !== "prepared-run.progress" ||
+              recorded.events.length !== 1 ||
+              recorded.firstSequence !== sequence ||
+              update?.type !== "turn-item.updated" ||
+              update.runId !== run.id ||
+              update.nodeId !== run.rootNodeId ||
+              update.providerInstanceId !== run.providerInstanceId ||
+              update.payload.type !== "command_execution" ||
+              update.payload.title === null ||
+              !phases.delete(update.payload.title) ||
+              !sameOperationRequest(update.payload, {
+                ...preparation,
+                title: update.payload.title,
+                updatedAt: update.occurredAt,
+              })
+            )
+              return false;
+          }
+        }
       }
 
       const history = yield* sql<{
@@ -393,14 +636,18 @@ export function makeRecoveryUnsentStartProof(sql: SqlClient.SqlClient, ports: Un
         SELECT sequence, command_id, event_type FROM orchestration_events
         WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${run.threadId}
           AND sequence > ${receipt.resultSequence}
-          AND (
+          AND (${
+            prepared
+              ? preparedActivity
+              : sql`
             (event_type IN ('run.created', 'run.updated', 'run-attempt.created', 'run-attempt.updated', 'provider-turn.updated')
               AND (json_extract(metadata_json, '$.runId') = ${run.id}
                 OR json_extract(payload_json, '$.runId') = ${run.id}
                 OR json_extract(payload_json, '$.id') IN (${run.id}, ${attempt.id})
                 OR json_extract(payload_json, '$.runAttemptId') = ${attempt.id}))
             OR (event_type = 'message.updated' AND json_extract(payload_json, '$.id') = ${message.id})
-          )
+          `
+          })
         ORDER BY sequence ASC LIMIT ${rows.length}
       `;
       if (history.length !== rows.length - 1) return false;
