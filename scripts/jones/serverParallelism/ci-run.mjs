@@ -336,25 +336,47 @@ try {
   if (writerTiming) {
     const profile = "vps";
     const baseline = await runBaseline(profile);
-    const name = `native-source-${profile}`;
-    const native = NodePath.join(output, `${name}.json`);
-    await node(
-      name,
-      [
-        "--import",
-        "./scripts/jones/serverParallelism/writer-timing-preload.mjs",
-        "scripts/jones/serverParallelism/qualify.mjs",
-        sourceManifest,
-        native,
-        profile,
-        baseline,
-      ],
-      { JONES_SP_WRITER_TRACE: NodePath.join(output, "writer-native.json") },
+    const command = JSON.parse(await NodeFSP.readFile(sourceManifest, "utf8"));
+    diagnosticComplete = await writerTraceVerified(
+      "writer-baseline.json",
+      "baseline.mjs",
+      "baseline",
     );
-    await report(name, native);
-    diagnosticComplete =
-      (await writerTraceVerified("writer-baseline.json", "baseline.mjs", "baseline")) &&
-      (await writerTraceVerified("writer-native.json", "qualify.mjs", "combined"));
+    for (const policy of ["current", "batch", "idle"]) {
+      const manifest =
+        policy === "current"
+          ? sourceManifest
+          : NodePath.join(output, `source-command-${policy}.json`);
+      if (policy !== "current")
+        await NodeFSP.writeFile(
+          manifest,
+          JSON.stringify({
+            ...command,
+            file: "/usr/bin/chrt",
+            args: [`--${policy}`, "0", command.file, ...command.args],
+          }) + "\n",
+          { flag: "wx", mode: 0o600 },
+        );
+      const name = `native-source-${profile}-${policy}`;
+      const native = NodePath.join(output, `${name}.json`);
+      const trace = `writer-native-${policy}.json`;
+      await node(
+        name,
+        [
+          "--import",
+          "./scripts/jones/serverParallelism/writer-timing-preload.mjs",
+          "scripts/jones/serverParallelism/qualify.mjs",
+          manifest,
+          native,
+          profile,
+          baseline,
+        ],
+        { JONES_SP_WRITER_TRACE: NodePath.join(output, trace) },
+      );
+      await report(name, native);
+      const traceComplete = await writerTraceVerified(trace, "qualify.mjs", "combined");
+      diagnosticComplete = diagnosticComplete && traceComplete;
+    }
   } else if (diagnosticScope) {
     const { verifyDiagnosticArtifacts } = await import("./observer-diagnostic.mjs");
     let baseline;

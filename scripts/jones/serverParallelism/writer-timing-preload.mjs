@@ -9,6 +9,18 @@ const fileKind = /^(baseline|combined)-[0-2]\.sqlite$/;
 const maximumTransactions = 1500;
 const maximumCalls = 64;
 
+function readRunQueueWait() {
+  try {
+    const fields = NodeFS.readFileSync("/proc/thread-self/schedstat", "utf8").trim().split(/\s+/);
+    if (fields.length !== 3 || !fields.every((field) => /^\d+$/.test(field))) return null;
+    const [runtime, delay, slices] = fields.map(Number);
+    // Disabled schedstat accounting exports three zeroes.
+    return runtime > 0 && slices > 0 && Number.isSafeInteger(delay) ? delay : null;
+  } catch {
+    return null;
+  }
+}
+
 function statementKind(sql) {
   const operation = sql.trim();
   if (/^BEGIN IMMEDIATE$/i.test(operation)) return "begin";
@@ -45,11 +57,27 @@ if (NodeWorkerThreads.isMainThread) {
       }
       if (start !== undefined) {
         if (current !== undefined) incomplete = true;
-        current = { databaseName, index, start, cpu: process.threadCpuUsage(), calls: [] };
+        current = {
+          databaseName,
+          index,
+          start,
+          cpu: process.threadCpuUsage(),
+          runQueueStartNs: readRunQueueWait(),
+          calls: [],
+        };
       } else if (current?.databaseName === databaseName && current.index === index) {
-        const { cpu, ...timing } = current;
+        const { cpu, runQueueStartNs, ...timing } = current;
         const { user, system } = process.threadCpuUsage(cpu);
-        transactions.push({ ...timing, end, cpuMs: (user + system) / 1000 });
+        const runQueueEndNs = readRunQueueWait();
+        transactions.push({
+          ...timing,
+          end,
+          cpuMs: (user + system) / 1000,
+          writerRunQueueWaitMs:
+            runQueueStartNs !== null && runQueueEndNs !== null && runQueueEndNs >= runQueueStartNs
+              ? (runQueueEndNs - runQueueStartNs) / 1_000_000
+              : null,
+        });
         current = undefined;
       } else incomplete = true;
     },
