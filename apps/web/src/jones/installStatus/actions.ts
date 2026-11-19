@@ -20,7 +20,15 @@ import { claimantId, routeLaptopDownload, routeLaptopInstall } from "./entrypoin
 import { installPlanServices, requestInstallPlan } from "./services";
 import type { InstallStatusDevice } from "./panelUi";
 
-export type PanelAction = "download" | "install" | "stop" | "remove" | "end" | "check";
+export type PanelAction =
+  | "download"
+  | "install"
+  | "stop"
+  | "remove"
+  | "end"
+  | "check"
+  | "abandon-stage"
+  | "check-build";
 function executorHostFor(environmentId: EnvironmentId): JonesExecutorHost {
   const binding = installPlanServices();
   if (binding === undefined) throw new Error("Install status is not connected.");
@@ -376,7 +384,33 @@ export async function performPanelAction(
             observation: { state, freshness: "fresh", heardAt: services.now() },
           });
       }
-      if (message !== undefined) store.update({ error: message });
+      const currentDevice = store
+        .get()
+        .devices.find((item) => item.environmentId === environmentId);
+      const latestState = store.get().native;
+      const latestPlan = latestState?.current ?? latestState?.last;
+      const latestOperation = latestPlan?.devices
+        .find((item) => item.environmentId === environmentId)
+        ?.operations.find(operationOutstanding);
+      store.update({
+        error:
+          message ??
+          (currentDevice?.observation.freshness !== "fresh"
+            ? `Could not refresh ${observed.label}. Check its connection and try again.`
+            : latestOperation === undefined
+              ? `Refreshed ${observed.label}.`
+              : `Checked ${observed.label}. Its update outcome is still pending.`),
+      });
+    } else if (environmentId === "laptop") {
+      const current = read.state.current ?? read.state.last;
+      const held = current?.laptop.operations.some(
+        (operation) => operation.result?.status === "held",
+      );
+      store.update({
+        error: held
+          ? "Checked Laptop. Its update outcome is still unconfirmed."
+          : "Refreshed Laptop.",
+      });
     }
     return;
   }
@@ -389,6 +423,25 @@ export async function performPanelAction(
     }
     if (action === "install") {
       await routeLaptopInstall(services.bridge, desktop);
+      return;
+    }
+    if (action === "check-build" && services.bridge.checkForUpdate !== undefined) {
+      const checked = await services.bridge.checkForUpdate();
+      store.update({ desktop: checked.state });
+      return;
+    }
+    if (action === "abandon-stage" && plan !== null) {
+      if (
+        !(await services.confirm(
+          "Abandon the Laptop's staged update? The downloaded selection will be discarded.",
+        ))
+      )
+        return;
+      const result = await requestInstallPlan(
+        { type: "laptop", planId: plan.planId, action: "abandon-stage" },
+        binding,
+      );
+      if (result.refused !== undefined) throw new Error(result.refused.message);
       return;
     }
     if (action === "stop" && plan !== null) {
@@ -423,6 +476,8 @@ export async function performPanelAction(
       );
     return;
   }
+  if (action === "abandon-stage" || action === "check-build")
+    throw new Error("This action is only available on Laptop.");
   const observed = await services.observe(environmentId);
   if (
     !observed.canOperate ||

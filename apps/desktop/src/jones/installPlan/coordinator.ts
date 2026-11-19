@@ -207,6 +207,7 @@ export function createInstallPlanCoordinator(options: {
     | "retiredLaptopInstall"
     | "download"
     | "stopDownload"
+    | "discard"
     | "install"
     | "isStaged"
     | "stagedBuild"
@@ -470,6 +471,7 @@ export function createInstallPlanCoordinator(options: {
     operationId: string,
     result: NonNullable<JonesInstallPlanLaptopOperation["result"]>,
     worker?: JonesInstallPlanLaptopOperation["worker"],
+    createdStagedHandle?: string,
   ) => {
     await nativeChange((plan) => {
       if (plan.planId !== planId) return plan;
@@ -484,6 +486,7 @@ export function createInstallPlanCoordinator(options: {
               : {
                   ...operation,
                   ...(worker === undefined ? {} : { worker }),
+                  ...(createdStagedHandle === undefined ? {} : { createdStagedHandle }),
                   result,
                 },
           ),
@@ -494,15 +497,43 @@ export function createInstallPlanCoordinator(options: {
   type LaptopEffect = {
     planId: string;
     operationId: string;
-    action: "download" | "stop" | "install";
+    action: "download" | "stop" | "install" | "abandon-stage";
     target: JonesInstallPlan["target"];
     review?: JonesInstallPlanReview;
     of?: string;
     artifactId?: number;
+    stagedHandle?: string;
+  };
+  const recordStageAbandonment = async (effect: LaptopEffect, retired: boolean) => {
+    await nativeChange((plan) => {
+      const stage = plan.laptop.stageAbandonment;
+      if (plan.planId !== effect.planId || stage?.operationId !== effect.operationId) return plan;
+      return {
+        ...plan,
+        revision: plan.revision + 1,
+        laptop: {
+          ...plan.laptop,
+          stageAbandonment: { ...stage, status: retired ? "retired" : "unconfirmed" },
+          operations: retired
+            ? plan.laptop.operations.map((operation) =>
+                operation.operationId === stage.operationId
+                  ? {
+                      ...operation,
+                      result: { status: "stopped", at: now(), code: "stage-retired" },
+                    }
+                  : operation,
+              )
+            : plan.laptop.operations,
+        },
+      };
+    });
   };
   const runLaptop = async (effect: LaptopEffect) => {
     try {
-      if (effect.action === "download") {
+      if (effect.action === "abandon-stage") {
+        const result = await options.track(() => options.controller.discard(effect.stagedHandle!));
+        await recordStageAbandonment(effect, result.completed);
+      } else if (effect.action === "download") {
         const result = await options.track(() =>
           options.controller.download(
             { artifactId: effect.artifactId!, sourceSha: effect.target.sourceSha },
@@ -526,6 +557,7 @@ export function createInstallPlanCoordinator(options: {
             ...(result.held ? { code: result.heldCode ?? "exit-unproved" } : {}),
           },
           result.held,
+          result.createdStagedHandle,
         );
       } else if (effect.action === "stop") {
         const result = await options.controller.stopDownload({
@@ -598,6 +630,10 @@ export function createInstallPlanCoordinator(options: {
         });
       }
     } catch {
+      if (effect.action === "abandon-stage") {
+        await recordStageAbandonment(effect, false).catch(() => undefined);
+        return;
+      }
       // A lost native handoff is not proof of a refused effect.
       await finishLaptop(effect.planId, effect.operationId, {
         status: "held",
@@ -806,7 +842,12 @@ export function createInstallPlanCoordinator(options: {
           const current = plan!;
           if (current.laptop.operations.length >= MAX_OPERATIONS)
             return refuse("bounds", "The Laptop operation history is full.");
-          if (action !== "stop" && pendingLaptop())
+          if (
+            action !== "stop" &&
+            (pendingLaptop() ||
+              (current.laptop.stageAbandonment !== undefined &&
+                current.laptop.stageAbandonment.status !== "retired"))
+          )
             return refuse("outstanding-operation", "Laptop work still requires settlement.");
           const native = options.controller.state.jones;
           let of: string | undefined;
@@ -1157,6 +1198,51 @@ export function createInstallPlanCoordinator(options: {
                 );
               }
             }
+          } else if (req.action === "abandon-stage") {
+            const download = plan.laptop.operations.findLast((op) => op.step === "download");
+            const handle = download?.createdStagedHandle;
+            if (
+              active.size > 0 ||
+              pendingLaptop() ||
+              plan.laptop.gate !== undefined ||
+              evidence.activationBlocked ||
+              evidence.environmentId !== plan.laptop.environmentId ||
+              options.controller.busy !== null ||
+              download?.result?.status !== "completed" ||
+              handle === undefined ||
+              handle !== options.controller.stagedBuild?.handle
+            )
+              refuse(
+                "invalid-evidence",
+                "Only the current Laptop stage created by this plan can be discarded.",
+              );
+            else {
+              const operationId = download.operationId;
+              save({
+                ...plan,
+                revision: plan.revision + 1,
+                laptop: {
+                  ...plan.laptop,
+                  stageAbandonment: { operationId, handle, status: "pending" },
+                },
+              });
+              dispositions = {
+                ...dispositions,
+                targets: dispositions.targets.map((target) =>
+                  target.targetSource === plan!.target.sourceSha &&
+                  target.targetTree === plan!.target.sourceTree
+                    ? { ...target, laptopStopped: true }
+                    : target,
+                ),
+              };
+              effect = {
+                planId: plan.planId,
+                operationId,
+                action: "abandon-stage",
+                target: plan.target,
+                stagedHandle: handle,
+              };
+            }
           } else await recordLaptop(req.action, req.review);
         } else if (req.type === "close-after-manual-install") {
           const review = manualCloseReview(plan, evidence);
@@ -1214,17 +1300,15 @@ export function createInstallPlanCoordinator(options: {
           else if (
             active.size > 0 ||
             options.controller.busy !== null ||
-            plan.devices.some(
-              (device) =>
-                device.abandoning === true ||
-                device.operations.some((operation) => {
-                  // An expired setup may still apply a manual-review directive. Archiving
-                  // the plan prevents subsequent downloads and installs.
-                  const expiredSetup =
-                    operation.step === "directive" &&
-                    Date.parse(operation.lease.leaseUntil) <= options.now();
-                  return outstanding(operation) && !awaitingCleanup(operation) && !expiredSetup;
-                }),
+            plan.devices.some((device) =>
+              device.operations.some((operation) => {
+                // An expired setup may still apply a manual-review directive. Archiving
+                // the plan prevents subsequent downloads and installs.
+                const expiredSetup =
+                  operation.step === "directive" &&
+                  Date.parse(operation.lease.leaseUntil) <= options.now();
+                return outstanding(operation) && !awaitingCleanup(operation) && !expiredSetup;
+              }),
             )
           )
             refuse(
@@ -1271,7 +1355,10 @@ export function createInstallPlanCoordinator(options: {
             refuse("not-selectable", "This device is not selected.");
           else if (req.type === "abandon-device") {
             const download = operations.findLast(
-              (operation) => operation.step === "download",
+              (operation) =>
+                operation.step === "download" &&
+                operation.receipt?.phase === "completed" &&
+                operation.receipt.stageRetiredAt === undefined,
             )?.receipt;
             const directive = operations.findLast(
               (operation) => operation.directive?.kind === "applied",
@@ -1291,7 +1378,12 @@ export function createInstallPlanCoordinator(options: {
                 "Settle the device's work before abandoning. An installed build requires a separate update.",
               );
             else if (req.phase === "begin") {
-              if (!device.abandoning)
+              if (download !== undefined && download.staged?.createdByOperation !== true)
+                refuse(
+                  "invalid-evidence",
+                  "This plan cannot prove ownership of the staged selection.",
+                );
+              else if (!device.abandoning)
                 save({
                   ...plan,
                   revision: plan.revision + 1,

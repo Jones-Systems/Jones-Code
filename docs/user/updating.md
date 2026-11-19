@@ -23,10 +23,10 @@ review and confirmation. A machine that cannot participate shows the reason.
 Enrolled hosts receive this plan's build only through plan selection; enrollment
 alone does not include them.
 
-Use **Remove from queue** before a machine starts. This removes planned work;
-it does not uninstall anything or roll back a completed update. Started work
-cannot be removed through Edit. **Stop update** on a staged host ends its plan
-work without installing the downloaded build.
+Use **Edit** to change your selection. You can leave Edit with **Cancel** or
+open a device to see its recovery actions. A device with work in progress or
+a staged build needs attention before you remove it. **Stop update** ends plan
+work on a staged device and keeps the downloaded build.
 
 On Laptop, **Stop download** is available only during transfer. Once checking
 has entered mount or copy work, or installation has begun, it cannot be stopped
@@ -36,6 +36,17 @@ install. If the Laptop install outcome is unconfirmed, open Laptop and choose
 **Check update outcome**. This checks for native proof from the running build.
 If the selected build is verified, the plan can continue on the other devices.
 Use the same check after manually installing the plan's selected build.
+**Refresh now** reads the device's running build. A device can satisfy the plan
+when it runs that exact build and any earlier update attempt has settled.
+
+After a confirmed refusal or rollback, retry from the device details. Review
+the staged build again before retrying an installation. Use **Abandon update**
+to discard a staged selection created by this plan and restore the previous
+follower setup when the host can verify both. This removes the device from the
+queue and keeps its history. You can select it again for a fresh attempt.
+On Laptop, **Abandon staged update** releases the plan's staged app before
+installation. These actions preserve installed builds and user data. If a
+device still has active work, use its Stop or Check action first.
 
 To end the rollout, choose **Cancel update plan** in **All** or **Laptop** and
 confirm. This closes the queue and keeps the attempt in **Last update**.

@@ -9,6 +9,7 @@ import {
   Clock3Icon,
   LaptopIcon,
   TriangleAlertIcon,
+  XIcon,
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Checkbox } from "../../components/ui/checkbox";
@@ -231,7 +232,7 @@ export function InstallStatusPanel({
       }}
     >
       <header
-        className="grid min-h-9 shrink-0 grid-cols-[auto_minmax(0,1fr)_2.5rem_1.5rem] items-center gap-1 px-2"
+        className="grid min-h-9 shrink-0 grid-cols-[auto_minmax(0,1fr)_2.5rem_3rem] items-center gap-1 px-2"
         data-install-header
       >
         <h2 className="whitespace-nowrap text-xs font-medium" data-install-title>
@@ -262,7 +263,7 @@ export function InstallStatusPanel({
             Done
           </Button>
         </span>
-        <span className="flex size-6 items-center justify-center">
+        <span className="flex w-12 items-center justify-end">
           <Button
             variant="ghost-muted"
             size="icon-micro"
@@ -272,6 +273,18 @@ export function InstallStatusPanel({
             onClick={collapse}
           >
             <ChevronDownIcon className={cn("size-3.5", snapshot.collapsed && "-rotate-90")} />
+          </Button>
+          <Button
+            variant="ghost-muted"
+            size="icon-micro"
+            aria-label="Hide Install status"
+            onClick={() => {
+              setDraft(null);
+              setDetail(null);
+              store.update({ open: false });
+            }}
+          >
+            <XIcon className="size-3.5" />
           </Button>
         </span>
       </header>
@@ -411,6 +424,33 @@ export function InstallStatusPanel({
                           ? "Check the running Laptop build. If it matches the plan and passes verification, the other devices can continue."
                           : "Check whether the previous download has finished or stopped."}
                     </p>
+                  ) : null}
+                  {availableLaptop?.abandon ? (
+                    <Button
+                      variant="outline"
+                      size="micro"
+                      disabled={pending.has("laptop:abandon-stage")}
+                      onClick={() => action("laptop", "abandon-stage")}
+                    >
+                      {plan.laptop.stageAbandonment?.status === "pending"
+                        ? "Abandoning staged update…"
+                        : plan.laptop.stageAbandonment?.status === "unconfirmed"
+                          ? "Retry abandoning staged update"
+                          : "Abandon staged update"}
+                    </Button>
+                  ) : null}
+                  {!view.readOnly &&
+                  plan.laptop.stageAbandonment?.status === "retired" &&
+                  availableLaptop?.download !== true &&
+                  installPlanServices()?.services.bridge.checkForUpdate !== undefined ? (
+                    <Button
+                      variant="ghost-muted"
+                      size="micro"
+                      disabled={pending.has("laptop:check-build")}
+                      onClick={() => action("laptop", "check-build")}
+                    >
+                      Check for builds
+                    </Button>
                   ) : null}
                   {canCheckLaptop ? (
                     <Button

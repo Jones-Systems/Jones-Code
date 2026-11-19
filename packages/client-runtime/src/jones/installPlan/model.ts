@@ -342,10 +342,6 @@ export function applyEdit(
                 ...(old.archivedOperationCount === undefined
                   ? {}
                   : { archivedOperationCount: old.archivedOperationCount }),
-                ...(old.ended === undefined ? {} : { ended: old.ended }),
-                ...(old.verifiedElsewhere === undefined
-                  ? {}
-                  : { verifiedElsewhere: old.verifiedElsewhere }),
               };
         if (index < 0) devices.push(next);
         else devices[index] = next;
@@ -472,7 +468,6 @@ const SUPERSEDABLE_BY_RUNNING_TARGET: ReadonlySet<InstallPlanDeviceState> = new 
   "not-updated",
   "not-started",
   "queued",
-  "fenced",
   "stopped",
   "ended",
   "staged",
@@ -551,6 +546,7 @@ export function planCompletion(
         : deviceState(plan, device) === "staged") &&
       !device.operations.some(outstanding) &&
       observation?.freshness === "fresh" &&
+      (!deviceRecovery || observation.state?.currentVersion !== undefined) &&
       matchesPlanTarget(plan, device, observation.state)
     );
   });

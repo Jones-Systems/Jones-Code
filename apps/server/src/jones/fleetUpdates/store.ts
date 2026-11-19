@@ -52,7 +52,9 @@ export const FleetFollowerRecord = Schema.Struct({
   lastAutomaticActivationAt: Schema.NullOr(Schema.String),
   directive: Schema.optionalKey(StoredDirective),
   directivePreimage: Schema.optionalKey(Schema.NullOr(StoredDirective)),
-  releasedDirectiveId: Schema.optionalKey(FleetOperationId),
+  releasedDirectives: Schema.optionalKey(
+    Schema.Array(FleetOperationId).check(Schema.isMaxLength(128)),
+  ),
 });
 export type FleetFollowerRecord = typeof FleetFollowerRecord.Type;
 

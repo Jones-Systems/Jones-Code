@@ -47,17 +47,20 @@ export async function finishPlan(planId: string) {
       )
         throw new Error("Running source proof changed. Read status before continuing.");
       const status = observed.get(candidate.environmentId)!;
+      const version = status.state?.currentVersion;
+      if (supportsDeviceRecovery && version === undefined)
+        throw new Error("The device did not report its running version. Refresh status again.");
       const result = await requestInstallPlan(
         {
           type: "end",
           planId,
           expectedRevision: plan.revision,
           environmentId: candidate.environmentId,
-          ...(supportsDeviceRecovery
+          ...(supportsDeviceRecovery && version !== undefined
             ? {
                 runningTarget: {
                   build: {
-                    version: status.state!.currentVersion,
+                    version,
                     sourceSha: status.state!.installedSource!.sha,
                     sourceTree: status.state!.installedSource!.tree,
                   },

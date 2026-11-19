@@ -134,6 +134,7 @@ describe("Jones environment HTTP registration", () => {
       ["operationStop", "POST", "/api/jones-updates/operations/stop"],
       ["operationFence", "POST", "/api/jones-updates/operations/fence"],
       ["operationRead", "POST", "/api/jones-updates/operations/read"],
+      ["abandonStage", "POST", "/api/jones-updates/operations/abandon-stage"],
       ["recoverCleanup", "POST", "/api/jones-updates/operations/recover-cleanup"],
       ["recoveryPreflight", "POST", "/api/jones-updates/recovery-preflight"],
     ]);

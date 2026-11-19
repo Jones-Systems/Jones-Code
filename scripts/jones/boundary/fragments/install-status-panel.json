@@ -34,6 +34,7 @@
     "apps/web/src/jones/installStatus/InstallStatusPoller.ts",
     "apps/web/src/jones/installStatus/ManualInstallClosure.tsx",
     "apps/web/src/jones/installStatus/ProgressSteps.tsx",
+    "apps/web/src/jones/installStatus/abandonDevice.ts",
     "apps/web/src/jones/installStatus/actions.ts",
     "apps/web/src/jones/installStatus/bulkUpdates.ts",
     "apps/web/src/jones/installStatus/checkFeedback.ts",

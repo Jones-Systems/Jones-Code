@@ -102,8 +102,12 @@ function fixture() {
     validateRecoveryReview: vi.fn(async () => {}),
     laptopEvidence: async () => evidence,
     retiredLaptopInstall: vi.fn(async () => false),
+    discard: vi.fn(async (_handle: string) => ({ accepted: true, completed: true })),
     isStaged: vi.fn(() => staged),
-    download: vi.fn(async () => ({ accepted: true, completed: true })),
+    download: vi.fn(async (): ReturnType<JonesDesktopUpdateController["download"]> => ({
+      accepted: true,
+      completed: true,
+    })),
     stopDownload: vi.fn(async () => "stopped" as const),
     install: vi.fn(
       async (
@@ -121,6 +125,7 @@ function fixture() {
     | "busy"
     | "laptopEvidence"
     | "retiredLaptopInstall"
+    | "discard"
     | "download"
     | "stopDownload"
     | "install"
@@ -1463,4 +1468,69 @@ it("independent preflight leaves an existing plan and dispositions byte-for-byte
   });
   expect(refused.refused?.code).toBe("invalid-evidence");
   expect(f.controller.recoveryPreflight).toHaveBeenCalledTimes(1);
+});
+
+it("keeps an abandoned attempt in history and admits a distinct download after re-adding", async () => {
+  const f = fixture();
+  const plan = await f.start();
+  const grant = (await f.claim(plan.planId)).grant!;
+  const request = (revision: number, phase: "begin" | "finish") =>
+    f.coordinator.request({
+      type: "abandon-device",
+      phase,
+      planId: plan.planId,
+      environmentId: remote,
+      expectedRevision: revision,
+    });
+  const current = () => f.snapshot().document.current!;
+  expect((await request(current().revision, "begin")).refused?.code).toBe("outstanding-operation");
+  await f.coordinator.request({
+    type: "report",
+    planId: plan.planId,
+    environmentId: remote,
+    operationId: grant.operationId,
+    evidence: { kind: "receipt", receipt: { ...f.receipt(grant), phase: "failed" } },
+  });
+  expect((await request(current().revision, "begin")).refused).toBeUndefined();
+  expect((await f.claim(plan.planId)).refused).toBeDefined();
+  expect((await request(current().revision, "finish")).refused).toBeUndefined();
+  expect(current().devices[0]).toMatchObject({ membership: "removed", archivedOperationCount: 1 });
+  await f.coordinator.request({
+    type: "edit",
+    planId: plan.planId,
+    expectedRevision: current().revision,
+    select: [selection],
+    deselect: [],
+  });
+  const retry = (await f.claim(plan.planId)).grant;
+  expect(retry?.operationId).toBeDefined();
+  expect(retry?.operationId).not.toEqual(grant.operationId);
+  expect(current().devices[0]?.operations.map((operation) => operation.operationId)).toEqual([
+    grant.operationId,
+    retry?.operationId,
+  ]);
+});
+
+it("keeps proof of a running external build without claiming it was installed by the plan", async () => {
+  const f = fixture();
+  const plan = await f.start();
+  const end = (sourceTree: string) =>
+    f.coordinator.request({
+      type: "end",
+      planId: plan.planId,
+      environmentId: remote,
+      expectedRevision: plan.revision,
+      runningTarget: {
+        build: { version: target.version, sourceSha: source, sourceTree },
+        observedAt: f.options.now(),
+      },
+    });
+  expect((await end("f".repeat(40))).refused?.code).toBe("invalid-evidence");
+  const result = await end(tree);
+  expect(result.refused).toBeUndefined();
+  expect(result.state.current?.devices[0]).toMatchObject({
+    verifiedElsewhere: { version: target.version },
+    operations: [],
+  });
+  expect(result.state.view.complete).toBe(true);
 });

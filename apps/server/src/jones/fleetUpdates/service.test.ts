@@ -941,6 +941,30 @@ describe("plan-managed follower targets", () => {
     targetTree: "c".repeat(40),
     expectedDirectiveId: null,
   };
+  it.effect("restores the exact prior directive and prevents a late replay", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+      yield* f.service.planDirective(directive);
+      const successor = {
+        ...directive,
+        directiveId: "66666666-6666-4666-8666-666666666666",
+        expectedDirectiveId: directive.directiveId,
+      };
+      yield* f.service.planDirective(successor);
+      expect((yield* f.service.releaseDirective(directive).pipe(Effect.flip)).reason).toBe(
+        "conflict",
+      );
+      const result = yield* f.service.releaseDirective(successor);
+      expect(result.releasedDirectiveId).toBe(successor.directiveId);
+      expect(result.follower?.planDirective?.directiveId).toBe(directive.directiveId);
+      expect((yield* f.service.releaseDirective(successor)).releasedDirectiveId).toBe(
+        successor.directiveId,
+      );
+      expect((yield* f.service.planDirective(successor).pipe(Effect.flip)).reason).toBe("conflict");
+    }),
+  );
+
   it.effect(
     "persists an idempotent directive without changing enrollment and excludes both campaign paths",
     () =>

@@ -107,18 +107,24 @@ export function installPlanPresentation(
             planId: plan.planId,
           });
     const nativeGate = plan.laptop.gate !== undefined && plan.laptop.gateClosed === undefined;
-    const mutable =
+    const canRecover =
       !readOnly &&
       device.membership === "selected" &&
       !device.abandoning &&
-      nativeGate &&
       observed?.observation.freshness === "fresh" &&
       observed.canOperate &&
       observed.observation.state?.capability.operations === 1;
+    const mutable = canRecover && nativeGate;
     const operations = deviceActiveOperations(device);
     const latest = operations.find(operationOutstanding) ?? operations.at(-1);
     const lastDownload = operations.findLast((o) => o.step === "download");
     const receipt = latest?.receipt;
+    const ownedStage = operations.findLast(
+      (operation) =>
+        operation.step === "download" &&
+        operation.receipt?.phase === "completed" &&
+        operation.receipt.stageRetiredAt === undefined,
+    )?.receipt?.staged;
     const recoveredDownload =
       receipt?.code === "cleanup-recovered" &&
       receipt.jobId !== undefined &&
@@ -199,6 +205,7 @@ export function installPlanPresentation(
         ? undefined
         : reportedProgress;
     if (progress?.text !== undefined && !LEDGER_TEXT_WINS.has(phase)) text = progress.text;
+    if (receipt?.code === "launcher-rejected") text = "Install request did not start";
     if (sourceHeadline) text = sourceText!;
     return {
       attemptText,
@@ -228,10 +235,8 @@ export function installPlanPresentation(
           observed.observation.freshness === "fresh" &&
           !operations.some(operationOutstanding) &&
           !confirmedInstall &&
-          (lastDownload?.receipt?.phase !== "completed" ||
-            lastDownload.receipt.stageRetiredAt !== undefined ||
-            (lastDownload.receipt.staged?.createdByOperation === true &&
-              hostState?.capability.abandonStage === 1)) &&
+          (ownedStage === undefined ||
+            (ownedStage.createdByOperation === true && hostState?.capability.abandonStage === 1)) &&
           (!operations.some((operation) => operation.directive?.kind === "applied") ||
             observed.fleetStatus?.releasePlanDirective === 1),
         download:
@@ -246,12 +251,12 @@ export function installPlanPresentation(
           status?.actions.install === true &&
           (!retryInstall || matchingRetryStage),
         stop:
-          mutable &&
+          canRecover &&
           phase === "downloading" &&
           latest?.receipt !== undefined &&
           ["accepted", "running"].includes(latest.receipt.phase) &&
           status?.actions.stop === true,
-        end: mutable && phase === "staged",
+        end: canRecover && phase === "staged",
         checkAgain: true,
       },
     };
@@ -334,7 +339,21 @@ export function installPlanPresentation(
           : laptopAlreadyRunning
             ? ALREADY_RUNNING_TEXT
             : (laptopCopy[laptopPhase] ?? "Not confirmed");
+  const abandoningStage = plan.laptop.stageAbandonment;
   const laptopActions = {
+    abandon:
+      !readOnly &&
+      state.view.deviceRecovery === 1 &&
+      plan.laptop.gate === undefined &&
+      !state.laptop.activationBlocked &&
+      laptopState?.stagedHandle !== undefined &&
+      plan.laptop.operations.findLast((op) => op.step === "download")?.createdStagedHandle ===
+        laptopState.stagedHandle &&
+      !plan.laptop.operations.some(
+        (op) =>
+          op.result === undefined ||
+          ["running", "held", "stop-requested"].includes(op.result.status),
+      ),
     download:
       !readOnly &&
       ["preview", "stopped", "interrupted", "failed", "refused"].includes(laptopPhase) &&
@@ -343,6 +362,7 @@ export function installPlanPresentation(
       laptopState.provenance?.sourceSha === plan.target.sourceSha,
     install:
       !readOnly &&
+      (abandoningStage === undefined || abandoningStage.status === "retired") &&
       (laptopPhase === "staged" || retryLaptopInstall) &&
       !laptopAlreadyRunning &&
       plan.laptop.gate === undefined &&

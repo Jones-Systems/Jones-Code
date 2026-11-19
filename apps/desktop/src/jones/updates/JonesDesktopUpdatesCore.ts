@@ -303,6 +303,7 @@ export interface JonesDesktopDownloadSelection {
 export interface JonesDesktopDownloadResult {
   readonly accepted: boolean;
   readonly completed: boolean;
+  readonly createdStagedHandle?: string;
   readonly refusal?: "selection-mismatch";
   readonly stopped?: boolean;
   readonly held?: { readonly pid: number; readonly processGroup: number };
@@ -2183,8 +2184,10 @@ export class JonesDesktopUpdateController {
         artifactDirectory: NodePath.dirname(artifact.payloadPath),
         app: this.#staged,
       };
+      let createdStagedHandle: string | undefined;
       try {
         await writeJonesNativeFile(selectionFile, JSON.stringify(selection) + "\n", 0o600);
+        if (work.operationId !== undefined) createdStagedHandle = selection.app.handle;
       } catch (cause) {
         if (
           (cause as NodeJS.ErrnoException).code !== "EEXIST" ||
@@ -2195,7 +2198,11 @@ export class JonesDesktopUpdateController {
           throw cause;
       }
       await this.#publish("staged", "downloaded");
-      return { accepted: true, completed: true };
+      return {
+        accepted: true,
+        completed: true,
+        ...(createdStagedHandle === undefined ? {} : { createdStagedHandle }),
+      };
     } catch (cause) {
       this.#staged = undefined;
       if (cause instanceof JonesStagingExitUnproved) {

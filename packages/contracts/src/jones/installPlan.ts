@@ -158,6 +158,7 @@ export const JonesInstallPlanLaptopOperation = Schema.Struct({
   operationId: JonesOperationId,
   step: Schema.Literals(["download", "stop", "install"]),
   requestedAt: Schema.String,
+  createdStagedHandle: Schema.optionalKey(TrimmedNonEmptyString),
   of: Schema.optionalKey(JonesOperationId), // stop: the download it stops
   review: Schema.optionalKey(JonesInstallPlanReview), // install
   worker: Schema.optionalKey(Schema.Struct({ pid: Schema.Number, processGroup: Schema.Number })), // held-exit proof after restart
@@ -194,6 +195,13 @@ const OrdinaryRecovery = Schema.Struct({
 export const JonesInstallPlanLaptop = Schema.Struct({
   environmentId: EnvironmentId,
   operations: Schema.Array(JonesInstallPlanLaptopOperation).check(Schema.isMaxLength(16)),
+  stageAbandonment: Schema.optionalKey(
+    Schema.Struct({
+      operationId: JonesOperationId,
+      handle: TrimmedNonEmptyString,
+      status: Schema.Literals(["pending", "retired", "unconfirmed"]),
+    }),
+  ),
   // Native-only fields: written by coordinator hooks, never derived from a renderer request.
   binding: Schema.optionalKey(
     Schema.Struct({
@@ -356,7 +364,7 @@ export const JonesInstallPlanRequest = Schema.Union([
     type: Schema.Literal("laptop"),
     command: Schema.optionalKey(JonesInstallPlanClientCommand),
     planId: JonesOperationId,
-    action: Schema.Literals(["download", "stop", "install", "preflight"]),
+    action: Schema.Literals(["download", "stop", "install", "preflight", "abandon-stage"]),
     review: Schema.optionalKey(JonesInstallPlanReview),
   }),
   Schema.Struct({

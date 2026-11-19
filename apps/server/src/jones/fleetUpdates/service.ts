@@ -294,11 +294,7 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     const operation =
       operationId === undefined ? null : yield* storage(() => store.readOperation(operationId));
     const follower = yield* followerStatus(enrollment);
-    const released = enrollment?.enabled === true ? yield* storage(store.readFollower) : null;
     return {
-      ...(released?.releasedDirectiveId === undefined
-        ? {}
-        : { releasedDirectiveId: released.releasedDirectiveId }),
       ...(options.serviceMode && updates.fleetOperationsSupported
         ? { planDirectiveProtocol: 1 as const, releasePlanDirective: 1 as const }
         : {}),
@@ -643,6 +639,8 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
         "Only a qualified service host accepts an update-plan directive.",
       );
     const current = yield* storage(store.readFollower);
+    if (current?.releasedDirectives?.includes(input.directiveId))
+      return yield* fail("conflict", "This directive was already released.");
     if (current?.directive?.directiveId === input.directiveId) {
       const d = current.directive;
       if (
@@ -675,7 +673,10 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     const issuedAt = isoAt(yield* Clock.currentTimeMillis);
     yield* storage(() =>
       store.editFollower((old) => {
-        if ((old?.directive?.directiveId ?? null) !== input.expectedDirectiveId)
+        if (
+          (old?.directive?.directiveId ?? null) !== input.expectedDirectiveId ||
+          old?.releasedDirectives?.includes(input.directiveId)
+        )
           throw fail("conflict", "The update-plan directive changed before it could be saved.");
         const leader = old?.leader?.enrollmentId === enrollment.enrollmentId ? old.leader : null;
         return {
@@ -709,10 +710,13 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     const current = yield* storage(store.readFollower);
     if (!options.serviceMode || !updates.fleetOperationsSupported || current === null)
       return yield* fail("binding", "This host cannot release an update-plan directive.");
-    if (current.releasedDirectiveId === input.directiveId) {
+    const released = current.releasedDirectives ?? [];
+    if (released.includes(input.directiveId)) {
       yield* updates.refreshPolicy;
-      return yield* status();
+      return { ...(yield* status()), releasedDirectiveId: input.directiveId };
     }
+    if (released.length >= 128)
+      return yield* fail("storage", "The host's directive release history is full.");
     const directive = current.directive;
     const prior = current.directivePreimage ?? null;
     if (
@@ -753,14 +757,14 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
         return {
           ...rest,
           ...(prior === null ? {} : { directive: prior }),
-          releasedDirectiveId: input.directiveId,
+          releasedDirectives: [...(old.releasedDirectives ?? []), input.directiveId],
         };
       }),
     );
     followerView = undefined;
     yield* updates.refreshPolicy;
     // The normal follower can act on the restored policy on its next scheduled pass.
-    return yield* status();
+    return { ...(yield* status()), releasedDirectiveId: input.directiveId };
   });
 
   const quietView = (decision: AutomaticActivationDecision, now: number) => ({

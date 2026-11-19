@@ -275,6 +275,22 @@ const click = async (screen: Screen, name: string) => {
 // These use real browser interactions and the real pure model/runner against scripted receipts.
 // They cannot qualify native installs, host worker exit, Electron IPC or publication.
 describe("Install status receipt fixture", () => {
+  it("leaves editing through device details or Cancel without saving the draft", async () => {
+    await using world = await setup();
+    const { screen } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+    await click(screen, "Mini update details");
+    expect(screen.getByRole("button", { name: "Back to all devices" }).element()).toBeDefined();
+    await click(screen, "Back to all devices");
+    await click(screen, "Edit");
+    expect(
+      screen.getByRole("checkbox", { name: "Include Mini" }).element().getAttribute("data-checked"),
+    ).toBeNull();
+    await click(screen, "Cancel");
+    expect(screen.getByRole("button", { name: "Edit", exact: true }).element()).toBeDefined();
+  });
+
   it("cancels the held Laptop rollout from its detail and keeps an inactive history entry", async () => {
     await using world = await setup();
     const { screen, fixture, calls, controller } = world;
@@ -375,7 +391,8 @@ describe("Install status receipt fixture", () => {
     const { screen, fixture, calls } = world;
     await click(screen, "Edit");
     expect(visibleDone(screen)).toHaveLength(1);
-    expect(screen.container.textContent).not.toMatch(/Save|Cancel/);
+    expect(screen.container.textContent).not.toMatch(/Save/);
+    expect(button(screen, "Cancel").element()).toBeDefined();
     await click(screen, "All");
     expect(fixture.store.get().previewSelection).toHaveLength(0);
     await click(screen, "None");

@@ -37,7 +37,12 @@ export async function abandonDevice(environmentId: EnvironmentId, planId: string
   const operations = deviceActiveOperations(device);
   if (operations.some(operationOutstanding))
     throw new Error("Check the outstanding operation before abandoning this device.");
-  const staged = operations.findLast((operation) => operation.step === "download")?.receipt;
+  const staged = operations.findLast(
+    (operation) =>
+      operation.step === "download" &&
+      operation.receipt?.phase === "completed" &&
+      operation.receipt.stageRetiredAt === undefined,
+  )?.receipt;
   const directive = operations.findLast((operation) => operation.directive?.kind === "applied");
   const host = await services.observe(environmentId);
   const state = host.observation.state;
@@ -47,7 +52,7 @@ export async function abandonDevice(environmentId: EnvironmentId, planId: string
     state?.environmentId !== environmentId
   )
     throw new Error("Refresh the device before abandoning its update.");
-  const needsStage = staged?.phase === "completed" && staged.stageRetiredAt === undefined;
+  const needsStage = staged !== undefined;
   if (
     needsStage &&
     (staged.staged?.createdByOperation !== true || state.capability.abandonStage !== 1)
