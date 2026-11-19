@@ -1,4 +1,8 @@
 import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
+import {
+  insertWorkstreamReference,
+  type WorkstreamReference,
+} from "../../jones/workstreams/workstreamReferenceDrop";
 import type { ReactNode } from "react";
 import { requiredComposerProvider } from "../../jones/threadConfiguration/composerSelection";
 import { ComposerShortcutRails } from "../../jones/composer/ComposerShortcutPlate";
@@ -304,6 +308,7 @@ export interface ChatComposerHandle {
   focusAt: (cursor: number) => void;
   addDroppedFiles: (files: File[]) => void;
   addDroppedFolders: (folders: File[]) => void;
+  addDroppedWorkstream: (reference: WorkstreamReference) => boolean;
   hasPendingAttachments: () => boolean;
   insertTextAtEnd: (
     text: string,
@@ -2735,6 +2740,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     return inserted;
   };
   const insertComposerTextAtEndStable = useStableCallback(insertComposerTextAtEnd);
+  const addDroppedWorkstream = useStableCallback((reference: WorkstreamReference) => {
+    if (activePendingUserInput) return false;
+    return insertWorkstreamReference({
+      target: composerDraftTarget,
+      destination: routeThreadRef,
+      reference,
+      hasPrompt: promptRef.current.length > 0,
+      insertAtEnd: insertComposerTextAtEndStable,
+    });
+  });
 
   const insertComposerFolders = async (
     folders: File[],
@@ -3020,6 +3035,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
       },
       addDroppedFolders: addComposerFoldersStable,
+      addDroppedWorkstream,
       hasPendingAttachments: () =>
         countPreparingComposerImages(attachmentTargetKey) > 0 ||
         pendingDraftWork.has(attachmentTargetKey),
@@ -3233,6 +3249,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       activeThread,
       addComposerAttachments,
       addComposerFoldersStable,
+      addDroppedWorkstream,
       foldPastedText,
       composerDraftTarget,
       composerModelOptions,
@@ -3573,6 +3590,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             className={cn(
               "rounded-2xl transition-[background-color] duration-200",
               "in-data-[thread-context-over]:bg-accent/45 in-data-[thread-context-over]:ring-1 in-data-[thread-context-over]:ring-inset in-data-[thread-context-over]:ring-primary/70",
+              "in-data-[workstream-reference-over]:bg-accent/45 in-data-[workstream-reference-over]:ring-1 in-data-[workstream-reference-over]:ring-inset in-data-[workstream-reference-over]:ring-primary/70",
               isDragOverComposer ? "bg-accent/45 ring-1 ring-inset ring-primary/70" : null,
               projectSelectionRequired ? "opacity-75" : null,
               composerProviderState.composerSurfaceClassName,

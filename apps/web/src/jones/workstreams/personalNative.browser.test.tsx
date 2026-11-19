@@ -32,6 +32,12 @@ import {
 } from "../../components/chat/threadContextDrag";
 import { ThreadContextDragGhost } from "../../components/chat/ThreadContextDragGhost";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
+import { useComposerDraftStore } from "../../composerDraftStore";
+import { collectInlineContextIds } from "../../lib/composerContextReferences";
+import {
+  insertWorkstreamReference,
+  workstreamReferenceDropHandlers,
+} from "./workstreamReferenceDrop";
 const env = EnvironmentId.make("synthetic-env");
 const thread = {
   environmentId: env,
@@ -203,6 +209,121 @@ const nativeRow = (container: HTMLElement, entry: EnvironmentThreadShell) =>
   )!;
 const composerReferences = (container: HTMLElement) =>
   JSON.parse(container.querySelector("[data-composer-references]")!.textContent!);
+
+describe("Workstream composer reference drags", () => {
+  it.each(["conversation", "composer", "cancelled"] as const)(
+    "handles a collapsed read-only Workstream drag onto %s",
+    async (dropOn) => {
+      using setup = fixture();
+      const snoozed = {
+        ...member,
+        environmentId: EnvironmentId.make("other-environment"),
+        id: ThreadId.make("snoozed-member"),
+        title: "Snoozed member",
+        snoozedUntil: "2099-01-01T00:00:00Z",
+      };
+      const settled = {
+        ...member,
+        id: ThreadId.make("settled-member"),
+        title: "Settled member",
+        settledOverride: "settled" as const,
+      };
+      setup.registry.set(setup.state, {
+        ...setup.initial,
+        canCreate: false,
+        assignmentsByThreadKey: new Map(
+          [member, snoozed, settled, thread].map((entry) => [
+            personalThreadKey(entry),
+            { threadId: entry.id, workstreamId: workstream.id, revision: 1, updatedAt: null },
+          ]),
+        ),
+      });
+      localStorage.setItem("jones:workstreams:collapsed:synthetic-work", "true");
+      const destination = scopeThreadRef(thread.environmentId, thread.id);
+      const draft = useComposerDraftStore.getState();
+      const before = "Existing draft";
+      draft.setPrompt(destination, before);
+      try {
+        await using screen = await render(
+          <RegistryContext.Provider value={setup.registry}>
+            <WorkstreamNativeSidebar
+              controller={setup.controller}
+              threads={[member]}
+              readReferenceThreads={() => [member, snoozed, settled, thread, unassigned]}
+              renderThread={(entry) => <li>{entry.title}</li>}
+              canOperate={() => false}
+              canReorder={() => false}
+              reorder={async () => {}}
+            />
+            <div
+              data-chat-column
+              {...workstreamReferenceDropHandlers((reference) =>
+                insertWorkstreamReference({
+                  target: destination,
+                  destination,
+                  reference,
+                  hasPrompt: true,
+                  insertAtEnd: (text) => {
+                    draft.setPrompt(destination, before + text);
+                    return true;
+                  },
+                }),
+              )}
+            >
+              <div data-conversation>Timeline</div>
+              <form data-composer>Composer</form>
+            </div>
+          </RegistryContext.Provider>,
+        );
+        const header = screen.container.querySelector<HTMLElement>("[data-workstream-header]")!;
+        const column = screen.container.querySelector("[data-chat-column]")!;
+        const transfer = new DataTransfer();
+        const drag = (target: Element, type: string) =>
+          target.dispatchEvent(
+            new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: transfer }),
+          );
+        const target = column.querySelector(
+          dropOn === "composer" ? "form" : "[data-conversation]",
+        )!;
+        expect(header.draggable).toBe(true);
+        expect(screen.container.querySelector("[data-personal-thread]")).toBeNull();
+        await act(() => {
+          drag(header.querySelector("[data-personal-group-title]")!, "dragstart");
+          expect(drag(target, "dragover")).toBe(false);
+        });
+        expect(column.hasAttribute("data-workstream-reference-over")).toBe(true);
+        expect(transfer.getData("text/plain")).toBe("");
+        await act(() => {
+          if (dropOn !== "cancelled") expect(drag(target, "drop")).toBe(false);
+          drag(header, "dragend");
+        });
+        expect(column.hasAttribute("data-workstream-reference-over")).toBe(false);
+        const result = draft.getComposerDraft(destination)!;
+        if (dropOn === "cancelled") {
+          expect(result.prompt).toBe(before);
+          expect(result.threadContexts).toEqual([]);
+        } else {
+          expect(result.prompt).toContain(`${before}\n\nWorkstream: Alpha\nUnsettled threads: `);
+          expect(
+            result.threadContexts.map(({ title, environmentId }) => ({ title, environmentId })),
+          ).toEqual([
+            { title: member.title, environmentId: member.environmentId },
+            { title: snoozed.title, environmentId: snoozed.environmentId },
+          ]);
+          expect(collectInlineContextIds(result.prompt)).toEqual(
+            result.threadContexts.map((record) => record.contextId),
+          );
+          expect(result.threadContexts.every((record) => !record.excerpt)).toBe(true);
+        }
+        expect(setup.controller.assign).not.toHaveBeenCalled();
+        expect(setup.controller.reorder).not.toHaveBeenCalled();
+      } finally {
+        draft.setThreadContexts(destination, []);
+        draft.setPrompt(destination, "");
+      }
+    },
+  );
+});
 
 describe("personal thread composer reference drags", () => {
   it.each([

@@ -39,6 +39,7 @@ import {
 } from "../../jones/workstreams/personalThreadDrag";
 import { windowPersonalThreads } from "../../jones/workstreams/personalThreadWindow";
 import { createSidebarDragAutoScroll } from "../../jones/workstreams/sidebarDragAutoScroll";
+import { workstreamReferenceMembers } from "../../jones/workstreams/workstreamReferenceDrop";
 export interface NativeThreadExternalDrop {
   readonly locateExternal: (
     point: { x: number; y: number },
@@ -60,6 +61,7 @@ export function WorkstreamNativeSidebar({
   threads,
   summaryThreads = threads,
   rosterThreads = summaryThreads,
+  readReferenceThreads,
   snoozedWorkstreams = [],
   renderThread,
   onOpenHistoryThread,
@@ -75,6 +77,7 @@ export function WorkstreamNativeSidebar({
   threads: readonly EnvironmentThreadShell[];
   summaryThreads?: readonly EnvironmentThreadShell[];
   rosterThreads?: readonly EnvironmentThreadShell[];
+  readReferenceThreads?: () => readonly EnvironmentThreadShell[];
   snoozedWorkstreams?: readonly PersonalWorkstreamView[];
   onOpenHistoryThread?: (thread: PersonalThreadRef) => void;
   renderThread: (thread: EnvironmentThreadShell) => ReactNode;
@@ -450,6 +453,9 @@ export function WorkstreamNativeSidebar({
         snoozedIds={snoozedIds}
         onOpenHistoryThread={onOpenHistoryThread}
         rosterTotals={personalSidebarRosterTotals(state, rosterThreads)}
+        referenceMembers={(id) =>
+          workstreamReferenceMembers(state, readReferenceThreads?.() ?? rosterThreads, id)
+        }
         dropTargetId={drop}
         memberCounts={
           new Map(grouping.groups.map((group) => [group.workstream.id, group.threads.length]))

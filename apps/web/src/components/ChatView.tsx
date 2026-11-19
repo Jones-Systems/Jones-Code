@@ -311,6 +311,10 @@ import {
 } from "../state/entities";
 import { useEnvironmentShellHasSnapshot } from "../state/shell";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import {
+  workstreamReferenceDropHandlers,
+  type WorkstreamReference,
+} from "../jones/workstreams/workstreamReferenceDrop";
 import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialogHost, openExpandedImagePreview } from "./chat/ExpandedImageDialog";
 import {
@@ -3320,6 +3324,14 @@ export default function ChatView(props: ChatViewProps) {
     (folders: Parameters<ChatComposerHandle["addDroppedFolders"]>[0]) =>
       composerRef.current?.addDroppedFolders(folders),
   );
+  const onDropWorkstream = useStableCallback((reference: WorkstreamReference) => {
+    if (composerRef.current?.addDroppedWorkstream(reference)) return;
+    toastManager.add({
+      type: "error",
+      title: "Unable to add Workstream",
+      description: "Try again when the message composer is available.",
+    });
+  });
   // Above the early return, where React Compiler can cache it for the side chat pane.
   const sideChatParentPanel = {
     openToolDiff: onOpenToolDiffStable,
@@ -3461,6 +3473,7 @@ export default function ChatView(props: ChatViewProps) {
         data-chat-column-maximized-away={rightPanelMaximized ? "true" : "false"}
         data-chat-column
         inert={rightPanelMaximized}
+        {...workstreamReferenceDropHandlers(onDropWorkstream)}
         onMouseUp={preventMiddleClickPasteOutsideEditable}
       >
         {embedded ? null : (
