@@ -10,7 +10,8 @@ Thread navigation shortcuts follow the displayed order.
 
 | Journey                                           | Surface                                                               | Coverage                                                              |
 | ------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Create, rename, color, lifecycle, reorder, delete | Sidebar group menu; mobile group controls                             | Personal browser and mobile presentation/control tests                |
+| Create, rename, lifecycle, reorder, delete        | Sidebar group menu; mobile group controls                             | Personal browser and mobile presentation/control tests                |
+| Change a Workstream color                         | Sidebar group menu; mobile group controls                             | Web browser tests for mouse, keyboard, and color readback             |
 | Start a thread in a Workstream                    | Right-click a named group or focus its header and press Shift+F10     | Group menu activation and draft seeding tests                         |
 | Set, change or clear a name icon                  | Inline toolbar form and **Change icon** submenu on web and desktop    | Ordered selection, wrapped titles and sync tests                      |
 | Assign, unassign, create and assign               | Thread picker, sidebar drag, mobile thread menu                       | Personal browser tests and shared controller command tests            |

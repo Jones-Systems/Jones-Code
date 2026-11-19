@@ -10,6 +10,8 @@ import * as ProcessRunner from "../../processRunner.ts";
 import * as HostService from "./HostService.ts";
 import * as HostServiceConfig from "./HostServiceConfig.ts";
 
+import { installRecoveryCommand } from "../updates/installRecoveryCli.ts";
+
 const encodeStatusJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }));
 const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -275,6 +277,7 @@ const routeRemove = Command.make("route-remove", { ...baseFlags, dryRun }).pipe(
 
 export const jonesCommand = Command.make("jones").pipe(
   Command.withSubcommands([
+    installRecoveryCommand,
     Command.make("host").pipe(
       Command.withSubcommands([stage, setup, adopt, adoptSystem, status, routeRemove]),
     ),
