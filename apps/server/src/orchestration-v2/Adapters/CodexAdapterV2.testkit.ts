@@ -1,3 +1,4 @@
+import packageJson from "../../../package.json" with { type: "json" };
 import * as Deferred from "effect/Deferred";
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -12,6 +13,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { materializeCodexReplayAppIdentity } from "../../jones/runtimeIdentity/CodexReplayIdentity.ts";
+import { codexStartReplyObservationOptions } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 
 import * as ServerConfig from "../../config.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -114,6 +116,7 @@ function metadataFromTranscript(transcript: ProviderReplayTranscript): {
 export function makeCodexReplayClientFactory(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
+  readonly observeFrame?: (frame: unknown) => void;
 }): CodexAdapterV2.CodexAppServerClientFactoryShape {
   const replayLayer = (options: CodexClient.CodexAppServerClientOptions) =>
     input.driver === undefined
@@ -132,9 +135,15 @@ export function makeCodexReplayClientFactory(input: {
         openInput.captureProcessExit?.(Deferred.await(processExited));
         yield* Effect.addFinalizer(() => Deferred.succeed(processExited, undefined));
         const context = yield* Layer.build(
-          replayLayer(
-            openInput.onTermination === undefined ? {} : { onTermination: openInput.onTermination },
-          ),
+          replayLayer({
+            ...codexStartReplyObservationOptions((frame) => {
+              openInput.observeDecodedReply?.(frame);
+              input.observeFrame?.(frame);
+            }),
+            ...(openInput.onTermination === undefined
+              ? {}
+              : { onTermination: openInput.onTermination }),
+          }),
         ).pipe(
           Effect.mapError(
             (cause) =>
@@ -167,10 +176,11 @@ export function makeCodexReplayClientFactory(input: {
   };
 }
 
-export function layer(input: {
-  readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
-  readonly driver?: CodexReplay.CodexAppServerReplayDriver;
-}) {
+export function layer(
+  input: Parameters<typeof makeCodexReplayClientFactory>[0] & {
+    readonly onSessionOpened?: (runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime) => void;
+  },
+) {
   const layerReplayClientFactory = Layer.succeed(
     CodexAdapterV2.CodexAppServerClientFactory,
     makeCodexReplayClientFactory(input),
@@ -186,7 +196,21 @@ export function layer(input: {
       environment: [],
       enabled: true,
       config: DEFAULT_CODEX_SETTINGS,
-    }).pipe(Effect.map((adapter) => [adapter])),
+    }).pipe(
+      Effect.map((adapter) => [
+        input.onSessionOpened === undefined
+          ? adapter
+          : {
+              ...adapter,
+              openSession: (value: ProviderAdapter.ProviderAdapterV2OpenSessionInput) =>
+                adapter
+                  .openSession(value)
+                  .pipe(
+                    Effect.tap((runtime) => Effect.sync(() => input.onSessionOpened?.(runtime))),
+                  ),
+            },
+      ]),
+    ),
   ).pipe(
     Layer.provide(ControlAdmission.layer),
     Layer.provide(
@@ -247,3 +271,275 @@ export const CodexOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness
     );
   },
 };
+
+export function makeCodexReplayTurn(input: {
+  readonly id: string;
+  readonly status: "inProgress" | "completed" | "interrupted" | "failed";
+}): Record<string, unknown> {
+  const terminal =
+    input.status === "completed" || input.status === "interrupted" || input.status === "failed";
+  return {
+    id: input.id,
+    items: [],
+    itemsView: "notLoaded",
+    status: input.status,
+    error: null,
+    startedAt: 1782622440,
+    completedAt: terminal ? 1782622450 : null,
+    durationMs: null,
+  };
+}
+
+export function codexReplayPreamble(input: {
+  readonly nativeThreadId: string;
+  readonly nativeTurnId: string;
+  readonly prompt: string;
+  readonly cwd?: string;
+  readonly sentPrompt?: string;
+  readonly effort?: string;
+  readonly turnPolicy?: Pick<
+    typeof CodexClient.V2TurnStartParams.Type,
+    "approvalPolicy" | "sandboxPolicy"
+  >;
+}): Array<CodexReplay.CodexAppServerReplayEntry> {
+  return [
+    {
+      type: "expect_outbound",
+      label: "initialize",
+      frame: {
+        id: 1,
+        method: "initialize",
+        params: {
+          clientInfo: { name: "T3 Code", title: "T3 Code", version: packageJson.version },
+          capabilities: {
+            experimentalApi: true,
+            optOutNotificationMethods: ["turn/diff/updated"],
+            extensions: {
+              "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
+            },
+          },
+        },
+      },
+    },
+    {
+      type: "emit_inbound",
+      label: "initialize",
+      frame: {
+        id: 1,
+        result: {
+          userAgent: "T3 Code/0.156.1",
+          codexHome: "/tmp/codex-home",
+          platformFamily: "unix",
+          platformOs: "macos",
+        },
+      },
+    },
+    { type: "expect_outbound", label: "initialized", frame: { method: "initialized" } },
+    {
+      type: "expect_outbound",
+      label: "thread/start",
+      frame: {
+        id: 2,
+        method: "thread/start",
+        params: { config: CodexAdapterV2.CODEX_THREAD_CONFIG },
+      },
+    },
+    {
+      type: "emit_inbound",
+      label: "thread/start",
+      frame: {
+        id: 2,
+        result: {
+          thread: {
+            id: input.nativeThreadId,
+            sessionId: input.nativeThreadId,
+            projectId: null,
+            forkedFromId: null,
+            preview: "",
+            ephemeral: false,
+            modelProvider: "openai",
+            createdAt: 1782622440,
+            updatedAt: 1782622440,
+            status: { type: "idle" },
+            path: `/tmp/${input.nativeThreadId}.jsonl`,
+            cwd: input.cwd ?? "/workspace",
+            cliVersion: "0.144.0",
+            source: "vscode",
+            threadSource: null,
+            agentNickname: null,
+            agentRole: null,
+            gitInfo: null,
+            name: null,
+            turns: [],
+          },
+          model: "gpt-5.4",
+          modelProvider: "openai",
+          serviceTier: null,
+          cwd: input.cwd ?? "/workspace",
+          instructionSources: [],
+          approvalPolicy: "on-request",
+          approvalsReviewer: "user",
+          sandbox: { type: "workspaceWrite", writableRoots: [], networkAccess: false },
+          reasoningEffort: "medium",
+        },
+      },
+    },
+    {
+      type: "expect_outbound",
+      label: "turn/start",
+      frame: {
+        id: 3,
+        method: "turn/start",
+        params: {
+          threadId: input.nativeThreadId,
+          input: [{ type: "text", text: input.sentPrompt ?? input.prompt }],
+          cwd: input.cwd ?? "/workspace",
+          model: "gpt-5.4",
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          sandboxPolicy: { type: "dangerFullAccess" },
+          ...input.turnPolicy,
+          summary: "auto",
+          ...(input.effort === undefined ? {} : { effort: input.effort }),
+          collaborationMode: {
+            mode: "default",
+            settings: {
+              model: "gpt-5.4",
+              ...(input.effort === undefined ? {} : { reasoning_effort: input.effort }),
+            },
+          },
+        },
+      },
+    },
+    {
+      type: "emit_inbound",
+      label: "turn/start",
+      frame: {
+        id: 3,
+        result: { turn: makeCodexReplayTurn({ id: input.nativeTurnId, status: "inProgress" }) },
+      },
+    },
+    {
+      type: "emit_inbound",
+      label: "turn/started",
+      frame: {
+        method: "turn/started",
+        params: {
+          threadId: input.nativeThreadId,
+          turn: makeCodexReplayTurn({ id: input.nativeTurnId, status: "inProgress" }),
+        },
+      },
+    },
+  ];
+}
+
+/**
+ * Every logical turn/start follows a config/read; inserts that exchange and shifts later
+ * client ids. A capacity retry resends its logical turn's built parameters promptlessly
+ * (an empty input on a thread this process already started), so it reads no config.
+ */
+export function withConfigReadBeforeTurnStart(
+  entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>,
+): Array<CodexReplay.CodexAppServerReplayEntry> {
+  const result: Array<CodexReplay.CodexAppServerReplayEntry> = [];
+  let offset = 0;
+  let clientIds = new Map<number, number>();
+  let startedThreads = new Set<unknown>();
+  for (const entry of entries) {
+    const frame = entry.type === "runtime_exit" ? undefined : entry.frame;
+    if (!Predicate.isObject(frame) || typeof frame.id !== "number") {
+      result.push(entry);
+      continue;
+    }
+    if (entry.type === "expect_outbound" && typeof frame.method === "string") {
+      if (frame.method === "initialize") {
+        offset = 0;
+        clientIds = new Map();
+        startedThreads = new Set();
+      }
+      const params = Predicate.isObject(frame.params) ? frame.params : {};
+      const capacityRetry =
+        frame.method === "turn/start" &&
+        Array.isArray(params.input) &&
+        params.input.length === 0 &&
+        startedThreads.has(params.threadId);
+      if (frame.method === "turn/start") startedThreads.add(params.threadId);
+      if (frame.method === "turn/start" && !capacityRetry) {
+        const id = frame.id + offset;
+        result.push(
+          {
+            type: "expect_outbound",
+            label: "config/read",
+            frame: { id, method: "config/read", params: { cwd: params.cwd, includeLayers: false } },
+          },
+          {
+            type: "emit_inbound",
+            label: "config/read",
+            frame: { id, result: { config: {}, origins: {} } },
+          },
+        );
+        offset += 1;
+      }
+      clientIds.set(frame.id, frame.id + offset);
+      result.push(withReplayRequestId(entry, frame.id + offset));
+      continue;
+    }
+    const mapped = clientIds.get(frame.id);
+    result.push(
+      entry.type === "emit_inbound" && frame.method === undefined && mapped !== undefined
+        ? withReplayRequestId(entry, mapped)
+        : entry,
+    );
+  }
+  return result;
+}
+
+export function withConfigReads(
+  transcript: CodexReplay.CodexAppServerReplayTranscript,
+): CodexReplay.CodexAppServerReplayTranscript {
+  return { ...transcript, entries: withConfigReadBeforeTurnStart(transcript.entries) };
+}
+
+const decodeMaterializedTranscript = Schema.decodeUnknownSync(
+  CodexReplay.CodexAppServerReplayTranscript,
+);
+
+// The adapter sends app identity on every turn/start without a T3 MCP session; the
+// replay still compares exact frames, so fixtures that omit it gain the current value.
+export function makeCodexReplayTranscript(input: {
+  readonly scenario: string;
+  readonly entries: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>;
+}): CodexReplay.CodexAppServerReplayTranscript {
+  return decodeMaterializedTranscript(
+    materializeCodexReplayAppIdentity({
+      provider: "codex",
+      protocol: "codex.app-server",
+      version: "0.144.0",
+      scenario: input.scenario,
+      entries: input.entries,
+    }),
+  );
+}
+
+export function withReplayRequestId(
+  entry: CodexReplay.CodexAppServerReplayEntry,
+  id: number,
+): CodexReplay.CodexAppServerReplayEntry {
+  return entry.type !== "runtime_exit" && Predicate.isObject(entry.frame)
+    ? { ...entry, frame: { ...entry.frame, id } }
+    : entry;
+}
+
+export const producerCompletion = (
+  threadId: string,
+  id: string,
+): CodexReplay.CodexAppServerReplayEntry => ({
+  type: "emit_inbound",
+  frame: {
+    method: "turn/completed",
+    params: {
+      threadId,
+      turn: makeCodexReplayTurn({ id, status: "completed" }),
+    },
+  },
+});

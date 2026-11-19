@@ -36,6 +36,7 @@ import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { CodexInlineHistoryStart } from "../../jones/provider/codex/HistoryDeliveryOutcome.ts";
 import { withOwnerSelectionIngress } from "../../jones/threadConfiguration/ownerIngress.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { CommandPolicyCapabilityUnsupportedError } from "../CommandPolicy.ts";
@@ -285,6 +286,12 @@ function makeTestAdapter(input: {
                     input.refusalCause ?? new ClaudeBackgroundWorkBlocksQueryReplacementError(),
                 });
               yield* Effect.yieldNow;
+              const inlineHistory =
+                input.driver === "codex" ? yield* CodexInlineHistoryStart : undefined;
+              if (inlineHistory !== undefined) {
+                assert.isTrue(inlineHistory.tryDispatch());
+                inlineHistory.markAcknowledged();
+              }
               yield* Ref.update(input.capturedTurns, (turns) => [
                 ...turns,
                 {

@@ -1085,7 +1085,59 @@ it.effect.each(
           },
         ],
       });
-      yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn: turn });
+      if (status === "running" && !direct) {
+        // The journal can announce a running turn after a newer update has already
+        // closed it. The wake records another deferral on the same run and attempt.
+        const deferredAgain = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "run.updated" &&
+              event.payload.id === queued.id &&
+              event.payload.status === "queued" &&
+              event.payload.steerWhenReadyRunId === run.id,
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* (yield* EventSink.EventSinkV2).write({
+          events: [
+            {
+              id: EventId.make("missed-steer-turn-started"),
+              type: "provider-turn.updated",
+              threadId,
+              occurredAt: now,
+              payload: turn,
+            },
+            {
+              id: EventId.make("missed-steer-turn-completed"),
+              type: "provider-turn.updated",
+              threadId,
+              occurredAt: now,
+              payload: { ...turn, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        yield* Fiber.join(deferredAgain);
+        assert.deepEqual(steered, []);
+        yield* (yield* EventSink.EventSinkV2).write({
+          events: [
+            {
+              id: EventId.make("steer-successor-turn-started"),
+              type: "provider-turn.updated",
+              threadId,
+              occurredAt: now,
+              payload: {
+                ...turn,
+                id: ProviderTurnId.make("steer-successor-native-turn"),
+                ordinal: turn.ordinal + 1,
+              },
+            },
+          ],
+        });
+      } else {
+        yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn: turn });
+      }
       yield* Fiber.join(promoted);
       if (restarting) yield* Fiber.join(secondReDeferred);
       yield* worker.drain();
