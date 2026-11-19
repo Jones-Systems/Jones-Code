@@ -44,6 +44,13 @@ vi.mock(import("../../state/environments"), async (original) => ({
 vi.mock(import("../../state/session"), async (original) => ({
   ...(await original()),
   useEnvironmentScope: (id, scope) => id !== null && (fixture.scopes.get(id)?.has(scope) ?? false),
+  readEnvironmentScope: (id, scope) => fixture.scopes.get(id)?.has(scope) ?? false,
+  useEnvironmentsWithScope: (targets, scope) =>
+    new Set(
+      targets
+        .map(({ environmentId }) => environmentId)
+        .filter((id) => fixture.scopes.get(id)?.has(scope)),
+    ),
 }));
 vi.mock(import("../../state/use-atom-command"), () => ({
   useAtomCommand: (command: { label: string }) =>
@@ -215,42 +222,109 @@ it("leaves status reads idle whenever the open menu is hidden", async () => {
   }
 });
 
-it("saves the selected checkout's cadence and preserves its other overrides", async () => {
+const extraProjectId = ProjectId.make("extra-project");
+const settingsMembers = [
+  {
+    id: projectId,
+    environmentId: primary,
+    environmentLabel: "Primary",
+    workspaceRoot: "/local",
+    physicalProjectKey: "primary/checkout",
+  },
+  {
+    id: projectId,
+    environmentId: remote,
+    environmentLabel: "Remote",
+    workspaceRoot: "/remote",
+    physicalProjectKey: "remote/checkout",
+  },
+  {
+    id: extraProjectId,
+    environmentId: remote,
+    environmentLabel: "Remote",
+    workspaceRoot: "/remote/version",
+    physicalProjectKey: "remote/extra",
+  },
+] as SidebarProjectGroupMember[];
+
+const pickCadence = async (name: string) => {
+  await page.getByRole("combobox", { name: "Automatic fetch" }).click();
+  await page.getByRole("option", { name, exact: true }).click();
+};
+
+it("applies a single cadence to the selected environments and only their chosen checkouts", async () => {
   setupFixture();
   fixture.scopes.get(remote)!.add(AuthSettingsWriteScope);
+  fixture.environments[1] = makeEnvironment(remote, true, 300);
   fixture.settings.mockResolvedValue(
     AsyncResult.success({
       ...DEFAULT_SERVER_SETTINGS,
       projectSettingsOverrides: {
-        [projectId]: { defaultAutoPull: true, repoFreshnessCadenceSeconds: 300 },
+        [projectId]: { defaultAutoPull: true, repoFreshnessCadenceSeconds: 0 },
       },
     }),
   );
-  const members = [
-    { id: projectId, environmentId: primary, environmentLabel: "Primary", workspaceRoot: "/local" },
-    { id: projectId, environmentId: remote, environmentLabel: "Remote", workspaceRoot: "/remote" },
-  ] as SidebarProjectGroupMember[];
-  await using screen = await render(<RepoFreshnessSettings members={members} />);
-  const select = screen.getByRole("combobox", { name: "Automatic fetch for Remote · /remote" });
-  await expect.element(select).toHaveTextContent("2 minutes");
-  await select.click();
-  await expect.element(page.getByRole("option", { name: "Off" })).toBeVisible();
-  await page.getByRole("option", { name: "5 minutes" }).click();
+  await using screen = await render(<RepoFreshnessSettings members={settingsMembers} />);
+  const cadence = screen.getByRole("combobox", { name: "Automatic fetch" });
+  await expect.element(cadence).toBeDisabled();
+  await expect.element(cadence).toHaveTextContent("Choose checkouts");
+  expect(fixture.settings).not.toHaveBeenCalled();
+
+  await screen.getByRole("combobox", { name: "Remote checkout" }).click();
+  await page.getByRole("option", { name: "/remote", exact: true }).click();
+  await expect.element(cadence).toBeEnabled();
+  await expect.element(cadence).toHaveTextContent("Mixed");
+  await pickCadence("Off");
+
   await expect
     .poll(() => fixture.settings.mock.calls)
-    .toEqual([
-      [
+    .toEqual(
+      [primary, remote].map((environmentId) => [
         {
-          environmentId: remote,
+          environmentId,
           input: {
             patch: {
-              projectSettingsOverrides: {
-                [projectId]: { defaultAutoPull: true, repoFreshnessCadenceSeconds: 300 },
-              },
+              projectSettingsOverrides: { [projectId]: { repoFreshnessCadenceSeconds: 0 } },
             },
           },
         },
-      ],
-    ]);
+      ]),
+    );
   expect(fixture.toast).not.toHaveBeenCalled();
+});
+
+it("reports which environment could not confirm a bulk save", async () => {
+  setupFixture();
+  fixture.scopes.get(remote)!.add(AuthSettingsWriteScope);
+  fixture.settings
+    .mockResolvedValueOnce(
+      AsyncResult.success({
+        ...DEFAULT_SERVER_SETTINGS,
+        projectSettingsOverrides: { [projectId]: { repoFreshnessCadenceSeconds: 300 } },
+      }),
+    )
+    .mockRejectedValueOnce(new Error("Connection lost"));
+  await using screen = await render(
+    <RepoFreshnessSettings members={settingsMembers.slice(0, 2)} />,
+  );
+  await expect
+    .element(screen.getByRole("combobox", { name: "Automatic fetch" }))
+    .toHaveTextContent("2 minutes");
+  await pickCadence("5 minutes");
+  await expect
+    .poll(() => fixture.toast.mock.lastCall?.[0])
+    .toMatchObject({
+      title: "Automatic fetch could not be confirmed everywhere",
+      description: "Check the setting on Remote.",
+    });
+});
+
+it("blocks a bulk save when a selected environment lacks settings access", async () => {
+  setupFixture();
+  await using screen = await render(
+    <RepoFreshnessSettings members={settingsMembers.slice(0, 2)} />,
+  );
+  await expect.element(screen.getByRole("combobox", { name: "Automatic fetch" })).toBeDisabled();
+  await expect.element(screen.getByText(/Automatic fetch is unavailable on Remote/)).toBeVisible();
+  expect(fixture.settings).not.toHaveBeenCalled();
 });

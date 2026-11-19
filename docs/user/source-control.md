@@ -5,9 +5,10 @@ Origin to clone and publish repositories, create pull requests, and review chang
 
 ## Keep the default branch fresh
 
-In **Settings → Projects**, choose a project checkout and set its automatic fetch interval to
-**2 minutes** or **5 minutes**. The server that owns the checkout checks the remote even when the
-app is closed, as long as the server is running. The last checked time advances on a successful
+In **Settings → Projects**, choose a project and the environments to update. If an environment
+has several registered checkouts, choose the folder to sync there. Set **Automatic fetch** to
+**2 minutes** or **5 minutes** to apply that interval to the selected checkouts. Each server checks
+the remote while it is running, even when the app is closed. The last checked time advances on a successful
 check, including when the commit stays the same. The result becomes stale after five minutes at the
 two-minute interval, or after 12 minutes and 30 seconds at the five-minute interval.
 
