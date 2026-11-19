@@ -146,16 +146,30 @@ export function ReviewActions(props: {
           <CopyIcon aria-hidden />
           Copy choice
         </Button>
-        <Button variant="outline" size="sm" onClick={props.onReset}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setOutcome(null);
+            props.onReset();
+          }}
+        >
           <RotateCcwIcon aria-hidden />
           {props.resetLabel}
         </Button>
-        <Button variant="ghost" size="sm" onClick={props.onRestart}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            setOutcome(null);
+            props.onRestart();
+          }}
+        >
           <RefreshCwIcon aria-hidden />
           Restart review
         </Button>
       </div>
-      <p role="status" className="min-h-4 text-xs text-muted-foreground">
+      <p role="status" className="text-xs text-muted-foreground">
         {current?.status === "copied"
           ? "Copied your choice to the clipboard."
           : current?.status === "blocked"

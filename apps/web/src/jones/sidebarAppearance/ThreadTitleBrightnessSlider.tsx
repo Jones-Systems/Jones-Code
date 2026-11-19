@@ -26,7 +26,7 @@ export function ThreadTitleBrightnessSlider({
         value={value}
         aria-valuetext={
           value === 0
-            ? "Current colours"
+            ? "Original colors"
             : value === 100
               ? "Highest contrast"
               : `${value}% toward highest contrast`
@@ -34,8 +34,8 @@ export function ThreadTitleBrightnessSlider({
         onInput={(event) => onChange(event.currentTarget.valueAsNumber)}
       />
       <div className="flex justify-between text-xs text-muted-foreground">
-        <span>Current</span>
-        <span>Higher contrast</span>
+        <span>0% · Original</span>
+        <span>100% · Highest contrast</span>
       </div>
     </div>
   );
