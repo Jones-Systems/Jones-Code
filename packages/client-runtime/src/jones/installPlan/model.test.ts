@@ -341,6 +341,76 @@ describe("install plan model", () => {
     ).toBe(false);
   });
 
+  it("adds the first late host Stop to a completed download without rewriting final evidence", () => {
+    const staged = { stagedHandle: "stage", sourceSha: source, sourceTree: tree, artifactId: 1 };
+    const completed: JonesOperationReceipt = { ...receipt("completed"), staged };
+    const requestedAt = "2026-10-27T05:01:00.000Z";
+    const stop = {
+      stopId: "33333333-3333-4333-8333-333333333333",
+      requestedAt,
+      result: "too-late",
+    } as const;
+    const annotated = { ...completed, stop, updatedAt: "2026-10-27T05:01:01.000Z" };
+    expect(validateReceipt(completed, annotated)).toBe(true);
+    expect(validateReceipt(annotated, annotated)).toBe(true);
+    for (const candidate of [
+      { ...annotated, operationId: id },
+      { ...annotated, environmentId: laptop },
+      { ...annotated, correlation: { planId: operationId, deviceKey: env } },
+      { ...annotated, staged: { ...staged, stagedHandle: "different-stage" } },
+      { ...annotated, message: "changed completion evidence" },
+      { ...annotated, phase: "stopped" as const },
+      { ...annotated, updatedAt: now },
+      { ...annotated, stop: { ...stop, requestedAt: "2026-10-27T04:59:59.000Z" } },
+      { ...annotated, stop: { ...stop, result: "not-stoppable-phase" as const } },
+    ]) {
+      expect(validateReceipt(completed, candidate)).toBe(false);
+    }
+    expect(validateReceipt(annotated, { ...annotated, stop: { ...stop, stopId: id } })).toBe(false);
+    expect(validateReceipt(annotated, completed)).toBe(false);
+  });
+
+  it("composes late Stop and owned-stage retirement while preserving both once recorded", () => {
+    const staged = {
+      stagedHandle: "owned-stage",
+      sourceSha: source,
+      sourceTree: tree,
+      artifactId: 1,
+      createdByOperation: true,
+    } as const;
+    const completed: JonesOperationReceipt = { ...receipt("completed"), staged };
+    const stop = {
+      stopId: id,
+      requestedAt: "2026-10-27T05:01:00.000Z",
+      result: "too-late",
+    } as const;
+    const stopped = { ...completed, stop, updatedAt: "2026-10-27T05:01:01.000Z" };
+    const retired = {
+      ...completed,
+      stageRetiredAt: "2026-10-27T05:02:00.000Z",
+      updatedAt: "2026-10-27T05:02:01.000Z",
+    };
+    const combined = { ...retired, stop };
+    const retiredThenStopped = {
+      ...retired,
+      stop: { ...stop, requestedAt: "2026-10-27T05:03:00.000Z" },
+      updatedAt: "2026-10-27T05:03:01.000Z",
+    };
+    expect(validateReceipt(completed, stopped)).toBe(true);
+    expect(validateReceipt(completed, retired)).toBe(true);
+    expect(validateReceipt(completed, combined)).toBe(true);
+    expect(validateReceipt(stopped, combined)).toBe(true);
+    expect(validateReceipt(retired, retiredThenStopped)).toBe(true);
+    expect(validateReceipt(stopped, { ...combined, stop: { ...stop, stopId: operationId } })).toBe(
+      false,
+    );
+    expect(validateReceipt(retired, { ...retiredThenStopped, stageRetiredAt: now })).toBe(false);
+    expect(validateReceipt(completed, { ...combined, stageRetiredAt: "invalid" })).toBe(false);
+    expect(
+      validateReceipt(completed, { ...combined, staged: { ...staged, stagedHandle: "other" } }),
+    ).toBe(false);
+  });
+
   it("settles unstarted followers only after a proven Laptop failure, with no outstanding leases", () => {
     const plan = base();
     expect(laptopSettled(plan)).toBe(false);

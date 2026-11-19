@@ -59,7 +59,8 @@ export function validateReceipt(
   next: JonesOperationReceipt,
 ): boolean {
   if (!isReceipt(next)) return false;
-  if (!Number.isFinite(Date.parse(next.updatedAt))) return false;
+  const updatedAt = Date.parse(next.updatedAt);
+  if (!Number.isFinite(updatedAt)) return false;
   if (!["refused", "fenced"].includes(next.phase) && next.acceptedAt === undefined) return false;
   for (const key of [
     "operationId",
@@ -95,11 +96,8 @@ export function validateReceipt(
   )
     return false;
   if (!("phase" in prev)) return true;
-  if (
-    !Number.isFinite(Date.parse(next.updatedAt)) ||
-    Date.parse(next.updatedAt) < Date.parse(prev.updatedAt)
-  )
-    return false;
+  const previousUpdate = Date.parse(prev.updatedAt);
+  if (updatedAt < previousUpdate) return false;
   // A stable field may first appear as work advances, but cannot be removed or rebound.
   for (const key of ["acceptedAt", "jobId", "staged", "updateId", "outcome", "recovery"] as const) {
     if (prev[key] !== undefined && !equal(prev[key], next[key])) {
@@ -125,17 +123,27 @@ export function validateReceipt(
       return false;
   }
   if (terminal.has(prev.phase)) {
-    if (
+    const stopRequestedAt = Date.parse(next.stop?.requestedAt ?? "");
+    const lateStop =
+      prev.phase === "completed" &&
+      prev.action.kind !== "install" &&
+      prev.staged !== undefined &&
+      prev.stop === undefined &&
+      next.stop?.result === "too-late" &&
+      stopRequestedAt >= previousUpdate &&
+      stopRequestedAt <= updatedAt;
+    const stageRetired =
       prev.phase === "completed" &&
       prev.staged?.createdByOperation === true &&
       prev.stageRetiredAt === undefined &&
       next.stageRetiredAt !== undefined &&
-      Number.isFinite(Date.parse(next.stageRetiredAt))
-    ) {
-      const { stageRetiredAt: _retired, ...rest } = next;
-      return equal(prev, { ...rest, updatedAt: prev.updatedAt });
-    }
-    return equal(prev, next);
+      Number.isFinite(Date.parse(next.stageRetiredAt));
+    if (!lateStop && !stageRetired) return equal(prev, next);
+    // A read may observe both annotations at once. Ignore only the first valid addition of each.
+    const finalEvidence = { ...next, updatedAt: prev.updatedAt };
+    if (lateStop) delete finalEvidence.stop;
+    if (stageRetired) delete finalEvidence.stageRetiredAt;
+    return equal(prev, finalEvidence);
   }
   if (next.phase === "fenced") return false; // acceptance can never be erased by a fence
   if (terminal.has(next.phase)) return true;
@@ -191,6 +199,10 @@ export type InstallPlanSelectability =
     }
   | { readonly selectable: false; readonly reason: string };
 
+function supportsInstallPlanMutations(capability: JonesUpdateState["capability"]): boolean {
+  return capability.operations === 1 && capability.download && capability.install;
+}
+
 export function selectability(
   observation: JonesUpdateObservation,
   fleetStatus?: FleetHostStatus | null,
@@ -198,12 +210,7 @@ export function selectability(
   const state = observation.state;
   if (observation.freshness !== "fresh" || state === null)
     return { selectable: false, reason: "Waiting for fresh update status." };
-  if (
-    state.capability.operations !== 1 ||
-    !state.capability.download ||
-    !state.capability.install ||
-    state.installedSource === undefined
-  )
+  if (!supportsInstallPlanMutations(state.capability) || state.installedSource === undefined)
     return {
       selectable: false,
       reason: "This host needs durable update operations and a verified installed source.",
@@ -383,12 +390,12 @@ export function operationOutstanding(operation: JonesInstallPlanHostOperation): 
   return outstanding(operation);
 }
 
+export function hasUnconfirmedLauncherOutcome(receipt: JonesOperationReceipt | undefined): boolean {
+  return receipt?.code === "launcher-unconfirmed" || receipt?.code === "launcher-unreadable";
+}
+
 function outstanding(operation: JonesInstallPlanHostOperation): boolean {
-  if (
-    operation.receipt?.code === "launcher-unconfirmed" ||
-    operation.receipt?.code === "launcher-unreadable"
-  )
-    return true;
+  if (hasUnconfirmedLauncherOutcome(operation.receipt)) return true;
   return operation.step === "directive"
     ? operation.directive === undefined
     : operation.receipt === undefined || !terminal.has(operation.receipt.phase);
@@ -396,6 +403,7 @@ function outstanding(operation: JonesInstallPlanHostOperation): boolean {
 
 export function laptopSettled(plan: JonesInstallPlan): boolean {
   if (
+    plan.laptop.gatePause === true ||
     (plan.laptop.stageAbandonment !== undefined &&
       plan.laptop.stageAbandonment.status !== "retired") ||
     plan.laptop.operations.some(
@@ -456,7 +464,7 @@ export function deviceState(
       const receipt = latest.receipt;
       if (receipt === undefined)
         return Date.parse(latest.lease.leaseUntil) > now ? "reserved" : "unknown";
-      if (receipt.code === "launcher-unconfirmed") return "unknown";
+      if (hasUnconfirmedLauncherOutcome(receipt)) return "unknown";
       if (receipt.phase === "held") return "held";
       if (receipt.phase === "fenced") return "fenced";
       if (receipt.phase === "stop-requested") return "stop-requested";
@@ -605,6 +613,11 @@ export type InstallPlanRunnerStep =
   | { readonly kind: "wait"; readonly reason: string }
   | { readonly kind: "reservation"; readonly operation: JonesInstallPlanHostOperation }
   | { readonly kind: "read"; readonly operation: JonesInstallPlanHostOperation }
+  | {
+      readonly kind: "report-directive";
+      readonly operationId: string;
+      readonly status: FleetHostStatus;
+    }
   | { readonly kind: "claim-fence"; readonly operationId: string }
   | {
       readonly kind: "claim-directive";
@@ -616,6 +629,10 @@ export type InstallPlanRunnerStep =
       readonly action: JonesOperationAction;
       readonly expectedInstalledSource: string;
     };
+
+export function supportsOperationReceiptReads(capability: JonesUpdateState["capability"]): boolean {
+  return capability.operations === 1 || capability.operationReceipts === 1;
+}
 
 /** Pure scheduling advice. Only the native coordinator can grant dispatch authority. */
 export function nextRunnerStep(
@@ -633,16 +650,31 @@ export function nextRunnerStep(
     device.abandoning === true
   )
     return wait("Plan is inactive for this device.");
-  if (
-    observation.freshness !== "fresh" ||
-    observation.state?.environmentId !== device.environmentId ||
-    observation.state.capability.operations !== 1
-  )
-    return wait("Fresh operation support is required.");
+  const { state } = observation;
+  if (observation.freshness !== "fresh" || state?.environmentId !== device.environmentId)
+    return wait("Fresh matching update status is required.");
+  const capability = state.capability;
+  const mutationsSupported = supportsInstallPlanMutations(capability);
   const operations = deviceActiveOperations(device);
   const pending = operations.find(outstanding);
+  if (
+    pending?.request.kind === "operation-start" &&
+    supportsOperationReceiptReads(capability) &&
+    (pending.receipt !== undefined || !mutationsSupported)
+  )
+    return { kind: "read", operation: pending };
+  if (
+    pending?.step === "directive" &&
+    pending.request.kind === "plan-directive" &&
+    pending.request.input.environmentId === device.environmentId &&
+    pending.request.input.directiveId === pending.operationId &&
+    capability.operations === 1 &&
+    fleetStatus != null &&
+    validateDirectiveEvidence(pending.request.input, fleetStatus)
+  )
+    return { kind: "report-directive", operationId: pending.operationId, status: fleetStatus };
+  if (!mutationsSupported) return wait("Fresh download and install capability is required.");
   if (pending !== undefined) {
-    if (pending.receipt !== undefined) return { kind: "read", operation: pending };
     if (pending.step === "directive") {
       // A directive has no operation ledger fence. Its reservation can only be replayed by ID.
       return { kind: "reservation", operation: pending };
@@ -655,7 +687,7 @@ export function nextRunnerStep(
     return wait("Waits for Laptop.");
   if (device.ended !== undefined || device.verifiedElsewhere !== undefined)
     return wait("This device's update was ended.");
-  if (matchesPlanTarget(plan, device, observation.state))
+  if (matchesPlanTarget(plan, device, state))
     return wait("The selected source is already running.");
   const selectable = selectability(observation, fleetStatus);
   if (
@@ -667,7 +699,6 @@ export function nextRunnerStep(
   const lastDownload = operations.findLast((o) => o.step === "download");
   if (lastDownload !== undefined && lastDownload.receipt?.phase !== "fenced")
     return wait("Download already attempted; another attempt needs an explicit action.");
-  const state = observation.state;
   if (
     device.route === "follower-operations" &&
     state.installedSource?.sha !== plan.target.sourceSha &&
@@ -687,12 +718,7 @@ export function nextRunnerStep(
       expectedDirectiveId: fleetStatus.follower?.planDirective?.directiveId ?? null,
     };
   }
-  if (
-    state.installedSource === undefined ||
-    !state.capability.download ||
-    !state.capability.install
-  )
-    return wait("The host cannot download now.");
+  if (state.installedSource === undefined) return wait("The host cannot download now.");
   if (
     state.stagedHandle !== undefined ||
     ["downloading", "verifying", "preparing", "installing"].includes(state.phase)

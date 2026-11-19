@@ -12,7 +12,6 @@ const ready = {
   hasStage: true,
   hasInstall: true,
   hasEnvironment: true,
-  restoreFailed: false,
 };
 
 describe("qualified server update capability", () => {
@@ -101,7 +100,6 @@ describe("qualified server update capability", () => {
       { qualifiedUpdates: false },
       { hasInstall: false },
       { hasEnvironment: false },
-      { restoreFailed: true },
     ]) {
       expect(qualifiedServerCapability({ ...ready, ...patch })).toEqual({
         check: true,

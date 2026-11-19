@@ -117,6 +117,7 @@ function fixture() {
   const host = vi.fn<InstallPlanDriver["host"]>(async () => {
     throw new Error("unused");
   });
+  const canOperate = vi.fn<InstallPlanDriver["canOperate"]>(() => true);
   return {
     driver: {
       claimant: "window:a",
@@ -124,6 +125,7 @@ function fixture() {
       cancelled: () => false,
       desktop,
       observe,
+      canOperate,
       operation,
       host,
     },
@@ -136,6 +138,7 @@ function fixture() {
     desktop,
     operation,
     observe,
+    canOperate,
     host,
   };
 }
@@ -152,19 +155,78 @@ describe("bounded install plan runner", () => {
     );
   });
 
-  it("keeps excluded devices and a closed native barrier inert", async () => {
-    for (const removed of [true, false]) {
+  it.each(["removed", "changed", "paused"] as const)(
+    "keeps %s devices or gates inert",
+    async (kind) => {
       const f = fixture(),
         p = f.plan();
       f.setPlan(
-        removed
+        kind === "removed"
           ? { ...p, devices: [{ ...p.devices[0]!, membership: "removed" }] }
-          : { ...p, laptop: { ...p.laptop, gateClosed: { at: now, reason: "changed" } } },
+          : {
+              ...p,
+              laptop: {
+                ...p.laptop,
+                gateClosed: { at: now, reason: kind === "paused" ? "blocked" : "changed" },
+                ...(kind === "paused" ? { gatePause: true as const } : {}),
+              },
+            },
       );
       await advanceInstallPlan(f.driver);
       expect(f.operation).not.toHaveBeenCalled();
       expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read"]);
-    }
+    },
+  );
+
+  it.each(["new download", "download replay", "fence"] as const)(
+    "uses no lease or host mutation for a read-only peer's %s",
+    async (step) => {
+      const f = fixture();
+      if (step !== "new download") {
+        const plan = f.plan();
+        f.setPlan({
+          ...plan,
+          devices: [
+            {
+              ...plan.devices[0]!,
+              operations: [
+                {
+                  operationId: opId,
+                  step: "download",
+                  request: { kind: "operation-start", input: request },
+                  lease: {
+                    claimant: f.driver.claimant,
+                    reservedAt: now,
+                    leaseUntil: step === "fence" ? now : leaseUntil,
+                  },
+                },
+              ],
+            },
+          ],
+        });
+      }
+      const observed = await f.observe(env);
+      f.observe.mockResolvedValueOnce({ ...observed, canOperate: false });
+      await advanceInstallPlan(f.driver);
+      f.canOperate.mockReturnValue(false);
+      await advanceInstallPlan(f.driver);
+      expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "read"]);
+      expect(f.operation).not.toHaveBeenCalled();
+      expect(f.host).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not dispatch when authority changes during a native claim", async () => {
+    const f = fixture();
+    const claim = f.desktop.getMockImplementation()!;
+    f.desktop.mockImplementation(async (request) => {
+      const result = await claim(request);
+      if (request.type === "claim") f.canOperate.mockReturnValue(false);
+      return result;
+    });
+    await advanceInstallPlan(f.driver);
+    expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "claim"]);
+    expect(f.operation).not.toHaveBeenCalled();
   });
 
   it("resends only its own identical live reservation and fences an abandoned one", async () => {
@@ -236,7 +298,107 @@ describe("bounded install plan runner", () => {
     });
     await advanceInstallPlan(f.driver);
     expect(f.desktop.mock.calls.filter(([r]) => r.type === "report")).toHaveLength(0);
+    const observed = await f.observe(env);
+    f.observe.mockResolvedValue({ ...observed, canOperate: false });
+    f.canOperate.mockReturnValue(false);
+    f.operation.mockResolvedValue({ receipts: [{ operationId: opId, receipt: f.receipt }] });
+    await advanceInstallPlan(f.driver);
+    expect(f.operation.mock.calls.at(-1)?.[1]).toMatchObject({
+      action: "operationRead",
+      input: { environmentId: env, operationIds: [opId] },
+    });
+    expect(f.desktop.mock.calls.at(-1)?.[0]).toMatchObject({
+      type: "report",
+      operationId: opId,
+      evidence: { kind: "receipt", receipt: f.receipt },
+    });
+    expect(f.desktop.mock.calls.some(([r]) => r.type === "claim")).toBe(false);
   });
+
+  it.each([
+    {
+      name: "receipt-only support",
+      capability: { check: false, download: false, install: false, operationReceipts: 1 },
+    },
+    {
+      name: "download disabled",
+      capability: { check: true, download: false, install: true, operations: 1, exactSource: true },
+    },
+    {
+      name: "install disabled",
+      capability: { check: true, download: true, install: false, operations: 1, exactSource: true },
+    },
+  ] as const)(
+    "reads exact receipts and never claims a lease with $name",
+    async ({ capability }) => {
+      const f = fixture();
+      const plan = f.plan();
+      const observed = await f.observe(env);
+      const before = observed.observation.state!;
+      const limited = {
+        ...observed,
+        observation: { ...observed.observation, state: { ...before, capability } },
+      };
+      const reservation = {
+        operationId: opId,
+        step: "download" as const,
+        request: { kind: "operation-start" as const, input: request },
+        lease: { claimant: f.driver.claimant, reservedAt: now, leaseUntil: now },
+      };
+      const setOperation = (operation = reservation) => {
+        f.setPlan({ ...plan, devices: [{ ...plan.devices[0]!, operations: [operation] }] });
+      };
+
+      f.observe.mockResolvedValue(limited);
+      for (const expiresAt of [now, leaseUntil]) {
+        setOperation({ ...reservation, lease: { ...reservation.lease, leaseUntil: expiresAt } });
+        f.operation.mockResolvedValueOnce({ receipts: [{ operationId: opId, receipt: null }] });
+        await advanceInstallPlan(f.driver);
+        expect(f.operation).toHaveBeenLastCalledWith(env, {
+          action: "operationRead",
+          input: { environmentId: env, operationIds: [opId] },
+        });
+      }
+      expect(f.operation).toHaveBeenCalledTimes(2);
+      expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read", "read"]);
+
+      f.operation.mockClear();
+      const accepted = { ...reservation, receipt: f.receipt };
+      setOperation(accepted);
+      f.observe.mockResolvedValueOnce({
+        ...limited,
+        observation: {
+          ...limited.observation,
+          state: { ...before, capability, environmentId: laptop },
+        },
+      });
+      await advanceInstallPlan(f.driver);
+      f.observe.mockResolvedValueOnce({
+        ...limited,
+        observation: { ...limited.observation, freshness: "stale" },
+      });
+      await advanceInstallPlan(f.driver);
+      expect(f.operation).not.toHaveBeenCalled();
+
+      f.observe.mockResolvedValueOnce({ ...limited, canOperate: false });
+      f.canOperate.mockReturnValue(false);
+      await advanceInstallPlan(f.driver);
+      expect(f.desktop.mock.calls.at(-1)?.[0]).toEqual({
+        type: "report",
+        planId,
+        environmentId: env,
+        operationId: opId,
+        evidence: { kind: "receipt", receipt: f.receipt },
+      });
+
+      f.setPlan(plan);
+      f.canOperate.mockReturnValue(true);
+      await advanceInstallPlan(f.driver);
+      expect(f.operation).toHaveBeenCalledTimes(1);
+      expect(f.desktop.mock.calls.some(([r]) => r.type === "claim")).toBe(false);
+      expect(f.host).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not borrow another window's lease or perform explicit install/Stop", async () => {
     const f = fixture(),
@@ -337,6 +499,13 @@ describe("bounded install plan runner", () => {
         },
       },
     };
+    if (result === "reply") {
+      f.observe.mockResolvedValueOnce({ ...observed, canOperate: false, fleetStatus: fleet });
+      await advanceInstallPlan(f.driver);
+      expect(f.desktop.mock.calls.map(([request]) => request.type)).toEqual(["read"]);
+      expect(f.host).not.toHaveBeenCalled();
+      f.desktop.mockClear();
+    }
     if (result !== "reply")
       f.host.mockRejectedValueOnce({
         _tag: "FleetHostError",
@@ -367,9 +536,18 @@ describe("bounded install plan runner", () => {
         ],
       });
       const resumed = { ...f.driver, claimant: "window:b", now: () => Date.parse(leaseUntil) };
+      const update = observed.observation.state!;
+      const limited = {
+        ...observed,
+        observation: {
+          ...observed.observation,
+          state: { ...update, capability: { ...update.capability, download: false } },
+        },
+      };
       if (result === "lost reply") {
         f.desktop.mockResolvedValue({ state: state() });
-        f.observe.mockResolvedValue({ ...observed, fleetStatus: applied });
+        f.observe.mockResolvedValue({ ...limited, canOperate: false, fleetStatus: applied });
+        f.canOperate.mockReturnValue(false);
         await advanceInstallPlan(resumed);
         expect(f.host).toHaveBeenCalledTimes(1);
       } else {
@@ -384,8 +562,15 @@ describe("bounded install plan runner", () => {
         await advanceInstallPlan(resumed);
         expect(f.host).toHaveBeenCalledTimes(1);
         f.observe.mockResolvedValue({ ...observed, canOperate: false, fleetStatus: fleet });
+        f.desktop.mockClear();
         await advanceInstallPlan(resumed);
         expect(f.host).toHaveBeenCalledTimes(1);
+        expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read"]);
+        f.observe.mockResolvedValue({ ...limited, fleetStatus: fleet });
+        f.desktop.mockClear();
+        await advanceInstallPlan(resumed);
+        expect(f.host).toHaveBeenCalledTimes(1);
+        expect(f.desktop.mock.calls.map(([r]) => r.type)).toEqual(["read"]);
         f.observe.mockResolvedValue({ ...observed, fleetStatus: fleet });
         f.desktop.mockResolvedValue({
           state: state(),

@@ -90,12 +90,16 @@ export async function writeJonesNativeFile(
   }
 }
 
-export function runNativeCommand(command: string, args: readonly string[]): Promise<string> {
+export function runNativeCommand(
+  command: string,
+  args: readonly string[],
+  timeout = 120000,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     NodeChildProcess.execFile(
       command,
       [...args],
-      { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 120000 },
+      { encoding: "utf8", maxBuffer: 1024 * 1024, timeout },
       (error, stdout) => {
         if (error)
           reject(new Error(`Native updater operation ${NodePath.basename(command)} failed.`));

@@ -590,18 +590,20 @@ def selection_binding(active, handle, selection_path, expected_digest):
         raise SelectionRefused('selection-mismatch')
     return path, selection, raw, info
 
-def inspect_selection_transactions(active, transaction_id=None, claiming=False, staged_handle=None, retiring=None):
+def inspect_selection_transactions(active, transaction_id=None, claiming=False, staged_handle=None, retiring=None, startup=False):
     root = manifest_path.parent / 'jones-updates' / 'transactions'
     if transaction_id is not None: reject_withdrawn_preparation(transaction_id)
     if not root.exists():
-        if claiming: raise SelectionRefused('unknown-state')
+        if claiming or (startup and root.is_symlink()): raise SelectionRefused('unknown-state')
         return
     if root.is_symlink() or not root.is_dir(): raise SelectionRefused('unknown-state')
+    if startup: retention_identity(root)
     count = 0
     for transaction in root.iterdir():
         count += 1
         if count > 1000 or transaction.is_symlink() or not transaction.is_dir() or len(transaction.name) != 64 or any(char not in '0123456789abcdef' for char in transaction.name):
             raise SelectionRefused('unknown-state')
+        if startup: retention_identity(transaction)
         if transaction.name != retiring and (transaction / 'retirement-intent.json').exists() and not (transaction / 'retirement-receipt.json').exists():
             raise SelectionRefused('activation-pending')
         intent, journal, preparation = [transaction / name for name in ('intent.json', 'journal.json', 'prepare-intent.json')]
@@ -616,6 +618,8 @@ def inspect_selection_transactions(active, transaction_id=None, claiming=False, 
             prior, _, _ = bounded_native_json(intent)
             if value.get('intent') != prior or prior.get('transactionId') != transaction.name or prior.get('protocol') != PROTOCOL or prior.get('expected', {}).get('home') != active['home']:
                 raise SelectionRefused('unknown-state')
+            if startup and (not warm_intent_shape(prior) or value.get('recoveryReserveCleanup') == 'held'):
+                raise SelectionRefused('unknown-state')
             if value.get('phase') not in ('resumed', 'rolled-back'):
                 raise SelectionRefused('activation-pending')
             if staged_handle is not None and prior.get('staged', {}).get('handle') == staged_handle:
@@ -623,6 +627,51 @@ def inspect_selection_transactions(active, transaction_id=None, claiming=False, 
                     raise SelectionRefused('activation-pending')
         elif intent.exists() or preparation.exists() or prepared:
             raise SelectionRefused('activation-pending')
+        elif startup and next(transaction.iterdir(), None) is not None:
+            # A crash before the plan binds may leave an empty transaction directory.
+            raise SelectionRefused('unknown-state')
+
+def inspect_laptop_startup(handle, selection_path, selection_sha256, manifest_sha256, lock_absent=False):
+    result = {'protocol': PROTOCOL, 'operation': 'inspect-laptop-startup', 'status': 'refused'}
+    try:
+        runtime = manifest_path.parent
+        for directory in (runtime, runtime / 'jones-updates', runtime / 'jones-updates/staging'):
+            retention_identity(directory)
+        active, manifest_raw, manifest_info = bounded_native_json(manifest_path)
+        database_binding(active)
+        if manifest_info.st_nlink != 1 or hashlib.sha256(manifest_raw).hexdigest() != manifest_sha256:
+            raise SelectionRefused('active-changed')
+        path, _, raw, info = selection_binding(active, handle, selection_path, selection_sha256)
+        if info.st_nlink != 1: raise SelectionRefused('selection-mismatch')
+        maintenance = runtime / 'jones-maintenance'
+        if os.path.lexists(maintenance): raise SelectionRefused('maintenance-pending')
+        inspect_selection_transactions(active, staged_handle=handle, startup=True)
+        manual = runtime / 'jones-manual-installs'
+        if os.path.lexists(manual):
+            retention_identity(manual)
+            for count, directory in enumerate(manual.iterdir(), 1):
+                if count > 1000 or not database_hex(directory.name):
+                    raise SelectionRefused('unknown-state')
+                retention_identity(directory)
+                receipt, _ = database_read(directory / 'receipt.json')
+                if (receipt.get('protocol') != PROTOCOL or receipt.get('operation') != 'manual-install' or
+                    receipt.get('transactionId') != directory.name or
+                    (receipt.get('phase') != 'launched' and not manual_aborted_before_swap(directory))):
+                    raise SelectionRefused('manual-install-pending')
+        _, manifest_current, manifest_stat = bounded_native_json(manifest_path)
+        _, _, selection_current, selection_stat = selection_binding(active, handle, path, selection_sha256)
+        if (manifest_current != manifest_raw or not os.path.samestat(manifest_info, manifest_stat) or
+            selection_current != raw or not os.path.samestat(info, selection_stat) or os.path.lexists(maintenance)):
+            raise SelectionRefused('native-binding-changed')
+        if lock_absent:
+            # Helpers publish the persistent lock before any activation writes.
+            if os.path.lexists(lock_path): raise SelectionRefused('activation-lock-changed')
+        else: require_retention_exclusion()
+        return dict(result, status='settled', manifestSha256=manifest_sha256, selectionSha256=selection_sha256)
+    except SelectionRefused as refused:
+        return dict(result, reason=refused.reason)
+    except Exception:
+        return dict(result, reason='unknown-state')
 
 def pre_swap_preparation_recovery(request, request_path, request_sha256, active, manifest_raw):
     if set(request) != {'manifestSha256', 'observed', 'preSwapPreparationRecovery'}: raise SelectionRefused('unknown-transaction')
@@ -2805,6 +2854,7 @@ action = parser.add_mutually_exclusive_group(required=True)
 action.add_argument('--process-identity', type=kernel_process_pid)
 action.add_argument('--activate')
 action.add_argument('--inspect-recovery')
+action.add_argument('--inspect-laptop-startup')
 action.add_argument('--settle-interrupted-activation')
 action.add_argument('--reconcile-running')
 action.add_argument('--inspect-manual-settlement')
@@ -2833,6 +2883,7 @@ parser.add_argument('--staged-handle')
 parser.add_argument('--selection')
 parser.add_argument('--selection-sha256')
 parser.add_argument('--plan-sha256')
+parser.add_argument('--manifest-sha256')
 parser.add_argument('--manual-plan')
 parser.add_argument('--snapshot', action='append')
 parser.add_argument('--require-clone', action='store_true')
@@ -2849,6 +2900,13 @@ if args.process_identity is not None:
     print(json.dumps(identity, separators=(',', ':')))
     raise SystemExit(0)
 if args.manifest is None: parser.error('--manifest is required for this action')
+startup_inspection = args.inspect_laptop_startup is not None
+if startup_inspection:
+    allowed = {'manifest', 'inspect_laptop_startup', 'manifest_sha256', 'selection', 'selection_sha256'}
+    if (not args.selection or not all(database_hex(value) for value in (args.inspect_laptop_startup, args.manifest_sha256, args.selection_sha256)) or
+        any(value not in (None, False, []) for key, value in vars(args).items() if key not in allowed)):
+        parser.error('Laptop startup inspection requires the exact manifest and stage digests.')
+elif args.manifest_sha256 is not None: parser.error('--manifest-sha256 requires Laptop startup inspection')
 settlement = args.inspect_manual_settlement or args.settle_manual_install
 if args.manual_plan and not settlement: parser.error('--manual-plan requires a manual settlement action')
 if settlement is not None:
@@ -2870,7 +2928,7 @@ if database_action:
 if args.require_clone and not (args.inspect_manual_install or args.manual_install): parser.error('--require-clone requires a manual installation action')
 if args.arguments and args.arguments[0] == '--': args.arguments = args.arguments[1:]
 manifest_path = pathlib.Path(args.manifest).resolve(strict=True)
-if (args.inspect_recovery or settlement) and pathlib.Path(args.manifest) != manifest_path:
+if (args.inspect_recovery or settlement or startup_inspection) and pathlib.Path(args.manifest) != manifest_path:
     raise SystemExit('Recovery manifest must be an exact confined native path.')
 if sys.platform != 'darwin': raise SystemExit('The Jones native helper requires macOS.')
 if args.inspect_recovery:
@@ -2882,11 +2940,14 @@ if args.inspect_recovery:
     print(json.dumps(result))
     raise SystemExit(0)
 lock_path = manifest_path.with_name('jones-activation.lock')
-readonly_lock = bool(database_action or settlement)
-lock_operation = 'manual-settlement' if settlement else 'database-retirement'
+readonly_lock = bool(database_action or settlement or startup_inspection)
+lock_operation = 'inspect-laptop-startup' if startup_inspection else 'manual-settlement' if settlement else 'database-retirement'
 if readonly_lock:
     try: descriptor = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
+        if startup_inspection:
+            print(json.dumps(inspect_laptop_startup(args.inspect_laptop_startup, args.selection, args.selection_sha256, args.manifest_sha256, lock_absent=True)))
+            raise SystemExit(0)
         print(json.dumps({'protocol': 1, 'operation': lock_operation, 'status': 'refused', 'reason': 'activation-lock-absent'}))
         raise SystemExit(0)
     except OSError:
@@ -2945,6 +3006,9 @@ with os.fdopen(descriptor, 'r' if readonly_lock else 'r+', encoding='utf8') as l
         raise
     retention_exclusion_held = True
     retention_exclusion_descriptor = lock.fileno()
+    if startup_inspection:
+        print(json.dumps(inspect_laptop_startup(args.inspect_laptop_startup, args.selection, args.selection_sha256, args.manifest_sha256)))
+        raise SystemExit(0)
     if settlement:
         print(json.dumps(manual_settlement(settlement, args.manual_plan, args.plan_sha256)))
         raise SystemExit(0)

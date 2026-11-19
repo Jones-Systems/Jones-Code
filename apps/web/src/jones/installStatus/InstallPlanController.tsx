@@ -8,7 +8,12 @@ import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { environmentSession } from "../../state/session";
 import { jonesUpdates } from "../updates/jonesUpdates";
 import { installStatusStore, type InstallStatusStore, type InstallStatusDevice } from "./panelUi";
-import { bindInstallPlanServices, requestInstallPlan, type InstallPlanServices } from "./services";
+import {
+  bindInstallPlanServices,
+  canOperateInstallDevice,
+  requestInstallPlan,
+  type InstallPlanServices,
+} from "./services";
 import { claimantId, openInstallStatus } from "./entrypoints";
 import { productionInstallPlanServices } from "./production";
 import { startInstallStatusPoller } from "./InstallStatusPoller";
@@ -47,6 +52,7 @@ export function startInstallPlanController(
         });
       return observed;
     },
+    canOperate: (id) => canOperateInstallDevice(services, id),
     operation: async (id, request) => {
       const result = await services.operation(id, request);
       if ("binding" in result || "recoveredCleanup" in result || "receipt" in result)

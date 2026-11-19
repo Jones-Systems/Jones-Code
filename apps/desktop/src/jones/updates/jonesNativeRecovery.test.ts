@@ -74,6 +74,85 @@ print('ok')
 `;
 
 describe("native recovery inspection", () => {
+  it("reads the fixed Laptop stage under the exact activation lock or proves it has not been created", () => {
+    const source = String.raw`
+import tempfile
+with tempfile.TemporaryDirectory(prefix='jones-laptop-startup-') as scratch:
+    home = pathlib.Path(scratch).resolve()
+    manifest_path = home / 'runtime/jones-active-install.json'
+    lock_path = manifest_path.with_name('jones-activation.lock')
+    updates = manifest_path.parent / 'jones-updates'
+    transaction = updates / 'transactions' / ('c' * 64)
+    transaction.mkdir(parents=True)
+    active = {'protocol': 1, 'owner': 'desktop', 'home': str(home),
+              'sourceSha': 'a' * 40, 'version': 'old', 'generation': 'previous',
+              'profile': str(home / 'profile'), 'databasePath': str(home / 'userdata/state.sqlite'),
+              'environmentId': 'native-environment'}
+    durable(manifest_path, active)
+    handle = 'b' * 64
+    selection = updates / 'staging' / (active['sourceSha'] + '-reviewed.json')
+    durable(selection, {'schema': 1, 'source': 'jones-actions', 'home': str(home),
+                        'profile': active['profile'], 'currentVersion': active['version'],
+                        'installedSource': active['sourceSha'], 'active': active, 'app': {'handle': handle}})
+    manifest_sha, selection_sha = digest(manifest_path), digest(selection)
+    def inspect(manifest_digest=manifest_sha, selection_digest=selection_sha):
+        command = [sys.executable, '-', '--manifest', str(manifest_path), '--inspect-laptop-startup', handle,
+                   '--manifest-sha256', manifest_digest, '--selection', str(selection), '--selection-sha256', selection_digest]
+        output = subprocess.run(command, input="import sys; sys.platform = 'darwin'\n" + helper,
+                                text=True, capture_output=True, check=True, timeout=5)
+        return json.loads(output.stdout)
+    proof = {'protocol': 1, 'operation': 'inspect-laptop-startup', 'status': 'settled',
+             'manifestSha256': manifest_sha, 'selectionSha256': selection_sha}
+    assert inspect() == proof
+    assert not lock_path.exists() and not list(transaction.iterdir())
+    assert inspect(manifest_digest='d' * 64)['status'] == 'refused'
+    assert inspect(selection_digest='d' * 64)['status'] == 'refused'
+
+    lock_path.write_text('jones-activation-lock-v1\n')
+    with open(lock_path, 'r+') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert inspect()['reason'] == 'busy'
+    assert inspect() == proof
+
+    for name in ('prepare-intent.json', 'prepare-request.json', 'continuation.json', 'intent.json'):
+        record = transaction / name
+        durable(record, {})
+        assert inspect()['status'] == 'refused', name
+        record.unlink()
+    maintenance = manifest_path.with_name('jones-maintenance')
+    maintenance.symlink_to(home / 'missing-maintenance')
+    assert inspect()['reason'] == 'maintenance-pending'
+    maintenance.unlink()
+    manual = manifest_path.with_name('jones-manual-installs') / ('d' * 64) / 'receipt.json'
+    durable(manual, {'protocol': 1, 'operation': 'manual-install', 'phase': 'held', 'transactionId': 'd' * 64})
+    assert inspect()['reason'] == 'manual-install-pending'
+    shutil.rmtree(manual.parent.parent)
+
+    intent = {'protocol': 1, 'transactionId': transaction.name, 'expected': active,
+              'staged': {'handle': handle}, 'continuationReceipt': str(transaction / 'continuation.json'),
+              'processes': [], 'listener': 'local'}
+    durable(transaction / 'intent.json', intent)
+    journal_path = transaction / 'journal.json'
+    durable(journal_path, {'phase': 'preparing', 'intent': intent})
+    assert inspect()['reason'] == 'activation-pending'
+    durable(journal_path, {'phase': 'rolled-back', 'intent': dict(intent, listener='unrelated')})
+    assert inspect()['reason'] == 'unknown-state'
+    durable(journal_path, {'phase': 'rolled-back', 'intent': intent})
+    assert inspect() == proof
+    assert digest(manifest_path) == manifest_sha and digest(selection) == selection_sha
+    assert lock_path.read_text() == 'jones-activation-lock-v1\n'
+    lock_path.write_text('unknown-lock')
+    assert inspect()['reason'] == 'activation-lock-unknown'
+print('ok')
+`;
+    const output = NodeChildProcess.execFileSync("python3", ["-"], {
+      input: `${definitions}\nhelper = ${JSON.stringify(jonesNativeHelperSource)}\n${source}`,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    expect(output.trim()).toBe("ok");
+  });
+
   it.each([
     "first-install",
     "same-volume",

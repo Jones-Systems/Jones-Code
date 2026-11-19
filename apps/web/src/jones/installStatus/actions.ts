@@ -1,6 +1,6 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
-import type { JonesInstallPlan, JonesInstallPlanGrant } from "@t3tools/contracts/jones/installPlan";
+import type { JonesInstallPlan } from "@t3tools/contracts/jones/installPlan";
 import {
   executeJonesAction,
   prepareReviewedInstall,
@@ -12,18 +12,23 @@ import {
 } from "@t3tools/client-runtime/jones/updates/executor";
 import {
   canReplayDirective,
+  deviceActiveOperations,
+  hasUnconfirmedLauncherOutcome,
+  laptopGateIssue,
+  laptopInstallNeedsReopen,
   operationOutstanding,
+  supportsOperationReceiptReads,
   validateDirectiveEvidence,
   validateReceipt,
 } from "@t3tools/client-runtime/jones/install-plan";
 import { claimantId, routeLaptopDownload, routeLaptopInstall } from "./entrypoints";
-import { installPlanServices, requestInstallPlan } from "./services";
+import { canOperateInstallDevice, installPlanServices, requestInstallPlan } from "./services";
 import type { InstallStatusDevice } from "./panelUi";
+import { LAPTOP_REOPEN_TO_CHECK_INSTALL } from "./copy";
 
 export type PanelAction =
   | "download"
   | "install"
-  | "stop"
   | "remove"
   | "end"
   | "check"
@@ -70,30 +75,110 @@ function executorHostFor(environmentId: EnvironmentId): JonesExecutorHost {
   };
 }
 
-async function sendStopGrant(grant: JonesInstallPlanGrant) {
+export async function stopPanelDownload(target: {
+  readonly kind: "laptop" | "device";
+  readonly planId: string;
+  readonly environmentId: EnvironmentId;
+  readonly operationId: string;
+}) {
   const binding = installPlanServices();
   if (binding === undefined) throw new Error("Install status is not connected.");
   const { services } = binding;
+  const { kind, planId, environmentId, operationId } = target;
+  const canOperate = () => canOperateInstallDevice(services, environmentId);
+  if (kind === "device") {
+    const observed = await services.observe(environmentId);
+    if (
+      !observed.canOperate ||
+      observed.observation.freshness !== "fresh" ||
+      observed.observation.state?.environmentId !== environmentId ||
+      observed.observation.state.capability.operations !== 1
+    )
+      throw new Error("Fresh authorized operation capability is required.");
+  }
+  const read = await requestInstallPlan({ type: "read" }, binding);
+  const plan = read.state.current;
+  if (read.state.readOnly !== undefined) throw new Error(read.state.readOnly.message);
+  if (read.refused !== undefined) throw new Error(read.refused.message);
+  const changedTarget = "This download is no longer current. Refresh Install status.";
+  if (installPlanServices() !== binding || plan?.planId !== planId) throw new Error(changedTarget);
+  if (kind === "laptop") {
+    const operation = plan.laptop.operations.at(-1);
+    if (
+      plan.laptop.environmentId !== environmentId ||
+      operation?.operationId !== operationId ||
+      operation.step !== "download" ||
+      (operation.result !== undefined && operation.result.status !== "running")
+    )
+      throw new Error(changedTarget);
+    const result = await requestInstallPlan(
+      { type: "laptop", planId, action: "stop", operationId },
+      binding,
+    );
+    if (result.refused !== undefined) throw new Error(result.refused.message);
+    return;
+  }
+  const device = plan.devices.find((candidate) => candidate.environmentId === environmentId);
+  const operations = device === undefined ? [] : deviceActiveOperations(device);
+  const operation = operations.find(operationOutstanding) ?? operations.at(-1);
+  if (
+    device?.membership !== "selected" ||
+    device.abandoning === true ||
+    operation?.operationId !== operationId ||
+    operation.step !== "download" ||
+    operation.request.kind !== "operation-start" ||
+    operation.receipt === undefined ||
+    !["accepted", "running", "stop-requested"].includes(operation.receipt.phase)
+  )
+    throw new Error(changedTarget);
+  if (!canOperate()) throw new Error("This session cannot change updates.");
+  const claimed = await requestInstallPlan(
+    {
+      type: "claim",
+      planId,
+      environmentId,
+      claimant: `window:${claimantId()}`,
+      step: "stop",
+      explicit: true,
+      operationId,
+    },
+    binding,
+  );
+  if (claimed.refused !== undefined) throw new Error(claimed.refused.message);
+  const grant = claimed.grant;
+  const request = grant?.request;
+  if (
+    grant?.step !== "stop" ||
+    grant.planId !== planId ||
+    grant.environmentId !== environmentId ||
+    grant.operationId !== operationId ||
+    request?.kind !== "operation-stop" ||
+    request.input.environmentId !== environmentId ||
+    request.input.operationId !== operationId
+  )
+    throw new Error("The native grant does not match this Stop request.");
   if (
     !Number.isFinite(Date.parse(grant.leaseUntil)) ||
     Date.parse(grant.leaseUntil) <= services.now()
   )
     throw new Error("The native grant expired. Read status before continuing.");
-  const request = grant.request;
-  if (grant.environmentId !== request.input.environmentId || request.kind !== "operation-stop")
-    throw new Error("The native grant does not match this action.");
-  const receipt = await services.stop(grant.environmentId, {
+  if (installPlanServices() !== binding || !canOperate())
+    throw new Error("This session cannot change updates.");
+  const receipt = await services.stop(environmentId, {
     action: "operationStop",
     input: request.input,
   });
-  if (receipt.operationId !== grant.operationId || receipt.environmentId !== grant.environmentId)
+  if (
+    !validateReceipt(operation.request.input, receipt) ||
+    !validateReceipt(operation.receipt, receipt)
+  )
     throw new Error("The returned Stop receipt does not match this request.");
   const result = await requestInstallPlan(
     {
       type: "report",
-      planId: grant.planId,
-      environmentId: grant.environmentId,
-      operationId: grant.operationId,
+      planId,
+      environmentId,
+      operationId,
       evidence: { kind: "receipt", receipt },
     },
     binding,
@@ -301,17 +386,27 @@ export async function refreshDeviceEvidence(
           ? `${observed.label} still reports its previous setup. The plan can resend the same request.`
           : `${observed.label} reported a different setup. The original request is still unconfirmed.`;
   } else if (operation?.request.kind === "operation-start") {
+    const { observation } = observed;
+    const { input } = operation.request;
+    if (
+      observation.freshness !== "fresh" ||
+      observation.state?.environmentId !== environmentId ||
+      input.environmentId !== environmentId ||
+      input.operationId !== operation.operationId ||
+      !supportsOperationReceiptReads(observation.state.capability)
+    )
+      return options.refreshInstallOutcome
+        ? `Could not read the exact update receipt on ${observed.label}. Refresh its status and try again.`
+        : undefined;
     const result = await services.operation(environmentId, {
       action: "operationRead",
       input: {
         environmentId,
         operationIds: [operation.operationId],
         ...(options.refreshInstallOutcome &&
-        operation.request.input.action.kind === "install" &&
+        input.action.kind === "install" &&
         observed.canOperate &&
-        observed.observation.freshness === "fresh" &&
-        observed.observation.state?.environmentId === environmentId &&
-        observed.observation.state.capability.operations === 1
+        canOperateInstallDevice(services, environmentId)
           ? { refreshInstallOutcome: operation.operationId }
           : {}),
       },
@@ -320,7 +415,7 @@ export async function refreshDeviceEvidence(
       const receipt = result.receipts.find((r) => r.operationId === operation.operationId)?.receipt;
       if (
         receipt != null &&
-        validateReceipt(operation.request.input, receipt) &&
+        validateReceipt(input, receipt) &&
         (operation.receipt === undefined || validateReceipt(operation.receipt, receipt))
       )
         await requestInstallPlan(
@@ -346,6 +441,7 @@ export async function performPanelAction(
   const binding = installPlanServices();
   if (binding === undefined) throw new Error("Install status is not connected.");
   const { services, store } = binding;
+  const previouslyShown = store.get().native;
   const read = await requestInstallPlan({ type: "read" }, binding);
   const plan = read.state.current;
   if (action === "check") {
@@ -404,6 +500,12 @@ export async function performPanelAction(
       const latestOperation = latestPlan?.devices
         .find((item) => item.environmentId === environmentId)
         ?.operations.find(operationOutstanding);
+      const progress = currentDevice?.observation.state?.progress;
+      const installUnconfirmed =
+        latestOperation?.step === "install" &&
+        (hasUnconfirmedLauncherOutcome(latestOperation.receipt) ||
+          (progress?.operationId === latestOperation.operationId &&
+            progress.error?.code === "outcome-unavailable"));
       store.update({
         error:
           message ??
@@ -411,17 +513,36 @@ export async function performPanelAction(
             ? `Could not refresh ${observed.label}. Check its connection and try again.`
             : latestOperation === undefined
               ? `Refreshed ${observed.label}.`
-              : `Checked ${observed.label}. Its update outcome is still pending.`),
+              : installUnconfirmed
+                ? `Checked ${observed.label}. Its install outcome is still unconfirmed.`
+                : `Checked ${observed.label}. Its update outcome is still pending.`),
       });
-    } else if (environmentId === "laptop") {
-      const held = checked?.laptop.operations.some(
-        (operation) => operation.result?.status === "held",
+    } else {
+      const latest = store.get().native ?? read.state;
+      const checkedLaptop = [latest.current, latest.last].find(
+        (candidate) => checked !== null && candidate?.planId === checked.planId,
       );
-      store.update({
-        error: held
-          ? "Checked Laptop. Its update outcome is still unconfirmed."
-          : "Refreshed Laptop.",
-      });
+      const previousPlan = [previouslyShown?.current, previouslyShown?.last].find(
+        (candidate) => candidate?.planId === checkedLaptop?.planId,
+      );
+      const gateIssue = checkedLaptop == null ? undefined : laptopGateIssue(checkedLaptop.laptop);
+      const operation = checkedLaptop?.laptop.operations.at(-1);
+      let error = "Refreshed Laptop.";
+      if (laptopInstallNeedsReopen(checkedLaptop, latest.laptop))
+        error = `Checked Laptop. ${LAPTOP_REOPEN_TO_CHECK_INSTALL}`;
+      else if (gateIssue !== undefined) error = `Checked Laptop. ${gateIssue.reason}`;
+      else if (previousPlan?.laptop.gatePause === true && checkedLaptop?.laptop.gate !== undefined)
+        error = "Checked Laptop. Verification is restored. Other devices can continue.";
+      else if (operation?.result?.status === "held")
+        error = "Checked Laptop. Its update outcome is still unconfirmed.";
+      else if (operation?.step === "install" && operation.result?.status === "rolled-back")
+        error = "Checked Laptop. The install rolled back.";
+      else if (operation?.step === "install" && operation.result?.status === "committed")
+        error =
+          checkedLaptop?.laptop.gate === undefined
+            ? "Checked Laptop. The install committed. Verification is still pending."
+            : "Checked Laptop. The selected build is verified.";
+      store.update({ error });
     }
     return;
   }
@@ -450,14 +571,6 @@ export async function performPanelAction(
         return;
       const result = await requestInstallPlan(
         { type: "laptop", planId: plan.planId, action: "abandon-stage" },
-        binding,
-      );
-      if (result.refused !== undefined) throw new Error(result.refused.message);
-      return;
-    }
-    if (action === "stop" && plan !== null) {
-      const result = await requestInstallPlan(
-        { type: "laptop", planId: plan.planId, action: "stop" },
         binding,
       );
       if (result.refused !== undefined) throw new Error(result.refused.message);
@@ -498,26 +611,6 @@ export async function performPanelAction(
     throw new Error("Fresh authorized operation capability is required.");
   const device = plan.devices.find((d) => d.environmentId === environmentId);
   if (device === undefined) throw new Error("This device is not in the plan.");
-  if (action === "stop") {
-    const operation = device.operations.at(-1);
-    if (operation === undefined) throw new Error("No download operation is recorded.");
-    const result = await requestInstallPlan(
-      {
-        type: "claim",
-        planId: plan.planId,
-        environmentId,
-        claimant: `window:${claimantId()}`,
-        step: "stop",
-        explicit: true,
-        operationId: operation.operationId,
-      },
-      binding,
-    );
-    if (result.grant === undefined)
-      throw new Error(result.refused?.message ?? "Stop was not granted.");
-    await sendStopGrant(result.grant);
-    return;
-  }
   const host = executorHostFor(environmentId);
   const proposed: JonesDownloadResolution & { readonly review?: JonesReviewedInstall } =
     action === "install"

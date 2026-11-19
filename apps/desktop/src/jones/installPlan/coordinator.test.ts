@@ -5,6 +5,7 @@ import { EnvironmentId, type DesktopUpdateState } from "@t3tools/contracts";
 import type {
   JonesInstallPlanCliRequest,
   JonesInstallPlanLaptopEvidence,
+  JonesInstallPlanSelection,
   JonesInstallPlanState,
   JonesInstallPlanReview,
   JonesInstallPlanGrant,
@@ -41,12 +42,21 @@ function fixture() {
     document: { schema: 1, current: null, last: null },
     dispositions: { schema: 1, targets: [] },
   };
+  let interceptWrite: ((commit: () => void) => Promise<void>) | undefined;
   let queue: Promise<unknown> = Promise.resolve();
   const store: InstallPlanStore = {
     transact: (work) => {
       const pending = queue.then(async () => {
         const next = await work(snapshot);
-        snapshot = { ...snapshot, document: next.document, dispositions: next.dispositions };
+        if (next.document !== snapshot.document || next.dispositions !== snapshot.dispositions) {
+          const commit = () => {
+            snapshot = { ...snapshot, document: next.document, dispositions: next.dispositions };
+          };
+          const intercept = interceptWrite;
+          interceptWrite = undefined;
+          if (intercept === undefined) commit();
+          else await intercept(commit);
+        }
         return next.result;
       });
       queue = pending.catch(() => undefined);
@@ -104,7 +114,7 @@ function fixture() {
         }) satisfies JonesRecoveryPreflight,
     ),
     validateRecoveryReview: vi.fn(async () => {}),
-    laptopEvidence: async () => evidence,
+    laptopEvidence: vi.fn(async () => evidence),
     retiredLaptopInstall: vi.fn(async () => false),
     discard: vi.fn(async (_handle: string) => ({ accepted: true, completed: true })),
     laptopStageSelectionName: vi.fn(async (_handle: string) => "selection.json"),
@@ -156,7 +166,7 @@ function fixture() {
     workerAbsent: () => false,
   };
   const coordinator = createInstallPlanCoordinator(options);
-  const start = async (select = [selection]) => {
+  const start = async (select: readonly JonesInstallPlanSelection[] = [selection]) => {
     const result = await coordinator.request({
       type: "start",
       origin: "update-button",
@@ -218,6 +228,9 @@ function fixture() {
     },
     setStaged: (value = true) => {
       staged = value;
+    },
+    interceptNextWrite: (intercept: (commit: () => void) => Promise<void>) => {
+      interceptWrite = intercept;
     },
     advance: () => {
       clock += 120_001;
@@ -365,17 +378,17 @@ describe("ordinary recovery proof", () => {
     expect(f.controller.install).not.toHaveBeenCalled();
   });
 
-  it.each(["missing", "manifest", "receipt", "generation", "warm-fallback"])(
+  it.each(["manifest", "receipt", "generation", "warm-fallback"])(
     "closes an ordinary gate when its exact proof changes: %s",
     async (change) => {
       const f = recovered();
       await f.start();
+      f.setEvidence({ ordinaryRecovery: undefined });
+      const paused = await f.coordinator.request({ type: "read" });
+      expect(paused.state.current!.laptop.gatePause).toBe(true);
       f.setEvidence(
-        change === "missing" || change === "warm-fallback"
-          ? {
-              ordinaryRecovery: undefined,
-              committedTransactionId: change === "warm-fallback" ? transaction : undefined,
-            }
+        change === "warm-fallback"
+          ? { committedTransactionId: transaction }
           : {
               ordinaryRecovery: {
                 ...proof,
@@ -387,8 +400,148 @@ describe("ordinary recovery proof", () => {
       );
       const result = await f.coordinator.request({ type: "read" });
       expect(result.state.current!.laptop.gateClosed?.reason).toBe("changed");
+      expect(result.state.current!.laptop.gatePause).toBeUndefined();
+      f.setEvidence({ ordinaryRecovery: proof, committedTransactionId: undefined });
+      expect((await f.coordinator.request({ type: "read" })).state.current).toEqual(
+        result.state.current,
+      );
     },
   );
+
+  it.each(["ordinary-recovery", "committed"])(
+    "pauses the %s gate while proof is unavailable and resumes its exact reservation",
+    async (kind) => {
+      const f = kind === "ordinary-recovery" ? recovered() : fixture();
+      const plan = await f.start();
+      const original = (await f.claim(plan.planId)).grant!;
+      f.setEvidence({ ordinaryRecovery: undefined, committedTransactionId: undefined });
+      const paused = (await f.coordinator.request({ type: "read" })).state.current!;
+      expect(paused.laptop).toMatchObject({
+        gate: plan.laptop.gate,
+        gatePause: true,
+        gateClosed: { reason: "blocked" },
+      });
+      expect(paused.revision).toBeGreaterThan(plan.revision);
+      expect(await f.claim(plan.planId)).toMatchObject({ refused: { code: "gate-closed" } });
+
+      const reopened = createInstallPlanCoordinator(f.options);
+      f.setEvidence({
+        ...(kind === "ordinary-recovery"
+          ? { ordinaryRecovery: proof }
+          : { committedTransactionId: transaction }),
+        activationBlocked: true,
+      });
+      expect((await reopened.request({ type: "read" })).state.current).toEqual(paused);
+      f.setEvidence({ activationBlocked: false });
+      const resumed = (await reopened.request({ type: "read" })).state.current!;
+      expect(resumed.laptop.gatePause).toBeUndefined();
+      expect(resumed.laptop.gateClosed).toBeUndefined();
+      expect(resumed.laptop.gate).toEqual(plan.laptop.gate);
+      expect(resumed.revision).toBeGreaterThan(paused.revision);
+      expect((await f.claim(plan.planId)).grant).toEqual(original);
+    },
+  );
+
+  it("holds new plan actions and directive replays while Laptop proof is paused", async () => {
+    const f = recovered();
+    const enrollmentId = id(120);
+    const plan = await f.start([{ ...selection, route: "follower-operations", enrollmentId }]);
+    const directive = {
+      type: "claim",
+      planId: plan.planId,
+      environmentId: remote,
+      claimant: "window-a",
+      step: "directive",
+      explicit: false,
+      enrollmentId,
+      expectedDirectiveId: null,
+    } as const;
+    const reserved = await f.coordinator.request(directive);
+    expect(reserved.grant).toBeDefined();
+    f.advance();
+    f.setEvidence({ ordinaryRecovery: undefined, activeTree: undefined });
+    const refuse = { refused: { code: "gate-closed" } };
+    const replay = { ...directive, operationId: reserved.grant!.operationId };
+    expect(await f.coordinator.request(replay)).toMatchObject(refuse);
+    for (const action of ["download", "install"] as const)
+      expect(
+        await f.coordinator.request({ type: "laptop", planId: plan.planId, action }),
+      ).toMatchObject(refuse);
+    expect(
+      await f.coordinator.request({
+        type: "claim",
+        planId: plan.planId,
+        environmentId: remote,
+        claimant: "window-a",
+        step: "install",
+        explicit: true,
+      }),
+    ).toMatchObject(refuse);
+    f.setEvidence({ ordinaryRecovery: proof });
+    expect(await f.coordinator.request(replay)).toMatchObject(refuse);
+    f.setEvidence({ activeTree: tree });
+    expect((await f.coordinator.request(replay)).grant?.request).toEqual(reserved.grant?.request);
+    expect(f.controller.download).not.toHaveBeenCalled();
+    expect(f.controller.install).not.toHaveBeenCalled();
+  });
+
+  it("does not reopen a legacy blocked gate even with the original proof", async () => {
+    const f = recovered();
+    await f.start();
+    await f.options.store.transact(async (snapshot) => {
+      const current = snapshot.document.current!;
+      return {
+        ...snapshot,
+        document: {
+          ...snapshot.document,
+          current: {
+            ...current,
+            laptop: { ...current.laptop, gateClosed: { at: timestamp, reason: "blocked" } },
+          },
+        },
+        result: undefined,
+      };
+    });
+    const reopened = createInstallPlanCoordinator(f.options);
+    const before = f.snapshot().document.current;
+    expect((await reopened.request({ type: "read" })).state.current).toEqual(before);
+    expect(await f.claim(before!.planId)).toMatchObject({ refused: { code: "laptop-changed" } });
+  });
+
+  it("latches a changed Laptop identity during a native verification block", async () => {
+    const f = recovered();
+    await f.start();
+    f.setEvidence({ activationBlocked: true, ordinaryRecovery: undefined });
+    expect((await f.coordinator.request({ type: "read" })).state.current!.laptop.gatePause).toBe(
+      true,
+    );
+    f.setEvidence({ environmentId: remote });
+    const changed = (await f.coordinator.request({ type: "read" })).state.current!;
+    expect(changed.laptop.gateClosed?.reason).toBe("changed");
+    expect(changed.laptop.gatePause).toBeUndefined();
+    f.setEvidence({ environmentId: laptop, activationBlocked: false, ordinaryRecovery: proof });
+    expect((await f.coordinator.request({ type: "read" })).state.current).toEqual(changed);
+  });
+
+  it("retains the gate closure when a replacement plan's first action is refused", async () => {
+    const f = recovered();
+    const plan = await f.start();
+    f.setEvidence({ ordinaryRecovery: { ...proof, receiptSha256: "9".repeat(64) } });
+    const refused = await f.coordinator.request({
+      type: "start",
+      origin: "update-button",
+      target: { ...target, sourceSha: old },
+      select: [],
+      laptop: { action: "download" },
+    });
+    expect(refused.refused?.code).toBe("not-selectable");
+    expect(refused.state.current).toMatchObject({
+      planId: plan.planId,
+      laptop: { gateClosed: { reason: "changed" } },
+    });
+    f.setEvidence({ ordinaryRecovery: proof });
+    expect(await f.claim(plan.planId)).toMatchObject({ refused: { code: "laptop-changed" } });
+  });
 
   it("does not reinterpret a warm gate as ordinary recovery", async () => {
     const f = fixture();
@@ -431,6 +584,7 @@ describe("Laptop install recovery", () => {
   const startInstall = async (
     f: ReturnType<typeof fixture>,
     select = [] as (typeof selection)[],
+    coordinator = f.coordinator,
   ) => {
     f.setStaged();
     f.setEvidence({
@@ -438,7 +592,7 @@ describe("Laptop install recovery", () => {
       activeGeneration: "previous",
       committedTransactionId: undefined,
     });
-    return f.coordinator.request({
+    return coordinator.request({
       type: "start",
       origin: "update-button",
       target,
@@ -455,6 +609,290 @@ describe("Laptop install recovery", () => {
       transactionId: transaction,
       fromGeneration: "previous",
     });
+
+  it("does not call native install when reservation storage fails before the write", async () => {
+    const f = fixture();
+    f.interceptNextWrite(async () => {
+      throw new Error("Lost the plan journal before commit.");
+    });
+    expect(await startInstall(f)).toMatchObject({ refused: { code: "storage" } });
+    expect(f.snapshot().document.current).toBeNull();
+    expect(f.controller.install).not.toHaveBeenCalled();
+  });
+
+  it("retains a durable unbound reservation across shutdown before dispatch", async () => {
+    const f = fixture();
+    const written = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    f.interceptNextWrite(async (commit) => {
+      commit();
+      written.resolve();
+      await release.promise;
+    });
+    const starting = startInstall(f);
+    await written.promise;
+    const pending = f.snapshot().document.current!.laptop.operations[0]!;
+    expect(pending.prebinding).toEqual({
+      fromGeneration: "previous",
+      fromSource: old,
+      fromTree: tree,
+      stagedHandle: "stage",
+    });
+    expect(f.controller.install).not.toHaveBeenCalled();
+    f.coordinator.dispose();
+    const reopened = createInstallPlanCoordinator(f.options);
+    const read = () => reopened.request({ type: "read" });
+    f.controller.laptopEvidence.mockClear();
+    const checking = read();
+    try {
+      await Promise.resolve();
+      expect(f.controller.laptopEvidence).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+    }
+    await starting;
+    expect((await checking).state.current!.laptop.operations[0]!.result).toMatchObject({
+      status: "held",
+      code: "native-unconfirmed",
+    });
+    expect(f.controller.laptopEvidence).toHaveBeenCalledExactlyOnceWith({
+      ...pending.prebinding,
+      environmentId: laptop,
+      targetSource: source,
+      targetTree: tree,
+      currentVersion: "old",
+    });
+    f.setEvidence({ startupInspectionComplete: true });
+    const settled = (await read()).state.current!;
+    expect(settled.laptop.operations[0]).toMatchObject({
+      operationId: pending.operationId,
+      result: { status: "interrupted", code: "install-not-dispatched" },
+    });
+    expect(f.controller.isStaged).toHaveBeenLastCalledWith({
+      targetSource: source,
+      targetTree: tree,
+      stagedHandle: "stage",
+      currentVersion: "old",
+      expectedInstalledSource: old,
+    });
+    expect(f.controller.install).not.toHaveBeenCalled();
+    const retried = await reopened.request({
+      type: "laptop",
+      planId: settled.planId,
+      action: "install",
+      review,
+    });
+    expect(retried.refused).toBeUndefined();
+    expect(retried.state.current!.laptop.operations[1]!.operationId).not.toBe(pending.operationId);
+    expect(f.controller.install).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the local dispatch reservation pending and fences a delayed callback on disposal", async () => {
+    const f = fixture();
+    const tracking = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const finished = Promise.withResolvers<void>();
+    const coordinator = createInstallPlanCoordinator({
+      ...f.options,
+      track: async (work) => {
+        tracking.resolve();
+        await release.promise;
+        try {
+          return await work();
+        } finally {
+          finished.resolve();
+        }
+      },
+    });
+    f.setEvidence({ startupInspectionComplete: true });
+    await startInstall(f, [], coordinator);
+    await tracking.promise;
+    const read = await coordinator.request({ type: "read" });
+    expect(read.state.current!.laptop.operations[0]!.result?.status).toBe("running");
+    coordinator.dispose();
+    release.resolve();
+    await finished.promise;
+    expect(f.controller.install).not.toHaveBeenCalled();
+    const restarted = createInstallPlanCoordinator(f.options);
+    expect(
+      (await restarted.request({ type: "read" })).state.current!.laptop.operations[0]!.result,
+    ).toMatchObject({ status: "interrupted", code: "install-not-dispatched" });
+  });
+
+  it("does not acknowledge a binding that commits during disposal", async () => {
+    const f = fixture();
+    const native = Promise.withResolvers<Awaited<ReturnType<typeof f.controller.install>>>();
+    f.controller.install.mockImplementationOnce(() => native.promise);
+    const started = await startInstall(f);
+    const operationId = started.state.current!.laptop.operations[0]!.operationId;
+    const written = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    f.interceptNextWrite(async (commit) => {
+      commit();
+      written.resolve();
+      await release.promise;
+    });
+    const binding = bind(f, operationId);
+    await written.promise;
+    const saved = f.snapshot().document.current!.laptop;
+    expect(saved.binding?.operationId).toBe(operationId);
+    expect(saved.operations[0]?.prebinding).toBeUndefined();
+    f.coordinator.dispose();
+    release.resolve();
+    await expect(binding).rejects.toThrow("coordinator is closing");
+    native.resolve({ accepted: false, completed: false, failed: true });
+
+    f.setEvidence({ startupInspectionComplete: true });
+    const restarted = createInstallPlanCoordinator(f.options);
+    const held = (await restarted.request({ type: "read" })).state.current!.laptop;
+    expect(held.binding).toEqual(saved.binding);
+    expect(held.operations[0]!.result).toMatchObject({
+      status: "held",
+      code: "native-unconfirmed",
+    });
+  });
+
+  it("makes a paused gate permanently closed when its native attempt rolls back", async () => {
+    const f = fixture();
+    const { state } = await startInstall(f, [selection]);
+    await bind(f, state.current!.laptop.operations[0]!.operationId);
+    const committed = {
+      transactionId: transaction,
+      status: "committed",
+      activeGeneration: transaction,
+      activeSource: source,
+      activeTree: tree,
+    } as const;
+    await f.coordinator.recordLaptopOutcome(committed);
+    f.setEvidence({
+      activeGeneration: transaction,
+      activeSource: source,
+      committedTransactionId: transaction,
+    });
+    const read = () => f.coordinator.request({ type: "read" });
+    expect((await read()).state.current!.laptop.gate?.basis).toBe("plan-install");
+    f.setEvidence({ committedTransactionId: undefined });
+    expect((await read()).state.current!.laptop.gatePause).toBe(true);
+    await f.coordinator.recordLaptopOutcome({
+      ...committed,
+      status: "rolled-back",
+      activeGeneration: "previous",
+      activeSource: old,
+    });
+    f.setEvidence({ committedTransactionId: transaction });
+    const closed = (await read()).state.current!.laptop;
+    expect(closed.gateClosed?.reason).toBe("rolled-back");
+    expect(closed.gatePause).toBeUndefined();
+  });
+
+  it.each([
+    "stage",
+    "generation",
+    "source",
+    "tree",
+    "blocked",
+    "busy",
+    "worker",
+    "binding",
+    "legacy",
+  ] as const)(
+    "keeps the unbound attempt held when restart evidence is ambiguous: %s",
+    async (scenario) => {
+      const f = fixture();
+      await startInstall(f);
+      f.coordinator.dispose();
+      f.setEvidence({
+        startupInspectionComplete: true,
+        ...(scenario === "generation" ? { activeGeneration: "other" } : {}),
+        ...(scenario === "source" ? { activeSource: source } : {}),
+        ...(scenario === "tree" ? { activeTree: old } : {}),
+        ...(scenario === "blocked" ? { activationBlocked: true } : {}),
+      });
+      if (scenario === "stage") f.setStaged(false);
+      if (scenario === "legacy" || scenario === "worker" || scenario === "binding")
+        await f.options.store.transact(async (snapshot) => {
+          const current = snapshot.document.current!;
+          const operation = current.laptop.operations[0]!;
+          const { prebinding: _reservation, ...legacy } = operation;
+          return {
+            ...snapshot,
+            document: {
+              ...snapshot.document,
+              current: {
+                ...current,
+                laptop: {
+                  ...current.laptop,
+                  operations: [
+                    scenario === "legacy"
+                      ? legacy
+                      : scenario === "worker"
+                        ? { ...operation, worker: { pid: 50, processGroup: 50 } }
+                        : operation,
+                  ],
+                  ...(scenario !== "binding"
+                    ? {}
+                    : {
+                        binding: {
+                          operationId: operation.operationId,
+                          stagedHandle: "stage",
+                          targetSource: source,
+                          targetTree: tree,
+                          transactionId: transaction,
+                          fromGeneration: "previous",
+                          boundAt: timestamp,
+                        },
+                      }),
+                },
+              },
+            },
+            result: undefined,
+          };
+        });
+      const restarted = createInstallPlanCoordinator({
+        ...f.options,
+        ...(scenario === "busy"
+          ? { controller: { ...f.controller, busy: "download" as const } }
+          : {}),
+      });
+      const retainedBinding = f.snapshot().document.current!.laptop.binding;
+      f.controller.laptopEvidence.mockClear();
+      const read = await restarted.request({ type: "read" });
+      expect(read.state.current!.laptop.operations[0]!.result).toMatchObject({
+        status: "held",
+        code: "native-unconfirmed",
+      });
+      expect(read.state.current!.laptop.binding).toEqual(retainedBinding);
+      if (["busy", "worker", "legacy", "binding"].includes(scenario))
+        expect(f.controller.laptopEvidence).toHaveBeenCalledExactlyOnceWith(undefined);
+      expect(f.controller.install).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("reconciles the same verified prebinding in cancelled history", async () => {
+    const f = fixture();
+    const began = await startInstall(f);
+    f.coordinator.dispose();
+    const restarted = createInstallPlanCoordinator(f.options);
+    const held = (await restarted.request({ type: "read" })).state.current!;
+    expect(held.laptop.operations[0]!.result?.status).toBe("held");
+    expect(
+      (
+        await restarted.request({
+          type: "cancel-plan",
+          planId: began.state.current!.planId,
+          expectedRevision: held.revision,
+        })
+      ).state.current,
+    ).toBeNull();
+    f.setEvidence({ startupInspectionComplete: true });
+    const archived = (await restarted.request({ type: "read" })).state.last!;
+    expect(archived.cancelled).toBe(true);
+    expect(archived.laptop.operations[0]!.result).toMatchObject({
+      status: "interrupted",
+      code: "install-not-dispatched",
+    });
+    expect(await restarted.preparationHeld()).toBe(false);
+  });
 
   it.each([true, false])(
     "settles a held attempt on verified manual startup (same target: %s)",
@@ -1053,6 +1491,66 @@ describe("native install plan coordinator", () => {
     ).toBe(false);
   });
 
+  it.each([false, true])(
+    "accepts a host Stop independently of a local claim: %s",
+    async (claimed) => {
+      const f = fixture();
+      const plan = await f.start();
+      const grant = (await f.claim(plan.planId)).grant!;
+      const report = (receipt: JonesOperationReceipt) =>
+        f.coordinator.request({
+          type: "report",
+          planId: plan.planId,
+          environmentId: remote,
+          operationId: grant.operationId,
+          evidence: { kind: "receipt", receipt },
+        });
+      const running = f.receipt(grant);
+      expect((await report(running)).refused).toBeUndefined();
+      f.setEvidence({ committedTransactionId: undefined, activationBlocked: true });
+      const stop = claimed
+        ? (
+            await f.coordinator.request({
+              type: "claim",
+              planId: plan.planId,
+              environmentId: remote,
+              claimant: "window-a",
+              step: "stop",
+              explicit: true,
+              operationId: grant.operationId,
+            })
+          ).state.current!.devices[0]!.operations[0]!.stop
+        : undefined;
+      if (claimed) expect(stop?.stopId).toBeDefined();
+      const hostStop = {
+        ...running,
+        phase: "stop-requested",
+        stop: { stopId: id(100), requestedAt: timestamp },
+      } as const;
+      expect((await report({ ...hostStop, expectedInstalledSource: source })).refused?.code).toBe(
+        "invalid-evidence",
+      );
+      const observed = await report(hostStop);
+      expect(observed.refused).toBeUndefined();
+      expect(observed.state.current!.devices[0]!.operations[0]).toMatchObject({
+        receipt: hostStop,
+      });
+      expect(observed.state.current!.devices[0]!.operations[0]!.stop).toEqual(stop);
+      expect(
+        (await report({ ...hostStop, stop: { ...hostStop.stop, stopId: id(101) } })).refused?.code,
+      ).toBe("invalid-evidence");
+      expect((await report(running)).refused?.code).toBe("invalid-evidence");
+      const stopped = {
+        ...hostStop,
+        phase: "stopped",
+        stop: { ...hostStop.stop, result: "stopped" },
+      } as const;
+      expect((await report(stopped)).state.current!.devices[0]!.operations[0]).toMatchObject({
+        receipt: stopped,
+      });
+    },
+  );
+
   it("locks a started row against Edit and keeps an unknown reservation after restart", async () => {
     const f = fixture(),
       plan = await f.start();
@@ -1260,7 +1758,13 @@ describe("native install plan coordinator", () => {
   it("accepts a native install binding before handoff and settles only its exact native outcome", async () => {
     const f = fixture();
     f.setStaged();
-    f.setEvidence({ activeSource: old, committedTransactionId: undefined });
+    f.setEvidence({
+      activeSource: old,
+      activeGeneration: "previous",
+      committedTransactionId: undefined,
+    });
+    const native = Promise.withResolvers<Awaited<ReturnType<typeof f.controller.install>>>();
+    f.controller.install.mockImplementationOnce(() => native.promise);
     const review: JonesInstallPlanReview = {
       stagedHandle: "stage",
       targetSource: source,
@@ -1287,7 +1791,15 @@ describe("native install plan coordinator", () => {
     await expect(
       f.coordinator.bindLaptopInstall({ ...binding, targetTree: old }),
     ).rejects.toThrow();
+    await expect(
+      f.coordinator.bindLaptopInstall({ ...binding, fromGeneration: "other" }),
+    ).rejects.toThrow();
+    f.setEvidence({ activeTree: old });
+    await expect(f.coordinator.bindLaptopInstall(binding)).rejects.toThrow();
+    f.setEvidence({ activeTree: tree });
     await f.coordinator.bindLaptopInstall(binding);
+    await f.coordinator.bindLaptopInstall(binding);
+    native.resolve({ accepted: true, completed: false, failed: false });
     await f.coordinator.recordLaptopOutcome({
       transactionId: "unrelated",
       status: "committed",
@@ -1307,6 +1819,52 @@ describe("native install plan coordinator", () => {
     const complete = await f.coordinator.request({ type: "read" });
     expect(complete.state.current?.laptop.gate?.basis).toBe("plan-install");
     expect(complete.state.view.complete).toBe(true);
+  });
+
+  it("stops only the latest Laptop download selected before a proof pause", async () => {
+    const f = fixture();
+    const plan = await f.start();
+    const download = { type: "laptop", planId: plan.planId, action: "download" } as const;
+    const initial = Promise.withResolvers<{ accepted: boolean; completed: boolean }>();
+    f.controller.download.mockImplementationOnce(() => initial.promise);
+    const first = (await f.coordinator.request(download)).state.current!.laptop.operations[0]!;
+    const completed = Promise.withResolvers<void>();
+    f.interceptNextWrite(async (commit) => {
+      commit();
+      completed.resolve();
+    });
+    initial.resolve({ accepted: true, completed: true });
+    await completed.promise;
+
+    const next = Promise.withResolvers<{ accepted: boolean; completed: boolean }>();
+    f.controller.download.mockImplementationOnce(() => next.promise);
+    const latest = (await f.coordinator.request(download)).state.current!.laptop.operations.at(-1)!;
+    expect(latest.operationId).not.toBe(first.operationId);
+    f.setEvidence({ committedTransactionId: undefined });
+    const stop = { ...download, action: "stop" } as const;
+    const legacy = await f.coordinator.request(stop);
+    expect(legacy.refused).toEqual({
+      code: "invalid-evidence",
+      message: "Stop needs the current Laptop download ID. Refresh Update Status and try again.",
+    });
+    expect(legacy.state.current!.laptop.operations.at(-1)).toEqual(latest);
+    expect(f.controller.stopDownload).not.toHaveBeenCalled();
+    const stale = await f.coordinator.request({ ...stop, operationId: first.operationId });
+    expect(stale.refused?.code).toBe("invalid-evidence");
+    expect(stale.state.current!.laptop.gatePause).toBe(true);
+    expect(stale.state.current!.laptop.operations.at(-1)).toEqual(latest);
+    expect(f.controller.stopDownload).not.toHaveBeenCalled();
+    const stopped = await f.coordinator.request({ ...stop, operationId: latest.operationId });
+    expect(stopped.refused).toBeUndefined();
+    expect(stopped.state.current!.laptop.operations.at(-1)).toMatchObject({
+      step: "stop",
+      of: latest.operationId,
+    });
+    expect(f.controller.stopDownload).toHaveBeenCalledExactlyOnceWith({
+      sourceSha: source,
+      operationId: latest.operationId,
+    });
+    next.resolve({ accepted: true, completed: false });
   });
 
   it("holds a lost Laptop download across restart without treating absent payload as exit proof", async () => {
@@ -1369,7 +1927,7 @@ it("forwards native preflight and the identical reviewed opaque proof to the bou
     jones: {
       ...native,
       capability: { ...native.capability, recoveryPolicy: 1 },
-      installedSource: { repository: target.repository, sha: old, tree },
+      installedSource: { repository: target.repository, sha: source, tree },
       stagedHandle: "stage",
     },
   };
@@ -1384,7 +1942,7 @@ it("forwards native preflight and the identical reviewed opaque proof to the bou
     environmentId: laptop,
     stagedHandle: "stage",
     currentVersion: "old",
-    expectedInstalledSource: old,
+    expectedInstalledSource: source,
   });
   const recovery = {
     policy: "clone-required",
@@ -1395,7 +1953,7 @@ it("forwards native preflight and the identical reviewed opaque proof to the bou
     stagedHandle: "stage",
     targetSource: source,
     currentVersion: "old",
-    expectedInstalledSource: old,
+    expectedInstalledSource: source,
     recovery,
   };
   const result = await f.coordinator.request({
@@ -1438,7 +1996,7 @@ it("does not reserve or dispatch an install when native recovery proof refuses",
       stagedHandle: "stage",
       targetSource: source,
       currentVersion: "old",
-      expectedInstalledSource: old,
+      expectedInstalledSource: source,
       recovery: { policy: "clone-required", preflightId: id(90) },
     },
   });

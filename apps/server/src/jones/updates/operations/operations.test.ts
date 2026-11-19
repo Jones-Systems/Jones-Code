@@ -81,10 +81,11 @@ async function make(
   base: string,
   recoveryEnabled: boolean,
   hostInstall?: JonesUpdaterHost["install"],
+  supervisor?: PreparationSupervisor,
 ) {
   const joins = new Map<string, PreparationJoin | "running">();
   let removedJobIds: string[] = [];
-  const preparation: PreparationSupervisor = {
+  const preparation: PreparationSupervisor = supervisor ?? {
     start: () => {
       throw new Error("This test injects the external preparation boundary through host.prepare.");
     },
@@ -105,10 +106,12 @@ async function make(
   let jobId: string | undefined;
   let prepareCalls = 0;
   let checkBarrier: Promise<void> | undefined;
+  let reservationBarrier: Promise<void> | undefined;
   let publicationBarrier: Promise<void> | undefined;
   const checkEntered = deferred<void>();
   const admissionReserved = deferred<void>();
   const prepareStarted = deferred<void>();
+  const reservationEntered = deferred<void>();
   const receipts = new Map<string, JonesOperationReceipt>();
   const receiptWaiters = new Set<{
     phase: JonesOperationReceipt["phase"];
@@ -156,8 +159,11 @@ async function make(
       },
       installedSource: async () => input.expectedInstalledSource,
       prepare: async (_candidate, options) => {
+        jobId = NodeCrypto.randomUUID();
+        reservationEntered.resolve();
+        await reservationBarrier;
+        await options.onReserved?.(jobId);
         prepareCalls++;
-        jobId = options.jobId!;
         // The receipt is durable before an external worker can start.
         expect((await createOperationLedger(base).read(input.operationId))?.jobId).toBe(jobId);
         joins.set(jobId, "running");
@@ -245,6 +251,7 @@ async function make(
     checkEntered: checkEntered.promise,
     admissionReserved: admissionReserved.promise,
     prepareStarted: prepareStarted.promise,
+    reservationEntered: reservationEntered.promise,
     refreshPolicy,
     reconcileNative,
     receiptAt: (phase: JonesOperationReceipt["phase"]) => {
@@ -261,6 +268,9 @@ async function make(
     jobId: () => jobId,
     blockCheck: (promise: Promise<void>) => {
       checkBarrier = promise;
+    },
+    blockReservation: (promise: Promise<void>) => {
+      reservationBarrier = promise;
     },
     blockPublication: (promise: Promise<void>) => {
       publicationBarrier = promise;
@@ -520,11 +530,161 @@ describe("target operations", () => {
       const check = deferred<void>();
       f.blockCheck(check.promise);
       await f.operations.start(input);
+      await f.checkEntered;
       await f.operations.stop({ ...input, stopId: NodeCrypto.randomUUID() });
       check.resolve();
-      await vi.waitFor(async () => expect((await f.receipt())?.phase).toBe("stopped"));
+      expect(await f.receiptAt("stopped")).not.toHaveProperty("jobId");
       expect(f.prepareCalls()).toBe(0);
     }));
+  it("interrupts a restart during exact catalog discovery without holding or replaying work", async () =>
+    fixture(async (f) => {
+      // Leave the crashed controller parked at this read-only boundary for the whole test.
+      f.blockCheck(deferred<void>().promise);
+      expect((await f.operations.start(input)).phase).toBe("accepted");
+      await f.checkEntered;
+      const restarted = await make(f.base, false);
+      await restarted.operations.reconcile();
+      expect(await restarted.receipt()).toMatchObject({ phase: "interrupted" });
+      expect(await restarted.receipt()).not.toHaveProperty("jobId");
+      expect(restarted.updater.admissionHeld()).toBe(false);
+      expect((await restarted.operations.start(input)).phase).toBe("interrupted");
+      expect(restarted.check).not.toHaveBeenCalled();
+      expect(restarted.prepareCalls()).toBe(0);
+    }));
+  it("honors the recorded Stop before the reservation callback can attach a job", async () =>
+    fixture(async (f) => {
+      const release = deferred<void>();
+      f.blockReservation(release.promise);
+      await f.operations.start(input);
+      await f.reservationEntered;
+      try {
+        const stop = await f.operations.stop({ ...input, stopId: NodeCrypto.randomUUID() });
+        expect(stop.phase).toBe("stop-requested");
+        expect(stop.jobId).toBeUndefined();
+      } finally {
+        release.resolve();
+        await f.receiptAt("stopped");
+      }
+      expect((await f.receipt())?.jobId).toBeUndefined();
+      expect(f.prepareCalls()).toBe(0);
+    }));
+  it.each(["before", "after"] as const)(
+    "recovers a durable reservation interrupted %s receipt attachment without starting a worker",
+    async (side) =>
+      fixture(async (f) => {
+        const observed = vi.fn();
+        const cacheRoot = NodePath.join(f.base, "cache");
+        const supervisor = () =>
+          makePreparationSupervisor({
+            baseDir: f.base,
+            cacheRoot,
+            command: { file: "/nonexistent-jones-test-worker", args: [] },
+            observe: observed,
+          });
+        await f.ledger.accept(input);
+        const jobId = NodeCrypto.randomUUID();
+        const lifecycle = NodePath.join(
+          f.base,
+          "runtime",
+          "jones-preparation",
+          "lifecycle",
+          `${jobId}.json`,
+        );
+        const entered = deferred<void>();
+        const allowBinding = deferred<void>();
+        const bound = deferred<void>();
+        const returnBinding = deferred<void>();
+        const controller = new AbortController();
+        const original = supervisor();
+        const job = original.start(
+          {
+            kind: "stage",
+            candidate,
+            cacheRoot,
+            dbPath: NodePath.join(f.base, "db"),
+            activeVersion: "0.0.0-preview.20261002.1",
+            host: { platform: "linux", architecture: "x64" },
+          },
+          {
+            jobId,
+            signal: controller.signal,
+            onReserved: async (reservedId) => {
+              entered.resolve();
+              await allowBinding.promise;
+              controller.signal.throwIfAborted();
+              await f.ledger.transition(input.operationId, (r) => ({
+                ...r,
+                phase: "running",
+                jobId: reservedId,
+              }));
+              bound.resolve();
+              await returnBinding.promise;
+            },
+          },
+        );
+        const outcome = job.outcome.catch(() => undefined);
+        try {
+          await entered.promise;
+          expect(await f.receipt()).toMatchObject({ phase: "accepted" });
+          expect(await f.receipt()).not.toHaveProperty("jobId");
+          expect(JSON.parse(await NodeFSP.readFile(lifecycle, "utf8"))).toMatchObject({
+            jobId,
+            state: "not-started",
+          });
+          // A competing controller cannot treat the live reservation as released, even if it knows the ID.
+          expect(await supervisor().reconcile!(jobId)).toBe("unknown");
+          if (side === "after") {
+            allowBinding.resolve();
+            await bound.promise;
+            expect(await f.receipt()).toMatchObject({ phase: "running", jobId });
+            expect(JSON.parse(await NodeFSP.readFile(lifecycle, "utf8"))).toMatchObject({
+              jobId,
+              state: "not-started",
+            });
+            await expect(
+              NodeFSP.stat(NodePath.join(preparationJobsDirectory(f.base), jobId)),
+            ).rejects.toMatchObject({ code: "ENOENT" });
+          }
+        } finally {
+          controller.abort();
+          allowBinding.resolve();
+          returnBinding.resolve();
+          await job.settled;
+          await outcome;
+          await original.sweepIfNeeded?.().catch(() => undefined);
+        }
+        expect(await job.settled).toEqual({ jobId, kind: "not-started" });
+        expect(observed.mock.calls.every(([exit]) => exit.kind !== "stage")).toBe(true);
+        const restartedPreparation = supervisor();
+        expect(await restartedPreparation.reconcile!(jobId)).toEqual({
+          jobId,
+          kind: "not-started",
+        });
+        const restarted = await make(f.base, false, undefined, restartedPreparation);
+        await restarted.operations.reconcile();
+        expect(await restarted.receipt()).toMatchObject({
+          phase: "interrupted",
+          ...(side === "after" ? { jobId } : {}),
+        });
+        if (side === "before") expect(await restarted.receipt()).not.toHaveProperty("jobId");
+        expect(restarted.updater.admissionHeld()).toBe(false);
+        expect((await restarted.operations.start(input)).phase).toBe("interrupted");
+        expect(restarted.prepareCalls()).toBe(0);
+        if (side === "before") {
+          // A crash can leave scratch with a reservation and no logical owner. Cleanup still
+          // requires the exact job lock and positive release evidence.
+          const scratch = NodePath.join(preparationJobsDirectory(f.base), jobId);
+          await NodeFSP.mkdir(scratch, { recursive: true });
+          const swept = await sweepPreparationLeftovers({
+            baseDir: f.base,
+            cacheRoot,
+            keepJob: NodeCrypto.randomUUID(),
+          });
+          expect(swept.removedJobIds).toEqual([jobId]);
+          await expect(NodeFSP.stat(scratch)).rejects.toMatchObject({ code: "ENOENT" });
+        }
+      }),
+  );
   it("records a late Stop without undoing a published stage", async () =>
     fixture(async (f) => {
       await f.operations.start(input);
@@ -772,26 +932,45 @@ describe("target operations", () => {
       expect(f.resolveNativeHandoff).not.toHaveBeenCalled();
     }));
 
-  it("holds a restarted download whose worker release is unknown", async () =>
-    fixture(async (f) => {
-      await f.ledger.accept(input);
-      await f.ledger.transition(input.operationId, (r) => ({
-        ...r,
-        phase: "running",
-        jobId: NodeCrypto.randomUUID(),
-      }));
-      await f.operations.reconcile();
-      expect(await f.receipt()).toMatchObject({ phase: "held", code: "unreaped" });
-      expect(f.updater.admissionHeld()).toBe(true);
-      expect(
-        (
-          await f.operations.read({
-            environmentId: input.environmentId,
-            operationIds: [NodeCrypto.randomUUID()],
-          })
-        ).receipts[0]?.receipt,
-      ).toBeNull();
-    }));
+  it.each(["legacy", "spawning", "unreadable"] as const)(
+    "holds a restarted download with %s worker evidence",
+    async (evidence) =>
+      fixture(async (f) => {
+        const jobId = NodeCrypto.randomUUID();
+        await f.ledger.accept(input);
+        await f.ledger.transition(input.operationId, (r) => ({
+          ...r,
+          phase: "running",
+          jobId,
+        }));
+        const preparation = makePreparationSupervisor({
+          baseDir: f.base,
+          cacheRoot: NodePath.join(f.base, "cache"),
+          command: { file: "unused", args: [] },
+        });
+        if (evidence !== "legacy") {
+          const launch = await preparationLifecycle(f.base, jobId).reserve("stage");
+          if (evidence === "spawning") await launch.spawning();
+          else
+            await NodeFSP.chmod(
+              NodePath.join(f.base, "runtime", "jones-preparation", "lifecycle", `${jobId}.json`),
+              0o622,
+            );
+        }
+        const restarted = await make(f.base, false, undefined, preparation);
+        await restarted.operations.reconcile();
+        expect(await restarted.receipt()).toMatchObject({ phase: "held", code: "unreaped", jobId });
+        expect(restarted.updater.admissionHeld()).toBe(true);
+        expect(
+          (
+            await restarted.operations.read({
+              environmentId: input.environmentId,
+              operationIds: [NodeCrypto.randomUUID()],
+            })
+          ).receipts[0]?.receipt,
+        ).toBeNull();
+      }),
+  );
 });
 
 it("persists precondition refusals and prevents stale IDs from becoming a later dispatch", async () =>
@@ -873,6 +1052,42 @@ it("settles a restart before dispatch without replaying its effect", async () =>
     expect((await f.receipt())?.phase).toBe("interrupted");
     expect(f.prepareCalls()).toBe(0);
     expect(f.install).not.toHaveBeenCalled();
+  }));
+
+it("preserves a refused Stop when restarting before native install dispatch", async () =>
+  fixture(async (f) => {
+    const installRequest: JonesOperationStartInput = {
+      ...input,
+      operationId: NodeCrypto.randomUUID(),
+      action: {
+        kind: "install",
+        stagedHandle: "stage",
+        currentVersion: f.updater.snapshot().currentVersion!,
+        targetSource: candidate.source,
+      },
+    };
+    await f.ledger.accept(installRequest);
+    const stopped = await f.operations.stop({
+      operationId: installRequest.operationId,
+      environmentId: installRequest.environmentId,
+      stopId: NodeCrypto.randomUUID(),
+    });
+    expect(stopped.phase).toBe("accepted");
+    expect(stopped.stop?.result).toBe("not-stoppable-phase");
+
+    const restarted = await make(f.base, false);
+    await restarted.operations.reconcile();
+    expect(await restarted.ledger.read(installRequest.operationId)).toMatchObject({
+      phase: "interrupted",
+      stop: stopped.stop,
+    });
+    expect(restarted.install).not.toHaveBeenCalled();
+    expect(restarted.reconcileNative).not.toHaveBeenCalled();
+    expect(restarted.updater.admissionHeld()).toBe(false);
+    expect((await restarted.operations.start(input)).phase).toBe("accepted");
+    await restarted.prepareStarted;
+    restarted.finish("completed");
+    await restarted.receiptAt("completed");
   }));
 
 it("keeps a generic blocked lost reply held through absent, restart, pending and committed without redispatch", async () =>

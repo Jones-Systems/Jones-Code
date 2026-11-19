@@ -24,7 +24,16 @@ const unsettled = new Set<JonesOperationPhase>([
   "held",
 ]);
 const legal: Partial<Record<JonesOperationPhase, readonly JonesOperationPhase[]>> = {
-  accepted: ["running", "stop-requested", "stopped", "interrupted", "refused", "held"],
+  accepted: [
+    "running",
+    "stop-requested",
+    "completed",
+    "stopped",
+    "failed",
+    "interrupted",
+    "refused",
+    "held",
+  ],
   running: [
     "adopting",
     "stop-requested",
@@ -119,6 +128,9 @@ export function createOperationLedger(baseDir: string) {
         const next = change(old);
         if (
           (next.phase === "stopped" && old.action.kind === "install") ||
+          (old.phase === "accepted" &&
+            old.action.kind === "install" &&
+            (next.phase === "completed" || next.phase === "failed")) ||
           next.operationId !== id ||
           !sameIntent(old, next) ||
           next.acceptedAt !== old.acceptedAt ||

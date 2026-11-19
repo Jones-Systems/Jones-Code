@@ -1,5 +1,5 @@
 import type { InstallProgressView } from "@t3tools/client-runtime/jones/install-plan";
-import { CheckIcon, CircleIcon, XIcon } from "lucide-react";
+import { CheckIcon, CircleIcon, TriangleAlertIcon, XIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { formatElapsed } from "./copy";
 import { Elapsed } from "./Elapsed";
@@ -9,11 +9,12 @@ const STATUS_LABEL = {
   current: "Running",
   pending: "Waiting",
   failed: "Failed",
+  unconfirmed: "Unconfirmed",
 } as const;
 
 /**
  * The host's steps for one download or install: done with its duration, the current step with a
- * live timer, pending steps, and a failed step with its error.
+ * live timer, pending steps, and any reported step error or missing outcome.
  */
 export function ProgressSteps({ progress }: { readonly progress: InstallProgressView }) {
   if (progress.steps.length === 0)
@@ -29,7 +30,10 @@ export function ProgressSteps({ progress }: { readonly progress: InstallProgress
           ) : null}
         </p>
         {progress.phase === "failed" && progress.error !== undefined ? (
-          <p className="text-destructive" role="status">
+          <p
+            className={progress.outcomeUnconfirmed ? "text-warning" : "text-destructive"}
+            role="status"
+          >
             {progress.error.message}
           </p>
         ) : null}
@@ -52,6 +56,8 @@ export function ProgressSteps({ progress }: { readonly progress: InstallProgress
               <CheckIcon className="size-3 text-success" />
             ) : step.status === "failed" ? (
               <XIcon className="size-3 text-destructive" />
+            ) : step.status === "unconfirmed" ? (
+              <TriangleAlertIcon className="size-3 text-warning" />
             ) : step.status === "current" ? (
               <span className="m-auto size-2 rounded-full bg-primary" />
             ) : (
@@ -60,8 +66,15 @@ export function ProgressSteps({ progress }: { readonly progress: InstallProgress
           </span>
           <span className="min-w-0 flex-1">
             <span className="block truncate">{step.label}</span>
-            {step.status === "failed" && progress.error !== undefined ? (
-              <span className="block text-destructive" role="status">
+            {(step.status === "failed" || step.status === "unconfirmed") &&
+            progress.error !== undefined ? (
+              <span
+                className={cn(
+                  "block",
+                  step.status === "failed" ? "text-destructive" : "text-warning",
+                )}
+                role="status"
+              >
                 {progress.error.message}
               </span>
             ) : null}

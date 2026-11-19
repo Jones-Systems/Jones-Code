@@ -168,6 +168,15 @@ export const JonesInstallPlanLaptopOperation = Schema.Struct({
   createdStagedHandle: Schema.optionalKey(TrimmedNonEmptyString),
   of: Schema.optionalKey(JonesOperationId), // stop: the download it stops
   review: Schema.optionalKey(JonesInstallPlanReview), // install
+  // Reserved before native binding. The coordinator consumes this marker when it commits the binding.
+  prebinding: Schema.optionalKey(
+    Schema.Struct({
+      fromGeneration: TrimmedNonEmptyString,
+      fromSource: JonesSourceSha,
+      fromTree: JonesSourceSha,
+      stagedHandle: TrimmedNonEmptyString,
+    }),
+  ),
   worker: Schema.optionalKey(Schema.Struct({ pid: Schema.Number, processGroup: Schema.Number })), // held-exit proof after restart
   result: Schema.optionalKey(
     Schema.Struct({
@@ -240,6 +249,8 @@ export const JonesInstallPlanLaptop = Schema.Struct({
       reason: Schema.Literals(["rolled-back", "changed", "blocked"]),
     }),
   ),
+  // A temporary verification pause also writes a blocked gateClosed for older readers.
+  gatePause: Schema.optionalKey(Schema.Literal(true)),
 });
 export type JonesInstallPlanLaptop = typeof JonesInstallPlanLaptop.Type;
 
@@ -306,6 +317,9 @@ export const JonesInstallPlanLaptopEvidence = Schema.Struct({
   committedTransactionId: Schema.optionalKey(TrimmedNonEmptyString), // validated resumed journal of the active generation
   ordinaryRecovery: Schema.optionalKey(OrdinaryRecovery),
   activationBlocked: Schema.Boolean,
+  // Native startup verified the active preimage and stage and ruled out ambiguous preparation.
+  startupInspectionComplete: Schema.optionalKey(Schema.Literal(true)),
+  reopenToCheckInstall: Schema.optionalKey(Schema.Literal(true)),
 });
 export type JonesInstallPlanLaptopEvidence = typeof JonesInstallPlanLaptopEvidence.Type;
 
@@ -374,6 +388,7 @@ export const JonesInstallPlanRequest = Schema.Union([
     command: Schema.optionalKey(JonesInstallPlanClientCommand),
     planId: JonesOperationId,
     action: Schema.Literals(["download", "stop", "install", "preflight", "abandon-stage"]),
+    operationId: Schema.optionalKey(JonesOperationId), // stop: the displayed download
     review: Schema.optionalKey(JonesInstallPlanReview),
   }),
   Schema.Struct({
