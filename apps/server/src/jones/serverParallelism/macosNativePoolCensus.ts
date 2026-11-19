@@ -1,7 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic qualification reads only task-captured workers.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
-import { sampleNativePools, type NativePoolObservation } from "./resourceSamples.ts";
+import {
+  sampleNativePools,
+  type MacNativePoolCensusFailure,
+  type NativePoolObservation,
+} from "./resourceSamples.ts";
 
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -22,6 +26,19 @@ function unavailable(pid: number, raw = ""): NativePoolObservation {
     raw,
     error: "macos-census-unavailable",
   };
+}
+
+function classifyReadFailure(cause: unknown): MacNativePoolCensusFailure {
+  const error = cause as NodeChildProcess.ExecFileException | null | undefined;
+  const code = error?.code;
+  if (typeof code === "number" && Number.isInteger(code) && code >= 1 && code <= 255) {
+    return { reason: "helper-exit", exitCode: code };
+  }
+  if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return { reason: "helper-output-limit" };
+  // The execFile deadline is the only caller-initiated kill once maxBuffer is ruled out.
+  if (error?.killed && error.signal === "SIGTERM") return { reason: "helper-timeout" };
+  if (error?.signal) return { reason: "helper-signal" };
+  return { reason: "helper-error" };
 }
 
 export function parseMacNativePoolCensus(pid: number, raw: string) {
@@ -76,11 +93,18 @@ export function makeMacNativePoolCensus(
   read = async (pid: number) =>
     (await execute(executable, [String(pid)], { timeout: 2_000, maxBuffer: 128 * 1024 })).stdout,
 ) {
-  const observe = async (pid: number) => {
+  const observe = async (
+    pid: number,
+  ): Promise<
+    ReturnType<typeof parseMacNativePoolCensus> & { failure?: MacNativePoolCensusFailure }
+  > => {
     try {
-      return parseMacNativePoolCensus(pid, await read(pid));
-    } catch {
-      return { identity: null, observation: unavailable(pid) };
+      const result = parseMacNativePoolCensus(pid, await read(pid));
+      return result.identity === null
+        ? { ...result, failure: { reason: "invalid-output" } }
+        : result;
+    } catch (cause) {
+      return { identity: null, observation: unavailable(pid), failure: classifyReadFailure(cause) };
     }
   };
   const compare = async (pid: number, preceding?: Awaited<ReturnType<typeof observe>>) => {
@@ -120,6 +144,8 @@ export function makeMacNativePoolCensus(
         threads: referenceObservation.threads.length,
         before: before.observation.raw,
         after: after.observation.raw,
+        ...(before.failure ? { beforeFailure: before.failure } : {}),
+        ...(after.failure ? { afterFailure: after.failure } : {}),
       },
     };
   };
@@ -152,8 +178,8 @@ export function makeMacNativePoolCensus(
         return result.referenceObservation;
       }
       if (!(await comparison).receipt.verified) return reference(pid);
-      const { observation } = await observe(pid);
-      return observation.status === "complete" ? observation : reference(pid);
+      const { observation, failure } = await observe(pid);
+      return failure ? { ...(await reference(pid)), fastCensusFailure: failure } : observation;
     },
     comparison: () => receipt ?? null,
   };
