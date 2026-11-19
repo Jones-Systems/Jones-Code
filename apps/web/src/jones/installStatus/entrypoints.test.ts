@@ -438,6 +438,13 @@ describe("bound Install status actions", () => {
         });
         expect(limited).toContain("Checking its launcher requires fresh status and permission.");
 
+        liveObservation = { freshness: "unsupported", state: null, heardAt: 10, unsupportedAt: 21 };
+        await check(directlyRead, true);
+        expect(operation).toHaveBeenLastCalledWith(hostId, {
+          action: "operationRead",
+          input: exactRead,
+        });
+
         await check({ ...authorized, observation: { freshness: "stale", state: status } }, true);
         await check(
           {
@@ -446,7 +453,42 @@ describe("bound Install status actions", () => {
           },
           true,
         );
-        expect(operation).toHaveBeenCalledTimes(5);
+        expect(operation).toHaveBeenCalledTimes(6);
+
+        liveObservation = { freshness: "stale", state: status, heardAt: 10 };
+        const unbind = bindInstallPlanServices(
+          {
+            ...binding.services,
+            observe: async () => ({ ...authorized, observation: liveObservation }),
+            readStatus: async () => status,
+          },
+          f.store,
+        );
+        try {
+          const state = { ...f.state, current: planWithInstall };
+          f.installPlan.mockResolvedValueOnce({
+            state: { ...state, readOnly: { code: "invalid", message: "The plan is read-only." } },
+          });
+          await performPanelAction(hostId, "check", plan.planId);
+          expect(operation).toHaveBeenLastCalledWith(hostId, {
+            action: "operationRead",
+            input: exactRead,
+          });
+          expect(f.store.get().error).toBe("The plan is read-only.");
+
+          f.installPlan.mockResolvedValueOnce({
+            state,
+            refused: { code: "storage", message: "The plan read was refused." },
+          });
+          await performPanelAction(hostId, "check", plan.planId);
+          expect(operation).toHaveBeenLastCalledWith(hostId, {
+            action: "operationRead",
+            input: exactRead,
+          });
+          expect(f.store.get().error).toBe("The plan read was refused.");
+        } finally {
+          unbind();
+        }
         expect(f.stop).not.toHaveBeenCalled();
       } finally {
         f.unbind();

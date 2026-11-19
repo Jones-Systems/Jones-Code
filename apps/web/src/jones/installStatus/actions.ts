@@ -404,11 +404,12 @@ export async function refreshDeviceEvidence(
       ? services.devices().find((device) => device.environmentId === environmentId)
       : undefined;
     const live = current?.observation;
+    const liveStatusAt = live?.unsupportedAt ?? live?.heardAt;
     // A direct status read can succeed while the background stream is stale.
     const latest =
       (live?.freshness === "fresh" || live?.freshness === "unsupported") &&
-      live.heardAt !== undefined &&
-      (observation.heardAt === undefined || live.heardAt > observation.heardAt)
+      liveStatusAt !== undefined &&
+      (observation.heardAt === undefined || liveStatusAt > observation.heardAt)
         ? live
         : observation;
     const checkLauncher =
@@ -492,11 +493,12 @@ export async function performPanelAction(
         });
       const observed = await refresh();
       update(observed);
+      const planReadError = read.refused?.message ?? read.state.readOnly?.message;
       const message =
         checked === null
           ? undefined
           : await refreshDeviceEvidence(binding, environmentId, checked, observed, {
-              refreshInstallOutcome: true,
+              refreshInstallOutcome: planReadError === undefined,
             });
       if (checked !== null && services.readStatus !== undefined) {
         const state = await services.readStatus(environmentId);
@@ -524,6 +526,7 @@ export async function performPanelAction(
             progress.error?.code === "outcome-unavailable"));
       store.update({
         error:
+          planReadError ??
           message ??
           (currentDevice?.observation.freshness !== "fresh"
             ? `Could not refresh ${observed.label}. Check its connection and try again.`

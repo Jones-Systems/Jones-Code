@@ -184,6 +184,8 @@ export interface JonesUpdateObservation {
   readonly message?: string;
   /** Client clock time of the last successful status read, including unchanged long-poll returns. */
   readonly heardAt?: number;
+  /** Client clock time when a definitive unsupported response arrived. */
+  readonly unsupportedAt?: number;
 }
 
 /** Longest pause between status reads; an unanswered host is retried, never abandoned. */
@@ -287,26 +289,26 @@ export function observeJonesUpdateSnapshot<A, E, R>(
                 Effect.catch((error) => {
                   latestIsFresh = false;
                   const disposition = readFailure(error);
-                  if (disposition === "unsupported") latest = null;
+                  if (disposition === "unsupported") {
+                    latest = null;
+                    return Clock.currentTimeMillis.pipe(
+                      Effect.map((unsupportedAt): readonly [JonesUpdateObservation, Cursor] => [
+                        { state: null, freshness: "unsupported", ...heard(), unsupportedAt },
+                        { ...cursor, done: true },
+                      ]),
+                    );
+                  }
                   return Effect.succeed<readonly [JonesUpdateObservation, Cursor]>([
                     {
                       state: latest,
-                      freshness: disposition === "unsupported" ? "unsupported" : "stale",
+                      freshness: "stale",
                       ...heard(),
-                      ...(disposition === "unsupported"
-                        ? {}
-                        : {
-                            message:
-                              disposition === "retry"
-                                ? "Update status is temporarily unavailable; retrying."
-                                : "Update status is unavailable. Check this connection or sign in again.",
-                          }),
+                      message:
+                        disposition === "retry"
+                          ? "Update status is temporarily unavailable; retrying."
+                          : "Update status is unavailable. Check this connection or sign in again.",
                     },
-                    {
-                      ...cursor,
-                      failures: cursor.failures + 1,
-                      ...(disposition === "unsupported" ? { done: true } : { wait: disposition }),
-                    },
+                    { ...cursor, failures: cursor.failures + 1, wait: disposition },
                   ]);
                 }),
               );

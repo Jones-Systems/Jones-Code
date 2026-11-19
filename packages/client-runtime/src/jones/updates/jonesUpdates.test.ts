@@ -612,6 +612,35 @@ it.effect("stamps heardAt on every successful read, including an unchanged long-
   }).pipe(Effect.provide(TestClock.layer())),
 );
 
+it.effect("timestamps an unsupported response without advancing the last successful read", () =>
+  Effect.gen(function* () {
+    const polling = yield* Deferred.make<void>();
+    let reads = 0;
+    const observer = yield* observeJonesUpdateSnapshot(
+      Stream.succeed(Option.some("prepared")),
+      () =>
+        ++reads === 1
+          ? Effect.succeed(staged)
+          : Deferred.succeed(polling, undefined).pipe(
+              Effect.andThen(Effect.sleep("2 seconds")),
+              Effect.andThen(
+                Effect.fail({ _tag: "RemoteEnvironmentAuthUndeclaredStatusError", status: 404 }),
+              ),
+            ),
+      () => Effect.never,
+    ).pipe(Stream.take(2), Stream.runCollect, Effect.forkChild({ startImmediately: true }));
+    yield* Deferred.await(polling);
+    yield* TestClock.adjust("2 seconds");
+    const [first, unsupported] = yield* Fiber.join(observer);
+    expect(unsupported).toMatchObject({
+      state: null,
+      freshness: "unsupported",
+      heardAt: first!.heardAt,
+      unsupportedAt: first!.heardAt! + 2_000,
+    });
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
 it.effect("a kick restarts reads for a non-fresh stream without waiting out its delay", () =>
   Effect.gen(function* () {
     const kick = yield* Deferred.make<void>();
