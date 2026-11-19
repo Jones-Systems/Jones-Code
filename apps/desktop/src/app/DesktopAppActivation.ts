@@ -12,6 +12,10 @@ import {
   DesktopAppActivationRequest,
   type DesktopAppActivationResponse,
 } from "@t3tools/contracts";
+import {
+  JonesInstallPlanCliRequest,
+  type JonesInstallPlanCliResponse,
+} from "@t3tools/contracts/jones/installPlan";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
@@ -27,6 +31,8 @@ import type * as Electron from "electron";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import { DESKTOP_APP_ACTIVATION_REQUEST_CHANNEL } from "../ipc/channels.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
+import { DesktopUpdates } from "../updates/DesktopUpdatesService.ts";
+import { dispatchInstallPlanCli, installPlanCliFailure } from "../jones/installPlan/cliControl.ts";
 import { DesktopAppActivationBroker } from "./DesktopAppActivationBroker.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
@@ -34,6 +40,7 @@ import { makeComponentLogger } from "./DesktopObservability.ts";
 const MAX_REQUEST_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
 const isDesktopAppActivationRequest = Schema.is(DesktopAppActivationRequest);
+const isInstallPlanCliRequest = Schema.is(JonesInstallPlanCliRequest);
 
 export class DesktopAppActivationStartError extends Schema.TaggedError<DesktopAppActivationStartError>()(
   "DesktopAppActivationStartError",
@@ -110,6 +117,9 @@ export async function startDesktopAppControlServer(input: {
   readonly directory: string | null;
   readonly userId: number | undefined;
   readonly handle: (request: DesktopAppActivationRequest) => Promise<DesktopAppActivationResponse>;
+  readonly installPlan?: (
+    request: JonesInstallPlanCliRequest,
+  ) => Promise<JonesInstallPlanCliResponse>;
   readonly cancel: (requestId: string) => void;
   readonly onReclaimError: (error: unknown) => void;
 }): Promise<RunningControlServer> {
@@ -124,7 +134,7 @@ export async function startDesktopAppControlServer(input: {
 
     socket.setTimeout(5_000, () => socket.destroy());
 
-    const finish = (response: DesktopAppActivationResponse) => {
+    const finish = (response: DesktopAppActivationResponse | JonesInstallPlanCliResponse) => {
       responseSent = true;
       if (!socket.destroyed) socket.end(`${JSON.stringify(response)}\n`);
     };
@@ -151,6 +161,20 @@ export async function startDesktopAppControlServer(input: {
         return;
       }
 
+      if (input.directory !== null && input.installPlan && isInstallPlanCliRequest(parsed)) {
+        void input
+          .installPlan(parsed)
+          .then(finish, () =>
+            finish(
+              installPlanCliFailure(
+                parsed,
+                "unavailable",
+                "Read the plan again before repeating a recovery action.",
+              ),
+            ),
+          );
+        return;
+      }
       if (!isDesktopAppActivationRequest(parsed)) {
         pipe(
           requestIdFromUnknown(parsed),
@@ -298,6 +322,7 @@ const { logWarning } = makeComponentLogger("desktop-app-activation");
 export const make = Effect.gen(function* () {
   const desktopEnvironment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  const updater = yield* DesktopUpdates;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const path = yield* Path.Path;
   const userId = yield* HostProcess.UserId;
@@ -338,6 +363,12 @@ export const make = Effect.gen(function* () {
             ...address,
             userId,
             handle: (request) => broker.request(request),
+            ...(desktopEnvironment.platform === "darwin" && userId !== undefined
+              ? {
+                  installPlan: (request: JonesInstallPlanCliRequest) =>
+                    runPromise(dispatchInstallPlanCli(request, updater.installPlan)),
+                }
+              : {}),
             cancel: (requestId) => broker.cancel(requestId),
             onReclaimError: (cause) =>
               void runPromise(
