@@ -1,6 +1,7 @@
 import type { ThreadTokenUsageSnapshot } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 export class HandoffCompactionError extends Schema.TaggedError<HandoffCompactionError>()(
@@ -16,9 +17,17 @@ interface Binding {
   readonly runtimeGeneration: string;
   readonly nativeThreadId: string;
 }
-interface Request extends Binding {
+interface AttemptBinding extends Binding {
+  readonly runId: string;
+  readonly attemptId: string;
+}
+interface OwnedCompaction extends Binding {
+  readonly compactionItemId: string;
+}
+interface Request extends AttemptBinding {
   readonly done: Deferred.Deferred<ThreadTokenUsageSnapshot, HandoffCompactionError>;
   nativeTurnId?: string;
+  compactionItemId?: string;
   dispatched: boolean;
   acknowledged: boolean;
   compacted: boolean;
@@ -29,26 +38,43 @@ interface Request extends Binding {
   usage?: ThreadTokenUsageSnapshot;
 }
 
+const matchesBinding = (owner: Binding | undefined, binding: Binding) =>
+  owner?.runtimeGeneration === binding.runtimeGeneration &&
+  owner.nativeThreadId === binding.nativeThreadId;
+
 // Never register maintenance as a root turn: it would attribute unsent user input to that native turn.
 // Cancellation never revives it; acknowledged terminal evidence may release its native fence.
 // After restoration dispatch, require restoration acknowledgement or producer retirement;
 // the earlier compaction terminal cannot settle the later effect.
 export function makeCodexHandoffCompaction() {
   const consumed = new Set<string>();
+  // At most one entry per consumed attempt. Only matching late maintenance
+  // frames may pass a subsequent start's rejection guard.
+  const ownedTurns = new Map<string, OwnedCompaction>();
   let pending: Request | undefined;
-  const matches = (binding: Binding) =>
-    pending?.runtimeGeneration === binding.runtimeGeneration &&
-    pending.nativeThreadId === binding.nativeThreadId;
+  const matches = (binding: Binding) => matchesBinding(pending, binding);
+  const canRestore = (request: Request) =>
+    pending === request && !request.failed && request.restorationPending;
+  const clear = (request: Request) => {
+    if (request.nativeTurnId !== undefined && request.compactionItemId !== undefined)
+      ownedTurns.set(request.nativeTurnId, {
+        runtimeGeneration: request.runtimeGeneration,
+        nativeThreadId: request.nativeThreadId,
+        compactionItemId: request.compactionItemId,
+      });
+    pending = undefined;
+  };
   const reconcile = (request: Request) => {
     if (
       pending === request &&
       request.failed &&
       request.acknowledged &&
       request.completed &&
+      request.compactionItemId !== undefined &&
       !request.ambiguous &&
       !request.restorationPending
     )
-      pending = undefined;
+      clear(request);
   };
   const finish = (request: Request) => {
     reconcile(request);
@@ -78,18 +104,90 @@ export function makeCodexHandoffCompaction() {
     owns(binding: Binding) {
       return matches(binding);
     },
+    canRestore(binding: AttemptBinding) {
+      return (
+        pending !== undefined &&
+        matches(binding) &&
+        pending.runId === binding.runId &&
+        pending.attemptId === binding.attemptId &&
+        canRestore(pending)
+      );
+    },
+    ownsTurn(binding: Binding, nativeTurnId: string) {
+      return (
+        (matches(binding) && pending?.nativeTurnId === nativeTurnId) ||
+        matchesBinding(ownedTurns.get(nativeTurnId), binding)
+      );
+    },
+    ownsItem(binding: Binding, nativeTurnId: string, itemId: string) {
+      return (
+        matches(binding) &&
+        pending?.nativeTurnId === nativeTurnId &&
+        pending.compactionItemId === itemId
+      );
+    },
+    observeActivity(binding: Binding, nativeTurnId: string, method: string, payload: object) {
+      const item =
+        (method === "item/started" || method === "item/completed") &&
+        Predicate.hasProperty(payload, "item") &&
+        Predicate.isObject(payload.item) &&
+        payload.item.type === "contextCompaction" &&
+        typeof payload.item.id === "string"
+          ? payload.item.id
+          : undefined;
+      const started = method === "turn/started";
+      const turnEvidence =
+        started ||
+        method === "thread/tokenUsage/updated" ||
+        method === "turn/completed" ||
+        method === "thread/compacted";
+      const owned = ownedTurns.get(nativeTurnId);
+      if (
+        owned !== undefined &&
+        matchesBinding(owned, binding) &&
+        (turnEvidence || item === owned.compactionItemId)
+      )
+        return true;
+      const request = pending;
+      if (request === undefined || !matches(binding) || !request.dispatched) return false;
+      // Compact's ACK carries no turn ID. Hold the candidate until its own
+      // compaction item, terminal, usage and ACK agree. Every other frame
+      // naming unresolved work on this binding remains opposing evidence.
+      if (
+        (request.nativeTurnId === undefined || request.nativeTurnId === nativeTurnId) &&
+        (started ||
+          item !== undefined ||
+          (request.nativeTurnId === nativeTurnId && turnEvidence)) &&
+        (item === undefined ||
+          request.compactionItemId === undefined ||
+          request.compactionItemId === item)
+      ) {
+        request.nativeTurnId ??= nativeTurnId;
+        if (item !== undefined) request.compactionItemId ??= item;
+        return true;
+      }
+      request.failed = true;
+      request.ambiguous = true;
+      Deferred.doneUnsafe(
+        request.done,
+        Effect.fail(new HandoffCompactionError({ reason: "ambiguous" })),
+      );
+      return false;
+    },
     nativeTurnId(binding: Binding) {
-      return matches(binding) ? pending?.nativeTurnId : undefined;
+      return matches(binding) && pending?.compactionItemId !== undefined
+        ? pending.nativeTurnId
+        : undefined;
     },
     cancel,
     retire(binding: Binding) {
       return Effect.sync(() => {
         if (matches(binding)) pending = undefined;
+        for (const [id, owned] of ownedTurns)
+          if (matchesBinding(owned, binding)) ownedTurns.delete(id);
       });
     },
-    begin: Effect.fn("CodexHandoffCompaction.begin")(function* (
-      binding: Binding & { readonly runId: string; readonly attemptId: string },
-    ) {
+    begin: Effect.fn("CodexHandoffCompaction.begin")(function* (binding: AttemptBinding) {
       const key = [
         binding.runtimeGeneration,
         binding.nativeThreadId,
@@ -128,12 +226,10 @@ export function makeCodexHandoffCompaction() {
             pending = undefined;
           return cancelRequest(request, "cancelled");
         }),
-        beginDispatch: Effect.suspend(() => {
-          if (pending !== request || request.failed)
-            return Effect.fail(new HandoffCompactionError({ reason: "cancelled" }));
+        canDispatch: () => pending === request && !request.failed && !request.dispatched,
+        markDispatched: () => {
           request.dispatched = true;
-          return Effect.void;
-        }),
+        },
         assertActive: Effect.suspend(() =>
           request.failed
             ? Effect.fail(new HandoffCompactionError({ reason: "cancelled" }))
@@ -150,25 +246,30 @@ export function makeCodexHandoffCompaction() {
           request.restorationPending = true;
           return Effect.void;
         }),
+        canRestore: () => canRestore(request),
         acknowledgeRestoration: Effect.sync(() => {
           request.restorationPending = false;
           reconcile(request);
         }),
-        release: Effect.sync(() => {
-          if (pending === request && !request.failed && !request.restorationPending)
-            pending = undefined;
-        }),
+        release: (canRelease: () => boolean) =>
+          Effect.sync(() => {
+            if (
+              pending === request &&
+              !request.failed &&
+              !request.restorationPending &&
+              request.acknowledged &&
+              request.compacted &&
+              request.completed &&
+              request.usage !== undefined &&
+              canRelease()
+            ) {
+              clear(request);
+              return true;
+            }
+            return false;
+          }),
       };
     }),
-    started(binding: Binding, nativeTurnId: string) {
-      return Effect.suspend(() => {
-        if (!matches(binding) || !pending) return Effect.void;
-        if (pending.nativeTurnId && pending.nativeTurnId !== nativeTurnId)
-          return cancel("ambiguous");
-        pending.nativeTurnId = nativeTurnId;
-        return Effect.void;
-      });
-    },
     compacted(binding: Binding, nativeTurnId: string) {
       return Effect.suspend(() => {
         if (!matches(binding) || !pending || pending.nativeTurnId !== nativeTurnId)

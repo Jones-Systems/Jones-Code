@@ -67,10 +67,22 @@ export interface CodexStartRejectionProof {
 
 type StartRejection = { readonly kind: "other_error" | "unverified" } | CodexStartRejectionProof;
 
+interface MaintenanceActivity {
+  readonly blocked: boolean;
+  readonly observeActivity: (
+    binding: NativeBinding,
+    nativeTurnId: string,
+    method: string,
+    payload: object,
+  ) => boolean;
+}
+
 // The caller's deadline leaves the native effect unresolved. The original RPC
 // can reconcile it with an exact non-applying rejection, or with an ACK and the
 // acknowledged turn's terminal.
-export function makeCodexLateStartRecovery<AdditionalContext = never>() {
+export function makeCodexLateStartRecovery<AdditionalContext = never>(
+  maintenance?: MaintenanceActivity,
+) {
   const dispatches = new Set<CodexStartDispatch>();
   const releasedStarts = new Map<
     string,
@@ -108,9 +120,28 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
     const record = releasedStarts.get(binding.nativeThreadId);
     return record !== undefined && matchesNativeBinding(record, binding) ? record : undefined;
   };
-  const observeTurnActivity = (runtimeGeneration: string, payload: unknown) => {
-    if ((dispatches.size === 0 && releasedStarts.size === 0) || !Predicate.isObject(payload))
-      return;
+  const releaseWithFence = (dispatch: CodexStartDispatch) => {
+    for (const [id, record] of releasedStarts) {
+      if (record.runtimeGeneration !== dispatch.runtimeGeneration) releasedStarts.delete(id);
+    }
+    // Keep observing the binding until the next prompt is admitted to the queue.
+    if (releasedStarts.size >= RELEASED_START_LIMIT || releasedStart(dispatch)?.conflicted)
+      return false;
+    const excludedTurnIds = new Set(
+      [...dispatch.excludedTurnIds].slice(-RECENT_ACKNOWLEDGED_TURN_LIMIT),
+    );
+    if (dispatch.nativeTurnId !== undefined) excludedTurnIds.add(dispatch.nativeTurnId);
+    releasedStarts.set(dispatch.nativeThreadId, {
+      runtimeGeneration: dispatch.runtimeGeneration,
+      nativeThreadId: dispatch.nativeThreadId,
+      excludedTurnIds,
+      conflicted: false,
+    });
+    return dispatches.delete(dispatch);
+  };
+  const observing = () => dispatches.size > 0 || releasedStarts.size > 0 || maintenance?.blocked;
+  const observeTurnActivity = (runtimeGeneration: string, payload: unknown, method?: string) => {
+    if (!observing() || !Predicate.isObject(payload)) return;
     const nativeThreadId = payload.threadId;
     const nativeTurnId =
       typeof payload.turnId === "string"
@@ -123,11 +154,15 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
     const binding = { nativeThreadId, runtimeGeneration };
     const released = releasedStart(binding);
     const knownOwner = acknowledgedTurns.get(nativeTurnId);
+    const knownTurn = knownOwner !== undefined && matchesNativeBinding(knownOwner, binding);
     if (
-      released !== undefined &&
-      !released.excludedTurnIds.has(nativeTurnId) &&
-      (knownOwner === undefined || !matchesNativeBinding(knownOwner, binding))
+      !knownTurn &&
+      !released?.excludedTurnIds.has(nativeTurnId) &&
+      method !== undefined &&
+      maintenance?.observeActivity(binding, nativeTurnId, method, payload)
     )
+      return;
+    if (released !== undefined && !released.excludedTurnIds.has(nativeTurnId) && !knownTurn)
       released.conflicted = true;
     for (const dispatch of dispatches) {
       if (!matchesNativeBinding(dispatch, binding) || dispatch.excludedTurnIds.has(nativeTurnId))
@@ -137,6 +172,13 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
         dispatch.observedTurnId ??= nativeTurnId;
         if (dispatch.observedTurnId !== nativeTurnId) dispatch.conflictingTurnActivity = true;
       }
+    }
+  };
+  const rememberTurn = (binding: NativeBinding, nativeTurnId: string) => {
+    acknowledgedTurns.set(nativeTurnId, binding);
+    if (acknowledgedTurns.size > RECENT_ACKNOWLEDGED_TURN_LIMIT) {
+      const oldest = acknowledgedTurns.keys().next();
+      if (!oldest.done) acknowledgedTurns.delete(oldest.value);
     }
   };
   return {
@@ -167,11 +209,9 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
     blocksStart(binding: NativeBinding) {
       return releasedStart(binding)?.conflicted === true;
     },
-    beginSend(binding: NativeBinding, claim?: () => boolean) {
+    consumeReleasedStart(binding: NativeBinding) {
       const released = releasedStart(binding);
-      if (released?.conflicted || claim?.() === false) return false;
       if (released !== undefined) releasedStarts.delete(binding.nativeThreadId);
-      return true;
     },
     markUnknown(dispatch: CodexStartDispatch) {
       if (!dispatches.has(dispatch)) return;
@@ -179,8 +219,7 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
       releaseSettled(dispatch);
     },
     observeFrame(runtimeGeneration: string, frame: unknown) {
-      if ((dispatches.size === 0 && releasedStarts.size === 0) || !Predicate.isObject(frame))
-        return;
+      if (!observing() || !Predicate.isObject(frame)) return;
       if (
         typeof frame.method === "string" &&
         (frame.id === undefined ||
@@ -190,7 +229,7 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
         !("error" in frame)
       ) {
         // Record activity before handlers can yield or be forked off the reader.
-        observeTurnActivity(runtimeGeneration, frame.params);
+        observeTurnActivity(runtimeGeneration, frame.params, frame.method);
         return;
       }
       // The envelope schema permits both result and error. The client sends
@@ -247,25 +286,7 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
         kind: "not_applied",
         canReconcileLate,
         isCurrent,
-        release: () => {
-          if (!isCurrent()) return false;
-          for (const [id, record] of releasedStarts) {
-            if (record.runtimeGeneration !== dispatch.runtimeGeneration) releasedStarts.delete(id);
-          }
-          // Keep observing this binding until the next prompt is actually issued.
-          // At capacity, retain the original fence instead of evicting negative evidence.
-          if (releasedStarts.size >= RELEASED_START_LIMIT || releasedStart(dispatch)?.conflicted)
-            return false;
-          releasedStarts.set(dispatch.nativeThreadId, {
-            runtimeGeneration: dispatch.runtimeGeneration,
-            nativeThreadId: dispatch.nativeThreadId,
-            excludedTurnIds: new Set(
-              [...dispatch.excludedTurnIds].slice(-RECENT_ACKNOWLEDGED_TURN_LIMIT),
-            ),
-            conflicted: false,
-          });
-          return dispatches.delete(dispatch);
-        },
+        release: () => isCurrent() && releaseWithFence(dispatch),
       };
     },
     observeTurnActivity,
@@ -284,14 +305,13 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
       }
       if (acknowledgedTurns.get(nativeTurnId)?.runtimeGeneration === runtimeGeneration) return;
       dispatch.nativeTurnId = nativeTurnId;
-      acknowledgedTurns.set(nativeTurnId, {
-        runtimeGeneration,
-        nativeThreadId: dispatch.nativeThreadId,
-      });
-      if (acknowledgedTurns.size > RECENT_ACKNOWLEDGED_TURN_LIMIT) {
-        const oldest = acknowledgedTurns.keys().next();
-        if (!oldest.done) acknowledgedTurns.delete(oldest.value);
-      }
+      rememberTurn(
+        {
+          runtimeGeneration,
+          nativeThreadId: dispatch.nativeThreadId,
+        },
+        nativeTurnId,
+      );
       // A prompt's accepted context survives caller failure. Keep the ordinal
       // even when this ACK clears context, so an older ACK cannot restore it.
       const accepted = acceptedContexts.get(dispatch.nativeThreadId);
@@ -329,7 +349,7 @@ export function makeCodexLateStartRecovery<AdditionalContext = never>() {
       return lateTerminal(dispatch) === terminal;
     },
     releaseLateTerminal(dispatch: CodexStartDispatch, terminal: CodexStartTerminal) {
-      if (lateTerminal(dispatch) === terminal) dispatches.delete(dispatch);
+      if (lateTerminal(dispatch) === terminal) releaseWithFence(dispatch);
     },
     release(dispatch: CodexStartDispatch) {
       if (!dispatch.unknown) dispatches.delete(dispatch);

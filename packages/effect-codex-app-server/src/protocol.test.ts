@@ -27,6 +27,59 @@ const encodeJsonl = (value: unknown) => encoder.encode(`${encodeUnknownJsonStrin
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
+  it.effect("admits only current requests after logging and leaves refusals unsent", () =>
+    Effect.gen(function* () {
+      const { stdio, input, output } = yield* makeInMemoryStdio();
+      const logged = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      let current = true;
+      let enqueued = 0;
+      const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+        stdio,
+        logOutgoing: true,
+        logger: (event) =>
+          event.direction === "outgoing" &&
+          event.stage === "raw" &&
+          typeof event.payload === "string" &&
+          event.payload.includes('"refuse"')
+            ? Deferred.succeed(logged, undefined).pipe(Effect.andThen(Deferred.await(resume)))
+            : Effect.void,
+      });
+      const admission = {
+        canEnqueue: () => current,
+        onEnqueued: () => {
+          enqueued += 1;
+        },
+      };
+      const first = yield* CodexProtocol.withRequestAdmission(
+        transport.request("refuse"),
+        admission,
+      ).pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(logged);
+      current = false;
+      yield* Deferred.succeed(resume, undefined);
+      const refusal = yield* Fiber.join(first);
+      assert.isTrue(
+        refusal._tag === "Failure" &&
+          refusal.failure._tag === "CodexAppServerRequestError" &&
+          refusal.failure.operation === "enqueue-request",
+      );
+      assert.equal(enqueued, 0);
+      assert.equal(yield* Queue.size(output), 0);
+
+      current = true;
+      const next = yield* CodexProtocol.withRequestAdmission(
+        transport.request("admit"),
+        admission,
+      ).pipe(Effect.forkScoped);
+      assert.deepEqual(yield* decodeJson(yield* Queue.take(output)), { id: 2, method: "admit" });
+      assert.equal(enqueued, 1);
+      yield* Queue.offer(input, encodeJsonl({ id: 1, result: "stale" }));
+      yield* Queue.offer(input, encodeJsonl({ id: 2, result: "admitted" }));
+      assert.equal(yield* Fiber.join(next), "admitted");
+    }),
+  );
+
   it.effect(
     "encodes requests without a jsonrpc field and routes inbound requests and notifications",
     () =>

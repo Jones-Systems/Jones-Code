@@ -24,6 +24,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
@@ -100,6 +101,9 @@ describe("Codex inline handoff rejection recovery", () => {
     { code: null, late: true, recovery: "late acceptance after pruning" },
     { code: null, late: true, recovery: "late acceptance with statement rollback" },
     { code: null, late: true, recovery: "process loss before late acceptance commits" },
+    { code: null, late: true, recovery: "late acceptance contradicted before COMMIT" },
+    { code: null, late: true, recovery: "readback of restart after COMMIT contradiction" },
+    { code: null, late: true, recovery: "process loss after late receipt commits" },
   ] as const)("handles $recovery (reply code: $code, late: $late)", ({ code, late, recovery }) =>
     Effect.gen(function* () {
       const scenario = `inline-handoff-refusal-${code}-${recovery}`;
@@ -111,17 +115,21 @@ describe("Codex inline handoff rejection recovery", () => {
       const terminalFirst = recovery === "late terminal before ACK";
       const ackOnly = recovery === "late ACK without a terminal";
       const wrongTerminal = recovery === "late ACK with a different terminal";
-      const commitsInline =
-        recovery === "on-time ACK and terminal" ||
-        recovery === "late ACK and terminal" ||
-        terminalFirst;
-      const atCommit = recovery === "contradiction before outer commit";
+      const restartReadback = recovery === "readback of restart after COMMIT contradiction";
+      const commitsInline = recovery === "on-time ACK and terminal";
+      const lostAfterCommit = recovery === "process loss after late receipt commits";
+      const recordsLateReceipt =
+        restartReadback || lostAfterCommit || recovery === "late ACK and terminal" || terminalFirst;
+      const positiveCommitRace =
+        restartReadback || recovery === "late acceptance contradicted before COMMIT";
+      const atCommit = recovery === "contradiction before outer commit" || positiveCommitRace;
       const lostBeforeCommit = recovery === "process loss before late acceptance commits";
       const reopenDatabase =
         atCommit ||
+        commitsInline ||
         (acceptsPrompt && late) ||
         recovery === "pending without observed contradiction";
-      const contradicts = recovery.startsWith("contradiction");
+      const contradicts = recovery.startsWith("contradiction") || positiveCommitRace;
       const fileSystem = yield* FileSystem.FileSystem;
       const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "jones-codex-history-" });
       const path = yield* Path.Path;
@@ -357,33 +365,37 @@ describe("Codex inline handoff rejection recovery", () => {
       const possibleRestoreFinished = yield* Deferred.make<void>();
       const activityObserved = yield* Deferred.make<void>();
       const sessionOpened = yield* Deferred.make<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
-      let parkNextCommit = false;
+      let commitsUntilPark = 0;
       let commitIntercepted = false;
       const databaseLayer = Layer.effect(
         SqlClient.SqlClient,
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           const withTransaction: typeof sql.withTransaction = (body) =>
-            Effect.suspend(() => {
-              if (!parkNextCommit) return sql.withTransaction(body);
-              parkNextCommit = false;
+            Effect.gen(function* () {
+              if (
+                commitsUntilPark === 0 ||
+                Option.isSome(yield* Effect.serviceOption(sql.transactionService))
+              )
+                return yield* sql.withTransaction(body);
+              commitsUntilPark -= 1;
+              if (commitsUntilPark > 0) return yield* sql.withTransaction(body);
               commitIntercepted = true;
-              // If the rejection starts a writer, park after its whole body, including
-              // the publication lane and any final proof check, but before outer COMMIT.
-              return sql
-                .withTransaction(
-                  body.pipe(
-                    Effect.tap(() =>
-                      lostBeforeCommit
-                        ? Deferred.succeed(writerParked, undefined).pipe(
-                            Effect.andThen(Deferred.await(allowWriter)),
-                            Effect.interruptible,
-                          )
-                        : Deferred.await(allowWriter),
-                    ),
-                  ),
-                )
-                .pipe(Effect.ensuring(Deferred.succeed(possibleRestoreFinished, undefined)));
+              const park =
+                lostBeforeCommit || positiveCommitRace || lostAfterCommit
+                  ? Deferred.succeed(writerParked, undefined).pipe(
+                      Effect.andThen(Deferred.await(allowWriter)),
+                      Effect.interruptible,
+                    )
+                  : Deferred.await(allowWriter);
+              // The interception is outside the batch body and its publication
+              // lane acquisition. The post-commit variant stops before publication.
+              const transaction = lostAfterCommit
+                ? sql.withTransaction(body).pipe(Effect.tap(() => park))
+                : sql.withTransaction(body.pipe(Effect.tap(() => park)));
+              return yield* transaction.pipe(
+                Effect.ensuring(Deferred.succeed(possibleRestoreFinished, undefined)),
+              );
             });
           return new Proxy(sql, {
             get(target, key, receiver) {
@@ -582,22 +594,27 @@ describe("Codex inline handoff rejection recovery", () => {
         }
         if (recovery === "late acceptance with statement rollback") {
           yield* sql`CREATE TEMP TRIGGER refuse_inline_delivery BEFORE INSERT ON orchestration_events
-            WHEN NEW.event_type = 'context-handoff.updated'
-              AND json_extract(NEW.payload_json, '$.delivery.status') = 'inline'
+            WHEN NEW.event_type = 'provider-turn.updated'
+              AND json_extract(NEW.payload_json, '$.nativeTurnRef.nativeId') = 'original-native-turn'
             BEGIN SELECT RAISE(ABORT, 'synthetic late delivery rollback'); END`;
         }
-        const acceptedDelivery = commitsInline
-          ? yield* orchestrator.streamDomainEvents.pipe(
-              Stream.filter(
-                (event) =>
-                  event.type === "context-handoff.updated" &&
-                  event.payload.id === handoffId &&
-                  event.payload.delivery?.status === "inline",
-              ),
-              Stream.runHead,
-              Effect.forkChild({ startImmediately: true }),
-            )
-          : undefined;
+        const acceptedDelivery =
+          (commitsInline || recordsLateReceipt) && !lostAfterCommit
+            ? yield* orchestrator.streamDomainEvents.pipe(
+                Stream.filter((event) =>
+                  commitsInline
+                    ? event.type === "context-handoff.updated" &&
+                      event.payload.id === handoffId &&
+                      event.payload.delivery?.status === "inline"
+                    : event.type === "provider-turn.updated" &&
+                      event.payload.runAttemptId === originalAttemptId &&
+                      event.payload.nativeTurnRef?.nativeId === originalNativeTurnId &&
+                      event.payload.status === "completed",
+                ),
+                Stream.runHead,
+                Effect.forkChild({ startImmediately: true }),
+              )
+            : undefined;
         const initialCompletion =
           acceptsPrompt && !late
             ? yield* orchestrator.streamDomainEvents.pipe(
@@ -623,7 +640,8 @@ describe("Codex inline handoff rejection recovery", () => {
                 .pipe(Effect.forkChild({ startImmediately: true }))
             : undefined;
         if (heldWriter !== undefined) yield* Deferred.await(writerParked);
-        parkNextCommit = atCommit || lostBeforeCommit;
+        commitsUntilPark =
+          lostBeforeCommit || lostAfterCommit || restartReadback ? 2 : atCommit ? 1 : 0;
         yield* Deferred.succeed(allowRejection, undefined);
         yield* Deferred.await(rejectionObserved);
         if (lostBeforeCommit) {
@@ -637,6 +655,25 @@ describe("Codex inline handoff rejection recovery", () => {
             providerTurns: timedOut.providerTurns,
           };
         }
+        if (lostAfterCommit) {
+          yield* Deferred.await(writerParked);
+          const after = yield* getProjection();
+          assert.deepEqual(after.contextHandoffs[0], pending, "the pending marker must survive");
+          assert.deepEqual(yield* currentMarker, expectedMarker);
+          assert.deepEqual(after.runs, timedOut.runs);
+          assert.deepEqual(after.attempts, timedOut.attempts);
+          assert.equal(after.providerTurns.length, 1);
+          assert.equal(after.providerTurns[0]?.nativeTurnRef?.nativeId, originalNativeTurnId);
+          assert.equal(after.providerTurns[0]?.runAttemptId, originalAttemptId);
+          assert.equal(after.providerTurns[0]?.status, "completed");
+          return {
+            handoffs: after.contextHandoffs,
+            runs: after.runs,
+            attempts: after.attempts,
+            providerTurns: after.providerTurns,
+          };
+        }
+        if (positiveCommitRace) yield* Deferred.await(writerParked);
         yield* TestClock.adjust(0);
         if (contradicts) {
           yield* Deferred.succeed(allowActivity, undefined);
@@ -647,8 +684,8 @@ describe("Codex inline handoff rejection recovery", () => {
         if (commitIntercepted) yield* Deferred.await(possibleRestoreFinished);
         yield* TestClock.adjust(0);
         yield* Fiber.join(starting);
-        parkNextCommit = false;
-        if (commitsInline) {
+        commitsUntilPark = 0;
+        if (commitsInline || recordsLateReceipt) {
           yield* Fiber.join(acceptedDelivery!);
           if (initialCompletion !== undefined) {
             yield* Fiber.join(initialCompletion);
@@ -665,9 +702,23 @@ describe("Codex inline handoff rejection recovery", () => {
           });
           assert.equal(
             after.contextHandoffs[0]?.delivery?.status,
-            "inline",
-            "exact acceptance should settle the owned marker",
+            commitsInline ? "inline" : "pending",
+            "a late receipt must preserve the durable hold",
           );
+          if (recordsLateReceipt) assert.deepEqual(yield* currentMarker, expectedMarker);
+          if (restartReadback) {
+            const runtime = yield* Deferred.await(sessionOpened);
+            const liveHold = yield* runtime
+              .ensureThread({
+                threadId: ThreadId.make(`${scenario}-gate-check`),
+                modelSelection: CODEX_TEST_MODEL_SELECTION,
+                runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+              })
+              .pipe(Effect.flip);
+            assert.equal(liveHold._tag, "ProviderRuntimeBindingError");
+            if (liveHold._tag === "ProviderRuntimeBindingError")
+              assert.include(liveHold.detail, "unconfirmed native effect");
+          }
           const [accepted] = after.providerTurns;
           assert.equal(after.providerTurns.length, 1);
           assert.equal(accepted?.nativeTurnRef?.nativeId, originalNativeTurnId);
@@ -849,7 +900,7 @@ describe("Codex inline handoff rejection recovery", () => {
         assert.deepEqual(after.contextHandoffs, retained.handoffs);
         assert.deepEqual(
           after.runs.map((run) => run.status),
-          ["failed", commitsInline ? "completed" : "failed"],
+          [commitsInline ? "completed" : "failed", commitsInline ? "completed" : "failed"],
         );
         assert.deepEqual(after.runs[0], retained.runs[0]);
         assert.deepEqual(

@@ -1,7 +1,6 @@
 import type {
   MessageId,
   OrchestrationV2ContextHandoff,
-  OrchestrationV2DomainEvent,
   OrchestrationV2ProviderTurn,
   OrchestrationV2StoredEvent,
   ProviderRuntimeBinding,
@@ -94,7 +93,7 @@ export const promptWasNotApplied = (
   return false;
 };
 
-interface LateInlineAcceptance {
+interface LateInlineReceipt {
   readonly binding: ProviderRuntimeBinding;
   readonly runId: RunId;
   readonly runOrdinal: number;
@@ -106,6 +105,7 @@ interface LateInlineAcceptance {
 interface InlineHistoryStart {
   readonly acknowledged: boolean;
   readonly closeUnsent: () => boolean;
+  readonly canDispatch: () => boolean;
   readonly tryDispatch: () => boolean;
   readonly markAcknowledged: () => void;
   readonly reconcileLate: (
@@ -130,10 +130,10 @@ class InlineRestorationSqlFailure extends Schema.TaggedError<
 
 const isInlineRestorationSqlFailure = Schema.is(InlineRestorationSqlFailure);
 
-class InlineAcceptanceChanged extends Schema.TaggedError<
-  InlineAcceptanceChanged,
+class LateInlineReceiptChanged extends Schema.TaggedError<
+  LateInlineReceiptChanged,
   { readonly brand: unique symbol }
->()("InlineAcceptanceChanged", {}) {}
+>()("LateInlineReceiptChanged", {}) {}
 
 const hasSqlCause = (error: unknown): boolean => {
   // EventSink and EventStore wrap statement errors with their operation.
@@ -181,7 +181,7 @@ const ownsPendingHistoryDelivery = Effect.fn("HistoryDeliveryOutcome.ownsPending
 
 // The provider turn records native input acceptance independently of the app run's outcome.
 const ownsLateInlineTurn = Effect.fn("HistoryDeliveryOutcome.ownsLateInlineTurn")(function* (
-  receipt: LateInlineAcceptance,
+  receipt: LateInlineReceipt,
 ) {
   const { binding, runId, runOrdinal, messageId, turn } = receipt;
   const database = yield* Effect.serviceOption(SqlClient.SqlClient);
@@ -288,64 +288,69 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
       idAllocator: IdAllocatorV2["Service"],
     ): InlineHistoryStart {
       let status: "unsent" | "closed" | "dispatched" | "acknowledged" = "unsent";
-      const acceptLate = Effect.fn("HistoryDeliveryOutcome.acceptLateInline")(function* (
-        receipt: LateInlineAcceptance,
+      const ownsDelivery = Effect.fn("HistoryDeliveryOutcome.ownsLateInlineDelivery")(function* (
+        receipt: LateInlineReceipt,
       ) {
-        if (status !== "acknowledged" || !receipt.isCurrent() || pending.size === 0) return false;
-        return yield* withProviderBatch(
-          Effect.gen(function* () {
-            if (!(yield* ownsLateInlineTurn(receipt))) return false;
-            const { binding, runId, turn } = receipt;
-            const occurredAt = yield* DateTime.now;
-            const deliveries: OrchestrationV2DomainEvent[] = [];
-            for (const marker of pending.values()) {
-              if (marker === undefined) return false;
-              const { event } = marker;
-              if (
-                event.type !== "context-handoff.updated" ||
-                event.threadId !== binding.threadId ||
-                event.runId !== runId ||
-                event.providerInstanceId !== binding.providerInstanceId ||
-                event.payload.toProviderThreadId !== binding.providerThreadId ||
-                event.payload.delivery?.nativeThreadId !== binding.nativeThreadId ||
-                !(yield* ownsPendingHistoryDelivery(marker))
-              )
-                return false;
-              deliveries.push({
-                ...event,
-                id: yield* idAllocator.allocate.event({ threadId: binding.threadId }),
-                occurredAt,
-                payload: {
-                  ...event.payload,
-                  updatedAt: occurredAt,
-                  delivery: { ...event.payload.delivery, status: "inline" },
-                },
-              });
-            }
-            const id = yield* idAllocator.allocate.event({ threadId: binding.threadId });
-            if (!receipt.isCurrent()) return false;
-            const written = yield* sink({
-              events: [
-                {
-                  id,
-                  type: "provider-turn.updated",
-                  threadId: binding.threadId,
-                  runId,
-                  nodeId: turn.nodeId,
-                  driver: binding.driver,
-                  providerInstanceId: binding.providerInstanceId,
-                  occurredAt,
-                  payload: turn,
-                },
-                ...deliveries,
-              ],
-            });
-            if (written.length !== 1 + deliveries.length || !receipt.isCurrent())
-              return yield* new InlineAcceptanceChanged();
-            return true;
-          }),
-        ).pipe(Effect.catchTags({ InlineAcceptanceChanged: () => Effect.succeed(false) }));
+        if (!receipt.isCurrent() || pending.size === 0) return false;
+        if (!(yield* ownsLateInlineTurn(receipt))) return false;
+        const { binding, runId } = receipt;
+        for (const marker of pending.values()) {
+          if (marker === undefined) return false;
+          const { event } = marker;
+          if (
+            event.type !== "context-handoff.updated" ||
+            event.threadId !== binding.threadId ||
+            event.runId !== runId ||
+            event.providerInstanceId !== binding.providerInstanceId ||
+            event.payload.status !== "ready" ||
+            event.payload.toProviderThreadId !== binding.providerThreadId ||
+            event.payload.delivery?.nativeThreadId !== binding.nativeThreadId ||
+            !(yield* ownsPendingHistoryDelivery(marker))
+          )
+            return false;
+        }
+        return receipt.isCurrent();
       });
+      const recordLateReceipt = Effect.fn("HistoryDeliveryOutcome.recordLateInlineReceipt")(
+        function* (receipt: LateInlineReceipt) {
+          if (status !== "acknowledged" || !receipt.isCurrent()) return false;
+          // The matching ACK and terminal describe the original input. Live
+          // exclusivity can still change while SQLite commits or publishes.
+          // Keep the original pending marker through every crash cut. Only
+          // independent native evidence could settle delivery for reconstruction.
+          if (!(yield* withProviderBatch(ownsDelivery(receipt))) || !receipt.isCurrent())
+            return false;
+          return yield* withProviderBatch(
+            Effect.gen(function* () {
+              // The ownership read completed its writer/publication interval.
+              // Recheck the exact marker and attempt in the receipt's own write.
+              if (!(yield* ownsDelivery(receipt))) return false;
+              const { binding, runId, turn } = receipt;
+              const occurredAt = yield* DateTime.now;
+              const id = yield* idAllocator.allocate.event({ threadId: binding.threadId });
+              if (!receipt.isCurrent()) return false;
+              const written = yield* sink({
+                events: [
+                  {
+                    id,
+                    type: "provider-turn.updated",
+                    threadId: binding.threadId,
+                    runId,
+                    nodeId: turn.nodeId,
+                    driver: binding.driver,
+                    providerInstanceId: binding.providerInstanceId,
+                    occurredAt,
+                    payload: turn,
+                  },
+                ],
+              });
+              if (written.length !== 1 || !receipt.isCurrent())
+                return yield* new LateInlineReceiptChanged();
+              return true;
+            }),
+          ).pipe(Effect.catchTags({ LateInlineReceiptChanged: () => Effect.succeed(false) }));
+        },
+      );
       return {
         get acknowledged() {
           return status === "acknowledged";
@@ -355,6 +360,7 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
           status = "closed";
           return true;
         },
+        canDispatch: () => status === "unsent",
         tryDispatch() {
           if (status !== "unsent") return false;
           status = "dispatched";
@@ -366,7 +372,7 @@ export function makeCodexHistoryDeliveryPersistence<WriteError>(
         reconcileLate: (terminal, binding, input, isCurrent, release) =>
           Deferred.await(terminal).pipe(
             Effect.flatMap((observed) =>
-              acceptLate({
+              recordLateReceipt({
                 binding,
                 runId: input.runId,
                 runOrdinal: input.runOrdinal,

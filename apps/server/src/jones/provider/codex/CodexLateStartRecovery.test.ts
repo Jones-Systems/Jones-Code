@@ -187,7 +187,8 @@ describe("Codex late start admission recovery", () => {
     const originalProof = rejectionFor(original, 7);
     if (originalProof.kind !== "not_applied") throw new Error("Expected exact rejection proof");
     expect(originalProof.release()).toBe(true);
-    expect(ledger.beginSend(binding)).toBe(true);
+    expect(ledger.blocksStart(binding)).toBe(false);
+    ledger.consumeReleasedStart(binding);
 
     const next = ledger.begin(binding, []);
     ledger.observeFrame(binding.runtimeGeneration, {
@@ -224,14 +225,13 @@ describe("Codex late start admission recovery", () => {
       });
     }
     expect(ledger.blocksStart(binding)).toBe(false);
-    expect(ledger.beginSend(binding, () => false)).toBe(false);
     ledger.observeTurnActivity(binding.runtimeGeneration, {
       threadId: binding.nativeThreadId,
       turnId: "unowned-turn",
     });
-    expect(ledger.beginSend(binding)).toBe(false);
-    expect(ledger.beginSend(sibling)).toBe(true);
-    expect(ledger.beginSend(replacement)).toBe(true);
+    expect(ledger.blocksStart(binding)).toBe(true);
+    expect(ledger.blocksStart(sibling)).toBe(false);
+    expect(ledger.blocksStart(replacement)).toBe(false);
   });
 
   it.each([-32600, -32601])("keeps code %s proof scoped to the original wait", (code) => {
