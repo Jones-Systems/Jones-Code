@@ -1713,7 +1713,7 @@ jobs:
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version: 26.13.1
-          cache: ${{ github.ref == 'refs/heads/main' }}
+          cache: false
           run-install: |
             args:
               - --filter=@t3tools/scripts...
@@ -1790,7 +1790,7 @@ jobs:
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version: 26.13.1
-          cache: ${{ runner.os != 'macOS' || github.ref == 'refs/heads/main' }}
+          cache: ${{ runner.os != 'macOS' }}
           run-install: true
 
       - name: Verify official Effect TSRS after the full install

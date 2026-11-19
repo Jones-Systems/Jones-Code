@@ -647,18 +647,23 @@ describe("personal Workstreams native presentation", () => {
       });
     },
   );
-  it("saves a different icon from the Workstream menu and closes the editor", async () => {
+  it("adds, changes and clears the icon from the ordered Workstream submenu", async () => {
     using setup = fixture();
     const { registry, controller, initial, state } = setup;
-    const project = {
-      projectKey: "studio",
-      displayName: "Studio",
+    const projects = (
+      [
+        ["Studio", "🟪"],
+        ["Garden", "🌱"],
+      ] as const
+    ).map(([name, emoji]) => ({
+      projectKey: name,
+      displayName: name,
       environmentId: env,
-      workspaceRoot: "/synthetic/studio",
-      title: "Studio",
+      workspaceRoot: `/synthetic/${name}`,
+      title: name,
       faviconPath: null,
-      projectIcon: { kind: "emoji" as const, emoji: "🟪" },
-    };
+      projectIcon: { kind: "emoji" as const, emoji },
+    }));
     registry.set(state, { ...initial, canSetNameIcon: true });
     const setNameIcon = vi.fn<NonNullable<PersonalWorkstreamsController["setNameIcon"]>>(
       async (_id, projectKey) => {
@@ -672,7 +677,7 @@ describe("personal Workstreams native presentation", () => {
       <RegistryContext.Provider value={registry}>
         <WorkstreamNativeSidebar
           controller={controller}
-          nameIconProjects={[project]}
+          nameIconProjects={projects}
           threads={[thread]}
           renderThread={(entry) => <li>{entry.title}</li>}
           canOperate={() => true}
@@ -681,21 +686,46 @@ describe("personal Workstreams native presentation", () => {
         />
       </RegistryContext.Provider>,
     );
-    for (const [label, projectKey] of [
-      ["Studio", "studio"],
-      ["None", null],
-    ] as const) {
-      await page
-        .getByRole("button", { name: "Collapse Alpha", exact: true })
-        .click({ button: "right" });
-      await userEvent.click(page.getByRole("menuitem", { name: "Change name icon" }));
-      const picker = page.getByRole("combobox", { name: "Icon", exact: true });
-      await userEvent.click(picker);
-      await userEvent.click(page.getByRole("option", { name: label, exact: true }));
-      await userEvent.click(page.getByRole("button", { name: "Save", exact: true }));
-      await expect.element(picker).not.toBeInTheDocument();
-      expect(setNameIcon).toHaveBeenLastCalledWith(workstream.id, projectKey);
-    }
+    const header = page.getByRole("button", { name: "Collapse Alpha", exact: true });
+    const submenu = page.getByRole("menuitem", { name: "Change icon", exact: true });
+    const choices = page.getByRole("group", { name: "Workstream icon", exact: true });
+    const option = (name: string) => choices.getByRole("menuitemradio", { name, exact: true });
+    const open = async () => {
+      await header.click({ button: "right" });
+      await userEvent.click(submenu);
+    };
+
+    await open();
+    const options = choices.getByRole("menuitemradio");
+    await expect.element(options.nth(0)).toHaveAccessibleName("None");
+    await expect.element(options.nth(1)).toHaveAccessibleName("Studio");
+    await expect.element(options.nth(2)).toHaveAccessibleName("Garden");
+    await expect.element(option("None")).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(option("Studio"));
+    await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
+    await expect.element(page.getByText("🟪", { exact: true })).toBeVisible();
+
+    await open();
+    await expect.element(option("Studio")).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(option("Studio"));
+    await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
+    expect(setNameIcon).toHaveBeenCalledTimes(1);
+
+    await open();
+    await userEvent.click(option("Garden"));
+    await expect.element(page.getByRole("menu")).not.toBeInTheDocument();
+    const gardenIcon = page.getByText("🌱", { exact: true });
+    await expect.element(gardenIcon).toBeVisible();
+
+    await open();
+    await expect.element(option("Garden")).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(option("None"));
+    await expect.element(gardenIcon).not.toBeInTheDocument();
+    expect(setNameIcon.mock.calls).toEqual([
+      [workstream.id, "Studio"],
+      [workstream.id, "Garden"],
+      [workstream.id, null],
+    ]);
   });
   it("renders a pushed controller update without refresh and keeps a cached group visible while offline", async () => {
     using setup = fixture();

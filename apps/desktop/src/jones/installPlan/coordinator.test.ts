@@ -415,7 +415,10 @@ describe("Laptop install recovery", () => {
     expectedInstalledSource: old,
     reviewedAt: timestamp,
   };
-  const startInstall = async (f: ReturnType<typeof fixture>) => {
+  const startInstall = async (
+    f: ReturnType<typeof fixture>,
+    select = [] as (typeof selection)[],
+  ) => {
     f.setStaged();
     f.setEvidence({
       activeSource: old,
@@ -426,7 +429,7 @@ describe("Laptop install recovery", () => {
       type: "start",
       origin: "update-button",
       target,
-      select: [],
+      select,
       laptop: { action: "install", review },
     });
   };
@@ -439,6 +442,155 @@ describe("Laptop install recovery", () => {
       transactionId: transaction,
       fromGeneration: "previous",
     });
+
+  it.each([true, false])(
+    "settles a held attempt on verified manual startup (same target: %s)",
+    async (sameTarget) => {
+      const f = fixture();
+      const { state } = await startInstall(f, [selection]);
+      const plan = state.current!;
+      const operationId = plan.laptop.operations[0]!.operationId;
+      await bind(f, operationId);
+      const restored = createInstallPlanCoordinator(f.options);
+      const held = await restored.request({ type: "read" });
+      expect(held.state.current?.laptop.operations[0]?.result?.status).toBe("held");
+      const generation = "8".repeat(64);
+      f.setEvidence({
+        activeSource: sameTarget ? source : "9".repeat(40),
+        activeTree: tree,
+        activeGeneration: generation,
+      });
+      expect((await restored.request({ type: "read" })).state.current?.laptop.gate).toBeUndefined();
+      f.setEvidence({
+        ordinaryRecovery: {
+          transactionId: `manual-${generation}`,
+          activeGeneration: generation,
+          manifestSha256: "e".repeat(64),
+          receiptSha256: "f".repeat(64),
+        },
+      });
+      const checked = await restored.request({ type: "read" });
+      expect(checked.state.current?.laptop.operations[0]?.result).toMatchObject({
+        status: "interrupted",
+        code: sameTarget ? "target-verified-elsewhere" : "install-not-active",
+      });
+      if (sameTarget) {
+        expect(checked.state.current?.laptop.gate).toMatchObject({
+          basis: "prior-verified",
+          verificationKind: "ordinary-recovery",
+        });
+        expect(checked.state.view.manualClose).toBeUndefined();
+      } else {
+        expect(checked.state.current?.laptop.gate).toBeUndefined();
+        const closed = await restored.request({
+          type: "close-after-manual-install",
+          planId: plan.planId,
+          expectedRevision: checked.state.current!.revision,
+          ...checked.state.view.manualClose!,
+          devices: [{ environmentId: remote, kind: "unverified", observedAt: f.options.now() }],
+        });
+        expect(closed.refused).toBeUndefined();
+        expect(closed.state.current).toBeNull();
+      }
+      expect(f.controller.install).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("cancels a held Laptop rollout, retains its native fence and reconciles late proof in history", async () => {
+    const f = fixture();
+    const { state } = await startInstall(f, [selection]);
+    const plan = state.current!;
+    const operationId = plan.laptop.operations[0]!.operationId;
+    await bind(f, operationId);
+    const restored = createInstallPlanCoordinator(f.options);
+    const held = await restored.request({ type: "read" });
+    const cancel = {
+      type: "cancel-plan" as const,
+      planId: plan.planId,
+      expectedRevision: held.state.current!.revision,
+    };
+    expect(
+      (await restored.request({ ...cancel, expectedRevision: plan.revision })).refused?.code,
+    ).toBe("stale-revision");
+    const cancelled = await restored.request(cancel);
+    expect(cancelled.refused).toBeUndefined();
+    expect(cancelled.state.current).toBeNull();
+    expect(cancelled.state.last).toMatchObject({
+      cancelled: true,
+      laptop: { operations: [{ operationId, result: { status: "held" } }] },
+    });
+    const reopened = createInstallPlanCoordinator(f.options);
+    expect(await reopened.preparationHeld()).toBe(true);
+    expect(
+      (await reopened.request({ type: "start", origin: "update-button", target, select: [] }))
+        .refused?.code,
+    ).toBe("outstanding-operation");
+    expect((await f.claim(plan.planId)).refused?.code).toBe("plan-mismatch");
+    f.setEvidence({
+      activeGeneration: transaction,
+      committedTransactionId: transaction,
+      activeSource: source,
+    });
+    const reconciled = await reopened.request({ type: "read" });
+    expect(reconciled.state.current).toBeNull();
+    expect(reconciled.state.last?.laptop.gate).toBeUndefined();
+    expect(reconciled.state.last?.laptop.operations[0]?.result?.status).toBe("committed");
+    expect(await reopened.preparationHeld()).toBe(false);
+    expect(f.controller.install).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a plan with a reserved remote operation when cancellation is requested", async () => {
+    const f = fixture();
+    const plan = await f.start();
+    const claimed = await f.claim(plan.planId);
+    expect(claimed.grant).toBeDefined();
+    const cancelled = await f.coordinator.request({
+      type: "cancel-plan",
+      planId: plan.planId,
+      expectedRevision: claimed.state.current!.revision,
+    });
+    expect(cancelled.refused?.code).toBe("outstanding-operation");
+    expect(cancelled.state.current).toEqual(claimed.state.current);
+    expect(cancelled.state.last).toBeNull();
+  });
+
+  it("cancels pending rollout work and keeps the exact remote cleanup available in history", async () => {
+    const f = fixture();
+    const plan = await f.start();
+    const grant = (await f.claim(plan.planId)).grant!;
+    const held = {
+      ...f.receipt(grant),
+      phase: "held",
+      code: "cleanup-unconfirmed",
+      jobId: id(121),
+    } as const;
+    const report = (receipt: JonesOperationReceipt) =>
+      f.coordinator.request({
+        type: "report",
+        planId: plan.planId,
+        environmentId: remote,
+        operationId: grant.operationId,
+        evidence: { kind: "receipt", receipt },
+      });
+    const recorded = await report(held);
+    expect(recorded.refused).toBeUndefined();
+    const cancelled = await f.coordinator.request({
+      type: "cancel-plan",
+      planId: plan.planId,
+      expectedRevision: recorded.state.current!.revision,
+    });
+    expect(cancelled.state.current).toBeNull();
+    expect(cancelled.state.last?.devices[0]?.operations[0]?.receipt).toEqual(held);
+    expect((await f.claim(plan.planId)).refused?.code).toBe("plan-mismatch");
+    const start = { type: "start", origin: "update-button", target, select: [] } as const;
+    expect((await f.coordinator.request(start)).refused?.code).toBe("outstanding-operation");
+    const released = { ...held, phase: "interrupted", code: "cleanup-recovered" } as const;
+    expect((await report({ ...released, jobId: id(122) })).refused?.code).toBe("invalid-evidence");
+    const settled = await report(released);
+    expect(settled.state.current).toBeNull();
+    expect(settled.state.last?.devices[0]?.operations[0]?.receipt).toEqual(released);
+    expect((await f.coordinator.request(start)).state.current).not.toBeNull();
+  });
 
   it("records a failed result after binding and permits an explicit reviewed retry", async () => {
     const f = fixture();
@@ -872,7 +1024,7 @@ describe("native install plan coordinator", () => {
     ).toBe("not-complete");
   });
 
-  it("requires a matching directive before downloads and preserves an expired directive as unknown", async () => {
+  it("requires a matching directive before downloads and regrants the exact expired request", async () => {
     const f = fixture();
     const enrollmentId = id(99);
     const result = await f.coordinator.request({
@@ -883,7 +1035,7 @@ describe("native install plan coordinator", () => {
     });
     const planId = result.state.current!.planId;
     expect((await f.claim(planId)).refused?.code).toBe("directive-required");
-    const directive = await f.coordinator.request({
+    const claim = {
       type: "claim",
       planId,
       environmentId: remote,
@@ -892,7 +1044,8 @@ describe("native install plan coordinator", () => {
       explicit: false,
       enrollmentId,
       expectedDirectiveId: null,
-    });
+    } as const;
+    const directive = await f.coordinator.request(claim);
     expect(directive.grant?.request).toEqual({
       kind: "plan-directive",
       input: {
@@ -906,6 +1059,23 @@ describe("native install plan coordinator", () => {
       },
     });
     f.advance();
+    const replay = { ...claim, claimant: "window-b", operationId: directive.grant!.operationId };
+    expect((await f.coordinator.request({ ...replay, operationId: id(123) })).refused?.code).toBe(
+      "claimed",
+    );
+    expect(
+      (await f.coordinator.request({ ...replay, expectedDirectiveId: id(123) })).refused?.code,
+    ).toBe("claimed");
+    const renewed = await f.coordinator.request(replay);
+    expect(renewed.grant).toMatchObject({
+      operationId: directive.grant!.operationId,
+      request: directive.grant!.request,
+    });
+    expect(renewed.grant!.leaseUntil).not.toBe(directive.grant!.leaseUntil);
+    expect(renewed.state.current?.devices[0]?.operations).toHaveLength(1);
+    expect((await f.coordinator.request({ ...replay, claimant: "window-c" })).refused?.code).toBe(
+      "claimed",
+    );
     expect(
       (
         await f.coordinator.request({
@@ -920,6 +1090,53 @@ describe("native install plan coordinator", () => {
       ).refused?.code,
     ).toBe("invalid-evidence");
     expect((await f.claim(planId)).state.view.complete).toBe(false);
+    const cancel = {
+      type: "cancel-plan",
+      planId,
+      expectedRevision: renewed.state.current!.revision,
+    } as const;
+    expect((await f.coordinator.request(cancel)).refused?.code).toBe("outstanding-operation");
+    f.advance();
+    const cancelled = await f.coordinator.request(cancel);
+    expect(cancelled.state.current).toBeNull();
+    expect(cancelled.state.last?.devices[0]?.operations[0]?.directive).toBeUndefined();
+    expect((await f.coordinator.request(replay)).refused?.code).toBe("plan-mismatch");
+    const observed = await f.coordinator.request({
+      type: "report",
+      planId,
+      environmentId: remote,
+      operationId: replay.operationId,
+      evidence: {
+        kind: "directive",
+        status: {
+          environmentId: remote,
+          operationProtocol: 1,
+          planDirectiveProtocol: 1,
+          enrollment: {
+            enrollmentId,
+            environmentId: remote,
+            enabled: true,
+            continueRunningThreads: false,
+          },
+          operation: null,
+          update: null,
+          follower: {
+            protocol: 1,
+            state: "waiting-for-leader",
+            leaderSource: null,
+            planDirective: {
+              directiveId: replay.operationId,
+              targetSource: source,
+              targetTree: tree,
+              mode: "manual-review",
+              issuedAt: timestamp,
+            },
+          },
+        },
+      },
+    });
+    expect(observed.state.current).toBeNull();
+    expect(observed.state.last?.devices[0]?.operations[0]?.directive?.kind).toBe("applied");
   });
 
   it("keeps a completed download open until ended and retains publication suppression after Done", async () => {

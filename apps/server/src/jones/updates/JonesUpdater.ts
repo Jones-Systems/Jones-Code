@@ -29,6 +29,7 @@ import {
   advanceProgress,
   completeProgress,
   failProgress,
+  reconcileProgressAtStartup,
   startProgress,
   withOperationId,
 } from "./progress.ts";
@@ -334,8 +335,33 @@ export class JonesUpdater {
   }
 
   recordOperation(operation: JonesOperationReceipt): void {
-    if (this.state.operation === undefined || this.state.operation.updatedAt <= operation.updatedAt)
-      this.publish({ operation });
+    const progress = this.state.progress;
+    const status = operation.outcome?.status;
+    const reconciled =
+      progress?.operationId === operation.operationId &&
+      operation.updateId === operation.operationId &&
+      operation.action.kind === "install" &&
+      ((operation.phase === "completed" && status === "committed") ||
+        (operation.phase === "rolled-back" && status === "rolled-back"))
+        ? reconcileProgressAtStartup(
+            progress,
+            {
+              status,
+              id: operation.operationId,
+              ...(operation.outcome?.reason === undefined
+                ? {}
+                : { reason: operation.outcome.reason }),
+            },
+            Date.parse(operation.updatedAt),
+          )
+        : progress;
+    const latest =
+      this.state.operation === undefined || this.state.operation.updatedAt <= operation.updatedAt;
+    if (latest || reconciled !== progress)
+      this.publish({
+        ...(latest ? { operation } : {}),
+        ...(reconciled === undefined ? {} : { progress: reconciled }),
+      });
   }
 
   /** Notify observers after the host rereads this attempt's supplemental settlement evidence. */

@@ -25,7 +25,7 @@ export class WriterRetirementWaitExpiredError extends Schema.TaggedError<WriterR
   { providerSessionId: ProviderSessionId },
 ) {
   override get message(): string {
-    return `The previous provider session ${this.providerSessionId} is still releasing this conversation. Retirement proof was not observed within ten minutes. Please retry.`;
+    return `The previous provider session ${this.providerSessionId} is still releasing this conversation. Retirement proof was not observed within ${RETIREMENT_ADMISSION_BUDGET_MS / 1_000} seconds. Please retry.`;
   }
 }
 export const isWriterRetirementWaitExpired = Schema.is(WriterRetirementWaitExpiredError);
@@ -72,7 +72,7 @@ export const awaitWriterRetirements = Effect.fn("jones.awaitWriterRetirements")(
 });
 
 // One budget spans all retirement barriers in this admission, including their initial waits.
-export const RETIREMENT_ADMISSION_BUDGET_MS = 10 * 60 * 1_000;
+export const RETIREMENT_ADMISSION_BUDGET_MS = 110_000;
 export const awaitRetirementForAdmission = Effect.fn("jones.awaitRetirementForAdmission")(
   function* <E, R, E2, R2>(
     operation: Effect.Effect<void, E, R>,

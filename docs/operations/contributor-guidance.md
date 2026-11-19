@@ -507,7 +507,6 @@ Every other check is advisory:
 - `Linux CLI artifacts`;
 - `Mac Desktop Artifact`, including the opt-in #873 original-worker reproduction job;
 - `Mac CLI artifact`;
-- `Rotate macOS dependency cache`;
 - any native E2E workflow.
 
 An advisory failure gets investigated, fixed, or filed as an issue, but it
@@ -536,8 +535,13 @@ evidence. Each shard with hits reruns one of them fresh as an audit. The
 transfer-budget and service-control tests always run fresh. Shards using the
 cache path do not contribute timings. Main pushes run fresh and supply the
 shard weights. Manual, stacked, fork and unknown-scope runs also stay fresh.
-New archives require headroom within GitHub's included cache allowance. When
-headroom is low or unknown and there is no usable archive, the shard runs fresh.
+New archives require headroom within GitHub's included cache allowance. The
+[Jones PR cache capacity workflow](../../.github/workflows/jones-pr-cache-capacity.yml)
+checks usage during and after PR CI. Above 9 GiB, it deletes PR-scoped
+archives in order of oldest access until usage returns to 9 GiB or the PR
+archives run out. Shared branch caches stay outside this cleanup. GitHub's own
+repository-wide eviction still applies at its limit. When headroom is low or
+unknown and there is no usable archive, the shard runs fresh.
 
 For a rollback, go to **Settings → Secrets and variables → Actions → Variables**
 and set `JONES_SERVER_RESULT_CACHE` to `off` or remove it. Re-run the affected
@@ -546,10 +550,11 @@ again and uses the original full-shard command when it is off. To replace
 every shard's result with fresh evidence, choose **Re-run all jobs**. Reruns
 that predate the rollout retain their original workflow definition.
 
-Apple Silicon PR jobs install dependencies from the lockfile without saving
-or restoring the large macOS pnpm archive. The archive is available to main
-builds. After successful CI for the current main commit, rotation retires older
-main macOS pnpm keys once the replacement is visible in the Actions cache.
+Apple Silicon jobs install dependencies from the lockfile on every run.
+They do not restore or save the pnpm package-store archive. In recent CI runs,
+restoring and unpacking the full archive took longer than a fresh install.
+The Linux server cache above reuses test results. macOS native qualification
+and measurements execute on the selected runner and runtime.
 
 ### Standing delivery and merge contract
 

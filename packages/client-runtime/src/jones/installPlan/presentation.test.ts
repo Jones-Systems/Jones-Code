@@ -254,11 +254,43 @@ it.each(["refused", "failed", "interrupted", "stopped"] as const)(
         {
           now: Date.parse(now),
           devices: new Map([
-            [host, { observation: { state: running, freshness: "fresh" }, canOperate: true }],
+            [
+              host,
+              {
+                observation: {
+                  state: {
+                    ...running,
+                    progress: {
+                      schema: 1,
+                      kind: "install",
+                      phase: "failed",
+                      operationId: installId,
+                      stepKey: "restart",
+                      stepIndex: 5,
+                      stepCount: 6,
+                      stepLabel: "Restarting into the new runtime",
+                      stepStartedAt: now,
+                      startedAt: now,
+                      updatedAt: now,
+                      reportedAt: now,
+                      error: { code: "outcome-unavailable", message: "No launcher outcome yet." },
+                    },
+                  },
+                  freshness: "fresh",
+                },
+                canOperate: true,
+              },
+            ],
           ]),
         },
       );
-      expect(confirmed.rows[0]).toMatchObject({ phase: "done", targetBuildRunning: false });
+      expect(confirmed.rows[0]).toMatchObject({
+        phase: "done",
+        text: "Updated · verified",
+        targetBuildRunning: false,
+        settled: true,
+      });
+      expect(confirmed.rows[0]?.progress).toBeUndefined();
     }
     for (const operation of [
       { ...receipt, phase: "held" as const, code: "unreaped" },
@@ -461,7 +493,7 @@ it.each([
     ).text,
   ).not.toContain("Last confirmed");
   for (const [receiptPhase, code, expectedPhase, text] of [
-    ["held", "cleanup-unconfirmed", "held", "Stop not confirmed"],
+    ["held", "cleanup-unconfirmed", "held", "Cleanup unconfirmed"],
     ["running", "launcher-unconfirmed", "unknown", "Not confirmed"],
     ["stop-requested", "stopping", "stop-requested", "Stop requested…"],
     ["fenced", "fenced", "fenced", "Waiting for a new download reservation"],

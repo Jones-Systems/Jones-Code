@@ -251,9 +251,7 @@ jobs:
         uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version-file: package.json
-          # Full macOS jobs need space for the bundle and archive. Install the
-          # filtered closure without restoring the much larger shared store.
-          cache: ${{ matrix.os != 'macos' || (github.ref == 'refs/heads/main' && env.JONES_SP_SCOPE != 'full') }}
+          cache: ${{ matrix.os != 'macos' }}
           run-install: |
             args:
               - --filter=t3...

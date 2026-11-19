@@ -50,7 +50,7 @@ it.effect("pending proof waits beyond ordinary retries and resumes the same oper
       ),
       Effect.forkChild,
     );
-    yield* TestClock.adjust("8 minutes");
+    yield* TestClock.adjust("100 seconds");
     assert.isUndefined(waiting.pollUnsafe());
     assert.equal(starts, 0);
     assert.equal(calls, 1);
@@ -62,7 +62,7 @@ it.effect("pending proof waits beyond ordinary retries and resumes the same oper
   }),
 );
 
-it.effect("budget exhaustion names the pending session accurately without discarding proof", () =>
+it.effect("the wait expires after 110 seconds without discarding proof", () =>
   Effect.gen(function* () {
     const { record, deadline } = yield* fixture;
     const waiting = yield* awaitRetirementForAdmission(
@@ -70,10 +70,14 @@ it.effect("budget exhaustion names the pending session accurately without discar
       deadline,
       Effect.void,
     ).pipe(Effect.flip, Effect.forkChild);
-    yield* TestClock.adjust("10 minutes");
+    yield* TestClock.adjust("109 seconds");
+    assert.isUndefined(waiting.pollUnsafe());
+    yield* TestClock.adjust("1 second");
+    assert.isDefined(waiting.pollUnsafe());
     const failure = yield* Fiber.join(waiting);
     assert.equal(failure._tag, "WriterRetirementWaitExpiredError");
     assert.include(failure.message, "shared-codex-session");
+    assert.include(failure.message, "within 110 seconds");
     assert.include(failure.message, "Please retry");
     assert.notInclude(failure.message, "Failed to release");
     assert.isFalse(yield* Deferred.isDone(record.completion));
@@ -149,7 +153,7 @@ it.effect("a multi-record conversation barrier cannot resume after only its firs
     ).pipe(Effect.forkChild);
     yield* TestClock.adjust("1 minute");
     yield* Deferred.succeed(first.record.completion, undefined);
-    yield* TestClock.adjust("1 minute");
+    yield* TestClock.adjust("40 seconds");
     assert.isUndefined(waiting.pollUnsafe());
     yield* Deferred.succeed(second.record.completion, undefined);
     yield* Fiber.join(waiting);

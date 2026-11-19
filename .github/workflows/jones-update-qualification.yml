@@ -346,7 +346,7 @@ jobs:
       - uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
-          cache: ${{ github.ref == 'refs/heads/main' }}
+          cache: false
           run-install: true
       - name: Ensure Electron runtime is installed
         if: ${{ github.event_name != 'schedule' && github.event.action != 'labeled' }}

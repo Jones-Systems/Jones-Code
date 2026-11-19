@@ -261,6 +261,20 @@ describe("restart reconciliation", () => {
     });
   });
 
+  it("replaces a provisional restart warning only with the same operation's late outcome", () => {
+    const warning = reconcileProgressAtStartup(restarting(), undefined, later);
+    const committed = { status: "committed", id: "op-1" } as const;
+    expect(warning?.error?.code).toBe("outcome-unavailable");
+    expect(reconcileProgressAtStartup(warning, { ...committed, id: "other" }, later + 1)).toBe(
+      warning,
+    );
+    const failure = { ...warning!, error: { code: "launcher-failed", message: "failed" } };
+    expect(reconcileProgressAtStartup(failure, committed, later + 1)).toBe(failure);
+    const corrected = reconcileProgressAtStartup(warning, committed, later + 1);
+    expect(corrected).toMatchObject({ phase: "done", stepKey: "confirm-restart" });
+    expect(corrected?.error).toBeUndefined();
+  });
+
   it("does not adopt another operation's outcome, and fails interrupted records", () => {
     expect(
       reconcileProgressAtStartup(restarting(), { status: "committed", id: "op-2" }, later),

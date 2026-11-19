@@ -2430,6 +2430,49 @@ it("exposes Laptop proof only for the validated resumed journal and exact active
   }
 });
 
+it("defers trial startup until the same generation has a resumed receipt and active manifest", async () => {
+  const f = await fixture(true, "committed");
+  try {
+    const directory = NodePath.join(f.controller.updaterRoot, "transactions", handle);
+    const journalPath = NodePath.join(directory, "journal.json");
+    const resumed = JSON.parse(await NodeFSP.readFile(journalPath, "utf8"));
+    const manifest = f.controller.manifestPath;
+    await NodeFSP.writeFile(manifest, JSON.stringify(resumed.intent.expected));
+    await NodeFSP.writeFile(journalPath, JSON.stringify({ ...resumed, phase: "trial" }));
+    const recordLaptopOutcome = vi.fn(async () => {});
+    const controller = new JonesDesktopUpdateController({
+      ...f.options,
+      trialDescriptorPath: NodePath.join(directory, "trial-descriptor.json"),
+      plan: { bindLaptopInstall: async () => {}, recordLaptopOutcome },
+    });
+    await controller.configure();
+    expect(await controller.laptopEvidence()).toMatchObject({ activationBlocked: true });
+    expect(recordLaptopOutcome).not.toHaveBeenCalled();
+
+    await NodeFSP.writeFile(journalPath, JSON.stringify(resumed));
+    await controller.refreshTrialActivation();
+    expect((await controller.laptopEvidence()).committedTransactionId).toBeUndefined();
+    expect(recordLaptopOutcome).not.toHaveBeenCalled();
+
+    await NodeFSP.writeFile(manifest, JSON.stringify(f.active));
+    await Promise.all([controller.refreshTrialActivation(), controller.refreshTrialActivation()]);
+    expect(await controller.laptopEvidence()).toMatchObject({
+      committedTransactionId: handle,
+      activeGeneration: handle,
+      activationBlocked: false,
+    });
+    expect(recordLaptopOutcome).toHaveBeenCalledExactlyOnceWith({
+      transactionId: handle,
+      status: "committed",
+      activeGeneration: handle,
+      activeSource: f.active.sourceSha,
+      activeTree: f.active.sourceTree,
+    });
+  } finally {
+    await f.cleanup();
+  }
+});
+
 it("does not let a newer rollback journal hide the committed transaction of the active generation", async () => {
   const f = await fixture(true, "committed");
   try {

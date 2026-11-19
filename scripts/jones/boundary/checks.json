@@ -467,13 +467,6 @@
       ]
     },
     {
-      "id": "macos-dependency-cache",
-      "tests": ["scripts/jones/ci/macos-dependency-cache.node-test.mjs"],
-      "commands": [
-        "node --test --test-concurrency=1 scripts/jones/ci/macos-dependency-cache.node-test.mjs"
-      ]
-    },
-    {
       "id": "jones-server-result-cache",
       "tests": [
         "scripts/jones/ci/server-result-cache.node-test.mjs",
@@ -483,6 +476,11 @@
         "node --test --test-concurrency=1 scripts/jones/ci/server-result-cache.node-test.mjs",
         "vp test run scripts/lib/cached-tests.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
+    },
+    {
+      "id": "jones-pr-cache-capacity",
+      "tests": ["scripts/jones/ci/pr-cache-capacity.node-test.mjs"],
+      "commands": ["node --test scripts/jones/ci/pr-cache-capacity.node-test.mjs"]
     },
     {
       "id": "native-stack-projection-order",

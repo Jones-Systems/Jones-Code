@@ -27,6 +27,7 @@ const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 const SHA = /^[a-f0-9]{40}$/;
 const HASH = /^[a-f0-9]{64}$/;
 const ANCESTRY_MEMO_LIMIT = 256;
+const BUILD_LIST_TIMEOUT_MS = 15_000;
 const PREVIEW = /^\d+\.\d+\.\d+-preview\.\d{8}\.\d+(?:\.\d+)?$/;
 const API_ROOT = `repos/${JONES_ACTIONS_REPOSITORY}`;
 
@@ -368,7 +369,7 @@ function runFrontier(run: Record<string, unknown>): RunFrontier | undefined {
 
 /** Adapters own authentication and redirect following; neither enters the updater model. */
 export interface JonesActionsTransport {
-  api(endpoint: string): Promise<unknown>;
+  api(endpoint: string, signal?: AbortSignal): Promise<unknown>;
   download(artifactId: number, destination: string): Promise<void>;
 }
 
@@ -471,7 +472,7 @@ function newestArtifactRun(left: Record<string, unknown>, right: Record<string, 
 }
 
 async function* discoverArtifactRuns(
-  transport: JonesActionsTransport,
+  api: JonesActionsTransport["api"],
   approved: ReturnType<typeof spec>,
   targetSource: string | undefined,
   evidence: Pick<CheckEvidence, "discovery" | "rejections">,
@@ -508,7 +509,7 @@ async function* discoverArtifactRuns(
       if (stream.runs.length > 0 || stream.complete) continue;
       try {
         context.origin = "request";
-        const response = await transport.api(
+        const response = await api(
           `${API_ROOT}/actions/workflows/${NodePath.posix.basename(approved.workflow)}/runs?branch=main&event=${stream.event}${targetSource === undefined ? "" : `&head_sha=${targetSource}`}&per_page=50&page=${++stream.page}`,
         );
         context.origin = "validation";
@@ -573,7 +574,11 @@ function classifyGh(stderr: string, missing = false): JonesActionsError {
 
 /** Fixed host and repository. gh alone reads its auth and follows the download redirect. */
 function createGhJonesActionsTransport(): JonesActionsTransport {
-  const invoke = async (endpoint: string, destination?: string): Promise<unknown> => {
+  const invoke = async (
+    endpoint: string,
+    destination?: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> => {
     if (!endpoint.startsWith(`${API_ROOT}/`) || /[\r\n]/.test(endpoint))
       throw new JonesActionsError("unqualified");
     const child = NodeChildProcess.spawn(
@@ -583,6 +588,7 @@ function createGhJonesActionsTransport(): JonesActionsTransport {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         timeout: destination ? 15 * 60 * 1000 : 30000,
+        ...(signal === undefined ? {} : { signal }),
       },
     );
     let stderr = "";
@@ -625,12 +631,12 @@ function createGhJonesActionsTransport(): JonesActionsTransport {
       return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
     } catch (error) {
       // This PID was spawned here; stop bounded failed transports rather than orphaning them.
-      child.kill();
+      if (!child.killed) child.kill();
       throw safeTransportError(error);
     }
   };
   return {
-    api: (endpoint) => invoke(endpoint),
+    api: (endpoint, signal) => invoke(endpoint, undefined, signal),
     download: async (artifactId, destination) => {
       await invoke(`${API_ROOT}/actions/artifacts/${positive(artifactId)}/zip`, destination);
     },
@@ -665,10 +671,14 @@ export class JonesActionsClient {
     input: Omit<JonesActionsCheckInput, "targetSource">,
   ): Promise<{ readonly builds: readonly QualifiedBuild[]; readonly unavailable: boolean }> {
     const builds = new Map<string, QualifiedBuild>();
-    const observation = await this.observe(input, (build) => {
-      if (!builds.has(build.candidate.source)) builds.set(build.candidate.source, build);
-      return builds.size >= 5;
-    });
+    const observation = await this.observe(
+      input,
+      (build) => {
+        if (!builds.has(build.candidate.source)) builds.set(build.candidate.source, build);
+        return builds.size >= 5;
+      },
+      AbortSignal.timeout(BUILD_LIST_TIMEOUT_MS),
+    );
     return {
       builds: [...builds.values()],
       unavailable: observation.kind === "failure" || observation.kind === "incomplete-discovery",
@@ -678,6 +688,7 @@ export class JonesActionsClient {
   private async observe(
     input: JonesActionsCheckInput,
     collect?: (build: QualifiedBuild) => boolean,
+    signal?: AbortSignal,
   ): Promise<JonesActionsCheckObservation> {
     const scope: CheckEvidence["scope"] = {
       platform: input.platform,
@@ -714,17 +725,21 @@ export class JonesActionsClient {
       ...(mainObservedAt === undefined ? {} : { mainObservedAt }),
     });
     const context: CheckFailureContext = { operation: "input", origin: "validation" };
+    const api = (endpoint: string) => {
+      signal?.throwIfAborted();
+      return this.transport.api(endpoint, signal);
+    };
     const read = async (operation: CheckOperation, endpoint: string): Promise<unknown> => {
       context.operation = operation;
       context.origin = "request";
-      const response = await this.transport.api(endpoint);
+      const response = await api(endpoint);
       context.origin = "validation";
       return response;
     };
     const descends = async (base: string, head: string): Promise<boolean> => {
       context.operation = "ancestry";
       context.origin = "unknown";
-      const proven = await this.descends(base, head);
+      const proven = await this.descends(base, head, api);
       context.origin = "validation";
       return proven;
     };
@@ -771,7 +786,7 @@ export class JonesActionsClient {
       const ciObservations = new Map<string, Array<Record<string, unknown>>>();
       let catalogBudget = 24;
       for await (const listed of discoverArtifactRuns(
-        this.transport,
+        api,
         approved,
         targetSource,
         { discovery, rejections },
@@ -998,12 +1013,16 @@ export class JonesActionsClient {
    * membership is still proven on every check because the fresh main SHA is part of the pair.
    * Transport failures and unparsable comparisons are never remembered.
    */
-  private async descends(base: string, head: string): Promise<boolean> {
+  private async descends(
+    base: string,
+    head: string,
+    api: JonesActionsTransport["api"] = (endpoint) => this.transport.api(endpoint),
+  ): Promise<boolean> {
     if (base === head) return true;
     const pair = `${source(base)}...${source(head)}`;
     const known = this.ancestry.get(pair);
     if (known !== undefined) return known;
-    const comparison = record(await this.transport.api(`${API_ROOT}/compare/${pair}?per_page=1`));
+    const comparison = record(await api(`${API_ROOT}/compare/${pair}?per_page=1`));
     if (comparison.status === "ahead") {
       const proven = record(comparison.merge_base_commit).sha === base;
       if (proven) this.remember(pair, true);
