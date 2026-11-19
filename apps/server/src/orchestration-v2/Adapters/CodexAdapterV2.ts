@@ -6771,6 +6771,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         );
         yield* client.handleServerNotification("thread/goal/cleared", (payload) =>
           Effect.gen(function* () {
+            goalsPausedForWake.delete(payload.threadId);
             goalsByNativeThread.set(payload.threadId, null);
             yield* emitGoalUpdate(payload.threadId);
             yield* releaseGoalHold(payload.threadId);
@@ -8337,7 +8338,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 completedTurn: input.goalHoldTurn,
                 next: yield* Deferred.make<ActiveCodexTurnContext | undefined>(),
               });
-              // A continuation turn would only report that the delegated task is still running.
+              // App-owned background work will deliver its own wake when it has news.
               const producer = (yield* CodexProducerContext) ?? currentProducer;
               const claimed = waitsForWake
                 ? claimGoalHold(nativeThreadId, event, producer)
@@ -8407,6 +8408,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               nativeThreadId,
             });
           }
+          if (waitsForWake) goalsPausedForWake.add(nativeThreadId);
           yield* client
             .request("thread/goal/set", { threadId: nativeThreadId, status: "paused" })
             .pipe(
@@ -8414,13 +8416,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               Effect.timeout("10 seconds"),
               Effect.flatMap(({ goal }) => {
                 goalsByNativeThread.set(nativeThreadId, providerGoalFromCodex(goal));
-                if (waitsForWake && goal.status === "paused")
-                  goalsPausedForWake.add(nativeThreadId);
+                if (goal.status !== "paused") goalsPausedForWake.delete(nativeThreadId);
                 return emitGoalUpdate(nativeThreadId);
               }),
-              Effect.catch((cause) =>
-                Effect.logWarning("orchestration-v2.codex-goal-pause-failed", { cause }),
-              ),
+              Effect.catch((cause) => {
+                goalsPausedForWake.delete(nativeThreadId);
+                return Effect.logWarning("orchestration-v2.codex-goal-pause-failed", { cause });
+              }),
               Effect.ensuring(
                 turnTerminalizationPermit.withPermits(1)(settleGoalHold(hold, "completed")),
               ),
@@ -9959,6 +9961,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               goalPauseIssue: undefined,
             };
           }
+          goalsPausedForWake.delete(goalThreadId);
           goalStops.set(goalThreadId, (goalStops.get(goalThreadId) ?? 0) + 1);
           return yield* Effect.gen(function* () {
             // The run can settle while the pause is in flight, which drops its record.
@@ -11665,6 +11668,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 beforeMutation: (action) =>
                   Effect.sync(() => {
                     if (action === "pause" || action === "clear") {
+                      goalsPausedForWake.delete(nativeId);
                       const activation = goalActivations.get(nativeId);
                       if (activation !== undefined) activation.stopped = true;
                     }

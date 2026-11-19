@@ -18,7 +18,7 @@ export interface McpProviderSessionConfig {
   readonly browserToolsAvailable: boolean;
   readonly capabilities?: ReadonlySet<string>;
   readonly agentDeviceEnvironment?: Readonly<Record<string, string>>;
-  /** True while a delegated task this thread started will wake it with its result. */
+  /** True while app-owned work, such as a delegated task or watched CI, owes this thread a wake. */
   readonly hasPendingWake?: Effect.Effect<boolean>;
 }
 

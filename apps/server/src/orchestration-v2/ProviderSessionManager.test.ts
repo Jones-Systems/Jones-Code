@@ -2814,6 +2814,49 @@ it.effect(
 
         assert.isFalse(yield* captured!.hasPendingWake!);
 
+        const thread = yield* (yield* ProjectionStore.ProjectionStoreV2).getThread(threadId);
+        const at = DateTime.formatIso(now);
+        for (const checksPending of [undefined, true, false]) {
+          yield* eventSink.write({
+            events: [
+              {
+                id: yield* idAllocator.allocate.event({ threadId }),
+                type: "thread.pull-request-synced",
+                threadId,
+                occurredAt: now,
+                payload: {
+                  ...thread,
+                  pullRequests: [
+                    {
+                      host: "github.com",
+                      repository: "example/app",
+                      number: 12,
+                      url: "https://github.com/example/app/pull/12",
+                      source: "agent",
+                      linkedAt: at,
+                      snapshot: null,
+                      stack: null,
+                      watch: {
+                        startedAt: at,
+                        headSha: null,
+                        failedChecks: [],
+                        passed: false,
+                        passedChecks: [],
+                        remarksThrough: at,
+                        remarkIds: [],
+                        conflicting: false,
+                        wakes: 0,
+                        ...(checksPending === undefined ? {} : { checksPending }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          });
+          assert.equal(yield* captured!.hasPendingWake!, checksPending !== false);
+        }
+
         yield* manager.close(providerSessionId);
         assert.isUndefined(yield* mcpSessions.read(threadId));
         assert.isUndefined(yield* registry.resolve(token!));

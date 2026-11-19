@@ -2,6 +2,7 @@ import * as RetirementAdmission from "../jones/providerRetirement/admissionWait.
 import * as DutyRelease from "../jones/workspaceRetirement/DutyRelease.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as DecisionSnapshotAccess from "../jones/mcp/decisionSnapshot/access.ts";
+import { pullRequestWatchWillWake } from "../jones/pullRequestWatch/goalWait.ts";
 import { PROVIDER_SCOPE_CLOSE_TIMEOUT_MS } from "../jones/cloud/shutdownBudget.ts";
 import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
 import { CurrentEffectClaim } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
@@ -1302,7 +1303,11 @@ export const layerWithOptions = (
                   hasPendingWake: projectionStore
                     .getThreadRecords(threadId, ["runs", "subagents"])
                     .pipe(
-                      Effect.map(delegatedTaskWillWake),
+                      Effect.map(
+                        (records) =>
+                          delegatedTaskWillWake(records) ||
+                          pullRequestWatchWillWake(records.thread),
+                      ),
                       Effect.orElseSucceed(() => false),
                     ),
                 });

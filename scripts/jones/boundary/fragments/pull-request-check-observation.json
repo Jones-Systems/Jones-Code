@@ -3,7 +3,8 @@
   "feature": "pull-request-check-observation",
   "jonesOwnedPaths": [
     "apps/server/src/jones/pullRequestWatch/checkObservation.ts",
-    "apps/server/src/jones/pullRequestWatch/checkObservation.test.ts"
+    "apps/server/src/jones/pullRequestWatch/checkObservation.test.ts",
+    "apps/server/src/jones/pullRequestWatch/goalWait.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -23,6 +24,14 @@
     {
       "from": "apps/server/src/orchestration-v2/PullRequestWatchReactor.ts",
       "to": "apps/server/src/jones/pullRequestWatch/checkObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/PullRequestWatchReactor.ts",
+      "to": "apps/server/src/jones/pullRequestWatch/goalWait.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/pullRequestWatch/goalWait.ts"
     }
   ]
 }
