@@ -197,6 +197,31 @@ describe("placePersonalThread", () => {
     expect(f.orderWrites.length).toBeGreaterThan(0);
   });
 
+  it("saves an active move within a workstream that also shows a pinned member", async () => {
+    const f = fixture(
+      ["first", "moved", "pinned"],
+      [
+        ["first", "a"],
+        ["moved", "a"],
+        ["pinned", "a"],
+      ],
+      "pinned",
+    );
+    const input = f.input("a", "first");
+    const members = [...input.activeThreads, f.row("pinned")];
+    expect(
+      await placePersonalThread({
+        ...input,
+        activeThreads: members,
+        activeKeys: members.map(shellKey),
+        reorderableKeys: new Set(members.map(shellKey)),
+      }),
+    ).toBe(true);
+    expect(f.groupOrder("a")).toEqual(["moved", "first"]);
+    expect(f.orderWrites.map(({ id }) => id)).toEqual(["first", "moved"]);
+    expect(f.row("pinned").activeOrderKey).toBeNull();
+  });
+
   it.each([
     { after: false, expected: ["a1", "moved", "a2"] },
     { after: true, expected: ["a1", "a2", "moved"] },

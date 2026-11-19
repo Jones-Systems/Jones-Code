@@ -188,9 +188,13 @@ async function start(sourceRow: HTMLElement, destination: Point) {
 const insertion = () => document.querySelector<HTMLElement>("[data-personal-thread-insertion]");
 
 describe("personal thread pointer placement", () => {
-  it.each([false, true])(
-    "reads back the real controller membership and saved neighbor order (pinned=%s)",
-    async (pinned) => {
+  it.each([
+    { pinned: false, release: "pointerup", sameGroup: false },
+    { pinned: false, release: "pointermove", sameGroup: true },
+    { pinned: true, release: "pointerup", sameGroup: false },
+  ])(
+    "reads back membership and saved neighbor order ($pinned, $release, $sameGroup)",
+    async ({ pinned, release, sameGroup }) => {
       const registry = AtomRegistry.make();
       const at = "2026-11-17T12:00:00.000Z";
       const shellKey = (thread: EnvironmentThreadShell) =>
@@ -211,7 +215,7 @@ describe("personal thread pointer placement", () => {
                 rev: 1,
                 origin: "drag-integration",
               })),
-              assignments: [first, last].map((thread) => ({
+              assignments: (sameGroup ? [first, last, moved] : [first, last]).map((thread) => ({
                 threadId: thread.id,
                 workstreamId: "Drag Alpha",
                 revision: 1,
@@ -251,7 +255,8 @@ describe("personal thread pointer placement", () => {
         const [rows, setRows] = useState(
           [moved, first, last].map((thread, index) => ({
             ...thread,
-            activeOrderKey: ["b", "d", "f"][index]!,
+            activeOrderKey: sameGroup ? null : ["b", "d", "f"][index]!,
+            createdAt: [at, "2026-11-19T12:00:00.000Z", "2026-11-18T12:00:00.000Z"][index]!,
           })),
         );
         const active = sortActiveThreadsByOrderKey(
@@ -346,8 +351,9 @@ describe("personal thread pointer placement", () => {
       expect(neighbor.getBoundingClientRect().top - originalTop).toBe(73);
       expect(gap.nextElementSibling).toBe(neighbor);
       expect(
-        registry.get(controller.state).assignmentsByThreadKey.get(personalThreadKey(moved)),
-      ).toBeUndefined();
+        registry.get(controller.state).assignmentsByThreadKey.get(personalThreadKey(moved))
+          ?.workstreamId,
+      ).toBe(sameGroup ? "Drag Alpha" : undefined);
       for (const fraction of [0.1, 0.5, 0.9, 0.5]) {
         if (pinned)
           await act(() => {
@@ -362,7 +368,11 @@ describe("personal thread pointer placement", () => {
           expect(await bridge.current!.dropExternal(point(gap), moved)).toBe(true);
         });
         await userEvent.click(page.getByRole("button", { name: "Unpin saved arrival" }));
-      } else await act(() => pointer(document, "pointerup", point(gap), 0));
+      } else {
+        const landing = point(gap);
+        await act(() => pointer(document, release, landing, 0));
+        if (release === "pointermove") await act(() => pointer(document, "pointerup", landing, 0));
+      }
       expect(
         registry.get(controller.state).assignmentsByThreadKey.get(personalThreadKey(moved))
           ?.workstreamId,
@@ -547,9 +557,12 @@ describe("personal thread pointer placement", () => {
     expect(setup.activate).toHaveBeenCalledTimes(1);
   });
 
-  it.each([false, true])(
-    "allows supported Unassigned reordering in either direction: after=%s",
-    async (after) => {
+  it.each([
+    { after: false, release: "pointermove" },
+    { after: true, release: "pointerup" },
+  ])(
+    "allows supported Unassigned reordering in either direction ($after, $release)",
+    async ({ after, release }) => {
       using setup = fixture();
       setup.registry.set(setup.state, { ...setup.initial, assignmentsByThreadKey: new Map() });
       await using screen = await render(setup.ui(), { container: container() });
@@ -558,7 +571,9 @@ describe("personal thread pointer placement", () => {
       const at = point(row(screen.container, neighbor), after ? 0.8 : 0.2);
       await start(row(screen.container, moved), at);
       expect(insertion()?.dataset.personalThreadInsertion).toBe(after ? "after" : "before");
-      await act(() => pointer(document, "pointerup", at, 0));
+      const landing = point(insertion()!);
+      await act(() => pointer(document, release, landing, 0));
+      if (release === "pointermove") await act(() => pointer(document, "pointerup", landing, 0));
       expect(setup.placeThread).toHaveBeenCalledExactlyOnceWith(moved, null, neighbor, after);
     },
   );
