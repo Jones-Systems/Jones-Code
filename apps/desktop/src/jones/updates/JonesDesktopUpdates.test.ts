@@ -1329,6 +1329,30 @@ describe("Jones desktop updates", () => {
           expect((await NodeFSP.lstat(selectionPath)).isFile()).toBe(true);
           if (status === "uncertain")
             expect(f.controller.state.jones?.capability.reason).toBe("blocked");
+          if (status === "uncertain") {
+            nativeCommand.mockImplementationOnce((_command, args, _options, callback) => {
+              if (typeof callback !== "function" || !Array.isArray(args))
+                throw new Error("Invalid command fixture.");
+              expect(args[6]).toBe(selectionPath);
+              void NodeFSP.unlink(selectionPath).then(
+                () =>
+                  callback(
+                    null,
+                    JSON.stringify({
+                      protocol: 1,
+                      operation: "discard-staged",
+                      handle,
+                      status: "discarded",
+                    }),
+                    "",
+                  ),
+                (cause: NodeChildProcess.ExecFileException) => callback(cause, "", ""),
+              );
+              return new NodeChildProcess.ChildProcess();
+            });
+            expect(await f.controller.discard(handle)).toEqual({ accepted: true, completed: true });
+            expect((await f.controller.laptopEvidence()).activationBlocked).toBe(false);
+          }
         }
         expect(
           (

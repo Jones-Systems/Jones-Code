@@ -1234,7 +1234,6 @@ export function createInstallPlanCoordinator(options: {
               active.size > 0 ||
               pendingLaptop() ||
               plan.laptop.gate !== undefined ||
-              evidence.activationBlocked ||
               evidence.environmentId !== plan.laptop.environmentId ||
               options.controller.busy !== null ||
               download?.result?.status !== "completed" ||

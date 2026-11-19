@@ -359,7 +359,7 @@ export function installPlanPresentation(
       !readOnly &&
       state.view.deviceRecovery === 1 &&
       plan.laptop.gate === undefined &&
-      !state.laptop.activationBlocked &&
+      (!state.laptop.activationBlocked || abandoningStage?.status === "unconfirmed") &&
       laptopState?.stagedHandle !== undefined &&
       plan.laptop.operations.findLast((op) => op.step === "download")?.createdStagedHandle ===
         laptopState.stagedHandle &&

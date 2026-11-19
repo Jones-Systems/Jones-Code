@@ -2442,13 +2442,23 @@ export class JonesDesktopUpdateController {
   }
 
   async laptopStageSelectionName(handle: string): Promise<string | undefined> {
-    if (this.#staged?.handle !== handle || this.#activationBlocked || this.#bootstrap === undefined)
+    if (
+      this.#staged?.handle !== handle ||
+      this.#nativeActivationBlocked ||
+      this.#bootstrap === undefined ||
+      this.#heldDownload !== undefined
+    )
       return undefined;
     const selection = await this.#selectionFile();
+    const name = NodePath.basename(selection);
+    if (
+      this.#unconfirmedDiscard !== undefined &&
+      (this.#unconfirmedDiscard.selectionName !== name ||
+        this.#unconfirmedDiscard.handle !== handle)
+    )
+      return undefined;
     const raw = await NodeFSP.readFile(selection, "utf8");
-    return decodeStageSelection(JSON.parse(raw)).app.handle === handle
-      ? NodePath.basename(selection)
-      : undefined;
+    return decodeStageSelection(JSON.parse(raw)).app.handle === handle ? name : undefined;
   }
 
   async isLaptopStageAbsent(selectionName: string, handle: string): Promise<boolean> {
@@ -2518,7 +2528,8 @@ export class JonesDesktopUpdateController {
     if (
       this.#busy !== null ||
       this.#staged?.handle !== handle ||
-      this.#activationBlocked ||
+      this.#nativeActivationBlocked ||
+      (this.#unconfirmedDiscard !== undefined && this.#unconfirmedDiscard.handle !== handle) ||
       this.#options.disabledByEnv ||
       this.#bootstrap === undefined
     ) {
@@ -2535,6 +2546,7 @@ export class JonesDesktopUpdateController {
         );
         return { accepted: false, completed: false };
       }
+      this.#unconfirmedDiscard = undefined;
       await this.#publishDiscardedStage();
       return { accepted: true, completed: true };
     } catch {
@@ -2559,11 +2571,17 @@ export class JonesDesktopUpdateController {
     dispatch: { dispatched: boolean; selectionName?: string },
   ): Promise<"discarded" | "refused"> {
     const selection = await this.#selectionFile();
+    const selectionName = NodePath.basename(selection);
+    if (
+      this.#unconfirmedDiscard !== undefined &&
+      this.#unconfirmedDiscard.selectionName !== selectionName
+    )
+      return "refused";
     const raw = await NodeFSP.readFile(selection, "utf8");
     if (decodeStageSelection(JSON.parse(raw)).app.handle !== handle)
       throw new Error("Selection changed.");
     const helper = await this.#helperPath();
-    dispatch.selectionName = NodePath.basename(selection);
+    dispatch.selectionName = selectionName;
     dispatch.dispatched = true;
     const result = decodeNativeSelectionResult(
       JSON.parse(
