@@ -246,7 +246,7 @@ export function WorkstreamNativeSidebar({
     };
     const before = neighbor ? visibleOrder().filter((entry) => entry !== key) : [];
     const neighborIndex = before.indexOf(target.neighborKey ?? undefined);
-    let saved = false;
+    let saved: boolean | undefined = false;
     busy.current = true;
     try {
       if (placeThread) saved = await placeThread(thread, target.id, neighbor, target.after);
@@ -254,29 +254,30 @@ export function WorkstreamNativeSidebar({
         await reorder(thread, neighbor, target.after);
         saved = true;
       }
-      return saved;
     } catch {
+      saved = undefined;
+    }
+    busy.current = false;
+    if (neighborIndex !== -1) {
+      requestAnimationFrame(() => {
+        const renderedIndex = visibleOrder().indexOf(key);
+        console.debug("[workstream thread drop]", {
+          destination: target.id === null ? "unassigned" : "workstream",
+          requestedPosition: neighborIndex + (target.after ? 2 : 1),
+          renderedPositionAtNextFrame: renderedIndex === -1 ? null : renderedIndex + 1,
+          saved: saved ?? false,
+        });
+      });
+    }
+    if (saved === undefined) {
       showPersonalFailure({
         action: "reorder",
         reason: "failed",
         environmentId: thread.environmentId,
         dedupeKey: `reorder:${key}:failed`,
       });
-      return false;
-    } finally {
-      busy.current = false;
-      if (neighborIndex !== -1) {
-        requestAnimationFrame(() => {
-          const renderedIndex = visibleOrder().indexOf(key);
-          console.debug("[workstream thread drop]", {
-            destination: target.id === null ? "unassigned" : "workstream",
-            requestedPosition: neighborIndex + (target.after ? 2 : 1),
-            renderedPositionAtNextFrame: renderedIndex === -1 ? null : renderedIndex + 1,
-            saved,
-          });
-        });
-      }
     }
+    return saved ?? false;
   };
   const pointerActions = useRef({ locate, place, threads, groupId, validTarget });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- A gesture may span controller updates; release uses the latest committed rows and membership.
