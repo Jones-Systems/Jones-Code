@@ -278,9 +278,11 @@ function codexFileChangeApprovalPrompt(input: {
 }
 
 export function normalizeCodexThreadLoadModelSelection(selection: ModelSelection): ModelSelection {
-  // Codex applies effort on turn/start; resume discards its pinned request effort.
+  // Effort and speed are sent on turn/start, so changing either can reuse the loaded thread.
   const { options, ...rest } = selection;
-  const loadOptions = options?.filter((option) => option.id !== "reasoningEffort");
+  const loadOptions = options?.filter(
+    ({ id }) => id !== "reasoningEffort" && id !== "serviceTier" && id !== "fastMode",
+  );
   return { ...rest, ...(loadOptions?.length ? { options: loadOptions } : {}) };
 }
 

@@ -3,6 +3,7 @@ import * as NodeZlib from "node:zlib";
 import * as NodePerfHooks from "node:perf_hooks";
 import * as NodeTimers from "node:timers";
 import * as NodeTimersPromises from "node:timers/promises";
+import * as NodeUtil from "node:util";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ThreadId, OrchestrationV2ShellSnapshotJson } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -17,6 +18,8 @@ import * as Fixture from "../threadResultDependencies/testkit.ts";
  * and existing wire schema before root decides whether to activate that slice.
  */
 const compiledEncodeEffect1 = Schema.encodeEffect(OrchestrationV2ShellSnapshotJson);
+const deflateSnapshot = NodeUtil.promisify(NodeZlib.deflateRaw);
+const deflateFlushTrailerBytes = 4;
 const loopResolutionMs = 10;
 const maxPhaseLoopTicks = 4_096;
 const waitForLoopSamples = Effect.promise(() =>
@@ -93,10 +96,13 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           // @effect-diagnostics-next-line preferSchemaOverJson:off -- Measure the actual synchronous wire stringify separately from schema projection.
           const bytes = JSON.stringify(projected);
           const encodeMs = performance.now() - encodedAt;
-          const compressedAt = performance.now(),
-            compressed = NodeZlib.gzipSync(bytes);
+          // Match the WebSocket permessage-deflate path for the first frame of a connection.
+          const compressedAt = performance.now();
+          const compressed = yield* Effect.promise(() =>
+            deflateSnapshot(bytes, { finishFlush: NodeZlib.constants.Z_SYNC_FLUSH }),
+          );
           const compressionMs = performance.now() - compressedAt;
-          // A later tick must close the interval that includes the final synchronous phase.
+          // Require a tick after encoding and compression finish.
           const loopWorkEndSampleCount = loop.count;
           yield* waitForLoopSamples;
           const loopFinalSampleCount = loop.count;
@@ -114,7 +120,8 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
             encodeMs,
             compressionMs,
             bytes: Buffer.byteLength(bytes),
-            compressedBytes: compressed.byteLength,
+            // The WebSocket sender omits the final Z_SYNC_FLUSH marker.
+            compressedBytes: compressed.byteLength - deflateFlushTrailerBytes,
             loopWarmupSampleCount,
             loopWorkEndSampleCount,
             loopFinalSampleCount,
@@ -132,6 +139,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
       return {
         samples,
         captureRoute: "file-backed-sqlite-reader",
+        compressionRoute: "websocket-deflate-first-frame",
         snapshotOffloadActivated: false,
         // JSON.stringify is synchronous, so this is a demonstrated contiguous block.
         contiguousEncodeTrigger: samples.some((sample) => sample.encodeMs >= 50),

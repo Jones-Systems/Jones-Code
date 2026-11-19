@@ -55,6 +55,30 @@ export interface InstallPlanServices {
   /** Ask a waiting update status stream to read now; it never interrupts a live long-poll. */
   readonly kick?: (environmentId: EnvironmentId) => void;
 }
+
+export function authorizedUpdateStatus(
+  device: InstallStatusDevice | undefined,
+  environmentId: EnvironmentId,
+): JonesUpdateState | undefined {
+  if (
+    device?.environmentId === environmentId &&
+    device.canOperate &&
+    device.observation.freshness === "fresh" &&
+    device.observation.state?.environmentId === environmentId
+  )
+    return device.observation.state;
+}
+
+export function currentAuthorizedUpdateStatus(
+  services: InstallPlanServices,
+  environmentId: EnvironmentId,
+): JonesUpdateState | undefined {
+  return authorizedUpdateStatus(
+    services.devices().find((device) => device.environmentId === environmentId),
+    environmentId,
+  );
+}
+
 let active: { services: InstallPlanServices; store: InstallStatusStore } | undefined;
 export function bindInstallPlanServices(services: InstallPlanServices, store = installStatusStore) {
   const binding = { services, store };
@@ -77,7 +101,9 @@ export async function requestInstallPlan(
   if (active?.services === binding.services && active.store === binding.store)
     binding.store.update({
       native: result.state,
-      ...(request.type === "read" ? {} : { error: result.refused?.message ?? null }),
+      ...(request.type === "read" || (request.type === "report" && result.refused === undefined)
+        ? {}
+        : { error: result.refused?.message ?? null }),
     });
   return result;
 }

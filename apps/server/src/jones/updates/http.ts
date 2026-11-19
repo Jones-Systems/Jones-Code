@@ -13,6 +13,7 @@ import { requireEnvironmentScope } from "../../auth/http.ts";
 import { JonesUpdates } from "./service.ts";
 import * as SourceRelation from "./sourceRelation.ts";
 import { stampProgressReportedAt } from "./progress.ts";
+import { JONES_OPERATION_RECEIPTS_HEADER } from "./serverCapability.ts";
 
 const noStore = HttpEffect.appendPreResponseHandler((_request, response) =>
   Effect.succeed(HttpServerResponse.setHeader(response, "cache-control", "no-store")),
@@ -53,6 +54,15 @@ export const jonesUpdatesHttpApiLayer = HttpApiBuilder.group(
             yield* noStore;
             if (payload.inspectCleanup !== undefined || payload.refreshInstallOutcome !== undefined)
               yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+              Effect.succeed(
+                HttpServerResponse.setHeader(
+                  response,
+                  JONES_OPERATION_RECEIPTS_HEADER,
+                  updates.operationReceiptReadsSupported ? "supported" : "unsupported",
+                ),
+              ),
+            );
             return yield* updates.operationRead(payload);
           }),
         )

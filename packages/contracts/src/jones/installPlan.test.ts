@@ -136,6 +136,46 @@ describe("install-plan renderer authority", () => {
     expect(compiledIs1({ ...state, clientCommands: 1 })).toBe(true);
   });
 
+  it("preserves an optional exact Laptop download identity on Stop", () => {
+    const legacy = { type: "laptop", planId, action: "stop" } as const;
+    const bound = { ...legacy, operationId };
+    expect(decode(legacy)).toEqual(legacy);
+    expect(decode(bound)).toEqual(bound);
+    expect(() => decode({ ...bound, operationId: "unqualified-operation" })).toThrow();
+  });
+
+  it("keeps recovery evidence and the old gate closure in a plan response", () => {
+    const decodeState = Schema.decodeUnknownSync(JonesInstallPlanState);
+    const paused = {
+      ...state,
+      current: {
+        ...plan,
+        laptop: {
+          ...laptop,
+          gate: {
+            openedAt: at,
+            basis: "prior-verified",
+            transactionId: "verified-transaction",
+            activeGeneration: "verified-generation",
+            activeSource: source,
+            activeTree: tree,
+          },
+          gateClosed: { at, reason: "blocked" },
+          gatePause: true,
+        },
+      },
+      laptop: {
+        ...state.laptop,
+        activationBlocked: true,
+        reopenToCheckInstall: true,
+      },
+    };
+    expect(decodeState(paused)).toEqual(paused);
+    const inspected = { ...state, laptop: { ...state.laptop, startupInspectionComplete: true } };
+    expect(decodeState(inspected)).toEqual(inspected);
+    expect(decodeState(state)).toEqual(state);
+  });
+
   it("accepts the bounded request vocabulary and retains CAS and review bindings", () => {
     const requests = [
       { type: "read" },
@@ -223,6 +263,9 @@ describe("install-plan renderer authority", () => {
       gate: { activeSource: source },
       gateClosed: { reason: "changed" },
       activationBlocked: false,
+      gatePause: true,
+      startupInspectionComplete: true,
+      reopenToCheckInstall: true,
     };
     expect(decode({ type: "read", ...native })).toEqual({ type: "read" });
     expect(

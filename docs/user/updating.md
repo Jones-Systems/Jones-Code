@@ -32,11 +32,17 @@ closes the panel. Open it again from the sidebar to return to the plan.
 On Laptop, **Stop download** is available only during transfer. Once checking
 has entered mount or copy work, or installation has begun, it cannot be stopped
 from the panel. A Stop request on a supported host remains pending until its
-worker and any native cleanup are proved finished; a late Stop can leave a completed download ready to
-install. If the Laptop install outcome is unconfirmed, open Laptop and choose
-**Check update outcome**. This checks for native proof from the running build.
-If the selected build is verified, the plan can continue on the other devices.
-Use the same check after manually installing the plan's selected build.
+worker and any native cleanup are proved finished. A late Stop can leave a
+completed download ready to install. If you stopped a plan download from
+**Connections** or the CLI, refresh that device in **Install status** to read
+the host's result.
+
+If the Laptop install outcome is unconfirmed, open Laptop and choose **Check
+update outcome**. This checks for native proof from the running build. If the
+panel asks you to quit and reopen Jones Code, check the outcome again after
+reopening. If **Laptop verification paused** appears, the other devices wait
+for Laptop to reverify the same build. Refresh Laptop to check again. Use the
+same check after manually installing the plan's selected build.
 **Refresh now** reads the device's running build. If the device is already
 running the exact selected build, **Done** can record that result. An original
 attempt without confirmed launcher acceptance remains unconfirmed in the
@@ -105,6 +111,9 @@ plan’s earlier attempt did not finish. Its attempt details remain available.
 When that proof is no longer fresh, **Last confirmed running the selected source**
 is historical and dated from the last observation; it enables no host action.
 Held or outstanding work keeps its own status with source evidence below it.
+When the launcher has yet to confirm the install, choose **Check update
+outcome** to ask the host for the original attempt's result. The running build
+and the launcher outcome can be reported separately.
 
 The header's completion **Done** appears only when Laptop and every chosen device
 have settled and no operation is outstanding, or fresh exact proof shows that

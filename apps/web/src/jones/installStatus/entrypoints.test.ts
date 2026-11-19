@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, type DesktopUpdateState } from "@t3tools/contracts";
 import type {
+  JonesInstallPlanGrant,
   JonesInstallPlanRequest,
   JonesInstallPlanResult,
   JonesInstallPlanState,
 } from "@t3tools/contracts/jones/installPlan";
-import type { JonesRecoveryPreflight } from "@t3tools/contracts/jones/jonesOperations";
+import type {
+  JonesOperationReceipt,
+  JonesRecoveryPreflight,
+} from "@t3tools/contracts/jones/jonesOperations";
 import { startPlan } from "@t3tools/client-runtime/jones/install-plan";
 import type { JonesUpdateObservation } from "@t3tools/client-runtime/jones/updates";
 import {
@@ -21,7 +25,7 @@ import {
   partitionUpdateEverything,
   legacyConnectionsGate,
 } from "./entrypoints";
-import { performPanelAction } from "./actions";
+import { performPanelAction, refreshDeviceEvidence, stopPanelDownload } from "./actions";
 import { createInstallStatusStore, installStatusStore, type InstallStatusDevice } from "./panelUi";
 import { bindInstallPlanServices, type InstallPlanServices } from "./services";
 
@@ -89,6 +93,409 @@ const desktop: DesktopUpdateState = {
     },
   },
 };
+
+describe("bound Install status actions", () => {
+  const hostId = EnvironmentId.make("stop-host");
+  const laptopOperationId = "22222222-2222-4222-8222-222222222222";
+  const hostOperationId = "33333333-3333-4333-8333-333333333333";
+  const earlierOperationId = "44444444-4444-4444-8444-444444444444";
+  const localStopId = "55555555-5555-4555-8555-555555555555";
+  const hostStopId = "66666666-6666-4666-8666-666666666666";
+  const at = plan.createdAt;
+  const input = {
+    operationId: hostOperationId,
+    environmentId: hostId,
+    action: { kind: "download-exact", targetSource: source },
+    expectedInstalledSource: "d".repeat(40),
+    correlation: { planId: plan.planId, deviceKey: hostId },
+  } as const;
+  const running: JonesOperationReceipt = {
+    protocol: 1,
+    ...input,
+    phase: "running",
+    acceptedAt: at,
+    updatedAt: at,
+  };
+  const grant: JonesInstallPlanGrant = {
+    planId: plan.planId,
+    environmentId: hostId,
+    operationId: hostOperationId,
+    leaseUntil: "2026-10-27T04:02:00.000Z",
+    step: "stop",
+    request: {
+      kind: "operation-stop",
+      input: { environmentId: hostId, operationId: hostOperationId, stopId: localStopId },
+    },
+  };
+  const hostReceipt: JonesOperationReceipt = {
+    ...running,
+    phase: "stop-requested",
+    stop: { stopId: hostStopId, requestedAt: at },
+  };
+  function bindFixture(initialGrant: JonesInstallPlanGrant = grant) {
+    const state = native({
+      ...plan,
+      laptop: {
+        ...plan.laptop,
+        operations: [
+          {
+            operationId: laptopOperationId,
+            step: "download",
+            requestedAt: at,
+            result: { status: "running", at },
+          },
+        ],
+      },
+      devices: [
+        {
+          environmentId: hostId,
+          label: "Stop host",
+          route: "operations",
+          membership: "selected",
+          addedAt: at,
+          operations: [
+            {
+              operationId: hostOperationId,
+              step: "download",
+              request: { kind: "operation-start", input },
+              receipt: running,
+              lease: { claimant: "window:a", reservedAt: at, leaseUntil: grant.leaseUntil },
+            },
+          ],
+        },
+      ],
+    });
+    const installPlan = vi.fn(
+      async (request: JonesInstallPlanRequest): Promise<JonesInstallPlanResult> => ({
+        state,
+        ...(request.type === "claim" ? { grant: initialGrant } : {}),
+      }),
+    );
+    const device: InstallStatusDevice = {
+      environmentId: hostId,
+      label: "Stop host",
+      canOperate: true,
+      observation: {
+        freshness: "fresh",
+        state: {
+          ...desktop.jones!,
+          environmentId: hostId,
+          phase: "downloading",
+          capability: { ...desktop.jones!.capability, operations: 1 },
+          operation: running,
+        },
+      },
+    };
+    const unused = async () => {
+      throw new Error("Unexpected host action.");
+    };
+    const stop = vi.fn<InstallPlanServices["stop"]>(async () => hostReceipt);
+    const devices = vi.fn(() => [device]);
+    const services: InstallPlanServices = {
+      bridge: { installPlan, getUpdateState: async () => desktop, onUpdateState: () => () => {} },
+      devices,
+      observe: async () => device,
+      legacy: unused,
+      operation: unused,
+      stop,
+      host: unused,
+      confirm: unused,
+      chooseRecovery: unused,
+      now: () => Date.parse(at),
+    };
+    const store = createInstallStatusStore();
+    return {
+      installPlan,
+      stop,
+      state,
+      devices,
+      services,
+      store,
+      unbind: bindInstallPlanServices(services, store),
+    };
+  }
+
+  it.each(["laptop", "device"] as const)("refuses to retarget a stale %s Stop", async (kind) => {
+    const f = bindFixture();
+    try {
+      const displayed = {
+        kind,
+        planId: plan.planId,
+        environmentId: kind === "laptop" ? environmentId : hostId,
+        operationId: kind === "laptop" ? laptopOperationId : hostOperationId,
+      };
+      await expect(
+        stopPanelDownload({ ...displayed, operationId: earlierOperationId }),
+      ).rejects.toThrow("This download is no longer current");
+      await expect(stopPanelDownload({ ...displayed, planId: earlierOperationId })).rejects.toThrow(
+        "This download is no longer current",
+      );
+      expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(["read", "read"]);
+      expect(f.stop).not.toHaveBeenCalled();
+    } finally {
+      f.unbind();
+    }
+  });
+
+  it.each(["read", "claim"] as const)(
+    "blocks Stop when capability downgrades during the native %s",
+    async (downgradeOn) => {
+      const f = bindFixture();
+      try {
+        const device = await f.services.observe(hostId);
+        f.installPlan.mockImplementation(async (request) => {
+          if (request.type === downgradeOn)
+            f.devices.mockReturnValue([
+              {
+                ...device,
+                observation: {
+                  freshness: "fresh",
+                  state: {
+                    ...device.observation.state!,
+                    capability: {
+                      check: false,
+                      download: false,
+                      install: false,
+                      operationReceipts: 1,
+                    },
+                  },
+                },
+              },
+            ]);
+          return { state: f.state, ...(request.type === "claim" ? { grant } : {}) };
+        });
+        await expect(
+          stopPanelDownload({
+            kind: "device",
+            planId: plan.planId,
+            environmentId: hostId,
+            operationId: hostOperationId,
+          }),
+        ).rejects.toThrow("Fresh authorized operation capability is required.");
+        expect(f.installPlan.mock.calls.map(([request]) => request.type)).toEqual(
+          downgradeOn === "read" ? ["read"] : ["read", "claim"],
+        );
+        expect(f.stop).not.toHaveBeenCalled();
+      } finally {
+        f.unbind();
+      }
+    },
+  );
+
+  it("keeps the exact Stop grant binding and reports the host's first Stop ID", async () => {
+    const displayed = {
+      kind: "device",
+      planId: plan.planId,
+      environmentId: hostId,
+      operationId: hostOperationId,
+    } as const;
+    const mismatched = bindFixture({
+      ...grant,
+      request: {
+        kind: "operation-stop",
+        input: { operationId: earlierOperationId, environmentId: hostId, stopId: localStopId },
+      },
+    });
+    try {
+      await expect(stopPanelDownload(displayed)).rejects.toThrow(
+        "does not match this Stop request",
+      );
+      expect(mismatched.stop).not.toHaveBeenCalled();
+    } finally {
+      mismatched.unbind();
+    }
+    const f = bindFixture();
+    try {
+      await stopPanelDownload(displayed);
+      expect(f.installPlan.mock.calls[1]?.[0]).toMatchObject({
+        type: "claim",
+        step: "stop",
+        explicit: true,
+        planId: plan.planId,
+        environmentId: hostId,
+        operationId: hostOperationId,
+      });
+      expect(f.stop).toHaveBeenCalledExactlyOnceWith(hostId, {
+        action: "operationStop",
+        input: { environmentId: hostId, operationId: hostOperationId, stopId: localStopId },
+      });
+      expect(f.installPlan.mock.calls[2]?.[0]).toEqual({
+        type: "report",
+        planId: plan.planId,
+        environmentId: hostId,
+        operationId: hostOperationId,
+        evidence: { kind: "receipt", receipt: hostReceipt },
+      });
+    } finally {
+      f.unbind();
+    }
+  });
+
+  it.each(["operationReceipts", "operations"] as const)(
+    "%s supports exact readback with disabled updates and requires current scope for explicit refresh",
+    async (receiptCapability) => {
+      const f = bindFixture();
+      const current = f.state.current!;
+      const device = current.devices[0]!;
+      const receipt: JonesOperationReceipt = {
+        ...running,
+        action: {
+          kind: "install",
+          targetSource: source,
+          currentVersion: "old",
+          stagedHandle: "stage",
+        },
+      };
+      const planWithInstall = {
+        ...current,
+        devices: [
+          {
+            ...device,
+            operations: [
+              {
+                ...device.operations[0]!,
+                step: "install" as const,
+                request: { kind: "operation-start" as const, input: receipt },
+                receipt,
+              },
+            ],
+          },
+        ],
+      };
+      const observed = await f.services.observe(hostId);
+      const status = {
+        ...observed.observation.state!,
+        capability: {
+          check: false,
+          download: false,
+          install: false,
+          [receiptCapability]: 1 as const,
+        },
+      };
+      const authorized = { ...observed, observation: { ...observed.observation, state: status } };
+      const operation = vi.fn<InstallPlanServices["operation"]>(async () => ({
+        receipts: [{ operationId: hostOperationId, receipt }],
+      }));
+      let canOperate = false;
+      let liveObservation: InstallStatusDevice["observation"] = authorized.observation;
+      const binding = {
+        services: {
+          ...f.services,
+          devices: () => [{ ...authorized, observation: liveObservation, canOperate }],
+          operation,
+        },
+        store: f.store,
+      };
+      const check = (observed: InstallStatusDevice, refreshInstallOutcome: boolean) =>
+        refreshDeviceEvidence(binding, hostId, planWithInstall, observed, {
+          refreshInstallOutcome,
+        });
+      const exactRead = { environmentId: hostId, operationIds: [hostOperationId] };
+      try {
+        await check(authorized, true);
+        expect(operation).toHaveBeenLastCalledWith(hostId, {
+          action: "operationRead",
+          input: exactRead,
+        });
+        canOperate = true;
+        await check(authorized, false);
+        expect(operation).toHaveBeenLastCalledWith(hostId, {
+          action: "operationRead",
+          input: exactRead,
+        });
+        await check(authorized, true);
+        expect(operation).toHaveBeenLastCalledWith(hostId, {
+          action: "operationRead",
+          input: { ...exactRead, refreshInstallOutcome: hostOperationId },
+        });
+        expect(f.installPlan).toHaveBeenLastCalledWith({
+          type: "report",
+          planId: plan.planId,
+          environmentId: hostId,
+          operationId: hostOperationId,
+          evidence: { kind: "receipt", receipt },
+        });
+        const directlyRead = {
+          ...authorized,
+          observation: { ...authorized.observation, heardAt: 20 },
+        };
+        liveObservation = { freshness: "stale", state: status, heardAt: 10 };
+        await check(directlyRead, true);
+        expect(operation).toHaveBeenLastCalledWith(hostId, {
+          action: "operationRead",
+          input: { ...exactRead, refreshInstallOutcome: hostOperationId },
+        });
+
+        liveObservation = {
+          freshness: "fresh",
+          heardAt: 21,
+          state: { ...status, capability: { check: true, download: false, install: false } },
+        };
+        const limited = await check(directlyRead, true);
+        expect(operation).toHaveBeenLastCalledWith(hostId, {
+          action: "operationRead",
+          input: exactRead,
+        });
+        expect(limited).toContain("Checking its launcher requires fresh status and permission.");
+
+        liveObservation = { freshness: "unsupported", state: null, heardAt: 10, unsupportedAt: 21 };
+        await check(directlyRead, true);
+        expect(operation).toHaveBeenLastCalledWith(hostId, {
+          action: "operationRead",
+          input: exactRead,
+        });
+
+        await check({ ...authorized, observation: { freshness: "stale", state: status } }, true);
+        await check(
+          {
+            ...authorized,
+            observation: { freshness: "fresh", state: { ...status, environmentId } },
+          },
+          true,
+        );
+        expect(operation).toHaveBeenCalledTimes(6);
+
+        liveObservation = { freshness: "stale", state: status, heardAt: 10 };
+        const unbind = bindInstallPlanServices(
+          {
+            ...binding.services,
+            observe: async () => ({ ...authorized, observation: liveObservation }),
+            readStatus: async () => status,
+          },
+          f.store,
+        );
+        try {
+          const state = { ...f.state, current: planWithInstall };
+          f.installPlan.mockResolvedValueOnce({
+            state: { ...state, readOnly: { code: "invalid", message: "The plan is read-only." } },
+          });
+          await performPanelAction(hostId, "check", plan.planId);
+          expect(operation).toHaveBeenLastCalledWith(hostId, {
+            action: "operationRead",
+            input: exactRead,
+          });
+          expect(f.store.get().error).toBe("The plan is read-only.");
+
+          f.installPlan.mockResolvedValueOnce({
+            state,
+            refused: { code: "storage", message: "The plan read was refused." },
+          });
+          await performPanelAction(hostId, "check", plan.planId);
+          expect(operation).toHaveBeenLastCalledWith(hostId, {
+            action: "operationRead",
+            input: exactRead,
+          });
+          expect(f.store.get().error).toBe("The plan read was refused.");
+        } finally {
+          unbind();
+        }
+        expect(f.stop).not.toHaveBeenCalled();
+      } finally {
+        f.unbind();
+      }
+    },
+  );
+});
 
 describe("install entrypoint routing", () => {
   it("settles an unresolved directive only from exact fresh host status", async () => {

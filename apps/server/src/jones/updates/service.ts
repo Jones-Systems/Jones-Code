@@ -121,6 +121,7 @@ export class JonesUpdates extends Context.Service<
     readonly recoveryPreflight: (
       input: JonesRecoveryPreflightInput,
     ) => Effect.Effect<JonesRecoveryPreflight, EnvironmentInternalError>;
+    readonly operationReceiptReadsSupported: boolean;
     readonly fleetOperationsSupported: boolean;
     readonly state: (after?: number) => Effect.Effect<JonesUpdateState | null>;
     readonly check: Effect.Effect<JonesUpdateState>;
@@ -335,6 +336,7 @@ export const layer = Layer.effect(
           reason: "Caller-bound native updates are unavailable on this host.",
         }),
       fleetOperationsSupported: false,
+      operationReceiptReadsSupported: false,
       stageExact: () =>
         Effect.succeed(blocked("Caller-bound native updates are unavailable on this host.")),
       installForOperation: () =>
@@ -712,7 +714,7 @@ export const layer = Layer.effect(
         );
       void capabilityWrites.catch(() => {});
     };
-    const serviceCapability = qualifiedServerCapability({
+    const qualifiedCapability = qualifiedServerCapability({
       supported,
       qualifiedRuntime: nativeReceipt,
       launcherManaged: launcher.managed,
@@ -724,21 +726,25 @@ export const layer = Layer.effect(
       hasStage: preparation !== undefined,
       hasInstall: qualifiedSelfUpdate.installQualified !== undefined && preparation !== undefined,
       hasEnvironment: environmentId !== undefined,
-      restoreFailed: restoreFailure !== undefined,
     });
-    const fleetOperationsSupported =
-      launcher.managed &&
+    const operationReceiptReadsSupported =
       launcher.qualifiedOperations === true &&
       launcher.qualifiedRetirement === true &&
-      supported &&
-      nativeReceipt &&
-      serviceCapability.download &&
-      serviceCapability.install &&
+      qualifiedCapability.download &&
+      qualifiedCapability.install &&
       preparation !== undefined;
-    const recoveryPolicySupported =
-      fleetOperationsSupported &&
+    // A failed selection read prevents new updates. Retained operation receipts and
+    // ordered native outcome readback still use the same qualified host identity.
+    const fleetOperationsSupported = operationReceiptReadsSupported && restoreFailure === undefined;
+    const serviceCapability: JonesUpdateState["capability"] =
+      restoreFailure === undefined || !qualifiedCapability.check
+        ? qualifiedCapability
+        : { check: false, download: false, install: false, reason: "blocked" };
+    const nativeRecoveryPolicySupported =
+      operationReceiptReadsSupported &&
       launcher.stateRecoveryPolicy === true &&
       launcher.withStateRecoveryPolicy !== undefined;
+    const recoveryPolicySupported = fleetOperationsSupported && nativeRecoveryPolicySupported;
     const recoveryPreflights: ReturnType<typeof createRecoveryPreflights> =
       createRecoveryPreflights({
         snapshot: () => updater.snapshot(),
@@ -848,6 +854,9 @@ export const layer = Layer.effect(
         capability: {
           ...serviceCapability,
           ...(fleetOperationsSupported ? { operations: 1 as const } : {}),
+          ...(operationReceiptReadsSupported && !fleetOperationsSupported
+            ? { operationReceipts: 1 as const }
+            : {}),
           ...(fleetOperationsSupported &&
           launcher.qualifiedRetirement === true &&
           launcher.retireUpdate !== undefined
@@ -868,7 +877,7 @@ export const layer = Layer.effect(
             preparation,
           )
         ).sourceSha,
-      prepare: async (candidate, { signal, onVerifying, jobId, onStarted, onAdopting }) => {
+      prepare: async (candidate, { signal, onVerifying, onReserved, onStarted, onAdopting }) => {
         if (preparation === undefined) throw preparationUnavailable();
         const activeVersion = launcher.currentVersion;
         if (!launcher.managed || launcher.qualifiedStaging !== true || activeVersion === undefined)
@@ -889,8 +898,9 @@ export const layer = Layer.effect(
             host: preparationHost,
           },
           {
-            jobId: jobId ?? NodeCrypto.randomUUID(),
+            jobId: NodeCrypto.randomUUID(),
             signal,
+            ...(onReserved === undefined ? {} : { onReserved }),
             onPhase: (phase) => (phase === "verifying" ? onVerifying() : undefined),
           },
         );
@@ -1142,6 +1152,7 @@ export const layer = Layer.effect(
         };
       }
       if (
+        restoreFailure !== undefined ||
         launcher.qualifiedOperations !== true ||
         launcher.qualifiedRetirement !== true ||
         runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
@@ -1157,7 +1168,7 @@ export const layer = Layer.effect(
       );
     });
     const targetOperations =
-      fleetOperationsSupported && preparation !== undefined
+      operationReceiptReadsSupported && preparation !== undefined
         ? createTargetOperations({
             key: config.baseDir,
             ledger: createOperationLedger(config.baseDir),
@@ -1176,7 +1187,7 @@ export const layer = Layer.effect(
             onFailure: () => {
               void run(Effect.logWarning("Target operation needs durable reconciliation."));
             },
-            ...(recoveryPolicySupported
+            ...(nativeRecoveryPolicySupported
               ? {
                   recovery: {
                     validate: recoveryPreflights.validate,
@@ -1289,9 +1300,15 @@ export const layer = Layer.effect(
       recordRetired: settleOperation,
       refreshPolicy,
       retireStagedOperation: Effect.fn("JonesUpdates.retireStagedOperation")((input) =>
-        Effect.promise(() => updater.retireStagedOperation(input)),
+        restoreFailure === undefined
+          ? Effect.promise(() => updater.retireStagedOperation(input))
+          : Effect.succeed({
+              retired: false,
+              reason: "The retained staged selection requires reconciliation.",
+            }),
       ),
       fleetOperationsSupported,
+      operationReceiptReadsSupported,
       stageExact: Effect.fn("JonesUpdates.stageExact")((input) =>
         isUpdateOperationId(input.operationId) &&
         launcher.qualifiedOperations === true &&

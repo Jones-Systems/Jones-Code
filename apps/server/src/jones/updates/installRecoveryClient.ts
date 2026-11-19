@@ -22,6 +22,7 @@ import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import { resolveCliAuthConfig } from "../../cli/config.ts";
 import * as ServerConfig from "../../config.ts";
 import { readLiveServerRuntimeState } from "../../serverRuntimeState.ts";
+import { JONES_OPERATION_RECEIPTS_HEADER } from "./serverCapability.ts";
 
 export class InstallRecoveryError extends Schema.TaggedError<InstallRecoveryError>()(
   "InstallRecoveryError",
@@ -33,6 +34,10 @@ export class InstallRecoveryError extends Schema.TaggedError<InstallRecoveryErro
 }
 
 const isInstallRecoveryError = Schema.is(InstallRecoveryError);
+const decodeOperationRead = HttpApiClient.decodeResponse(EnvironmentHttpApi, {
+  group: "jonesUpdates",
+  endpoint: "operationRead",
+});
 
 type HostAction =
   | { readonly type: "status" }
@@ -121,7 +126,12 @@ export const runHostRecovery = Effect.fn("InstallRecovery.runHost")(function* (
       const headers = { authorization: `Bearer ${token}` };
       const state = yield* client.state({ headers, query: {} });
       if (action.type === "status") return { state };
-      if (state?.environmentId !== action.environmentId) {
+      if (state === null) {
+        return yield* new InstallRecoveryError({
+          detail: "Durable update operation receipts are unsupported on this host.",
+        });
+      }
+      if (state.environmentId !== action.environmentId) {
         return yield* new InstallRecoveryError({
           detail: "The live server does not match the requested environment ID.",
         });
@@ -135,7 +145,7 @@ export const runHostRecovery = Effect.fn("InstallRecovery.runHost")(function* (
         return { receipt: yield* verifyReceipt(receipt, environmentId, operationId) };
       }
       const inspected = action.type === "inspect-cleanup" || action.type === "recover-cleanup";
-      const read = yield* client.operationRead({
+      const response = yield* client.operationRead({
         headers,
         payload: {
           environmentId,
@@ -143,12 +153,39 @@ export const runHostRecovery = Effect.fn("InstallRecovery.runHost")(function* (
           ...(inspected ? { inspectCleanup: operationId } : {}),
           ...(action.type === "refresh-outcome" ? { refreshInstallOutcome: operationId } : {}),
         },
+        responseMode: "response-only",
       });
-      const receipt = yield* verifyReceipt(
-        read.receipts.find((entry) => entry.operationId === operationId)?.receipt ?? null,
-        environmentId,
-        operationId,
+      const availability = response.headers[JONES_OPERATION_RECEIPTS_HEADER];
+      if (availability === "unsupported") {
+        return yield* new InstallRecoveryError({
+          detail: "Durable update operation receipts are unsupported on this host.",
+        });
+      }
+      const read = yield* decodeOperationRead(response).pipe(
+        Effect.mapError(
+          () =>
+            new InstallRecoveryError({
+              detail: "The exact update receipt could not be read. Check the host before retrying.",
+            }),
+        ),
       );
+      const entry = read.receipts[0];
+      if (read.receipts.length !== 1 || entry?.operationId !== operationId) {
+        return yield* new InstallRecoveryError({
+          detail: "The host did not return a result for the exact update operation.",
+        });
+      }
+      const receipt = yield* verifyReceipt(entry.receipt, environmentId, operationId);
+      if (
+        receipt === null &&
+        availability !== "supported" &&
+        state.capability.operations !== 1 &&
+        state.capability.operationReceipts !== 1
+      ) {
+        return yield* new InstallRecoveryError({
+          detail: "This server did not establish whether it can read the retained update receipt.",
+        });
+      }
       const inspection = read.cleanupInspection;
       if (action.type !== "recover-cleanup") {
         return {

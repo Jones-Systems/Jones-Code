@@ -1,5 +1,7 @@
 export const INSTALL_PLAN_WAIT = "After Laptop is verified";
 export const INSTALL_PLAN_GO = "Laptop verified · Others go";
+export const LAPTOP_REOPEN_TO_CHECK_INSTALL =
+  "Reopen Jones Code to check the Laptop install outcome.";
 
 export function lastUpdateLabel(at: string) {
   const date = new Date(at);

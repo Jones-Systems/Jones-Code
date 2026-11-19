@@ -1,5 +1,10 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import type { JonesInstallPlanState } from "@t3tools/contracts/jones/installPlan";
+import type {
+  JonesInstallPlan,
+  JonesInstallPlanLaptop,
+  JonesInstallPlanLaptopEvidence,
+  JonesInstallPlanState,
+} from "@t3tools/contracts/jones/installPlan";
 import type { JonesRecoveryPreflight } from "@t3tools/contracts/jones/jonesOperations";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
 import type { JonesUpdateObservation } from "../updates/jonesUpdates.ts";
@@ -13,6 +18,7 @@ import {
   deviceActiveOperations,
   deviceStagedReceipt,
   deviceSelectionLocked,
+  hasUnconfirmedLauncherOutcome,
   operationOutstanding,
   isPlanComplete,
   type InstallPlanDeviceState,
@@ -65,6 +71,51 @@ function rowProgress(
 ): InstallProgressView | undefined {
   const progress = progressForOperation(observation?.state?.progress, latestOperationId, planless);
   return progress === undefined ? undefined : installProgressView(progress, observation?.heardAt);
+}
+
+function settledInstallProgress(progress: InstallProgressView | undefined, committed: boolean) {
+  if (progress?.kind !== "install") return undefined;
+  const matches = committed
+    ? progress.phase === "done"
+    : progress.phase === "failed" && !progress.outcomeUnconfirmed;
+  return matches ? progress : undefined;
+}
+
+export function laptopGateIssue(laptop: JonesInstallPlanLaptop) {
+  const closed = laptop.gateClosed;
+  if (closed === undefined) return undefined;
+  if (laptop.gatePause === true && closed.reason === "blocked")
+    return {
+      phase: "gatePaused",
+      title: "Laptop verification paused",
+      reason: "Could not recheck the verified Laptop build. Other devices are paused.",
+    } as const;
+  const messages = {
+    changed: { title: "Laptop changed", reason: "Laptop no longer matches the verified build." },
+    blocked: {
+      title: "Laptop verification blocked",
+      reason: "Laptop reported a verification block.",
+    },
+    "rolled-back": {
+      title: "Laptop rolled back",
+      reason: "Laptop returned to the previous build.",
+    },
+  };
+  return { phase: "gateClosed", ...messages[closed.reason] } as const;
+}
+
+export function laptopInstallNeedsReopen(
+  plan: JonesInstallPlan | null | undefined,
+  evidence: JonesInstallPlanLaptopEvidence,
+): boolean {
+  const operation = plan?.laptop.operations.at(-1);
+  const status = operation?.result?.status;
+  return (
+    evidence.reopenToCheckInstall === true &&
+    evidence.environmentId === plan?.laptop.environmentId &&
+    operation?.step === "install" &&
+    (status === undefined || status === "running" || status === "held")
+  );
 }
 
 type ActiveWork = "install" | "download" | undefined;
@@ -142,6 +193,24 @@ export function installPlanPresentation(
         receipt.updateId === operationId &&
         receipt.outcome?.status === "committed",
     );
+    const reportedProgress = rowProgress(observed?.observation, latest?.operationId, planless);
+    const installSettled = latest?.step === "install" && !operationOutstanding(latest);
+    const launcherOutcomeUnconfirmed =
+      latest?.step === "install" &&
+      !installSettled &&
+      (hasUnconfirmedLauncherOutcome(receipt) ||
+        reportedProgress?.outcomeUnconfirmed === true ||
+        reportedProgress?.phase === "done");
+    const explicitInstallOutcome =
+      installSettled &&
+      (receipt?.outcome !== undefined ||
+        receipt?.phase === "blocked" ||
+        receipt?.code === "launcher-rejected");
+    const progress = installSettled
+      ? settledInstallProgress(reportedProgress, receipt?.phase === "completed")
+      : launcherOutcomeUnconfirmed && !reportedProgress?.outcomeUnconfirmed
+        ? undefined
+        : reportedProgress;
     const matchesTarget = matchesPlanTarget(plan, device, hostState);
     const runningTarget = observed?.observation.freshness === "fresh" && matchesTarget;
     const targetBuildRunning = !confirmedInstall && runningTarget;
@@ -156,7 +225,9 @@ export function installPlanPresentation(
       heardAt !== undefined &&
       Number.isFinite(heardAt);
     const sourceText = runningTarget
-      ? "Updated · running the selected source"
+      ? launcherOutcomeUnconfirmed
+        ? "Running the selected source"
+        : "Updated · running the selected source"
       : cachedTarget
         ? `Last confirmed running the selected source · ${relativeAge(heardAt!, options.now)}`
         : undefined;
@@ -199,19 +270,15 @@ export function installPlanPresentation(
       hostState?.stagedAlreadyRunning === true;
     if (alreadyRunning) text = ALREADY_RUNNING_TEXT;
     const attemptText =
-      device.verifiedElsewhere !== undefined && latest?.receipt?.code === "launcher-unconfirmed"
+      device.verifiedElsewhere !== undefined && launcherOutcomeUnconfirmed
         ? "This plan’s launcher outcome remains unconfirmed."
         : sourceHeadline
           ? `This plan's attempt: ${text}${latest?.receipt?.code !== undefined && !text.endsWith(latest.receipt.code) ? ` · ${latest.receipt.code}` : ""}`
           : undefined;
-    const reportedProgress = rowProgress(observed?.observation, latest?.operationId, planless);
-    // Older hosts can retain a restart warning after the exact install receipt commits.
-    const progress =
-      (phase === "done" && confirmedInstall && reportedProgress?.phase !== "done") ||
-      (device.verifiedElsewhere !== undefined && receipt?.code === "launcher-unconfirmed")
-        ? undefined
-        : reportedProgress;
-    if (progress?.text !== undefined && !LEDGER_TEXT_WINS.has(phase)) text = progress.text;
+    if (progress?.text !== undefined && !explicitInstallOutcome && !LEDGER_TEXT_WINS.has(phase))
+      text = progress.text;
+    if (launcherOutcomeUnconfirmed && phase !== "updated-elsewhere")
+      text = progress?.text ?? "Install outcome unconfirmed";
     if (receipt?.code === "launcher-rejected") text = "Install request did not start";
     if (sourceHeadline) text = sourceText!;
     return {
@@ -223,11 +290,13 @@ export function installPlanPresentation(
       copyKey: `device.${phase}`,
       text,
       targetBuildRunning,
+      launcherOutcomeUnconfirmed,
       downloadLabel: retryDownload ? "Retry download" : `Download on ${device.label}`,
       installLabel: retryInstall ? "Retry install" : `Install on ${device.label}`,
       settled: phase === "updated-elsewhere" || deviceSettled(plan, device),
       status,
-      activeWork: sourceHeadline ? undefined : activeWork(phase, progress),
+      activeWork:
+        sourceHeadline || launcherOutcomeUnconfirmed ? undefined : activeWork(phase, progress),
       ...(progress === undefined ? {} : { progress }),
       ...(latest === undefined ? {} : { operationId: latest.operationId }),
       actions: {
@@ -267,8 +336,11 @@ export function installPlanPresentation(
         stop:
           canRecover &&
           phase === "downloading" &&
+          latest?.step === "download" &&
           latest?.receipt !== undefined &&
           ["accepted", "running"].includes(latest.receipt.phase) &&
+          hostState?.environmentId === device.environmentId &&
+          hostState.operation?.operationId === latest.operationId &&
           status?.actions.stop === true,
         end: canRecover && phase === "staged",
         checkAgain: true,
@@ -297,28 +369,27 @@ export function installPlanPresentation(
     laptopState.stagedHandle !== undefined &&
     laptopState.provenance?.sourceSha === plan.target.sourceSha &&
     laptopState.provenance.sourceTree === plan.target.sourceTree;
+  const gateIssue = laptopGateIssue(plan.laptop);
+  const reopenToCheckInstall = laptopInstallNeedsReopen(plan, state.laptop);
   const laptopPhase =
-    plan.laptop.gateClosed !== undefined
-      ? "gateClosed"
-      : plan.laptop.gate !== undefined ||
-          (plan.cancelled === true && laptopOperation?.result?.status === "committed")
-        ? "verified"
-        : laptopOperation?.result?.status === "committed"
-          ? "committedGatePending"
-          : laptopOperation?.result?.status === "completed"
-            ? "staged"
-            : laptopOperation?.result?.status === "running"
-              ? laptopOperation.step === "install"
-                ? "installing"
-                : options.laptop?.freshness === "fresh" &&
-                    options.laptop.state?.phase === "verifying"
-                  ? "verifying"
-                  : "downloading"
-              : coldStage
-                ? "staged"
-                : (laptopOperation?.result?.status ?? "preview");
+    gateIssue?.phase ??
+    (plan.laptop.gate !== undefined ||
+    (plan.cancelled === true && laptopOperation?.result?.status === "committed")
+      ? "verified"
+      : laptopOperation?.result?.status === "committed"
+        ? "committedGatePending"
+        : laptopOperation?.result?.status === "completed"
+          ? "staged"
+          : laptopOperation?.result?.status === "running"
+            ? laptopOperation.step === "install"
+              ? "installing"
+              : options.laptop?.freshness === "fresh" && options.laptop.state?.phase === "verifying"
+                ? "verifying"
+                : "downloading"
+            : coldStage
+              ? "staged"
+              : (laptopOperation?.result?.status ?? "preview"));
   const laptopCopy: Record<string, string> = {
-    gateClosed: "Laptop changed · others won't start",
     verified: "Updated · verified",
     committedGatePending: "Checking after restart…",
     staged: "Downloaded · ready to install",
@@ -338,21 +409,41 @@ export function installPlanPresentation(
   const complete = isPlanComplete(plan);
   const laptopAlreadyRunning =
     laptopPhase === "staged" && laptopState?.stagedAlreadyRunning === true;
-  const laptopProgress = rowProgress(
+  const reportedLaptopProgress = rowProgress(
     options.laptop?.freshness === "fresh" ? options.laptop : undefined,
     laptopOperation?.operationId,
     planless,
   );
+  const laptopCommitted = laptopPhase === "verified" || laptopPhase === "committedGatePending";
+  const explicitLaptopOutcome =
+    laptopCommitted ||
+    (laptopOperation?.step === "install" &&
+      ["rolled-back", "blocked", "failed", "refused", "interrupted"].includes(laptopPhase));
+  const laptopInstallUnconfirmed =
+    reopenToCheckInstall ||
+    (laptopOperation?.step === "install" &&
+      !explicitLaptopOutcome &&
+      (laptopPhase === "held" || reportedLaptopProgress?.phase === "done"));
+  const laptopProgress =
+    gateIssue !== undefined
+      ? undefined
+      : explicitLaptopOutcome
+        ? settledInstallProgress(reportedLaptopProgress, laptopCommitted)
+        : laptopInstallUnconfirmed && !reportedLaptopProgress?.outcomeUnconfirmed
+          ? undefined
+          : reportedLaptopProgress;
   const laptopText =
-    laptopOperation?.step === "download" && laptopPhase === "refused"
-      ? "Download request did not start"
-      : laptopOperation?.step === "install" && laptopPhase === "held"
-        ? "Install outcome unconfirmed"
-        : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
-          ? "Install didn't finish"
-          : laptopAlreadyRunning
-            ? ALREADY_RUNNING_TEXT
-            : (laptopCopy[laptopPhase] ?? "Not confirmed");
+    gateIssue !== undefined
+      ? gateIssue.title
+      : laptopInstallUnconfirmed
+        ? (laptopProgress?.text ?? "Install outcome unconfirmed")
+        : laptopOperation?.step === "download" && laptopPhase === "refused"
+          ? "Download request did not start"
+          : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
+            ? "Install didn't finish"
+            : laptopAlreadyRunning
+              ? ALREADY_RUNNING_TEXT
+              : (laptopCopy[laptopPhase] ?? "Not confirmed");
   const abandoningStage = plan.laptop.stageAbandonment;
   const laptopActions = {
     abandon:
@@ -387,6 +478,7 @@ export function installPlanPresentation(
     stop:
       !readOnly &&
       laptopPhase === "downloading" &&
+      laptopOperation?.step === "download" &&
       laptopState?.phase === "downloading" &&
       laptopState.capability.operations === 1,
     checkAgain: true,
@@ -412,9 +504,11 @@ export function installPlanPresentation(
       phase: laptopPhase,
       copyKey: `laptop.${laptopPhase}`,
       text:
-        laptopProgress?.text !== undefined && laptopPhase !== "held"
+        laptopProgress?.text !== undefined && !explicitLaptopOutcome && laptopPhase !== "held"
           ? laptopProgress.text
           : laptopText,
+      gateIssue,
+      reopenToCheckInstall,
       downloadLabel: retryLaptopDownload ? "Retry download" : "Download on Laptop",
       actions: laptopActions,
       ...(laptopProgress === undefined ? {} : { progress: laptopProgress }),

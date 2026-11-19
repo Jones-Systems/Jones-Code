@@ -64,7 +64,7 @@ it("keeps the reference read and adopts the census after a stable comparison", a
   const read = vi.fn(async (pid: number) => census(pid));
   const sampler = makeMacNativePoolCensus("/fixture", reference, read);
   expect(sampler.comparison()).toBeNull();
-  expect((await sampler.sample(123)).method).toBe("macos-sample");
+  expect(await sampler.sample(123)).toEqual(referencePool(123));
   expect((await sampler.sample(124)).method).toBe("macos-proc-info");
   expect(sampler.comparison()).toMatchObject({ pid: 123, verified: true, threads: 4 });
   expect(reference).toHaveBeenCalledTimes(1);
@@ -143,7 +143,7 @@ it("keeps the fallback when a non-watcher thread starts during the comparison", 
   expect(read).toHaveBeenCalledTimes(2);
 });
 
-it("uses the reference when process identity changes or a later census fails", async () => {
+it("uses the reference when process identity changes during verification", async () => {
   const reference = vi.fn(async (pid: number) => referencePool(pid));
   const unstable = vi
     .fn(async (pid: number) => census(pid, 43))
@@ -153,14 +153,72 @@ it("uses the reference when process identity changes or a later census fails", a
   expect((await sampler.sample(124)).method).toBe("macos-sample");
   expect(sampler.comparison()?.verified).toBe(false);
   expect(unstable).toHaveBeenCalledTimes(2);
+});
 
-  const recovering = makeMacNativePoolCensus("/fixture", reference, async (pid) => {
-    if (pid === 124) throw new Error("unavailable");
-    return census(pid);
+it("keeps the failed bracket read in the comparison receipt", async () => {
+  const read = vi
+    .fn(async (pid: number) => census(pid))
+    .mockResolvedValueOnce(census(123))
+    .mockRejectedValueOnce({ code: 5 });
+  const reference = vi.fn(async (pid: number) => referencePool(pid));
+  const sampler = makeMacNativePoolCensus("/fixture", reference, read);
+
+  expect(await sampler.sample(123)).toEqual(referencePool(123));
+  expect(sampler.comparison()).toMatchObject({
+    verified: false,
+    before: census(123),
+    afterFailure: { reason: "helper-exit", exitCode: 5 },
   });
-  await recovering.sample(123);
-  expect((await recovering.sample(124)).method).toBe("macos-sample");
-  expect(recovering.comparison()?.verified).toBe(true);
+  expect(await sampler.sample(124)).toEqual(referencePool(124));
+  expect(read).toHaveBeenCalledTimes(2);
+});
+
+it("records why each verified fast census fell back without exposing helper diagnostics", async () => {
+  const read = vi.fn(async (pid: number) => census(pid));
+  const sampler = makeMacNativePoolCensus("/fixture", async (pid) => referencePool(pid), read);
+  await sampler.sample(123);
+
+  for (const [error, failure] of [
+    [{ code: 6 }, { reason: "helper-exit", exitCode: 6 }],
+    [{ killed: true, signal: "SIGTERM" }, { reason: "helper-timeout" }],
+    [{ signal: "SIGTERM" }, { reason: "helper-signal" }],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }, { reason: "helper-output-limit" }],
+    [{ code: "ENOENT" }, { reason: "helper-error" }],
+  ] as const) {
+    read.mockRejectedValueOnce({ ...error, stderr: "discarded" });
+    expect(await sampler.sample(124)).toEqual({
+      ...referencePool(124),
+      fastCensusFailure: failure,
+    });
+  }
+  read.mockResolvedValueOnce(census(125));
+  expect(await sampler.sample(124)).toEqual({
+    ...referencePool(124),
+    fastCensusFailure: { reason: "invalid-output" },
+  });
+  expect((await sampler.sample(124)).method).toBe("macos-proc-info");
+  expect(sampler.comparison()?.verified).toBe(true);
+});
+
+it("retains unavailable reference evidence after a verified fast census fails", async () => {
+  const read = vi.fn(async (pid: number) => census(pid));
+  const unavailable = {
+    ...referencePool(124),
+    status: "unavailable",
+    error: "reference failed",
+    threads: [],
+  } as const;
+  const sampler = makeMacNativePoolCensus(
+    "/fixture",
+    async (pid) => (pid === 124 ? unavailable : referencePool(pid)),
+    read,
+  );
+  await sampler.sample(123);
+  read.mockRejectedValueOnce({ code: 6 });
+  expect(await sampler.sample(124)).toEqual({
+    ...unavailable,
+    fastCensusFailure: { reason: "helper-exit", exitCode: 6 },
+  });
 });
 
 const row = (pid: number, rssBytes = 64 * 1024 * 1024) => ({ pid, rssBytes, cpuMs: 1 });

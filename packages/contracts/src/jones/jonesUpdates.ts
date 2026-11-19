@@ -84,8 +84,10 @@ export const JonesUpdateCapability = Schema.Struct({
   exactSource: Schema.optionalKey(Schema.Boolean),
   /** Exact-source staging can retire a caller-bound selection; requires download and exactSource. */
   replaceStaged: Schema.optionalKey(Schema.Boolean),
-  /** Durable operations require download and install support. Absent means unsupported. */
+  /** New durable operations require download and install support. */
   operations: Schema.optionalKey(Schema.Literal(1)),
+  /** Exact receipts remain readable on this host while new durable operations are disabled. */
+  operationReceipts: Schema.optionalKey(Schema.Literal(1)),
   recoveryPolicy: Schema.optionalKey(Schema.Literal(1)),
   abandonStage: Schema.optionalKey(Schema.Literal(1)),
   reason: Schema.optionalKey(
