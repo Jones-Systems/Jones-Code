@@ -15,6 +15,8 @@ import * as Fixture from "../threadResultDependencies/testkit.ts";
 const compiledEncodeEffect1 = Schema.encodeEffect(OrchestrationV2ShellSnapshotJson);
 const loopResolutionMs = 10;
 const maxPhaseLoopTicks = 4_096;
+const threadCpuMs = (usage: ReturnType<typeof process.threadCpuUsage>) =>
+  (usage.user + usage.system) / 1000;
 const waitForLoopSamples = Effect.promise(() =>
   NodeTimersPromises.setTimeout(3 * loopResolutionMs),
 );
@@ -63,18 +65,24 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           yield* waitForLoopSamples;
           // Resetting the histogram also loses the timer's preceding timestamp on Node.
           const loopWarmupSampleCount = loop.count;
+          const captureCpuStart = process.threadCpuUsage();
           const capturedAt = performance.now();
           const decode = yield* fixture.sql.withTransaction(fixture.projection.readShellSnapshot());
           const captureFinishedAt = performance.now();
+          const captureCpuMs = threadCpuMs(process.threadCpuUsage(captureCpuStart));
+          const decodeCpuStart = process.threadCpuUsage();
           const decodedAt = performance.now(),
             shell = yield* decode;
           const decodeFinishedAt = performance.now();
+          const decodeCpuMs = threadCpuMs(process.threadCpuUsage(decodeCpuStart));
+          const projectionCpuStart = process.threadCpuUsage();
           const projectedAt = performance.now();
           const projected = yield* compiledEncodeEffect1({
             ...shell,
             projects: [],
           });
           const projectionFinishedAt = performance.now();
+          const projectionCpuMs = threadCpuMs(process.threadCpuUsage(projectionCpuStart));
           const encodedAt = performance.now();
           // @effect-diagnostics-next-line preferSchemaOverJson:off -- Measure the actual synchronous wire stringify separately from schema projection.
           const bytes = JSON.stringify(projected);
@@ -91,6 +99,11 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
             captureMs: captureFinishedAt - capturedAt,
             decodeMs: decodeFinishedAt - decodedAt,
             schemaProjectionMs: projectionFinishedAt - projectedAt,
+            phaseThreadCpuMs: {
+              capture: captureCpuMs,
+              decode: decodeCpuMs,
+              projection: projectionCpuMs,
+            },
             phaseLoopTrace: {
               ...phaseLoop.trace,
               capture: { startMs: capturedAt, endMs: captureFinishedAt },

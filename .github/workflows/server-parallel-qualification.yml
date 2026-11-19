@@ -15,6 +15,7 @@ on:
             observer-cadence,
             observer-residency,
             writer-timing,
+            snapshot-attribution,
           ]
         default: source-evidence
       observer_full_artifact:
@@ -81,7 +82,7 @@ jobs:
       matrix:
         include: >-
           ${{ fromJSON(
-            github.event.inputs.scope == 'observer-cadence' && '[{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]' ||
+            (github.event.inputs.scope == 'observer-cadence' || github.event.inputs.scope == 'snapshot-attribution') && '[{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]' ||
             (github.event.inputs.scope == 'observer-diagnostic' || github.event.inputs.scope == 'observer-control' || github.event.inputs.scope == 'observer-residency' || github.event.inputs.scope == 'writer-timing') && '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"}]' ||
             '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"},{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]'
           ) }}
@@ -393,7 +394,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$TMPDIR/installed"
-          if [[ "$JONES_SP_SCOPE" == observer-control ]]; then
+          if [[ "$JONES_SP_SCOPE" == snapshot-attribution ]]; then
+            test "$GITHUB_EVENT_NAME" = workflow_dispatch
+            node scripts/jones/serverParallelism/snapshot-attribution.mjs "$JONES_SP_REPORTS"
+          elif [[ "$JONES_SP_SCOPE" == observer-control ]]; then
             test "$(pwd -P)" = /home/runner/work/Jones-Code/Jones-Code
             test "$(git rev-parse HEAD)" = 8e20d00f7df1c9f86bc48fcc296f0521a9f6e343
             test "$(git rev-parse HEAD^{tree})" = 39e18d9e7eba8b51695ae053e35259d7300ca00f
